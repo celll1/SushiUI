@@ -15,7 +15,6 @@ from pathlib import Path
 
 def migrate():
     """Add phase tracking columns to training_runs table."""
-    # Get database path
     db_path = Path(__file__).parent.parent.parent.parent / "training.db"
 
     print(f"[Migration] Migrating database: {db_path}")
@@ -29,7 +28,6 @@ def migrate():
     cursor = conn.cursor()
 
     try:
-        # Check if columns already exist
         cursor.execute("PRAGMA table_info(training_runs)")
         columns = [row[1] for row in cursor.fetchall()]
 
@@ -45,7 +43,6 @@ def migrate():
             print("[Migration] All columns already exist. Nothing to do.")
             return True
 
-        # Add columns
         for col_name, col_type in columns_to_add:
             print(f"[Migration] Adding column: {col_name} ({col_type})")
             cursor.execute(f"ALTER TABLE training_runs ADD COLUMN {col_name} {col_type}")

@@ -67,14 +67,12 @@ def save_image_with_metadata(
     os.makedirs(settings.outputs_dir, exist_ok=True)
     print(f"Outputs directory: {settings.outputs_dir}")
 
-    # Generate filename
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     seed = params.get("seed", 0)
     filename = f"{generation_type}_{timestamp}_{seed}.png"
     filepath = os.path.join(settings.outputs_dir, filename)
     print(f"Saving image to: {filepath}")
 
-    # Prepare metadata
     metadata = PngImagePlugin.PngInfo()
     metadata.add_text("prompt", params.get("prompt", ""))
     metadata.add_text("negative_prompt", params.get("negative_prompt", ""))
@@ -106,7 +104,6 @@ def save_image_with_metadata(
         metadata.add_text("flatten_in_loop_last_steps", str(int(params.get("flatten_in_loop_last_steps", 3) or 3)))
         metadata.add_text("flatten_in_loop_min_region", str(params.get("flatten_in_loop_min_region", 0.02)))
 
-    # Add NAG (Normalized Attention Guidance) parameters
     nag_enable = params.get("nag_enable", False)
     if nag_enable:
         metadata.add_text("nag_enable", str(nag_enable))
@@ -118,32 +115,25 @@ def save_image_with_metadata(
         if nag_negative_prompt:
             metadata.add_text("nag_negative_prompt", nag_negative_prompt)
 
-    # Add Advanced CFG parameters (can coexist with NAG)
-    # Always save cfg_schedule parameters as they may be used even when type is "constant"
     cfg_schedule_type = params.get("cfg_schedule_type", "constant")
     metadata.add_text("cfg_schedule_type", cfg_schedule_type)
 
-    # Save schedule range parameters
     metadata.add_text("cfg_schedule_min", str(params.get("cfg_schedule_min", 1.0)))
     if params.get("cfg_schedule_max") is not None:
         metadata.add_text("cfg_schedule_max", str(params["cfg_schedule_max"]))
 
-    # Save power parameter for quadratic schedule
     if cfg_schedule_type == "quadratic" or params.get("cfg_schedule_power") is not None:
         metadata.add_text("cfg_schedule_power", str(params.get("cfg_schedule_power", 2.0)))
 
-    # Save SNR-based adaptive CFG
     cfg_rescale_snr_alpha = params.get("cfg_rescale_snr_alpha", 0.0)
     if cfg_rescale_snr_alpha > 0:
         metadata.add_text("cfg_rescale_snr_alpha", str(cfg_rescale_snr_alpha))
 
-    # Save dynamic thresholding parameters
     dynamic_threshold_percentile = params.get("dynamic_threshold_percentile", 0.0)
     if dynamic_threshold_percentile > 0:
         metadata.add_text("dynamic_threshold_percentile", str(dynamic_threshold_percentile))
         metadata.add_text("dynamic_threshold_mimic_scale", str(params.get("dynamic_threshold_mimic_scale", 7.0)))
 
-    # Add generation-type specific parameters
     if generation_type in ("img2img", "inpaint"):
         if "denoising_strength" in params:
             metadata.add_text("denoising_strength", str(params["denoising_strength"]))
@@ -199,20 +189,16 @@ def save_image_with_metadata(
         if "inpaint_blur_strength" in params:
             metadata.add_text("inpaint_blur_strength", str(params["inpaint_blur_strength"]))
 
-    # Add model information
     if model_info:
-        # Extract filename from source path
         model_source = model_info.get("source", "")
         if model_source:
             model_filename = os.path.basename(model_source)
             metadata.add_text("model_name", model_filename)
 
-        # Add model hash if available
         model_hash = model_info.get("model_hash", "")
         if model_hash:
             metadata.add_text("model_hash", model_hash)
 
-    # Add U-Net quantization if used
     unet_quantization = params.get("unet_quantization")
     if unet_quantization and unet_quantization != "none":
         metadata.add_text("unet_quantization", unet_quantization)
@@ -456,7 +442,6 @@ def save_image_with_metadata(
     except Exception as e:
         print(f"[Metadata] Failed to write full sushi_parameters JSON blob: {e}")
 
-    # Save image
     try:
         image.save(filepath, pnginfo=metadata)
         print(f"Image saved successfully: {filename}")
@@ -484,7 +469,6 @@ def create_thumbnail(image_path: str, size: tuple = (256, 256)) -> str:
     image = Image.open(image_path)
     # Convert to RGB if RGBA (WebP quality mode requires RGB)
     if image.mode == 'RGBA':
-        # Create white background and paste image on it
         background = Image.new('RGB', image.size, (255, 255, 255))
         background.paste(image, mask=image.split()[3])
         image = background
@@ -500,7 +484,6 @@ def create_thumbnail(image_path: str, size: tuple = (256, 256)) -> str:
     thumb_path_png = os.path.join(settings.thumbnails_dir, f"{base_name}.png")
     image.save(thumb_path_png, format='PNG')
 
-    # Save WebP version (for transfer reduction, ~80% smaller)
     thumb_path_webp = os.path.join(settings.thumbnails_dir, f"{base_name}.webp")
     image.save(thumb_path_webp, format='WEBP', quality=85)
 
@@ -519,12 +502,10 @@ def extract_metadata_from_image(image_path: str) -> Dict[str, Any]:
 
 def calculate_image_hash(image: Image.Image) -> str:
     """Calculate SHA256 hash of image"""
-    # Convert image to bytes
     buffer = BytesIO()
     image.save(buffer, format='PNG')
     image_bytes = buffer.getvalue()
 
-    # Calculate hash
     sha256_hash = hashlib.sha256(image_bytes).hexdigest()
     return sha256_hash
 
@@ -603,7 +584,6 @@ def calculate_file_hash(file_path: str, algorithm: str = "sha256") -> str:
 
     hash_obj = hashlib.new(algorithm)
 
-    # Read file in chunks to handle large files
     with open(file_path, 'rb') as f:
         while chunk := f.read(8192):
             hash_obj.update(chunk)

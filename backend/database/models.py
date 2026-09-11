@@ -14,21 +14,16 @@ def get_local_now():
     """Get current local time (not UTC)"""
     return datetime.now()
 
-# Create separate declarative bases for each database
 GalleryBase = declarative_base()
 DatasetBase = declarative_base()
 TrainingBase = declarative_base()
 
-# ============================================================
-# Gallery Models (gallery.db)
-# ============================================================
 
 class UserSettings(GalleryBase):
     """User settings for application configuration"""
     __tablename__ = "user_settings"
 
     id = Column(Integer, primary_key=True, index=True)
-    # Store directory paths as JSON arrays
     model_dirs = Column(JSON, default=list)  # Additional directories for base models
     lora_dirs = Column(JSON, default=list)   # Additional directories for LoRAs
     controlnet_dirs = Column(JSON, default=list)  # Additional directories for ControlNets
@@ -159,7 +154,6 @@ class GeneratedImage(GalleryBase):
             "model_hash": self.model_hash,
         }
 
-        # Extract Advanced CFG and NAG parameters from parameters JSON if available
         if self.parameters:
             # NAG parameters
             nag_enable = self.parameters.get("nag_enable", False)
@@ -453,15 +447,9 @@ class StudioRenderJob(GalleryBase):
         }
 
 
-# ============================================================
-# Dataset Management Models
-# ============================================================
 
 
 
-# ============================================================
-# Dataset Models (datasets.db)
-# ============================================================
 
 class Dataset(DatasetBase):
     """Dataset for training/fine-tuning models"""
@@ -745,7 +733,6 @@ class DatasetCaption(DatasetBase):
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
 
-        # Parse tag_data if present
         if self.tag_data:
             import json
             try:
@@ -804,9 +791,6 @@ class TagDictionary(DatasetBase):
 
 
 
-# ============================================================
-# Training Models (training.db)
-# ============================================================
 
 class TrainingRun(TrainingBase):
     """Training run for model fine-tuning or LoRA training"""
@@ -817,7 +801,6 @@ class TrainingRun(TrainingBase):
     dataset_configs = Column(JSON, nullable=True)  # List of {dataset_id, caption_types, filters}
     run_id = Column(String, unique=True, nullable=False, index=True, default=lambda: str(uuid.uuid4()))  # Unique ID (UUID)
 
-    # Run identification
     run_name = Column(String, unique=True, index=True, nullable=False)
     training_method = Column(String, nullable=False, index=True)  # 'lora', 'full_finetune'
     base_model_path = Column(String, nullable=False)
@@ -924,7 +907,6 @@ class TrainingRun(TrainingBase):
         out["config_yaml"]     = self.config_yaml
         out["warnings"]        = list(self.warnings or [])
 
-        # Extract component-specific LRs from YAML config
         unet_lr = None
         text_encoder_lr = None
         text_encoder_1_lr = None
@@ -945,7 +927,6 @@ class TrainingRun(TrainingBase):
         out["text_encoder_1_lr"]  = text_encoder_1_lr
         out["text_encoder_2_lr"]  = text_encoder_2_lr
 
-        # Get checkpoints from DB (sorted by step descending = newest first)
         out["checkpoint_paths"] = [
             ckpt.file_path
             for ckpt in sorted(self.checkpoints, key=lambda x: x.step, reverse=True)
@@ -1131,9 +1112,6 @@ class TrainingMetrics(TrainingBase):
         }
 
 
-# ============================================================
-# Tagger Training Models (training.db)
-# ============================================================
 
 class TaggerTrainingRun(TrainingBase):
     """Training run for SigLIP2-based image tagger."""

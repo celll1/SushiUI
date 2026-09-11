@@ -550,18 +550,12 @@ class Txt2ImgRequest(GenerationParams):
 class Img2ImgRequest(GenerationParams):
     denoising_strength: float = 0.75
 
-# ---------------------------------------------------------------------------
-# System endpoints
-# ---------------------------------------------------------------------------
 
 @router.get("/health", tags=["system"])
 async def health_check():
     """Liveness check for the backend API."""
     return {"status": "ok", "version": APP_VERSION}
 
-# ---------------------------------------------------------------------------
-# Schema endpoints — single source of truth for frontend DEFAULT_PARAMS
-# ---------------------------------------------------------------------------
 
 # Modality-matched replacement endpoints, keyed by the image route the caller
 # actually hit. Suggesting /generate/txt2vid to a caller that just uploaded an
@@ -1174,9 +1168,6 @@ async def get_arch_capabilities():
     }
 
 
-# ---------------------------------------------------------------------------
-# GPU coordinator helpers (shared by all /generate/* endpoints)
-# ---------------------------------------------------------------------------
 
 # Conservative per-pixel peak VRAM table.  Used to estimate how much
 # headroom we need before starting generation so the GPU coordinator
@@ -1534,14 +1525,11 @@ async def generate_txt2img(
         # Reset cancellation flag before starting new generation
         pipeline_manager.reset_cancel_flag()
 
-        # Parse LoRA configs
         import json
         lora_configs = _parsed_loras
 
-        # Parse ControlNet configs
         controlnet_configs = json.loads(controlnets) if controlnets else []
 
-        # Parse TIPO config
         tipo_config_dict = json.loads(tipo_config) if tipo_config else {}
 
         # TIPO prompt upsampling (if enabled)
@@ -1549,12 +1537,10 @@ async def generate_txt2img(
         if use_tipo:
             print(f"[TIPO] Upsampling prompt with TIPO...")
             try:
-                # Load TIPO model if needed
                 model_name = tipo_config_dict.get("model_name", "KBlueLeaf/TIPO-500M")
                 if not tipo_manager.loaded or tipo_manager.model_name != model_name:
                     tipo_manager.load_model(model_name)
 
-                # Generate upsampled prompt
                 upsampled_prompt = tipo_manager.generate_prompt(
                     input_prompt=prompt,
                     tag_length=tipo_config_dict.get("tag_length", "long"),
@@ -1624,7 +1610,6 @@ async def generate_txt2img(
             # No VE path supplied — keep existing VE if already loaded (allows sticky sessions)
             pass
 
-        # Apply (or restore) the planned VAE/TE overrides on the loaded model.
         _override_meta = apply_overrides(
             pipeline_manager, _override_plan,
             pid_sr_output=pid_sr_output, pid_use_gemma=pid_use_gemma, pid_low_vram=pid_low_vram,
@@ -1632,7 +1617,6 @@ async def generate_txt2img(
             pid_fast_large_decode=pid_fast_large_decode, prompt=prompt,
         )
 
-        # Generate image
         params = {
             "prompt": prompt,
             "negative_prompt": negative_prompt,
@@ -1739,14 +1723,12 @@ async def generate_txt2img(
         # Log params without large base64 data
         print(f"txt2img generation params: {sanitize_params_for_logging(params)}")
 
-        # Set prompt chunking settings
         set_prompt_chunking_settings(
             pipeline_manager,
             prompt_chunking_mode,
             max_prompt_chunks
         )
 
-        # Load LoRAs if specified
         pipeline_manager.txt2img_pipeline, has_step_range_loras = load_loras_for_generation(
             lora_manager,
             pipeline_manager.txt2img_pipeline,
@@ -1754,8 +1736,6 @@ async def generate_txt2img(
             "txt2img"
         )
 
-        # Process ControlNet images
-        # Handle direct image uploads (multipart) or base64 (JSON)
         processed_controlnet_images = []
         if controlnet_images and len(controlnet_images) > 0:
             # Direct image upload via multipart (io is already imported at module scope)
@@ -1801,7 +1781,6 @@ async def generate_txt2img(
             preview_decoder=params.get("preview_decoder", "matrix")
         )
 
-        # Create step callback for LoRA step range if needed
         step_callback = None
         if has_step_range_loras:
             step_callback = create_lora_step_callback(
@@ -1833,7 +1812,6 @@ async def generate_txt2img(
         # Record total wall time + any phase breakdown the pipeline populated.
         apply_generation_timings(params, time.perf_counter() - _gen_start)
 
-        # Update params with actual seeds
         params["seed"] = actual_seed
         params["ancestral_seed"] = actual_ancestral_seed
 
@@ -1869,8 +1847,6 @@ async def generate_txt2img(
             if ve_hash:
                 params["vision_encoder_hash"] = ve_hash
 
-        # Add VAE identity to params. The VAE always participates in decode, so this
-        # is recorded for every generation where it can be determined.
         vae_name, vae_hash = extract_vae_info(pipeline_manager)
         if vae_name:
             params["vae_name"] = vae_name
@@ -1891,7 +1867,6 @@ async def generate_txt2img(
         # PNG metadata and the gallery row cannot name a backend that did not.
         record_attention_backend(params, _gen_id)
 
-        # Save image with metadata (include model info)
         filename = save_image_with_metadata(
             image,
             params,
@@ -1912,11 +1887,9 @@ async def generate_txt2img(
                 "warnings": get_warnings(_gen_id),
             }
 
-        # Create thumbnail
         image_path = os.path.join(settings.outputs_dir, filename)
         create_thumbnail(image_path)
 
-        # Calculate metadata
         metadata = calculate_generation_metadata(
             image,
             lora_configs,
@@ -1930,10 +1903,8 @@ async def generate_txt2img(
         if _effective_warnings:
             params_for_db["effective_warnings"] = _effective_warnings
 
-        # Extract model name and hash from current_model_info
         model_name, model_hash = extract_model_info(pipeline_manager)
 
-        # Save to database
         db_image = create_db_image_record(
             GeneratedImage,
             filename=filename,
@@ -2329,7 +2300,6 @@ def _save_preview_to_gallery(
     fake_model_name = f"training-preview:{label}@step{current_step}"
     fake_model_hash = f"training-preview-step{current_step}"
 
-    # Apply honest seed back into params so PNG / DB carry the real value
     actual_seed = int(meta.get("seed") or params.get("seed") or -1)
     params_for_save: Dict[str, Any] = {**params, "seed": actual_seed}
     # Stash training context inside parameters JSON for future filtering
@@ -2342,17 +2312,14 @@ def _save_preview_to_gallery(
 
     model_info = {"source": fake_model_name, "model_hash": fake_model_hash}
 
-    # 1) File save + PNG metadata
     filename = save_image_with_metadata(
         image, params_for_save, generation_type=mode, model_info=model_info,
     )
     image_path = os.path.join(settings.outputs_dir, filename)
-    # 2) Thumbnail
     try:
         create_thumbnail(image_path)
     except Exception as _e:
         print(f"[Preview] thumbnail generation failed: {_e}")
-    # 3) DB row
     try:
         image_hash = calculate_image_hash(image)
         params_for_db = prepare_params_for_db(params_for_save, calculate_image_hash)
@@ -2565,18 +2532,15 @@ async def generate_img2img(
         else:
             init_image = None
 
-        # Parse LoRA configs
         import json
         lora_configs = _parsed_loras
 
-        # Parse ControlNet configs
         controlnet_configs = json.loads(controlnets) if controlnets else []
         controlnet_images, style_transfer, style_transfers, style_combine_mode = process_controlnet_configs(
             controlnet_configs,
             generation_type="img2img"
         )
 
-        # Parse TIPO config
         tipo_config_dict = json.loads(tipo_config) if tipo_config else {}
 
         # TIPO prompt upsampling (if enabled)
@@ -2584,12 +2548,10 @@ async def generate_img2img(
         if use_tipo:
             print(f"[TIPO] Upsampling prompt with TIPO...")
             try:
-                # Load TIPO model if needed
                 model_name = tipo_config_dict.get("model_name", "KBlueLeaf/TIPO-500M")
                 if not tipo_manager.loaded or tipo_manager.model_name != model_name:
                     tipo_manager.load_model(model_name)
 
-                # Generate upsampled prompt
                 upsampled_prompt = tipo_manager.generate_prompt(
                     input_prompt=prompt,
                     tag_length=tipo_config_dict.get("tag_length", "long"),
@@ -2636,7 +2598,6 @@ async def generate_img2img(
                 print(f"[TIPO] Using original prompt")
                 # Continue with original prompt on error
 
-        # Process reference images (FLUX.2 Image Edit / Vision Encoder)
         ref_image_list = []
         if ref_images:
             for ref_img_file in ref_images:
@@ -2649,7 +2610,6 @@ async def generate_img2img(
         if vision_encoder_path and not is_flux2:
             pipeline_manager.load_vision_encoder(vision_encoder_path)
 
-        # Apply (or restore) the planned VAE/TE overrides on the loaded model.
         _override_meta = apply_overrides(
             pipeline_manager, _override_plan,
             pid_sr_output=pid_sr_output, pid_use_gemma=pid_use_gemma, pid_low_vram=pid_low_vram,
@@ -2657,7 +2617,6 @@ async def generate_img2img(
             pid_fast_large_decode=pid_fast_large_decode, prompt=prompt,
         )
 
-        # Generate image
         params = {
             "prompt": prompt,
             "vae_path": vae_path,
@@ -2769,14 +2728,12 @@ async def generate_img2img(
 
         print(f"img2img generation params: {sanitize_params_for_logging(params)}")
 
-        # Set prompt chunking settings
         set_prompt_chunking_settings(
             pipeline_manager,
             prompt_chunking_mode,
             max_prompt_chunks
         )
 
-        # Load LoRAs if specified
         pipeline_manager.img2img_pipeline, has_step_range_loras = load_loras_for_generation(
             lora_manager,
             pipeline_manager.img2img_pipeline,
@@ -2806,10 +2763,8 @@ async def generate_img2img(
             preview_decoder=params.get("preview_decoder", "matrix")
         )
 
-        # Create step callback for LoRA step range if needed
         step_callback = None
         if has_step_range_loras:
-            # Calculate actual steps based on denoising strength
             actual_steps = int(steps * denoising_strength)
             step_callback = create_lora_step_callback(
                 lora_manager,
@@ -2838,7 +2793,6 @@ async def generate_img2img(
         # Record total wall time + any phase breakdown the pipeline populated.
         apply_generation_timings(params, time.perf_counter() - _gen_start)
 
-        # Update params with actual seeds
         params["seed"] = actual_seed
         params["ancestral_seed"] = actual_ancestral_seed
 
@@ -2873,8 +2827,6 @@ async def generate_img2img(
             if ve_hash:
                 params["vision_encoder_hash"] = ve_hash
 
-        # Add VAE identity to params. The VAE always participates in decode, so this
-        # is recorded for every generation where it can be determined.
         vae_name, vae_hash = extract_vae_info(pipeline_manager)
         if vae_name:
             params["vae_name"] = vae_name
@@ -2895,7 +2847,6 @@ async def generate_img2img(
         # PNG metadata and the gallery row cannot name a backend that did not.
         record_attention_backend(params, _gen_id)
 
-        # Save image with metadata (include model info)
         filename = save_image_with_metadata(
             result_image,
             params,
@@ -2919,9 +2870,6 @@ async def generate_img2img(
         image_path = os.path.join(settings.outputs_dir, filename)
         create_thumbnail(image_path)
 
-        # Calculate metadata (source_image is None for latent-passthrough starts
-        # -- init_image is a size-only placeholder there, never the real input --
-        # calculate_generation_metadata already skips source_image_hash when falsy)
         metadata = calculate_generation_metadata(
             result_image,
             lora_configs,
@@ -2936,10 +2884,8 @@ async def generate_img2img(
         if _effective_warnings:
             params_for_db["effective_warnings"] = _effective_warnings
 
-        # Extract model name and hash from current_model_info
         model_name, model_hash = extract_model_info(pipeline_manager)
 
-        # Save to database
         db_image = create_db_image_record(
             GeneratedImage,
             filename=filename,
@@ -3031,7 +2977,6 @@ async def generate_upscale(
     from core.upscaler import run_upscale
     _gen_id = start_generation("upscale")
     try:
-        # Load input image
         image_data = await image.read()
         input_image = Image.open(io.BytesIO(image_data)).convert("RGB")
 
@@ -3125,7 +3070,6 @@ async def generate_upscale(
         params["width"] = result_image.width
         params["height"] = result_image.height
 
-        # Calculate metadata first so source_image_hash lands in the PNG text chunk
         metadata = calculate_generation_metadata(
             result_image,
             [],
@@ -3138,7 +3082,6 @@ async def generate_upscale(
         is_diffusion = upscaler_backend == "diffusion"
         diffusion_model_info = pipeline_manager.current_model_info if is_diffusion else None
 
-        # Save image with metadata
         filename = save_image_with_metadata(
             result_image,
             params,
@@ -3921,7 +3864,6 @@ async def generate_aud2aud(
         "block_swap_ring_size": block_swap_ring_size,
     }
 
-    # Read the uploaded reference audio clip.
     try:
         reference_audio_bytes = await reference_audio.read()
         if not reference_audio_bytes:
@@ -4303,7 +4245,6 @@ async def generate_outpaint_audio(
             detail=f"extend_duration_sec must be positive, got {extend_duration_sec}.",
         )
 
-    # Read the uploaded input clip.
     try:
         reference_audio_bytes = await reference_audio.read()
         if not reference_audio_bytes:
@@ -7606,8 +7547,6 @@ async def preview_video_mask(
             detail=f"Missing IDs: {missing_mask_ids}; unknown IDs: {unknown_mask_ids}.",
         )
 
-    # Read-time byte cap derived from the manifest's own canvas, exactly as
-    # generate_inpaint_video bounds its own mask uploads.
     _max_mask_bytes = timeline.canvas.width * timeline.canvas.height * 4 + 65536
     mask_bytes_by_id: Dict[str, bytes] = {}
     content_hash_by_id: Dict[str, str] = {}
@@ -7933,7 +7872,6 @@ async def generate_inpaint(
         # Reset cancellation flag before starting new generation
         pipeline_manager.reset_cancel_flag()
 
-        # Load input image and mask
         image_data = await image.read()
         init_image = Image.open(io.BytesIO(image_data)).convert("RGB")
 
@@ -7946,23 +7884,19 @@ async def generate_inpaint(
         print(f"Mask stats - min: {mask_array.min()}, max: {mask_array.max()}, mean: {mask_array.mean():.2f}")
         print(f"Mask shape: {mask_array.shape}, non-zero pixels: {np.count_nonzero(mask_array)}, white pixels (>200): {np.count_nonzero(mask_array > 200)}")
 
-        # Apply mask blur if specified
         if mask_blur > 0:
             from PIL import ImageFilter
             mask_image = mask_image.filter(ImageFilter.GaussianBlur(radius=mask_blur))
 
-        # Parse LoRA configs
         import json
         lora_configs = _parsed_loras
 
-        # Parse ControlNet configs
         controlnet_configs = json.loads(controlnets) if controlnets else []
         controlnet_images, style_transfer, style_transfers, style_combine_mode = process_controlnet_configs(
             controlnet_configs,
             generation_type="inpaint"
         )
 
-        # Parse TIPO config
         tipo_config_dict = json.loads(tipo_config) if tipo_config else {}
 
         # TIPO prompt upsampling (if enabled)
@@ -7970,12 +7904,10 @@ async def generate_inpaint(
         if use_tipo:
             print(f"[TIPO] Upsampling prompt with TIPO...")
             try:
-                # Load TIPO model if needed
                 model_name = tipo_config_dict.get("model_name", "KBlueLeaf/TIPO-500M")
                 if not tipo_manager.loaded or tipo_manager.model_name != model_name:
                     tipo_manager.load_model(model_name)
 
-                # Generate upsampled prompt
                 upsampled_prompt = tipo_manager.generate_prompt(
                     input_prompt=prompt,
                     tag_length=tipo_config_dict.get("tag_length", "long"),
@@ -8022,7 +7954,6 @@ async def generate_inpaint(
                 print(f"[TIPO] Using original prompt")
                 # Continue with original prompt on error
 
-        # Process reference images (FLUX.2 Image Edit / Vision Encoder)
         ref_image_list = []
         if ref_images:
             for ref_img_file in ref_images:
@@ -8035,7 +7966,6 @@ async def generate_inpaint(
         if vision_encoder_path and not is_flux2:
             pipeline_manager.load_vision_encoder(vision_encoder_path)
 
-        # Apply (or restore) the planned VAE/TE overrides on the loaded model.
         _override_meta = apply_overrides(
             pipeline_manager, _override_plan,
             pid_sr_output=pid_sr_output, pid_use_gemma=pid_use_gemma, pid_low_vram=pid_low_vram,
@@ -8043,7 +7973,6 @@ async def generate_inpaint(
             pid_fast_large_decode=pid_fast_large_decode, prompt=prompt,
         )
 
-        # Generate image
         params = {
             "prompt": prompt,
             "vae_path": vae_path,
@@ -8182,14 +8111,12 @@ async def generate_inpaint(
                 code="not_implemented",
             )
 
-        # Set prompt chunking settings
         set_prompt_chunking_settings(
             pipeline_manager,
             prompt_chunking_mode,
             max_prompt_chunks
         )
 
-        # Load LoRAs if specified
         pipeline_manager.inpaint_pipeline, has_step_range_loras = load_loras_for_generation(
             lora_manager,
             pipeline_manager.inpaint_pipeline,
@@ -8219,10 +8146,8 @@ async def generate_inpaint(
             preview_decoder=params.get("preview_decoder", "matrix")
         )
 
-        # Create step callback for LoRA step range if needed
         step_callback = None
         if has_step_range_loras:
-            # Calculate actual steps based on denoising strength
             actual_steps = int(steps * denoising_strength)
             step_callback = create_lora_step_callback(
                 lora_manager,
@@ -8251,7 +8176,6 @@ async def generate_inpaint(
         # Record total wall time + any phase breakdown the pipeline populated.
         apply_generation_timings(params, time.perf_counter() - _gen_start)
 
-        # Update params with actual seeds
         params["seed"] = actual_seed
         params["ancestral_seed"] = actual_ancestral_seed
 
@@ -8265,8 +8189,6 @@ async def generate_inpaint(
             if ve_hash:
                 params["vision_encoder_hash"] = ve_hash
 
-        # Add VAE identity to params. The VAE always participates in decode, so this
-        # is recorded for every generation where it can be determined.
         vae_name, vae_hash = extract_vae_info(pipeline_manager)
         if vae_name:
             params["vae_name"] = vae_name
@@ -8287,7 +8209,6 @@ async def generate_inpaint(
         # PNG metadata and the gallery row cannot name a backend that did not.
         record_attention_backend(params, _gen_id)
 
-        # Save image with metadata (include model info)
         filename = save_image_with_metadata(
             result_image,
             params,
@@ -8311,7 +8232,6 @@ async def generate_inpaint(
         image_path = os.path.join(settings.outputs_dir, filename)
         create_thumbnail(image_path)
 
-        # Calculate metadata
         metadata = calculate_generation_metadata(
             result_image,
             lora_configs,
@@ -8328,10 +8248,8 @@ async def generate_inpaint(
         if _effective_warnings:
             params_for_db["effective_warnings"] = _effective_warnings
 
-        # Extract model name and hash from current_model_info
         model_name, model_hash = extract_model_info(pipeline_manager)
 
-        # Save to database
         db_image = create_db_image_record(
             GeneratedImage,
             filename=filename,
@@ -8598,8 +8516,6 @@ async def generate_outpaint(
         # Reset cancellation flag before starting new generation
         pipeline_manager.reset_cancel_flag()
 
-        # Load input image (outpaint builds its own canvas + mask -- no
-        # separate mask upload, unlike /generate/inpaint).
         image_data = await image.read()
         init_image = Image.open(io.BytesIO(image_data)).convert("RGB")
 
@@ -8632,18 +8548,15 @@ async def generate_outpaint(
         except ValueError as e:
             raise ValidationError("Invalid outpaint placement geometry", detail=str(e))
 
-        # Parse LoRA configs
         import json
         lora_configs = _parsed_loras
 
-        # Parse ControlNet configs
         controlnet_configs = json.loads(controlnets) if controlnets else []
         controlnet_images, style_transfer, style_transfers, style_combine_mode = process_controlnet_configs(
             controlnet_configs,
             generation_type="outpaint"
         )
 
-        # Parse TIPO config
         tipo_config_dict = json.loads(tipo_config) if tipo_config else {}
 
         # TIPO prompt upsampling (if enabled)
@@ -8651,12 +8564,10 @@ async def generate_outpaint(
         if use_tipo:
             print(f"[TIPO] Upsampling prompt with TIPO...")
             try:
-                # Load TIPO model if needed
                 model_name = tipo_config_dict.get("model_name", "KBlueLeaf/TIPO-500M")
                 if not tipo_manager.loaded or tipo_manager.model_name != model_name:
                     tipo_manager.load_model(model_name)
 
-                # Generate upsampled prompt
                 upsampled_prompt = tipo_manager.generate_prompt(
                     input_prompt=prompt,
                     tag_length=tipo_config_dict.get("tag_length", "long"),
@@ -8703,7 +8614,6 @@ async def generate_outpaint(
                 print(f"[TIPO] Using original prompt")
                 # Continue with original prompt on error
 
-        # Process reference images (FLUX.2 Image Edit / Vision Encoder)
         ref_image_list = []
         if ref_images:
             for ref_img_file in ref_images:
@@ -8716,7 +8626,6 @@ async def generate_outpaint(
         if vision_encoder_path and not is_flux2:
             pipeline_manager.load_vision_encoder(vision_encoder_path)
 
-        # Apply (or restore) the planned VAE/TE overrides on the loaded model.
         _override_meta = apply_overrides(
             pipeline_manager, _override_plan,
             pid_sr_output=pid_sr_output, pid_use_gemma=pid_use_gemma, pid_low_vram=pid_low_vram,
@@ -8724,7 +8633,6 @@ async def generate_outpaint(
             pid_fast_large_decode=pid_fast_large_decode, prompt=prompt,
         )
 
-        # Generate image
         params = {
             "prompt": prompt,
             "vae_path": vae_path,
@@ -8905,15 +8813,12 @@ async def generate_outpaint(
                 code="not_implemented",
             )
 
-        # Set prompt chunking settings
         set_prompt_chunking_settings(
             pipeline_manager,
             prompt_chunking_mode,
             max_prompt_chunks
         )
 
-        # Load LoRAs if specified (outpaint delegates to the shared inpaint
-        # pipeline underneath).
         pipeline_manager.inpaint_pipeline, has_step_range_loras = load_loras_for_generation(
             lora_manager,
             pipeline_manager.inpaint_pipeline,
@@ -8944,10 +8849,8 @@ async def generate_outpaint(
             preview_decoder=params.get("preview_decoder", "matrix")
         )
 
-        # Create step callback for LoRA step range if needed
         step_callback = None
         if has_step_range_loras:
-            # Calculate actual steps based on denoising strength
             actual_steps = int(steps * denoising_strength)
             step_callback = create_lora_step_callback(
                 lora_manager,
@@ -8976,7 +8879,6 @@ async def generate_outpaint(
         # Record total wall time + any phase breakdown the pipeline populated.
         apply_generation_timings(params, time.perf_counter() - _gen_start)
 
-        # Update params with actual seeds
         params["seed"] = actual_seed
         params["ancestral_seed"] = actual_ancestral_seed
 
@@ -8990,8 +8892,6 @@ async def generate_outpaint(
             if ve_hash:
                 params["vision_encoder_hash"] = ve_hash
 
-        # Add VAE identity to params. The VAE always participates in decode, so this
-        # is recorded for every generation where it can be determined.
         vae_name, vae_hash = extract_vae_info(pipeline_manager)
         if vae_name:
             params["vae_name"] = vae_name
@@ -9012,8 +8912,6 @@ async def generate_outpaint(
         # PNG metadata and the gallery row cannot name a backend that did not.
         record_attention_backend(params, _gen_id)
 
-        # Save image with metadata (include model info). params["width"]/["height"]
-        # were overwritten by generate_outpaint to the resolved canvas size.
         filename = save_image_with_metadata(
             result_image,
             params,
@@ -9037,8 +8935,6 @@ async def generate_outpaint(
         image_path = os.path.join(settings.outputs_dir, filename)
         create_thumbnail(image_path)
 
-        # Calculate metadata. No mask_image here (outpaint builds its own
-        # mask server-side; there is no user-uploaded mask to record).
         metadata = calculate_generation_metadata(
             result_image,
             lora_configs,
@@ -9053,10 +8949,8 @@ async def generate_outpaint(
         if _effective_warnings:
             params_for_db["effective_warnings"] = _effective_warnings
 
-        # Extract model name and hash from current_model_info
         model_name, model_hash = extract_model_info(pipeline_manager)
 
-        # Save to database
         db_image = create_db_image_record(
             GeneratedImage,
             filename=filename,
@@ -9123,12 +9017,10 @@ async def get_images(
             GeneratedImage.filename.contains(search),
         ))
 
-    # Filter by generation type
     if generation_types:
         types = [t.strip() for t in generation_types.split(',')]
         query = query.filter(GeneratedImage.generation_type.in_(types))
 
-    # Filter by date range
     if date_from:
         from datetime import datetime
         date_from_dt = datetime.fromisoformat(date_from)
@@ -9139,19 +9031,16 @@ async def get_images(
         date_to_dt = datetime.fromisoformat(date_to)
         query = query.filter(GeneratedImage.created_at <= date_to_dt)
 
-    # Filter by width range
     if width_min is not None:
         query = query.filter(GeneratedImage.width >= width_min)
     if width_max is not None:
         query = query.filter(GeneratedImage.width <= width_max)
 
-    # Filter by height range
     if height_min is not None:
         query = query.filter(GeneratedImage.height >= height_min)
     if height_max is not None:
         query = query.filter(GeneratedImage.height <= height_max)
 
-    # Get total count for pagination
     total_count = query.count()
 
     # Order by created_at descending and apply pagination
@@ -9423,7 +9312,6 @@ def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool = False
 
     models = []
 
-    # Get user-configured directories
     settings_record = db.query(UserSettings).first()
     additional_model_dirs = settings_record.model_dirs if settings_record else []
 
@@ -9463,7 +9351,6 @@ def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool = False
             if re.search(r"-\d{5}-of-\d{5}\.safetensors$", item):
                 continue
 
-            # Detect model architecture (sd15, sdxl, zimage)
             architecture = ModelLoader.detect_model_type(item_path)
 
             if os.path.isdir(item_path):
@@ -10040,9 +9927,6 @@ async def load_model(
                 "final_adaln_from_overlay": bool(hybrid_final_adaln_from_overlay),
             }
 
-        # Run the (blocking, ~20s) load in the executor so it never blocks the event
-        # loop -- important now that load_model serializes on a lock: if the boot
-        # auto-load thread holds it, waiting here happens off the event loop.
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(
             executor,
@@ -10276,7 +10160,6 @@ async def upload_model(file: UploadFile = File(...)):
         os.makedirs(settings.models_dir, exist_ok=True)
         file_path = os.path.join(settings.models_dir, file.filename)
 
-        # Save uploaded file
         with open(file_path, "wb") as f:
             content = await file.read()
             f.write(content)
@@ -10583,7 +10466,6 @@ async def tokenize_prompt(prompt: str = Form(...)):
         if not pipeline_manager.txt2img_pipeline:
             raise HTTPException(status_code=400, detail="No model loaded")
 
-        # Get tokenizer from pipeline
         from diffusers import StableDiffusionXLPipeline
         is_sdxl = isinstance(pipeline_manager.txt2img_pipeline, StableDiffusionXLPipeline)
         tokenizer = pipeline_manager.txt2img_pipeline.tokenizer_2 if is_sdxl else pipeline_manager.txt2img_pipeline.tokenizer
@@ -10592,7 +10474,6 @@ async def tokenize_prompt(prompt: str = Form(...)):
         tokens = tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids[0]
         token_count = len(tokens)
 
-        # Add 2 for BOS/EOS tokens
         total_count = token_count + 2
 
         return {
@@ -10682,20 +10563,17 @@ async def save_directory_settings(
     db: Session = Depends(get_gallery_db)
 ):
     """Save user-configured model directories, cache directory, and training directory"""
-    # Extract from request body
     model_dirs = settings_data.get("model_dirs", [])
     lora_dirs = settings_data.get("lora_dirs", [])
     controlnet_dirs = settings_data.get("controlnet_dirs", [])
     cache_dir = settings_data.get("cache_dir")
     training_dir = settings_data.get("training_dir")
     try:
-        # Get or create settings record
         settings_record = db.query(UserSettings).first()
         if not settings_record:
             settings_record = UserSettings()
             db.add(settings_record)
 
-        # Update directory paths (filter out empty strings)
         settings_record.model_dirs = [d.strip() for d in model_dirs if d.strip()]
         settings_record.lora_dirs = [d.strip() for d in lora_dirs if d.strip()]
         settings_record.controlnet_dirs = [d.strip() for d in controlnet_dirs if d.strip()]
@@ -10718,7 +10596,6 @@ async def save_directory_settings(
         print(f"  Cache dir: {settings_record.cache_dir}")
         print(f"  Training dir: {settings_record.training_dir}")
 
-        # Update managers with new directories
         lora_manager.set_additional_dirs(settings_record.lora_dirs)
         controlnet_manager.set_additional_dirs(settings_record.controlnet_dirs)
 
@@ -10765,7 +10642,6 @@ async def save_generation_settings(
             settings_record = UserSettings()
             db.add(settings_record)
 
-        # Update generation settings
         if "inpaint_use_dedicated_model" in settings_data:
             settings_record.inpaint_use_dedicated_model = bool(settings_data["inpaint_use_dedicated_model"])
 
@@ -11039,13 +10915,11 @@ async def upload_temp_image(image_base64: str = Form(...)):
 
         image_data = base64.b64decode(image_base64)
 
-        # Generate unique filename based on content hash and timestamp
         content_hash = hashlib.sha256(image_data).hexdigest()[:16]
         timestamp = str(int(time.time() * 1000))
         filename = f"{timestamp}_{content_hash}.png"
         filepath = os.path.join(TEMP_DIR, filename)
 
-        # Save image
         image = Image.open(io.BytesIO(image_data))
         image.save(filepath, "PNG")
 
@@ -11070,7 +10944,6 @@ async def get_temp_image(image_id: str):
         except TempImageRefError:
             raise HTTPException(status_code=404, detail="Image not found")
 
-        # Read image and convert to base64
         with open(filepath, "rb") as f:
             image_data = f.read()
 
@@ -11132,7 +11005,6 @@ async def get_taglist_timestamps():
     Returns Unix timestamps in milliseconds.
     """
     try:
-        # Use TaglistCache for taglist timestamps
         timestamps = taglist_cache.get_all_timestamps()
 
         # Get tag_other_names timestamp (not in taglist, keep manual check)
@@ -11174,19 +11046,15 @@ async def add_tag_to_category(request: AddTagRequest, db: Session = Depends(get_
         raise HTTPException(status_code=404, detail=f"Taglist file not found: {taglist_file}")
 
     try:
-        # Load existing taglist
         with open(taglist_file, 'r', encoding='utf-8') as f:
             taglist = json.load(f)
 
-        # Check if tag already exists in this category
         tag_already_exists = request.tag in taglist
         json_updated = False
 
         if not tag_already_exists:
-            # Add tag to taglist JSON
             taglist[request.tag] = request.count
 
-            # Sort by count (descending) and write back
             sorted_taglist = dict(sorted(taglist.items(), key=lambda x: int(x[1]), reverse=True))
 
             with open(taglist_file, 'w', encoding='utf-8') as f:
@@ -11209,7 +11077,6 @@ async def add_tag_to_category(request: AddTagRequest, db: Session = Depends(get_
                 except:
                     user_additions = []
 
-            # Add new entry with timestamp
             from datetime import datetime
             user_additions.append({
                 "tag": request.tag,
@@ -11218,18 +11085,15 @@ async def add_tag_to_category(request: AddTagRequest, db: Session = Depends(get_
                 "timestamp": datetime.now().isoformat()
             })
 
-            # Write user additions log (keep last 1000 entries)
             with open(user_additions_file, 'w', encoding='utf-8') as f:
                 json.dump(user_additions[-1000:], f, ensure_ascii=False, indent=2)
         else:
             print(f"[TagCategory] Tag '{request.tag}' already exists in {request.category}.json, skipping JSON update")
 
-        # Update tag category in all datasets' tag_statistics
         datasets = db.query(Dataset).all()
         updated_datasets = 0
         for dataset in datasets:
             if dataset.tag_statistics and request.tag in dataset.tag_statistics:
-                # Update category for this tag
                 dataset.tag_statistics[request.tag]["category"] = request.category
                 updated_datasets += 1
 
@@ -11238,7 +11102,6 @@ async def add_tag_to_category(request: AddTagRequest, db: Session = Depends(get_
             db.commit()
             print(f"[TagCategory] Updated category for tag '{request.tag}' in {updated_datasets} datasets")
 
-        # Build response message
         if tag_already_exists:
             message = f"Tag '{request.tag}' already exists in {request.category} category. Updated {updated_datasets} dataset(s)."
         else:
@@ -11271,7 +11134,6 @@ async def get_taglist(category: str):
         if category.lower() not in valid_categories:
             raise HTTPException(status_code=404, detail=f"Unknown category: {category}")
 
-        # Use TaglistCache for O(1) lookup with automatic mtime-based invalidation
         tags = taglist_cache.get_category_tags(category.lower())
 
         if not tags:
@@ -11366,7 +11228,6 @@ async def resolve_tag_categories(request: ResolveCategoriesRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ==================== ControlNet Preprocessor Endpoints ====================
 
 @router.get("/controlnet/detect-preprocessor")
 async def detect_controlnet_preprocessor(model_path: str):
@@ -11410,11 +11271,9 @@ async def preprocess_controlnet_image(
         Preprocessed image as base64 string
     """
     try:
-        # Read uploaded image
         image_bytes = await image.read()
         image_pil = Image.open(io.BytesIO(image_bytes))
 
-        # Apply preprocessing
         preprocessed = controlnet_preprocessor.preprocess(
             image_pil,
             preprocessor,
@@ -11426,7 +11285,6 @@ async def preprocess_controlnet_image(
             blur_strength=blur_strength
         )
         
-        # Convert to base64
         buffered = io.BytesIO()
         preprocessed.save(buffered, format="PNG")
         import base64
@@ -11491,9 +11349,6 @@ async def get_available_preprocessors():
 
 
 
-# ============================================================================
-# MiniMax-H3 Prompt Assist
-# ============================================================================
 
 class PromptAssistReference(BaseModel):
     token: str
@@ -11764,9 +11619,6 @@ async def clear_music3_lyrics_cache():
     return {"status": "success", "deleted": deleted}
 
 
-# ============================================================================
-# TIPO (Prompt Optimization) Endpoints
-# ============================================================================
 
 class TIPOGenerateRequest(BaseModel):
     input_prompt: str
@@ -11828,7 +11680,6 @@ async def generate_tipo_prompt(request: TIPOGenerateRequest):
             tipo_manager.load_model(request.model_name)
             auto_loaded = True
 
-        # Generate TIPO output
         raw_output = tipo_manager.generate_prompt(
             input_prompt=request.input_prompt,
             tag_length=request.tag_length,
@@ -11841,7 +11692,6 @@ async def generate_tipo_prompt(request: TIPOGenerateRequest):
             treat_as_nl=request.treat_as_nl
         )
 
-        # Check if using tipo-kgen (returns dict)
         if hasattr(tipo_manager, 'tipo_runner') and isinstance(raw_output, dict):
             # tipo-kgen returns a dict, format according to user preferences
             print("[TIPO] Using tipo-kgen mode: formatting result dict")
@@ -11871,7 +11721,6 @@ async def generate_tipo_prompt(request: TIPOGenerateRequest):
             # Parse input tags to preserve them
             input_parsed = tipo_manager.parse_input_tags(request.input_prompt)
 
-            # Parse TIPO output into structured format
             tipo_parsed = tipo_manager.parse_tipo_output(raw_output)
 
             # Merge input tags with TIPO generated tags
@@ -11898,7 +11747,6 @@ async def generate_tipo_prompt(request: TIPOGenerateRequest):
         print(f"[TIPO] Auto-unloading model to free VRAM (auto_loaded={auto_loaded})")
         tipo_manager.unload_model()
 
-        # Build response
         response = {
             "status": "success",
             "original_prompt": request.input_prompt,
@@ -11967,9 +11815,6 @@ async def get_port_info():
     return {"port": 8000, "host": "localhost"}
 
 
-# ============================================================================
-# Image Tagger Endpoints
-# ============================================================================
 
 class TaggerRequest(BaseModel):
     image_base64: str
@@ -12079,9 +11924,6 @@ async def unload_tagger_model():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ============================================================================
-# SigLIP2 Tagger Endpoints
-# ============================================================================
 
 from core.tagger.siglip2_inference_manager import get_siglip2_inference_manager
 from core.tagger.tag_metrics_accumulator import TagMetricsAccumulator
@@ -12990,7 +12832,6 @@ async def download_image(filename: str, include_metadata: bool = False):
         # Construct full path
         filepath = os.path.join(settings.outputs_dir, filename)
 
-        # Check if file exists
         if not os.path.exists(filepath):
             raise HTTPException(status_code=404, detail="Image not found")
 
@@ -13002,14 +12843,11 @@ async def download_image(filename: str, include_metadata: bool = False):
         if not filename.lower().endswith(_IMAGE_EXTS):
             return FileResponse(filepath, filename=filename)
 
-        # Read the image
         image = Image.open(filepath)
 
-        # Create BytesIO buffer
         buffer = io.BytesIO()
 
         if include_metadata:
-            # Save with metadata (if it exists)
             if hasattr(image, 'info') and 'pnginfo' in image.info:
                 # Preserve existing metadata
                 from PIL import PngImagePlugin
@@ -13024,7 +12862,6 @@ async def download_image(filename: str, include_metadata: bool = False):
             # Strip metadata by saving without pnginfo
             image.save(buffer, format="PNG")
 
-        # Get bytes and return as response
         buffer.seek(0)
         image_bytes = buffer.getvalue()
 
@@ -13043,9 +12880,6 @@ async def download_image(filename: str, include_metadata: bool = False):
         raise HTTPException(status_code=500, detail=f"Error downloading image: {str(e)}")
 
 
-# ============================================================
-# Dataset Management Endpoints
-# ============================================================
 
 class DatasetCreateRequest(BaseModel):
     name: str
@@ -13160,8 +12994,6 @@ async def create_dataset(request: DatasetCreateRequest, db: Session = Depends(ge
         db.commit()
         db.refresh(dataset)
 
-        # Calculate statistics by counting existing items/captions
-        # (User may have already added items manually or from previous scan)
         total_items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset.id).count()
         total_tags, total_captions = _dataset_caption_item_counts(db, dataset.id)
 
@@ -13268,9 +13100,6 @@ async def update_dataset_exif_config(
     return dataset.to_dict()
 
 
-# ============================================================
-# Caption Processing Presets API
-# ============================================================
 
 class CaptionProcessingPresetCreateRequest(BaseModel):
     name: str
@@ -13334,7 +13163,6 @@ async def update_caption_processing_preset(
         raise HTTPException(status_code=404, detail="Preset not found")
 
     if request.name is not None:
-        # Check if new name conflicts with existing preset
         existing = db.query(CaptionProcessingPreset).filter(
             CaptionProcessingPreset.name == request.name,
             CaptionProcessingPreset.id != preset_id
@@ -13449,7 +13277,6 @@ async def compute_tag_statistics(dataset_id: int, db: Session, send_progress: bo
             tag_categories[tag] = category
 
     while True:
-        # Get batch of captions via JOIN (efficient query)
         batch = db.query(DatasetCaption).join(
             DatasetItem, DatasetCaption.item_id == DatasetItem.id
         ).filter(
@@ -13463,7 +13290,6 @@ async def compute_tag_statistics(dataset_id: int, db: Session, send_progress: bo
         # Collect tags from captions without tag_data so we can batch-resolve them
         content_tags_batch: list[str] = []
 
-        # Process batch
         for caption in batch:
             if caption.tag_data:
                 try:
@@ -13500,7 +13326,6 @@ async def compute_tag_statistics(dataset_id: int, db: Session, send_progress: bo
             for tag in unique_content_tags:
                 category = resolved.get(tag, "Unknown")
                 _set_category(tag, category)
-            # Remove from unresolved if now known
             for tag in unique_content_tags:
                 if tag_categories.get(tag) != "Unknown":
                     unresolved_tags.discard(tag)
@@ -13530,7 +13355,6 @@ async def compute_tag_statistics(dataset_id: int, db: Session, send_progress: bo
 
     print(f"[Dataset] Found {len(tag_counts)} unique tags from {processed} captions")
 
-    # Build final statistics with categories
     statistics = {}
     for tag, count in tag_counts.items():
         statistics[tag] = {
@@ -13769,7 +13593,6 @@ async def scan_dataset_preview(dataset_id: int, db: Session = Depends(get_datase
     from utils.dataset_scanner import scan_directory_structure, classify_caption_files, build_scan_preview
     from utils.taglist_loader import load_all_tags
 
-    # Load taglist for format detection
     taglist = load_all_tags(settings.root_dir)
 
     # 2-pass scan
@@ -13785,7 +13608,6 @@ async def scan_dataset_preview(dataset_id: int, db: Session = Depends(get_datase
     sample_groups = dict(list(scan_groups.items())[:500])
     classify_caption_files(sample_groups, taglist)
 
-    # Build preview
     preview = build_scan_preview(sample_groups)
     preview["dataset_path"] = dataset.path
 
@@ -13883,7 +13705,6 @@ async def scan_dataset(
     media_exts = image_exts | video_exts | audio_exts
     caption_exts = {".txt", ".json"}
 
-    # Load taglist for caption format detection (once at start)
     from utils.taglist_loader import load_all_tags
     from utils.caption_detector import classify_field, scan_json_fields, read_exif_captions
     print(f"[Dataset Scan] Loading taglist for format detection...")
@@ -13893,8 +13714,6 @@ async def scan_dataset(
     taglist_cache.initialize(settings.root_dir, enable_gelbooru=True)
     print(f"[Dataset Scan] Loaded {len(taglist)} tags for format detection")
 
-    # Read-EXIF option: when enabled, embedded EXIF caption fields are extracted
-    # per image (namespaced exif.<TagName>) alongside the TXT/JSON sidecars.
     read_exif_enabled = bool(getattr(dataset, "read_exif", False))
     exif_caption_fields = getattr(dataset, "exif_caption_fields", None) or None
     if read_exif_enabled:
@@ -14002,7 +13821,6 @@ async def scan_dataset(
             "items_purged": 0, "cancelled": True, "dataset": dataset.to_dict(),
         }
 
-    # Build suffix caption lookup and count images from pre-scan results
     suffix_captions_by_stem = {}
     detected_suffixes = set()
     total_images = 0
@@ -14022,7 +13840,6 @@ async def scan_dataset(
 
     print(f"[Dataset Scan] Found {total_images} images, {len(suffix_captions_by_stem)} groups with suffix captions")
 
-    # --- Path-based dedup: batch-load existing items (single query) ---
     existing_items_rows = db.query(DatasetItem.id, DatasetItem.image_path).filter(
         DatasetItem.dataset_id == dataset_id
     ).all()
@@ -14046,7 +13863,6 @@ async def scan_dataset(
     # This way: file scan uses steps 0 to total_images (90.9%), tag stats uses remaining (9.1%)
     total_steps = int(total_images * 1.1) if total_images > 0 else 100
 
-    # Send initial progress
     print(f"[Dataset Scan] Sending initial progress to frontend...")
     manager.send_progress_sync(0, total_steps, f"Starting scan: 0/{total_images} images to process")
     print(f"[Dataset Scan] Starting directory scan...")
@@ -14068,12 +13884,10 @@ async def scan_dataset(
 
         print(f"[Dataset Scan] Scanning directory: {dir_path} ({len(entries)} entries)")
 
-        # Get reference image settings from dataset
         reference_suffixes = dataset.reference_suffixes or []
         target_suffixes = dataset.target_suffixes or []
         caption_suffixes_for_ref = dataset.caption_suffixes_for_reference or []
 
-        # Check if reference image mode is enabled
         use_reference_mode = bool(reference_suffixes and target_suffixes)
         if use_reference_mode:
             print(f"[Dataset Scan] Reference mode enabled: ref_suffixes={reference_suffixes}, target_suffixes={target_suffixes}")
@@ -14091,19 +13905,16 @@ async def scan_dataset(
             base_name, ext = os.path.splitext(filename)
 
             if use_reference_mode:
-                # Check reference suffixes (e.g., "_source")
                 for suffix in reference_suffixes:
                     if base_name.endswith(suffix):
                         group_name = base_name[:-len(suffix)]
                         return group_name, "reference"
 
-                # Check target suffixes (e.g., "_target")
                 for suffix in target_suffixes:
                     if base_name.endswith(suffix):
                         group_name = base_name[:-len(suffix)]
                         return group_name, "target"
 
-                # Check caption suffixes for reference mode (e.g., "_instruction")
                 for suffix in caption_suffixes_for_ref:
                     if base_name.endswith(suffix):
                         group_name = base_name[:-len(suffix)]
@@ -14112,7 +13923,6 @@ async def scan_dataset(
             # Normal mode: use base_name as group name
             return base_name, "normal"
 
-        # Group files by group name
         file_groups = {}
         entries_processed = 0
         for entry in entries:
@@ -14156,7 +13966,6 @@ async def scan_dataset(
 
         print(f"[Dataset Scan] Grouped {len(file_groups)} file groups in {dir_path}, starting processing...")
 
-        # Process file groups
         groups_processed = 0
         for base_name, files in file_groups.items():
             groups_processed += 1
@@ -14186,7 +13995,6 @@ async def scan_dataset(
             if not main_images:
                 continue
 
-            # Use first image as primary
             image_path = main_images[0]
 
             _t_item = time.time()
@@ -14201,7 +14009,6 @@ async def scan_dataset(
                     seen_existing_paths.add(image_path)
                     files_processed += 1
 
-                    # Check if any caption files have been updated since last scan
                     any_caption_updated = False
                     for cp in caption_files:
                         try:
@@ -14309,7 +14116,6 @@ async def scan_dataset(
 
                     file_size = os.path.getsize(image_path)
 
-                    # Build related_images for reference mode
                     related_images_data = {}
                     if use_reference_mode and reference_images:
                         related_images_data["reference"] = reference_images
@@ -14404,8 +14210,6 @@ async def scan_dataset(
                             f"Scanning: {files_processed}/{total_images} images | {items_found} new img | {_fstat_msg()}"
                         )
 
-                # Process captions (TXT/JSON files) — for both new and updated items
-                # Use item_id_for_captions (set above for both new and existing items)
                 _t_caps = time.time()
                 _jr = _sjf = _ups = 0.0  # json-read / scan_json_fields / upsert sub-times
                 _cf = _btd = _sfx = _exif = 0.0  # classify / build_tag_data / suffix / exif
@@ -14422,7 +14226,6 @@ async def scan_dataset(
                                 content = f.read().strip()
                                 _txr += time.time() - _ts
                                 if content:
-                                    # Detect format
                                     _ts = time.time()
                                     field_category, is_tags_format, match_rate = classify_field("tags", content, taglist)
                                     _cf += time.time() - _ts
@@ -14445,7 +14248,6 @@ async def scan_dataset(
                                     _txq += time.time() - _ts
 
                                     if existing_cap:
-                                        # Update existing (migrating caption_type if it changed)
                                         existing_cap.caption_type = detected_caption_type
                                         existing_cap.content = content
                                         existing_cap.field_category = field_category
@@ -14460,7 +14262,6 @@ async def scan_dataset(
                                         captions_updated += 1
                                         _fstat_bump(detected_caption_type, added=False)
                                     else:
-                                        # Create new
                                         _ts = time.time()
                                         _td_new = _build_tag_data_json(content) if is_tags_format else None
                                         _btd += time.time() - _ts
@@ -14507,7 +14308,6 @@ async def scan_dataset(
                     except Exception as e:
                         print(f"[Dataset Scan] Failed to read caption {caption_path}: {e}")
 
-                # Process suffix-based caption files detected by 2-pass scanner
                 _ts = time.time()
                 if base_name in suffix_captions_by_stem:
                     for suffix, suffix_path in suffix_captions_by_stem[base_name]:
@@ -14555,9 +14355,6 @@ async def scan_dataset(
                             print(f"[Dataset Scan] Failed to read suffix caption {suffix_path}: {e}")
                 _sfx += time.time() - _ts
 
-                # Process EXIF-embedded captions (when read_exif is enabled). Each
-                # field is namespaced exif.<TagName> and upserted by caption_type,
-                # so the main tags/natural_language rows are never affected.
                 _ts = time.time()
                 if read_exif_enabled:
                     try:
@@ -14633,7 +14430,6 @@ async def scan_dataset(
             "dataset": dataset.to_dict(),
         }
 
-    # --- Purge: remove DB records whose files no longer exist on disk ---
     stale_paths = set(existing_paths.keys()) - seen_existing_paths
     items_purged = 0
     # For incremental mode: read purged captions BEFORE deletion so we can
@@ -14659,7 +14455,6 @@ async def scan_dataset(
                 for tag in tags:
                     if tag:
                         purged_tag_counts[tag] = purged_tag_counts.get(tag, 0) + 1
-        # Delete captions first (foreign key), then items
         db.query(DatasetCaption).filter(
             DatasetCaption.item_id.in_(stale_item_ids)
         ).delete(synchronize_session=False)
@@ -14700,7 +14495,6 @@ async def scan_dataset(
                     if stats[tag]["count"] <= 0:
                         del stats[tag]
 
-            # Add counts for new items (their captions are now in DB)
             if new_item_ids:
                 new_caps = db.query(DatasetCaption).filter(
                     DatasetCaption.item_id.in_(new_item_ids),
@@ -14739,8 +14533,6 @@ async def scan_dataset(
         print(f"[Dataset Scan] Computing tag statistics...")
         tag_statistics = await compute_tag_statistics(dataset_id, db, send_progress=True, total_steps=total_steps, current_step=total_images)
 
-    # Send final completion progress (per-field breakdown; image-with-field totals
-    # are returned in the response's field_summary).
     manager.send_progress_sync(
         total_steps,
         total_steps,
@@ -14852,7 +14644,6 @@ async def list_dataset_items(
             query = query.join(DatasetCaption, DatasetItem.id == DatasetCaption.item_id)
             query = query.filter(DatasetCaption.caption_type == "tags")
 
-            # Filter by each tag (comma-separated in caption content)
             for tag in tag_list:
                 # Match tag as whole word in comma-separated list
                 query = query.filter(
@@ -14904,7 +14695,6 @@ async def get_all_dataset_item_ids(
                     func.lower(DatasetCaption.content).like(f"%{tag}%")
                 )
 
-    # Get all IDs
     item_ids = [row[0] for row in query.order_by(DatasetItem.id).all()]
 
     return {
@@ -14922,22 +14712,18 @@ async def get_dataset_tags(
     Returns:
         List of unique tags across all items in the dataset
     """
-    # Get all items in dataset
     items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).all()
 
     if not items:
         return {"tags": []}
 
-    # Get all item IDs
     item_ids = [item.id for item in items]
 
-    # Get all tag captions for these items
     tag_captions = db.query(DatasetCaption).filter(
         DatasetCaption.item_id.in_(item_ids),
         DatasetCaption.caption_type == "tags"
     ).all()
 
-    # Extract unique tags
     unique_tags = set()
     for caption in tag_captions:
         if caption.content:
@@ -14964,7 +14750,6 @@ async def get_dataset_item(
     if not item:
         raise HTTPException(status_code=404, detail="Dataset item not found")
 
-    # Get all captions for this item
     captions = db.query(DatasetCaption).filter(DatasetCaption.item_id == item_id).all()
 
     result = item.to_dict()
@@ -14989,7 +14774,6 @@ async def get_dataset_caption_types(
     db: Session = Depends(get_datasets_db)
 ):
     """Get available caption types with format detection info"""
-    # Check dataset exists
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
@@ -15031,7 +14815,6 @@ async def get_dataset_caption_types(
         # Average of averages (weighted by count would be better, but this is simpler)
         caption_types_dict[caption_type]["avg_match_rate"] = avg_match_rate or 0.0
 
-    # Convert to list and sort: training first, then by count
     caption_types_list = sorted(
         caption_types_dict.values(),
         key=lambda x: (x["field_category"] != "training", -x["total_count"])
@@ -15064,7 +14847,6 @@ async def get_random_caption(
         process_caption, process_caption_with_tag_data, get_default_caption_processing_config,
     )
 
-    # Check dataset exists
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
@@ -15157,7 +14939,6 @@ async def get_random_caption(
         # Natural language: used as-is by training (no tag processing).
         processed_caption = raw_caption
 
-    # Fetch reference images from the DatasetItem
     reference_images = []
     if item and item.related_images:
         reference_images = item.related_images.get("reference", [])
@@ -15170,9 +14951,6 @@ async def get_random_caption(
         "reference_images": reference_images,
     }
 
-# ============================================================
-# Dataset Item Caption Update API
-# ============================================================
 
 class CaptionUpdateRequest(BaseModel):
     caption_type: str = "tags"
@@ -15186,12 +14964,10 @@ async def update_item_caption(
     db: Session = Depends(get_datasets_db)
 ):
     """Update caption for a dataset item"""
-    # Check item exists
     item = db.query(DatasetItem).filter(DatasetItem.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Dataset item not found")
 
-    # Get old caption content for tag statistics update
     old_content = None
     caption = db.query(DatasetCaption).filter(
         DatasetCaption.item_id == item_id,
@@ -15200,15 +14976,12 @@ async def update_item_caption(
 
     if caption:
         old_content = caption.content
-        # Update existing caption
         caption.content = request.content
-        # Update tag_data if provided
         if request.tag_data is not None:
             import json
             caption.tag_data = json.dumps(request.tag_data)
         caption.updated_at = datetime.utcnow()
     else:
-        # Create new caption
         tag_data_json = None
         if request.tag_data is not None:
             import json
@@ -15226,13 +14999,11 @@ async def update_item_caption(
     db.commit()
     db.refresh(caption)
 
-    # Update tag statistics if this is a "tags" caption
     if request.caption_type == "tags":
         dataset = db.query(Dataset).filter(Dataset.id == item.dataset_id).first()
         if dataset and dataset.tag_statistics:
             tag_statistics = dataset.tag_statistics.copy()
 
-            # Parse old and new tags
             old_tags = set()
             if old_content:
                 old_tags = {tag.strip() for tag in old_content.split(",") if tag.strip()}
@@ -15267,16 +15038,12 @@ async def update_item_caption(
                         "category": category
                     }
 
-            # Save updated statistics
             dataset.tag_statistics = tag_statistics
             db.commit()
 
     return {"status": "success", "caption": caption.to_dict()}
 
 
-# ============================================================
-# Dataset Item Reference Images API
-# ============================================================
 
 class ReferenceImagesUpdateRequest(BaseModel):
     reference_images: List[str]  # List of file paths to reference images
@@ -15290,7 +15057,6 @@ async def update_item_reference_images(
     """Update reference images for a dataset item"""
     import os
 
-    # Get item
     item = db.query(DatasetItem).filter(DatasetItem.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Dataset item not found")
@@ -15307,11 +15073,9 @@ async def update_item_reference_images(
             detail=f"Invalid reference image paths: {', '.join(invalid_paths)}"
         )
 
-    # Update related_images with reference key
     related_images = item.related_images or {}
     related_images["reference"] = request.reference_images
 
-    # Use SQL update to handle JSON properly
     item.related_images = related_images
     item.updated_at = datetime.utcnow()
 
@@ -15335,7 +15099,6 @@ async def add_item_reference_image(
     """Add a reference image to a dataset item"""
     import os
 
-    # Get item
     item = db.query(DatasetItem).filter(DatasetItem.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Dataset item not found")
@@ -15344,15 +15107,12 @@ async def add_item_reference_image(
     if not os.path.exists(image_path):
         raise HTTPException(status_code=400, detail=f"Image file not found: {image_path}")
 
-    # Get current reference images
     related_images = item.related_images or {}
     reference_list = related_images.get("reference", [])
 
-    # Check for duplicates
     if image_path in reference_list:
         return {"status": "already_exists", "item_id": item_id, "reference_images": reference_list}
 
-    # Add new reference image
     reference_list.append(image_path)
     related_images["reference"] = reference_list
 
@@ -15377,20 +15137,16 @@ async def remove_item_reference_image(
     db: Session = Depends(get_datasets_db)
 ):
     """Remove a reference image from a dataset item"""
-    # Get item
     item = db.query(DatasetItem).filter(DatasetItem.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Dataset item not found")
 
-    # Get current reference images
     related_images = item.related_images or {}
     reference_list = related_images.get("reference", [])
 
-    # Check if image exists in list
     if image_path not in reference_list:
         raise HTTPException(status_code=404, detail=f"Reference image not found: {image_path}")
 
-    # Remove the reference image
     reference_list.remove(image_path)
     related_images["reference"] = reference_list
 
@@ -15418,12 +15174,10 @@ async def save_item_caption_to_txt(
     import os
     import json
 
-    # Get item
     item = db.query(DatasetItem).filter(DatasetItem.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Dataset item not found")
 
-    # Get tags caption
     caption = db.query(DatasetCaption).filter(
         DatasetCaption.item_id == item_id,
         DatasetCaption.caption_type == "tags"
@@ -15442,24 +15196,19 @@ async def save_item_caption_to_txt(
     saved_files = []
 
     try:
-        # Check if TXT file exists and save to it
         if os.path.exists(txt_path):
             with open(txt_path, 'w', encoding='utf-8') as f:
                 f.write(caption.content)
             saved_files.append(txt_path)
             print(f"[Dataset] Saved caption to TXT: {txt_path}")
 
-        # Check if JSON file exists and save to it
         if os.path.exists(json_path):
             try:
-                # Read existing JSON
                 with open(json_path, 'r', encoding='utf-8') as f:
                     json_data = json.load(f)
 
-                # Update caption field (tags)
                 json_data['caption'] = caption.content
 
-                # Write back
                 with open(json_path, 'w', encoding='utf-8') as f:
                     json.dump(json_data, f, ensure_ascii=False, indent=2)
 
@@ -15491,12 +15240,10 @@ async def save_all_captions_to_txt(
     """Save all captions from DB to TXT files"""
     import os
 
-    # Get dataset
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
-    # Get all items
     items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).all()
 
     saved_count = 0
@@ -15504,7 +15251,6 @@ async def save_all_captions_to_txt(
     failed_items = []
 
     for item in items:
-        # Get tags caption
         caption = db.query(DatasetCaption).filter(
             DatasetCaption.item_id == item.id,
             DatasetCaption.caption_type == "tags"
@@ -15518,7 +15264,6 @@ async def save_all_captions_to_txt(
         txt_path = os.path.splitext(image_path)[0] + ".txt"
 
         try:
-            # Write to TXT file
             with open(txt_path, 'w', encoding='utf-8') as f:
                 f.write(caption.content)
             saved_count += 1
@@ -15543,7 +15288,6 @@ async def restore_item_caption_from_txt(
     """Restore caption from TXT file to DB"""
     import os
 
-    # Get item
     item = db.query(DatasetItem).filter(DatasetItem.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Dataset item not found")
@@ -15556,11 +15300,9 @@ async def restore_item_caption_from_txt(
         raise HTTPException(status_code=404, detail=f"TXT file not found: {txt_path}")
 
     try:
-        # Read from TXT file
         with open(txt_path, 'r', encoding='utf-8') as f:
             content = f.read().strip()
 
-        # Update or create caption
         caption = db.query(DatasetCaption).filter(
             DatasetCaption.item_id == item_id,
             DatasetCaption.caption_type == "tags"
@@ -15590,13 +15332,9 @@ async def restore_item_caption_from_txt(
 
 # Tag Dictionary Search API was removed - frontend uses tagSuggestions.ts (JSON files) instead
 
-# ============================================================
-# Unified Taglist API (Phase 2: High-performance tag operations)
-# ============================================================
 
 from utils.taglist_cache import taglist_cache
 
-# Initialize taglist cache on module load
 taglist_cache.initialize(settings.root_dir)
 
 class TagSearchRequest(BaseModel):
@@ -15667,9 +15405,6 @@ async def get_tag_stats():
     stats = taglist_cache.get_stats()
     return {"stats": stats}
 
-# ============================================================
-# Training API Endpoints
-# ============================================================
 
 from database.models import TrainingRun, TrainingCheckpoint, TrainingSample
 
@@ -16448,7 +16183,6 @@ async def create_training_run(
             uuid_short = run_id.split('-')[0]  # First segment of UUID (8 chars)
             run_name = f"{timestamp}_{uuid_short}"
 
-        # Check if run name is unique
         existing = training_db.query(TrainingRun).filter(TrainingRun.run_name == run_name).first()
         if existing:
             raise HTTPException(status_code=400, detail=f"Training run '{run_name}' already exists")
@@ -16473,7 +16207,6 @@ async def create_training_run(
         output_dir.mkdir(parents=True, exist_ok=True)
         output_dir_str = str(output_dir)
 
-        # Get resume setting from request
         resume_from_checkpoint = request.resume_from_checkpoint
 
         # Resolve temp_img:// references in sample_prompts condition_image_path
@@ -16515,11 +16248,8 @@ async def create_training_run(
 
         print(f"[Training] Calculated total_steps: {calculated_total_steps}")
 
-        # Generate YAML config
         config_generator = TrainingConfigGenerator()
 
-        # Build params dict from Pydantic request, plus resume_from_checkpoint
-        # which has special handling (resolved separately above).
         params_dict = request.model_dump()
         params_dict["resume_from_checkpoint"] = resume_from_checkpoint
         # Which fields the caller ACTUALLY sent. model_dump() materialises every
@@ -16555,11 +16285,9 @@ async def create_training_run(
         else:  # full_finetune
             config_yaml = config_generator.generate_full_finetune_config(params_dict, **common_kwargs)
 
-        # Save config file
         config_path = os.path.join(output_dir_str, f"{run_name}_config.yaml")
         config_generator.save_config(config_yaml, config_path)
 
-        # Create training run with specified run_id and run_name
         from database.training_detail_store import (
             RUN_DB_FILENAME,
             RUN_DB_SCHEMA_VERSION,
@@ -16825,7 +16553,6 @@ _YAML_FIELD_LOCATIONS: Dict[str, tuple] = {
     "training_dtype": ("dtype", "training"),
     "vae_dtype": ("dtype", "vae"),
     "output_dtype": ("dtype", "save"),
-    # save section
     "save_every": ("save",),
     "save_every_unit": ("save",),
     "max_step_saves_to_keep": ("save",),
@@ -17018,7 +16745,6 @@ async def get_training_run_params(
         raise HTTPException(status_code=404, detail="Training run not found")
     print(f"[get_training_run_params] DB query took {time.time() - start_time:.3f}s")
 
-    # Parse YAML config to extract parameters
     import yaml
     yaml_start = time.time()
     try:
@@ -17027,7 +16753,6 @@ async def get_training_run_params(
         raise HTTPException(status_code=500, detail=f"Failed to parse config YAML: {str(e)}")
     print(f"[get_training_run_params] YAML parsing took {time.time() - yaml_start:.3f}s")
 
-    # Extract job config (first job in config)
     job = config.get("config", {}).get("job", config.get("job", "lora"))
     process_config = config.get("config", {}).get("process", [{}])[0] if config.get("config", {}).get("process") else config.get("process", [{}])[0] if config.get("process") else {}
 
@@ -17054,11 +16779,8 @@ async def get_training_run_params(
     dataset_configs = resolve_dataset_configs_from_yaml(run.config_yaml, datasets_db) or []
     print(f"[get_training_run_params] Dataset lookup took {time.time() - dataset_start:.3f}s, found {len(dataset_configs)} datasets")
 
-    # Extract training parameters using schema-driven helper
-    # (uses TrainingRunCreateRequest.model_fields as single source of truth)
     params = _extract_request_params_from_yaml(process_config, job)
 
-    # Add fields that aren't part of TrainingRunCreateRequest schema
     params["run_id"] = run.id  # Edit mode marker
     params["run_name"] = run.run_name
     params["training_method"] = (
@@ -17118,13 +16840,11 @@ async def update_training_run(
             for config in request.dataset_configs:
                 from core.training.dataset_params import extract_dataset_params
                 config_dict = config.model_dump()
-                # Store dict format for total_steps calculation
                 dataset_configs.append({
                     "dataset_id": config.dataset_id,
                     "filters": {},
                     **extract_dataset_params(config_dict),
                 })
-                # Build YAML format (with dataset_id for YAML editing support)
                 dataset = datasets_db.query(Dataset).filter(Dataset.id == config.dataset_id).first()
                 if dataset:
                     yaml_config = {
@@ -17134,7 +16854,6 @@ async def update_training_run(
                     }
                     dataset_configs_for_yaml.append(yaml_config)
 
-        # Get primary dataset
         primary_dataset_id = request.dataset_configs[0].dataset_id if request.dataset_configs else None
         primary_dataset = datasets_db.query(Dataset).filter(Dataset.id == primary_dataset_id).first() if primary_dataset_id else None
 
@@ -17197,7 +16916,6 @@ async def update_training_run(
             print(f"[Training] Preserved config-channel keys on run {run_id}: "
                   f"{', '.join(preserved_config_keys)}")
 
-        # Update config_yaml and base_model_path in database
         run.config_yaml = config_yaml
         run.base_model_path = request.base_model_path
 
@@ -17227,7 +16945,6 @@ async def update_training_run(
             run.total_steps = (total_dataset_size // request.batch_size) * request.epochs
             run.epochs = request.epochs
 
-        # Save config file
         config_path = os.path.join(run.output_dir, f"{run.run_name}_config.yaml")
         config_generator.save_config(config_yaml, config_path)
 
@@ -17343,14 +17060,12 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
     try:
         print(f"[API] Starting training run {run_id}")
 
-        # Get config path
         config_path = os.path.join(run.output_dir, f"{run.run_name}_config.yaml")
         print(f"[API] Config path: {config_path}")
 
         if not os.path.exists(config_path):
             raise HTTPException(status_code=500, detail="Config file not found")
 
-        # Update status to "starting" immediately
         print(f"[API] Updating status to 'starting'")
         run.status = "starting"
         run.error_message = None  # Clear stale error from a prior crash on (re)start/resume
@@ -17358,7 +17073,6 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
         # settings would otherwise show the previous attempt's as current.
         run.warnings = []
 
-        # Set started_at on first start, last_resumed_at and resumed_from_step on resume
         current_time = datetime.utcnow()
         if run.started_at is None:
             run.started_at = current_time
@@ -17628,7 +17342,6 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
             print(f"[API] Run {run_id} was stopped during pre-flight; not spawning training process")
             return {"message": "Training run was stopped before it started", "run": _status_recheck.to_dict()}
 
-        # Create training process
         print(f"[API] Creating training process")
         process = training_process_manager.create_process(
             run_id=run.id,
@@ -17640,7 +17353,6 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
 
         # Define progress callback to update database (runs in separate thread)
         def progress_callback_sync(step: int, loss: float, lr: float):
-            # Create a new database session for background task
             from database import TrainingSessionLocal
             db_session = TrainingSessionLocal()
             try:
@@ -17676,7 +17388,6 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
                     db_session.commit()
                     return
 
-                # Update status to "running" on first progress update
                 if current_run.status == "starting":
                     current_run.status = "running"
                     print(f"[Training {run_id}] Status updated: starting -> running")
@@ -17813,7 +17524,6 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
                 except Exception:
                     pass
 
-        # Start training process (non-blocking)
         print(f"[API] Starting training process...")
         await process.start(
             progress_callback=progress_callback,
@@ -17868,7 +17578,6 @@ async def stop_training_run(run_id: int, db: Session = Depends(get_training_db))
         raise HTTPException(status_code=400, detail=f"Cannot stop training with status '{run.status}'")
 
     try:
-        # Get training process
         process = training_process_manager.get_process(run_id)
 
         if process:
@@ -17879,7 +17588,6 @@ async def stop_training_run(run_id: int, db: Session = Depends(get_training_db))
             # Process doesn't exist (likely crashed during startup)
             print(f"[API] No active process found for run {run_id}, updating status only")
 
-        # Update run status
         run.status = "stopped"
         db.commit()
 
@@ -17932,7 +17640,6 @@ async def update_training_config(
         if not config_yaml:
             raise HTTPException(status_code=400, detail="config_yaml is required")
 
-        # Update config_yaml in database
         run.config_yaml = config_yaml
 
         # Keep dataset_configs column in sync with the newly-saved YAML
@@ -17940,7 +17647,6 @@ async def update_training_config(
         from core.training.dataset_params import resolve_dataset_configs_from_yaml
         run.dataset_configs = resolve_dataset_configs_from_yaml(config_yaml, datasets_db) or run.dataset_configs
 
-        # Update the original config file on disk ({run_name}_config.yaml)
         import yaml
         from pathlib import Path
 
@@ -17978,7 +17684,6 @@ async def reload_training_config(
     try:
         from pathlib import Path
 
-        # Read config from disk
         config_path = Path(run.output_dir) / f"{run.run_name}_config.yaml"
         if not config_path.exists():
             raise HTTPException(status_code=404, detail=f"Config file not found: {config_path}")
@@ -17986,7 +17691,6 @@ async def reload_training_config(
         with open(config_path, 'r', encoding='utf-8') as f:
             config_yaml = f.read()
 
-        # Update database with disk content
         run.config_yaml = config_yaml
 
         # Keep dataset_configs column in sync with the reloaded YAML
@@ -18070,7 +17774,6 @@ async def get_training_status(run_id: int, db: Session = Depends(get_training_db
     # Checkpoints are now tracked in DB via TrainingCheckpoint model
     # No need to scan filesystem - checkpoints are loaded via to_dict()
 
-    # Get process status if available
     process = training_process_manager.get_process(run_id)
     process_status = process.get_status() if process else None
 
@@ -18102,7 +17805,6 @@ async def start_tensorboard(run_id: int, db: Session = Depends(get_training_db))
     if not run:
         raise HTTPException(status_code=404, detail="Training run not found")
 
-    # Get tensorboard log directory
     from pathlib import Path
     log_dir = Path(run.output_dir) / "tensorboard"
 
@@ -18275,21 +17977,17 @@ async def get_debug_latents(run_id: int, db: Session = Depends(get_training_db))
     if not debug_dir.exists():
         return {"debug_latents": []}
 
-    # Find all step directories
     step_dirs = sorted([d for d in debug_dir.iterdir() if d.is_dir() and d.name.startswith("step_")])
 
     debug_latents = []
     for step_dir in step_dirs:
-        # Extract step number from directory name (step_XXXXXX)
         step_str = step_dir.name.replace("step_", "")
         try:
             step = int(step_str)
 
-            # Find all latent .pt files in this step directory
             latent_files = sorted(step_dir.glob("latents_t*.pt"))
 
             for latent_file in latent_files:
-                # Extract timestep from filename (latents_tXXXX.pt or latents_t0.XXXX.pt)
                 timestep_str = latent_file.stem.replace("latents_t", "")
                 try:
                     # Try float first (Z-Image), then int (SD/SDXL)
@@ -18305,7 +18003,6 @@ async def get_debug_latents(run_id: int, db: Session = Depends(get_training_db))
         except ValueError:
             continue
 
-    # Sort by step and timestep
     debug_latents.sort(key=lambda x: (x["step"], x["timestep"]))
 
     return {"debug_latents": debug_latents}
@@ -18353,7 +18050,6 @@ async def visualize_debug_latent(
             raise HTTPException(status_code=404, detail="No latent files found")
         latent_file = latent_files[0]
 
-    # Load the latent data
     try:
         data = torch.load(latent_file, map_location='cpu')
     except Exception as e:
@@ -18390,7 +18086,6 @@ async def visualize_debug_latent(
 
         # Take first 3 channels (or repeat if less than 3)
         if latent_np.shape[0] >= 3:
-            # Use first 3 channels as R, G, B
             rgb_channels = latent_np[:3]  # [3, H, W]
         elif latent_np.shape[0] == 1:
             # Single channel, repeat 3 times
@@ -18411,10 +18106,8 @@ async def visualize_debug_latent(
             else:
                 normalized[i] = np.zeros_like(channel)
 
-        # Convert to [H, W, 3] and uint8
         rgb_image = normalized.transpose(1, 2, 0).astype(np.uint8)  # [H, W, 3]
 
-        # Convert to PIL Image
         pil_image = Image.fromarray(rgb_image, mode='RGB')
 
         return pil_image
@@ -18426,10 +18119,8 @@ async def visualize_debug_latent(
         buffer.seek(0)
         return base64.b64encode(buffer.read()).decode('utf-8')
 
-    # Detect model type from saved data
     is_flux2 = data.get("model_type") == "flux2"
 
-    # Convert each latent type to image
     result = {
         "step": step,
         "timestep": data.get("timestep", 0),
@@ -18438,7 +18129,6 @@ async def visualize_debug_latent(
         "model_type": data.get("model_type", "unknown"),
     }
 
-    # Add caption if available
     if "caption" in data:
         result["caption"] = data["caption"]
 
@@ -18448,7 +18138,6 @@ async def visualize_debug_latent(
         if _k in data:
             result[_k] = data[_k]
 
-    # Add reference image thumbnail if available
     if "reference_image_path" in data:
         try:
             from PIL import Image as _PILImage
@@ -18561,7 +18250,6 @@ async def get_training_metrics(
     try:
         from tensorboard.backend.event_processing import event_accumulator
 
-        # Find all event files in all subdirectories (timestamp-based)
         event_files = []
         for subdir in tensorboard_dir.iterdir():
             if subdir.is_dir():
@@ -18577,13 +18265,11 @@ async def get_training_metrics(
             event_files_sorted = sorted(event_files, key=lambda f: Path(f).stat().st_mtime)
             event_files = [event_files_sorted[-1]]  # Only most recent
 
-        # Use the most recent event file or merge all
         all_loss = []
         all_recon_loss = []
         all_lr = []
 
         for event_file in event_files:
-            # Check cache first (keyed by run_id and event_file path)
             cache_key = (run_id, event_file)
             event_file_path = Path(event_file)
             current_mtime = event_file_path.stat().st_mtime
@@ -18604,7 +18290,6 @@ async def get_training_metrics(
                 ea.Reload()
                 _event_accumulator_cache[cache_key] = (ea, current_mtime)
 
-            # Get scalar tags
             if 'train/loss' in ea.Tags()['scalars']:
                 loss_events = ea.Scalars('train/loss')
                 all_loss.extend([
@@ -18626,7 +18311,6 @@ async def get_training_metrics(
                     for e in lr_events
                 ])
 
-        # Sort by step
         all_loss.sort(key=lambda x: x["step"])
         all_recon_loss.sort(key=lambda x: x["step"])
         all_lr.sort(key=lambda x: x["step"])
@@ -18643,14 +18327,12 @@ async def get_training_metrics(
                 if step not in step_to_latest or point["wall_time"] > step_to_latest[step]["wall_time"]:
                     step_to_latest[step] = point
 
-            # Return sorted by step
             return sorted(step_to_latest.values(), key=lambda x: x["step"])
 
         all_loss = deduplicate_by_latest_wall_time(all_loss)
         all_recon_loss = deduplicate_by_latest_wall_time(all_recon_loss)
         all_lr = deduplicate_by_latest_wall_time(all_lr)
 
-        # Filter by since_step if provided
         if since_step is not None:
             all_loss = [d for d in all_loss if d["step"] > since_step]
             all_recon_loss = [d for d in all_recon_loss if d["step"] > since_step]
@@ -18720,7 +18402,6 @@ async def get_training_metrics_db(
     from database.models import TrainingMetrics
     from core.training.metric_registry import EXTRA_METRIC_DEFS
 
-    # Check if run exists
     run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Training run not found")
@@ -18743,7 +18424,6 @@ async def get_training_metrics_db(
                 # empty graph.
                 metrics_db = db
 
-        # Get min and max steps for this run
         result = metrics_db.query(
             func.min(TrainingMetrics.step),
             func.max(TrainingMetrics.step)
@@ -18789,10 +18469,8 @@ async def get_training_metrics_db(
                 metrics_db.close()
             return response
 
-        # Calculate uniform sample steps
         total_steps = max_step - min_step + 1
         if total_steps <= max_points:
-            # Fetch all steps
             sample_steps = list(range(min_step, max_step + 1))
         else:
             # Uniform sampling: divide range into max_points intervals
@@ -18805,7 +18483,6 @@ async def get_training_metrics_db(
             if max_step not in sample_steps:
                 sample_steps.append(max_step)
 
-        # Fetch metrics for sampled steps
         query = metrics_db.query(TrainingMetrics).filter(
             TrainingMetrics.run_id == run_id,
             TrainingMetrics.step.in_(sample_steps)
@@ -18813,7 +18490,6 @@ async def get_training_metrics_db(
 
         metrics = query.all()
 
-        # Convert to response format
         loss_data = []
         recon_loss_data = []
         # Bespoke arch/method-specific metrics (REPA, outpaint gen_loss, …) stored
@@ -20015,7 +19691,6 @@ async def get_training_samples(
     # cannot overwrite each other at the same step.
     sample_files = list(samples_dir.glob("step_*_sample_*.png"))
 
-    # Parse step numbers and organize
     samples_by_step = {}
     pattern = re.compile(r"step_(\d+)_sample_(\d+)(?:_ondemand_([0-9a-fA-F]+))?\.png$")
 
@@ -20034,7 +19709,6 @@ async def get_training_samples(
             # This ensures compatibility even if UserSettings.training_dir changes
             path_url = f"/api/v1/training/runs/{run_id}/samples/{file.name}"
 
-            # Extract generation metadata from PNG (embedded since recent version)
             img_params = None
             try:
                 from PIL import Image as _PILImage
@@ -20052,8 +19726,6 @@ async def get_training_samples(
                 "request_id": request_id,
             })
 
-    # Sort by step and return. Scheduled samples first within a step, so the
-    # settings panel keyed on images[0] keeps showing the scheduled one.
     samples = []
     for step in sorted(samples_by_step.keys()):
         samples.append({
@@ -20095,14 +19767,10 @@ async def get_training_sample_image(
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Sample image not found")
 
-    # Return image file
     from fastapi.responses import FileResponse
     return FileResponse(file_path, media_type="image/png")
 
 
-# ============================================================
-# Training Presets API
-# ============================================================
 
 class TrainingPresetCreateRequest(BaseModel):
     name: str
@@ -20132,7 +19800,6 @@ async def get_training_preset(preset_id: int, db: Session = Depends(get_training
 @router.post("/training/presets", status_code=201)
 async def create_training_preset(request: TrainingPresetCreateRequest, db: Session = Depends(get_training_db)):
     """Create a new training preset"""
-    # Check if name already exists
     existing = db.query(TrainingPreset).filter(TrainingPreset.name == request.name).first()
     if existing:
         raise HTTPException(status_code=400, detail=f"Preset with name '{request.name}' already exists")
@@ -20156,7 +19823,6 @@ async def update_training_preset(preset_id: int, request: TrainingPresetUpdateRe
         raise HTTPException(status_code=404, detail="Preset not found")
 
     if request.name is not None:
-        # Check if new name conflicts with another preset
         existing = db.query(TrainingPreset).filter(
             TrainingPreset.name == request.name,
             TrainingPreset.id != preset_id
@@ -20187,9 +19853,6 @@ async def delete_training_preset(preset_id: int, db: Session = Depends(get_train
     return {"message": "Preset deleted successfully"}
 
 
-# ============================================================
-# Batch Operations for Dataset Items
-# ============================================================
 
 from api.batch_operations import (
     BatchTaggerRequest,
@@ -20313,7 +19976,6 @@ async def batch_cancel_endpoint(dataset_id: int):
     return {"message": "Batch operation cancellation requested"}
 
 
-# ==================== Debug VRAM Inspection ====================
 
 @router.get("/debug/vram")
 async def debug_vram_inspection():
@@ -20331,7 +19993,6 @@ async def debug_vram_inspection():
     mem_max_allocated = torch.cuda.max_memory_allocated() / 1024**2
     mem_max_reserved = torch.cuda.max_memory_reserved() / 1024**2
 
-    # Find all CUDA tensors via gc
     gc.collect()
     cuda_tensors = []
     tensor_summary = {}  # shape+dtype -> {count, total_bytes, referrers}
@@ -20355,7 +20016,6 @@ async def debug_vram_inspection():
                 tensor_summary[key]["count"] += 1
                 tensor_summary[key]["total_mb"] += size_bytes / 1024**2
 
-                # Get referrer info (what holds this tensor)
                 if tensor_summary[key]["count"] <= 3:  # Limit referrer inspection
                     try:
                         referrers = gc.get_referrers(obj)
@@ -20363,7 +20023,6 @@ async def debug_vram_inspection():
                             ref_type = type(ref).__name__
                             ref_info = ref_type
                             if isinstance(ref, dict):
-                                # Find the key that references this tensor
                                 for k, v in ref.items():
                                     if v is obj:
                                         ref_info = f"dict['{k}']"
@@ -20379,7 +20038,6 @@ async def debug_vram_inspection():
         except Exception:
             pass
 
-    # Sort by total size descending
     sorted_tensors = sorted(
         tensor_summary.values(),
         key=lambda x: x["total_mb"],
@@ -20465,9 +20123,6 @@ async def debug_vram_force_release():
     }
 
 
-# ============================================================
-# Tagger Training API
-# ============================================================
 
 class TaggerTrainingRunCreateRequest(BaseModel):
     run_name: Optional[str] = None
@@ -20934,7 +20589,6 @@ def update_tagger_training_run(
     run.dataset_configs     = request.dataset_configs
     run.config              = config
     run.total_epochs        = request.epochs
-    # Reset progress/metrics so re-run starts clean
     run.status              = "pending"
     run.progress            = 0.0
     run.current_epoch       = 0
@@ -21057,9 +20711,6 @@ async def start_tagger_training_run(run_id: str, training_db: Session = Depends(
 
         db = TrainingSessionLocal()
         try:
-            # ----- Pre-flight: dataset drift detection / optional rescan -----
-            # Runs inside the background thread so the HTTP /start response
-            # returns immediately (pre-flight can take hours on large datasets).
             _rescan_mode = normalize_rescan_mode(config.get("rescan_before_training"))
             if _rescan_mode != "off" and dataset_ids:
                 from core.training.dataset_drift import (
@@ -21203,7 +20854,6 @@ async def start_tagger_training_run(run_id: str, training_db: Session = Depends(
                 finally:
                     ddb.close()
 
-            # Update status to "running" now that pre-flight is complete
             row = db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
             if row and row.status == "starting":
                 row.status = "running"
@@ -21578,7 +21228,6 @@ def preview_tagger_vocabulary(
                 tag_categories[norm_tag] = "General"
             # else: keep "Unknown" if the taglist doesn't know it either.
 
-    # Apply filters
     if excl_cats:
         tag_counts = {t: c for t, c in tag_counts.items()
                       if tag_categories.get(t, "General") not in excl_cats}
@@ -21841,7 +21490,6 @@ class VideoChainValidateRequestModel(BaseModel):
     recompute_plan_hash: bool = True
 
 
-# --- issues ----------------------------------------------------------------
 
 
 def _video_chain_issue(
@@ -21880,7 +21528,6 @@ def _video_chain_warning_issues(messages: Sequence[str]) -> List[Dict[str, Any]]
     return issues
 
 
-# --- wire <-> core conversion ----------------------------------------------
 
 
 def _video_chain_state_to_wire(lines: Sequence[str]) -> Dict[str, Any]:
@@ -22203,7 +21850,6 @@ def _video_chain_manifest_from_wire(model: VideoChainManifestModel) -> ChainMani
     )
 
 
-# --- planning helpers ------------------------------------------------------
 
 
 def _video_chain_grid(architecture: str) -> VideoGridSpec:

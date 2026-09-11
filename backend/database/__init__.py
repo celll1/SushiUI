@@ -30,7 +30,6 @@ def _set_wal_mode(dbapi_conn, _):
 for _engine in (gallery_engine, datasets_engine, training_engine):
     event.listen(_engine, "connect", _set_wal_mode)
 
-# Create separate session factories
 GallerySessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=gallery_engine)
 DatasetsSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=datasets_engine)
 TrainingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=training_engine)
@@ -59,7 +58,6 @@ def init_db():
     from .auto_migrate import auto_migrate_all_databases
     import uuid
 
-    # Create tables for each database
     print("[Database] Initializing gallery.db...")
     GalleryBase.metadata.create_all(bind=gallery_engine)
 
@@ -130,7 +128,6 @@ def init_db():
     print("[Database] Initializing training.db...")
     TrainingBase.metadata.create_all(bind=training_engine)
 
-    # Run auto-migration to add any missing columns
     auto_migrate_all_databases()
 
     # Migration: Add unique_id to existing datasets

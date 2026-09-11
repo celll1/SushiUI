@@ -123,9 +123,6 @@ _ORIG_IN_DICT_ATTR = "_sushi_gn_orig_in_dict"
 _MARK_ATTR = "_sushi_gn_global"
 
 
-# ---------------------------------------------------------------------------
-# discovery / gating
-# ---------------------------------------------------------------------------
 
 def decoder_group_norms(vae) -> list:
     """``(name, module)`` of every ``nn.GroupNorm`` inside ``vae.decoder``."""
@@ -189,9 +186,6 @@ def _tiling_engaged(vae, z: torch.Tensor, threshold_px: int,
     return int(z.shape[-2]) > budget_cells or int(z.shape[-1]) > budget_cells
 
 
-# ---------------------------------------------------------------------------
-# accumulator
-# ---------------------------------------------------------------------------
 
 class _Accum:
     """Per-(module, group) sum / sumsq / count, accumulated across tile decodes.
@@ -396,9 +390,6 @@ def _gn_hook(mods, record: "Optional[_Accum]" = None,
                 m.__dict__.pop("forward", None)
 
 
-# ---------------------------------------------------------------------------
-# the two-pass decode
-# ---------------------------------------------------------------------------
 
 def two_pass_global_group_norm_decode(
     vae,
@@ -453,7 +444,6 @@ def two_pass_global_group_norm_decode(
             del part
         return _wrap_result(out, return_dict)
 
-    # ---- pass 1: today's decode, recording only (bit-exact no-op) ----------
     acc = _Accum()
     with _gn_hook(mods, record=acc):
         first = inner_decode(z, return_dict=False, **decode_kwargs)
@@ -475,9 +465,6 @@ def two_pass_global_group_norm_decode(
         return inner_decode(z, return_dict=return_dict, **decode_kwargs)
 
 
-# ---------------------------------------------------------------------------
-# install / uninstall on a VAE object
-# ---------------------------------------------------------------------------
 
 def install_global_group_norm_decode(vae, threshold_px: int) -> bool:
     """Install (or re-point) the two-pass ``decode`` override on ``vae``.

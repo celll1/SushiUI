@@ -16,7 +16,6 @@ class HashCache:
         Args:
             cache_file: Path to cache file (relative to backend directory)
         """
-        # Store cache in backend directory
         backend_dir = Path(__file__).parent.parent
         self.cache_path = backend_dir / cache_file
         self.cache = self._load_cache()
@@ -53,14 +52,11 @@ class HashCache:
         if not os.path.exists(file_path):
             return None
 
-        # Get file modification time
         mtime = os.path.getmtime(file_path)
         file_size = os.path.getsize(file_path)
 
-        # Create cache key
         cache_key = f"{file_path}:{algorithm}"
 
-        # Check cache
         if cache_key in self.cache:
             cached_entry = self.cache[cache_key]
             cached_mtime = cached_entry.get("mtime")
@@ -83,14 +79,11 @@ class HashCache:
         if not os.path.exists(file_path):
             return
 
-        # Get file metadata
         mtime = os.path.getmtime(file_path)
         file_size = os.path.getsize(file_path)
 
-        # Create cache key
         cache_key = f"{file_path}:{algorithm}"
 
-        # Store in cache
         self.cache[cache_key] = {
             "hash": hash_value,
             "mtime": mtime,
@@ -98,7 +91,6 @@ class HashCache:
             "algorithm": algorithm
         }
 
-        # Save to disk
         self._save_cache()
 
     def calculate_and_cache(self, file_path: str, algorithm: str = "sha256") -> str:
@@ -131,7 +123,6 @@ class HashCache:
             print(f"[HashCache] Using cached hash for {os.path.basename(file_path)}")
             return cached_hash
 
-        # Calculate new hash
         print(f"[HashCache] Calculating new hash for {os.path.basename(file_path)}")
         hash_value = self._calculate_file_hash(file_path, algorithm)
 
@@ -155,7 +146,6 @@ class HashCache:
 
         hash_obj = hashlib.new(algorithm)
 
-        # Read file in chunks to handle large files
         with open(file_path, 'rb') as f:
             while chunk := f.read(8192):
                 hash_obj.update(chunk)

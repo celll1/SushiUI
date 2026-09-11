@@ -133,8 +133,6 @@ def set_flux2_attention_backend(transformer, backend, attention_impl="diffusers"
     if attention_impl == "conduit":
         from core.attention import AttentionMode
         from core.inference.nag_flux2 import set_flux2_nag_negpip_conduit
-        # Reset diffusers' global active backend to native so any residual KV-cache
-        # (ref-image) processors left on the diffusers registry run deterministically.
         try:
             transformer.set_attention_backend("native")
         except Exception:
@@ -362,7 +360,6 @@ class Flux2Mixin:
             self.flux2_components["transformer"] = model
         return model
 
-    # -- LoRA lifetime -------------------------------------------------------
 
     @staticmethod
     def _flux2_lora_warn(message: str, code: str) -> None:
@@ -800,7 +797,6 @@ class Flux2Mixin:
 
         print("[FLUX.2] Starting txt2img generation")
 
-        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
             discard_resident, should_keep_resident, compute_model_key, component_nbytes,
@@ -844,14 +840,12 @@ class Flux2Mixin:
         try:
             import numpy as np
 
-            # Load LoRAs if specified
             lora_configs = params.get("loras", [])
             print(f"[FLUX.2] DEBUG: lora_configs from params = {lora_configs}")
             if lora_configs:
                 # Unload previous LoRAs first (if any)
                 if hasattr(self, '_flux2_lora_wrapped_modules') and self._flux2_lora_wrapped_modules:
                     self._unload_lora_flux2()
-                # Load new LoRAs
                 print(f"[FLUX.2] Loading {len(lora_configs)} LoRA(s)...")
                 self._load_lora_flux2(lora_configs)
             else:
@@ -862,7 +856,6 @@ class Flux2Mixin:
                 else:
                     print(f"[FLUX.2] DEBUG: No LoRAs in params, skipping LoRA loading")
 
-            # Extract components
             transformer = self.flux2_components["transformer"]
             vae = self.flux2_components["vae"]
             text_encoder = self.flux2_components["text_encoder"]
@@ -880,7 +873,6 @@ class Flux2Mixin:
             attention_impl = params.get("attention_impl", getattr(settings, "attention_impl", "conduit"))
             set_flux2_attention_backend(transformer, attention_type, attention_impl)
 
-            # Prepare generator
             seed = params.get("seed", -1)
             if seed == -1:
                 seed = random.randint(0, 2**32 - 1)
@@ -906,7 +898,6 @@ class Flux2Mixin:
             guidance_scale = params.get("cfg_scale", 4.0)
             max_sequence_length = 512  # FLUX.2 uses Qwen3 with max 512 tokens
 
-            # Check if distilled model (no CFG)
             is_distilled = config.get("is_distilled", False)
             do_classifier_free_guidance = guidance_scale > 1.0 and not is_distilled
 
@@ -921,14 +912,10 @@ class Flux2Mixin:
                 move_flux2_transformer_to_gpu
             )
 
-            # Get quantization parameters
             transformer_quantization = params.get("unet_quantization")  # Transformer (U-Net equivalent)
             text_encoder_quantization = params.get("text_encoder_quantization")  # Text Encoder (Qwen3)
             text_encoder_quantization = self._flux2_te_quantization_with_lora(text_encoder_quantization)
 
-            # ============================================================
-            # Stage 1: Text Encoding (Qwen3)
-            # ============================================================
             print("[FLUX.2] Stage 1: Text encoding...")
             if not is_resident(self, "text_encoder", _kh_model_key):
                 text_encoder = move_flux2_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
@@ -1022,9 +1009,6 @@ class Flux2Mixin:
                     ref_ids = ref_ids.to(self.device)
                     print(f"[FLUX.2 Image Edit] Reference tokens: {ref_tokens.shape}, IDs: {ref_ids.shape}")
 
-            # ============================================================
-            # Stage 2: Prepare Latents
-            # ============================================================
             print("[FLUX.2] Stage 2: Preparing latents...")
 
             # VAE scale factor (8) * patch size (2) = 16
@@ -1038,11 +1022,9 @@ class Flux2Mixin:
             # FLUX.2 has 32 latent channels, but patchified to 128
             num_channels_latents = transformer.config.in_channels // 4  # 32
 
-            # Create random latents
             latent_shape = (1, num_channels_latents * 4, latent_height // 2, latent_width // 2)
             latents = torch.randn(latent_shape, generator=generator, device=self.device, dtype=prompt_embeds.dtype)
 
-            # Prepare latent position IDs
             latent_ids = self._flux2_prepare_latent_ids(latents).to(self.device)
 
             # Pack latents: (B, C, H, W) -> (B, H*W, C)
@@ -1050,9 +1032,6 @@ class Flux2Mixin:
 
             print(f"[FLUX.2] Latents shape: {latents.shape}, Latent IDs shape: {latent_ids.shape}")
 
-            # ============================================================
-            # Stage 3: Denoising Loop
-            # ============================================================
             print("[FLUX.2] Stage 3: Denoising loop...")
             _t_denoise = _time.perf_counter()
 
@@ -1077,7 +1056,6 @@ class Flux2Mixin:
                 from core.memory_management import create_flux_block_offloader
                 from core.models.flux2_block_swap_wrapper import Flux2BlockSwapWrapper
 
-                # Create block offloader
                 block_offloader = create_flux_block_offloader(
                     transformer=transformer,
                     blocks_to_swap=blocks_to_swap,
@@ -1089,7 +1067,6 @@ class Flux2Mixin:
                     ring_size=block_swap_ring_size,
                 )
 
-                # Prepare block devices
                 block_offloader.prepare_block_devices_before_forward()
                 # Adapters are already installed (stage 1): the sweep above put
                 # a LyCORIS branch's bare parameters on the device for good.
@@ -1147,7 +1124,6 @@ class Flux2Mixin:
                 from core.memory_management.block_offloading import weighs_to_device
                 if not is_resident(self, "transformer", _kh_model_key):
                     transformer = move_flux2_transformer_to_gpu(transformer, transformer_quantization)
-                # Move all block weights to GPU (in case they were on CPU from previous Block Swap)
                 for block in transformer.transformer_blocks:
                     weighs_to_device(block, torch.device(self.device))
                 for block in transformer.single_transformer_blocks:
@@ -1231,11 +1207,9 @@ class Flux2Mixin:
             else:
                 fbcache_target = None
 
-            # Prepare timesteps
             image_seq_len = latents.shape[1]
             mu = self._flux2_compute_empirical_mu(image_seq_len, num_inference_steps)
 
-            # Set timesteps with sigmas
             sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
             scheduler.set_timesteps(num_inference_steps, device=self.device, mu=mu)
             timesteps = scheduler.timesteps
@@ -1552,14 +1526,10 @@ class Flux2Mixin:
                 transformer.to("cpu")
                 torch.cuda.empty_cache()
 
-            # Clean up reference tokens/IDs (Image Edit)
             if ref_tokens is not None:
                 del ref_tokens, ref_ids
                 torch.cuda.empty_cache()
 
-            # ============================================================
-            # Stage 4: VAE Decode
-            # ============================================================
             generation_timer.add("denoise", _time.perf_counter() - _t_denoise)
             print("[FLUX.2] Stage 4: VAE decoding...")
             _t_decode = _time.perf_counter()
@@ -1580,7 +1550,6 @@ class Flux2Mixin:
                 self._apply_vae_tiling(vae, getattr(self, "_vae_tiling", False))
                 image = vae.decode(latents, return_dict=False)[0]
 
-            # Convert to PIL
             image = (image / 2 + 0.5).clamp(0, 1)
             _cf = getattr(self, "_color_flatten_strength", 0)
             if _cf and _cf > 0:
@@ -1670,7 +1639,6 @@ class Flux2Mixin:
         _t_phase = _time.perf_counter()
         device = text_encoder.device
 
-        # Check if Text Encoder has FP8 weights
         has_fp8_weights = False
         for module in text_encoder.modules():
             if hasattr(module, 'weight') and module.weight is not None:
@@ -1686,7 +1654,6 @@ class Flux2Mixin:
 
         print(f"[FLUX.2] FP8 weight detection: has_fp8_weights = {has_fp8_weights}, output dtype = {dtype}")
 
-        # Apply chat template
         messages = [{"role": "user", "content": prompt}]
         text = tokenizer.apply_chat_template(
             messages,
@@ -1726,7 +1693,6 @@ class Flux2Mixin:
                     use_cache=False,
                 )
 
-        # Extract and stack hidden states from specified layers
         out = torch.stack([output.hidden_states[k] for k in hidden_states_layers], dim=1)
         out = out.to(dtype=dtype, device=device)
 
@@ -1734,7 +1700,6 @@ class Flux2Mixin:
         batch_size, num_channels, seq_len, hidden_dim = out.shape
         prompt_embeds = out.permute(0, 2, 1, 3).reshape(batch_size, seq_len, num_channels * hidden_dim)
 
-        # Prepare text IDs (4D position coordinates)
         text_ids = self._flux2_prepare_text_ids(prompt_embeds).to(device)
 
         generation_timer.add("text_encode", _time.perf_counter() - _t_phase)
@@ -2256,7 +2221,6 @@ class Flux2Mixin:
         # Preprocess and encode each image
         encoded_refs = []
         for idx, img in enumerate(images[:10]):  # Max 10 images
-            # Convert to RGB
             img = img.convert("RGB")
 
             # Resize to fit pixel limit (preserve aspect ratio)
@@ -2276,7 +2240,6 @@ class Flux2Mixin:
             top = (h - new_h) // 2
             img = img.crop((left, top, left + new_w, top + new_h))
 
-            # Convert to tensor
             img_array = np.array(img).astype(np.float32) / 255.0
             img_array = (img_array - 0.5) * 2.0
             img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0)
@@ -2294,7 +2257,6 @@ class Flux2Mixin:
                 encoded_refs.append(encoded[0])  # [128, H, W]
                 print(f"[FLUX.2 Image Edit] Image {idx+1}: Encoded to latent {encoded[0].shape}")
 
-        # Generate position IDs for each reference image
         ref_tokens_list = []
         ref_ids_list = []
 
@@ -2323,7 +2285,6 @@ class Flux2Mixin:
         ref_tokens = torch.cat(ref_tokens_list, dim=0)  # [K, 128]
         ref_ids = torch.cat(ref_ids_list, dim=0)        # [K, 4]
 
-        # Add batch dimension
         ref_tokens = ref_tokens.unsqueeze(0)  # [1, K, 128]
         ref_ids = ref_ids.unsqueeze(0)        # [1, K, 4]
 
@@ -2355,7 +2316,6 @@ class Flux2Mixin:
 
         print("[FLUX.2] Starting img2img generation")
 
-        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
             discard_resident, should_keep_resident, compute_model_key, component_nbytes,
@@ -2397,13 +2357,11 @@ class Flux2Mixin:
         try:
             import numpy as np
 
-            # Load LoRAs if specified
             lora_configs = params.get("loras", [])
             if lora_configs:
                 # Unload previous LoRAs first (if any)
                 if hasattr(self, '_flux2_lora_wrapped_modules') and self._flux2_lora_wrapped_modules:
                     self._unload_lora_flux2()
-                # Load new LoRAs
                 print(f"[FLUX.2] Loading {len(lora_configs)} LoRA(s)...")
                 self._load_lora_flux2(lora_configs)
             else:
@@ -2412,7 +2370,6 @@ class Flux2Mixin:
                     print(f"[FLUX.2] No LoRAs in params, unloading existing LoRAs")
                     self._unload_lora_flux2()
 
-            # Extract components
             transformer = self.flux2_components["transformer"]
             vae = self.flux2_components["vae"]
             text_encoder = self.flux2_components["text_encoder"]
@@ -2430,7 +2387,6 @@ class Flux2Mixin:
             attention_impl = params.get("attention_impl", getattr(settings, "attention_impl", "conduit"))
             set_flux2_attention_backend(transformer, attention_type, attention_impl)
 
-            # Prepare generator
             seed = params.get("seed", -1)
             if seed == -1:
                 seed = random.randint(0, 2**32 - 1)
@@ -2453,7 +2409,6 @@ class Flux2Mixin:
             guidance_scale = params.get("cfg_scale", 4.0)
             max_sequence_length = 512
 
-            # Get image dimensions (use input image size)
             width, height = init_image.size
 
             # VAE scale factor
@@ -2469,7 +2424,6 @@ class Flux2Mixin:
 
             print(f"[FLUX.2] img2img: {width}x{height}, strength: {denoising_strength}")
 
-            # Check CFG
             is_distilled = config.get("is_distilled", False)
             do_classifier_free_guidance = guidance_scale > 1.0 and not is_distilled
 
@@ -2479,14 +2433,10 @@ class Flux2Mixin:
                 move_flux2_transformer_to_gpu
             )
 
-            # Get quantization parameters
             transformer_quantization = params.get("unet_quantization")
             text_encoder_quantization = self._flux2_te_quantization_with_lora(
                 params.get("text_encoder_quantization"))
 
-            # ============================================================
-            # Stage 1: Text Encoding
-            # ============================================================
             print("[FLUX.2] Stage 1: Text encoding...")
             if not is_resident(self, "text_encoder", _kh_model_key):
                 text_encoder = move_flux2_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
@@ -2576,9 +2526,6 @@ class Flux2Mixin:
                     ref_ids = ref_ids.to(self.device)
                     print(f"[FLUX.2 Image Edit] Reference tokens: {ref_tokens.shape}, IDs: {ref_ids.shape}")
 
-            # ============================================================
-            # Stage 2: Encode input image
-            # ============================================================
             print("[FLUX.2] Stage 2: Encoding input image...")
             if not is_resident(self, "vae", _kh_model_key):
                 vae = vae.to(self.device)
@@ -2604,39 +2551,27 @@ class Flux2Mixin:
             vae.to("cpu")
             torch.cuda.empty_cache()
 
-            # ============================================================
-            # Stage 3: Prepare latents with noise
-            # ============================================================
             print("[FLUX.2] Stage 3: Preparing latents...")
 
-            # Prepare position IDs
             latent_ids = self._flux2_prepare_latent_ids(init_latents).to(self.device)
 
             # Pack latents
             init_latents = self._flux2_pack_latents(init_latents)
 
-            # Prepare timesteps
             image_seq_len = init_latents.shape[1]
             mu = self._flux2_compute_empirical_mu(image_seq_len, num_inference_steps)
             scheduler.set_timesteps(num_inference_steps, device=self.device, mu=mu)
             timesteps = scheduler.timesteps
 
-            # Calculate start timestep based on denoising strength
             t_start = max(int(len(timesteps) * (1 - denoising_strength)), 1)
             timesteps = timesteps[t_start:]
 
-            # Add noise at start timestep (Flow Matching linear interpolation)
-            # t ranges from 1.0 (pure noise) to 0.0 (clean image)
-            # scheduler.timesteps is in [0, 1000] range, normalize to [0, 1]
             t_value = timesteps[0].item() / 1000.0
             noise = torch.randn(init_latents.shape, generator=generator, device=init_latents.device, dtype=init_latents.dtype)
             latents = (1 - t_value) * init_latents + t_value * noise
 
             print(f"[FLUX.2] Denoising from step {t_start} ({len(timesteps)} steps, t={t_value:.4f})")
 
-            # ============================================================
-            # Stage 4: Denoising Loop
-            # ============================================================
             print("[FLUX.2] Stage 4: Denoising loop...")
             _t_denoise = _time.perf_counter()
 
@@ -3096,14 +3031,10 @@ class Flux2Mixin:
                 transformer.to("cpu")
                 torch.cuda.empty_cache()
 
-            # Clean up reference tokens/IDs (Image Edit)
             if ref_tokens is not None:
                 del ref_tokens, ref_ids
                 torch.cuda.empty_cache()
 
-            # ============================================================
-            # Stage 5: VAE Decode (img2img)
-            # ============================================================
             generation_timer.add("denoise", _time.perf_counter() - _t_denoise)
             print("[FLUX.2] Stage 5: VAE decoding...")
             _t_decode = _time.perf_counter()
@@ -3197,7 +3128,6 @@ class Flux2Mixin:
 
         print("[FLUX.2] Starting inpaint generation")
 
-        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
             discard_resident, should_keep_resident, compute_model_key, component_nbytes,
@@ -3239,13 +3169,11 @@ class Flux2Mixin:
         try:
             import numpy as np
 
-            # Load LoRAs if specified
             lora_configs = params.get("loras", [])
             if lora_configs:
                 # Unload previous LoRAs first (if any)
                 if hasattr(self, '_flux2_lora_wrapped_modules') and self._flux2_lora_wrapped_modules:
                     self._unload_lora_flux2()
-                # Load new LoRAs
                 print(f"[FLUX.2] Loading {len(lora_configs)} LoRA(s)...")
                 self._load_lora_flux2(lora_configs)
             else:
@@ -3254,7 +3182,6 @@ class Flux2Mixin:
                     print(f"[FLUX.2] No LoRAs in params, unloading existing LoRAs")
                     self._unload_lora_flux2()
 
-            # Extract components
             transformer = self.flux2_components["transformer"]
             vae = self.flux2_components["vae"]
             text_encoder = self.flux2_components["text_encoder"]
@@ -3272,7 +3199,6 @@ class Flux2Mixin:
             attention_impl = params.get("attention_impl", getattr(settings, "attention_impl", "conduit"))
             set_flux2_attention_backend(transformer, attention_type, attention_impl)
 
-            # Prepare generator
             seed = params.get("seed", -1)
             if seed == -1:
                 seed = random.randint(0, 2**32 - 1)
@@ -3296,7 +3222,6 @@ class Flux2Mixin:
             mask_blur = params.get("mask_blur", 4)
             max_sequence_length = 512
 
-            # Get dimensions
             width, height = init_image.size
 
             vae_scale_factor = 8
@@ -3312,12 +3237,10 @@ class Flux2Mixin:
 
             print(f"[FLUX.2] inpaint: {width}x{height}, strength: {denoising_strength}")
 
-            # Apply mask blur
             if mask_blur > 0:
                 from PIL import ImageFilter
                 mask_image = mask_image.filter(ImageFilter.GaussianBlur(radius=mask_blur))
 
-            # Check CFG
             is_distilled = config.get("is_distilled", False)
             do_classifier_free_guidance = guidance_scale > 1.0 and not is_distilled
 
@@ -3327,14 +3250,10 @@ class Flux2Mixin:
                 move_flux2_transformer_to_gpu
             )
 
-            # Get quantization parameters
             transformer_quantization = params.get("unet_quantization")
             text_encoder_quantization = self._flux2_te_quantization_with_lora(
                 params.get("text_encoder_quantization"))
 
-            # ============================================================
-            # Stage 1: Text Encoding
-            # ============================================================
             print("[FLUX.2] Stage 1: Text encoding...")
             if not is_resident(self, "text_encoder", _kh_model_key):
                 text_encoder = move_flux2_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
@@ -3424,9 +3343,6 @@ class Flux2Mixin:
                     ref_ids = ref_ids.to(self.device)
                     print(f"[FLUX.2 Image Edit] Reference tokens: {ref_tokens.shape}, IDs: {ref_ids.shape}")
 
-            # ============================================================
-            # Stage 2: Encode input image and prepare mask
-            # ============================================================
             print("[FLUX.2] Stage 2: Encoding input image and mask...")
             if not is_resident(self, "vae", _kh_model_key):
                 vae = vae.to(self.device)
@@ -3442,7 +3358,6 @@ class Flux2Mixin:
                 latent_dist = vae.encode(image_tensor).latent_dist
                 init_latents = latent_dist.mode()
 
-            # Prepare mask in latent space
             mask_tensor = torch.from_numpy(np.array(mask_image.convert("L"))).float() / 255.0
             mask_tensor = mask_tensor.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
 
@@ -3466,9 +3381,6 @@ class Flux2Mixin:
             vae.to("cpu")
             torch.cuda.empty_cache()
 
-            # ============================================================
-            # Stage 3: Prepare latents
-            # ============================================================
             print("[FLUX.2] Stage 3: Preparing latents...")
 
             # Patchify mask (same spatial transform as latents)
@@ -3477,7 +3389,6 @@ class Flux2Mixin:
                 mask_latent, size=(latent_h // 2, latent_w // 2), mode='bilinear', align_corners=False
             )
 
-            # Prepare position IDs
             latent_ids = self._flux2_prepare_latent_ids(init_latents).to(self.device)
 
             # Pack latents
@@ -3486,28 +3397,20 @@ class Flux2Mixin:
             # Pack mask (1, 1, H/2, W/2) -> (1, H*W/4, 1)
             mask_packed = mask_patchified.reshape(1, 1, -1).permute(0, 2, 1)
 
-            # Prepare timesteps
             image_seq_len = init_latents_packed.shape[1]
             mu = self._flux2_compute_empirical_mu(image_seq_len, num_inference_steps)
             scheduler.set_timesteps(num_inference_steps, device=self.device, mu=mu)
             timesteps = scheduler.timesteps
 
-            # Calculate start timestep
             t_start = max(int(len(timesteps) * (1 - denoising_strength)), 1)
             timesteps = timesteps[t_start:]
 
-            # Add noise (Flow Matching linear interpolation)
-            # t ranges from 1.0 (pure noise) to 0.0 (clean image)
-            # scheduler.timesteps is in [0, 1000] range, normalize to [0, 1]
             t_value = timesteps[0].item() / 1000.0
             noise = torch.randn(init_latents_packed.shape, generator=generator, device=init_latents_packed.device, dtype=init_latents_packed.dtype)
             latents = (1 - t_value) * init_latents_packed + t_value * noise
 
             print(f"[FLUX.2] Inpainting from step {t_start} ({len(timesteps)} steps, t={t_value:.4f})")
 
-            # ============================================================
-            # Stage 4: Denoising Loop with mask blending
-            # ============================================================
             print("[FLUX.2] Stage 4: Denoising loop with mask blending...")
             _t_denoise = _time.perf_counter()
 
@@ -3980,14 +3883,10 @@ class Flux2Mixin:
                 transformer.to("cpu")
                 torch.cuda.empty_cache()
 
-            # Clean up reference tokens/IDs (Image Edit)
             if ref_tokens is not None:
                 del ref_tokens, ref_ids
                 torch.cuda.empty_cache()
 
-            # ============================================================
-            # Stage 5: VAE Decode (inpaint)
-            # ============================================================
             generation_timer.add("denoise", _time.perf_counter() - _t_denoise)
             print("[FLUX.2] Stage 5: VAE decoding...")
             _t_decode = _time.perf_counter()

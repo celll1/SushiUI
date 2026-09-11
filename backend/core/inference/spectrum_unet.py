@@ -74,7 +74,6 @@ class SpectrumBlockController:
         self._device = None
         self._dtype = None
 
-    # ---- step control -------------------------------------------------------
     def begin_step(self, step_idx):
         """Set mode, (on forecast) precompute the forecast, and install the wrappers.
 
@@ -103,7 +102,6 @@ class SpectrumBlockController:
             self.forecaster.record(self._step, flat)
             self._capture = []
 
-    # ---- wrappers -----------------------------------------------------------
     def _wrap_down(self, idx, orig):
         def wrapper(*args, **kwargs):
             if self._mode == "forecast":

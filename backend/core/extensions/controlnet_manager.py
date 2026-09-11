@@ -113,7 +113,6 @@ class ControlNetManager:
                 print(f"[ControlNetManager] Excluding training artifact: {file_path.name}")
                 return False
 
-        # Check file extension
         if file_path.suffix not in ['.safetensors', '.pth', '.pt', '.bin']:
             return False
 
@@ -135,7 +134,6 @@ class ControlNetManager:
                     # T2I-Adapter (diffusers): adapter.body
                     # T2I-Adapter (original): body.0, body.1
 
-                    # Check for each architecture pattern
                     is_standard_cn_sd15 = any('input_blocks' in k or 'middle_block' in k or 'zero_convs' in k for k in keys)
                     is_standard_cn_sdxl = any('controlnet_cond_embedding' in k for k in keys)
                     is_lllite = any('lllite_unet' in k or 'conditioning1' in k for k in keys)
@@ -272,7 +270,6 @@ class ControlNetManager:
             return False
 
         try:
-            # Load state dict keys
             if full_path.suffix == '.safetensors':
                 from safetensors import safe_open
                 with safe_open(str(full_path), framework="pt", device="cpu") as f:
@@ -282,7 +279,6 @@ class ControlNetManager:
                 state_dict = torch.load(str(full_path), map_location="cpu")
                 keys = list(state_dict.keys())
 
-            # Check for LLLite-specific keys
             lllite_indicators = [
                 'lllite_unet',
                 'lllite_mid',
@@ -330,11 +326,9 @@ class ControlNetManager:
             # MID corresponds to mid_block
             layers = []
 
-            # Add input blocks (IN00-IN11)
             for i in range(12):
                 layers.append(f"IN{i:02d}")
 
-            # Add middle block
             layers.append("MID")
 
             print(f"[ControlNetManager] ControlNet layers for {controlnet_path}: {layers}")
@@ -355,7 +349,6 @@ class ControlNetManager:
     ) -> Optional[ControlNetModel]:
         """Load a ControlNet model"""
 
-        # Check if already loaded
         if model_path in self.loaded_controlnets:
             return self.loaded_controlnets[model_path]
 
@@ -367,7 +360,6 @@ class ControlNetManager:
 
         try:
             if is_lllite:
-                # Load ControlNet-LLLite
                 print(f"Loading ControlNet-LLLite from {full_path}")
                 lllite_model = self._load_lllite_model(full_path, device, dtype)
                 if lllite_model is not None:
@@ -375,7 +367,6 @@ class ControlNetManager:
                     print(f"ControlNet-LLLite loaded successfully: {model_path}")
                 return lllite_model
             else:
-                # Load standard ControlNet
                 print(f"Loading ControlNet from {full_path}")
 
                 # Try to load as diffusers ControlNet
@@ -385,7 +376,6 @@ class ControlNetManager:
                         torch_dtype=dtype
                     )
                 else:
-                    # Load from single file
                     controlnet = ControlNetModel.from_single_file(
                         str(full_path),
                         torch_dtype=dtype
@@ -410,7 +400,6 @@ class ControlNetManager:
         try:
             from safetensors.torch import load_file
 
-            # Load state dict
             if model_path.suffix == '.safetensors':
                 state_dict = load_file(str(model_path), device=device)
             else:
@@ -460,17 +449,12 @@ class ControlNetManager:
         """
         print(f"[ControlNetManager] Applying LLLite to U-Net")
 
-        # Remove any existing LLLite patches first
         self.remove_lllite_patches()
 
-        # Store control image in the lllite model for later use
         lllite_model['control_image'] = control_image
 
-        # Get layer weights if available
         layer_weights = lllite_model.get('_layer_weights', None)
 
-        # Apply LLLite weights to U-Net
-        # LLLite modifies attention layers, we need to patch the forward hooks
         self._patch_unet_with_lllite(unet, lllite_model, layer_weights)
 
         print(f"[ControlNetManager] LLLite applied to U-Net")
@@ -499,7 +483,6 @@ class ControlNetManager:
             reserved = torch.cuda.memory_reserved(device) / 1024**3
             print(f"[ControlNetManager VRAM] Before LLLite: Allocated={allocated:.2f}GB, Reserved={reserved:.2f}GB")
 
-        # Build LLLite modules from state dict
         lllite_modules = self._build_lllite_modules(state_dict, device, dtype)
 
         if torch.cuda.is_available():
@@ -518,7 +501,6 @@ class ControlNetManager:
             control_image, lllite_modules, matched_modules, device, dtype
         )
 
-        # Store for cleanup
         self.current_lllite_modules = lllite_modules
         self.current_lllite_embeddings = cond_emb
 
@@ -618,7 +600,6 @@ class ControlNetManager:
 
             submodules = lllite_modules[base_name]
 
-            # Find conditioning1 submodules
             conditioning_modules = {k: v for k, v in submodules.items() if k.startswith('conditioning1')}
 
             if not conditioning_modules:
@@ -628,7 +609,6 @@ class ControlNetManager:
             # Use clone() to avoid in-place modification of control_image
             x = control_image.clone()
 
-            # Sort conditioning module layers by their numeric suffix (0, 2, 4)
             cond_layers = sorted(conditioning_modules.items(), key=lambda item: item[0])
 
             for layer_name, params in cond_layers:
@@ -653,7 +633,6 @@ class ControlNetManager:
                         stride = kernel_size
                         padding = 0
 
-                    # Apply conv2d with kohya-ss parameters
                     x_new = torch.nn.functional.conv2d(x, weight, bias, stride=stride, padding=padding)
 
                     # Free previous x immediately
@@ -662,7 +641,6 @@ class ControlNetManager:
 
                     x = x_new
 
-                    # Apply ReLU activation (except for last layer)
                     if layer_name != cond_layers[-1][0]:
                         x = torch.nn.functional.relu(x)
 
@@ -696,10 +674,7 @@ class ControlNetManager:
 
         modules = {}
 
-        # Group keys by base module name and move to device immediately
         for key in state_dict.keys():
-            # Parse key structure: lllite_unet_..._to_q.conditioning1.0.weight
-            # Split by dots to separate base module, submodule, layer, param
             parts = key.split('.')
 
             # Find the split point (before conditioning1/down/mid/up)
@@ -742,7 +717,6 @@ class ControlNetManager:
 
         Patches specific transformer blocks to add LLLite conditioning.
         """
-        # Store LLLite info on U-Net for access during forward pass
         if not hasattr(unet, '_lllite_data'):
             unet._lllite_data = []
 
@@ -777,7 +751,6 @@ class ControlNetManager:
             for down_idx, block in enumerate(unet.down_blocks):
                 if hasattr(block, 'attentions') and block.attentions is not None:
                     for attn_idx, attention in enumerate(block.attentions):
-                        # Use known_mappings from _find_matching_modules
                         kohya_idx = {
                             (1, 0): 4,
                             (2, 0): 7,
@@ -880,20 +853,17 @@ class ControlNetManager:
 
             proj_layer = getattr(attention, proj_name)
 
-            # Build the full module name for LLLite lookup
             lllite_name = f"lllite_unet_{block_name}_{proj_name}"
 
             if lllite_name not in lllite_modules:
                 continue
 
-            # Get the conditioning embedding and LoRA modules
             cond_emb = cond_embeddings.get(lllite_name)
             modules = lllite_modules[lllite_name]
 
             if cond_emb is None:
                 continue
 
-            # Save original forward for cleanup
             original_forward = proj_layer.forward
 
             # Track this patch for later cleanup
@@ -905,7 +875,6 @@ class ControlNetManager:
                 cond_embedding: Pre-computed conditioning embedding (B, C, H, W)
                 module_name: Name of the LLLite module for debugging
                 """
-                # Get LoRA-like weights (already on GPU)
                 down_weight = mods.get('down.0', {}).get('weight')
                 down_bias = mods.get('down.0', {}).get('bias')
                 mid_weight = mods.get('mid.0', {}).get('weight')
@@ -924,14 +893,11 @@ class ControlNetManager:
                                                            mid_weight is not None,
                                                            up_weight is not None]):
                         try:
-                            # 1. Reshape pre-computed conditioning: (B, C, H, W) -> (B, H*W, C)
                             n, c, h, w = cond_embedding.shape
                             cx = cond_embedding.view(n, c, h * w).permute(0, 2, 1)  # (B, H*W, C)
 
-                            # 2. Apply down projection to hidden_states
                             down_x = torch.nn.functional.linear(x, down_weight, down_bias)
 
-                            # 3. Match spatial dimensions if needed
                             seq_len = x.shape[1]
                             if cx.shape[1] != seq_len:
                                 cx = torch.nn.functional.interpolate(
@@ -941,22 +907,17 @@ class ControlNetManager:
                                     align_corners=False
                                 ).permute(0, 2, 1)  # (B, seq_len, C)
 
-                            # 4. Match batch size (for CFG, batch size is 2x)
                             batch_size = x.shape[0]
                             if cx.shape[0] != batch_size:
                                 # Repeat conditioning for each batch item
                                 cx = cx.repeat(batch_size, 1, 1)
 
-                            # 5. Concatenate: [conditioning, down(x)]
                             cx = torch.cat([cx, down_x], dim=2)
 
-                            # 6. Mid layer
                             cx = torch.nn.functional.linear(cx, mid_weight, mid_bias)
 
-                            # 7. Up layer
                             cx = torch.nn.functional.linear(cx, up_weight, up_bias)
 
-                            # 8. Add to input (LoRA-style residual)
                             x = x + cx
 
                         except Exception as e:
@@ -966,7 +927,6 @@ class ControlNetManager:
                                 print(f"  Error: {e}")
                                 first_call[0] = False
 
-                    # Apply original projection
                     output = orig_forward(x)
                     return output
 
@@ -1039,8 +999,6 @@ class ControlNetManager:
 
         print(f"[ControlNetManager] Applying layer weights to ControlNet")
 
-        # Convert layer names (IN00, IN01, ..., MID) to indices
-        # Store as a list for easier indexing during forward pass
         down_weights = []
         mid_weight = 1.0
 
@@ -1051,8 +1009,6 @@ class ControlNetManager:
 
         mid_weight = layer_weights.get("MID", 1.0)
 
-        # Store weights in a format compatible with ControlNet output
-        # ControlNet returns (down_block_res_samples, mid_block_res_sample)
         layer_weight_data = {
             'down': down_weights,  # List of 12 weights
             'mid': mid_weight      # Single weight
@@ -1060,7 +1016,6 @@ class ControlNetManager:
 
         print(f"[ControlNetManager] Layer weights applied: down={down_weights}, mid={mid_weight}")
 
-        # Handle LLLite models (stored as dict) vs standard ControlNet models
         if isinstance(controlnet, dict):
             # LLLite model - store weights in the dict
             controlnet['_layer_weights'] = layer_weight_data
@@ -1073,18 +1028,14 @@ class ControlNetManager:
     def _patch_controlnet_forward(self, controlnet: ControlNetModel):
         """Patch ControlNet forward method to apply layer weights"""
 
-        # Check if already patched
         if hasattr(controlnet, '_original_forward'):
             return
 
-        # Save original forward method
         controlnet._original_forward = controlnet.forward
 
         def weighted_forward(*args, **kwargs):
-            # Call original forward
             output = controlnet._original_forward(*args, **kwargs)
 
-            # Apply layer weights if set
             if hasattr(controlnet, '_layer_weights'):
                 weights = controlnet._layer_weights
 
@@ -1099,7 +1050,6 @@ class ControlNetManager:
                     down_samples = output.down_block_res_samples
                     mid_sample = output.mid_block_res_sample
 
-                # Apply down block weights
                 weighted_down_samples = []
                 for i, sample in enumerate(down_samples):
                     if i < len(weights['down']):
@@ -1108,7 +1058,6 @@ class ControlNetManager:
                     else:
                         weighted_down_samples.append(sample)
 
-                # Apply mid block weight
                 weighted_mid_sample = mid_sample * weights['mid']
 
                 # Return in same format as input
@@ -1146,7 +1095,6 @@ class ControlNetManager:
 
         self.lllite_patched_layers.clear()
 
-        # Delete cached LLLite data to free GPU memory
         if self.current_lllite_modules is not None:
             print(f"[ControlNetManager] Clearing {len(self.current_lllite_modules)} LLLite modules from GPU")
             for module_name, module_data in self.current_lllite_modules.items():

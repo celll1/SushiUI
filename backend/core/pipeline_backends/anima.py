@@ -757,7 +757,6 @@ class AnimaMixin:
         cpu_text_encoding = params.get("cpu_text_encoding", False)
         enc_device = "cpu" if cpu_text_encoding else device
 
-        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
             discard_resident, should_keep_resident, compute_model_key, component_nbytes,
@@ -822,7 +821,6 @@ class AnimaMixin:
             elif not cpu_text_encoding:
                 self._anima_move("text_encoder", "cpu")
             if cpu_text_encoding:
-                # Move CPU-encoded embeddings to GPU for denoising
                 def _embeds_to_gpu(d):
                     return {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in d.items()}
                 cond = _embeds_to_gpu(cond)
@@ -1045,7 +1043,6 @@ class AnimaMixin:
         cpu_text_encoding = params.get("cpu_text_encoding", False)
         enc_device = "cpu" if cpu_text_encoding else device
 
-        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
             discard_resident, should_keep_resident, compute_model_key, component_nbytes,
@@ -1336,7 +1333,6 @@ class AnimaMixin:
         cpu_text_encoding = params.get("cpu_text_encoding", False)
         enc_device = "cpu" if cpu_text_encoding else device
 
-        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
             discard_resident, should_keep_resident, compute_model_key, component_nbytes,

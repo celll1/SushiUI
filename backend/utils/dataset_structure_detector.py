@@ -176,14 +176,12 @@ def detect_dataset_structure(
     if not os.path.isdir(dir_path):
         return result
 
-    # Step 1: Collect filenames
     filenames = _collect_filenames(dir_path, recursive, max_depth, ALL_EXTENSIONS, MAX_SAMPLE_FILES)
     result["stats"]["total_files_sampled"] = len(filenames)
 
     if len(filenames) < MIN_PAIRS_FOR_DETECTION * 2:
         return result
 
-    # Step 2: Extract suffix candidates
     suffix_data: Dict[str, SuffixStats] = {}
     no_suffix_count = 0
 
@@ -216,7 +214,6 @@ def detect_dataset_structure(
     if len(viable_suffixes) < 2:
         return result
 
-    # Step 4: Find suffix pairs by checking base name overlap
     suffix_list = list(viable_suffixes.keys())
     suffix_pairs: List[Tuple[str, str, int, float]] = []
 
@@ -238,7 +235,6 @@ def detect_dataset_structure(
     if not suffix_pairs:
         return result
 
-    # Step 5: Classify each detected suffix
     paired_suffixes: Set[str] = set()
     for s1, s2, _overlap, _ratio in suffix_pairs:
         paired_suffixes.add(s1)
@@ -289,7 +285,6 @@ def detect_dataset_structure(
                         detected_caption.append(suffix)
                     break
 
-    # Step 6: Handle ambiguous cases - 2 unknown suffixes that pair with each other
     if not detected_target and not detected_reference and len(unknown_suffixes) >= 2:
         # Try to disambiguate using caption file association
         # The suffix whose bases overlap more with caption file bases is likely the target
@@ -321,12 +316,10 @@ def detect_dataset_structure(
                     if us not in detected_target and us not in detected_reference
                 ]
 
-    # Step 7: Final check - we need at least one target AND one reference
     if not detected_target or not detected_reference:
         result["unknown_suffixes"] = unknown_suffixes
         return result
 
-    # Step 8: Calculate confidence
     target_bases: Set[str] = set()
     for s in detected_target:
         target_bases |= viable_suffixes[s]["bases"]
@@ -338,7 +331,6 @@ def detect_dataset_structure(
     total_potential = len(target_bases | ref_bases)
     confidence = paired_count / total_potential if total_potential > 0 else 0.0
 
-    # Build suffix counts for stats
     suffix_counts: Dict[str, int] = {}
     all_detected = set(detected_reference + detected_target + detected_caption)
     for s in all_detected:

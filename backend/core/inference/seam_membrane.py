@@ -966,7 +966,6 @@ if __name__ == "__main__":
     print(f"[seam_membrane self-test] OK: rect byte-exact, jump {pre_jump:.3f} -> {post_jump:.3f}, "
           f"meta={meta}")
 
-    # --- R2 cross-seam tone self-test ---------------------------------------
     ct_rng = np.random.default_rng(1)
     ct_W, ct_H = 256, 256
     ct_rect = (64, 64, 192, 192)
@@ -1002,7 +1001,6 @@ if __name__ == "__main__":
     print(f"[cross_seam_tone self-test] OK: rect byte-exact, seam jump {ct_pre_jump:.3f} -> {ct_post_jump:.3f}, "
           f"meta={ct_meta}")
 
-    # --- G_prop16 boundary-offset propagation self-test ---------------------
     op_rng = np.random.default_rng(2)
     op_W, op_H = 256, 256
     op_rect = (64, 64, 192, 192)

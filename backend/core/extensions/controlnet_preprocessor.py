@@ -72,7 +72,6 @@ class ControlNetPreprocessor:
         """
         model_name_lower = model_path.lower()
 
-        # Check for specific model types
         if "canny" in model_name_lower:
             return "canny"
         elif "depth" in model_name_lower:
@@ -121,10 +120,8 @@ class ControlNetPreprocessor:
         if preprocessor_type == "none":
             return image
 
-        # Convert PIL to numpy
         image_np = np.array(image)
 
-        # Apply appropriate preprocessor
         if preprocessor_type == "canny":
             result = self._preprocess_canny(image_np, **kwargs)
         elif preprocessor_type.startswith("depth"):
@@ -159,21 +156,17 @@ class ControlNetPreprocessor:
             print(f"[Preprocessor] Unknown preprocessor type: {preprocessor_type}, returning original image")
             result = image_np
 
-        # Convert back to PIL
         return Image.fromarray(result)
 
     def _preprocess_canny(self, image_np: np.ndarray, low_threshold: int = 100, high_threshold: int = 200) -> np.ndarray:
         """Apply Canny edge detection"""
-        # Convert to grayscale if needed
         if len(image_np.shape) == 3:
             gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
         else:
             gray = image_np
 
-        # Apply Canny edge detection
         edges = cv2.Canny(gray, low_threshold, high_threshold)
 
-        # Convert back to 3-channel for ControlNet
         edges_rgb = cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)
 
         return edges_rgb
@@ -187,7 +180,6 @@ class ControlNetPreprocessor:
         try:
             from controlnet_aux import MidasDetector, ZoeDetector, LeresDetector
 
-            # Load appropriate depth detector
             if depth_type == "depth_midas" or depth_type == "depth":
                 if "depth_midas" not in self.loaded_preprocessors:
                     print("[Preprocessor] Loading Midas depth detector...")
@@ -209,7 +201,6 @@ class ControlNetPreprocessor:
                     self.loaded_preprocessors["depth_midas"] = MidasDetector.from_pretrained("lllyasviel/Annotators")
                 detector = self.loaded_preprocessors["depth_midas"]
 
-            # Convert numpy to PIL for detector
             image_pil = Image.fromarray(image_np)
             depth_map = detector(image_pil)
             return np.array(depth_map)
@@ -250,7 +241,6 @@ class ControlNetPreprocessor:
             include_hand = "hand" in pose_type or "full" in pose_type or kwargs.get("include_hand", False)
             include_face = "face" in pose_type or "full" in pose_type or kwargs.get("include_face", False)
 
-            # Convert numpy to PIL
             image_pil = Image.fromarray(image_np)
             pose_map = detector(image_pil, hand_and_face=include_hand or include_face)
             return np.array(pose_map)
@@ -415,7 +405,6 @@ class ControlNetPreprocessor:
         """
         # If blur_strength is provided, calculate kernel size relative to image size
         if blur_strength is not None and blur_strength > 0:
-            # Use the shorter dimension to calculate kernel size
             h, w = image_np.shape[:2]
             shorter_side = min(h, w)
             # kernel_size = (shorter_side * blur_strength / 100), rounded to nearest odd number
@@ -468,7 +457,6 @@ class ControlNetPreprocessor:
             # Upsample back
             upsampled = cv2.resize(downsampled, (w, h), interpolation=cv2.INTER_CUBIC)
 
-            # Apply sharpening if requested
             if sharpness > 0:
                 # Unsharp masking for better sharpening
                 # Create Gaussian blur
@@ -491,21 +479,17 @@ class ControlNetPreprocessor:
         Args:
             threshold: Threshold value (0 = auto/Otsu, 1-254 = fixed threshold)
         """
-        # Convert to grayscale
         if len(image_np.shape) == 3:
             gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
         else:
             gray = image_np
 
-        # Apply thresholding
         if threshold == 0:
-            # Use Otsu's method for automatic threshold
             thresh_value, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             print(f"[Preprocessor] Binary threshold (Otsu): {thresh_value}")
         else:
             _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
 
-        # Convert back to RGB
         return cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB)
 
     def _preprocess_color(self, image_np: np.ndarray, **kwargs) -> np.ndarray:
@@ -522,16 +506,13 @@ class ControlNetPreprocessor:
         Args:
             threshold: Threshold value (default: 127)
         """
-        # Convert to grayscale
         if len(image_np.shape) == 3:
             gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
         else:
             gray = image_np
 
-        # Apply threshold
         _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
 
-        # Convert back to RGB
         return cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB)
 
     def _preprocess_scribble(self, image_np: np.ndarray, scribble_type: str, **kwargs) -> np.ndarray:
@@ -554,7 +535,6 @@ class ControlNetPreprocessor:
                 detector = self.loaded_preprocessors["scribble_pidinet"]
 
             image_pil = Image.fromarray(image_np)
-            # Use scribble mode if available
             scribble_map = detector(image_pil, scribble=True)
             return np.array(scribble_map)
 

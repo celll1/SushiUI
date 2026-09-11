@@ -61,9 +61,6 @@ from diffusers.models.transformers.transformer_flux2 import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Weight-vector construction (Qwen3 chat-template aware)
-# ---------------------------------------------------------------------------
 
 def _render_template(tokenizer, prompt: str) -> str:
     """Render the exact templated text ``_flux2_encode_prompt`` feeds the tokenizer."""
@@ -226,9 +223,6 @@ def build_flux2_negpip_weights(prompt, negative_prompt, tokenizer, device, dtype
     return torch.stack(rows, dim=0)  # [txt_b, seq]
 
 
-# ---------------------------------------------------------------------------
-# Signed-V helper (shared by all processors)
-# ---------------------------------------------------------------------------
 
 def _scale_text_value(enc_v, weights, txt_b):
     """Scale text-token value ``enc_v`` [B, seq, heads, dim] by per-context signed
@@ -258,9 +252,6 @@ def _scale_text_value(enc_v, weights, txt_b):
     return enc_v * w[:, :, None, None]  # [B, seq, heads, dim] *= [B, seq, 1, 1]
 
 
-# ---------------------------------------------------------------------------
-# Standalone NegPip processors (NAG OFF)
-# ---------------------------------------------------------------------------
 
 class NegPipFlux2AttnProcessor:
     """Signed-V NegPip for the dual-stream Flux2Attention (text = encoder stream)."""
@@ -474,9 +465,6 @@ class NegPipNAGFlux2ParallelSelfAttnProcessor(NAGFlux2ParallelSelfAttnProcessor)
         return hs
 
 
-# ---------------------------------------------------------------------------
-# Install / restore
-# ---------------------------------------------------------------------------
 
 def set_negpip_flux2_processors(transformer, token_weights):
     """Install standalone NegPip processors (NAG OFF). Returns (originals, single_procs)."""
@@ -523,9 +511,6 @@ def set_negpip_nag_flux2_processors(transformer, nag_scale, nag_tau, nag_alpha, 
     return originals, single_procs
 
 
-# ---------------------------------------------------------------------------
-# Wrappers
-# ---------------------------------------------------------------------------
 
 class Flux2NegPipWrapper(nn.Module):
     """Thin NegPip helper: installs the standalone NegPip attention processors and

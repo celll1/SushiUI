@@ -173,7 +173,6 @@ def prepare_reference_guide_latents(
             clean_latent = vae_normalize(clean_latent, pipeline.vae)
             clean_latent = clean_latent.to(dtype=dtype)
 
-        # Generate noise for re-noising at each step
         noise = torch.randn(clean_latent.shape, generator=generator, device=device, dtype=dtype)
 
         # Normalize start/end from 0-1000 to 0.0-1.0
@@ -236,9 +235,6 @@ def apply_reference_guide_blend(
     return latents, pred_original_sample
 
 
-# ---------------------------------------------------------------------------
-# Training-free reference-style transfer (SD1.5/SDXL U-Net wiring)
-# ---------------------------------------------------------------------------
 
 def prepare_style_reference_latent(image, pipeline, width, height, device, dtype, seed, ref_index: int = 0):
     """VAE-encode the style reference image to the SAME latent shape/scaling as
@@ -633,7 +629,6 @@ def calculate_cfg_metrics(noise_pred_uncond: torch.Tensor, noise_pred_text: torc
     if not developer_mode:
         return None
 
-    # Calculate L2 norms (magnitude of vectors)
     uncond_norm = torch.norm(noise_pred_uncond).item()
     text_norm = torch.norm(noise_pred_text).item()
     diff = noise_pred_text - noise_pred_uncond
@@ -730,7 +725,6 @@ def calculate_dynamic_cfg(
     # Normalize sigma to [0, 1] range
     sigma_norm = min(sigma / sigma_max, 1.0) if sigma_max > 0 else 0.0
 
-    # Calculate CFG based on schedule type
     if cfg_schedule_type == "linear":
         # Linear interpolation: high CFG at start (high sigma), low at end
         cfg = cfg_schedule_min + (cfg_schedule_max - cfg_schedule_min) * sigma_norm
@@ -814,8 +808,6 @@ def dynamic_thresholding(
     s = torch.quantile(abs_noise, percentile / 100.0, dim=1, keepdim=True)
     s = s.to(original_dtype)
 
-    # Apply static threshold: s = max(s, clamp_value)
-    # This ensures s is at least clamp_value (typically 1.0)
     s = torch.maximum(s, torch.tensor(clamp_value, device=noise_pred.device, dtype=original_dtype))
 
     # Reshape for broadcasting
@@ -1969,12 +1961,10 @@ def custom_sampling_loop(
 
     print(f"[CustomSampling] Pipeline type: {type(pipeline).__name__}, is_sdxl: {is_sdxl}, is_deus: {is_deus}")
 
-    # Use ancestral_generator for stochastic samplers (always provided by pipeline)
     step_generator = ancestral_generator
     if ancestral_generator is not None:
         print(f"[CustomSampling] Using ancestral generator for stochastic sampler")
 
-    # Get components
     unet = pipeline.unet
     scheduler = pipeline.scheduler
 
@@ -2002,17 +1992,14 @@ def custom_sampling_loop(
         print(f"[CustomSampling] Multi-ref style transfer active: {len(style_refs)} references, "
               f"{num_style_blocks} self-attention layers eligible")
 
-    # Check if ControlNet is present
     controlnet = getattr(pipeline, 'controlnet', None)
     has_controlnet = controlnet is not None and controlnet_images is not None
 
     if has_controlnet:
         print(f"[CustomSampling] ControlNet detected, preparing control images")
-        # Prepare control images
         if not isinstance(controlnet_images, list):
             controlnet_images = [controlnet_images]
 
-        # Convert PIL images to tensors
         control_image_tensors = []
         for img in controlnet_images:
             if isinstance(img, Image.Image):
@@ -2078,7 +2065,6 @@ def custom_sampling_loop(
         from core.inference.negpip_processor import set_negpip_processors
         original_processors = set_negpip_processors(unet, negpip_token_weights, attention_type=attention_type)
 
-    # Set timesteps
     scheduler.set_timesteps(num_inference_steps, device=device)
     timesteps = scheduler.timesteps
 
@@ -2207,7 +2193,6 @@ def custom_sampling_loop(
                 label="txt2img",
             )
 
-    # Prepare latents
     if latents is None:
         latent_channels = unet.config.in_channels
         _scale = latent_scale_factor(pipeline)
@@ -2227,7 +2212,6 @@ def custom_sampling_loop(
         )
         latents = latents * scheduler.init_noise_sigma
 
-    # Prepare Reference Guide latents (VAE encode reference images)
     ref_guides = []
     if ref_guide_configs:
         from core.vram_optimization import move_vae_to_gpu, move_vae_to_cpu
@@ -2244,9 +2228,6 @@ def custom_sampling_loop(
     current_pooled_prompt_embeds = pooled_prompt_embeds
     current_negative_pooled_prompt_embeds = negative_pooled_prompt_embeds
 
-    # ============================================================
-    # DEBUG: Scheduler initialization (for comparison with training)
-    # ============================================================
     print(f"\n[CustomSampling] [Debug] ========== SCHEDULER INITIALIZATION ==========")
     print(f"[CustomSampling] [Debug] Scheduler timesteps (first 5): {scheduler.timesteps[:5].tolist()}")
     print(f"[CustomSampling] [Debug] Scheduler timesteps (last 5): {scheduler.timesteps[-5:].tolist()}")
@@ -2265,7 +2246,6 @@ def custom_sampling_loop(
         print(f"[CustomSampling] Sending initial noise preview (step 0)")
         progress_callback(-1, len(timesteps), latents, cfg_metrics=None)
 
-    # Get sigma_max for dynamic CFG scheduling
     sigma_max = 0.0
     if hasattr(scheduler, 'sigmas') and len(scheduler.sigmas) > 0:
         sigma_max = float(scheduler.sigmas[0].item())
@@ -2275,7 +2255,6 @@ def custom_sampling_loop(
     previous_snr = None
     first_iteration_debug = True
 
-    # ---- In-loop hard-flatten setup (SD1.5/SDXL, opt-in) -----------------------
     _flatten_inject_steps = _setup_inloop_flatten(
         pipeline, timesteps, spectrum, fbcache_ctrl,
         flatten_in_loop, flatten_in_loop_last_steps, flatten_in_loop_min_region)
@@ -2292,7 +2271,6 @@ def custom_sampling_loop(
             # pipeline_manager not available (e.g., in training subprocess)
             pass
 
-        # Check if NAG should be deactivated based on sigma threshold
         if nag_active and nag_sigma_end > 0.0:
             if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
                 current_sigma = float(scheduler.sigmas[i].item())
@@ -2307,14 +2285,12 @@ def custom_sampling_loop(
                     nag_negative_prompt_embeds = None
                     print(f"[CustomSampling] NAG negative embeddings cleared for subsequent steps")
 
-        # Check if prompt should be updated at this step
         if prompt_embeds_callback is not None:
             new_embeds = prompt_embeds_callback(i)
             if new_embeds is not None:
                 current_prompt_embeds, current_negative_prompt_embeds, current_pooled_prompt_embeds, current_negative_pooled_prompt_embeds = new_embeds
                 print(f"[CustomSampling] Step {i}: Updated prompt embeddings")
 
-        # Calculate current sigma and guidance scale first to determine if we need CFG
         current_sigma = 0.0
         if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
             current_sigma = float(scheduler.sigmas[i].item())
@@ -2336,7 +2312,6 @@ def custom_sampling_loop(
         # per-context V weights align (and negative-prompt double-negation works).
         do_classifier_free_guidance = (abs(current_guidance_scale - 1.0) > 1e-5) or nag_active or negpip_active
 
-        # Prepare latent input based on CFG mode
         if nag_active:
             # NAG mode: Use batch approach (legacy, backward compatible)
             # Both NAG and CFG use double batch structure: [negative, positive]
@@ -2397,7 +2372,6 @@ def custom_sampling_loop(
             latent_model_input = scheduler.scale_model_input(latent_model_input, t)
             prompt_embeds_input = current_prompt_embeds
 
-        # Prepare added conditions for SDXL
         added_cond_kwargs = {}
         if is_sdxl:
             # SDXL requires time_ids
@@ -2437,15 +2411,12 @@ def custom_sampling_loop(
                     "time_ids": add_time_ids
                 }
 
-        # Get ControlNet residuals if present
         down_block_res_samples = None
         mid_block_res_sample = None
 
         if has_controlnet:
-            # Check if this step is within the guidance range
             current_fraction = i / num_inference_steps
 
-            # Calculate active ControlNet scales for this step
             active_scales = []
             for idx, (start, end, scale) in enumerate(zip(control_guidance_start, control_guidance_end, controlnet_conditioning_scale)):
                 if start <= current_fraction <= end:
@@ -2459,7 +2430,6 @@ def custom_sampling_loop(
                     # Determine batch size for ControlNet conditioning
                     batch_multiplier = 2 if do_classifier_free_guidance else 1
 
-                    # Get ControlNet conditioning
                     if isinstance(controlnet, list):
                         # Multiple ControlNets
                         down_block_res_samples_list = []
@@ -2472,7 +2442,6 @@ def custom_sampling_loop(
                                     "conditioning_scale": scale,
                                     "return_dict": False,
                                 }
-                                # Add SDXL-specific conditioning to ControlNet
                                 if is_sdxl and added_cond_kwargs:
                                     controlnet_kwargs["added_cond_kwargs"] = added_cond_kwargs
 
@@ -2500,7 +2469,6 @@ def custom_sampling_loop(
                                 "conditioning_scale": active_scales[0],
                                 "return_dict": False,
                             }
-                            # Add SDXL-specific conditioning to ControlNet
                             if is_sdxl and added_cond_kwargs:
                                 controlnet_kwargs["added_cond_kwargs"] = added_cond_kwargs
 
@@ -2520,9 +2488,6 @@ def custom_sampling_loop(
                 # This is required because DEUS has variable sequence length embeddings
                 # that cannot be batch concatenated
 
-                # ============================================================
-                # DEBUG: First iteration details (DEUS 2-Pass CFG)
-                # ============================================================
                 if first_iteration_debug:
                     print(f"\n[CustomSampling] [Debug] ========== FIRST DENOISING ITERATION (DEUS 2-Pass CFG) ==========")
                     print(f"[CustomSampling] [Debug] timestep (t): {t.item()}")
@@ -2784,13 +2749,9 @@ def custom_sampling_loop(
                 if mid_block_res_sample is not None:
                     unet_kwargs["mid_block_additional_residual"] = mid_block_res_sample
 
-                # Add SDXL-specific conditioning as a nested dict
                 if is_sdxl and added_cond_kwargs:
                     unet_kwargs["added_cond_kwargs"] = added_cond_kwargs
 
-                # ============================================================
-                # DEBUG: First iteration details (for comparison with training)
-                # ============================================================
                 if first_iteration_debug:
                     print(f"\n[CustomSampling] [Debug] ========== FIRST DENOISING ITERATION ==========")
                     print(f"[CustomSampling] [Debug] timestep (t): {t.item()}")
@@ -2841,21 +2802,17 @@ def custom_sampling_loop(
                 # NAG guidance was applied in attention space, but CFG is still applied here
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
 
-            # Calculate preliminary CFG metrics to get SNR (if SNR-based adaptive CFG is enabled)
             current_snr = None
             if cfg_rescale_snr_alpha > 0.0 or developer_mode:
-                # Calculate SNR from CFG components
                 uncond_norm = torch.norm(noise_pred_uncond).item()
                 diff = noise_pred_text - noise_pred_uncond
                 diff_norm = torch.norm(diff).item()
                 if uncond_norm > 1e-8:
                     current_snr = (diff_norm ** 2) / (uncond_norm ** 2)
 
-            # Store current SNR for next step
             if current_snr is not None:
                 previous_snr = current_snr
 
-            # Apply CFG
             noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
 
             # ============================================================
@@ -2865,7 +2822,6 @@ def custom_sampling_loop(
                 print(f"[CustomSampling] [Debug] noise_pred AFTER CFG shape: {noise_pred.shape}, dtype: {noise_pred.dtype}")
                 print(f"[CustomSampling] [Debug] noise_pred AFTER CFG min: {noise_pred.min().item():.4f}, max: {noise_pred.max().item():.4f}, mean: {noise_pred.mean().item():.4f}")
 
-            # Apply dynamic thresholding if enabled (prevents CFG saturation)
             if dynamic_threshold_percentile > 0.0:
                 noise_pred = dynamic_thresholding(
                     noise_pred,
@@ -2873,7 +2829,6 @@ def custom_sampling_loop(
                     clamp_value=dynamic_threshold_mimic_scale
                 )
 
-            # Apply guidance rescale if specified (important for v-prediction models)
             if guidance_rescale > 0.0:
                 noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=guidance_rescale)
         else:
@@ -2922,7 +2877,6 @@ def custom_sampling_loop(
         # Note: Some schedulers (DPM2, DPM2a) create more timesteps than num_inference_steps
         # so we pass len(timesteps) as the total to avoid showing progress > 100%
         if progress_callback is not None:
-            # Calculate CFG metrics for developer mode
             cfg_metrics = None
             if do_classifier_free_guidance:
                 cfg_metrics = calculate_cfg_metrics(
@@ -2931,11 +2885,9 @@ def custom_sampling_loop(
                     current_guidance_scale,
                     developer_mode=developer_mode
                 )
-            # Add timestep/sigma info to metrics
             if cfg_metrics is not None:
                 cfg_metrics['timestep'] = int(t.item())
                 cfg_metrics['step'] = i
-                # Get sigma from scheduler if available
                 if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
                     cfg_metrics['sigma'] = float(scheduler.sigmas[i].item())
 
@@ -2949,7 +2901,6 @@ def custom_sampling_loop(
 
     print(f"[CustomSampling] Sampling complete, decoding latents")
 
-    # Clean up Reference Guide GPU tensors
     if ref_guides:
         for rg in ref_guides:
             del rg["clean_latent"], rg["noise"]
@@ -2960,7 +2911,6 @@ def custom_sampling_loop(
         from core.inference.nag_processor import restore_original_processors
         restore_original_processors(unet, original_processors)
 
-    # ===== STAGE 3: VAE DECODE =====
     from core.vram_optimization import log_device_status, move_unet_to_cpu, move_vae_to_gpu, move_vae_to_cpu
 
     # Offload U-Net to CPU to free VRAM for VAE
@@ -3019,7 +2969,6 @@ def custom_sampling_loop(
     if not _pid_active or _use_real_vae_only:
         move_vae_to_cpu(pipeline)
 
-    # Convert to PIL with robust nan/inf handling (moves image tensor to CPU internally)
     image = vae_output_to_pil(image, color_flatten_strength=color_flatten_strength)
 
     return image
@@ -3153,7 +3102,6 @@ def custom_img2img_sampling_loop(
     else:
         dtype = unet_dtype
 
-    # Check if SDXL by checking if text_encoder_2 exists
     is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
 
     # DEUS uses 2-Pass CFG (separate negative/positive passes) instead of batch concatenation
@@ -3162,12 +3110,10 @@ def custom_img2img_sampling_loop(
 
     print(f"[CustomSampling] [img2img] Pipeline type: {type(pipeline).__name__}, is_sdxl: {is_sdxl}, is_deus: {is_deus}")
 
-    # Use ancestral_generator for stochastic samplers (always provided by pipeline)
     step_generator = ancestral_generator
     if ancestral_generator is not None:
         print(f"[CustomSampling] Using ancestral generator for stochastic sampler")
 
-    # Get components
     unet = pipeline.unet
     scheduler = pipeline.scheduler
 
@@ -3202,17 +3148,14 @@ def custom_img2img_sampling_loop(
     # Get image dimensions (save before converting to tensor)
     original_width, original_height = init_image.size
 
-    # Check if ControlNet is present
     controlnet = getattr(pipeline, 'controlnet', None)
     has_controlnet = controlnet is not None and controlnet_images is not None
 
     if has_controlnet:
         print(f"[CustomSampling] ControlNet detected in img2img, preparing control images")
-        # Prepare control images
         if not isinstance(controlnet_images, list):
             controlnet_images = [controlnet_images]
 
-        # Convert PIL images to tensors
         control_image_tensors = []
         for img in controlnet_images:
             if isinstance(img, Image.Image):
@@ -3240,17 +3183,13 @@ def custom_img2img_sampling_loop(
         if not isinstance(control_guidance_end, list):
             control_guidance_end = [control_guidance_end] * len(control_image_tensors)
 
-    # Set timesteps
     scheduler.set_timesteps(num_inference_steps, device=device)
     timesteps = scheduler.timesteps
 
-    # Calculate timestep to start from
     if t_start_override is not None:
-        # Use explicit t_start (for "Do full steps" mode)
         t_start = t_start_override
         print(f"[CustomSampling] Using explicit t_start={t_start} (Do full steps mode)")
     else:
-        # Calculate from strength (standard img2img)
         init_timestep = min(int(num_inference_steps * strength), num_inference_steps)
         t_start = max(num_inference_steps - init_timestep, 0)
 
@@ -3306,13 +3245,10 @@ def custom_img2img_sampling_loop(
                 ).clamp(0, 1).mean(dim=(0, 2, 3), keepdim=True)
                 _drift_ref_latents = init_latents.detach().clone()
 
-    # Prepare Reference Guide latents while VAE is still on GPU (stage it now if
-    # the encode above was skipped -- init_latents_override never staged it).
     ref_guides = []
     if ref_guide_configs:
         if init_latents_override is not None:
             move_vae_to_gpu(pipeline)
-        # Use actual image dimensions (width/height may be None in img2img)
         ref_w = width if width is not None else original_width
         ref_h = height if height is not None else original_height
         print(f"[RefGuide] Preparing {len(ref_guide_configs)} reference guide(s) for img2img ({ref_w}x{ref_h})")
@@ -3446,7 +3382,6 @@ def custom_img2img_sampling_loop(
     print(f"[CustomSampling] Starting img2img loop with {len(timesteps)} steps (strength={strength})")
     print(f"[CustomSampling] Latents shape: {latents.shape}, dtype: {latents.dtype}")
 
-    # Get sigma_max for dynamic CFG scheduling
     sigma_max = 0.0
     if hasattr(scheduler, 'sigmas') and len(scheduler.sigmas) > 0:
         sigma_max = float(scheduler.sigmas[0].item())
@@ -3461,7 +3396,6 @@ def custom_img2img_sampling_loop(
         print(f"[CustomSampling] Sending initial noise preview (step 0)")
         progress_callback(-1, len(timesteps), latents, cfg_metrics=None)
 
-    # ---- In-loop hard-flatten setup (SD1.5/SDXL, opt-in) -----------------------
     _flatten_inject_steps = _setup_inloop_flatten(
         pipeline, timesteps, spectrum, fbcache_ctrl,
         flatten_in_loop, flatten_in_loop_last_steps, flatten_in_loop_min_region)
@@ -3478,7 +3412,6 @@ def custom_img2img_sampling_loop(
             # pipeline_manager not available (e.g., in training subprocess)
             pass
 
-        # Check if NAG should be deactivated based on sigma threshold
         if nag_active and nag_sigma_end > 0.0:
             if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
                 current_sigma = float(scheduler.sigmas[i].item())
@@ -3493,14 +3426,12 @@ def custom_img2img_sampling_loop(
                     nag_negative_prompt_embeds = None
                     print(f"[CustomSampling] NAG negative embeddings cleared for subsequent steps")
 
-        # Check if prompt should be updated
         if prompt_embeds_callback is not None:
             new_embeds = prompt_embeds_callback(t_start + i)
             if new_embeds is not None:
                 current_prompt_embeds, current_negative_prompt_embeds, current_pooled_prompt_embeds, current_negative_pooled_prompt_embeds = new_embeds
                 print(f"[CustomSampling] Step {t_start + i}: Updated prompt embeddings")
 
-        # Calculate current sigma and guidance scale first to determine if we need CFG
         current_sigma = 0.0
         if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
             current_sigma = float(scheduler.sigmas[i].item())
@@ -3522,7 +3453,6 @@ def custom_img2img_sampling_loop(
         # per-context V weights align (and negative-prompt double-negation works).
         do_classifier_free_guidance = (abs(current_guidance_scale - 1.0) > 1e-5) or nag_active or negpip_active
 
-        # Prepare latent input based on CFG mode
         if nag_active:
             # NAG mode: Use batch approach (legacy, backward compatible)
             # Both NAG and CFG use double batch structure: [negative, positive]
@@ -3587,7 +3517,6 @@ def custom_img2img_sampling_loop(
             latent_model_input = scheduler.scale_model_input(latent_model_input, t)
             prompt_embeds_input = current_prompt_embeds
 
-        # Prepare added conditions for SDXL
         added_cond_kwargs = {}
         if is_sdxl:
             # SDXL requires time_ids
@@ -3627,15 +3556,12 @@ def custom_img2img_sampling_loop(
                     "time_ids": add_time_ids
                 }
 
-        # Get ControlNet residuals if present
         down_block_res_samples = None
         mid_block_res_sample = None
 
         if has_controlnet:
-            # Check if this step is within the guidance range
             current_fraction = (t_start + i) / num_inference_steps
 
-            # Calculate active ControlNet scales for this step
             active_scales = []
             for idx, (start, end, scale) in enumerate(zip(control_guidance_start, control_guidance_end, controlnet_conditioning_scale)):
                 if start <= current_fraction <= end:
@@ -3649,7 +3575,6 @@ def custom_img2img_sampling_loop(
                     # Determine batch size for ControlNet conditioning
                     batch_multiplier = 2 if do_classifier_free_guidance else 1
 
-                    # Get ControlNet conditioning
                     if isinstance(controlnet, list):
                         # Multiple ControlNets
                         down_block_res_samples_list = []
@@ -3706,9 +3631,6 @@ def custom_img2img_sampling_loop(
             if is_deus and do_classifier_free_guidance:
                 # DEUS: 2-Pass CFG - separate U-Net calls for negative and positive embeddings
 
-                # ============================================================
-                # DEBUG: First iteration details (DEUS 2-Pass CFG)
-                # ============================================================
                 if first_iteration_debug:
                     print(f"\n[CustomSampling] [Debug] ========== FIRST DENOISING ITERATION (DEUS 2-Pass CFG) ==========")
                     print(f"[CustomSampling] [Debug] timestep (t): {t.item()}")
@@ -3968,13 +3890,9 @@ def custom_img2img_sampling_loop(
                 if mid_block_res_sample is not None:
                     unet_kwargs["mid_block_additional_residual"] = mid_block_res_sample
 
-                # Add SDXL-specific conditioning as a nested dict
                 if is_sdxl and added_cond_kwargs:
                     unet_kwargs["added_cond_kwargs"] = added_cond_kwargs
 
-                # ============================================================
-                # DEBUG: First iteration details (for comparison with training)
-                # ============================================================
                 if first_iteration_debug:
                     print(f"\n[CustomSampling] [Debug] ========== FIRST DENOISING ITERATION ==========")
                     print(f"[CustomSampling] [Debug] timestep (t): {t.item()}")
@@ -4029,21 +3947,17 @@ def custom_img2img_sampling_loop(
                 # NAG guidance was applied in attention space, but CFG is still applied here
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
 
-            # Calculate preliminary CFG metrics to get SNR (if SNR-based adaptive CFG is enabled)
             current_snr = None
             if cfg_rescale_snr_alpha > 0.0 or developer_mode:
-                # Calculate SNR from CFG components
                 uncond_norm = torch.norm(noise_pred_uncond).item()
                 diff = noise_pred_text - noise_pred_uncond
                 diff_norm = torch.norm(diff).item()
                 if uncond_norm > 1e-8:
                     current_snr = (diff_norm ** 2) / (uncond_norm ** 2)
 
-            # Store current SNR for next step
             if current_snr is not None:
                 previous_snr = current_snr
 
-            # Apply CFG
             noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
 
             # ============================================================
@@ -4053,7 +3967,6 @@ def custom_img2img_sampling_loop(
                 print(f"[CustomSampling] [Debug] noise_pred AFTER CFG shape: {noise_pred.shape}, dtype: {noise_pred.dtype}")
                 print(f"[CustomSampling] [Debug] noise_pred AFTER CFG min: {noise_pred.min().item():.4f}, max: {noise_pred.max().item():.4f}, mean: {noise_pred.mean().item():.4f}")
 
-            # Apply dynamic thresholding if enabled (prevents CFG saturation)
             if dynamic_threshold_percentile > 0.0:
                 noise_pred = dynamic_thresholding(
                     noise_pred,
@@ -4061,7 +3974,6 @@ def custom_img2img_sampling_loop(
                     clamp_value=dynamic_threshold_mimic_scale
                 )
 
-            # Apply guidance rescale if specified (important for v-prediction models)
             if guidance_rescale > 0.0:
                 noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=guidance_rescale)
         else:
@@ -4106,7 +4018,6 @@ def custom_img2img_sampling_loop(
 
         # Progress callback
         if progress_callback is not None:
-            # Calculate CFG metrics for developer mode
             cfg_metrics = None
             if do_classifier_free_guidance:
                 cfg_metrics = calculate_cfg_metrics(
@@ -4115,11 +4026,9 @@ def custom_img2img_sampling_loop(
                     current_guidance_scale,
                     developer_mode=developer_mode
                 )
-            # Add timestep/sigma info to metrics
             if cfg_metrics is not None:
                 cfg_metrics['timestep'] = int(t.item())
                 cfg_metrics['step'] = i
-                # Get sigma from scheduler if available
                 if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
                     cfg_metrics['sigma'] = float(scheduler.sigmas[i].item())
 
@@ -4138,7 +4047,6 @@ def custom_img2img_sampling_loop(
         from core.inference.nag_processor import restore_original_processors
         restore_original_processors(unet, original_processors)
 
-    # ===== STAGE 3: VAE DECODE =====
     from core.vram_optimization import log_device_status, move_unet_to_cpu, move_vae_to_gpu, move_vae_to_cpu
 
     # Offload U-Net to CPU to free VRAM for VAE
@@ -4198,7 +4106,6 @@ def custom_img2img_sampling_loop(
     if not _pid_active or _use_real_vae_only:
         move_vae_to_cpu(pipeline)
 
-    # Convert to PIL with robust nan/inf handling
     image = vae_output_to_pil(image, color_flatten_strength=color_flatten_strength, dc_bias=_dc_bias)
 
     return image
@@ -4380,7 +4287,6 @@ def custom_inpaint_sampling_loop(
     outpaint_commit_near: float = 0.35,  # commit front: schedule progress fraction at which boundary-touching
                                         # (distance 0) generate cells begin committing.
     outpaint_commit_far: float = 0.80,  # commit front: schedule progress fraction at which the farthest
-                                        # generate cells (distance >= outpaint_commit_distance) begin committing.
     outpaint_commit_distance: float = 32.0,  # commit front: distance (latent cells) from the boundary at which
                                         # the per-cell commit-progress schedule saturates to outpaint_commit_far.
     region_prompt_embeds: Optional[torch.Tensor] = None,  # Regional additional prompt (STAGE R1): region-positive
@@ -4513,7 +4419,6 @@ def custom_inpaint_sampling_loop(
     else:
         dtype = unet_dtype
 
-    # Check if SDXL by checking if text_encoder_2 exists
     is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
 
     # DEUS uses 2-Pass CFG (separate negative/positive passes) instead of batch concatenation
@@ -4522,7 +4427,6 @@ def custom_inpaint_sampling_loop(
 
     print(f"[CustomSampling] [inpaint] Pipeline type: {type(pipeline).__name__}, is_sdxl: {is_sdxl}, is_deus: {is_deus}")
 
-    # Use ancestral_generator for stochastic samplers (always provided by pipeline)
     step_generator = ancestral_generator
     if ancestral_generator is not None:
         print(f"[CustomSampling] Using ancestral generator for stochastic sampler")
@@ -4616,7 +4520,6 @@ def custom_inpaint_sampling_loop(
     # Get image dimensions (save before converting to tensor)
     original_width, original_height = init_image.size
 
-    # Check if ControlNet is present
     controlnet = getattr(pipeline, 'controlnet', None)
     has_controlnet = controlnet is not None and controlnet_images is not None
 
@@ -4704,13 +4607,10 @@ def custom_inpaint_sampling_loop(
     scheduler.set_timesteps(num_inference_steps, device=device)
     timesteps = scheduler.timesteps
 
-    # Calculate timestep to start from
     if t_start_override is not None:
-        # Use explicit t_start (for "Do full steps" mode)
         t_start = t_start_override
         print(f"[CustomSampling] Using explicit t_start={t_start} (Do full steps mode)")
     else:
-        # Calculate from strength (standard inpaint)
         init_timestep = min(int(num_inference_steps * strength), num_inference_steps)
         t_start = max(num_inference_steps - init_timestep, 0)
 
@@ -4785,7 +4685,6 @@ def custom_inpaint_sampling_loop(
         print(f"[CustomSampling] Moving VAE from {vae_device} to {device} for initial encoding")
         move_vae_to_gpu(pipeline)
 
-    # Prepare images
     if isinstance(init_image, Image.Image):
         init_image_tensor = torch.from_numpy(np.array(init_image)).float() / 255.0
         init_image_tensor = init_image_tensor.permute(2, 0, 1).unsqueeze(0)
@@ -4886,7 +4785,6 @@ def custom_inpaint_sampling_loop(
         print(f"[CustomSampling] Applying inpaint fill mode: {inpaint_fill_mode} (strength: {inpaint_fill_strength})")
 
         if inpaint_fill_mode == "blur":
-            # Apply gaussian blur to the original image
             import torch.nn.functional as F
             # Blur with kernel size proportional to image size and blur strength
             # inpaint_blur_strength: 0.1 = very weak blur, 1.0 = default, 2.0+ = very strong blur
@@ -4894,14 +4792,11 @@ def custom_inpaint_sampling_loop(
             kernel_size = max(3, int(base_kernel_size * inpaint_blur_strength) | 1)
             sigma = kernel_size / 3.0
 
-            # Create gaussian kernel
             x = torch.arange(-kernel_size // 2 + 1, kernel_size // 2 + 1, dtype=dtype, device=device)
             gauss = torch.exp(-x**2 / (2 * sigma**2))
             gauss = gauss / gauss.sum()
             kernel_1d = gauss.unsqueeze(0)
 
-            # Apply separable 2D gaussian blur
-            # Number of iterations based on blur strength (1-5 iterations)
             blur_iterations = max(1, min(5, int(3 * inpaint_blur_strength)))
             blurred = init_image_tensor.to(device=device, dtype=vae_dtype)
             for _ in range(blur_iterations):
@@ -5068,7 +4963,6 @@ def custom_inpaint_sampling_loop(
                     code="boundary_relax_no_ssc",
                 )
 
-    # Prepare Reference Guide latents while VAE is still on GPU
     ref_guides = []
     if ref_guide_configs:
         ref_w = width if width is not None else original_width
@@ -5324,7 +5218,6 @@ def custom_inpaint_sampling_loop(
             )
     print(f"[CustomSampling] Starting inpaint loop with {len(timesteps)} steps")
 
-    # Get sigma_max for dynamic CFG scheduling
     sigma_max = 0.0
     if hasattr(scheduler, 'sigmas') and len(scheduler.sigmas) > 0:
         sigma_max = float(scheduler.sigmas[0].item())
@@ -5346,7 +5239,6 @@ def custom_inpaint_sampling_loop(
         print(f"[CustomSampling] Sending initial noise preview (step 0)")
         progress_callback(-1, len(_outpaint_visit_schedule), latents, cfg_metrics=None)
 
-    # ---- In-loop hard-flatten setup (SD1.5/SDXL, opt-in) -----------------------
     _flatten_inject_steps = _setup_inloop_flatten(
         pipeline, timesteps, spectrum, fbcache_ctrl,
         flatten_in_loop, flatten_in_loop_last_steps, flatten_in_loop_min_region)
@@ -5502,7 +5394,6 @@ def custom_inpaint_sampling_loop(
             # pipeline_manager not available (e.g., in training subprocess)
             pass
 
-        # Check if NAG should be deactivated based on sigma threshold
         if nag_active and nag_sigma_end > 0.0:
             if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
                 current_sigma = float(scheduler.sigmas[i].item())
@@ -5522,7 +5413,6 @@ def custom_inpaint_sampling_loop(
             if new_embeds is not None:
                 current_prompt_embeds, current_negative_prompt_embeds, current_pooled_prompt_embeds, current_negative_pooled_prompt_embeds = new_embeds
 
-        # Calculate current sigma and guidance scale first to determine if we need CFG
         current_sigma = 0.0
         if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
             current_sigma = float(scheduler.sigmas[i].item())
@@ -5544,7 +5434,6 @@ def custom_inpaint_sampling_loop(
         # per-context V weights align (and negative-prompt double-negation works).
         do_classifier_free_guidance = (abs(current_guidance_scale - 1.0) > 1e-5) or nag_active or negpip_active
 
-        # Prepare latent input based on CFG mode
         if nag_active:
             # NAG mode: Use batch approach (legacy, backward compatible)
             # Both NAG and CFG use double batch structure: [negative, positive]
@@ -5559,8 +5448,6 @@ def custom_inpaint_sampling_loop(
                 masked_image_latents = image_latents * (1 - mask_latent)
                 latent_model_input = torch.cat([latent_model_input, mask_latent.repeat(2, 1, 1, 1), masked_image_latents.repeat(2, 1, 1, 1)], dim=1)
 
-            # Prepare prompt embeddings: [negative, positive]
-            # NAG mode: use NAG negative embeddings for cross-attention guidance
             prompt_embeds_input = torch.cat([nag_negative_prompt_embeds, current_prompt_embeds])
 
         elif do_classifier_free_guidance:
@@ -5609,7 +5496,6 @@ def custom_inpaint_sampling_loop(
 
             prompt_embeds_input = current_prompt_embeds
 
-        # Prepare added conditions for SDXL
         added_cond_kwargs = {}
         if is_sdxl:
             # SDXL requires time_ids
@@ -5649,7 +5535,6 @@ def custom_inpaint_sampling_loop(
                     "time_ids": add_time_ids
                 }
 
-        # Get ControlNet residuals if present
         down_block_res_samples = None
         mid_block_res_sample = None
 
@@ -5667,7 +5552,6 @@ def custom_inpaint_sampling_loop(
                     # Determine batch size for ControlNet conditioning
                     batch_multiplier = 2 if do_classifier_free_guidance else 1
 
-                    # Get ControlNet conditioning
                     if isinstance(controlnet, list):
                         down_block_res_samples_list = []
                         mid_block_res_sample_list = []
@@ -5727,9 +5611,6 @@ def custom_inpaint_sampling_loop(
             if is_deus and do_classifier_free_guidance:
                 # DEUS: 2-Pass CFG - separate U-Net calls for negative and positive embeddings
 
-                # ============================================================
-                # DEBUG: First iteration details (DEUS 2-Pass CFG)
-                # ============================================================
                 if first_iteration_debug:
                     print(f"\n[CustomSampling] [Debug] ========== FIRST DENOISING ITERATION (DEUS 2-Pass CFG) ==========")
                     print(f"[CustomSampling] [Debug] timestep (t): {t.item()}")
@@ -6173,13 +6054,9 @@ def custom_inpaint_sampling_loop(
                 if mid_block_res_sample is not None:
                     unet_kwargs["mid_block_additional_residual"] = mid_block_res_sample
 
-                # Add SDXL-specific conditioning as a nested dict
                 if is_sdxl and added_cond_kwargs:
                     unet_kwargs["added_cond_kwargs"] = added_cond_kwargs
 
-                # ============================================================
-                # DEBUG: First iteration details (for comparison with training)
-                # ============================================================
                 if first_iteration_debug:
                     print(f"\n[CustomSampling] [Debug] ========== FIRST DENOISING ITERATION ==========")
                     print(f"[CustomSampling] [Debug] timestep (t): {t.item()}")
@@ -6237,21 +6114,17 @@ def custom_inpaint_sampling_loop(
                 # NAG guidance was applied in attention space, but CFG is still applied here
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
 
-            # Calculate preliminary CFG metrics to get SNR (if SNR-based adaptive CFG is enabled)
             current_snr = None
             if cfg_rescale_snr_alpha > 0.0 or developer_mode:
-                # Calculate SNR from CFG components
                 uncond_norm = torch.norm(noise_pred_uncond).item()
                 diff = noise_pred_text - noise_pred_uncond
                 diff_norm = torch.norm(diff).item()
                 if uncond_norm > 1e-8:
                     current_snr = (diff_norm ** 2) / (uncond_norm ** 2)
 
-            # Store current SNR for next step
             if current_snr is not None:
                 previous_snr = current_snr
 
-            # Apply CFG
             noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_text - noise_pred_uncond)
 
             # ============================================================
@@ -6261,7 +6134,6 @@ def custom_inpaint_sampling_loop(
                 print(f"[CustomSampling] [Debug] noise_pred AFTER CFG shape: {noise_pred.shape}, dtype: {noise_pred.dtype}")
                 print(f"[CustomSampling] [Debug] noise_pred AFTER CFG min: {noise_pred.min().item():.4f}, max: {noise_pred.max().item():.4f}, mean: {noise_pred.mean().item():.4f}")
 
-            # Apply dynamic thresholding if enabled (prevents CFG saturation)
             if dynamic_threshold_percentile > 0.0:
                 noise_pred = dynamic_thresholding(
                     noise_pred,
@@ -6269,7 +6141,6 @@ def custom_inpaint_sampling_loop(
                     clamp_value=dynamic_threshold_mimic_scale
                 )
 
-            # Apply guidance rescale if specified (important for v-prediction models)
             if guidance_rescale > 0.0:
                 noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=guidance_rescale)
         else:
@@ -6722,7 +6593,6 @@ def custom_inpaint_sampling_loop(
             first_iteration_debug = False
 
         if progress_callback is not None:
-            # Calculate CFG metrics for developer mode
             cfg_metrics = None
             if do_classifier_free_guidance:
                 cfg_metrics = calculate_cfg_metrics(
@@ -6731,11 +6601,9 @@ def custom_inpaint_sampling_loop(
                     current_guidance_scale,
                     developer_mode=developer_mode
                 )
-            # Add timestep/sigma info to metrics
             if cfg_metrics is not None:
                 cfg_metrics['timestep'] = int(t.item())
                 cfg_metrics['step'] = i
-                # Get sigma from scheduler if available
                 if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
                     cfg_metrics['sigma'] = float(scheduler.sigmas[i].item())
 
@@ -6760,7 +6628,6 @@ def custom_inpaint_sampling_loop(
             callback_kwargs = step_callback(pipeline, t_start + i, t, {"latents": latents})
             latents = callback_kwargs.get("latents", latents)
 
-    # Clean up Reference Guide GPU tensors
     if ref_guides:
         for rg in ref_guides:
             del rg["clean_latent"], rg["noise"]
@@ -6779,7 +6646,6 @@ def custom_inpaint_sampling_loop(
         from core.inference.nag_processor import restore_original_processors
         restore_original_processors(unet, original_processors)
 
-    # ===== STAGE 3: VAE DECODE =====
     from core.vram_optimization import log_device_status, move_unet_to_cpu, move_vae_to_gpu, move_vae_to_cpu
 
     # Offload U-Net to CPU to free VRAM for VAE
@@ -6885,8 +6751,6 @@ def custom_inpaint_sampling_loop(
     if _dc_bias is not None:
         image = (image - _dc_bias.to(image.device, image.dtype)).clamp(0, 1)
 
-    # Apply pixel-space mask blending for non-inpaint UNets
-    # This preserves the original image exactly in non-masked regions
     if not is_inpaint_unet and t_start_override == 0:
         # Convert original init_image to tensor in same format as decoded image
         if isinstance(init_image, Image.Image):

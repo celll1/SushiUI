@@ -170,9 +170,6 @@ def build_outpaint_references(
 class MiniMaxH3Mixin:
     """MiniMaxH3Mixin: joint video + audio generation with MiniMax-H3."""
 
-    # ------------------------------------------------------------------
-    # Component staging
-    # ------------------------------------------------------------------
 
     def _minimax_h3_empty_cache(self):
         if torch.cuda.is_available():
@@ -394,9 +391,6 @@ class MiniMaxH3Mixin:
             json.dump(payload, f)
         print(f"[MiniMax-H3] Residual probe (debug/research): {len(records)} record(s) -> {out_path}")
 
-    # ------------------------------------------------------------------
-    # Attention backend
-    # ------------------------------------------------------------------
 
     def _minimax_h3_apply_attention_backend(self, transformer, params: Dict[str, Any]) -> str:
         """Stamp the inference attention backend on the transformer. Returns it.
@@ -421,9 +415,6 @@ class MiniMaxH3Mixin:
         print(f"[MiniMax-H3] Attention backend: {backend} (from attention_type={requested!r})")
         return backend
 
-    # ------------------------------------------------------------------
-    # Block swap (the block-loop wrapper)
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _minimax_h3_build_residual_recorder():
@@ -639,9 +630,6 @@ class MiniMaxH3Mixin:
         # the auxiliary modules come back.
         self._minimax_h3_move("transformer", "cpu")
 
-    # ------------------------------------------------------------------
-    # LoRA
-    # ------------------------------------------------------------------
 
     @property
     def _minimax_h3_lora_session(self):
@@ -958,9 +946,6 @@ class MiniMaxH3Mixin:
         )
         return projected
 
-    # ------------------------------------------------------------------
-    # Generation
-    # ------------------------------------------------------------------
 
     def _generate_txt2vid_minimax_h3(
         self,
@@ -1180,7 +1165,6 @@ class MiniMaxH3Mixin:
         width = int(params.get("width", 960))
         height = int(params.get("height", 544))
 
-        # ---- Trim the head clip (pixel frames), then preprocess ONCE ----
         trim_start = max(0, int(params.get("input_trim_start_frames", 0) or 0))
         trim_end = max(0, int(params.get("input_trim_end_frames", 0) or 0))
         total_src = video_frames.shape[0]
@@ -2712,7 +2696,6 @@ class MiniMaxH3Mixin:
         self._minimax_h3_reset_peak_vram()
         wall_start = time.perf_counter()
 
-        # ---- Phase 1: text encode (layer-streamed; nothing else on the GPU) ----
         text_encoder = components.get("text_encoder")
         tokenizer = components.get("tokenizer")
         if text_encoder is None or tokenizer is None:
@@ -3154,7 +3137,6 @@ class MiniMaxH3Mixin:
         del audio_condition_rows, condition_noises
         generation_timer.add("prepare", time.perf_counter() - prepare_time_start)
 
-        # ---- Phase 2: denoise (DiT resident) ----
         self._minimax_h3_assert_components_off_cuda("text_encoder", "vae", "audio_vae", "image_vae")
         prepare_allocated, prepare_reserved, prepare_peak = self._minimax_h3_vram_stats()
         phase_peaks["prepare"] = prepare_peak
@@ -3257,7 +3239,6 @@ class MiniMaxH3Mixin:
         if not torch.isfinite(video_rows).all():
             raise RuntimeError("MiniMax-H3 produced non-finite video latents.")
 
-        # ---- Phase 3: decode ----
         n_cond_video = layout["num_condition_video_rows"]
         n_cond_audio = layout["num_condition_audio_rows"]
         video_row_order = layout["video_row_order"]

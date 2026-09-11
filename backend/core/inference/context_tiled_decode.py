@@ -62,9 +62,6 @@ from typing import Optional
 
 import torch
 
-# ---------------------------------------------------------------------------
-# constants
-# ---------------------------------------------------------------------------
 
 # Latent cells of REAL neighbouring context decoded around each output tile and
 # discarded afterwards. 16 is the measured exact-extinction point of the
@@ -98,9 +95,6 @@ def _warn(message: str, code: str) -> None:
         pass
 
 
-# ---------------------------------------------------------------------------
-# geometry
-# ---------------------------------------------------------------------------
 
 def spatial_compression_of(vae) -> int:
     """Pixels per latent cell for ``vae``.
@@ -216,9 +210,6 @@ def resolve_geometry(threshold_px: int, margin_cells: int, scale: int) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# decode
-# ---------------------------------------------------------------------------
 
 def _as_tensor(out) -> torch.Tensor:
     """Normalise whatever a decode returned into a plain tensor."""
@@ -287,9 +278,6 @@ def context_tiled_decode(
             "decode input is not a tensor; using diffusers tiling for this decode",
             "vae_tile_context_unsupported", **decode_kwargs)
 
-    # ---- layout -----------------------------------------------------------
-    # 4-D [B, C, h, w] (AutoencoderKL / AutoencoderKLFlux2) or
-    # 5-D [B, C, T, h, w] (AutoencoderKLQwenImage; T = 1 for stills).
     if (z.ndim == 5 and int(z.shape[2]) != 1) or z.ndim not in (4, 5):
         # A real video latent (T > 1) or an unrecognised layout: temporal tiling
         # is a different problem and this path makes no claim about it.
@@ -393,9 +381,6 @@ def context_tiled_decode(
     return _wrap_result(out, return_dict)
 
 
-# ---------------------------------------------------------------------------
-# install / uninstall on a VAE object
-# ---------------------------------------------------------------------------
 
 _ORIG_ATTR = "_sushi_ctx_orig_decode"
 _MARK_ATTR = "_sushi_ctx_tiled"

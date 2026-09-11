@@ -74,7 +74,6 @@ class FBCacheBlockController:
     def _rel_l1(cur, prev):
         return FirstBlockCache._rel_l1(cur, prev)
 
-    # ---- step control -------------------------------------------------------
     def begin_step(self, step_idx):
         """Reset the per-step decision and install the wrappers for one U-Net call.
 
@@ -101,7 +100,6 @@ class FBCacheBlockController:
             self._cache_flat = self._packer.pack(self._capture)
             self._capture = []
 
-    # ---- wrappers -----------------------------------------------------------
     def _wrap_indicator(self, orig):
         """down_blocks[branch]: ALWAYS runs real; its OUTPUT is the FBCache indicator.
 
@@ -124,7 +122,6 @@ class FBCacheBlockController:
             self._reuse_this_step = reuse
             if reuse:
                 self.n_hits += 1
-                # Prepare cached tensors for the reuse wrappers that follow.
                 self._reuse_items = self._packer.unpack(
                     self._cache_flat, self._device, self._dtype
                 )

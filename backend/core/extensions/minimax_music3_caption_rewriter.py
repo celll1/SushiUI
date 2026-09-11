@@ -451,7 +451,6 @@ def validate_caption(
         if position > 0 and not re.search(r"\n\s*\n\Z", text[:position]):
             warnings.append(f"Expected a blank line before '{name}'")
 
-    # 2. Word count.
     word_count = _word_count(text)
     if word_count < _MIN_WORDS or word_count > _MAX_WORDS:
         warnings.append(

@@ -391,9 +391,6 @@ class MiniMaxMusic3Mixin:
     (8B Qwen3 language model + 0.6B RVQ depth decoder -> 2.4B flow-matching
     DiT -> vocoder). See module docstring for the staged-offload contract."""
 
-    # ------------------------------------------------------------------
-    # Component staging
-    # ------------------------------------------------------------------
 
     def _minimax_music3_move(self, names, device, *, allow_partial_failure: bool = False) -> None:
         """Move each named component to `device`.
@@ -458,9 +455,6 @@ class MiniMaxMusic3Mixin:
               f"({conductor.blocks_to_swap}/{len(modules)} blocks)")
         return conductor
 
-    # ------------------------------------------------------------------
-    # txt2aud
-    # ------------------------------------------------------------------
 
     def _generate_txt2aud_minimax_music3(
         self,
@@ -666,7 +660,6 @@ class MiniMaxMusic3Mixin:
         # slice-back per chunk and frees the rest between chunks.
         ar_result.frame_hiddens = ar_result.frame_hiddens.detach().to("cpu")
 
-        # ---- Stage 2: flow-matching (transformer + condition encoder) ----
         self._minimax_music3_move(("transformer", "condition_encoder"), device)
         flow_offloader = self._minimax_music3_maybe_install_block_offload(
             params, transformer, transformer.transformer_blocks, device, "flow")
@@ -684,7 +677,6 @@ class MiniMaxMusic3Mixin:
             self._minimax_music3_move(("transformer", "condition_encoder"), "cpu", allow_partial_failure=True)
             self._minimax_music3_empty_cache()
 
-        # ---- Stage 3: decode (vocoder) ----
         self._minimax_music3_move(("vocoder",), device)
         try:
             audio = pipeline.decode(latent_chunks, output_type="pt")
@@ -996,7 +988,6 @@ class MiniMaxMusic3Mixin:
                 detail=_causal_lm_reason,
             )
 
-        # ---- reference_audio must be a server-side path (the sidecar lives next to it) ----
         if not isinstance(reference_audio, str) or not reference_audio:
             raise ValidationError(
                 "MiniMax Music 3 audio extend requires a server-side audio file path",
@@ -1011,7 +1002,6 @@ class MiniMaxMusic3Mixin:
                 detail=f"No file at {reference_audio!r}.",
             )
 
-        # ---- locate + validate the sidecar ----
         try:
             sidecar = read_frame_codes_sidecar_for_audio(reference_audio)
         except ValueError as exc:
@@ -1092,7 +1082,6 @@ class MiniMaxMusic3Mixin:
                        f"output for the sidecar next to it.",
             )
 
-        # ---- prompt/lyrics: always reused from the sidecar -- see this method's docstring ----
         prompt = sidecar.prompt
         lyrics = sidecar.lyrics
         requested_prompt = params.get("prompt")
@@ -1109,7 +1098,6 @@ class MiniMaxMusic3Mixin:
                 code="minimax_music3_extend_prompt_ignored",
             )
 
-        # ---- required, no-fallback generation params (same convention as txt2aud) ----
         for required_key in ("extend_duration_sec", "num_inference_steps", "flow_guidance_scale"):
             if params.get(required_key) is None:
                 raise ValidationError(
@@ -1188,7 +1176,6 @@ class MiniMaxMusic3Mixin:
             except Exception as exc:
                 print(f"[MiniMaxMusic3] progress_callback raised: {exc!r}")
 
-        # ---- Stage 1: autoregressive resume (LM + depth decoder co-resident) ----
         self._minimax_music3_move(("language_model", "rvq_depth_decoder"), device)
         ar_offloader = self._minimax_music3_maybe_install_block_offload(
             params, language_model, language_model.model.layers, device, "AR")
@@ -1246,7 +1233,6 @@ class MiniMaxMusic3Mixin:
             self._minimax_music3_move(("transformer", "condition_encoder"), "cpu", allow_partial_failure=True)
             self._minimax_music3_empty_cache()
 
-        # ---- Stage 3: decode (vocoder) -- new tail only ----
         self._minimax_music3_move(("vocoder",), device)
         try:
             new_audio = pipeline.decode(latent_chunks, output_type="pt")

@@ -48,7 +48,6 @@ class SenseNovaMixin:
     all-or-nothing residency, the same shape MiniT2I uses.
     """
 
-    # -- LoRA lifetime -------------------------------------------------------
 
     @staticmethod
     def _sensenova_lora_warn(message: str, code: str) -> None:

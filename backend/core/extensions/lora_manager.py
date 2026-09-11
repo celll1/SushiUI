@@ -214,9 +214,6 @@ def classify_lora_keys(keys) -> Dict[str, Any]:
                 blocks.add(f"UDiT{int(match.group(1)):02d}")
         return classified("ideogram4")
 
-    # --- Anima (anima_adapter.py:114, anima_lora._flatten_to_sdscripts) ----
-    # lora_unet_blocks_<N>_{self_attn,cross_attn,mlp,adaln_modulation_*}_* and
-    # lora_unet_llm_adapter_{blocks_<N>_*,in_proj,out_proj}.
     if any(re.match(r'lora_unet_(?:blocks_\d+_|llm_adapter_)', key) for key in keys):
         for key in keys:
             match = re.match(r'lora_unet_blocks_(\d+)_', key)
@@ -230,8 +227,6 @@ def classify_lora_keys(keys) -> Dict[str, Any]:
                 blocks.add("LAPROJ")
         return classified("anima")
 
-    # --- ACE-Step 1.5 (acestep_adapter.py:150, iter_acestep_lora_targets) --
-    # lora_unet_decoder_layers_<N>_{self_attn,cross_attn,mlp}_*_proj.
     if any(re.match(r'lora_unet_decoder_layers_\d+_', key) for key in keys):
         for key in keys:
             match = re.match(r'lora_unet_decoder_layers_(\d+)_', key)
@@ -239,10 +234,6 @@ def classify_lora_keys(keys) -> Dict[str, Any]:
                 blocks.add(f"L{int(match.group(1)):02d}")
         return classified("acestep")
 
-    # --- MiniT2I (minit2i_lora.flatten_to_key / flatten_to_te_key) ---------
-    # Flattens "." to "__", so the roots are lora_unet_model__net__* and
-    # lora_te_encoder__block__* (FLAN-T5, train_text_encoder) -- disjoint from
-    # every single-underscore root by construction.
     if any(key.startswith('lora_unet_model__net__')
            or key.startswith('lora_te_encoder__block__') for key in keys):
         for key in keys:
@@ -352,7 +343,6 @@ def classify_lora_keys(keys) -> Dict[str, Any]:
     if blocks or any(k.startswith('lora_unet_') or k.startswith('lora_te') for k in keys):
         return classified("sdxl" if has_te2 else "sd15")
 
-    # --- Unknown / unrecognized structure ------------------------------------
     return classified("unknown")
 
 
@@ -726,7 +716,6 @@ class LoRAConfig:
 
     def is_active_at_step(self, current_step: int, total_steps: int) -> bool:
         """Check if LoRA should be active at current step"""
-        # Convert normalized range [0-1000] to actual step range
         start_step = int((self.step_range[0] / 1000) * total_steps)
         end_step = int((self.step_range[1] / 1000) * total_steps)
         return start_step <= current_step <= end_step
@@ -786,7 +775,6 @@ class LoRAManager:
         # what made it linear in the whole directory.
         self._probe_cache: Dict[str, Tuple[Tuple[int, int], Optional[Dict[str, Any]]]] = {}
 
-        # Add training directory to search paths (for trained LoRAs)
         training_dir = Path(settings.root_dir) / "training"
         if training_dir.exists():
             self.seeded_dirs.append(training_dir)
@@ -1236,11 +1224,9 @@ class LoRAManager:
             print("[LoRAManager] No LoRA configs provided, skipping")
             return pipeline
 
-        # Parse configs
         self.loaded_loras = [LoRAConfig.from_dict(cfg) for cfg in lora_configs]
         print(f"[LoRAManager] Parsed {len(self.loaded_loras)} LoRA configs")
 
-        # Load LoRAs using diffusers' native support
         for i, lora_config in enumerate(self.loaded_loras):
             # Warnings ride into the PNG metadata chunk and the API response,
             # so they name the basename and never a path.
@@ -1280,15 +1266,12 @@ class LoRAManager:
                 from safetensors import safe_open
                 import tempfile
 
-                # Check LoRA format
                 with safe_open(str(lora_path), framework="pt", device="cpu") as f:
                     file_keys = list(f.keys())
                     file_pairs = _count_lora_branch_pairs(file_keys)
                     sample_keys = file_keys[:5]
                     print(f"[LoRAManager] Sample keys from LoRA: {sample_keys}")
 
-                    # Detect format: SD format uses underscores (lora_unet_*, lora_te1_*)
-                    # Diffusers format uses dots (unet.*, text_encoder.*)
                     is_sd_format = any(k.startswith("lora_") for k in sample_keys)
                     is_diffusers_format = any("." in k and not k.startswith("lora_") for k in sample_keys)
 
@@ -1325,7 +1308,6 @@ class LoRAManager:
                                 converted_state_dict[new_key] = tensor
                                 continue
 
-                            # Convert the base key (module path) to SD format
                             if base_key.startswith("unet."):
                                 # unet.down_blocks.0.xxx -> lora_unet_down_blocks_0_xxx
                                 new_base = "lora_" + base_key.replace(".", "_")
@@ -1345,7 +1327,6 @@ class LoRAManager:
                             new_key = new_base + suffix
                             converted_state_dict[new_key] = tensor
 
-                    # Save converted LoRA to temporary file
                     from safetensors.torch import save_file
                     temp_dir = tempfile.gettempdir()
                     temp_lora_path = os.path.join(temp_dir, f"converted_lora_{adapter_name}.safetensors")
@@ -1422,8 +1403,6 @@ class LoRAManager:
                 )
 
             try:
-                # Set adapter with strength
-                # Note: Step ranges will be handled in callback
                 if hasattr(pipeline, 'set_adapters'):
                     print(f"[LoRAManager] Setting adapter with strength={lora_config.strength}")
                     pipeline.set_adapters(adapter_name, adapter_weights=lora_config.strength)
@@ -1510,7 +1489,6 @@ class LoRAManager:
 
             unet = pipeline.unet
 
-            # Check if UNet has peft_config (PEFT-based LoRA)
             if not hasattr(unet, 'peft_config'):
                 print("[LoRAManager] UNet does not have peft_config, trying alternative method")
                 # Try alternative method for non-PEFT LoRAs
@@ -1520,7 +1498,6 @@ class LoRAManager:
             # Iterate through all named modules in the UNet
             modified_count = 0
             for name, module in unet.named_modules():
-                # Check if this module has LoRA adapters
                 if hasattr(module, 'lora_A') or hasattr(module, 'lora_B'):
                     # Determine which block this module belongs to
                     block_weight = self._get_block_weight_for_module(name, lora_config.unet_layer_weights)
@@ -1554,9 +1531,7 @@ class LoRAManager:
         Returns:
             Weight value for this module (default 1.0)
         """
-        # Parse module name to determine block
         if 'down_blocks' in module_name or 'input_blocks' in module_name:
-            # Extract block number
             import re
             match = re.search(r'(down_blocks|input_blocks)[._](\d+)', module_name)
             if match:
@@ -1575,7 +1550,6 @@ class LoRAManager:
                 block_id = f"OUT{block_num:02d}"
                 return block_weights.get(block_id, 1.0)
 
-        # Check for BASE
         return block_weights.get("BASE", 1.0)
 
     def _apply_layer_weights_alternative(self, pipeline: Any, adapter_name: str, lora_config: LoRAConfig):
@@ -1598,7 +1572,6 @@ class LoRAManager:
             Callback function for step-based LoRA control
         """
         def callback(pipe, step: int, timestep: float, callback_kwargs: dict):
-            # Check which LoRAs should be active at this step
             active_adapters = []
             adapter_weights = []
 
@@ -1608,7 +1581,6 @@ class LoRAManager:
                     active_adapters.append(adapter_name)
                     adapter_weights.append(lora_config.strength)
 
-            # Update active adapters for this step
             if hasattr(pipeline, 'set_adapters'):
                 if active_adapters:
                     self.activate_adapters(pipeline, active_adapters, adapter_weights)
@@ -1616,7 +1588,6 @@ class LoRAManager:
                     # Disable all LoRAs if none are active
                     pipeline.disable_lora()
 
-            # Call original callback if provided
             if original_callback:
                 return original_callback(pipe, step, timestep, callback_kwargs)
 
@@ -1683,7 +1654,6 @@ class LoRAManager:
         architecture classify_lora_keys() detected (BASE when a file carries no
         block-structured keys, e.g. a text-encoder-only checkpoint).
         """
-        # Use _resolve_lora_path to check both lora/ and training/ directories
         lora_path = self._resolve_lora_path(lora_name)
 
         if lora_path is None:

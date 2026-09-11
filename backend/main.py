@@ -28,8 +28,6 @@ if sys.platform == 'win32':
     # Apply custom handler after event loop is created (in startup)
     _windows_exception_handler_installed = False
 
-# Remove PIL image size limit for large images
-# Reference: https://kakashibata.hatenablog.jp/entry/2022/03/27/232553
 Image.MAX_IMAGE_PIXELS = None
 print("[PIL] MAX_IMAGE_PIXELS limit removed (can handle large images)")
 
@@ -53,20 +51,16 @@ class EndpointFilter(logging.Filter):
 # Disable uvicorn access logs
 logging.getLogger("uvicorn.access").disabled = True
 
-# Add filter to uvicorn logger
 logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
 logging.getLogger("uvicorn").addFilter(EndpointFilter())
 
-# Initialize database
 init_db()
 
-# Create FastAPI app
 app = FastAPI(title="Stable Diffusion WebUI API", version=APP_VERSION)
 
 # Register error handlers
 register_error_handlers(app)
 
-# Start WebSocket message sender on startup and load user directory settings
 @app.on_event("startup")
 async def startup_event():
     import asyncio
@@ -86,7 +80,6 @@ async def startup_event():
 
     asyncio.create_task(manager.start_sender())
 
-    # Load user-configured directories for LoRA and ControlNet managers
     try:
         db = GallerySessionLocal()
         settings_record = db.query(UserSettings).first()
@@ -100,7 +93,6 @@ async def startup_event():
     except Exception as e:
         print(f"[Startup] Error loading user directory settings: {e}")
 
-    # Load last used model in background (non-blocking)
     async def load_model_background():
         try:
             print("[Startup] Starting background model loading...")
@@ -161,7 +153,6 @@ async def startup_event():
             from api import routes
             import asyncio
 
-            # Run scans in thread pool (blocking operations)
             def scan_all():
                 # Scan models
                 try:
@@ -315,13 +306,11 @@ def save_port_info(port: int):
 if __name__ == "__main__":
     import uvicorn
 
-    # Find available port
     actual_port = find_available_port(settings.port)
 
     if actual_port != settings.port:
         print(f"[Server] Port {settings.port} is in use, using port {actual_port} instead")
 
-    # Save port info for frontend
     save_port_info(actual_port)
 
     uvicorn.run(

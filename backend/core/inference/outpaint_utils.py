@@ -82,7 +82,6 @@ def validate_and_snap_placement(
     canvas_w = max(align, int(round(canvas_w / align)) * align)
     canvas_h = max(align, int(round(canvas_h / align)) * align)
 
-    # --- Crop (trim) of the input image before placement ---
     crop_x = int(params.get("input_crop_x") or 0)
     crop_y = int(params.get("input_crop_y") or 0)
     crop_w = int(params.get("input_crop_w") or 0)
@@ -106,7 +105,6 @@ def validate_and_snap_placement(
             f"input_size={input_size}"
         )
 
-    # --- Placed size: 0 = input native size (after crop) ---
     place_w = int(params.get("place_width") or 0)
     place_h = int(params.get("place_height") or 0)
     if place_w <= 0:
@@ -123,7 +121,6 @@ def validate_and_snap_placement(
     place_x = max(0, min(place_x, canvas_w - place_w))
     place_y = max(0, min(place_y, canvas_h - place_h))
 
-    # --- Optional snap-to-grid (UI convenience; correctness independent) ---
     if snap and snap > 0:
         def _snap(value: int) -> int:
             return int(round(value / snap) * snap)
@@ -138,7 +135,6 @@ def validate_and_snap_placement(
         place_x = max(0, min(place_x, canvas_w - place_w))
         place_y = max(0, min(place_y, canvas_h - place_h))
 
-    # --- Reject degenerate geometry ---
     if place_w < _MIN_RECT_PX or place_h < _MIN_RECT_PX:
         raise ValueError(
             f"Placed rect too small: {place_w}x{place_h} "

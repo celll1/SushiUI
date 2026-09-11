@@ -111,7 +111,6 @@ class TaggerManager:
 
             print(f"[Tagger] Loading ONNX model: {model_path}")
 
-            # Check if model is FP16
             is_fp16_model = False
             try:
                 import onnx
@@ -159,7 +158,6 @@ class TaggerManager:
                 self.session = _ort.InferenceSession(model_path)
                 print("[Tagger] Using CPU for inference")
 
-            # Load tag mapping
             print(f"[Tagger] Loading tag mapping: {tag_mapping_path}")
             self.labels, self.idx_to_tag, self.tag_to_category = self._load_tag_mapping(tag_mapping_path)
 
@@ -180,7 +178,6 @@ class TaggerManager:
         with open(mapping_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
 
-        # Parse the new format: {"0": {"tag": "...", "category": "..."}, ...}
         names = []
         rating_indices = []
         general_indices = []
@@ -230,7 +227,6 @@ class TaggerManager:
             elif category == 'model':
                 model_indices.append(idx)
 
-        # Create LabelData structure
         class LabelData:
             def __init__(self, names, rating, general, artist, character, copyright, meta, quality, model):
                 self.names = names
@@ -255,10 +251,8 @@ class TaggerManager:
             np.array(model_indices, dtype=np.int64)
         )
 
-        # Create idx_to_tag mapping
         idx_to_tag = {i: tag for i, tag in enumerate(labels.names)}
 
-        # Create tag_to_category mapping
         tag_to_category = {}
         for idx in labels.rating:
             tag_to_category[labels.names[idx]] = "rating"
@@ -315,13 +309,10 @@ class TaggerManager:
         # Resize
         image = image.resize(target_size, Image.BICUBIC)
 
-        # Convert to numpy array (HWC format, RGB)
         image_array = np.array(image, dtype=np.float32) / 255.0
 
-        # Convert to CHW format
         image_array = image_array.transpose(2, 0, 1)  # HWC to CHW
 
-        # Convert RGB to BGR (model expects BGR)
         image_array = image_array[::-1, :, :]
 
         # Normalize with mean=0.5, std=0.5
@@ -329,7 +320,6 @@ class TaggerManager:
         std = np.array([0.5, 0.5, 0.5], dtype=np.float32).reshape(3, 1, 1)
         image_array = (image_array - mean) / std
 
-        # Add batch dimension
         image_array = np.expand_dims(image_array, axis=0)
 
         return image_array
@@ -365,7 +355,6 @@ class TaggerManager:
             char_threshold: Default threshold for character/copyright/artist tags
             thresholds: Optional dict with individual thresholds per category
         """
-        # Get individual thresholds or use defaults
         if thresholds:
             rating_th = thresholds.get("rating", 0.0)  # Not used (always select max)
             quality_th = thresholds.get("quality", 0.0)  # Not used (always select max)
@@ -486,26 +475,21 @@ class TaggerManager:
         # Preprocess image
         input_data = self._preprocess_image(image)
 
-        # Check expected input type
         expected_input_type = self.session.get_inputs()[0].type
         if "float16" in expected_input_type:
             input_data = input_data.astype(np.float16)
         else:
             input_data = input_data.astype(np.float32)
 
-        # Run inference
         input_name = self.session.get_inputs()[0].name
         output_name = self.session.get_outputs()[0].name
 
         outputs = self.session.run([output_name], {input_name: input_data})[0]
 
-        # Handle NaN and inf
         outputs = np.nan_to_num(outputs, nan=0.0, posinf=100.0, neginf=-100.0)
 
-        # Apply sigmoid
         outputs = self._stable_sigmoid(outputs)
 
-        # Get tags
         predictions = self._get_tags(outputs[0], gen_threshold, char_threshold, thresholds)
 
         # Auto-unload to free VRAM

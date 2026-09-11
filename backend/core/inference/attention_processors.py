@@ -316,7 +316,6 @@ def set_attention_processor(
     Returns:
         dict: Original processors for restoration
     """
-    # Store original processors
     original_processors = unet.attn_processors.copy()
 
     num_processors = len(unet.attn_processors)

@@ -135,7 +135,6 @@ class ConduitFlux2ParallelSelfAttnProcessor:
             hidden_states, [3 * attn.inner_dim, attn.mlp_hidden_dim * attn.mlp_mult_factor], dim=-1
         )
 
-        # Handle the attention logic
         query, key, value = qkv.chunk(3, dim=-1)
 
         query = query.unflatten(-1, (attn.heads, -1))
@@ -156,7 +155,6 @@ class ConduitFlux2ParallelSelfAttnProcessor:
         hidden_states = hidden_states.flatten(2, 3)
         hidden_states = hidden_states.to(query.dtype)
 
-        # Handle the feedforward (FF) logic
         mlp_hidden_states = attn.mlp_act_fn(mlp_hidden_states)
 
         # Concatenate and parallel output projection

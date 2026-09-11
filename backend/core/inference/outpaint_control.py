@@ -32,7 +32,6 @@ import numpy as np
 from PIL import Image
 
 
-# --- internal geometry containers -------------------------------------------
 class _Crossing:
     __slots__ = ("py", "px", "ty", "tx", "width", "conf", "depth")
 
@@ -242,7 +241,6 @@ def build_outpaint_control_image(
     if not all_cross:
         return None
 
-    # --- render at supersample resolution, then downsample once (anti-alias) ---
     ss = max(1, int(supersample))
     Hs, Ws = H * ss, W * ss
     ctrl = np.zeros((Hs, Ws), dtype=np.float32)   # known edges + extrapolated strands
@@ -254,7 +252,6 @@ def build_outpaint_control_image(
         interpolation=cv2.INTER_NEAREST,
     ) / 255.0
 
-    # generate-region mask (1 = generate) at supersample res
     genmask = np.ones((Hs, Ws), dtype=np.float32)
     genmask[y0 * ss:y1 * ss, x0 * ss:x1 * ss] = 0.0
 

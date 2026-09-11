@@ -21,8 +21,9 @@ remained stopped throughout the campaign.
 | Windows block swap startup | cp932 console output | fixed and covered by regression test |
 
 The H3 measurements and their limitations are in
-`MINIMAX_H3_ACTIVATION_DISPATCH_GPU_RESULT_2026-09.md`. The shared mechanism
-result is `results/activation_dispatch_cuda_2026-09-10.json`.
+`MINIMAX_H3_ACTIVATION_DISPATCH_GPU_RESULT_2026-09.md`. The table above records
+the durable result of the shared mechanism probe; machine-specific raw output
+is intentionally not part of the public documentation.
 
 ## Architecture disposition
 
@@ -56,15 +57,13 @@ work, not missing architecture rows.
 - H3 peak allocated memory fell, while peak reserved memory did not. The
   feature creates reusable in-step headroom; it does not force the CUDA caching
   allocator to return its high-water reservation.
-- Candidates A--E in `TRAINING_ITERATION_VRAM_VALIDATION_PLAN_2026-09.md` are
-  proposals, not implemented optimizations awaiting a final GPU test. Their
-  acceptance campaigns remain future work and are not marked complete here.
+- Unimplemented allocator, prefetch, reduction, scheduling, and compile-policy
+  experiments are outside this audit. No performance claim is implied for
+  those alternatives.
 
-## Reopening the omitted matrix
+## Unverified architectures
 
-Use the contract and exact rows in
-`ACTIVATION_DISPATCH_GPU_VALIDATION_BACKLOG_2026-09.md`. A future result must
-name the checkpoint, dataset, dtype, bucket, method, checkpointing state, block
-swap state, raw timing samples, allocated/reserved VRAM, host peak, offloaded
-bytes, loss/gradient comparison, and optimizer outcome. Missing assets remain
-blocked rows rather than implied passes.
+The omitted rows are not release claims. Validation must name the checkpoint,
+dataset, dtype, bucket, method, checkpointing state, block-swap state, timing
+samples, allocated/reserved VRAM, host peak, offloaded bytes, loss/gradient
+comparison, and optimizer outcome before any row is described as GPU-verified.

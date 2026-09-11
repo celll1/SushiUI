@@ -1,8 +1,9 @@
 # Activation dispatch architecture coverage report (2026-09)
 
-Status: static review and implementation complete; no model load or GPU
-measurement was performed. Required execution work is tracked in
-`ACTIVATION_DISPATCH_GPU_VALIDATION_BACKLOG_2026-09.md`.
+Status: static review and implementation complete. The later shared-CUDA and
+MiniMax-H3 measurements are summarized in
+`ACTIVATION_DISPATCH_GPU_VALIDATION_SUMMARY_2026-09.md`; other architectures
+retain static coverage only.
 
 Implementation follow-up: `BaseTrainer` now resolves the five settings from the
 shared run configuration for every trainer method, uses workload-native keys for

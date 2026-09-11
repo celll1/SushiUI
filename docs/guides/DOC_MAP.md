@@ -71,9 +71,11 @@ machine-local working material.
 | `backend/core/memory_management/BLOCK_SWAP.md` | Current block-swap behavior. |
 | `backend/core/memory_management/RING_BUFFER_OPTIMIZER.md` | Optimizer-state residency mechanism. |
 | `backend/core/training/optimizers/RINGBUFFER_OPTIMIZERS.md` | Ring-buffer optimizer contracts. |
-| `docs/audits/BLOCK_SWAP.md` | Completed block-swap implementation audit. |
+| `docs/audits/ACTIVATION_DISPATCH_ARCH_COVERAGE_REPORT_2026-09.md` | Static activation-dispatch coverage and architecture boundaries. |
+| `docs/audits/ACTIVATION_DISPATCH_GPU_VALIDATION_SUMMARY_2026-09.md` | Scope and disposition of the completed GPU validation. |
+| `docs/audits/MINIMAX_H3_ACTIVATION_DISPATCH_GPU_RESULT_2026-09.md` | MiniMax-H3 activation-dispatch measurements and limitations. |
+| `docs/audits/UNIFIED_OFFLOAD_TRANSFER_VALIDATION_2026-09.md` | Completed common transfer-engine validation and measured claims. |
 | `docs/audits/SENSENOVA_UND_BRANCH_DISCRIMINATION.md` | Measured audit: the SenseNova understanding branch keeps detail-differing prompts apart. |
-| `docs/audits/TRAINING_EQUIVALENCE_REFACTOR_2026-09.md` | Scoped audit and execution plan for behavior-preserving training-code cleanup. |
 
 ## API, tools, and subapps
 

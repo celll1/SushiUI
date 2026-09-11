@@ -65,21 +65,15 @@ the step, not a lower CUDA allocator high-water mark.
 The cap was 38.39 GiB. It was not raised to consume the whole card or risk WDDM
 spill. These are capacity results, not numerical failures.
 
-## Raw evidence
+## Reproduction
 
-- `results/minimax_h3_activation_dispatch_short_r3_2026-09-10.json`
-- `results/minimax_h3_activation_dispatch_short_swap40_r3_2026-09-10.json`
-- `results/minimax_h3_activation_dispatch_long_r3_2026-09-10.json`
-- `results/minimax_h3_activation_dispatch_long_swap40_r3_2026-09-10.json`
-- `results/minimax_h3_activation_dispatch_short_no_gc_off_oom_2026-09-10.json`
-- `results/minimax_h3_activation_dispatch_short_no_gc_on_oom_2026-09-10.json`
-- `results/minimax_h3_activation_dispatch_short_swap40_no_gc_off_oom_2026-09-10.json`
-- `results/minimax_h3_activation_dispatch_short_swap40_no_gc_on_oom_2026-09-10.json`
+The tables above are the durable result. Raw captures contain machine-specific
+paths and allocator state and are retained outside the tracked tree.
 
 Reproduce a passing condition from the repository root:
 
 ```powershell
 venv\Scripts\python.exe backend\core\training\probes\minimax_h3_activation_dispatch.py `
   --model <MODEL_ROOT>/minimax_h3 --clip long --blocks-to-swap 40 --repeats 3 `
-  --out docs\audits\results\minimax_h3_activation_dispatch_long_swap40_r3_2026-09-10.json
+  --out <OUTPUT_ROOT>/minimax_h3_activation_dispatch.json
 ```

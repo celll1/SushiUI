@@ -11,6 +11,10 @@ from .offload_transfer_engine import (
 from .layer_offload_strategy import LayerOffloadStrategy
 from .layer_offload_conductor import LayerOffloadConductor
 from .branched_layer_offload_conductor import BranchedLayerOffloadConductor
+from .frozen_module_offload_conductor import (
+    FrozenBranchedLayerOffloadConductor,
+    FrozenModuleOffloadConductor,
+)
 from .activation_dispatcher import ActivationDispatcher, offload_activations
 
 __all__ = [

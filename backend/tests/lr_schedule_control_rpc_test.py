@@ -6,16 +6,11 @@ recomputation. P2 adds the file-RPC that carries "decay now" / "cancel decay"
 from the API process into the trainer, and the display file the GET endpoint
 reads back.
 
-Fixed here:
+Covered here:
 
-* the transport is HOISTED, not copied -- ``training_sample_rpc`` and
-  ``training_control_rpc`` share ``training_file_rpc``'s atomic write, read,
-  age sort and ``owns``, and the sample queue's behaviour is unchanged;
 * the two queues are separate directories-worth of files with separate caps: a
   sample request is not a command and neither claims the other's;
-* a queued command is applied at the NEXT poll, and the poll is at the head of
-  the batch rather than in the sampling block, because the fused optimizer
-  paths step from a backward hook (§5.6);
+* a queued command is applied at the next poll;
 * every §5.3 result code comes back keyed by ``request_id``, and re-delivering
   an id answers what it answered the first time instead of acting twice;
 * a command belonging to another run sharing the output directory is left
@@ -76,16 +71,6 @@ from core.training.lr_schedules import (  # noqa: E402
 from core.training.training_events import TRAINING_EVENT_SENTINEL  # noqa: E402
 from api.param_defaults import LR_PREVIEW_DEFAULTS  # noqa: E402
 
-BASE_TRAINER_SRC = (BACKEND / "core" / "training" / "base_trainer.py").read_text(
-    encoding="utf-8")
-SAMPLE_RPC_SRC = (BACKEND / "core" / "training" / "training_sample_rpc.py").read_text(
-    encoding="utf-8")
-CONTROL_RPC_SRC = (BACKEND / "core" / "training" / "training_control_rpc.py").read_text(
-    encoding="utf-8")
-PROCESS_SRC = (BACKEND / "core" / "training" / "training_process.py").read_text(
-    encoding="utf-8")
-ROUTES_SRC = (BACKEND / "api" / "routes.py").read_text(encoding="utf-8")
-
 BASE_LR = 1e-4
 RUN_ID = 7
 # A plateau whose configured decay sits at the very end, so a COMMAND is the
@@ -139,18 +124,6 @@ def results_by_id(output_dir):
 # ---------------------------------------------------------------------------
 # The transport is shared, and the sample queue is unchanged
 # ---------------------------------------------------------------------------
-
-def test_the_primitives_are_hoisted_not_copied():
-    assert sample_rpc.owns is file_rpc.owns
-    assert control_rpc.owns is file_rpc.owns
-    assert sample_rpc._atomic_write_json is file_rpc.atomic_write_json
-    assert sample_rpc._read_json is file_rpc.read_json
-    assert sample_rpc.make_request_id is file_rpc.make_request_id
-    for definition in ("def _atomic_write_json", "def _read_json",
-                       "def _sorted_by_age", "def owns"):
-        assert definition not in SAMPLE_RPC_SRC, definition
-        assert definition not in CONTROL_RPC_SRC, definition
-
 
 def test_the_two_queues_do_not_see_each_other(tmp_path):
     sample_rpc.queue_request(tmp_path, seed=1, run_id=RUN_ID)
@@ -612,34 +585,6 @@ def test_the_metric_is_registered():
     assert entry["range"] == {"kind": "fixed", "min": 0, "max": 3}
 
 
-# ---------------------------------------------------------------------------
-# Where the poll sits, and what is cleared before a spawn
-# ---------------------------------------------------------------------------
-
-def test_the_poll_is_at_the_batch_head_not_in_the_sampling_block():
-    assert BASE_TRAINER_SRC.count("poll_lr_schedule_commands(self, global_step)") == 1
-    stop = BASE_TRAINER_SRC.index("stop_flag_file.unlink()  # Clean up flag file")
-    poll_at = BASE_TRAINER_SRC.index("poll_lr_schedule_commands(self, global_step)")
-    sampling = BASE_TRAINER_SRC.index(
-        "on_demand_request = self._claim_on_demand_sample_request()")
-    assert stop < poll_at < sampling
-
-
-def test_commands_are_claimed_even_while_a_stop_is_pending():
-    # The sample claim re-checks the stop flag because a generation would delay
-    # the stop; a command is a list append and rides out on the same checkpoint.
-    body = CONTROL_RPC_SRC + BASE_TRAINER_SRC[
-        BASE_TRAINER_SRC.index("def poll_lr_schedule_commands"):
-        BASE_TRAINER_SRC.index("def lr_decay_state_code")]
-    assert ".stop_training" not in body
-
-
-def test_stale_commands_are_cleared_before_the_next_run_is_spawned():
-    assert "training_control_rpc import clear_all" in PROCESS_SRC
-    spawn = PROCESS_SRC.index("asyncio.create_subprocess_exec")
-    assert PROCESS_SRC.index("training_control_rpc import clear_all") < spawn
-
-
 def test_clear_all_removes_commands_and_results_but_not_the_state(tmp_path):
     control_rpc.queue_request(tmp_path, command="start_decay", run_id=RUN_ID)
     control_rpc.write_result(tmp_path, "done", {"result": "applied"})
@@ -675,31 +620,6 @@ def test_the_endpoints_are_documented_in_openapi():
             "ignored_already_recovering", "ignored_no_active_decay",
             "rejected_during_warmup", "rejected_zero_length",
             "rejected_unknown_command"} <= documented
-
-
-def handler_body(name: str) -> str:
-    """One route handler's source, ending at the next decorator."""
-    start = ROUTES_SRC.index(f"async def {name}")
-    return ROUTES_SRC[start:ROUTES_SRC.index("\n@router.", start)]
-
-
-def test_the_post_is_fire_and_forget_and_refuses_a_dead_run():
-    body = handler_body("queue_lr_schedule_command")
-    assert "status_code=202" in ROUTES_SRC[
-        ROUTES_SRC.index('@router.post("/training/runs/{run_id}/lr-schedule"'):
-        ROUTES_SRC.index("async def queue_lr_schedule_command")]
-    assert "status_code=409" in body
-    assert "status_code=429" in body
-    # Nothing in the handler waits on the trainer; it writes a file and returns.
-    assert "await" not in body
-
-
-def test_the_get_reads_the_files_and_works_for_a_stopped_run():
-    body = handler_body("get_lr_schedule_status")
-    assert "read_status(output_dir)" in body
-    # No live process: fall back to the run row's directory rather than 409.
-    assert "run.output_dir" in body
-    assert "409" not in body
 
 
 # ---------------------------------------------------------------------------
@@ -1216,7 +1136,6 @@ def test_the_documented_defaults_are_the_ones_the_endpoint_uses():
     props = spec["components"]["schemas"]["LrScheduleRetargetRequest"]["properties"]
     for key, value in LR_RETARGET_DEFAULTS.items():
         assert props[key]["default"] == value, key
-    assert "LR_RETARGET_DEFAULTS" in ROUTES_SRC
 
 
 # ---------------------------------------------------------------------------

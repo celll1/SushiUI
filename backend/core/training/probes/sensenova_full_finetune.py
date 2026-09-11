@@ -441,9 +441,6 @@ def u2_5_unmoved_expectation(paths, num_layers: int) -> list[str]:
     return sorted(p for p in paths if p in unreachable)
 
 
-# ---------------------------------------------------------------------------
-# Arm 1 -- the run
-# ---------------------------------------------------------------------------
 
 
 def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
@@ -823,9 +820,6 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
-# Arm 2 -- the production reader, in a process that never held a trainer
-# ---------------------------------------------------------------------------
 
 
 def _run_reload_arm(args: argparse.Namespace) -> dict[str, Any]:

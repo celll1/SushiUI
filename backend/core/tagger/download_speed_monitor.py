@@ -30,14 +30,12 @@ class DownloadSpeedMonitor:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        # --- config (defaults overridden by configure()) ---
         self._enabled = True
         self._degraded_bps = 250 * 1024        # below this = "slow"
         self._min_slow_streak = 8              # consecutive slow downloads to trip
         self._min_slow_seconds = 90.0          # ...sustained at least this long
         self._cooldown_seconds = 3600.0        # pause duration
         self._min_sample_bytes = 64 * 1024     # ignore tiny files (noisy speed)
-        # --- state ---
         self._recent: deque[Tuple[float, float]] = deque(maxlen=64)  # (ts, kbps)
         self._last_kbps = 0.0
         self._slow_streak = 0
@@ -46,7 +44,6 @@ class DownloadSpeedMonitor:
         self._cooldown_count = 0
         self._last_reason = ""
 
-    # ------------------------------------------------------------------
     def configure(self, *, enabled: bool = True, degraded_kbps: int = 250,
                   min_slow_streak: int = 8, min_slow_seconds: float = 90.0,
                   cooldown_seconds: float = 3600.0) -> None:
@@ -60,7 +57,6 @@ class DownloadSpeedMonitor:
               f"degraded<{degraded_kbps}KB/s streak>={min_slow_streak} "
               f"sustained>={min_slow_seconds:.0f}s cooldown={cooldown_seconds:.0f}s")
 
-    # ------------------------------------------------------------------
     def record(self, num_bytes: int, net_seconds: float, timed_out: bool = False) -> None:
         """Feed one download outcome.
 
@@ -106,7 +102,6 @@ class DownloadSpeedMonitor:
                       f"pausing Danbooru collection for {int(self._cooldown_seconds)}s")
                 self._slow_streak = 0
 
-    # ------------------------------------------------------------------
     def is_in_cooldown(self) -> bool:
         with self._lock:
             return time.time() < self._cooldown_until
@@ -121,7 +116,6 @@ class DownloadSpeedMonitor:
                 return True
             return False
 
-    # ------------------------------------------------------------------
     def metrics(self) -> Dict[str, Any]:
         now = time.time()
         with self._lock:

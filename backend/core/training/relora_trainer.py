@@ -91,7 +91,6 @@ class ReLoRATrainer(LoRATrainer):
 
         self._refuse_unsupported_relora(kwargs.get("model_path"))
 
-        # Initialize parent (LoRATrainer -> BaseTrainer)
         super().__init__(**kwargs)
 
         from core.adapters import count_quantized_linears
@@ -132,9 +131,6 @@ class ReLoRATrainer(LoRATrainer):
             raise ValueError(
                 f"ReLoRA is not supported for architecture '{arch}': {reason}")
 
-    # ============================================================
-    # Optimizer & LR Scheduler Setup
-    # ============================================================
 
     def setup_optimizer(
         self,
@@ -165,9 +161,6 @@ class ReLoRATrainer(LoRATrainer):
                   f"restart warmup {self.restart_warmup_steps} steps)")
         super().setup_optimizer(optimizer_type, "relora", total_steps)
 
-    # ============================================================
-    # Merge-Reinit Cycle
-    # ============================================================
 
     def should_merge(self, global_step: int, epoch: int, is_first_batch_in_epoch: bool = False) -> bool:
         """
@@ -222,19 +215,14 @@ class ReLoRATrainer(LoRATrainer):
         print(f"{self.log_prefix} Merge-Reinit Cycle #{self.merge_count} at step {global_step} (epoch {epoch})")
         print(f"{self.log_prefix} ========================================")
 
-        # 1. Save pre-merge LoRA checkpoint
         self._save_pre_merge_checkpoint(global_step, epoch)
 
-        # 2. Merge LoRA -> base model
         merged_count = merge_lora_into_base(self.lora_layers)
         print(f"{self.log_prefix} Merged {merged_count}/{len(self.lora_layers)} LoRA layers into base model")
 
-        # 3. Reinitialize LoRA layers
         reinitialize_lora(self.lora_layers)
         print(f"{self.log_prefix} Reinitialized LoRA layers (A=kaiming, B=zeros)")
 
-        # 4. Reset optimizer state
-        # Collect trainable parameter IDs for targeted reset
         trainable_param_ids = self._get_trainable_param_ids()
         reset_optimizer_state(
             self.optimizer,
@@ -265,10 +253,8 @@ class ReLoRATrainer(LoRATrainer):
                         trainable_param_ids=trainable_param_ids,
                     )
 
-        # 5. Register LR warmup restart
         self._add_lr_restart(global_step)
 
-        # Update epoch tracking for epoch-based merging
         if self.relora_merge_unit == "epochs":
             self._last_merge_epoch = epoch
 
@@ -343,9 +329,6 @@ class ReLoRATrainer(LoRATrainer):
         print(f"{self.log_prefix} Added LR warmup restart at scheduler step {at} "
               f"(global step {global_step}): {result}")
 
-    # ============================================================
-    # Training State Save/Restore
-    # ============================================================
 
     def save_training_state(self, step: int, epoch: int, batch_idx: int, multi_noise_timesteps: int = 1):
         """
@@ -359,7 +342,6 @@ class ReLoRATrainer(LoRATrainer):
             batch_idx: Current batch index
             multi_noise_timesteps: MNT value
         """
-        # Call parent to save standard state
         super().save_training_state(step, epoch, batch_idx, multi_noise_timesteps)
 
         # Append ReLoRA state to the saved JSON

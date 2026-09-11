@@ -144,7 +144,6 @@ class CpuTextEncoderPrefetcher:
         self._thread: Optional[threading.Thread] = None
         self.stats = CpuPrefetchStats()
 
-    # ----- worker -----
 
     def _worker(self) -> None:
         try:
@@ -210,7 +209,6 @@ class CpuTextEncoderPrefetcher:
             except queue.Full:
                 pass
 
-    # ----- lifecycle -----
 
     def start(self) -> None:
         if self._thread is not None:

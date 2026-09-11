@@ -187,7 +187,6 @@ class ControlNetTrainer(BaseTrainer):
         # silently find nothing for a directory checkpoint). Set before super().
         self._manages_own_resume = True
 
-        # Initialize base trainer (loads model components)
         super().__init__(**kwargs)
 
         # Override log prefix
@@ -247,10 +246,8 @@ class ControlNetTrainer(BaseTrainer):
         # Freeze all base model components
         self._freeze_base_models()
 
-        # Create model-specific adapter
         self._create_adapter()
 
-        # Create ControlNet using adapter
         self._create_controlnet()
 
         # Resume: load the ControlNet adapter weights from its own checkpoint.
@@ -555,9 +552,6 @@ class ControlNetTrainer(BaseTrainer):
 
             self._delete_checkpoint_db_row(step_num)
 
-    # ============================================================
-    # Sample Generation (ControlNet-aware)
-    # ============================================================
 
     def _load_sample_condition_image(self, condition_image_path: "Optional[str]" = None) -> "Optional[Image.Image]":
         """
@@ -842,7 +836,6 @@ class ControlNetTrainer(BaseTrainer):
         # Resize condition image to sample dimensions
         condition_image = condition_image.resize((width, height), Image.LANCZOS)
 
-        # Set models to eval mode
         self.unet.eval()
         self.vae.eval()
         self.text_encoder.eval()
@@ -851,9 +844,6 @@ class ControlNetTrainer(BaseTrainer):
         self.controlnet.eval()
 
         try:
-            # ========================================
-            # STEP 1: Create Temporary Pipeline with ControlNet
-            # ========================================
             class TempPipeline:
                 def __init__(self, unet, vae, text_encoder, text_encoder_2,
                              scheduler, tokenizer, tokenizer_2, controlnet):
@@ -890,9 +880,6 @@ class ControlNetTrainer(BaseTrainer):
                 controlnet=self.controlnet,
             )
 
-            # ========================================
-            # STEP 2: Text Encoding
-            # ========================================
             self.move_text_encoder_to_gpu()
 
             if self.is_sdxl:
@@ -914,9 +901,6 @@ class ControlNetTrainer(BaseTrainer):
             self.move_text_encoder_to_cpu()
             torch.cuda.empty_cache()
 
-            # ========================================
-            # STEP 3: Create Generator
-            # ========================================
             if seed < 0:
                 actual_seed = random.randint(0, 2**32 - 1)
             else:
@@ -924,9 +908,6 @@ class ControlNetTrainer(BaseTrainer):
 
             generator = torch.Generator(device=self.device).manual_seed(actual_seed)
 
-            # ========================================
-            # STEP 4: Call custom_sampling_loop with ControlNet
-            # ========================================
             self.move_main_model_to_gpu()
             self.move_vae_to_gpu()
 
@@ -1053,7 +1034,6 @@ class ControlNetTrainer(BaseTrainer):
         # Resize condition image to sample dimensions
         condition_image = condition_image.resize((width, height), Image.LANCZOS)
 
-        # Set models to eval mode
         self.unet.eval()
         self.vae.eval()
         self.text_encoder.eval()
@@ -1064,9 +1044,6 @@ class ControlNetTrainer(BaseTrainer):
         lllite_patched = False
 
         try:
-            # ========================================
-            # STEP 1: Create Temporary Pipeline (no controlnet attr)
-            # ========================================
             if self.is_sdxl:
                 class TempPipeline:
                     def __init__(self, unet, vae, text_encoder, text_encoder_2,
@@ -1120,9 +1097,6 @@ class ControlNetTrainer(BaseTrainer):
                     tokenizer=self.tokenizer,
                 )
 
-            # ========================================
-            # STEP 2: Text Encoding
-            # ========================================
             self.move_text_encoder_to_gpu()
 
             if self.is_sdxl:
@@ -1144,9 +1118,6 @@ class ControlNetTrainer(BaseTrainer):
             self.move_text_encoder_to_cpu()
             torch.cuda.empty_cache()
 
-            # ========================================
-            # STEP 3: Create Generator
-            # ========================================
             if seed < 0:
                 actual_seed = random.randint(0, 2**32 - 1)
             else:
@@ -1154,9 +1125,6 @@ class ControlNetTrainer(BaseTrainer):
 
             generator = torch.Generator(device=self.device).manual_seed(actual_seed)
 
-            # ========================================
-            # STEP 4: Apply LLLite patches and call custom_sampling_loop
-            # ========================================
             self.move_main_model_to_gpu()
             self.move_vae_to_gpu()
 
@@ -1165,7 +1133,6 @@ class ControlNetTrainer(BaseTrainer):
                 device=self.device, dtype=self.training_dtype
             )
 
-            # Apply LLLite patches to UNet
             self.controlnet.apply_patches(self.unet, cond_tensor)
             lllite_patched = True
             log_verbose(f"{self.log_prefix} [Sample] LLLite patches applied to UNet")
@@ -1212,7 +1179,6 @@ class ControlNetTrainer(BaseTrainer):
                     # No controlnet params for LLLite (patches already applied)
                 )
 
-                # Remove LLLite patches
                 self.controlnet.remove_patches(self.unet)
                 lllite_patched = False
 
@@ -1232,7 +1198,6 @@ class ControlNetTrainer(BaseTrainer):
             return placeholder
 
         finally:
-            # Remove LLLite patches if still applied
             if lllite_patched and hasattr(self.controlnet, '_is_patched') and self.controlnet._is_patched:
                 self.controlnet.remove_patches(self.unet)
 

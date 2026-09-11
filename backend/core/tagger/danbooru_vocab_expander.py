@@ -24,9 +24,6 @@ if TYPE_CHECKING:
     from .tag_vocabulary import TagVocabulary
 
 
-# ---------------------------------------------------------------------------
-# VocabExpander — thread-safe tag proposal queue
-# ---------------------------------------------------------------------------
 
 class VocabExpander:
     """Collects new-tag proposals from the buffer thread for the training thread.
@@ -67,9 +64,6 @@ class VocabExpander:
             return tags
 
 
-# ---------------------------------------------------------------------------
-# Optimizer state helpers
-# ---------------------------------------------------------------------------
 
 def _is_8bit_state(state: Dict[str, Any]) -> bool:
     return any(k in state for k in ("state1", "state2", "absmax1", "absmax2"))
@@ -130,9 +124,6 @@ def _find_param_in_optimizer(
     return None
 
 
-# ---------------------------------------------------------------------------
-# Main expansion function
-# ---------------------------------------------------------------------------
 
 def expand_vocab_and_head(
     new_tags: List[str],
@@ -160,7 +151,6 @@ def expand_vocab_and_head(
     old_tag_to_idx: Dict[str, int] = dict(vocabulary.tag_to_idx)
     old_num_tags = vocabulary.num_tags
 
-    # Step 2: extend vocabulary
     added: List[Tuple[str, int]] = vocabulary.add_tags(new_tags)
     if not added:
         return 0
@@ -173,10 +163,8 @@ def expand_vocab_and_head(
     old_head_weight: nn.Parameter = model.head.weight
     old_head_bias: Optional[nn.Parameter] = model.head.bias if model.head.bias is not None else None
 
-    # Step 4: expand the head linear layer (zeros for new rows)
     new_w, new_b = model.expand_head(vocabulary.num_tags)
 
-    # Step 5: update optimizer param_groups[1] to reference new parameters
     head_params = list(model.head.parameters())
     # Guard: if the optimizer has fewer than 2 groups, append rather than crash.
     if len(optimizer.param_groups) > 1:

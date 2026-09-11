@@ -295,7 +295,6 @@ class LatentCache:
         self.embeddings_dir = arch_dir / "text_embeddings"
         self.cache_info_path = self.cache_dir / "cache_info.json"
 
-        # Create directories
         self.latents_dir.mkdir(parents=True, exist_ok=True)
         self.embeddings_dir.mkdir(parents=True, exist_ok=True)
 
@@ -846,7 +845,6 @@ class LatentCache:
         """
         caption_hash = self.compute_caption_hash(caption)
 
-        # Save CLIP-L embeddings (or SD1.5 embeddings)
         clip1_path = self.embeddings_dir / f"{caption_hash}_clip1.pt"
         torch.save({
             'embeddings': text_embeddings.cpu(),
@@ -854,7 +852,6 @@ class LatentCache:
             'created_at': datetime.utcnow().isoformat(),
         }, clip1_path)
 
-        # Save SDXL-specific embeddings
         if pooled_embeddings is not None:
             pooled_path = self.embeddings_dir / f"{caption_hash}_pooled.pt"
             torch.save({
@@ -897,12 +894,10 @@ class LatentCache:
             return None
 
         try:
-            # Load CLIP-L embeddings
             data = torch.load(clip1_path, map_location=device)
             text_embeddings = data['embeddings']
 
             if is_sdxl:
-                # Load pooled embeddings
                 pooled_path = self.embeddings_dir / f"{caption_hash}_pooled.pt"
                 if not pooled_path.exists():
                     return None
@@ -1072,7 +1067,6 @@ class LatentCache:
         """
         import random
 
-        # Get all cached latent files
         latent_files = list(self.latents_dir.glob("*.pt"))
 
         if len(latent_files) == 0:

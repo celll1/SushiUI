@@ -40,9 +40,6 @@ if TYPE_CHECKING:
     from .base_trainer import BaseTrainer
 
 
-# ---------------------------------------------------------------------------
-# Helpers — base64 ↔ PIL.Image
-# ---------------------------------------------------------------------------
 
 def _decode_b64_image(b64: Optional[str]) -> Optional["Image.Image"]:
     """Decode a base64-encoded PNG/JPEG into a PIL Image, or None."""
@@ -73,9 +70,6 @@ def _decode_b64_mask(b64: Optional[str]) -> Optional["Image.Image"]:
         raise ValueError(f"Could not decode base64 mask: {e}")
 
 
-# ---------------------------------------------------------------------------
-# Main generator
-# ---------------------------------------------------------------------------
 
 class TrainingPreviewGenerator:
     """Bound to a BaseTrainer; processes one preview request at a time.
@@ -93,9 +87,6 @@ class TrainingPreviewGenerator:
         # Cleared by ``_detach_additional_loras``.
         self._lora_stack: Optional[Dict[str, Any]] = None
 
-    # ------------------------------------------------------------------
-    # Public API — invoked by the trainer at batch boundaries
-    # ------------------------------------------------------------------
 
     def process_request(self, request_id: str, params: Dict[str, Any]) -> None:
         """Run one preview generation and write result files to disk.
@@ -170,9 +161,6 @@ class TrainingPreviewGenerator:
                 pass
             self._current_request_id = None
 
-    # ------------------------------------------------------------------
-    # eval/train mode helpers (idempotent)
-    # ------------------------------------------------------------------
 
     def _enter_eval_mode(self) -> None:
         t = self.trainer
@@ -196,9 +184,6 @@ class TrainingPreviewGenerator:
         if getattr(t, "text_encoder_2", None) is not None:
             t.text_encoder_2.train()
 
-    # ------------------------------------------------------------------
-    # LoRA stack: attach / detach additional adapters
-    # ------------------------------------------------------------------
 
     def _apply_additional_loras(self, loras: List[Dict[str, Any]]) -> None:
         """Attach user-specified LoRAs on top of the in-training LoRA.
@@ -270,10 +255,6 @@ class TrainingPreviewGenerator:
                 "carry them. Stop the run before trusting further steps."
             ) from e
 
-    # ------------------------------------------------------------------
-    # Mode dispatchers — each path decodes its mode-specific images
-    # then routes through the unified ``_run_sampling`` below
-    # ------------------------------------------------------------------
 
     def _generate_txt2img(self, params: Dict[str, Any]):
         return self._run_sampling(params, init_image=None, mask_image=None)
@@ -347,12 +328,6 @@ class TrainingPreviewGenerator:
 
         return _cb
 
-    # ------------------------------------------------------------------
-    # Unified sampling — used by txt2img / img2img / inpaint.  Dispatches
-    # to the appropriate ``custom_*_sampling_loop`` based on which
-    # images are present.  Shares text-encoding, scheduler build,
-    # ControlNet pipeline construction, and advanced CFG/NAG passthrough.
-    # ------------------------------------------------------------------
 
     def _run_sampling(
         self,
@@ -386,13 +361,11 @@ class TrainingPreviewGenerator:
         if width <= 0 or height <= 0:
             raise ValueError(f"invalid size after snap-to-8: {width}x{height}")
 
-        # ----- resize init / mask (if present) -----
         if init_image is not None:
             init_image = init_image.resize((width, height), _Image.LANCZOS)
         if mask_image is not None:
             mask_image = mask_image.resize((width, height), _Image.LANCZOS)
 
-        # ----- scheduler -----
         schedule_type_mapped = params.get("schedule_type", "uniform")
         if schedule_type_mapped == "sgm_uniform":
             schedule_type_mapped = "uniform"
@@ -402,10 +375,8 @@ class TrainingPreviewGenerator:
             schedule_type=schedule_type_mapped,
         )
 
-        # ----- build pipeline shim -----
         pipeline = build_temp_pipeline_for_trainer(t, scheduler)
 
-        # ----- text encoding (uses trainer's encoder, eval-mode already) -----
         t.move_text_encoder_to_gpu()
         negative_prompt = params.get("negative_prompt") or ""
         if pipeline.is_sdxl:
@@ -430,20 +401,15 @@ class TrainingPreviewGenerator:
         t.move_text_encoder_to_cpu()
         torch.cuda.empty_cache()
 
-        # ----- seed -----
         seed_in = int(params.get("seed", -1))
         actual_seed = random.randint(0, 2**32 - 1) if seed_in < 0 else seed_in
         generator = torch.Generator(device=t.device).manual_seed(actual_seed)
 
-        # ----- ControlNet (Phase 4) -----
-        # If controlnets present, swap the temp pipeline for a real
-        # diffusers ControlNet pipeline built from its components.
         cn_pipeline = self._maybe_build_controlnet_pipeline(
             pipeline, params.get("controlnets") or [], width, height,
         )
         runtime_pipeline = cn_pipeline or pipeline
 
-        # ----- move main model + VAE to GPU for inference -----
         t.move_main_model_to_gpu()
         t.move_vae_to_gpu()
 
@@ -466,7 +432,6 @@ class TrainingPreviewGenerator:
             preview_decoder=str(params.get("preview_decoder", "matrix")),
         )
 
-        # ----- params shared by all 3 sampling loops -----
         common_kwargs: Dict[str, Any] = dict(
             progress_callback=preview_cb,
             pipeline=runtime_pipeline,
@@ -512,7 +477,6 @@ class TrainingPreviewGenerator:
                 cn_scales if len(cn_scales) > 1 else (cn_scales[0] if cn_scales else 1.0)
             )
 
-        # ----- dispatch to the right sampling loop -----
         try:
             with torch.autocast(device_type=t.device.type, dtype=t.training_dtype):
                 if init_image is None:
@@ -549,9 +513,6 @@ class TrainingPreviewGenerator:
 
         return image, actual_seed
 
-    # ------------------------------------------------------------------
-    # Phase 4: ControlNet — build a real diffusers CN pipeline
-    # ------------------------------------------------------------------
 
     def _maybe_build_controlnet_pipeline(
         self,

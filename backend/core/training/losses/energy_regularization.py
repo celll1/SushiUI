@@ -119,7 +119,6 @@ class EnergyRegularizationLoss(nn.Module):
             5. If timestep_adaptive: penalty *= (1 - timestep)
             6. loss = mean(penalty) * weight
         """
-        # Compute energy for both latents
         energy_pred = self.compute_energy(predicted_latent)  # [B]
         energy_true = self.compute_energy(true_latent)       # [B]
 
@@ -128,7 +127,6 @@ class EnergyRegularizationLoss(nn.Module):
         # ratio > 1.0: predicted has more energy (added noise/artifacts)
         energy_ratio = energy_pred / (energy_true + 1e-8)  # [B]
 
-        # Apply penalty based on mode
         if self.penalty_mode == "abs":
             # Penalize any deviation from 1.0 (two-sided)
             energy_penalty = (energy_ratio - 1.0).abs()  # [B]
@@ -181,7 +179,6 @@ class EnergyRegularizationLoss(nn.Module):
             energy_true = self.compute_energy(true_latent)
             energy_ratio = energy_pred / (energy_true + 1e-8)
 
-        # Compute loss (with gradient for actual training)
         loss = self.forward(predicted_latent, true_latent, timestep)
 
         with torch.no_grad():

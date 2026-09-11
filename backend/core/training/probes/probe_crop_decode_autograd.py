@@ -56,18 +56,12 @@ from core.inference.context_tiled_decode import (
 )
 from core.training.ops.crop_decode import decode_crop_with_context, make_crop_rect
 
-# ---------------------------------------------------------------------------
-# Pre-registered Gate G-C Acceptance Criteria
-# ---------------------------------------------------------------------------
 GATE_GC_MIN_COSINE: float = 0.95
 GATE_GC_RECOMMENDED_MARGIN: int = 16
 GATE_GC_MIN_DECAY_RATIO: float = 0.10  # MAE(k=16) / MAE(k=0) <= 0.10 (10x decay)
 GATE_GC_MAX_COST_RATIO: float = 0.70   # Crop forward+backward <= 70% of full-image
 
 
-# ---------------------------------------------------------------------------
-# Mock VAE for lightweight / CI / CPU testing
-# ---------------------------------------------------------------------------
 class MockVAE(nn.Module):
     """Lightweight autoencoder decoder with GroupNorm and multi-stage convolutions.
 
@@ -182,9 +176,6 @@ def load_vae(
     return vae
 
 
-# ---------------------------------------------------------------------------
-# Measurement Core
-# ---------------------------------------------------------------------------
 def measure_parity_and_cost(
     vae: nn.Module,
     device: torch.device,
@@ -262,9 +253,6 @@ def measure_parity_and_cost(
             return torch.cuda.max_memory_allocated(device) / (1024 * 1024)
         return 0.0
 
-    # -----------------------------------------------------------------------
-    # Step 1: Baseline Full-Image Decode
-    # -----------------------------------------------------------------------
     print(f"\n[Probe] Benchmarking Baseline Full Decode ({resolution}x{resolution} -> latent {lat_h}x{lat_w})...")
 
     # Warmup
@@ -309,9 +297,6 @@ def measure_parity_and_cost(
     if is_cuda:
         print(f"  Full Decode Peak VRAM: {full_peak_vram_mb:.2f} MB")
 
-    # -----------------------------------------------------------------------
-    # Step 2: Crop Decode across Margins
-    # -----------------------------------------------------------------------
     results_by_margin: List[Dict[str, Any]] = []
 
     print("\n[Probe] Sweeping Crop Decode Margins...")
@@ -509,10 +494,8 @@ def main() -> None:
         print(f"Current VRAM Reserved: {reserved:.2f} GiB")
     print("=" * 70)
 
-    # Parse margins
     margins = [int(m.strip()) for m in args.margins.split(",") if m.strip()]
 
-    # Load VAE
     vae = load_vae(
         model_type=args.model_type,
         vae_path=args.vae_path,
@@ -521,7 +504,6 @@ def main() -> None:
         dtype=dtype,
     )
 
-    # Run measurements
     data = measure_parity_and_cost(
         vae=vae,
         device=device,
@@ -540,7 +522,6 @@ def main() -> None:
     # Print human-readable report
     print_report(data)
 
-    # Save json if requested
     if args.json:
         out_path = Path(args.json)
         out_path.parent.mkdir(parents=True, exist_ok=True)

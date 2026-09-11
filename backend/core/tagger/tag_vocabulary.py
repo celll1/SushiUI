@@ -81,9 +81,6 @@ class TagVocabulary:
         self.rating_indices: List[int] = []
         self.quality_indices: Dict[str, List[int]] = {k: [] for k in QUALITY_TAG_GROUPS}
 
-    # ------------------------------------------------------------------
-    # Construction
-    # ------------------------------------------------------------------
 
     @classmethod
     def build_from_dataset_ids(
@@ -226,10 +223,8 @@ class TagVocabulary:
                     if tag_categories[norm_tag] == "__lookup__":
                         tag_categories[norm_tag] = "General"
 
-        # Filter by min_count
         filtered: Dict[str, int] = {t: c for t, c in tag_counts.items() if c >= min_count}
 
-        # Filter by excluded_categories
         if excluded_categories:
             excl: Set[str] = {c.strip() for c in excluded_categories}
             filtered = {t: c for t, c in filtered.items()
@@ -250,7 +245,6 @@ class TagVocabulary:
                 )
             filtered = {t: c for t, c in filtered.items() if not _is_banned(t)}
 
-        # Sort: category order first, then alphabetically within each category
         def _sort_key(tag: str) -> tuple:
             cat = tag_categories.get(tag, "General")
             cat_rank = CATEGORY_ORDER.index(cat) if cat in CATEGORY_ORDER else len(CATEGORY_ORDER)
@@ -277,16 +271,11 @@ class TagVocabulary:
         vocab._build_special_indices()
         return vocab
 
-    # ------------------------------------------------------------------
-    # Serialization
-    # ------------------------------------------------------------------
 
     def to_dict(self) -> dict:
-        # Build categories section: category -> sorted list of tags
         categories: Dict[str, List[str]] = {}
         for tag, cat in self.tag_to_category.items():
             categories.setdefault(cat, []).append(tag)
-        # Sort within each category alphabetically; sort category keys by CATEGORY_ORDER
         sorted_categories: Dict[str, List[str]] = {}
         cat_keys = sorted(
             categories.keys(),
@@ -306,9 +295,6 @@ class TagVocabulary:
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), ensure_ascii=False)
 
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
 
     @property
     def num_tags(self) -> int:
@@ -320,9 +306,6 @@ class TagVocabulary:
             counts[cat] += 1
         return dict(counts)
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
     def add_tags(
         self,
@@ -398,9 +381,6 @@ class TagVocabulary:
                         self.quality_indices[group_name].append(idx)
 
 
-# ------------------------------------------------------------------
-# Helpers
-# ------------------------------------------------------------------
 
 def _parse_caption_tags(caption) -> List[Tuple[str, str]]:
     """Extract (tag, category) pairs from a DatasetCaption row.

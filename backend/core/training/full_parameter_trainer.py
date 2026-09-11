@@ -81,16 +81,13 @@ class FullParameterTrainer(BaseTrainer):
         # message that was knowable from the checkpoint header alone).
         self._refuse_unsupported_full_finetune(kwargs.get("model_path"))
 
-        # Initialize base trainer (loads model components)
         super().__init__(**kwargs)
 
         # Override log prefix
         self.log_prefix = "[Full Parameter Trainer]"
 
-        # Create model-specific adapter
         self._create_adapter()
 
-        # Prepare models for training using adapter
         self._prepare_models()
 
         # Anima block swap is deferred until after adapter sets requires_grad
@@ -272,7 +269,6 @@ class FullParameterTrainer(BaseTrainer):
         """
         checkpoint_path = self.output_dir / f"{self.run_name}_step_{step:06d}"
         self.adapter.save_checkpoint(step, epoch, checkpoint_path)
-        # Save Vision Encoder checkpoint separately (if loaded)
         self._save_vision_encoder_checkpoint(step, epoch)
 
     def load_checkpoint(self, checkpoint_path: str) -> int:

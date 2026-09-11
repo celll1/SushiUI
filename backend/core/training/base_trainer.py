@@ -1595,9 +1595,6 @@ def _vramdiag(tag: str):
         pass
 
 
-# ============================================================
-# Checkpoint entry helpers (single-file + sushiUI shard-index aware)
-# ============================================================
 
 # A sharded save writes members named "<stem>-00001-of-000NN.safetensors";
 # these belong to their "<stem>.safetensors.index.json" and are never a
@@ -1818,9 +1815,6 @@ def _checkpoint_set_bytes(entry_path: Path) -> int:
     return weights + sidecars
 
 
-# ============================================================
-# Training Logger Helper
-# ============================================================
 
 def log_verbose(message: str):
     """
@@ -1841,9 +1835,6 @@ def log_verbose(message: str):
         pass
 
 
-# ============================================================
-# Utility Functions
-# ============================================================
 
 def print_vram_usage(label: str = ""):
     """
@@ -1920,8 +1911,6 @@ def compute_snr(noise_scheduler, timesteps, alphas_cumprod_cached=None):
     Returns:
         SNR values [batch_size]
     """
-    # Get alpha_bar for each timestep
-    # Use cached version if available (avoids repeated .to(device) calls)
     if alphas_cumprod_cached is not None:
         alphas_cumprod = alphas_cumprod_cached
     else:
@@ -1969,7 +1958,6 @@ def apply_snr_weight(loss, timesteps, noise_scheduler, min_snr_gamma=5.0, return
     while mse_loss_weights.dim() < loss.dim():
         mse_loss_weights = mse_loss_weights.unsqueeze(-1)
 
-    # Apply weighting
     weighted_loss = loss * mse_loss_weights
 
     if return_weights:
@@ -2274,9 +2262,6 @@ def predict_original_latent_unified(
     return predicted_latent
 
 
-# ============================================================
-# Parameter Change Tracker
-# ============================================================
 
 # Split to its own module (plan P8). Re-exported here so existing importers of
 # ``base_trainer.ParameterChangeTracker`` keep working (zero caller churn).
@@ -2391,9 +2376,6 @@ def apply_run_seed(configured: Any) -> Tuple[int, bool]:
     return seed, drawn
 
 
-# ============================================================
-# Base Trainer Class
-# ============================================================
 
 class BaseTrainer(ABC):
     """
@@ -3040,7 +3022,6 @@ class BaseTrainer(ABC):
             if mixed_precision:
                 print(f"[Trainer] Note: mixed_precision disabled (training_dtype=fp32, autocast has no effect)")
 
-        # Initialize tensorboard writer
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         tensorboard_dir = self.output_dir / "tensorboard" / timestamp
         tensorboard_dir.mkdir(parents=True, exist_ok=True)
@@ -3049,7 +3030,6 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Initializing on {self.device}")
         print(f"{self.log_prefix} Tensorboard logs: {tensorboard_dir}")
 
-        # Check if resuming from checkpoint
         checkpoint_to_load = None
         # Trainers that manage their own checkpoint format (ControlNet: directory
         # or lllite-adapter saves) load weights themselves after this __init__ and
@@ -3075,7 +3055,6 @@ class BaseTrainer(ABC):
                     exclude_substr=("vision_encoder", EMA_ENTRY_MARKER, QUARANTINE_ENTRY_MARKER),
                 )
                 if checkpoint_files:
-                    # Get latest checkpoint by step number
                     def get_step(path):
                         return _checkpoint_step_from_name(path.name) or 0
 
@@ -3152,7 +3131,6 @@ class BaseTrainer(ABC):
                         f"Error: {e}"
                     )
         else:
-            # Load base model (new training)
             print(f"{self.log_prefix} Loading model from {model_path}")
             self._load_model_components()
 
@@ -3175,7 +3153,6 @@ class BaseTrainer(ABC):
 
     def _load_model_components(self):
         """Load model components (dispatcher for different model types)."""
-        # Detect model type
         from core.model_loader import ModelLoader
         model_type = ModelLoader.detect_model_type(self.model_path)
         self.is_zimage = (model_type == "zimage")
@@ -3230,9 +3207,6 @@ class BaseTrainer(ABC):
         else:
             sd_sdxl_ops.load_components(self)
 
-    # ============================================================
-    # Anima (Cosmos-Predict2 DiT) component loading and training
-    # ============================================================
 
     def setup_anima_block_swap(self):
         """Delegator (plan P3b): body lives in ``ops/anima_ops.setup_block_swap``.
@@ -3771,7 +3745,6 @@ class BaseTrainer(ABC):
             if key not in m:
                 m[key] = (int(ow), int(oh))
 
-    # ---- Resolution curriculum helpers (opt-in low-res warmup, arch-agnostic) ----
     def _rc_scaled_resolutions(self, base_resolutions, scale):
         """Scale base resolutions for the warmup phase, snapping each to the /64 grid the
         bucket table (RESOLUTIONS_1024) is defined on. This reuses the existing bucket-fit
@@ -4245,7 +4218,6 @@ class BaseTrainer(ABC):
         from core.model_loader import ModelLoader
         from diffusers import DDPMScheduler, EulerAncestralDiscreteScheduler
 
-        # Detect model type from checkpoint
         model_type = ModelLoader.detect_model_type(checkpoint_path)
         self.is_zimage = (model_type == "zimage")
         self.is_deus = False
@@ -4280,7 +4252,6 @@ class BaseTrainer(ABC):
                 torch_dtype=self.weight_dtype
             )
 
-            # Store components
             self.transformer = components["transformer"]
             self.transformer_original = self.transformer  # FLUX.2 doesn't need wrapper
             self.vae = components["vae"]
@@ -4294,7 +4265,6 @@ class BaseTrainer(ABC):
             self.unet = None
             self.noise_scheduler = self.scheduler
 
-            # Convert VAE to vae_dtype
             self.vae = self.vae.to(dtype=self.vae_dtype)
 
             # Same latent-identity reinstatement as the SD/SDXL resume below: a
@@ -4408,7 +4378,6 @@ class BaseTrainer(ABC):
                 # Check if other components exist in the same directory
                 # Training saves: model_step_xxx.safetensors, vae/, text_encoder/, tokenizer/, scheduler/
                 if (checkpoint_dir / "vae").exists():
-                    # Load from directory structure
                     print(f"{self.log_prefix} Loading Z-Image from checkpoint directory: {checkpoint_dir}")
                     components = ModelLoader.load_zimage_from_diffusers(
                         model_path=str(checkpoint_dir),
@@ -4431,7 +4400,6 @@ class BaseTrainer(ABC):
                         f"Checkpoint: {checkpoint_path}"
                     )
 
-            # Store components
             self.transformer_original = components["transformer"]
             self.vae = components["vae"]
             self.text_encoder = components["text_encoder"]
@@ -4444,10 +4412,8 @@ class BaseTrainer(ABC):
             self.unet = None
             self.noise_scheduler = self.scheduler
 
-            # Save original scheduler for inference (sample generation)
             self.original_scheduler = self.scheduler
 
-            # Convert VAE to vae_dtype
             self.vae = self.vae.to(dtype=self.vae_dtype)
 
             # Wrap transformer with BatchedZImageWrapperOptimized
@@ -4569,8 +4535,6 @@ class BaseTrainer(ABC):
                 checkpoint_keys = list(f.keys())
                 checkpoint_metadata = f.metadata() or {}
 
-            # Detect if SDXL or SD1.5 based on state dict keys
-            # SDXL has text_encoder_2 keys
             is_sdxl_model = any("text_model_2" in k or "conditioner.embedders.1" in k for k in checkpoint_keys)
 
             # Detect a SushiUI custom architecture (non-native latent VAE / swapped
@@ -4629,7 +4593,6 @@ class BaseTrainer(ABC):
                 )
                 arch = getattr(temp_pipeline, "_sushi_arch", {}) or {}
 
-                # Extract raw components
                 self.vae = temp_pipeline.vae
                 self.text_encoder = temp_pipeline.text_encoder
                 self.tokenizer = temp_pipeline.tokenizer
@@ -4700,13 +4663,11 @@ class BaseTrainer(ABC):
                         device_map=None,  # Load to CPU first
                     )
 
-                # Extract components
                 self.vae = temp_pipeline.vae
                 self.text_encoder = temp_pipeline.text_encoder
                 self.tokenizer = temp_pipeline.tokenizer
                 self.unet = temp_pipeline.unet
 
-                # Save original scheduler for inference (sample generation)
                 self.original_scheduler = temp_pipeline.scheduler
 
                 # SDXL-specific components
@@ -4717,20 +4678,17 @@ class BaseTrainer(ABC):
                     self.text_encoder_2 = None
                     self.tokenizer_2 = None
 
-            # Store SDXL flag
             self.is_sdxl = is_sdxl_model
 
             # No transformer for SD/SDXL
             self.transformer = None
             self.transformer_original = None
 
-            # Clean up temporary pipeline
             del temp_pipeline
             import gc
             gc.collect()
             torch.cuda.empty_cache()
 
-            # Convert VAE to vae_dtype
             self.vae = self.vae.to(dtype=self.vae_dtype)
 
             if _declared_vae is not None:
@@ -5158,7 +5116,6 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} No dataset fingerprint in saved state (old checkpoint format)")
             return False
 
-        # Check if any key component changed
         if saved_fingerprint.get("total_item_count") != current_fingerprint.get("total_item_count"):
             print(f"{self.log_prefix} Dataset item count changed: {saved_fingerprint.get('total_item_count')} -> {current_fingerprint.get('total_item_count')}")
             return True
@@ -5293,7 +5250,6 @@ class BaseTrainer(ABC):
         }
 
         with open(state_file, 'w') as f:
-            # Convert random_state tuple to list for JSON serialization
             state_serializable = state.copy()
             random_state = state["random_state"]
             state_serializable["random_state"] = {
@@ -5544,8 +5500,6 @@ class BaseTrainer(ABC):
         """
         import re
 
-        # Reset per call: a True return with this set means "some groups
-        # resumed, others came up fresh" (see the pre-fix partial branch below).
         self._optimizer_state_partially_fresh = False
 
         optimizers = all_optimizers(self)
@@ -5994,7 +5948,6 @@ class BaseTrainer(ABC):
         def get_step(path):
             return _checkpoint_step_from_name(path.name) or 0
 
-        # Find latest step from both sources
         latest_checkpoint_step = 0
         latest_checkpoint_path = None
         latest_state_step = 0
@@ -6061,7 +6014,6 @@ class BaseTrainer(ABC):
         def get_step(path):
             return _checkpoint_step_from_name(path.name) or 0
 
-        # Sort by step number descending (newest first)
         sorted_checkpoints = sorted(checkpoint_files, key=get_step, reverse=True)
         return [(ckpt, get_step(ckpt)) for ckpt in sorted_checkpoints]
 
@@ -6076,7 +6028,6 @@ class BaseTrainer(ABC):
             Tuple of (success, loaded_checkpoint_path).
             If success is False, loaded_checkpoint_path is None.
         """
-        # Get sorted list of all checkpoints
         sorted_checkpoints = self._get_sorted_checkpoints()
 
         if not sorted_checkpoints:
@@ -6092,7 +6043,6 @@ class BaseTrainer(ABC):
                     start_idx = i
                     break
         else:
-            # Start from the newest checkpoint
             start_idx = 0
 
         # Try loading checkpoints starting from the requested one
@@ -6169,13 +6119,11 @@ class BaseTrainer(ABC):
         if len(checkpoint_files) <= max_step_saves_to_keep:
             return
 
-        # Sort by step number
         def get_step(path):
             return _checkpoint_step_from_name(path.name) or 0
 
         checkpoint_files.sort(key=get_step, reverse=True)
 
-        # Delete old checkpoints
         checkpoints_to_delete = checkpoint_files[max_step_saves_to_keep:]
         for checkpoint_path in checkpoints_to_delete:
             step_num = get_step(checkpoint_path)
@@ -6297,9 +6245,6 @@ class BaseTrainer(ABC):
         else:
             self._cleanup_old_checkpoints(keep)
 
-    # ============================================================
-    # Checkpoint free-space policy (see core/training/checkpoint_space.py)
-    # ============================================================
 
     def _existing_checkpoint_set_parts(self) -> List[Tuple[int, int]]:
         """``(weight bytes, sidecar bytes)`` per checkpoint set, newest step first."""
@@ -6668,9 +6613,6 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Training complete!")
         self.cleanup()
 
-    # ============================================================
-    # Optimizer Setup
-    # ============================================================
 
     def _build_component_lr_list(self):
         """
@@ -7502,7 +7444,6 @@ class BaseTrainer(ABC):
         """
         from core.training.adapters.base_adapter import resolve_component_lr
 
-        # Get trainable parameters from subclass
         param_groups = self.setup_trainable_parameters()
 
         # The base adapters append the REPA projector's group; this is the
@@ -7524,7 +7465,6 @@ class BaseTrainer(ABC):
                     f"projector_param_groups)."
                 )
 
-        # Add Vision Encoder parameters if training is enabled
         if getattr(self, '_train_vision_encoder', False) and getattr(self, 'vision_encoder', None) is not None:
             ve_lr = resolve_component_lr(self, '_vision_encoder_lr', 'text_encoder_lr',
                                          label="vision encoder")
@@ -7535,7 +7475,6 @@ class BaseTrainer(ABC):
                                      "component": "vision_encoder"})
                 ve_total = sum(p.numel() for p in ve_params)
                 print(f"{self.log_prefix} Vision Encoder: Added {len(ve_params)} param tensors ({ve_total/1e6:.1f}M params, lr={ve_lr}) to optimizer")
-                # Set requires_grad on VE model
                 for p in ve_params:
                     p.requires_grad_(True)
 
@@ -7591,10 +7530,8 @@ class BaseTrainer(ABC):
                 "position sequence, (2) set optimizer_schedule_free=false to use plain Lion."
             )
 
-        # Create optimizer using factory
         from .optimizer_factory import OptimizerFactory
         try:
-            # Use hyperparameters from config, or fall back to defaults
             hyper = self._resolved_optimizer_hyperparameters()
             weight_decay = hyper["weight_decay"]
             beta1 = hyper["beta1"]
@@ -8163,7 +8100,6 @@ class BaseTrainer(ABC):
 
         print(f"{self.log_prefix} Setting up fused backward pass for {optimizer_type}...")
 
-        # Check PyTorch version
         import torch
         if not hasattr(torch.Tensor, "register_post_accumulate_grad_hook"):
             print(f"{self.log_prefix} WARNING: PyTorch 2.1+ required for fused backward pass")
@@ -8234,7 +8170,6 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} Lion8bit_RingBuffer hooks registered via register_lion8bit_fused_backward")
             return  # Skip the hook registration loop below
 
-        # Register hooks for all trainable parameters
         from .optimizers.fused_grad_clip import apply_fused_grad_clip
         from .optimizers.fused_grad_norm import (
             record_fused_grad_norm,
@@ -8258,7 +8193,6 @@ class BaseTrainer(ABC):
                         # here (fused_grad_clip's header says why).
                         apply_fused_grad_clip(self.optimizer, tensor)
 
-                        # Update THIS parameter immediately (while on GPU)
                         self.optimizer.step_param(tensor, pg)
 
                         # Clear gradient to save memory
@@ -8288,7 +8222,6 @@ class BaseTrainer(ABC):
 
         print(f"{self.log_prefix} Setting up fused optimizer groups...")
 
-        # Check PyTorch version
         import torch
         if not hasattr(torch.Tensor, "register_post_accumulate_grad_hook"):
             print(f"{self.log_prefix} WARNING: PyTorch 2.1+ required for fused optimizer groups")
@@ -8350,13 +8283,11 @@ class BaseTrainer(ABC):
         # Replace self.lr_scheduler with first scheduler (for compatibility)
         self.lr_scheduler = lr_schedulers[0]
 
-        # Store all schedulers for stepping
         self.lr_schedulers = lr_schedulers
 
         setup_fused_grad_norm(self, optimizers)
         setup_fused_grad_clip(self, optimizers)
 
-        # Create FusedOptimizerGroups instance
         self.fused_optimizer_groups = FusedOptimizerGroups(
             optimizers=optimizers,
             # No clipping: the hook's clip is per parameter, which is not the
@@ -8365,7 +8296,6 @@ class BaseTrainer(ABC):
             max_grad_norm=0.0,
         )
 
-        # Register hooks
         self.fused_optimizer_groups.register_hooks()
 
         print(f"{self.log_prefix} Fused optimizer groups setup complete")
@@ -8613,9 +8543,6 @@ class BaseTrainer(ABC):
                 for name, param in self._ema_param_order:
                     param.data.copy_(stash[name])
 
-    # ============================================================
-    # Prompt Encoding
-    # ============================================================
 
     def _has_fp8_text_encoder(self) -> bool:
         """
@@ -8624,14 +8551,12 @@ class BaseTrainer(ABC):
         Returns:
             True if any text encoder has FP8 weights
         """
-        # Check text_encoder
         if self.text_encoder is not None:
             for module in self.text_encoder.modules():
                 if hasattr(module, 'weight') and module.weight is not None:
                     if module.weight.dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
                         return True
 
-        # Check text_encoder_2 (SDXL)
         if self.text_encoder_2 is not None:
             for module in self.text_encoder_2.modules():
                 if hasattr(module, 'weight') and module.weight is not None:
@@ -8674,7 +8599,6 @@ class BaseTrainer(ABC):
         if self.is_sdxl and getattr(self, "sdxl_te_type", "none") not in ("none", "clip", "", None):
             return self._encode_prompt_custom_te(prompt, requires_grad)
 
-        # Check prompt length - use tokenizer_2 for SDXL as it determines chunking
         tokenizer = self.tokenizer_2 if self.is_sdxl else self.tokenizer
         tokens = tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids[0]
 
@@ -9273,9 +9197,6 @@ class BaseTrainer(ABC):
         except Exception:
             pass
 
-    # ============================================================
-    # Image Encoding
-    # ============================================================
 
     def encode_image(
         self,
@@ -9358,7 +9279,6 @@ class BaseTrainer(ABC):
             if img_width * img_height > 5000 * 5000:
                 print(f"[encode_image] Resizing large image {img_width}x{img_height} -> {width}x{height}")
 
-            # Apply bucketing strategy
             if bucket_strategy == "resize":
                 # Direct resize (may distort aspect ratio)
                 image = image.resize((width, height), Image.LANCZOS)
@@ -9429,7 +9349,6 @@ class BaseTrainer(ABC):
             image if (getattr(self, "repa_enable", False)
                       and getattr(self, "repa_target_source", "pixel") == "pixel") else None)
 
-        # Convert to tensor and normalize
         image_array = np.array(image).astype(np.float32) / 255.0
         image_array = (image_array - 0.5) * 2.0
 
@@ -11102,7 +11021,6 @@ class BaseTrainer(ABC):
             packed_latents = self._flux2_pack_latents(mnt_latents)
             txt_ids = self._flux2_prepare_text_ids(mnt_text_embeddings).to(self.device)
 
-            # Prepare reference latents
             mnt_reference_latents_nested = None
             if reference_latents_nested is not None:
                 mnt_reference_latents_nested = [
@@ -11383,9 +11301,6 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} [FAILED] {self._resume_point_sentence()}")
         return True
 
-    # ============================================================
-    # Training Step
-    # ============================================================
 
     def train_step(
         self,
@@ -11465,7 +11380,6 @@ class BaseTrainer(ABC):
         if profile_vram:
             print_vram_usage("[train_step_controlnet] Start")
 
-        # Move tensors to GPU
         latents = latents.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
         condition_images = condition_images.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
 
@@ -11497,7 +11411,6 @@ class BaseTrainer(ABC):
                 timesteps = ((1.0 - timesteps) * self.noise_scheduler.config.num_train_timesteps).long()
                 timesteps = timesteps.clamp(0, self.noise_scheduler.config.num_train_timesteps - 1)
 
-        # Add noise to latents
         noisy_latents = add_noise_unified(
             noise_process=noise_process,
             noise_scheduler=self.noise_scheduler,
@@ -11506,7 +11419,6 @@ class BaseTrainer(ABC):
             timesteps=timesteps,
         )
 
-        # Prepare added_cond_kwargs for SDXL
         added_cond_kwargs = None
         if self.is_sdxl and pooled_embeddings is not None:
             if time_ids is not None:
@@ -11663,7 +11575,6 @@ class BaseTrainer(ABC):
         if profile_vram:
             print_vram_usage("[train_step_controlnet] After UNet forward")
 
-        # Get prediction target
         prediction_target = getattr(self, 'prediction_target', 'epsilon')
         target = get_target_unified(
             noise_process=noise_process,
@@ -11674,7 +11585,6 @@ class BaseTrainer(ABC):
             timesteps=timesteps,
         )
 
-        # Calculate loss (always in fp32)
         loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
         if loss_weight_map is not None:
             # Outpaint conditioning_mode: down-weight the KNOWN region and keep the
@@ -11784,7 +11694,6 @@ class BaseTrainer(ABC):
             # timestep balancing as the main loss (constraint 4 in the design doc).
             loss_per_sample = loss_per_sample + _seam_lambda * seam_grad_per_sample
 
-        # Apply Min-SNR gamma weighting
         if self.min_snr_gamma > 0 and prediction_target == "epsilon":
             loss_per_sample_weighted = apply_snr_weight(
                 loss_per_sample, timesteps, self.noise_scheduler, self.min_snr_gamma,
@@ -11840,9 +11749,6 @@ class BaseTrainer(ABC):
 
         return loss, pred_loss_value, recon_loss_value
 
-    # ============================================================
-    # FLUX.2 Position ID Helpers
-    # ============================================================
 
     def _flux2_prepare_text_ids(self, prompt_embeds: torch.Tensor) -> torch.Tensor:
         """
@@ -11979,14 +11885,10 @@ class BaseTrainer(ABC):
         batch_size, num_channels, seq_len, hidden_dim = out.shape
         prompt_embeds = out.permute(0, 2, 1, 3).reshape(batch_size, seq_len, num_channels * hidden_dim)
 
-        # Prepare text IDs
         text_ids = self._flux2_prepare_text_ids(prompt_embeds).to(self.device)
 
         return prompt_embeds, text_ids
 
-    # ============================================================
-    # Sample Generation
-    # ============================================================
 
     def generate_sample(
         self,
@@ -12060,9 +11962,6 @@ class BaseTrainer(ABC):
             step_progress_callback=step_progress_callback,
         )
 
-    # ============================================================
-    # Unified sample dispatch (shared by step-0 + periodic sampling)
-    # ============================================================
 
     def _dispatch_sample(
         self,
@@ -12203,14 +12102,12 @@ class BaseTrainer(ABC):
             samples_dir = self.output_dir / "samples"
             samples_dir.mkdir(parents=True, exist_ok=True)
 
-            # 1. Rollout image
             rollout_t: Optional[torch.Tensor] = None
             if rollout_sample is not None:
                 rollout_path = samples_dir / f"step_{current_step:06d}_diag_rollout.png"
                 rollout_sample.save(rollout_path)
                 rollout_t = TF.to_tensor(rollout_sample).unsqueeze(0)  # [1, 3, H, W] in [0, 1]
 
-            # 2. GT Reference / Roundtrip
             gt_ref_path = reference_image_path
             if not gt_ref_path and self._sample_prompts:
                 gt_ref_path = self._sample_prompts[0].get("condition_image_path") or self._sample_prompts[0].get("reference_image_path")
@@ -12242,7 +12139,6 @@ class BaseTrainer(ABC):
             if self._diag_gt_img is not None:
                 gt_t = TF.to_tensor(self._diag_gt_img).unsqueeze(0)
 
-            # 3. Single-step x0 prediction
             single_x0_img: Optional[Image.Image] = None
             single_x0_t: Optional[torch.Tensor] = None
             if self._last_predicted_latent is not None and hasattr(self, "vae") and self.vae is not None and hasattr(self.vae, "decode"):
@@ -12261,8 +12157,6 @@ class BaseTrainer(ABC):
                 single_x0_img.save(single_path)
                 single_x0_t = TF.to_tensor(single_x0_img).unsqueeze(0)
 
-            # 4. Statistical metrics computation
-            # (a) Pixel stats & Trajectory gap
             lum_err_rollout = 0.0
             lum_err_single = 0.0
             if rollout_t is not None and gt_t is not None:
@@ -13115,7 +13009,6 @@ class BaseTrainer(ABC):
                         emit_progress()
                         continue
 
-                    # Load and encode image
                     try:
                         image = Image.open(image_path)
 
@@ -13570,12 +13463,10 @@ class BaseTrainer(ABC):
 
             torch.cuda.empty_cache()
 
-            # Move VAE to GPU
             if vae_device != self.device:
                 print(f"{self.log_prefix} [Latent Regeneration] Moving VAE to GPU...")
                 self.vae.to(device=self.device, dtype=self.vae_dtype)
 
-            # Load and encode image
             print(f"{self.log_prefix} [Latent Regeneration] Encoding image: {image_path}")
             image = Image.open(image_path)
             latent = self.encode_image(
@@ -13809,7 +13700,6 @@ class BaseTrainer(ABC):
         total_encoded = 0
         total_cached = 0
 
-        # Move text encoder(s) to GPU for encoding
         self.move_text_encoder_to_gpu()
 
         try:
@@ -13817,13 +13707,11 @@ class BaseTrainer(ABC):
                 cache_dir = text_encoder_caches[dataset.unique_id]
                 pairs = dataset_captions[dataset.unique_id]
 
-                # Check which (caption, lyrics) pairs are missing
                 captions_to_encode = []
                 for caption, lyrics in pairs:
                     caption_hash = self._text_cache_key(caption, lyrics)
                     embeds_path = cache_dir / f"{caption_hash}_embeds.pt"
 
-                    # Check auxiliary data file (architecture-specific)
                     if self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2:
                         auxiliary_path = cache_dir / f"{caption_hash}_mask.pt"
                     elif self.is_ltx2:
@@ -13882,10 +13770,8 @@ class BaseTrainer(ABC):
                         embeds_path = cache_dir / f"{caption_hash}_embeds.pt"
 
                         try:
-                            # Save main embeddings
                             torch.save(embeds_cpu, embeds_path)
 
-                            # Save auxiliary data (architecture-specific)
                             if (self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2) and auxiliary_cpu is not None:
                                 mask_path = cache_dir / f"{caption_hash}_mask.pt"
                                 torch.save(auxiliary_cpu, mask_path)
@@ -13921,7 +13807,6 @@ class BaseTrainer(ABC):
                             )
 
         finally:
-            # Move text encoder(s) back to CPU
             self.move_text_encoder_to_cpu()
 
         print(f"{self.log_prefix} Text encoder cache validation complete:")
@@ -13961,7 +13846,6 @@ class BaseTrainer(ABC):
         caption_hash = self._text_cache_key(caption, lyrics)
         embeds_path = cache_dir / f"{caption_hash}_embeds.pt"
 
-        # Check architecture-specific auxiliary file
         if self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2:
             auxiliary_path = cache_dir / f"{caption_hash}_mask.pt"
         elif self.is_ltx2:
@@ -13985,7 +13869,6 @@ class BaseTrainer(ABC):
             if not embeds_path.exists():
                 return None
 
-        # Load embeddings
         try:
             embeddings = torch.load(embeds_path, map_location='cpu')
             if auxiliary_path is not None:
@@ -14027,9 +13910,6 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} WARNING: Failed to load cached embedding for caption '{caption[:30]}...': {e}")
             return None
 
-    # ============================================================
-    # Training Loop Infrastructure
-    # ============================================================
 
     def _warm_up_adapter_execution_backend(self):
         """Select and warm the adapter execution backend, before step 0.
@@ -14306,7 +14186,6 @@ class BaseTrainer(ABC):
             text_encoding_mode = "onthefly_gpu"
             latent_encoding_mode = "onthefly_gpu"
 
-        # Store references for subclass access
         self._training_datasets = datasets
         self._sample_prompts = sample_prompts or [
             dict(prompt) for prompt in _TRAINING_DEFAULTS["sample_prompts"]
@@ -14397,7 +14276,6 @@ class BaseTrainer(ABC):
                     "vision encoder; it will be ignored"
                 )
 
-        # Load Vision Encoder if specified (SigLIP2 for SDXL/SD1.5)
         if vision_encoder_path:
             print(f"{self.log_prefix} Vision Encoder: Loading from {vision_encoder_path}")
             try:
@@ -14698,7 +14576,6 @@ class BaseTrainer(ABC):
               f"with MNT={multi_noise_timesteps}, that is "
               f"{gradient_accumulation_steps / multi_noise_timesteps:g} batch(es) per step)")
 
-        # Calculate total steps and epochs
         total_items = sum(len(dataset.items) for dataset in datasets)
         batches_per_epoch = (total_items + batch_size - 1) // batch_size
         steps_per_epoch = batches_per_epoch * multi_noise_timesteps  # MNT multiplier
@@ -14868,7 +14745,6 @@ class BaseTrainer(ABC):
                 self._rc_apply_bucketing_grid(bucket_manager, self._rc_warmup_res)
             print(f"{self.log_prefix} [ResCurriculum] Phase 0 = WARMUP at {self._rc_warmup_res}")
 
-        # Apply bucketing to datasets
         if bucket_manager:
             # Bucket assignment is O(N) over every item; for large datasets (millions)
             # this takes a while with no output, so report progress to console (tqdm)
@@ -14899,7 +14775,6 @@ class BaseTrainer(ABC):
 
                     width = item.get("width", 1024)
                     height = item.get("height", 1024)
-                    # Check if item has reference images
                     reference_images = item.get("reference_images", [])
                     has_reference = len(reference_images) > 0
 
@@ -14917,7 +14792,6 @@ class BaseTrainer(ABC):
                     # can zero text embeddings for these items.
                     if item.get("_ve_reconstruction_mode"):
                         image_info["_ve_reconstruction_mode"] = True
-                    # Update item with bucket dimensions
                     item["width"] = image_info["bucket_width"]
                     item["height"] = image_info["bucket_height"]
 
@@ -15122,7 +14996,6 @@ class BaseTrainer(ABC):
                 # Use the checkpoint that was actually loaded in __init__ (may differ from "latest" if fallback occurred)
                 if self._loaded_checkpoint_path:
                     checkpoint_path = self._loaded_checkpoint_path
-                    # Extract step number from filename
                     import re
                     match = re.search(r'_step_(\d+)', Path(checkpoint_path).stem)
                     if match:
@@ -15371,7 +15244,6 @@ class BaseTrainer(ABC):
 
                 actual_total_steps = new_actual_total_steps
 
-                # Update DB with corrected total_steps
                 if update_total_steps_callback is not None:
                     update_total_steps_callback(actual_total_steps)
 
@@ -15386,9 +15258,6 @@ class BaseTrainer(ABC):
         if self.run_id is not None:
             self._cleanup_future_metrics(global_step)
 
-        # ============================================================
-        # Parameter Change Tracker initialization
-        # ============================================================
         self._param_tracker: Optional[ParameterChangeTracker] = None
         if param_tracking:
             tracked_components: Dict[str, torch.nn.Module] = {}
@@ -15413,7 +15282,6 @@ class BaseTrainer(ABC):
             else:
                 print(f"{self.log_prefix} [ParamTracker] No trainable components found, disabled")
 
-        # Generate step 0 sample to verify base model output.
         self._run_step0_sample_if_due(
             sample_every_n_steps=sample_every_n_steps,
             sample_width=sample_width,
@@ -15889,7 +15757,6 @@ class BaseTrainer(ABC):
                 import random as _random_snapshot
                 self._epoch_batch_rng_state = _random_snapshot.getstate()
 
-                # Create batches
                 if bucket_manager:
                     # BucketManager only manages items, we need to pair with datasets
                     # Build mapping from image_path to dataset
@@ -16073,8 +15940,6 @@ class BaseTrainer(ABC):
                                 _danb_batch = []
                                 for _ri in _items:
                                     _ipath = f"danbooru://{_ri.post_id}"
-                                    # Build the caption per-epoch with the dedicated
-                                    # shuffle/dropout config (seeded by path+epoch).
                                     try:
                                         _cap = process_caption_with_tag_data(
                                             _ri.tag_data, epoch, _ipath, _cap_cfg
@@ -16135,7 +16000,6 @@ class BaseTrainer(ABC):
                             total=text_encoding_swap_interval
                         )
 
-                    # Move Text Encoder to GPU for encoding
                     self.move_text_encoder_to_gpu()
                     # Move main model to CPU to free VRAM
                     self.move_main_model_to_cpu()
@@ -16164,7 +16028,6 @@ class BaseTrainer(ABC):
                             caption,  # String (CPU memory, minimal overhead)
                         )
 
-                        # Send progress update
                         if progress_callback and idx % 10 == 0:
                             progress_callback(
                                 phase="text_encoder_cache",
@@ -16172,9 +16035,7 @@ class BaseTrainer(ABC):
                                 total=len(buffer_items)
                             )
 
-                    # Move Text Encoder back to CPU
                     self.move_text_encoder_to_cpu()
-                    # Move main model to GPU for training
                     self.move_main_model_to_gpu()
 
                     next_swap_at_step = text_encoding_swap_interval
@@ -16218,7 +16079,6 @@ class BaseTrainer(ABC):
                         and next(self.text_encoder_2.parameters()).device.type != "cpu"
                     )
 
-                    # Move VAE to GPU for encoding
                     self.move_vae_to_gpu()
                     # Move main model to CPU to free VRAM. move_main_model_to_cpu moves only
                     # the weights; relocate the optimizer's GPU-resident state here too so it
@@ -16273,7 +16133,6 @@ class BaseTrainer(ABC):
                                     )
                                 continue
 
-                            # Load and encode image
                             image = Image.open(image_path)
                             latent = self.encode_image(
                                 image=image,
@@ -16291,7 +16150,6 @@ class BaseTrainer(ABC):
                             if self.debug_vram and idx % 50 == 0:
                                 _vramdiag(f"prefill_item_{idx}")
 
-                            # Send progress update
                             if progress_callback and idx % 10 == 0:
                                 progress_callback(
                                     phase="latent_cache",
@@ -16420,7 +16278,6 @@ class BaseTrainer(ABC):
                         actual_steps_per_epoch = full_batch_count * multi_noise_timesteps
                         actual_total_steps = actual_steps_per_epoch * num_epochs
 
-                    # Update DB if actual differs from initial estimate
                     if actual_total_steps != steps_per_epoch * num_epochs:
                         print(f"{self.log_prefix} Correcting total_steps: {steps_per_epoch * num_epochs} → {actual_total_steps} (bucketing overhead)")
                         if update_total_steps_callback is not None:
@@ -16502,7 +16359,6 @@ class BaseTrainer(ABC):
                     except Exception:
                         pass
 
-                    # Check for stop flag (user-requested stop from frontend)
                     stop_flag_file = self.output_dir / ".stop_training"
                     if stop_flag_file.exists():
                         print(f"\n{self.log_prefix} Stop flag detected, stopping training...")
@@ -16623,7 +16479,6 @@ class BaseTrainer(ABC):
                     )
                     _coalesced_refill = _text_refill_due and _latent_refill_due
 
-                    # Check if we need to refill swap buffer (swap_onthefly path)
                     if _text_refill_due:
                         # Calculate next batch range
                         start_idx = next_swap_at_step
@@ -16641,9 +16496,7 @@ class BaseTrainer(ABC):
                                 total=len(buffer_items)
                             )
 
-                        # Move Text Encoder to GPU
                         self.move_text_encoder_to_gpu()
-                        # Move main model to CPU
                         self.move_main_model_to_cpu()
 
                         # Clear old buffer and encode new captions (dict keyed by image_path)
@@ -16661,7 +16514,6 @@ class BaseTrainer(ABC):
                                 caption,  # String (CPU memory, minimal overhead)
                             )
 
-                            # Send progress update
                             if progress_callback and idx % 10 == 0:
                                 progress_callback(
                                     phase="text_encoder_cache",
@@ -16669,7 +16521,6 @@ class BaseTrainer(ABC):
                                     total=len(buffer_items)
                                 )
 
-                        # Move Text Encoder back to CPU
                         self.move_text_encoder_to_cpu()
                         if not _coalesced_refill:
                             self.move_main_model_to_gpu()
@@ -16678,7 +16529,6 @@ class BaseTrainer(ABC):
                         next_swap_at_step += text_encoding_swap_interval
                         print(f"{self.log_prefix} Buffer refilled with {len(swap_buffer)} embeddings")
 
-                    # Check if we need to refill latent swap buffer
                     if _latent_refill_due:
                         # Calculate next batch range
                         start_idx = next_latent_swap_at_step
@@ -16696,7 +16546,6 @@ class BaseTrainer(ABC):
                                 total=len(buffer_items)
                             )
 
-                        # Move VAE to GPU
                         self.move_vae_to_gpu()
                         if not _coalesced_refill:
                             self.move_main_model_to_cpu()
@@ -16710,7 +16559,6 @@ class BaseTrainer(ABC):
                             width = item.get("width") or item.get("bucket_width")
                             height = item.get("height") or item.get("bucket_height")
 
-                            # Load and encode image with corruption handling
                             try:
                                 # LTX-2.3 video clip: encode a 5D clip latent via the
                                 # LTX video VAE (Image.open cannot read .webm).
@@ -16754,7 +16602,6 @@ class BaseTrainer(ABC):
                                 self._report_item_failure(img_error, image_path, "Skipping")
                                 continue
 
-                            # Send progress update
                             if progress_callback and idx % 10 == 0:
                                 progress_callback(
                                     phase="latent_cache",
@@ -16776,9 +16623,7 @@ class BaseTrainer(ABC):
                             for path in corrupted_images:
                                 print(f"{self.log_prefix} [ITEM ENCODE]   - {path}")
 
-                        # Move VAE back to CPU
                         self.move_vae_to_cpu()
-                        # Move main model to GPU
                         self.move_main_model_to_gpu()
 
                         # Clear CUDA cache after model movement to free fragmented memory
@@ -16917,16 +16762,12 @@ class BaseTrainer(ABC):
                             _repa_decoded_image = None
                             _repa_bucketed_image = None
 
-                        # Load latent (mode-specific)
                         if latent_encoding_mode == "swap_onthefly":
-                            # Get from swap buffer using image_path as key (dict lookup)
-                            # This eliminates index-based alignment issues
                             if image_path in latent_swap_buffer:
                                 latent_cpu, buffer_caption = latent_swap_buffer[image_path]
                                 # Transfer to GPU
                                 latent = latent_cpu.to(self.device, non_blocking=True)
                                 latents_list.append(latent)
-                                # Update caption from buffer (ensures correct pairing)
                                 item["caption"] = buffer_caption
                             else:
                                 # Fallback to on-the-fly encoding (image not in buffer)
@@ -17624,7 +17465,6 @@ class BaseTrainer(ABC):
                     # each item's prompt prefix.
                     reference_latents_nested = None
                     if use_reference_images and self.is_flux2 and reference_latents_list:
-                        # Check if any item is missing reference latent (None)
                         if all(lat is not None for lat in reference_latents_list):
                             # Pass nested list structure to train_step
                             # train_step will apply T=10, 20, 30... per reference image
@@ -17634,7 +17474,6 @@ class BaseTrainer(ABC):
                             # This ensures consistent training behavior
                             pass
 
-                    # Prepare condition images batch for ControlNet training
                     condition_images_batch = None
                     loss_weight_maps_batch = None
                     use_condition_images = getattr(self, 'use_condition_images', False)
@@ -17820,7 +17659,6 @@ class BaseTrainer(ABC):
                         # SDXL time_ids are per-item (size/crop), timestep-independent.
                         mnt_time_ids = time_ids_batch
 
-                        # Handle text embeddings based on training mode
                         mnt_sensenova_prefix = None
                         if self.is_sensenova and _sensenova_text_batch_active:
                             mnt_text_embeddings = None
@@ -17878,7 +17716,6 @@ class BaseTrainer(ABC):
                                 mnt_text_embeddings_list, self.arch.text_seq_axis
                             )
 
-                            # Prepare auxiliary data
                             if self.is_zimage:
                                 mnt_attention_mask = self._collate_text_masks(
                                     mnt_auxiliary_data_list, mnt_text_seq_len
@@ -18617,7 +18454,6 @@ class BaseTrainer(ABC):
                             # step's row rather than riding the next one.
                             self._log_cfg_null_grad_split(grad_norm_total)
 
-                            # Update grad_norm in database
                             if self.run_id is not None:
                                 self._log_metrics_to_db(
                                     step=global_step,
@@ -19109,7 +18945,6 @@ class BaseTrainer(ABC):
             raise
 
         except Exception as e:
-            # Stop cpu_prefetch worker on failure too
             try:
                 if 'te_prefetcher' in locals() and te_prefetcher is not None:
                     te_prefetcher.stop()
@@ -19845,7 +19680,6 @@ class BaseTrainer(ABC):
                 'param_cumulative_drift_te2': param_cumulative_drift_te2,
                 'param_cumulative_drift_ve': param_cumulative_drift_ve,
             })
-            # Reset the per-step extra-metric accumulator now that it is captured.
             if self._extra_metrics:
                 self._extra_metrics = {}
 
@@ -19919,7 +19753,6 @@ class BaseTrainer(ABC):
                 ).first()
 
                 if existing:
-                    # Update existing metric (training restarted from checkpoint)
                     if m_loss is not None:
                         existing.loss = m_loss
                     if m_recon_loss is not None:
@@ -20060,7 +19893,6 @@ class BaseTrainer(ABC):
                 catalog_db, self.run_id
             )
 
-            # Find future metrics (step > current_step)
             future_metrics = history_db.query(TrainingMetrics).filter(
                 TrainingMetrics.run_id == self.run_id,
                 TrainingMetrics.step > current_step
@@ -20075,7 +19907,6 @@ class BaseTrainer(ABC):
                 print(f"{self.log_prefix} Found {len(future_metrics)} old metrics (steps {min_future_step}-{max_future_step}) beyond current step {current_step}")
                 print(f"{self.log_prefix} Cleaning up old metrics to prevent duplicates...")
 
-                # Delete future metrics
                 for metric in future_metrics:
                     history_db.delete(metric)
 
@@ -20142,7 +19973,6 @@ class BaseTrainer(ABC):
         if getattr(self, 'flux2_transformer_wrapper', None) is not None:
             self.flux2_transformer_wrapper = None
 
-        # Close TensorBoard writer
         if hasattr(self, 'writer') and self.writer is not None:
             self.writer.close()
             print(f"{self.log_prefix} TensorBoard writer closed")

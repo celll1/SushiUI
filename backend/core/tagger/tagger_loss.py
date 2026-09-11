@@ -28,9 +28,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-# ---------------------------------------------------------------------------
-# Original ASL
-# ---------------------------------------------------------------------------
 
 class AsymmetricLossOptimized(nn.Module):
     """Optimized asymmetric loss for multi-label classification.
@@ -119,9 +116,6 @@ class AsymmetricLossOptimized(nn.Module):
             return -self.loss
 
 
-# ---------------------------------------------------------------------------
-# Shared helper: CS-ASL per-element core
-# ---------------------------------------------------------------------------
 
 def _cs_asl_precompute(
     pi: torch.Tensor,
@@ -215,14 +209,10 @@ def _cs_asl_core(
         y * (p + m_pos) + anti_y * (1.0 - p + m_neg + clip)
     ).clamp(min=eps, max=1.0)
 
-    # ----- Class weight & combine ----------------------------------------
     a_eff = y * a_pos + anti_y * a_neg
     return -(a_eff * focal_w * log_arg.log())              # [B, N]
 
 
-# ---------------------------------------------------------------------------
-# CS-ASL
-# ---------------------------------------------------------------------------
 
 class CSASL(nn.Module):
     """Continuous Symmetric ASL.
@@ -307,9 +297,6 @@ class CSASL(nn.Module):
         return loss
 
 
-# ---------------------------------------------------------------------------
-# H-CS-ASL
-# ---------------------------------------------------------------------------
 
 def _compute_label_weights(
     pi: torch.Tensor,
@@ -416,8 +403,6 @@ class HCSASL(nn.Module):
         if loss_mask is not None:
             loss = loss * loss_mask
 
-        # Apply inter-label weights: weighted sum over labels, mean over batch
-        # loss [B, N] → (u * loss).sum(dim=1).mean()
         weighted = (self.u * loss).sum(dim=1)   # [B]
 
         if self.reduction == "mean":
@@ -427,9 +412,6 @@ class HCSASL(nn.Module):
         return loss   # 'none': return unweighted per-element for compatibility
 
 
-# ---------------------------------------------------------------------------
-# LA-S-ASL
-# ---------------------------------------------------------------------------
 
 class LASASL(nn.Module):
     """Logit-Adjusted Symmetric ASL.
@@ -509,9 +491,6 @@ class LASASL(nn.Module):
         return loss
 
 
-# ---------------------------------------------------------------------------
-# FW-BBCE
-# ---------------------------------------------------------------------------
 
 class FWBBCE(nn.Module):
     """Fisher-Weighted Balanced Binary Cross-Entropy.

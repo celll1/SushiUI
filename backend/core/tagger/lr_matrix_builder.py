@@ -58,9 +58,6 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _load_vocab(vocab_path: str) -> Tuple[Dict[str, int], Dict[int, str]]:
     with open(vocab_path, "r", encoding="utf-8") as f:
@@ -163,9 +160,6 @@ def _build_label_matrix(
     return sp.csr_matrix((data_np, indices_np, indptr_np), shape=(len(samples), n_tags))
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 def build_lr_matrix(
     output_path: str,
@@ -329,9 +323,6 @@ def build_lr_matrix(
     }
 
 
-# ---------------------------------------------------------------------------
-# CLI entry point
-# ---------------------------------------------------------------------------
 
 def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(

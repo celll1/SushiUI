@@ -265,7 +265,6 @@ class InventedHfLoss(torch.nn.Module):
         self.register_buffer("_b3", torch.tensor([0.25, 0.5, 0.25]),
                              persistent=False)
 
-    # -- primitives ------------------------------------------------------
     def _blur(self, x: torch.Tensor, times: int) -> torch.Tensor:
         """`times` applications of the separable binomial [1,2,1]/4 kernel.
 
@@ -309,7 +308,6 @@ class InventedHfLoss(torch.nn.Module):
         x = F.conv2d(x, kv, stride=(self.STRIDE, 1), groups=c)
         return F.conv2d(x, kh, stride=(1, self.STRIDE), groups=c)
 
-    # -- the term --------------------------------------------------------
     def forward(self, recon: torch.Tensor, target: torch.Tensor):
         """Returns ``(loss, coverage)``; both are 0-d tensors.
 

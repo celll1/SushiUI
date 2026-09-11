@@ -225,9 +225,6 @@ class VaeTrainer:
         self.checkpoints_dir = self.output_dir / "checkpoints"
         self.samples_dir = self.output_dir / "samples"
 
-    # ------------------------------------------------------------------
-    # Setup
-    # ------------------------------------------------------------------
     def load_base_vae(self):
         """Load the VAE to be fine-tuned, in fp32 (the optimizer master copy)."""
         from diffusers import AutoencoderKL
@@ -354,9 +351,6 @@ class VaeTrainer:
                   f"export goes to '{self.run_name}{self._export_suffix()}' and "
                   f"its sidecar records encoder_trained=true.")
 
-    # ------------------------------------------------------------------
-    # Base-VAE identity
-    # ------------------------------------------------------------------
     def _compute_frozen_fingerprint(self) -> Optional[Dict[str, Any]]:
         """Digest the tensors a resume does NOT restore, i.e. the frozen half.
 
@@ -810,9 +804,6 @@ class VaeTrainer:
         # LIVE weights, not on the EMA that actually gets saved).
         self._ema_retained_init *= d
 
-    # ------------------------------------------------------------------
-    # Train
-    # ------------------------------------------------------------------
     def train(self, dataset_items: List[Dict]) -> bool:
         """Run the fine-tune. Returns True if it was stopped by the user."""
         self.checkpoints_dir.mkdir(parents=True, exist_ok=True)
@@ -898,7 +889,6 @@ class VaeTrainer:
         self.optimizer.zero_grad(set_to_none=True)
 
         while self.global_step < total_steps:
-            # ---- stop sentinel, checked EVERY step --------------------
             if stop_flag.is_file():
                 print(f"{self.log_prefix} Stop flag detected at step "
                       f"{self.global_step}; saving and exiting.")
@@ -1055,9 +1045,6 @@ class VaeTrainer:
         (loss / accum).backward()
         return float(loss.detach()), parts
 
-    # ------------------------------------------------------------------
-    # Validation
-    # ------------------------------------------------------------------
     @torch.no_grad()
     def _run_validation(self, step: int):
         if self.val_batch is None:
@@ -1085,9 +1072,6 @@ class VaeTrainer:
         self._queue_metrics(step, extra={M_VAL_PSNR: val_psnr,
                                          M_VAL_BLOCKINESS: val_block})
 
-    # ------------------------------------------------------------------
-    # Checkpointing
-    # ------------------------------------------------------------------
     def _trainable_state_dict(self, use_ema: bool = False) -> Dict[str, torch.Tensor]:
         if use_ema and self.ema is not None:
             return {k: v.detach().cpu().clone() for k, v in self.ema.items()}
@@ -2013,9 +1997,6 @@ class VaeTrainer:
             except Exception as e:
                 print(f"{self.log_prefix} Could not prune {stale}: {e}")
 
-    # ------------------------------------------------------------------
-    # Final artifact
-    # ------------------------------------------------------------------
     def _export_suffix(self) -> str:
         """Directory suffix for the exported VAE.
 
@@ -2237,8 +2218,6 @@ class VaeTrainer:
         )
         from safetensors.torch import load_file as _load_file, save_file
 
-        # Read back what was actually written (i.e. the EMA weights when EMA is
-        # applied), rather than re-deriving which copy is live.
         shard = source_dir / "diffusion_pytorch_model.safetensors"
         state = (_load_file(str(shard)) if shard.is_file()
                  else {k: v.detach().cpu() for k, v in self.vae.state_dict().items()})
@@ -2253,9 +2232,6 @@ class VaeTrainer:
               f"unchanged from the base VAE because the encoder was frozen.")
         return out_path
 
-    # ------------------------------------------------------------------
-    # DB plumbing (TrainingRun-based; no new tables)
-    # ------------------------------------------------------------------
     def _split_items(self, items: List[Dict]):
         n_val = int(self.cfg["validation_num_images"])
         if len(items) <= n_val + 1:

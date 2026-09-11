@@ -35,7 +35,6 @@ class OptimizerFactory:
         """
         optimizers = ["adamw", "adamw8bit", "adamw8bit_ringbuffer", "adafactor", "lion8bit", "lion8bit_ringbuffer"]
 
-        # Check if bitsandbytes is available for paged optimizers
         try:
             import bitsandbytes as bnb
             optimizers.extend(["paged_adamw", "paged_adamw8bit", "paged_lion8bit"])
@@ -201,7 +200,6 @@ class OptimizerFactory:
                 get_state_buffer=get_state_buffer,
             )
 
-            # Build description string
             options_str = []
             if cautious:
                 options_str.append("cautious")

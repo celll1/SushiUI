@@ -78,9 +78,6 @@ from .state_dict_converter import (
 )
 
 
-# ============================================================
-# SDXL LoRA Adapter
-# ============================================================
 
 class SDXLLoRAAdapter(BaseLoRAAdapter):
     """LoRA adapter for SDXL models."""
@@ -111,9 +108,7 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
         count = 0
         unet = self.trainer.unet
 
-        # Find all Transformer2DModel blocks
         for block_name, block_module in unet.named_modules():
-            # Find Transformer2DModel blocks
             if block_module.__class__.__name__ != "Transformer2DModel":
                 continue
 
@@ -124,11 +119,8 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
             # targets. The class-name test then skips the wrapper itself.
             for child_name, child_module in named_modules_outside_adapters(block_module):
                 if child_module.__class__.__name__ == "Linear":
-                    # Build LoRA name: lora_unet_{block_name}_{child_name}
-                    # Replace '.' with '_' for diffusers style naming
                     lora_name = f"lora_unet_{block_name}_{child_name}".replace(".", "_")
 
-                    # Create LoRA layer
                     lora_layer = self.build_branch(child_module, lora_name)
 
                     # Replace original Linear with LoRA layer
@@ -143,7 +135,6 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
                             else:
                                 parent_module = getattr(parent_module, part)
 
-                        # Set the final attribute
                         attr_name = path_parts[-1]
                         if attr_name.isdigit():
                             parent_module[int(attr_name)] = lora_layer
@@ -235,9 +226,6 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
         }
 
 
-# ============================================================
-# SDXL Full Parameter Adapter
-# ============================================================
 
 class SDXLFullParameterAdapter(BaseFullParameterAdapter):
     """Full parameter adapter for SDXL models."""
@@ -247,7 +235,6 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
         trainer = self.trainer
         reject_quantized_base(trainer.unet, model_label="SDXL")
 
-        # Set requires_grad based on configuration
         if trainer.train_unet and trainer.unet is not None:
             trainer.unet.requires_grad_(True)
             trainer.unet.train()
@@ -370,7 +357,6 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
 
         combined_state_dict = {}
 
-        # Save U-Net weights: convert diffusers -> CompVis/LDM format
         if trainer.train_unet and trainer.unet is not None:
             print(f"[SDXLFullParameterAdapter] Collecting U-Net weights (diffusers -> CompVis)...")
             unet_state = trainer.unet.state_dict()
@@ -427,7 +413,6 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
             for key, value in converted_te1.items():
                 combined_state_dict[f"conditioner.embedders.0.transformer.{key}"] = value.cpu()
 
-        # Save Text Encoder 2 weights: convert HF -> OpenCLIP format
         if trainer.train_text_encoder and not _custom_te_save and trainer.text_encoder_2 is not None:
             print(f"[SDXLFullParameterAdapter] Collecting Text Encoder 2 weights (HF -> OpenCLIP)...")
             te2_state = trainer.text_encoder_2.state_dict()

@@ -36,9 +36,6 @@ from .base_adapter import (
 )
 
 
-# ============================================================
-# Z-Image LoRA Adapter
-# ============================================================
 
 class ZImageLoRAAdapter(BaseLoRAAdapter):
     """LoRA adapter for Z-Image models."""
@@ -72,7 +69,6 @@ class ZImageLoRAAdapter(BaseLoRAAdapter):
             else transformer
         )
 
-        # Find all ZImageAttention modules in the Transformer
         attention_modules = []
         for name, module in target_transformer.named_modules():
             if module.__class__.__name__ == "ZImageAttention":
@@ -84,7 +80,6 @@ class ZImageLoRAAdapter(BaseLoRAAdapter):
         target_attrs = ["to_q", "to_k", "to_v"]
 
         for attn_name, attn_module in attention_modules:
-            # Handle to_q, to_k, to_v
             for attr_name in target_attrs:
                 if hasattr(attn_module, attr_name):
                     original_linear = getattr(attn_module, attr_name)
@@ -94,30 +89,25 @@ class ZImageLoRAAdapter(BaseLoRAAdapter):
                     # those are nn.Modules but not nn.Linear subclasses, so the
                     # naive test drops every quantized target silently.
                     if is_lora_wrappable_linear(original_linear):
-                        # Create LoRA layer
                         lora_name = f"lora_transformer_{attn_name.replace('.', '_')}_{attr_name}"
                         lora_layer = self.build_branch(original_linear, lora_name)
 
                         # Replace in attention module
                         setattr(attn_module, attr_name, lora_layer)
 
-                        # Store reference
                         self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_UNET)
                         count += 1
 
-            # Handle to_out (ModuleList in Z-Image, first element is Linear projection)
             if hasattr(attn_module, "to_out") and isinstance(attn_module.to_out, torch.nn.ModuleList):
                 if len(attn_module.to_out) > 0 and is_lora_wrappable_linear(attn_module.to_out[0]):
                     original_linear = attn_module.to_out[0]
 
-                    # Create LoRA layer
                     lora_name = f"lora_transformer_{attn_name.replace('.', '_')}_to_out_0"
                     lora_layer = self.build_branch(original_linear, lora_name)
 
                     # Replace in ModuleList
                     attn_module.to_out[0] = lora_layer
 
-                    # Store reference
                     self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_UNET)
                     count += 1
 
@@ -172,9 +162,6 @@ class ZImageLoRAAdapter(BaseLoRAAdapter):
         }
 
 
-# ============================================================
-# Z-Image Full Parameter Adapter
-# ============================================================
 
 class ZImageFullParameterAdapter(BaseFullParameterAdapter):
     """Full parameter adapter for Z-Image models."""
@@ -291,7 +278,6 @@ class ZImageFullParameterAdapter(BaseFullParameterAdapter):
 
         combined_state_dict = {}
 
-        # Save Transformer weights with ComfyUI prefix
         if trainer.train_unet and trainer.transformer is not None:
             print(f"[ZImageFullParameterAdapter] Collecting Transformer weights...")
             # Access the original transformer inside the wrapper
@@ -328,7 +314,6 @@ class ZImageFullParameterAdapter(BaseFullParameterAdapter):
             for key, value in vae_state.items():
                 combined_state_dict[f"first_stage_model.{key}"] = value.cpu()
 
-        # Save Text Encoder weights with Z-Image prefix
         if trainer.train_text_encoder and trainer.text_encoder is not None:
             print(f"[ZImageFullParameterAdapter] Collecting Text Encoder (Qwen3) weights...")
             te_state = trainer.text_encoder.state_dict()

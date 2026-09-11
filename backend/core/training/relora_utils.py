@@ -49,10 +49,6 @@ def merge_lora_into_base(lora_layers: Dict[str, nn.Module]) -> int:
             device = original_module.weight.device
             orig_dtype = original_module.weight.dtype
 
-            # Compute LoRA delta in float32 for precision
-            # lora_up.weight: (out_features, rank)
-            # lora_down.weight: (rank, in_features)
-            # delta: (out_features, in_features)
             up_weight = lora_up.weight.data.to(device=device, dtype=torch.float32)
             down_weight = lora_down.weight.data.to(device=device, dtype=torch.float32)
             delta = (up_weight @ down_weight) * scale
@@ -146,7 +142,6 @@ def _full_reset(
     for Adam-type optimizers. Also resets step counts.
     """
     if trainable_param_ids is None:
-        # Reset all parameters
         optimizer.state.clear()
         return
 
@@ -219,11 +214,9 @@ def _magnitude_pruning_(tensor: torch.Tensor, prune_ratio: float) -> None:
         tensor.zero_()
         return
 
-    # Compute the threshold: entries below this magnitude will be zeroed
     abs_values = tensor.abs().flatten()
     threshold = torch.quantile(abs_values, prune_ratio)
 
-    # Create mask: keep entries whose magnitude exceeds threshold
     mask = tensor.abs() > threshold
     tensor.mul_(mask)
 
@@ -245,6 +238,5 @@ def _random_pruning_(tensor: torch.Tensor, prune_ratio: float) -> None:
         tensor.zero_()
         return
 
-    # Create random mask: keep entries where random value > prune_ratio
     mask = torch.rand_like(tensor, dtype=torch.float32) > prune_ratio
     tensor.mul_(mask)

@@ -35,9 +35,6 @@ from .base_adapter import (
 )
 
 
-# ============================================================
-# FLUX.2 Klein LoRA Adapter
-# ============================================================
 
 class FLUX2LoRAAdapter(BaseLoRAAdapter):
     """LoRA adapter for FLUX.2 Klein models."""
@@ -163,7 +160,6 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
         Returns:
             Number of LoRA layers injected (0 if text encoder is frozen)
         """
-        # Check if text encoder training is enabled
         if not getattr(self.trainer, 'train_text_encoder', False):
             print(f"[FLUX2LoRAAdapter] Text Encoder (Qwen3) is frozen (no LoRA)")
             return 0
@@ -175,8 +171,6 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
             print(f"[FLUX2LoRAAdapter] Warning: Text Encoder is None")
             return 0
 
-        # Find Qwen layers
-        # Qwen3 structure: model.layers[N].{mlp, self_attn}
         layers = None
         if hasattr(text_encoder, "model") and hasattr(text_encoder.model, "layers"):
             layers = text_encoder.model.layers
@@ -236,9 +230,6 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
         }
 
 
-# ============================================================
-# FLUX.2 Klein Full Parameter Adapter
-# ============================================================
 
 class FLUX2FullParameterAdapter(BaseFullParameterAdapter):
     """Full parameter adapter for FLUX.2 Klein models."""
@@ -248,7 +239,6 @@ class FLUX2FullParameterAdapter(BaseFullParameterAdapter):
         trainer = self.trainer
         reject_quantized_base(trainer.transformer, model_label="FLUX.2 Klein")
 
-        # Set requires_grad based on configuration
         if trainer.train_unet and trainer.transformer is not None:
             trainer.transformer.requires_grad_(True)
             trainer.transformer.train()
@@ -328,7 +318,6 @@ class FLUX2FullParameterAdapter(BaseFullParameterAdapter):
 
         combined_state_dict = {}
 
-        # Save Transformer weights
         if trainer.train_unet and trainer.transformer is not None:
             print(f"[FLUX2FullParameterAdapter] Collecting Transformer weights...")
             transformer_state = trainer.transformer.state_dict()
@@ -356,7 +345,6 @@ class FLUX2FullParameterAdapter(BaseFullParameterAdapter):
                 opt_state = trainer.optimizer.state_dict()
                 num_params_with_state = len(opt_state.get('state', {}))
                 print(f"[FLUX2FullParameterAdapter] DEBUG: Optimizer has state for {num_params_with_state} parameters")
-                # Check first param's step count
                 if opt_state.get('state'):
                     first_param_state = next(iter(opt_state['state'].values()))
                     if 'step' in first_param_state:
@@ -389,7 +377,6 @@ class FLUX2FullParameterAdapter(BaseFullParameterAdapter):
             for key, value in vae_state.items():
                 combined_state_dict[f"first_stage_model.{key}"] = value.cpu()
 
-        # Save Text Encoder weights
         if trainer.train_text_encoder and trainer.text_encoder is not None:
             print(f"[FLUX2FullParameterAdapter] Collecting Text Encoder (Qwen3) weights...")
             te_state = trainer.text_encoder.state_dict()
@@ -409,7 +396,6 @@ class FLUX2FullParameterAdapter(BaseFullParameterAdapter):
             "format": "pt",
         }
 
-        # Add base model info if available
         if base_model_repo:
             metadata["base_model_repo"] = base_model_repo
         if is_distilled is not None:

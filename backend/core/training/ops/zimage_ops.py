@@ -32,7 +32,6 @@ def load_components(trainer) -> None:
         torch_dtype=trainer.weight_dtype
     )
 
-    # Store components
     trainer.transformer_original = components["transformer"]
     trainer.vae = components["vae"]
     trainer.text_encoder = components["text_encoder"]
@@ -45,7 +44,6 @@ def load_components(trainer) -> None:
     trainer.unet = None
     trainer.noise_scheduler = trainer.scheduler
 
-    # Convert VAE to vae_dtype
     trainer.vae = trainer.vae.to(dtype=trainer.vae_dtype)
 
     # A training process is DEQUANT-ONLY (see ideogram4_ops.load_components for
@@ -230,7 +228,6 @@ def encode_prompt(trainer, prompt: str, max_sequence_length: int = 512):
             )
             prompt_embeds = encoder_output.hidden_states[-2]
 
-    # Extract and detach outputs
     result_embeds = prompt_embeds[0].detach()
     result_mask = attention_mask[0].detach()
 
@@ -249,7 +246,6 @@ def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
     mean, logvar = torch.chunk(h, 2, dim=1)
     latents = mean + torch.exp(0.5 * logvar) * torch.randn_like(mean)
     latents = normalize(latents, trainer.vae, getattr(trainer, "wiring", None))
-    # Clean up intermediate tensors
     del h, mean, logvar
     return latents
 
@@ -318,7 +314,6 @@ def train_step(
     batch_size = latents.shape[0]
     if timesteps is None:
         if trainer.timestep_sampler is not None:
-            # Use timestep sampler (returns [0, 1] for flow matching)
             timesteps = trainer.timestep_sampler.sample(batch_size, trainer.device)
         else:
             # Legacy behavior: uniform sampling from [0, 1]
@@ -327,7 +322,6 @@ def train_step(
     # Sample noise (standard normal distribution, now on GPU)
     noise = torch.randn_like(latents)
 
-    # Add noise using unified framework
     noisy_latents = add_noise_unified(
         noise_process=noise_process,
         noise_scheduler=trainer.noise_scheduler,
@@ -344,7 +338,6 @@ def train_step(
     # prompt_embeds is always detached (from encode_prompt_zimage with no_grad)
     # attention_mask is bool type, does not need gradients
 
-    # Add frame dimension for Z-Image: [B, C, H, W] -> [B, C, 1, H, W]
     noisy_latents_4d = noisy_latents.unsqueeze(2)
 
     # Predict velocity using Z-Image Transformer
@@ -364,7 +357,6 @@ def train_step(
             cap_mask=attention_mask,
         )
 
-    # Remove frame dimension: [B, C, 1, H, W] -> [B, C, H, W]
     model_pred = model_pred.squeeze(2)
 
     if profile_vram:
@@ -376,17 +368,14 @@ def train_step(
     # So we train with target = latents - noise to match this convention
     target = latents - noise
 
-    # Calculate MSE loss (always in fp32)
     loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
     loss_per_sample = loss_per_element.mean([1, 2, 3])
 
     # Flow Matching doesn't use Min-SNR weighting (uniform timestep distribution)
     mse_loss = loss_per_sample.mean()
 
-    # Add SNR and/or Energy regularization if enabled (can use both simultaneously)
     regularization_loss = torch.tensor(0.0, device=trainer.device)
 
-    # Compute predicted latent once (used by regularization losses and dual loss)
     predicted_latent_for_reg = None
     # The crop decode loss backpropagates through this x_0, so it must be the
     # grad-carrying copy; the monitoring branch below only keeps a detached one.
@@ -581,18 +570,13 @@ def generate_sample(
     trainer.vae.eval()
     trainer.text_encoder.eval()
 
-    # Store original devices for restoration
     text_encoder_device = next(trainer.text_encoder.parameters()).device
     vae_device = next(trainer.vae.parameters()).device
     transformer_device = next(trainer.transformer_original.parameters()).device
 
     try:
-        # ============================================================
-        # Stage 0: Offload Transformer AND Optimizer State to CPU
-        # ============================================================
         log_verbose(f"{trainer.log_prefix} [Sample] Offloading Transformer and Optimizer state to CPU")
 
-        # Move Transformer to CPU
         trainer.transformer_original.to("cpu")
 
         # CRITICAL: Move Optimizer state (gradients, momentum) to CPU
@@ -608,10 +592,6 @@ def generate_sample(
         torch.cuda.empty_cache()
         log_verbose(f"{trainer.log_prefix} [Sample] Transformer and Optimizer state offloaded to CPU")
 
-        # ============================================================
-        # Stage 1: Text Encoding (Sequential Offloading Pattern)
-        # ============================================================
-        # Move Text Encoder to GPU for encoding
         if text_encoder_device != trainer.device:
             log_verbose(f"{trainer.log_prefix} [Sample] Moving Text Encoder to GPU for encoding")
             trainer.text_encoder.to(trainer.device)
@@ -631,26 +611,18 @@ def generate_sample(
             trainer.text_encoder.to(text_encoder_device)
         torch.cuda.empty_cache()
 
-        # ============================================================
-        # Stage 1.5: Move Transformer back to GPU for denoising
-        # ============================================================
         log_verbose(f"{trainer.log_prefix} [Sample] Moving Transformer to GPU for denoising")
         trainer.transformer_original.to(transformer_device)
         torch.cuda.empty_cache()
 
-        # Add batch dimension
         prompt_embeds = prompt_embeds.unsqueeze(0)
         attention_mask = attention_mask.unsqueeze(0)
         if uncond_embeds is not None:
             uncond_embeds = uncond_embeds.unsqueeze(0)
             uncond_mask = uncond_mask.unsqueeze(0)
 
-        # ============================================================
-        # Stage 2: Denoising Loop (Transformer already on GPU from training)
-        # ============================================================
         log_verbose(f"{trainer.log_prefix} [Sample] Running denoising loop (Transformer on GPU)")
 
-        # Prepare latents with seed
         latent_height = height // 8
         latent_width = width // 8
         generator = None
@@ -713,7 +685,6 @@ def generate_sample(
         trainer.transformer_original.to("cpu")
         torch.cuda.empty_cache()
 
-        # Move VAE to GPU for decoding
         if vae_device != trainer.device:
             print(f"{trainer.log_prefix} [Sample] Moving VAE to GPU for decoding")
             trainer.vae.to(device=trainer.device, dtype=trainer.vae_dtype)
@@ -721,7 +692,6 @@ def generate_sample(
         # Decode latents
         image = _decode_zimage_latents(trainer, latents)
 
-        # Move VAE back to CPU
         if vae_device != trainer.device:
             print(f"{trainer.log_prefix} [Sample] Moving VAE back to CPU")
             trainer.vae.to(device=vae_device, dtype=trainer.vae_dtype)
@@ -730,12 +700,8 @@ def generate_sample(
         del latents
         torch.cuda.empty_cache()
 
-        # ============================================================
-        # Stage 4: Restore Transformer and Optimizer State to GPU
-        # ============================================================
         print(f"{trainer.log_prefix} [Sample] Restoring Transformer and Optimizer state to GPU")
 
-        # Move Transformer back to GPU
         trainer.transformer_original.to(transformer_device)
 
         # CRITICAL: Move Optimizer state back to GPU (skip for Ring Buffer optimizers)
@@ -796,7 +762,6 @@ def _run_zimage_denoising_loop(
     total_steps = len(scheduler.timesteps)
     with torch.no_grad(), torch.autocast(device_type=trainer.device.type, dtype=compute_dtype):
         for i, t in enumerate(tqdm(scheduler.timesteps, desc="Generating")):
-            # Check for stop flag during sample generation (allow graceful shutdown)
             stop_flag_file = trainer.output_dir / ".stop_training"
             if stop_flag_file.exists():
                 print(f"\n{trainer.log_prefix} [Sample] Stop flag detected during sample generation, aborting...")
@@ -808,7 +773,6 @@ def _run_zimage_denoising_loop(
                     step_progress_callback(total_steps, total_steps)
                 continue
 
-            # Prepare input
             if guidance_scale > 1.0:
                 latent_input = torch.cat([latents] * 2)
                 embeds_input = torch.cat([uncond_embeds, prompt_embeds])
@@ -835,10 +799,8 @@ def _run_zimage_denoising_loop(
             latent_input_5d = latent_input.unsqueeze(2)  # [B, C, H, W] -> [B, C, 1, H, W]
             latent_input_list = list(latent_input_5d.unbind(dim=0))  # List of [C, 1, H, W]
 
-            # Convert embeddings to list (each item: [seq_len, 2560])
             embeds_input_list = list(embeds_input.unbind(dim=0))
 
-            # Call transformer (inference interface: positional args, List format)
             model_out_list = trainer.transformer_original(
                 latent_input_list,
                 timestep,
@@ -886,7 +848,6 @@ def _decode_zimage_latents(trainer, latents: torch.Tensor) -> Image.Image:
             latents = trainer.vae.post_quant_conv(latents)
         image = trainer.vae.decoder(latents)
 
-    # Convert to PIL
     image = (image / 2 + 0.5).clamp(0, 1)
     image = image.cpu().permute(0, 2, 3, 1).float().numpy()
     image = (image * 255).astype(np.uint8)[0]

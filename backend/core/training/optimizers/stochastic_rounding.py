@@ -102,7 +102,6 @@ def copy_stochastic_bf16(target: torch.Tensor, source: torch.Tensor) -> None:
     # Uniform random in the 16 discarded mantissa bits.
     result = torch.randint_like(source, dtype=torch.int32, low=0, high=(1 << 16))
 
-    # Add it to the FP32 bit pattern, then truncate to the top 16 bits.
     result.add_(source.view(dtype=torch.int32))
     result.bitwise_and_(-65536)  # 0xFFFF0000
 
@@ -193,9 +192,6 @@ def stochastic_round_(param: torch.Tensor, master: Optional[torch.Tensor]) -> No
     copy_stochastic_bf16(param, master)
 
 
-# ---------------------------------------------------------------------------
-# Interposing on optimizers that write BF16 parameters themselves
-# ---------------------------------------------------------------------------
 
 # Set on a per-parameter update function that already applies stochastic
 # rounding internally, so ``attach_stochastic_rounding`` leaves it alone instead

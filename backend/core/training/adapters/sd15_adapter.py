@@ -54,9 +54,6 @@ def sd15_modelspec_metadata(trainer) -> Dict[str, str]:
     return md
 
 
-# ============================================================
-# SD1.5 LoRA Adapter
-# ============================================================
 
 class SD15LoRAAdapter(BaseLoRAAdapter):
     """LoRA adapter for SD1.5 models."""
@@ -80,9 +77,7 @@ class SD15LoRAAdapter(BaseLoRAAdapter):
         count = 0
         unet = self.trainer.unet
 
-        # Find all Transformer2DModel blocks
         for block_name, block_module in unet.named_modules():
-            # Find Transformer2DModel blocks
             if block_module.__class__.__name__ != "Transformer2DModel":
                 continue
 
@@ -93,11 +88,8 @@ class SD15LoRAAdapter(BaseLoRAAdapter):
             # targets. The class-name test then skips the wrapper itself.
             for child_name, child_module in named_modules_outside_adapters(block_module):
                 if child_module.__class__.__name__ == "Linear":
-                    # Build LoRA name: lora_unet_{block_name}_{child_name}
-                    # Replace '.' with '_' for diffusers style naming
                     lora_name = f"lora_unet_{block_name}_{child_name}".replace(".", "_")
 
-                    # Create LoRA layer
                     lora_layer = self.build_branch(child_module, lora_name)
 
                     # Replace original Linear with LoRA layer
@@ -112,7 +104,6 @@ class SD15LoRAAdapter(BaseLoRAAdapter):
                             else:
                                 parent_module = getattr(parent_module, part)
 
-                        # Set the final attribute
                         attr_name = path_parts[-1]
                         if attr_name.isdigit():
                             parent_module[int(attr_name)] = lora_layer
@@ -181,9 +172,6 @@ class SD15LoRAAdapter(BaseLoRAAdapter):
         }
 
 
-# ============================================================
-# SD1.5 Full Parameter Adapter
-# ============================================================
 
 class SD15FullParameterAdapter(BaseFullParameterAdapter):
     """Full parameter adapter for SD1.5 models."""
@@ -193,7 +181,6 @@ class SD15FullParameterAdapter(BaseFullParameterAdapter):
         trainer = self.trainer
         reject_quantized_base(trainer.unet, model_label="SD1.5")
 
-        # Set requires_grad based on configuration
         if trainer.train_unet and trainer.unet is not None:
             trainer.unet.requires_grad_(True)
             trainer.unet.train()
@@ -270,7 +257,6 @@ class SD15FullParameterAdapter(BaseFullParameterAdapter):
 
         combined_state_dict = {}
 
-        # Save U-Net weights: convert diffusers -> CompVis/LDM format
         if trainer.train_unet and trainer.unet is not None:
             print(f"[SD15FullParameterAdapter] Collecting U-Net weights (diffusers -> CompVis)...")
             unet_state = trainer.unet.state_dict()
@@ -303,7 +289,6 @@ class SD15FullParameterAdapter(BaseFullParameterAdapter):
             for key, value in converted_vae.items():
                 combined_state_dict[f"first_stage_model.{key}"] = value.cpu()
 
-        # Save Text Encoder weights (CLIP ViT-L, no conversion needed)
         if trainer.train_text_encoder and trainer.text_encoder is not None:
             print(f"[SD15FullParameterAdapter] Collecting Text Encoder weights...")
             te_state = trainer.text_encoder.state_dict()

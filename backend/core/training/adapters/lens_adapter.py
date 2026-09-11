@@ -38,9 +38,6 @@ from core.models.lens.lens_lora import (
 )
 
 
-# ---------------------------------------------------------------------------
-# LoRA adapter
-# ---------------------------------------------------------------------------
 
 class LensLoRAAdapter(BaseLoRAAdapter):
     """LoRA adapter for Lens DiT models."""
@@ -110,9 +107,6 @@ class LensLoRAAdapter(BaseLoRAAdapter):
         }
 
 
-# ---------------------------------------------------------------------------
-# Full-parameter adapter
-# ---------------------------------------------------------------------------
 
 class LensFullParameterAdapter(BaseFullParameterAdapter):
     """Full-parameter training adapter for Lens DiT models.

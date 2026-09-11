@@ -26,7 +26,6 @@ class DanbooruDeficiencyProvider:
         self._lock = threading.Lock()
         self._targets: Set[str] = set()
 
-    # -- Producer API (training thread) --------------------------------
 
     def set_targets(self, normalized_tags: List[str]) -> None:
         """Replace the current target set with ``normalized_tags``.
@@ -37,7 +36,6 @@ class DanbooruDeficiencyProvider:
         with self._lock:
             self._targets = {t for t in normalized_tags if t}
 
-    # -- Consumer API (sampler worker) ---------------------------------
 
     def get_targets(self) -> Set[str]:
         """Return a snapshot of the current low-F1 target tags."""

@@ -38,7 +38,6 @@ def load_components(trainer) -> None:
         torch_dtype=trainer.weight_dtype,
     )
 
-    # Store components on the trainer using the standard slots.
     trainer.transformer = components["transformer"]
     trainer.transformer_original = trainer.transformer   # No wrapper for Lens.
     trainer.vae = components["vae"]
@@ -522,12 +521,10 @@ def generate_sample(
     trainer.vae.eval()
 
     try:
-        # --- Offload transformer (+ optimizer state) to CPU for TE encode ---
         trainer.move_main_model_to_cpu()
         trainer._relocate_main_model_optimizer_state("cpu")
         torch.cuda.empty_cache()
 
-        # --- Stage 1: text encoding (reloads mxfp4 TE if freed) ---
         trainer.move_text_encoder_to_gpu()
         encoder_features, encoder_mask = _lens_encode_prompt(
             trainer.text_encoder, trainer.tokenizer, prompt, negative_prompt,
@@ -568,7 +565,6 @@ def generate_sample(
             )
         del encoder_features, encoder_mask
 
-        # --- Stage 3: VAE decode ---
         trainer.move_main_model_to_cpu()
         torch.cuda.empty_cache()
         trainer.move_vae_to_gpu()
@@ -577,7 +573,6 @@ def generate_sample(
         trainer.move_vae_to_cpu()
         del latents
 
-        # --- Restore transformer to GPU for continued training ---
         trainer.move_main_model_to_gpu()
         trainer._relocate_main_model_optimizer_state(device)
         torch.cuda.empty_cache()

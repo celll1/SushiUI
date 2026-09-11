@@ -87,7 +87,6 @@ class SenseNovaFourPhaseBackward:
         self._phase_three_ran = False
         return _TrainingPrefixCache(layers, packed=getattr(cache, "packed", None))
 
-    # -- shared window ------------------------------------------------------
 
     def begin_window(self, size: int) -> None:
         """Declare how many generation backwards share the current cut."""

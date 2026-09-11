@@ -81,9 +81,6 @@ def _is_hf_repo_or_url(path: str) -> "tuple[bool, str]":
     return False, ""
 
 
-# ------------------------------------------------------------------
-# LoRA primitives
-# ------------------------------------------------------------------
 
 class LoRALinear(nn.Module):
     """Drop-in replacement for nn.Linear with LoRA adapters.
@@ -127,9 +124,6 @@ class LoRALinear(nn.Module):
             self.base.weight.data += delta
 
 
-# ------------------------------------------------------------------
-# Vision encoder loader
-# ------------------------------------------------------------------
 
 def _load_vision_encoder(
     safetensors_path: str,
@@ -160,7 +154,6 @@ def _load_vision_encoder(
     # Strip surrounding quotes that may come from user input
     safetensors_path = safetensors_path.strip().strip('"').strip("'")
 
-    # --- HuggingFace repo / URL shortcut ---
     is_hf, resolved_repo = _is_hf_repo_or_url(safetensors_path)
     if is_hf:
         print(f"[VisionEncoder] Loading directly from HuggingFace repo: {resolved_repo} "
@@ -180,7 +173,6 @@ def _load_vision_encoder(
         full_model = AutoModel.from_pretrained(repo_id, dtype=torch.float32, **_ai)
     vision_encoder = full_model.vision_model
 
-    # Load our fine-tuned / custom weights
     state_dict = load_file(safetensors_path)
 
     # --- Merged tagger checkpoint detection (F2) ---
@@ -264,9 +256,6 @@ def _load_vision_encoder(
     return vision_encoder
 
 
-# ------------------------------------------------------------------
-# Custom Attention Pooling
-# ------------------------------------------------------------------
 
 class CustomAttentionPooling(nn.Module):
     """Learnable single-query attention pooling over patch tokens.
@@ -337,9 +326,6 @@ class CustomAttentionPooling(nn.Module):
         return self.proj_v(x)  # [B, N, hidden_proj_dim]
 
 
-# ------------------------------------------------------------------
-# Full-parameter model
-# ------------------------------------------------------------------
 
 class SigLIP2TaggerModel(nn.Module):
     """SigLIP2 vision encoder + classification head (full-parameter training).
@@ -416,9 +402,6 @@ class SigLIP2TaggerModel(nn.Module):
             pooled = out.pooler_output                          # [B, hidden_size]
         return self.head(pooled)                                # [B, num_tags]
 
-    # ------------------------------------------------------------------
-    # Head expansion (live vocabulary growth)
-    # ------------------------------------------------------------------
 
     def expand_head(self, new_num_tags: int) -> Tuple[nn.Parameter, Optional[nn.Parameter]]:
         """Replace ``self.head`` with a larger Linear layer.
@@ -461,9 +444,6 @@ class SigLIP2TaggerModel(nn.Module):
         self.head = new_head
         return new_head.weight, new_head.bias
 
-    # ------------------------------------------------------------------
-    # Save / load
-    # ------------------------------------------------------------------
 
     def save_checkpoint(self, output_dir: str, name: str, metadata: Optional[dict] = None) -> str:
         """Save model weights and metadata JSON. Returns path to safetensors file."""
@@ -558,9 +538,6 @@ class SigLIP2TaggerModel(nn.Module):
         return {"total": total, "trainable": trainable}
 
 
-# ------------------------------------------------------------------
-# LoRA model
-# ------------------------------------------------------------------
 
 class SigLIP2TaggerLoRAModel(nn.Module):
     """SigLIP2 vision encoder with LoRA adapters + classification head.
@@ -725,10 +702,6 @@ class SigLIP2TaggerLoRAModel(nn.Module):
         path_st   = os.path.join(output_dir, f"{name}.safetensors")
         path_meta = os.path.join(output_dir, f"{name}_metadata.json")
 
-        # Build merged state dict by deep-copying the full model state dict.
-        # LoRALinear modules store the original weight as ``base.weight``
-        # plus ``lora_A`` / ``lora_B``; we materialise the merged weight and
-        # produce a state dict that looks like a plain SigLIP2TaggerModel.
         merged_sd: Dict[str, torch.Tensor] = {}
         scale = self.lora_alpha / self.lora_rank
 
@@ -876,9 +849,6 @@ class SigLIP2TaggerLoRAModel(nn.Module):
         return {"total": total, "trainable": trainable, "lora": lora_only}
 
 
-# ------------------------------------------------------------------
-# Factory
-# ------------------------------------------------------------------
 
 def _block_copy(dst: torch.Tensor, src: torch.Tensor) -> str:
     """Copy ``src`` into ``dst``'s top-left corner, axis-by-axis.

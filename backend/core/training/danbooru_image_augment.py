@@ -86,9 +86,6 @@ def _normalize_for_count(tag: str) -> str:
     return tag.strip().lower().replace("_", " ")
 
 
-# ----------------------------------------------------------------------------
-# Auto deficiency: dataset tag-frequency analysis
-# ----------------------------------------------------------------------------
 
 class DatasetTagFrequencyAnalyzer:
     """Build a tag-frequency histogram from the training dataset captions and
@@ -142,9 +139,6 @@ class DatasetTagFrequencyAnalyzer:
         return [tag.replace(" ", "_") for tag, _c in cand]
 
 
-# ----------------------------------------------------------------------------
-# Background collector
-# ----------------------------------------------------------------------------
 
 class _ReadyItem:
     """One collected image ready for injection.  Holds the COMPRESSED image
@@ -243,9 +237,6 @@ class DanbooruImageCollector:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
 
     def start(self) -> None:
         self._stop.clear()
@@ -271,9 +262,6 @@ class DanbooruImageCollector:
         with self._cycle_lock:
             self._deficiency_queries = [q.strip() for q in queries if q.strip()]
 
-    # ------------------------------------------------------------------
-    # Consumer API
-    # ------------------------------------------------------------------
 
     def has_full_batch(self, n: int) -> bool:
         with self._lock:
@@ -328,9 +316,6 @@ class DanbooruImageCollector:
                 **_speed_metrics,
             }
 
-    # ------------------------------------------------------------------
-    # Worker
-    # ------------------------------------------------------------------
 
     def _pick_path(self) -> Optional[str]:
         """Weighted random choice of collection path among those with at least

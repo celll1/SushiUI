@@ -37,9 +37,6 @@ from typing import Dict, List, Optional
 _GEN_BYTES = 8  # little-endian uint64 generation counter
 
 
-# ----------------------------------------------------------------------------
-# IPC store (writer side, main process)
-# ----------------------------------------------------------------------------
 
 class TagRefreshStore:
     """Generation-gated override channel shared with DataLoader workers.
@@ -98,9 +95,6 @@ class TagRefreshStore:
                 pass
 
 
-# ----------------------------------------------------------------------------
-# Worker-side reader (called from TaggerDataset.__getitem__)
-# ----------------------------------------------------------------------------
 
 class TagRefreshReader:
     """Per-worker reader. Cheap generation check + lazy payload reload.
@@ -151,9 +145,6 @@ class TagRefreshReader:
         return self._overrides.get(idx)
 
 
-# ----------------------------------------------------------------------------
-# Detector (background thread, main process)
-# ----------------------------------------------------------------------------
 
 class TagRefreshDetector:
     """Polls datasets.db for edited captions and publishes overrides.
@@ -230,7 +221,6 @@ class TagRefreshDetector:
             self._thread.join(timeout=5.0)
         self.store.close()
 
-    # -- internals ---------------------------------------------------------
 
     def _idx_for_item_ids(self, changed_ids: List[int]) -> Dict[int, int]:
         """Return {item_id: sample_idx} for the changed ids using numpy (no giant
@@ -292,7 +282,6 @@ class TagRefreshDetector:
             con.execute("PRAGMA busy_timeout=10000")
             cur = con.cursor()
             ph = ",".join("?" for _ in self.dataset_ids)
-            # 1) which items had a tags-caption edited since last_seen?
             cur.execute(
                 f"""SELECT DISTINCT c.item_id
                       FROM dataset_captions c
@@ -316,8 +305,6 @@ class TagRefreshDetector:
                 self._last_seen = cycle_start
                 return
 
-            # 2) rebuild the FULL effective tag list for each changed item
-            #    (an item may carry several tags-captions; mirror _build_samples).
             target_ids = list(id_to_idx.keys())
             from core.tagger.tagger_dataset import resolve_caption_tags
             n_applied = 0

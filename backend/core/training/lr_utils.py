@@ -183,7 +183,6 @@ def reassert_config_lr(
                   f"step {position} ({exc}); applying the base LR unscaled")
             multipliers = [1.0] * n
 
-    # ---- write the param groups ----------------------------------------
     for group, base, mult in zip(groups, base_lrs, multipliers):
         group["lr"] = base * mult
         # LambdaLR re-reads initial_lr whenever a scheduler is rebuilt with
@@ -192,7 +191,6 @@ def reassert_config_lr(
         if "initial_lr" in group:
             group["initial_lr"] = base
 
-    # ---- write the scheduler's base_lrs --------------------------------
     if lr_scheduler is not None and hasattr(lr_scheduler, "base_lrs"):
         sched_bases = resolve_group_lrs(
             len(lr_scheduler.base_lrs), cfg_lr, fallback_lr, log_prefix,
@@ -202,7 +200,6 @@ def reassert_config_lr(
             lr_scheduler.base_lrs[i] = value
         lr_scheduler._last_lr = [float(g["lr"]) for g in groups]
 
-    # ---- report ---------------------------------------------------------
     if verbose:
         names = list(component_names or [])
         for i, (prev, base, mult) in enumerate(zip(prev_lrs, base_lrs, multipliers)):

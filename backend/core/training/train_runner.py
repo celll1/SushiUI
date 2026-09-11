@@ -69,7 +69,6 @@ from pathlib import Path
 from typing import Dict, Any, List
 from datetime import datetime
 
-# Add backend directory to path for imports (extensions, database, etc.)
 backend_dir = Path(__file__).parent.parent.parent  # backend/
 sys.path.insert(0, str(backend_dir))
 
@@ -1562,14 +1561,11 @@ def detect_start_epoch_from_checkpoint(output_dir: str, resume_from_checkpoint: 
     if not output_path.exists():
         return 0
 
-    # Find the latest checkpoint step
     if resume_from_checkpoint == "latest":
-        # Find all state files
         state_files = list(output_path.glob("*_step_*_state.json"))
         if not state_files:
             return 0
 
-        # Extract step numbers and find the latest
         def get_step(path):
             try:
                 step_str = path.stem.split("_step_")[-1].replace("_state", "")
@@ -1594,14 +1590,12 @@ def detect_start_epoch_from_checkpoint(output_dir: str, resume_from_checkpoint: 
         if not checkpoint_path.exists():
             return 0
 
-        # Extract step from checkpoint filename
         try:
             step_str = checkpoint_path.stem.split("_step_")[-1]
             step = int(step_str)
         except:
             return 0
 
-        # Find corresponding state file
         state_file_pattern = f"*_step_{step:06d}_state.json"
         state_files = list(output_path.glob(state_file_pattern))
 
@@ -1615,7 +1609,6 @@ def detect_start_epoch_from_checkpoint(output_dir: str, resume_from_checkpoint: 
 
         latest_state_file = state_files[0]
 
-    # Read epoch from state file
     try:
         with open(latest_state_file, 'r') as f:
             state = json.load(f)
@@ -1652,21 +1645,17 @@ def _compute_dataset_cache_key(db: Session, dataset_ids: list, caption_types: li
     key_parts = []
 
     for dataset_id in sorted(dataset_ids):
-        # Get dataset info
         dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
         if not dataset:
             continue
 
-        # Get item count and latest update
         item_count = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).count()
 
-        # Get latest updated_at from items
         from sqlalchemy import func
         latest_update = db.query(func.max(DatasetItem.updated_at)).filter(
             DatasetItem.dataset_id == dataset_id
         ).scalar()
 
-        # Get latest caption update
         latest_caption_update = db.query(func.max(DatasetCaption.updated_at)).join(
             DatasetItem, DatasetCaption.item_id == DatasetItem.id
         ).filter(DatasetItem.dataset_id == dataset_id).scalar()
@@ -1893,7 +1882,6 @@ def get_dataset_items_fast(db: Session, dataset_id: int, caption_types: list = N
             skipped_missing += 1
             continue
 
-        # Find primary caption
         primary_caption = None
         if skip_captions:
             pass  # pixels-only (VAE fine-tune): item.captions is never accessed
@@ -2012,7 +2000,6 @@ def get_dataset_items_cached(
     # dataset's load even began (e.g. between datasets in a multi-dataset run).
     _check_init_stop(output_dir)
 
-    # Get dataset info for caption config
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset:
         raise ValueError(f"Dataset {dataset_id} not found")
@@ -2206,7 +2193,6 @@ def _process_cached_items(
                 raw_caption, caption_config.get("caption_dropout_rate", 0.0)
             )
 
-        # Build processed item dict
         processed_item = {
             "image_path": item["image_path"],
             "caption": processed_caption,
@@ -2235,7 +2221,6 @@ def _process_cached_items(
         else:
             processed_item["item_type"] = item.get("item_type", "single")
 
-        # Add reference images if available
         if item.get("related_images") and "reference" in item.get("related_images", {}):
             processed_item["reference_images"] = item["related_images"]["reference"]
 
@@ -2274,12 +2259,10 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0, run_id: 
     Returns:
         List of dataset items with processed captions
     """
-    # Get dataset and its caption processing config
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset:
         raise ValueError(f"Dataset {dataset_id} not found")
 
-    # Get caption processing config (or defaults)
     caption_config = dataset.caption_processing or get_default_caption_processing_config()
 
     # Debug: Log caption config for first item only
@@ -2294,7 +2277,6 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0, run_id: 
     print(f"[TrainRunner] Processing {total_items} items from dataset {dataset_id}...")
 
     dataset_items = []
-    # Check if category_order is enabled
     has_category_order = caption_config.get("category_order") and len(caption_config.get("category_order", [])) > 0
 
     # Determine which caption types to use
@@ -2314,7 +2296,6 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0, run_id: 
         selected_caption_types = None  # Will auto-select per item
         print(f"[TrainRunner] No caption types specified - will auto-select per item (priority: tags > natural_language)")
 
-    # Update phase to "initializing" for dataset loading
     _update_phase_progress(run_id, "initializing", 0.0, f"Loading dataset: 0/{total_items} items")
 
     for idx, item in enumerate(items):
@@ -2328,7 +2309,6 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0, run_id: 
             progress_pct = ((idx + 1) / total_items) * 100.0
             print(f"[TrainRunner] Processed {idx + 1}/{total_items} items ({progress_pct:.1f}%)")
 
-        # Get caption based on selected caption_types
         primary_caption = None
         if selected_caption_types:
             # Try each selected caption type in order
@@ -2357,7 +2337,6 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0, run_id: 
 
         raw_caption = primary_caption.content if primary_caption else ""
 
-        # Check if caption is tags format (Danbooru tags) or natural language
         is_tags_format = primary_caption.is_tags_format if primary_caption and hasattr(primary_caption, 'is_tags_format') else True  # Default to True for backward compatibility
 
         if is_tags_format:
@@ -2414,7 +2393,6 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0, run_id: 
             )
             print(f"[TrainRunner] Natural language caption (skipping tag processing): {raw_caption[:50]}...")
 
-        # Build dataset item dict
         item_dict = {
             "image_path": item.image_path,
             "caption": processed_caption,
@@ -2424,7 +2402,6 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0, run_id: 
         # LTX-2.3 video items: carry item_type + probed video metadata (see fast path).
         _apply_video_metadata(item_dict, item.item_type, item.exif_data, item.image_path)
 
-        # Add reference images if available
         if item.related_images and "reference" in item.related_images:
             item_dict["reference_images"] = item.related_images["reference"]
 
@@ -2685,8 +2662,6 @@ def main():
     # Declare global logger
     global logger
 
-    # Set up signal handlers to convert SIGTERM to KeyboardInterrupt
-    # This allows graceful shutdown with checkpoint saving when user stops training
     def signal_handler(signum, frame):
         print(f"\n[TrainRunner] Received signal {signum}, converting to KeyboardInterrupt for graceful shutdown...")
         raise KeyboardInterrupt()
@@ -2695,36 +2670,27 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)  # Also handle Ctrl+C explicitly
     print(f"[TrainRunner] Signal handlers registered (SIGTERM, SIGINT)")
 
-    # Load config
     config = load_config(config_path)
     print(f"[TrainRunner] Loaded config: {config['job']}")
 
-    # ============================================================
-    # Set Up Training Log File
-    # ============================================================
     try:
-        # Get training folder from config
         training_folder = config['config']['process'][0].get('training_folder')
         if training_folder:
             training_folder_path = Path(training_folder)
 
-            # Create logs directory
             logs_dir = training_folder_path / "logs"
             logs_dir.mkdir(parents=True, exist_ok=True)
 
-            # Create log file with timestamp
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             log_filename = f"training_{timestamp}.log"
             log_file_path = logs_dir / log_filename
 
-            # Open log file
             log_file = open(log_file_path, 'w', encoding='utf-8')
 
             # Redirect stdout and stderr to both console and file
             sys.stdout = TeeOutput(original_stdout, log_file)
             sys.stderr = TeeOutput(original_stderr, log_file)
 
-            # Initialize global logger
             logger = TrainingLogger(log_file=log_file)
 
             print(f"[TrainRunner] Training log will be saved to: {log_file_path}")
@@ -2747,7 +2713,6 @@ def main():
     # Reconcile before the ORM builds a SELECT containing newly added columns.
     ensure_training_schema()
 
-    # Get database sessions (separate DBs for training and datasets)
     training_db_gen = get_training_db()
     training_db = next(training_db_gen)
 
@@ -2756,7 +2721,6 @@ def main():
     progress_reporter = None
 
     try:
-        # Get training run info (from training.db)
         run = training_db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
         if not run:
             print(f"[TrainRunner] ERROR: Training run {run_id} not found")
@@ -2778,7 +2742,6 @@ def main():
 
         dataset_configs = []
         if yaml_datasets:
-            # Build dataset_configs from YAML datasets section
             for yaml_ds in yaml_datasets:
                 from core.training.dataset_params import read_dataset_params
                 ds_config = {
@@ -2824,13 +2787,9 @@ def main():
         _preflight_minimax_h3_reference_dataset_contract(
             run.base_model_path, dataset_configs, datasets_db)
 
-        # ============================================================
-        # Detect Start Epoch for Resume Training (before dataset loading)
-        # ============================================================
         resume_from_checkpoint = train_config.get('resume_from_checkpoint')
 
-        # Detect start_epoch from checkpoint to load dataset with correct epoch_num
-        # This avoids redundant dataset scanning when resuming (initial load + epoch start)
+        # Resolve first so a resumed epoch is not scanned twice during startup.
         start_epoch = detect_start_epoch_from_checkpoint(run.output_dir, resume_from_checkpoint)
         if start_epoch > 0:
             print(f"[TrainRunner] Resume training detected: loading dataset for epoch {start_epoch}")
@@ -2857,7 +2816,6 @@ def main():
 
         print(f"[TrainRunner] Loading {len(dataset_configs)} dataset(s)...")
 
-        # Load all datasets and combine items
         all_dataset_items = []
         dataset_unique_ids = []  # Collect unique IDs for cache management
         for i, ds_config in enumerate(dataset_configs):
@@ -2920,16 +2878,12 @@ def main():
             print("[TrainRunner] ERROR: All datasets are empty")
             sys.exit(1)
 
-        # Use combined dataset items
         dataset_items = all_dataset_items
 
         # Extract remaining config sections (process_config and train_config already extracted above)
         network_config = process_config.get('network', {})
         model_config = process_config.get('model', {})
 
-        # ============================================================
-        # Dataset Wrapper Class for New Interface
-        # ============================================================
         class TrainRunnerDataset:
             """
             Dataset wrapper for train_runner.py to use new BaseTrainer.train() interface.
@@ -2985,7 +2939,6 @@ def main():
                 task_views = ds_params["task_views"]
                 from core.training.sensenova_tasks import required_caption_types
 
-                # Use cached loading - caption processing is applied per-epoch
                 items = get_dataset_items_cached(
                     db=datasets_db,
                     dataset_id=dataset_id,
@@ -3011,12 +2964,8 @@ def main():
 
                 return items
 
-        # ============================================================
-        # Prepare Datasets for New Interface
-        # ============================================================
         print(f"[TrainRunner] Preparing {len(dataset_configs)} dataset(s) for training...")
 
-        # Convert dataset_items to Dataset objects, grouped by unique_id
         from collections import defaultdict
         items_by_dataset = defaultdict(lambda: {"items": [], "config": None})
 
@@ -3043,9 +2992,6 @@ def main():
         for ds in training_datasets:
             print(f"  Dataset {ds.unique_id}: {len(ds.items)} items")
 
-        # ============================================================
-        # Determine Training Method
-        # ============================================================
 
         if network_type == 'lora':
             print("[TrainRunner] Training method: LoRA")
@@ -3105,13 +3051,11 @@ def main():
             min_snr_gamma = train_config.get('min_snr_gamma', 5.0)  # Min-SNR gamma weighting (default: 5.0)
             reconstruction_loss_weight = train_config.get('reconstruction_loss_weight', 0.0)  # Dual loss weight (default: 0.0, pred loss only)
 
-            # Get component-specific learning rates from train_config
             unet_lr = train_config.get('unet_lr')
             text_encoder_lr = train_config.get('text_encoder_lr')
             text_encoder_1_lr = train_config.get('text_encoder_1_lr')
             text_encoder_2_lr = train_config.get('text_encoder_2_lr')
 
-            # Get optimizer options and hyperparameters from train_config
             optimizer_cautious = train_config.get('optimizer_cautious', False)
             optimizer_beta1 = train_config.get('optimizer_beta1')
             optimizer_beta2 = train_config.get('optimizer_beta2')
@@ -3139,7 +3083,6 @@ def main():
             train_unet = train_config.get('train_unet', True)
             train_text_encoder = train_config.get('train_text_encoder', False)
 
-            # Initialize trainer
             trainer = LoRATrainer(
                 model_path=run.base_model_path,
                 output_dir=run.output_dir,
@@ -3197,16 +3140,11 @@ def main():
             # Note: setup_optimizer() is now called inside train() method
             # This avoids double initialization and provides clearer separation of concerns
 
-            # Get optimizer settings (passed to train() method)
             optimizer_type = train_config.get('optimizer', 'adamw8bit')
             lr_scheduler_type = train_config.get('lr_scheduler', 'constant')
 
-            # ============================================================
-            # Validate Prediction Configuration (Unified Framework)
-            # ============================================================
             from core.model_loader import ModelLoader
 
-            # Detect model's prediction configuration
             model_type = ModelLoader.detect_model_type(run.base_model_path)
             model_pred_config = ModelLoader.detect_prediction_config(run.base_model_path, model_type)
 
@@ -3215,7 +3153,6 @@ def main():
             print(f"  Prediction Target: {model_pred_config['prediction_target']}")
             print(f"  Detection Source: {model_pred_config['source']}")
 
-            # Get training configuration (with "auto" support)
             training_noise_process = train_config.get('noise_process', 'auto')
             training_prediction_target = train_config.get('prediction_target', 'auto')
             strict_validation = train_config.get('strict_validation', False)
@@ -3261,15 +3198,11 @@ def main():
             else:
                 print(f"[TrainRunner] OK Prediction configuration validated successfully")
 
-            # Store final training config for trainer
             trainer.noise_process = training_noise_process
             trainer.prediction_target = training_prediction_target
 
             _validate_latent_io(trainer, train_config)
 
-            # ============================================================
-            # Setup Regularization Loss (SNR or Energy)
-            # ============================================================
             regularization_type = train_config.get('regularization_type', None)
             if regularization_type:
                 print(f"[TrainRunner] Initializing {regularization_type.upper()} regularization...")
@@ -3318,7 +3251,6 @@ def main():
                 run.total_steps = total_steps
                 training_db.commit()
 
-            # Update status to running
             run.status = "running"
             training_db.commit()
             print("[TrainRunner] Status updated to 'running'")
@@ -3335,7 +3267,6 @@ def main():
                     print(f"    Prompt {i}: positive={prompt.get('positive', '')[:50]}..., negative={prompt.get('negative', '')[:50]}...")
             print(f"  sample_config: {sample_config}")
 
-            # Get debug parameters from config
             debug_latents = train_config.get('debug_latents', False)
             debug_latents_every = train_config.get('debug_latents_every', 50)
             convergence_diagnostics_enable = train_config.get('convergence_diagnostics_enable', False)
@@ -3348,7 +3279,6 @@ def main():
             crop_decode_loss_snr_range = train_config.get('crop_decode_loss_snr_range', '')
 
 
-            # Get bucketing parameters from config
             enable_bucketing = train_config.get('enable_bucketing', False)
             base_resolutions = train_config.get('base_resolutions', [1024])
             bucket_strategy = train_config.get('bucket_strategy', 'resize')
@@ -3356,7 +3286,6 @@ def main():
 
             _warn_removed_cache_keys(process_config)
 
-            # Convert save_every parameters to new interface (save_every_n_steps)
             save_every_unit = process_config['save'].get('save_every_unit', 'steps')
             save_every = process_config['save'].get('save_every', 100)
             max_step_saves_to_keep = process_config['save'].get('max_step_saves_to_keep', 3)
@@ -3371,7 +3300,6 @@ def main():
             print(f"[TrainRunner] Max step saves to keep: {max_step_saves_to_keep} "
                   f"(optimizer states: {max_optimizer_saves_to_keep})")
 
-            # Get sample generation settings
             sample_guidance_scale = sample_config["guidance_scale"]
             sample_steps = sample_config["sample_steps"]
             sample_width = sample_config["width"]
@@ -3389,12 +3317,10 @@ def main():
             if resume_from_checkpoint:
                 print(f"[TrainRunner] Resume from checkpoint: {resume_from_checkpoint}")
 
-            # Get text encoding mode
             text_encoding_mode = train_config.get('text_encoding_mode', 'swap_onthefly')
             text_encoding_swap_interval = train_config.get('text_encoding_swap_interval', 256)
             text_encoding_prefetch_depth = train_config.get('text_encoding_prefetch_depth', 4)
 
-            # Get latent encoding mode
             latent_encoding_mode = train_config.get('latent_encoding_mode', 'swap_onthefly')
             latent_encoding_swap_interval = train_config.get('latent_encoding_swap_interval', 256)
 
@@ -3404,7 +3330,6 @@ def main():
             trajectory_blend_alpha = train_config.get('trajectory_blend_alpha', 0.7)
             timestep_sampling_config = train_config.get('timestep_sampling', None)
 
-            # Get reference image settings
             use_reference_images = train_config.get('use_reference_images', False)
             vision_encoder_path = train_config.get('vision_encoder_path', None)
             train_vision_encoder = train_config.get('train_vision_encoder', False)
@@ -3420,7 +3345,6 @@ def main():
                 from core.training.priority_training import PriorityTrainingConfig
                 priority_training = {"_legacy_path": priority_training}
 
-            # Start training with new interface
             trainer.train(
                 datasets=training_datasets,
                 num_epochs=num_epochs if num_epochs else 1,
@@ -3497,7 +3421,6 @@ def main():
 
             print("[TrainRunner] Training completed successfully!")
 
-            # Update run status
             run.status = "completed"
             run.completed_at = datetime.utcnow()
             training_db.commit()
@@ -3602,7 +3525,6 @@ def main():
             print(f"[TrainRunner] ReLoRA config: merge_every={relora_merge_every} {relora_merge_unit}, "
                   f"restart_warmup={restart_warmup_steps}, reset_strategy={optimizer_reset_strategy}")
 
-            # Initialize ReLoRA trainer
             trainer = ReLoRATrainer(
                 # Base model settings
                 model_path=run.base_model_path,
@@ -3660,7 +3582,6 @@ def main():
                 train_config=train_config,
             )
 
-            # Get optimizer settings
             optimizer_type = train_config.get('optimizer', 'adamw8bit')
             lr_scheduler_type = train_config.get('lr_scheduler', 'constant')
 
@@ -3760,7 +3681,6 @@ def main():
                 run.total_steps = total_steps
                 training_db.commit()
 
-            # Update status to running
             run.status = "running"
             training_db.commit()
             print("[TrainRunner] Status updated to 'running'")
@@ -3768,7 +3688,6 @@ def main():
             sample_config = _resolve_training_sample_config(process_config, model_type)
             sample_prompts = sample_config["prompts"]
 
-            # Get debug parameters
             debug_latents = train_config.get('debug_latents', False)
             debug_latents_every = train_config.get('debug_latents_every', 50)
             convergence_diagnostics_enable = train_config.get('convergence_diagnostics_enable', False)
@@ -3781,13 +3700,11 @@ def main():
             crop_decode_loss_snr_range = train_config.get('crop_decode_loss_snr_range', '')
 
 
-            # Get bucketing parameters
             enable_bucketing = train_config.get('enable_bucketing', False)
             base_resolutions = train_config.get('base_resolutions', [1024])
 
             _warn_removed_cache_keys(process_config)
 
-            # Save settings
             save_every_unit = process_config['save'].get('save_every_unit', 'steps')
             save_every = process_config['save'].get('save_every', 100)
             max_step_saves_to_keep = process_config['save'].get('max_step_saves_to_keep', 3)
@@ -3839,7 +3756,6 @@ def main():
             param_tracking = train_config.get('param_tracking', False)
             param_tracking_interval = train_config.get('param_tracking_interval', 100)
 
-            # Start ReLoRA training
             trainer.train(
                 datasets=training_datasets,
                 num_epochs=num_epochs if num_epochs else 1,
@@ -3916,7 +3832,6 @@ def main():
 
             print("[TrainRunner] ReLoRA training completed successfully!")
 
-            # Update run status
             run.status = "completed"
             run.completed_at = datetime.utcnow()
             training_db.commit()
@@ -3988,7 +3903,6 @@ def main():
             prompt_chunking_mode = train_config.get('prompt_chunking_mode', 'a1111')
             max_prompt_chunks = train_config.get('max_prompt_chunks', 0)
 
-            # Get component-specific learning rates from train_config
             unet_lr = train_config.get('unet_lr')
             text_encoder_lr = train_config.get('text_encoder_lr')
             text_encoder_1_lr = train_config.get('text_encoder_1_lr')
@@ -4037,7 +3951,6 @@ def main():
             # rounding as implemented applies to bf16 parameters only.
             optimizer_stochastic_rounding = train_config.get('optimizer_stochastic_rounding', False)
 
-            # Initialize trainer
             trainer = FullParameterTrainer(
                 model_path=run.base_model_path,
                 output_dir=run.output_dir,
@@ -4099,16 +4012,11 @@ def main():
             # Note: setup_optimizer() is now called inside train() method
             # This avoids double initialization and provides clearer separation of concerns
 
-            # Get optimizer settings (passed to train() method)
             optimizer_type = train_config.get('optimizer', 'adamw8bit')
             lr_scheduler_type = train_config.get('lr_scheduler', 'constant')
 
-            # ============================================================
-            # Validate Prediction Configuration (Unified Framework)
-            # ============================================================
             from core.model_loader import ModelLoader
 
-            # Detect model's prediction configuration
             model_type = ModelLoader.detect_model_type(run.base_model_path)
             model_pred_config = ModelLoader.detect_prediction_config(run.base_model_path, model_type)
 
@@ -4117,7 +4025,6 @@ def main():
             print(f"  Prediction Target: {model_pred_config['prediction_target']}")
             print(f"  Detection Source: {model_pred_config['source']}")
 
-            # Get training configuration (with "auto" support)
             training_noise_process = train_config.get('noise_process', 'auto')
             training_prediction_target = train_config.get('prediction_target', 'auto')
             strict_validation = train_config.get('strict_validation', False)
@@ -4163,15 +4070,11 @@ def main():
             else:
                 print(f"[TrainRunner] OK Prediction configuration validated successfully")
 
-            # Store final training config for trainer
             trainer.noise_process = training_noise_process
             trainer.prediction_target = training_prediction_target
 
             _validate_latent_io(trainer, train_config)
 
-            # ============================================================
-            # Setup Regularization Loss (SNR or Energy)
-            # ============================================================
             regularization_type = train_config.get('regularization_type', None)
             if regularization_type:
                 print(f"[TrainRunner] Initializing {regularization_type.upper()} regularization...")
@@ -4218,7 +4121,6 @@ def main():
                 run.total_steps = total_steps
                 training_db.commit()
 
-            # Update status to running
             run.status = "running"
             training_db.commit()
             print("[TrainRunner] Status updated to 'running'")
@@ -4235,7 +4137,6 @@ def main():
                     print(f"    Prompt {i}: positive={prompt.get('positive', '')[:50]}..., negative={prompt.get('negative', '')[:50]}...")
             print(f"  sample_config: {sample_config}")
 
-            # Get debug parameters from config
             debug_latents = train_config.get('debug_latents', False)
             debug_latents_every = train_config.get('debug_latents_every', 50)
             convergence_diagnostics_enable = train_config.get('convergence_diagnostics_enable', False)
@@ -4248,7 +4149,6 @@ def main():
             crop_decode_loss_snr_range = train_config.get('crop_decode_loss_snr_range', '')
 
 
-            # Get bucketing parameters from config
             enable_bucketing = train_config.get('enable_bucketing', False)
             base_resolutions = train_config.get('base_resolutions', [1024])
             bucket_strategy = train_config.get('bucket_strategy', 'resize')
@@ -4256,7 +4156,6 @@ def main():
 
             _warn_removed_cache_keys(process_config)
 
-            # Convert save_every parameters to new interface (save_every_n_steps)
             save_every_unit = process_config['save'].get('save_every_unit', 'steps')
             save_every = process_config['save'].get('save_every', 100)
             max_step_saves_to_keep = process_config['save'].get('max_step_saves_to_keep', 3)
@@ -4271,7 +4170,6 @@ def main():
             print(f"[TrainRunner] Max step saves to keep: {max_step_saves_to_keep} "
                   f"(optimizer states: {max_optimizer_saves_to_keep})")
 
-            # Get sample generation settings
             sample_guidance_scale = sample_config["guidance_scale"]
             sample_steps = sample_config["sample_steps"]
             sample_width = sample_config["width"]
@@ -4289,12 +4187,10 @@ def main():
             if resume_from_checkpoint:
                 print(f"[TrainRunner] Resume from checkpoint: {resume_from_checkpoint}")
 
-            # Get text encoding mode
             text_encoding_mode = train_config.get('text_encoding_mode', 'swap_onthefly')
             text_encoding_swap_interval = train_config.get('text_encoding_swap_interval', 256)
             text_encoding_prefetch_depth = train_config.get('text_encoding_prefetch_depth', 4)
 
-            # Get latent encoding mode
             latent_encoding_mode = train_config.get('latent_encoding_mode', 'swap_onthefly')
             latent_encoding_swap_interval = train_config.get('latent_encoding_swap_interval', 256)
 
@@ -4304,7 +4200,6 @@ def main():
             trajectory_blend_alpha = train_config.get('trajectory_blend_alpha', 0.7)
             timestep_sampling_config = train_config.get('timestep_sampling', None)
 
-            # Get reference image settings
             use_reference_images = train_config.get('use_reference_images', False)
             vision_encoder_path = train_config.get('vision_encoder_path', None)
             train_vision_encoder = train_config.get('train_vision_encoder', False)
@@ -4320,7 +4215,6 @@ def main():
                 from core.training.priority_training import PriorityTrainingConfig
                 priority_training = {"_legacy_path": priority_training}
 
-            # Start training with new interface
             trainer.train(
                 datasets=training_datasets,
                 num_epochs=num_epochs if num_epochs else 1,
@@ -4397,7 +4291,6 @@ def main():
 
             print("[TrainRunner] Training completed successfully!")
 
-            # Update run status
             run.status = "completed"
             run.completed_at = datetime.utcnow()
             training_db.commit()
@@ -4457,10 +4350,8 @@ def main():
             prompt_chunking_mode = train_config.get('prompt_chunking_mode', 'a1111')
             max_prompt_chunks = train_config.get('max_prompt_chunks', 0)
 
-            # Get component-specific learning rates
             unet_lr = train_config.get('unet_lr')
 
-            # Get optimizer options and hyperparameters
             optimizer_cautious = train_config.get('optimizer_cautious', False)
             optimizer_beta1 = train_config.get('optimizer_beta1')
             optimizer_beta2 = train_config.get('optimizer_beta2')
@@ -4476,7 +4367,6 @@ def main():
             # Stochastic rounding for BF16 parameter updates (RingBuffer optimizers)
             optimizer_stochastic_rounding = train_config.get('optimizer_stochastic_rounding', False)
 
-            # Initialize ControlNet trainer
             trainer = ControlNetTrainer(
                 model_path=run.base_model_path,
                 output_dir=run.output_dir,
@@ -4539,7 +4429,6 @@ def main():
                 train_config=train_config,
             )
 
-            # Get optimizer settings
             optimizer_type = train_config.get('optimizer', 'adamw8bit')
             lr_scheduler_type = train_config.get('lr_scheduler', 'constant')
 
@@ -4586,7 +4475,6 @@ def main():
                 run.total_steps = total_steps
                 training_db.commit()
 
-            # Update status to running
             run.status = "running"
             training_db.commit()
             print("[TrainRunner] Status updated to 'running'")
@@ -4603,7 +4491,6 @@ def main():
                     if isinstance(prompt, dict) and not prompt.get('condition_image_path'):
                         prompt['condition_image_path'] = legacy_condition_path
 
-            # Get sample generation settings
             sample_guidance_scale = sample_config["guidance_scale"]
             sample_steps = sample_config["sample_steps"]
             sample_width = sample_config["width"]
@@ -4616,7 +4503,6 @@ def main():
             sensenova_sample_cfg_norm = sample_config["sensenova_cfg_norm"]
             print(f"[TrainRunner] Sample generation config: width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, sample_steps={sample_steps}, sampler={sample_sampler}, schedule_type={sample_schedule_type}, seed={sample_seed}")
 
-            # Get debug parameters from config
             debug_latents = train_config.get('debug_latents', False)
             debug_latents_every = train_config.get('debug_latents_every', 50)
             convergence_diagnostics_enable = train_config.get('convergence_diagnostics_enable', False)
@@ -4629,13 +4515,11 @@ def main():
             crop_decode_loss_snr_range = train_config.get('crop_decode_loss_snr_range', '')
 
 
-            # Get bucketing parameters from config
             enable_bucketing = train_config.get('enable_bucketing', False)
             base_resolutions = train_config.get('base_resolutions', [1024])
 
             _warn_removed_cache_keys(process_config)
 
-            # Convert save_every parameters to new interface (save_every_n_steps)
             save_every_unit = process_config['save'].get('save_every_unit', 'steps')
             save_every = process_config['save'].get('save_every', 100)
             max_step_saves_to_keep = process_config['save'].get('max_step_saves_to_keep', 3)
@@ -4655,12 +4539,10 @@ def main():
             if resume_from_checkpoint:
                 print(f"[TrainRunner] Resume from checkpoint: {resume_from_checkpoint}")
 
-            # Get text encoding mode
             text_encoding_mode = train_config.get('text_encoding_mode', 'swap_onthefly')
             text_encoding_swap_interval = train_config.get('text_encoding_swap_interval', 256)
             text_encoding_prefetch_depth = train_config.get('text_encoding_prefetch_depth', 4)
 
-            # Get latent encoding mode
             latent_encoding_mode = train_config.get('latent_encoding_mode', 'swap_onthefly')
             latent_encoding_swap_interval = train_config.get('latent_encoding_swap_interval', 256)
 
@@ -4670,7 +4552,6 @@ def main():
             trajectory_blend_alpha = train_config.get('trajectory_blend_alpha', 0.7)
             timestep_sampling_config = train_config.get('timestep_sampling', None)
 
-            # Start training
             trainer.train(
                 datasets=training_datasets,
                 num_epochs=num_epochs if num_epochs else 1,
@@ -4739,7 +4620,6 @@ def main():
 
             print("[TrainRunner] Training completed successfully!")
 
-            # Update run status
             run.status = "completed"
             run.completed_at = datetime.utcnow()
             training_db.commit()
@@ -4851,7 +4731,6 @@ def main():
         import traceback
         traceback.print_exc()
 
-        # Update run status to failed (in training.db)
         try:
             training_db.rollback()
             run = training_db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
@@ -4871,7 +4750,6 @@ def main():
         training_db.close()
         datasets_db.close()
 
-        # Close log file and restore original stdout/stderr
         if log_file:
             print(f"[TrainRunner] Closing training log file...")
             sys.stdout = original_stdout

@@ -81,8 +81,6 @@ class LoRATrainer(BaseTrainer):
         self.lora_rank = lora_rank
         self.lora_alpha = lora_alpha
         self.lora_scale = lora_alpha / lora_rank
-        # Read back by resolve_training_adapter_spec, which every adapter's
-        # build_branch goes through.
         self.adapter_algorithm = adapter_algorithm
         self.weight_decompose = weight_decompose
         self.adapter_config = dict(adapter_config or {})
@@ -93,7 +91,6 @@ class LoRATrainer(BaseTrainer):
         # LoRA modules storage
         self.lora_layers: Dict[str, nn.Module] = {}
 
-        # Initialize base trainer (loads model components)
         super().__init__(**kwargs)
 
         # Convert lora_dtype string to torch.dtype (after super().__init__ to have access to get_torch_dtype)
@@ -103,10 +100,8 @@ class LoRATrainer(BaseTrainer):
         # Override log prefix
         self.log_prefix = "[LoRA Trainer]"
 
-        # Create model-specific adapter
         self._create_adapter()
 
-        # Apply LoRA using adapter
         self._apply_lora()
 
         # Block swap deferred until after LoRA wraps Linear modules — the
@@ -177,14 +172,12 @@ class LoRATrainer(BaseTrainer):
         """Apply LoRA to U-Net/Transformer and Text Encoders using adapter."""
         print(f"{self.log_prefix} Applying LoRA layers...")
 
-        # Apply LoRA to U-Net/Transformer
         if self.train_unet:
             unet_count = self.adapter.apply_lora_to_unet(self.lora_layers)
             print(f"{self.log_prefix} Injected {unet_count} LoRA layers into U-Net/Transformer")
         else:
             print(f"{self.log_prefix} U-Net/Transformer LoRA skipped (train_unet=False)")
 
-        # Apply LoRA to Text Encoder(s)
         if self.train_text_encoder:
             te_count = self.adapter.apply_lora_to_text_encoders(self.lora_layers)
             print(f"{self.log_prefix} Injected {te_count} LoRA layers into Text Encoder(s)")
@@ -216,7 +209,6 @@ class LoRATrainer(BaseTrainer):
         """
         checkpoint_path = self.output_dir / f"{self.run_name}_step_{step:06d}.safetensors"
         self.adapter.save_checkpoint(self.lora_layers, step, epoch, checkpoint_path)
-        # Save Vision Encoder checkpoint separately (if loaded)
         self._save_vision_encoder_checkpoint(step, epoch)
 
     def load_checkpoint(self, checkpoint_path: str) -> int:
@@ -241,7 +233,6 @@ class LoRATrainer(BaseTrainer):
             if 'step' in metadata:
                 step = int(metadata['step'])
 
-        # Load checkpoint weights
         checkpoint = load_file(checkpoint_path)
 
         for field in ("lora_rank", "lora_alpha"):

@@ -124,7 +124,6 @@ def get_extension():
     if not torch.cuda.is_available():
         raise RuntimeError("[AdamW8bit_CUDA] CUDA is not available")
 
-    # Get source directory
     cuda_dir = Path(__file__).parent / "cuda"
     kernel_cu = cuda_dir / "adamw8bit_kernel.cu"
     schedulefree_kernel_cu = cuda_dir / "adamw8bit_schedulefree_kernel.cu"
@@ -140,7 +139,6 @@ def get_extension():
     if not wrapper_cpp.exists():
         raise RuntimeError(f"[AdamW8bit_CUDA] Wrapper source not found: {wrapper_cpp}")
 
-    # Create build directory
     build_dir = cuda_dir / "build"
     build_dir.mkdir(exist_ok=True)
 

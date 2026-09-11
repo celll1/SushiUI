@@ -57,7 +57,6 @@ def normalize_tag_for_matching(tag: str) -> str:
     """
     normalized = tag.strip()
 
-    # Remove excessive escaping: \\ → nothing
     normalized = normalized.replace('\\\\', '')
     normalized = normalized.replace('\\', '')
 
@@ -90,10 +89,8 @@ def normalize_tag_for_output(tag: str) -> str:
     """
     normalized = tag.strip()
 
-    # Remove excessive escaping first
     normalized = normalized.replace('\\\\', '\\')
 
-    # Check if tag contains parentheses
     if '(' in normalized or ')' in normalized:
         # Remove existing backslashes before parentheses
         normalized = normalized.replace('\\(', '(')
@@ -163,8 +160,6 @@ class TagGroupManager:
         self.tag_groups: Dict[str, Set[str]] = {}
         self._normalized_rating_quality: Set[str] = set()  # Fast O(1) lookup for Rating/Quality
 
-        # Initialize TaglistCache (will use singleton if already initialized)
-        # For training, enable gelbooru supplement to reduce "Unknown" tags
         taglist_cache.initialize(str(project_root), enable_gelbooru=enable_gelbooru)
 
         self.load_tag_groups()
@@ -177,7 +172,6 @@ class TagGroupManager:
         """
         print(f"[TagGroupManager] Loading tag groups via TaglistCache (no file reads)")
 
-        # Add hardcoded Rating and Quality tags (these don't have JSON files in taglist)
         rating_tags = {
             'general', 'sensitive', 'questionable', 'explicit',
             'rating:general', 'rating:sensitive', 'rating:questionable', 'rating:explicit'
@@ -193,7 +187,6 @@ class TagGroupManager:
         self.tag_groups['Rating'] = rating_tags
         self.tag_groups['Quality'] = quality_tags
 
-        # Build normalized Rating/Quality set for O(1) lookup in get_tag_group()
         for tag in rating_tags:
             self._normalized_rating_quality.add(self._normalize_tag(tag))
         for tag in quality_tags:
@@ -201,7 +194,6 @@ class TagGroupManager:
 
         print(f"[TagGroupManager] Added hardcoded Rating ({len(rating_tags)} tags) and Quality ({len(quality_tags)} tags)")
 
-        # Load other categories from TaglistCache
         categories = ["general", "character", "artist", "copyright", "meta", "model"]
         total_tags = 0
 
@@ -341,12 +333,10 @@ class TagGroupManager:
 
             group = self.get_tag_group(tag_stripped)
 
-            # Check if this is a person count tag (should be excluded from shuffle)
             if exclude_person_count and group == "General" and self.is_person_count_tag(tag_stripped):
                 person_count_tokens.append(token)
                 continue
 
-            # Check if this tag should be shuffled
             should_shuffle = group in groups_to_shuffle
 
             if should_shuffle:

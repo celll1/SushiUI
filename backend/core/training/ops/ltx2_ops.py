@@ -47,7 +47,6 @@ def _resolve_audio_latents_per_second(pipeline, transformer) -> float:
     (audio_sampling_rate / audio_hop_length / audio_vae_temporal_compression),
     then the transformer's audio-rope attribute, then a sane constant.
     """
-    # 1. Pipeline attributes (populated in LTX2Pipeline.__init__).
     try:
         sr = getattr(pipeline, "audio_sampling_rate", None)
         hop = getattr(pipeline, "audio_hop_length", None)
@@ -56,7 +55,6 @@ def _resolve_audio_latents_per_second(pipeline, transformer) -> float:
             return float(sr) / float(hop) / float(comp)
     except Exception:
         pass
-    # 2. Transformer audio-rope buffer (set in the LTX2 rope module).
     for attr in ("audio_rope", "audio_rope_embed"):
         rope = getattr(transformer, attr, None)
         v = getattr(rope, "audio_latents_per_second", None) if rope is not None else None
@@ -68,9 +66,6 @@ def _resolve_audio_latents_per_second(pipeline, transformer) -> float:
     return _DEFAULT_AUDIO_LATENTS_PER_SECOND
 
 
-# ----------------------------------------------------------------------
-# Loading / setup
-# ----------------------------------------------------------------------
 
 def load_components(trainer) -> None:
     """Load LTX-2.3 model components for training.
@@ -445,9 +440,6 @@ def collate_aux(trainer, aux_list):
     return batched
 
 
-# ----------------------------------------------------------------------
-# VAE encode — 5D video latents
-# ----------------------------------------------------------------------
 
 def _normalize_ltx_latents(trainer, latents_5d):
     """Apply LTX latents_mean/std + scaling_factor normalization (matches
@@ -494,9 +486,6 @@ def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
     return latents_5d
 
 
-# ----------------------------------------------------------------------
-# Training step — rectified-flow velocity prediction (video branch)
-# ----------------------------------------------------------------------
 
 def _pack_latents(latents_5d):
     """[B, C, F, H, W] -> [B, F*H*W, C] token sequence (patch=1, patch_t=1),
@@ -798,9 +787,6 @@ def train_step(
     return loss, pred_loss_value, recon_loss_value
 
 
-# ----------------------------------------------------------------------
-# Sample generation (reuse the inference pipeline, move-to-CPU staging)
-# ----------------------------------------------------------------------
 
 def generate_sample(
     trainer,

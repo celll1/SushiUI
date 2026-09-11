@@ -64,7 +64,6 @@ class ControlNetSD15Adapter(BaseControlNetAdapter):
         unet = self.trainer.unet
 
         if pretrained_path is not None:
-            # Load from existing checkpoint
             pretrained = Path(pretrained_path)
             print(f"[ControlNetSD15] Loading ControlNet from: {pretrained}")
 
@@ -81,7 +80,6 @@ class ControlNetSD15Adapter(BaseControlNetAdapter):
             print(f"[ControlNetSD15] Loaded ControlNet from checkpoint")
 
         elif init_from_unet:
-            # Initialize from UNet weights
             print(f"[ControlNetSD15] Initializing ControlNet from UNet weights")
             controlnet = ControlNetModel.from_unet(
                 unet,
@@ -91,7 +89,6 @@ class ControlNetSD15Adapter(BaseControlNetAdapter):
             print(f"[ControlNetSD15] ControlNet initialized from UNet")
 
         else:
-            # Initialize with random weights (from UNet architecture but no weight copy)
             print(f"[ControlNetSD15] Initializing ControlNet with random weights (UNet architecture)")
             controlnet = ControlNetModel.from_unet(
                 unet,
@@ -103,7 +100,6 @@ class ControlNetSD15Adapter(BaseControlNetAdapter):
         # Move to same device/dtype as UNet
         controlnet = controlnet.to(device=unet.device, dtype=unet.dtype)
 
-        # Set to training mode
         controlnet.train()
         controlnet.requires_grad_(True)
 
@@ -124,7 +120,6 @@ class ControlNetSD15Adapter(BaseControlNetAdapter):
         rank = self.trainer.lllite_rank
 
         if pretrained_path is not None:
-            # Load from existing kohya-ss compatible checkpoint
             pretrained = Path(pretrained_path)
             print(f"[ControlNetSD15] Loading LLLite from: {pretrained}")
 
@@ -132,7 +127,6 @@ class ControlNetSD15Adapter(BaseControlNetAdapter):
             lllite = LLLiteModule.from_kohya_state_dict(state_dict, unet)
             print(f"[ControlNetSD15] Loaded LLLite from checkpoint")
         else:
-            # Create new LLLite modules from UNet structure
             print(f"[ControlNetSD15] Creating LLLite modules (cond_ch={conditioning_channels}, rank={rank})")
             lllite = LLLiteModule.from_unet(
                 unet,
@@ -145,7 +139,6 @@ class ControlNetSD15Adapter(BaseControlNetAdapter):
         # Move to same device/dtype as UNet
         lllite = lllite.to(device=unet.device, dtype=unet.dtype)
 
-        # Set to training mode
         lllite.train()
         lllite.requires_grad_(True)
 
@@ -237,7 +230,6 @@ class ControlNetSD15Adapter(BaseControlNetAdapter):
         # Ensure output directory exists
         output_path.mkdir(parents=True, exist_ok=True)
 
-        # Save using diffusers save_pretrained (creates config.json + safetensors)
         controlnet.save_pretrained(
             str(output_path),
             safe_serialization=True,
@@ -260,7 +252,6 @@ class ControlNetSD15Adapter(BaseControlNetAdapter):
         # Export as kohya-ss compatible state dict
         state_dict = controlnet.to_kohya_state_dict()
 
-        # Save as safetensors
         safetensors_save_file(state_dict, str(output_path))
 
         print(f"[ControlNetSD15] Saved LLLite checkpoint: {output_path}")
@@ -288,7 +279,6 @@ class ControlNetSD15Adapter(BaseControlNetAdapter):
         """Load Standard ControlNet checkpoint."""
         path = Path(checkpoint_path)
 
-        # Load weights into existing model
         if path.is_dir():
             loaded = ControlNetModel.from_pretrained(
                 str(path),
@@ -304,7 +294,6 @@ class ControlNetSD15Adapter(BaseControlNetAdapter):
         controlnet.load_state_dict(loaded.state_dict())
         del loaded
 
-        # Extract step from directory/filename
         step = self._extract_step_from_path(path)
         print(f"[ControlNetSD15] Loaded checkpoint from {path} (step={step})")
 
@@ -314,7 +303,6 @@ class ControlNetSD15Adapter(BaseControlNetAdapter):
         """Load LLLite ControlNet checkpoint."""
         path = Path(checkpoint_path)
 
-        # Load state dict from safetensors
         state_dict = safetensors_load_file(str(path))
 
         # Re-create LLLite from loaded state dict and copy weights

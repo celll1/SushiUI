@@ -86,9 +86,6 @@ class DanbooruTagSurveyor:
         self._stop   = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
 
     def start(self) -> None:
         self._stop.clear()
@@ -106,9 +103,6 @@ class DanbooruTagSurveyor:
         if self._thread is not None:
             self._thread.join(timeout=5)
 
-    # ------------------------------------------------------------------
-    # Consumer API (called from training thread)
-    # ------------------------------------------------------------------
 
     def get_approved(self) -> Set[str]:
         """Return a snapshot of currently approved new tags."""
@@ -121,12 +115,8 @@ class DanbooruTagSurveyor:
         with self._lock:
             self._approved -= normalized
 
-    # ------------------------------------------------------------------
-    # Background survey
-    # ------------------------------------------------------------------
 
     def _survey_loop(self) -> None:
-        # Run immediately on start, then every survey_interval seconds.
         while not self._stop.is_set():
             try:
                 self._run_survey()

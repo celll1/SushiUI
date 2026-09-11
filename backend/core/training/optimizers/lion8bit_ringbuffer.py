@@ -178,16 +178,13 @@ class Lion8bit_RingBuffer(Optimizer):
             "absmax",    # FP32 absmax tracking for exp_avg
         }
 
-        # Create quantization maps
         if use_8bit:
             self._init_quantization_maps()
 
     def _init_quantization_maps(self):
         """Initialize quantization maps on device."""
-        # Create dynamic quantization map (signed, for momentum)
         qmap_signed = create_quantization_map(signed=True)
 
-        # Initialize on device (copies to constant memory)
         self.ext.init_quantization_maps(qmap_signed)
 
         print("[Lion8bit_RingBuffer] Quantization maps initialized on device")
@@ -217,25 +214,18 @@ class Lion8bit_RingBuffer(Optimizer):
         schedule_free = group.get('schedule_free', False)
 
         if use_8bit:
-            # ============================================================
-            # 8-bit Quantized State (Ring Buffer Allocation)
-            # ============================================================
 
             blocksize = 256  # Must match QUANTIZATION_BLOCKSIZE in CUDA kernel
             n = p.numel()
             num_blocks = (n + blocksize - 1) // blocksize
 
             if schedule_free:
-                # ============================================================
-                # Schedule-Free: Allocate state_z (momentum, 1 state)
-                # ============================================================
 
                 if self.get_state_buffer is not None:
                     # Ring Buffer enabled: CPU allocation
                     state['state_z'] = self.get_state_buffer(p, dtype=torch.uint8)
                     state['state_z'].zero_()
 
-                    # Use pinned memory for faster CPU-GPU transfer
                     if state['state_z'].is_cpu:
                         state['state_z'] = state['state_z'].pin_memory()
                 else:
@@ -248,16 +238,12 @@ class Lion8bit_RingBuffer(Optimizer):
                 state['absmax_z'] = torch.zeros(num_blocks, dtype=torch.float32, device=device)
 
             else:
-                # ============================================================
-                # Standard Lion: Allocate exp_avg (momentum)
-                # ============================================================
 
                 if self.get_state_buffer is not None:
                     # Ring Buffer enabled: CPU allocation (for Block Swap integration)
                     state['exp_avg'] = self.get_state_buffer(p, dtype=torch.uint8)
                     state['exp_avg'].zero_()
 
-                    # Use pinned memory for faster CPU-GPU transfer
                     if state['exp_avg'].is_cpu:
                         state['exp_avg'] = state['exp_avg'].pin_memory()
                 else:
@@ -351,7 +337,6 @@ class Lion8bit_RingBuffer(Optimizer):
                 # Only convert floating-point types, never UINT8
                 if param.is_floating_point() and value.dtype != torch.uint8:
                     value = value.to(param.dtype)
-                # Move to parameter's device
                 value = value.to(param.device)
                 return value
             elif isinstance(value, dict):
@@ -385,7 +370,6 @@ class Lion8bit_RingBuffer(Optimizer):
             else:
                 state[k] = v
 
-        # Update parameter groups
         def update_group(group, new_group):
             new_group["params"] = group["params"]
             # Add missing keys from current defaults (for backward compatibility)
@@ -406,7 +390,6 @@ class Lion8bit_RingBuffer(Optimizer):
         """
         state_dict = super().state_dict()
 
-        # Add Schedule-Free/RAdam specific state
         if self.schedule_free or self.use_radam:
             state_dict['k'] = self.k
             state_dict['weight_sum'] = self.weight_sum
@@ -461,9 +444,6 @@ class Lion8bit_RingBuffer(Optimizer):
             weight_decay = group['weight_decay']
             schedule_free = group.get('schedule_free', False)
 
-            # ============================================================
-            # Schedule-Free: Compute learning rate schedule and ckp1
-            # ============================================================
             if schedule_free:
                 use_radam = group.get('use_radam', False)
                 r = group['r']
@@ -471,9 +451,6 @@ class Lion8bit_RingBuffer(Optimizer):
                 k = self.step_count - 1  # k starts from 0
 
                 if use_radam:
-                    # ============================================================
-                    # RAdam Schedule-Free: Adaptive LR via Rectified Adam
-                    # ============================================================
                     import math
 
                     step = k + 1  # Use k+1 for all calculations
@@ -500,12 +477,8 @@ class Lion8bit_RingBuffer(Optimizer):
 
                     scheduled_lr = lr * rect
 
-                    # Update lr_max (for weight calculation)
                     self.lr_max = max(scheduled_lr, self.lr_max)
                 else:
-                    # ============================================================
-                    # Lion Schedule-Free: Linear warmup
-                    # ============================================================
                     warmup_steps = group['warmup_steps']
 
                     # Linear warmup (use k+1 because k increments at end of step)
@@ -516,10 +489,8 @@ class Lion8bit_RingBuffer(Optimizer):
 
                     scheduled_lr = lr * sched
 
-                    # Update lr_max
                     self.lr_max = max(scheduled_lr, self.lr_max)
 
-                # Compute weight for averaging (common for both Lion and RAdam)
                 if not hasattr(self, 'weight_sum'):
                     self.weight_sum = 0.0
 
@@ -560,7 +531,6 @@ class Lion8bit_RingBuffer(Optimizer):
                         f"parameters resident (blocks_to_swap=0)."
                     )
 
-                # Initialize state if needed
                 if len(self.state[p]) == 0:
                     self._init_param_state(p)
 
@@ -588,9 +558,6 @@ class Lion8bit_RingBuffer(Optimizer):
                 # 8-bit update
                 if state.get('is_8bit', False):
                     if schedule_free:
-                        # ============================================================
-                        # Schedule-Free 8-bit Update (CUDA Kernel)
-                        # ============================================================
 
                         stochastic_z = bool(group['stochastic_rounding'])
 
@@ -614,9 +581,6 @@ class Lion8bit_RingBuffer(Optimizer):
                         )
 
                     else:
-                        # ============================================================
-                        # Standard 8-bit Update (CUDA Kernel)
-                        # ============================================================
 
                         self.ext.lion_8bit_update(
                             p_for_update,
@@ -636,7 +600,6 @@ class Lion8bit_RingBuffer(Optimizer):
                     # Interpolate: c_t = β1 * m_{t-1} + (1 - β1) * g_t
                     c_t = beta1 * exp_avg + (1 - beta1) * grad
 
-                    # Update: sign(c_t) + weight_decay * param
                     update = torch.sign(c_t)
                     p_for_update.mul_(1 - lr * weight_decay).add_(update, alpha=-lr)
 
@@ -712,7 +675,6 @@ def register_lion8bit_fused_backward(optimizer, model):
             # produced; before the update, which is what the clip protects.
             apply_fused_grad_clip(optimizer, param)
 
-            # Initialize state if needed
             if len(optimizer.state[param]) == 0:
                 optimizer._init_param_state(param)
 

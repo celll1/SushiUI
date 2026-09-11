@@ -315,9 +315,6 @@ class _BranchGradCapture:
         return False
 
 
-# ---------------------------------------------------------------------------
-# Shared trainer driving
-# ---------------------------------------------------------------------------
 
 
 def _und_config(*, total_steps: int, mnt: int, reference: bool = False) -> dict[str, Any]:
@@ -514,9 +511,6 @@ def _inspect_saved_und_lora(path: Path, *, expected_step: int) -> dict[str, Any]
     }
 
 
-# ---------------------------------------------------------------------------
-# Arm 1 -- understanding trainer smoke
-# ---------------------------------------------------------------------------
 
 
 def _autocast_break_check(trainer, prompt: str) -> dict[str, Any]:
@@ -748,9 +742,6 @@ def _run_mnt_arm(args: argparse.Namespace) -> dict[str, Any]:
     return result
 
 
-# ---------------------------------------------------------------------------
-# Arm 3 -- fresh runtime application
-# ---------------------------------------------------------------------------
 
 
 def _generation_args(args: argparse.Namespace, lora_path: Optional[str], strength: float):
@@ -926,9 +917,6 @@ def _run_distill_runtime_arm(args: argparse.Namespace) -> dict[str, Any]:
     )
 
 
-# ---------------------------------------------------------------------------
-# Arm 4 -- train_text_encoder=false regression against the pre-U-1 library
-# ---------------------------------------------------------------------------
 
 
 def _run_regression_arm(args: argparse.Namespace) -> dict[str, Any]:
@@ -946,9 +934,6 @@ def _run_regression_arm(args: argparse.Namespace) -> dict[str, Any]:
     return result
 
 
-# ---------------------------------------------------------------------------
-# Driver
-# ---------------------------------------------------------------------------
 
 _ARMS = {
     "und_trainer": _run_und_trainer_arm,

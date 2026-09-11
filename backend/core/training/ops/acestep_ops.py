@@ -71,9 +71,6 @@ import torch
 import torch.nn.functional as F
 
 
-# ----------------------------------------------------------------------
-# Loading / setup
-# ----------------------------------------------------------------------
 
 def load_components(trainer) -> None:
     """Load ACE-Step 1.5 model components for training.
@@ -461,9 +458,6 @@ def vae_decode(trainer, latents, *, latent_h=None, latent_w=None):
     )
 
 
-# ----------------------------------------------------------------------
-# Training step — rectified-flow velocity prediction
-# ----------------------------------------------------------------------
 
 def train_step(
     trainer,

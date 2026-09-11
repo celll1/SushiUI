@@ -49,9 +49,6 @@ import torch
 import torch.nn.functional as F
 
 
-# ----------------------------------------------------------------------
-# Constants
-# ----------------------------------------------------------------------
 
 # Token for the audio preprocessing chain, folded into the clip-cache key so a
 # record produced by one chain is never served to another. Bump the suffix when
@@ -86,9 +83,6 @@ def minimax_h3_vae_tiling_token() -> str:
             f"{int(_P['tile_sample_min_overlap_width'])}")
 
 
-# ----------------------------------------------------------------------
-# Loading / setup
-# ----------------------------------------------------------------------
 
 def normalize_dtypes(trainer) -> None:
     """Force ``weight_dtype`` / ``training_dtype`` to bf16, UNCONDITIONALLY.
@@ -382,9 +376,6 @@ def collate_aux(trainer, aux_list):
     return {"num_text_tokens": torch.tensor(counts, dtype=torch.long)}
 
 
-# ----------------------------------------------------------------------
-# VAE encode
-# ----------------------------------------------------------------------
 
 def _normalize_video_latents(trainer, latents_5d: torch.Tensor) -> torch.Tensor:
     """``(z - mean) / std`` with the 24 fp32 per-channel vectors from the config
@@ -611,9 +602,6 @@ def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
     return latents
 
 
-# ----------------------------------------------------------------------
-# Training step
-# ----------------------------------------------------------------------
 
 def _shift_sigma(u: float, shift: float) -> float:
     """The flow schedule's sigma shift: ``shift*u / (1 + (shift-1)*u)``."""
@@ -812,7 +800,6 @@ def train_step(
     sigma_v = _shift_sigma(u, SHIFT_VIDEO)
     sigma_a = _shift_sigma(u, SHIFT_AUDIO)
 
-    # --- forward process + velocity targets: v = x0 - eps, t = 1 - sigma ---
     eps_v = torch.randn_like(latents)
     x_t_v = (1.0 - sigma_v) * latents + sigma_v * eps_v
     target_v = patchify_video_latents(latents - eps_v)
@@ -1016,9 +1003,6 @@ def _pixel_frames_for(trainer, t_lat: int) -> int:
     return 17 * n + 5
 
 
-# ----------------------------------------------------------------------
-# Sampling
-# ----------------------------------------------------------------------
 
 def generate_sample(trainer, prompt: str, height: int = 384, width: int = 640,
                     num_inference_steps: int = 20, guidance_scale: float = 1.0,

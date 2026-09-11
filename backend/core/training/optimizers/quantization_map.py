@@ -52,7 +52,6 @@ def create_dynamic_map(signed=True, max_exponent_bits=7, total_bits=8):
         if signed:
             data += (-(10 ** (-(max_exponent_bits - 1) + i)) * means).tolist()
 
-    # Add zero and 1.0
     data.append(0)
     data.append(1.0)
 
@@ -108,7 +107,6 @@ if __name__ == "__main__":
     print(f"Unsigned map[0] (zero): {qmap_unsigned[0]:.6f}")
     print(f"Unsigned map[255] (max): {qmap_unsigned[255]:.6f}")
 
-    # Check precision near zero (signed)
     near_zero_indices = [125, 126, 127, 128, 129]
     print(f"\nPrecision near zero (signed map):")
     for idx in near_zero_indices:

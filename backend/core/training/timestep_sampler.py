@@ -326,7 +326,6 @@ class LogitNormalTimestepSampler(TimestepSampler):
         # Sample from normal distribution
         u = torch.randn(batch_size, device=device) * self.std + self.mean
 
-        # Apply sigmoid to get [0, 1] - this is the "logit-normal" transformation
         timesteps = torch.sigmoid(u)
 
         # Scale to [min_timestep, max_timestep]
@@ -398,7 +397,6 @@ class CustomTimestepSampler(TimestepSampler):
 
     def sample(self, batch_size: int, device: torch.device) -> torch.Tensor:
         """Sample from custom distribution using provided weights."""
-        # Create bins based on weights
         num_bins = len(self.weights)
         bins = torch.linspace(self.min_timestep, self.max_timestep, num_bins + 1)
 

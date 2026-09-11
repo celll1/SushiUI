@@ -59,9 +59,6 @@ from core.training.probes.sensenova_real_checkpoint import (  # noqa: E402
 )
 
 
-# ---------------------------------------------------------------------------
-# metrics
-# ---------------------------------------------------------------------------
 
 
 def _seq_axis(tensor: torch.Tensor, seq_len: int) -> int:
@@ -159,9 +156,6 @@ def _first_divergence(ids_a: torch.Tensor, ids_b: torch.Tensor) -> Optional[int]
     return None
 
 
-# ---------------------------------------------------------------------------
-# model
-# ---------------------------------------------------------------------------
 
 
 def _load(args: argparse.Namespace):
@@ -191,9 +185,6 @@ def _load_pairs(path: Path) -> list[dict]:
     return items
 
 
-# ---------------------------------------------------------------------------
-# arms
-# ---------------------------------------------------------------------------
 
 
 def _arm_kv(args: argparse.Namespace) -> dict:
@@ -414,9 +405,6 @@ def _arm_qa(args: argparse.Namespace) -> dict:
 ARMS = {"kv": _arm_kv, "readout": _arm_readout, "qa": _arm_qa}
 
 
-# ---------------------------------------------------------------------------
-# entry
-# ---------------------------------------------------------------------------
 
 
 def main() -> int:

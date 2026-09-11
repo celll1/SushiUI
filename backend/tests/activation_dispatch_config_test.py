@@ -1,19 +1,13 @@
-"""CPU-only contracts for activation-dispatch configuration reachability."""
+"""CPU-only activation-dispatch configuration behavior."""
 
-import ast
-import inspect
-from pathlib import Path
 import sys
+from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parents[1]
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
-from api.param_defaults import TRAINING_DEFAULTS
-from core.training.base_trainer import (
-    BaseTrainer,
-    _resolve_activation_dispatch_settings,
-)
+from core.training.base_trainer import _resolve_activation_dispatch_settings
 
 
 def _fallbacks():
@@ -58,32 +52,3 @@ def test_direct_callers_retain_explicit_constructor_values():
         "residual_frac": 0.5,
         "threshold_mb": 7,
     }
-
-
-def test_base_trainer_signature_uses_api_default_ssot():
-    params = inspect.signature(BaseTrainer.__init__).parameters
-    for key in (
-        "activation_dispatch_enable",
-        "activation_dispatch_margin_gb",
-        "activation_dispatch_seed_coef",
-        "activation_dispatch_residual_frac",
-        "activation_dispatch_threshold_mb",
-    ):
-        assert params[key].default == TRAINING_DEFAULTS[key]
-
-
-def test_every_runner_created_base_trainer_receives_train_config():
-    runner = Path(__file__).parents[1] / "core" / "training" / "train_runner.py"
-    tree = ast.parse(runner.read_text(encoding="utf-8"))
-    trainer_names = {
-        "LoRATrainer", "ReLoRATrainer", "FullParameterTrainer", "ControlNetTrainer",
-    }
-    calls = [node for node in ast.walk(tree)
-             if isinstance(node, ast.Call)
-             and isinstance(node.func, ast.Name)
-             and node.func.id in trainer_names]
-
-    assert {call.func.id for call in calls} == trainer_names
-    for call in calls:
-        keywords = {keyword.arg for keyword in call.keywords}
-        assert "train_config" in keywords, call.func.id

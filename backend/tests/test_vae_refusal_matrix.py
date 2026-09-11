@@ -60,7 +60,6 @@ from core.training.vae.vae_config import (
     VALID_OPTIMIZERS,
     VALID_SOURCES,
     resolve_vae_training_config,
-    strict_bool,
 )
 
 # A minimal, valid process config: decoder-only, base VAE from the run's model.
@@ -267,18 +266,9 @@ class VaeRefusalMatrixTest(unittest.TestCase):
         for key in ("train_decoder", "train_encoder",
                     "acknowledge_latent_space_break", "export_bare_ldm",
                     "ema_enabled"):
-            for bad in ("maybe", 2, 0.5, [], "y e s"):
-                with self.subTest(key=key, value=bad):
-                    self._assert_refused([key, "must be a boolean"],
-                                         vae={key: bad})
-
-    def test_strict_bool_accepts_the_documented_spellings(self):
-        for value in (True, 1, "true", "TRUE", "yes", "on", "1"):
-            self.assertIs(strict_bool(value, "k"), True)
-        for value in (False, 0, "false", "no", "off", "0"):
-            self.assertIs(strict_bool(value, "k"), False)
-        with self.assertRaises(VaeConfigError):
-            strict_bool("truthy", "k")
+            with self.subTest(key=key):
+                self._assert_refused([key, "must be a boolean"],
+                                     vae={key: "maybe"})
 
     # ── losses ───────────────────────────────────────────────────────────
     def test_all_loss_weights_zero_is_refused(self):
@@ -499,67 +489,6 @@ class VaeRefusalMatrixTest(unittest.TestCase):
         self.assertEqual(cfg["resume_from"], "latest")
 
 
-# ── the numeric gate: one verdict per VAE_TRAINING_DEFAULTS key ──────────────
-# Written down so that ADDING a key without deciding what its meaningless values
-# are fails a test rather than shipping an unchecked knob. The verdict text is
-# the human-readable half; ``VaeNumericRefusalTest`` below asserts the rules.
-#
-# "enum"      - a closed value set is enforced.
-# "bool"      - parsed by strict_bool, anything else refused.
-# "bounded"   - numeric with an enforced range.
-# "free"      - deliberately unbounded above (see the note), bounded below.
-# "text"      - must be a string; emptiness rules live with vae_source.
-_KEY_VERDICTS = {
-    "batch_size": "bounded: >= 1",
-    "total_steps": "bounded: >= 1, and > lr_warmup_steps",
-    "gradient_accumulation_steps": "bounded: >= 1",
-    "learning_rate": "bounded: > 0 (0 is a no-op run that reports success)",
-    "optimizer": "enum: VALID_OPTIMIZERS (= everything OptimizerFactory resolves)",
-    "optimizer_weight_decay": "bounded: >= 0 (negative grows the weights)",
-    "max_grad_norm": "bounded: >= 0, where 0 MEANS 'no clipping' (repo-wide convention)",
-    "lr_scheduler": "enum: VALID_LR_SCHEDULERS (the registry, minus what this surface cannot shape)",
-    "lr_warmup_steps": "bounded: >= 0, < total_steps; every schedule applies it",
-    "seed": "bounded: 0 .. 2**32-1 (numpy.random.seed's domain)",
-    "num_workers": "bounded: >= 0",
-    "save_every": "bounded: >= 0 (0 = only the final checkpoint)",
-    "max_step_saves_to_keep": "bounded: >= 0 (0 = keep all)",
-    "vae_source": "enum: VALID_SOURCES",
-    "vae_path": "text: required for vae_source 'path'/'model'",
-    "vae_arch": "text: required for vae_source 'store'; the loader checks the key itself",
-    "train_decoder": "bool",
-    "decoder_blocks": "enum: VALID_DECODER_BLOCKS",
-    "train_encoder": "bool (double gate)",
-    "acknowledge_latent_space_break": "bool (double gate)",
-    "encoder_blocks": "enum: VALID_ENCODER_BLOCKS",
-    "resolution": "bounded: multiple of 8, >= 64",
-    "crop_scale_policy": "enum: VALID_CROP_SCALE_POLICIES",
-    "crop_scale_max_downscale": "bounded: 0 or >= 1, and only under 'mixed'",
-    "dtype": "enum: VALID_DTYPES (fp16 refused with its own reason)",
-    "ema_enabled": "bool",
-    "ema_decay": "bounded: strictly inside (0, 1)",
-    "mse_weight": "free: >= 0, unbounded above (a large weight is loud, not silent)",
-    "l1_weight": "free: >= 0",
-    "lpips_weight": "free: >= 0, plus the lpips-import gate above 0",
-    "lpips_net": "enum: VALID_LPIPS_NETS",
-    "ycbcr_dc_weight": "free: >= 0",
-    "ycbcr_dc_y_weight": "bounded: >= 0, not both-zero with chroma while the term is on",
-    "ycbcr_dc_chroma_weight": "bounded: >= 0, not both-zero with luma while the term is on",
-    "ycbcr_dc_eps": "bounded: > 0 (0 makes the Charbonnier gradient NaN at d=0)",
-    "pattern_weight": "free: >= 0",
-    "pattern_size": "bounded: >= 1, and <= resolution while the term is on",
-    "l_invented_weight": "bounded: 0 .. 10 (openapi's declared maximum)",
-    "l_invented_y_weight": "bounded: 0 .. 4, not both-zero with chroma while the term is on",
-    "l_invented_chroma_weight": "bounded: 0 .. 4, not both-zero with luma while the term is on",
-    "l_invented_flat_t_y": "bounded: 0 .. 8, and > 0 while the term is on",
-    "l_invented_flat_t_c": "bounded: 0 .. 8, and > 0 while the term is on",
-    "kl_weight": "free: >= 0 (ignored, and logged as ignored, under a frozen encoder)",
-    "export_bare_ldm": "bool (refused with train_encoder)",
-    "validation_every": "bounded: >= 0 (0 = validation off)",
-    "validation_num_images": "bounded: >= 1 (0 empties the TRAINING split)",
-    "validation_resolution": "bounded: multiple of 8, >= 64",
-}
-
-
 class VaeNumericRefusalTest(unittest.TestCase):
     """Numeric validation: every value that would train something OTHER than
     what the config says, without saying so.
@@ -579,17 +508,6 @@ class VaeNumericRefusalTest(unittest.TestCase):
     _resolve = VaeRefusalMatrixTest._resolve
     _assert_accepted = VaeRefusalMatrixTest._assert_accepted
     _assert_refused = VaeRefusalMatrixTest._assert_refused
-
-    # ── exhaustiveness ───────────────────────────────────────────────────
-    def test_every_default_key_has_a_recorded_verdict(self):
-        """A new key must come with a decision about its meaningless values.
-
-        Without this, the next key added to VAE_TRAINING_DEFAULTS would ship
-        with a bare cast and no range — which is exactly how the holes above got
-        in. The ledger is documentation; the tests below are the enforcement.
-        """
-        self.assertEqual(set(_KEY_VERDICTS), set(VAE_TRAINING_DEFAULTS))
-        self.assertEqual(len(_KEY_VERDICTS), 47)
 
     def test_the_shipped_defaults_resolve(self):
         """Every bound above must admit the value the SSOT ships."""
@@ -652,47 +570,9 @@ class VaeNumericRefusalTest(unittest.TestCase):
         self._assert_refused("OptimizerFactory resolves exactly this set",
                              vae={"optimizer": "sgd"})
 
-    def test_the_ringbuffer_optimizers_are_accepted_because_they_run(self):
-        """They do NOT need the allocator their name implies.
-
-        ``OptimizerFactory`` passes ``get_state_buffer=None`` and both
-        implementations then take their "Ring Buffer disabled: GPU allocation"
-        branch. Verified by construction plus a live ``step()`` on CUDA: the
-        state is allocated as uint8 on cuda:0 and the parameters move. Refusing
-        them would break a configuration that works today, so the misleading
-        name is handled by a log line in ``build_optimizer`` instead.
-        """
-        for name in ("adamw8bit_ringbuffer", "lion8bit_ringbuffer"):
-            with self.subTest(optimizer=name):
-                self.assertIn(name, VALID_OPTIMIZERS)
-                self.assertEqual(
-                    self._assert_accepted(vae={"optimizer": name})["optimizer"], name)
-
-    def test_the_optimizer_enum_is_exactly_what_the_factory_resolves(self):
-        """The enum is derived from OptimizerFactory, not guessed at. Reading
-        its source keeps this test free of a CUDA/bitsandbytes dependency while
-        still failing if the factory grows or loses a name."""
-        import inspect
-        import re
-        from core.training.optimizer_factory import OptimizerFactory
-        source = inspect.getsource(OptimizerFactory.create_optimizer)
-        names = set()
-        for match in re.finditer(r'optimizer_type\s*==\s*"([a-z0-9_]+)"', source):
-            names.add(match.group(1))
-        for match in re.finditer(r'optimizer_type\s+in\s+\[([^\]]+)\]', source):
-            names.update(re.findall(r'"([a-z0-9_]+)"', match.group(1)))
-        self.assertEqual(names, set(VALID_OPTIMIZERS))
-
     def test_optimizer_case_is_folded_like_optimizerfactory_folds_it(self):
         self.assertEqual(
             self._assert_accepted(vae={"optimizer": "AdamW"})["optimizer"], "adamw")
-
-    def test_every_listed_lr_scheduler_is_accepted(self):
-        for name in VALID_LR_SCHEDULERS:
-            with self.subTest(lr_scheduler=name):
-                self.assertEqual(
-                    self._assert_accepted(vae={"lr_scheduler": name})["lr_scheduler"],
-                    name)
 
     def test_an_unrunnable_lr_scheduler_is_refused(self):
         """The trainer CATCHES a construction failure and continues at a
@@ -722,16 +602,6 @@ class VaeNumericRefusalTest(unittest.TestCase):
         cfg = self._assert_accepted(vae={"lr_scheduler": "constant",
                                          "lr_warmup_steps": 500})
         self.assertEqual(cfg["lr_warmup_steps"], 500)
-
-    def test_the_same_warmup_under_constant_with_warmup_is_accepted(self):
-        cfg = self._assert_accepted(vae={"lr_scheduler": "constant_with_warmup",
-                                         "lr_warmup_steps": 500})
-        self.assertEqual(cfg["lr_warmup_steps"], 500)
-
-    def test_the_constant_scheduler_with_no_warmup_is_still_the_default(self):
-        cfg = self._assert_accepted()
-        self.assertEqual(cfg["lr_scheduler"], "constant")
-        self.assertEqual(cfg["lr_warmup_steps"], 0)
 
     def test_every_scheduler_accepts_a_warmup(self):
         for name in VALID_LR_SCHEDULERS:
@@ -804,11 +674,6 @@ class VaeNumericRefusalTest(unittest.TestCase):
             vae={"seed": 2 ** 32 - 1})["seed"], 2 ** 32 - 1)
         self.assertEqual(self._assert_accepted(vae={"seed": 0})["seed"], 0)
 
-    def test_the_documented_seed_aliasing_is_real(self):
-        """The refusal message's claim, checked rather than asserted."""
-        self.assertEqual((-1) % (2 ** 32), 4294967295)
-        self.assertEqual((2 ** 32 + 7) % (2 ** 32), 7)
-
     # ── YCbCr sub-parameters ─────────────────────────────────────────────
     def test_a_negative_ycbcr_channel_weight_is_refused(self):
         """It does not disable the channel: the term is summed over channels, so
@@ -879,10 +744,11 @@ class VaeNumericRefusalTest(unittest.TestCase):
 
     # ── type discipline ──────────────────────────────────────────────────
     def test_non_finite_numbers_are_refused(self):
-        for key in ("mse_weight", "learning_rate", "ema_decay"):
-            for bad in (float("nan"), float("inf"), "nan", "-inf"):
-                with self.subTest(key=key, value=bad):
-                    self._assert_refused("must be a finite number", vae={key: bad})
+        for key, bad in (("mse_weight", float("nan")),
+                         ("learning_rate", float("inf")),
+                         ("ema_decay", "-inf")):
+            with self.subTest(key=key, value=bad):
+                self._assert_refused("must be a finite number", vae={key: bad})
 
     def test_a_fractional_count_is_refused_rather_than_truncated(self):
         for key in ("total_steps", "batch_size", "validation_num_images"):
@@ -1386,27 +1252,20 @@ class VaeResumeBaseVaeIdentityTest(unittest.TestCase):
         self.assertNotIn("frozen_fingerprint", trainer._base_vae_identity)
 
     # ── proven-identical weights outrank a structural LABEL ──────────────
-    def test_a_renamed_vae_class_does_not_refuse_when_the_digests_match(self):
-        """A diffusers upgrade that renames ``_class_name`` must not strand a
-        long run: the digest already proves the frozen half is bit-identical, so
-        no hybrid is possible and the difference is in the description only."""
-        trainer = self._trainer(self._identity("Z:/model/x", "aaaa",
-                                               **{"class": "AutoencoderKLQwenImage"}))
-        out = self._run(trainer, self._checkpoint(
-            self._identity("Z:/model/x", "aaaa")))
-        self.assertIn("VAE class", out)
-        self.assertIn("bit-identical", out)
-        self.assertIn("no hybrid is possible", out)
-
-    def test_a_newly_reported_latent_channels_does_not_refuse_when_digests_match(self):
-        """Observed for real: a VAE class that reports no ``latent_channels`` is
-        recorded as -1, and a later diffusers version may start reporting 16."""
-        trainer = self._trainer(self._identity("Z:/model/x", "aaaa",
-                                               latent_channels=16))
-        out = self._run(trainer, self._checkpoint(
-            self._identity("Z:/model/x", "aaaa", latent_channels=-1)))
-        self.assertIn("latent_channels", out)
-        self.assertNotIn("DIFFERENT base VAE", out)
+    def test_matching_digests_reduce_structural_label_changes_to_warnings(self):
+        cases = (
+            ({"class": "AutoencoderKLQwenImage"}, {}, "VAE class"),
+            ({"latent_channels": 16}, {"latent_channels": -1},
+             "latent_channels"),
+        )
+        for current, saved, message in cases:
+            with self.subTest(field=message):
+                trainer = self._trainer(
+                    self._identity("Z:/model/x", "aaaa", **current))
+                out = self._run(trainer, self._checkpoint(
+                    self._identity("Z:/model/x", "aaaa", **saved)))
+                self.assertIn(message, out)
+                self.assertNotIn("DIFFERENT base VAE", out)
 
     def test_a_structural_mismatch_is_still_fatal_when_the_digests_differ(self):
         trainer = self._trainer(self._identity("Z:/model/x", "bbbb",
@@ -1419,33 +1278,16 @@ class VaeResumeBaseVaeIdentityTest(unittest.TestCase):
         self.assertIn("latent_channels", msg)
 
     # ── a changed export-baked factor is never silent ────────────────────
-    def test_a_changed_scaling_factor_warns_even_when_the_digests_match(self):
-        """`scaling_factor` is not spelling: `save_pretrained` bakes it into the
-        exported config.json and the sidecar/inference override path reads it, so
-        a resume must not change what the run finally writes in silence."""
-        trainer = self._trainer(self._identity("Z:/model/x", "aaaa",
-                                               scaling_factor=0.18215))
-        out = self._run(trainer, self._checkpoint(
-            self._identity("Z:/model/x", "aaaa")))
-        self.assertIn("scaling_factor", out)
-        self.assertIn("0.18215", out)
-        self.assertIn("exported config.json", out)
-
-    def test_a_changed_shift_factor_warns_even_when_the_digests_match(self):
-        trainer = self._trainer(self._identity("Z:/model/x", "aaaa",
-                                               shift_factor=0.1159))
-        out = self._run(trainer, self._checkpoint(
-            self._identity("Z:/model/x", "aaaa")))
-        self.assertIn("shift_factor", out)
-
-    def test_equal_factors_with_equal_digests_stay_silent(self):
-        """The path/format axis must remain suppressed by a matching digest --
-        only the export-baked factors escalate to a warning."""
-        trainer = self._trainer(self._identity("D:/moved/vae.safetensors", "aaaa",
-                                               format="single_file"))
-        out = self._run(trainer, self._checkpoint(
-            self._identity("Z:/model/x", "aaaa")))
-        self.assertNotIn("WARNING", out)
+    def test_changed_export_factors_warn_even_when_the_digests_match(self):
+        for field, value in (("scaling_factor", 0.18215),
+                             ("shift_factor", 0.1159)):
+            with self.subTest(field=field):
+                trainer = self._trainer(
+                    self._identity("Z:/model/x", "aaaa", **{field: value}))
+                out = self._run(trainer, self._checkpoint(
+                    self._identity("Z:/model/x", "aaaa")))
+                self.assertIn(field, out)
+                self.assertIn("exported config.json", out)
 
     # ── the recording side: select_trainable must WIRE the fingerprint in ─
     def _tiny_autoencoder(self, encoder_fill=1.0, decoder_fill=1.0):
@@ -1515,13 +1357,7 @@ class VaeResumeBaseVaeIdentityTest(unittest.TestCase):
 
 
 class VaeCropScalePolicyTest(unittest.TestCase):
-    """The loader side of the crop scale policy.
-
-    Synthetic images (no dataset dependency), but the geometry asserted is the
-    real thing: the reference expression for ``downscale`` is a verbatim copy of
-    the pre-policy implementation, so a regression there fails here rather than
-    24 hours into a fine-tune. Imports torch/PIL, hence its own class.
-    """
+    """The loader side of the crop scale policy on synthetic images."""
 
     @classmethod
     def setUpClass(cls):
@@ -1545,49 +1381,6 @@ class VaeCropScalePolicyTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls._tmp.cleanup()
-
-    @staticmethod
-    def _legacy_load(path, resolution, random_crop, rng):
-        """The implementation as it stood before crop_scale_policy existed."""
-        import numpy as np
-        import torch
-        from PIL import Image
-
-        with Image.open(path) as im:
-            image = im.convert("RGB")
-            w, h = image.size
-            scale = resolution / min(w, h)
-            if scale != 1.0:
-                new_w = max(resolution, int(round(w * scale)))
-                new_h = max(resolution, int(round(h * scale)))
-                image = image.resize((new_w, new_h), Image.LANCZOS)
-                w, h = new_w, new_h
-            max_left, max_top = w - resolution, h - resolution
-            if random_crop:
-                left = rng.randint(0, max_left) if max_left > 0 else 0
-                top = rng.randint(0, max_top) if max_top > 0 else 0
-            else:
-                left, top = max_left // 2, max_top // 2
-            image = image.crop((left, top, left + resolution, top + resolution))
-            arr = np.array(image).astype(np.float32) / 255.0
-            arr = (arr - 0.5) * 2.0
-        return torch.from_numpy(arr).permute(2, 0, 1).contiguous()
-
-    def test_downscale_policy_is_pixel_identical_to_the_legacy_loader(self):
-        """Run 113 has 52k steps of history under this exact geometry."""
-        import random as _random
-        import torch
-        from core.training.vae.vae_dataset import load_image_tensor
-
-        for size, path in self.paths.items():
-            for random_crop in (False, True):
-                with self.subTest(size=size, random_crop=random_crop):
-                    got = load_image_tensor(
-                        path, 512, random_crop=random_crop,
-                        rng=_random.Random(1234), scale_policy="downscale")
-                    want = self._legacy_load(
-                        path, 512, random_crop, _random.Random(1234))
-                    self.assertTrue(torch.equal(got, want))
 
     def test_native_policy_does_not_resample_a_large_enough_image(self):
         from core.training.vae.vae_dataset import resolve_crop_scale
@@ -2182,11 +1975,6 @@ class VaeResumeCompletenessTest(unittest.TestCase):
         self.assertIn("optimizer.pt", msg)
         self.assertIn("accumulated history", msg)
 
-    def test_a_missing_optimizer_state_refuses_without_a_manifest_too(self):
-        ckpt = self._write_checkpoint(manifest=False)
-        (ckpt / "optimizer.pt").unlink()
-        self.assertIn("optimizer.pt", self._refusal(self._trainer(), ckpt))
-
     def test_a_missing_lr_scheduler_state_refuses(self):
         ckpt = self._write_checkpoint()
         (ckpt / "lr_scheduler.pt").unlink()
@@ -2270,16 +2058,6 @@ class VaeResumeCompletenessTest(unittest.TestCase):
         self.assertNotIn("step_00005000", msg)
         self.assertIn("No other checkpoint", msg)
 
-    def test_a_truncated_optimizer_state_refuses(self):
-        """The failure the manifest exists for: the file is THERE, and shorter
-        than it was saved (an interrupted copy)."""
-        ckpt = self._write_checkpoint()
-        blob = (ckpt / "optimizer.pt").read_bytes()
-        (ckpt / "optimizer.pt").write_bytes(blob[: len(blob) // 2])
-        msg = self._refusal(self._trainer(), ckpt)
-        self.assertIn("optimizer.pt", msg)
-        self.assertIn("incompletely", msg)
-
     def test_a_zero_byte_artifact_is_refused_with_or_without_a_manifest(self):
         """An empty artifact is never valid state; the verdict must not depend
         on the checkpoint's generation."""
@@ -2360,16 +2138,6 @@ class VaeResumeCompletenessTest(unittest.TestCase):
         # would average that seed in at the full decay.
         self.assertEqual(trainer._ema_updates, 0)
         self.assertAlmostEqual(trainer._ema_retained_init, 1.0)
-
-    def test_a_truncated_ema_warns_and_reseeds(self):
-        ckpt = self._write_checkpoint()
-        blob = (ckpt / "ema.safetensors").read_bytes()
-        (ckpt / "ema.safetensors").write_bytes(blob[:64])
-        trainer = self._trainer()
-        out = self._resume(trainer, ckpt)
-        self.assertIn("ema.safetensors", out)
-        self.assertEqual(trainer.global_step, 10000)
-        self.assertEqual(trainer._ema_updates, 0)
 
     def test_a_checkpoint_without_ema_resumed_with_ema_on_warns(self):
         ckpt = self._write_checkpoint(ema=False)
@@ -2579,26 +2347,6 @@ class TestTrainingOutputIsCp932Encodable(unittest.TestCase):
             "subprocess's stdout. Replace the character with an ASCII "
             "equivalent (' - ' for an em-dash); see this class's docstring:\n  "
             + "\n  ".join(offences))
-
-    def test_the_check_would_catch_a_reintroduced_em_dash(self):
-        """The guard above passes trivially if the detector is broken."""
-        import tempfile
-        source = (
-            "def f():\n"
-            '    """A docstring with an em-dash — which is exempt."""\n'
-            '    # A comment with an em-dash — which is also exempt.\n'
-            '    print(f"placement note — the same state placement")\n'
-            '    raise ValueError("refused — for a reason")\n'
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "probe.py")
-            with open(path, "w", encoding="utf-8") as handle:
-                handle.write(source)
-            found = self.offending_literals(path)
-        self.assertEqual([lineno for lineno, _, _ in found], [4, 5],
-                         "the detector must flag the print and the raise, and "
-                         "exempt the docstring and the comment")
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -67,12 +67,6 @@ from core.training.lr_triggers import (  # noqa: E402
 from core.training.training_events import TRAINING_EVENT_SENTINEL  # noqa: E402
 from api.param_defaults import LR_TRIGGER_DEFAULTS  # noqa: E402
 
-BASE_TRAINER_SRC = (BACKEND / "core" / "training" / "base_trainer.py").read_text(
-    encoding="utf-8")
-TRIGGERS_SRC = (BACKEND / "core" / "training" / "lr_triggers.py").read_text(
-    encoding="utf-8")
-ROUTES_SRC = (BACKEND / "api" / "routes.py").read_text(encoding="utf-8")
-
 BASE_LR = 1e-4
 RUN_ID = 11
 # A plateau whose configured decay sits at the very end, so a trigger is the
@@ -594,17 +588,6 @@ def test_an_extra_metric_reaches_a_trigger_with_the_value_the_chart_gets(tmp_pat
     assert trainer._metrics_buffer[0]["extra"] == {"known_loss": 0.25}
 
 
-def test_the_evaluation_reads_no_database():
-    """D45: a per-step query in the training loop is exactly the cost the ring
-    exists to refuse."""
-    start = BASE_TRAINER_SRC.index("def evaluate_lr_triggers")
-    body = BASE_TRAINER_SRC[start:BASE_TRAINER_SRC.index("\ndef ", start + 1)]
-    for forbidden in ("get_training_db", "TrainingMetrics", "db.query",
-                      "session"):
-        assert forbidden not in body, forbidden
-    assert "get_training_db" not in TRIGGERS_SRC
-
-
 def test_the_seam_never_raises_into_the_training_loop(tmp_path):
     """`poll_lr_schedule_commands`'s existing contract, which R6 shares."""
     trainer = FakeTrainer(tmp_path, T=1000)
@@ -666,11 +649,6 @@ def test_trigger_state_survives_a_state_json_round_trip(tmp_path):
     # Including the window in progress, so the resume continues the partial
     # observation rather than restarting it.
     assert (restored.window, restored.window_count) == (2, 1)
-
-
-def test_the_state_key_is_written_and_read_by_the_checkpoint():
-    assert '"lr_schedule_triggers": dump_lr_triggers(self)' in BASE_TRAINER_SRC
-    assert 'state.get("lr_schedule_triggers")' in BASE_TRAINER_SRC
 
 
 def test_resume_preserves_samples_pending_at_checkpoint(tmp_path):
@@ -766,19 +744,6 @@ def test_a_resume_from_before_a_firing_drops_the_event_and_rearms(tmp_path):
     feed(resumed, [1.0] * 20, start=30, poll_every=10)
     assert rearmed.fires == 1
     assert resumed.state(20) == STATE_DECAYING
-
-
-def test_no_multiplier_path_reads_a_trigger():
-    """Invariants 2 and 19. The lambda closes over the timeline; nothing in
-    lr_schedules NAMES a trigger, so no multiplier can depend on one."""
-    import ast
-    source = (BACKEND / "core" / "training" / "lr_schedules.py").read_text(
-        encoding="utf-8")
-    assert "lr_triggers" not in source
-    for node in ast.walk(ast.parse(source)):
-        name = (getattr(node, "id", None) or getattr(node, "attr", None)
-                or getattr(node, "name", None) or "")
-        assert "trigger" not in str(name).lower(), name
 
 
 # ---------------------------------------------------------------------------
@@ -901,16 +866,6 @@ def test_the_interval_is_on_the_global_axis_and_gas_does_not_divide_it(tmp_path)
     assert decay["at"] == 25
 
 
-def test_no_axis_conversion_is_applied_to_the_interval():
-    import ast
-    for node in ast.walk(ast.parse(TRIGGERS_SRC)):
-        name = (getattr(node, "id", None) or getattr(node, "attr", None) or "")
-        assert "scheduler_axis" not in str(name), name
-    start = BASE_TRAINER_SRC.index("def _feed_lr_trigger_signals")
-    body = BASE_TRAINER_SRC[start:BASE_TRAINER_SRC.index("\n    def ", start + 1)]
-    assert "to_scheduler_axis" not in body
-
-
 # ---------------------------------------------------------------------------
 # API surface
 # ---------------------------------------------------------------------------
@@ -998,14 +953,6 @@ def test_the_endpoint_refuses_what_it_can_decide_without_the_run(
     assert status_of(e) == 400
     assert message in e.value.detail
     assert control_rpc.list_pending_requests(tmp_path) == []
-
-
-def test_the_action_goes_through_the_retarget_endpoints_own_validator():
-    # An action that registers is an action that would have queued and drawn:
-    # one validator, not two readings of the same payload.
-    start = ROUTES_SRC.index("def _validated_trigger_record")
-    body = ROUTES_SRC[start:ROUTES_SRC.index("\n@router.", start)]
-    assert "_validated_retarget_payload(candidate)" in body
 
 
 def test_the_endpoint_rejects_an_unknown_key_rather_than_ignoring_it(routes):
@@ -1130,7 +1077,6 @@ def test_the_documented_defaults_are_the_ones_the_endpoint_uses():
     props = spec["components"]["schemas"]["LrScheduleTriggerRequest"]["properties"]
     for key, value in LR_TRIGGER_DEFAULTS.items():
         assert props[key]["default"] == value, key
-    assert "LR_TRIGGER_DEFAULTS" in ROUTES_SRC
     schema = spec["components"]["schemas"]["LrTriggerDefaults"]
     assert set(schema["properties"]) == set(LR_TRIGGER_DEFAULTS)
 

@@ -150,3 +150,27 @@ def test_raw_frames_are_streamed_in_bounded_views(monkeypatch):
     assert stderr == ""
     assert all(len(chunk) <= 17 for chunk in writes)
     assert b"".join(writes) == np.ascontiguousarray(frames[:, :, ::-1, :]).tobytes()
+
+
+def test_streaming_surfaces_ffmpeg_error_after_broken_pipe(monkeypatch):
+    class BrokenStdin:
+        def write(self, chunk):
+            raise BrokenPipeError
+
+        def close(self):
+            raise BrokenPipeError
+
+    class FailedPopen:
+        def __init__(self, *args, **kwargs):
+            self.stdin = BrokenStdin()
+            kwargs["stderr"].write(b"codec rejected input")
+
+        def wait(self):
+            return 9
+
+    monkeypatch.setattr(video_utils.subprocess, "Popen", FailedPopen)
+
+    returncode, stderr = video_utils._encode_raw_frames(["ffmpeg"], _frames())
+
+    assert returncode == 9
+    assert stderr == "codec rejected input"

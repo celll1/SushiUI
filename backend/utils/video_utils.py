@@ -113,7 +113,10 @@ def _encode_raw_frames(cmd, frames: np.ndarray) -> Tuple[int, str]:
         except BrokenPipeError:
             pass
         finally:
-            proc.stdin.close()
+            try:
+                proc.stdin.close()
+            except BrokenPipeError:
+                pass
 
         returncode = proc.wait()
         stderr_file.seek(0, os.SEEK_END)

@@ -285,7 +285,7 @@ def test_the_flag_is_submitted_saved_and_restored():
     assert '"sensenova_four_phase_grad_reduction", "sensenova_full_finetune_save_format",' in tsx
     # The preset payload is derived from getRequestData() minus
     # PRESET_EXCLUDED_KEYS, so the two assertions above cover it too; the flag
-    # is not excluded. training_preset_payload_test.py owns that gate.
+    # is not excluded.
     assert "sensenova_four_phase_eviction" not in tsx[
         tsx.index("const PRESET_EXCLUDED_KEYS"):tsx.index("const PRESET_RESTORABLE_KEYS")]
 

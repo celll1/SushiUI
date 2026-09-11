@@ -4,9 +4,7 @@
 // A module rather than a block inside TrainingConfig.tsx, because these lists
 // only mean anything relative to each other -- PRESET_RESTORABLE_KEYS is built
 // from PARAM_KEYS, the camel table is built from those, and presetConfigToParams
-// reads all of them. Kept in the component they were four hundred lines adrift
-// of the code that consumes them, and the only place their agreement could be
-// checked was by parsing the component's source.
+// reads all of them. Kept here rather than far from the code that consumes them.
 //
 // Public surface is PARAM_KEYS, PRESET_EXCLUDED_KEYS,
 // PRESET_CLEARABLE_NUMERIC_KEYS and presetConfigToParams; the rest is internal.
@@ -18,7 +16,6 @@ import { TrainingRunCreateRequest } from "@/utils/api";
 // ------------------------------------------------------------
 // A preset is the outgoing request minus PRESET_EXCLUDED_KEYS, so a new
 // parameter survives a save/load without anyone remembering to list it.
-// backend/tests/training_preset_payload_test.py fails if it stops holding.
 // ============================================================
 
 /**
@@ -186,8 +183,7 @@ const PARAM_EXTRA_RESTORE_KEYS: string[] = [
  * are still in PARAM_KEYS because edit mode must restore them from a run's own
  * YAML, and this list is not the restore list: a key here and NOWHERE else is
  * silently lost on edit (that was rescan_before_training). Everything else in
- * the request is saved; adding an entry is a visible choice, pinned by
- * training_preset_payload_test.py.
+ * the request is saved; adding an entry is a visible choice.
  *
  * The auxiliary model paths (vision_encoder_path, repa_tagger_model_dir,
  * repa_siglip2_repo, minit2i_flan_t5_path, minit2i_scratch_init_from) are

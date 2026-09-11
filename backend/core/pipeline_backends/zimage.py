@@ -24,6 +24,7 @@ from core.model_loader import ModelLoader, ModelSource
 from core.prompts.processors import PromptEditingProcessor
 from core.inference.schedulers import get_scheduler
 from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
+from core.inference.callback_utils import callback_requests
 import time as _time
 from core.inference.generation_timing import generation_timer
 from core.models.components.vae_registry import normalize, denormalize
@@ -2720,10 +2721,19 @@ class ZImageMixin:
             # already normalised to [0, 1] above). Note that the sign flip on
             # noise_pred above gives us the standard-direction velocity, so the
             # straight subtraction is the right formula here.
-            try:
-                preview_pred_x0 = (latents.float() - t_norm * noise_pred.float()).to(latents.dtype)
-            except Exception:
-                preview_pred_x0 = None
+            preview_pred_x0 = None
+            if callback_requests(
+                progress_callback,
+                "wants_predicted_x0",
+                normalized_step,
+                num_inference_steps,
+            ):
+                try:
+                    preview_pred_x0 = (
+                        latents.float() - t_norm * noise_pred.float()
+                    ).to(latents.dtype)
+                except Exception:
+                    pass
 
             if progress_callback:
                 try:

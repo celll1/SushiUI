@@ -25,6 +25,7 @@ from core.model_loader import ModelLoader, ModelSource
 from core.prompts.processors import PromptEditingProcessor
 from core.inference.schedulers import get_scheduler
 from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
+from core.inference.callback_utils import callback_requests
 from core.models.components.vae_registry import (
     normalize as _vae_normalize,
     denormalize as _vae_denormalize,
@@ -1470,14 +1471,20 @@ class Flux2Mixin:
                     # The progress callback receives this as the 5th positional
                     # arg (pred_original_sample) and the factory uses it when
                     # preview_predicted_x0=True (defaulted on for FLUX.2 below).
-                    try:
-                        sigma = (
-                            t.float() / 1000.0 if isinstance(t, torch.Tensor)
-                            else float(t) / 1000.0
-                        )
-                        preview_pred_x0 = (latents.float() - sigma * noise_pred.float()).to(latents.dtype)
-                    except Exception:
-                        preview_pred_x0 = None
+                    preview_pred_x0 = None
+                    if callback_requests(
+                        progress_callback, "wants_predicted_x0", i, len(timesteps)
+                    ):
+                        try:
+                            sigma = (
+                                t.float() / 1000.0 if isinstance(t, torch.Tensor)
+                                else float(t) / 1000.0
+                            )
+                            preview_pred_x0 = (
+                                latents.float() - sigma * noise_pred.float()
+                            ).to(latents.dtype)
+                        except Exception:
+                            pass
 
                     # Scheduler step
                     if spectrum is not None:

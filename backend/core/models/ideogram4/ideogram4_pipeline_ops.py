@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 from core.inference.generation_timing import time_phase
+from core.inference.callback_utils import callback_requests
 from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 from core.inference.spectrum_forecaster import build_output_forecaster
@@ -1052,8 +1053,11 @@ def _run_loop(
             if spectrum is not None:
                 spectrum.record(i, v)
 
-        # x0 estimate for preview (diffusers passes -v to step; x0 = z + sigma * v).
-        pred_x0 = latents + sigma_t * v
+        pred_x0 = None
+        if callback_requests(
+            progress_callback, "wants_predicted_x0", i, total_steps
+        ):
+            pred_x0 = latents + sigma_t * v
 
         # Scheduler integrates the ODE with the negated velocity (diffusers convention).
         latents = scheduler.step(-v, t, latents, return_dict=False)[0]
@@ -1063,10 +1067,18 @@ def _run_loop(
             noised_init = (1.0 - sigma_t) * init_latents + sigma_t * init_noise
             latents = mask_latent * latents + (1.0 - mask_latent) * noised_init
             if progress_callback is not None:
-                preview_x0 = mask_latent * pred_x0 + (1.0 - mask_latent) * init_latents
-                progress_callback(i, total_steps, latents.detach(), cfg_metrics, preview_x0.detach())
+                preview_x0 = None
+                if pred_x0 is not None:
+                    preview_x0 = mask_latent * pred_x0 + (1.0 - mask_latent) * init_latents
+                progress_callback(
+                    i, total_steps, latents.detach(), cfg_metrics,
+                    preview_x0.detach() if preview_x0 is not None else None,
+                )
         elif progress_callback is not None:
-            progress_callback(i, total_steps, latents.detach(), cfg_metrics, pred_x0.detach())
+            progress_callback(
+                i, total_steps, latents.detach(), cfg_metrics,
+                pred_x0.detach() if pred_x0 is not None else None,
+            )
 
     _cleanup_ideogram4_fbcache(real_cond, real_uncond, fbcache_cond, fbcache_uncond)
     return latents

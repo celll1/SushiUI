@@ -29,7 +29,7 @@ Both directions are expressible here because both properties are STATIC:
 "does this arch appear in ARCH_UNSUPPORTED" are both string/dict facts, no
 model load or generation required. Direction 1 additionally needs no import at
 all -- it is checked by reading the four generation panels' TypeScript source
-as text, the same way `gallery_type_visibility_test.py` reads ImageGrid.tsx.
+as text.
 
 Run with:
     venv/Scripts/python.exe -m pytest backend/tests/spectrum_fbcache_capability_consistency_test.py -v

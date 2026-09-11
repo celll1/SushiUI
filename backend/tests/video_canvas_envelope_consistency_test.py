@@ -24,8 +24,7 @@ LIMITATION: this confirms the `max` prop is not a bare number, not that the
 expression it names is actually `videoCanvasAxisBounds(...)`'s result --
 a panel could satisfy this check with an unrelated non-literal expression.
 Checking the exact call chain would need a real JSX/TS parse this repo has
-no tooling for; the shape-based check below is the same tradeoff
-`gallery_type_visibility_test.py` makes for generation_type literals.
+no tooling for.
 
 Run with:
     venv/Scripts/python.exe -m pytest backend/tests/video_canvas_envelope_consistency_test.py -v

@@ -99,3 +99,11 @@ The rewrite procedure is deliberately separate from ordinary document cleanup:
 The backup necessarily contains the removed identifier and must not be
 published. Rewriting the local refs does not update the hosted repository;
 force-pushing affected branches remains an explicit owner action.
+
+Status: completed locally on 2026-09-11. The `flux2` branch, its
+remote-tracking ref, one detached worktree, and five Codex checkpoint-tree refs
+were rewritten. The current tree remained byte-identical, the detached
+worktree's two pre-existing uncommitted files were hash-verified before and
+after, and no affected commit or blob remains reachable from local refs. The
+verified ignored bundle is retained; the hosted `flux2` branch still requires
+an explicit lease-protected force-push.

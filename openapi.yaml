@@ -10707,7 +10707,7 @@ components:
             Destination `<stem>.safetensors`. Must end in `.safetensors` and must
             not lie inside the loaded model's own directory tree. Shards and a
             `<stem>.safetensors.index.json` are written beside it above 4 GB.
-          example: "C:/SushiUI/models/quantized_exports/anima-base-v1.0_int8/split_files/diffusion_models/anima-base-v1.0_int8.safetensors"
+          example: "<OUTPUT_ROOT>/anima-base-v1.0_int8/split_files/diffusion_models/anima-base-v1.0_int8.safetensors"
         link_siblings:
           type: boolean
           default: true
@@ -10752,7 +10752,7 @@ components:
         output_path:
           type: string
           description: Requested destination.
-          example: "D:/exports/anima_int8/split_files/diffusion_models/anima_int8.safetensors"
+          example: "<OUTPUT_ROOT>/anima_int8/split_files/diffusion_models/anima_int8.safetensors"
         written_path:
           type: string
           nullable: true
@@ -10760,7 +10760,7 @@ components:
             What was actually written: the `.safetensors` itself, or the
             `<stem>.safetensors.index.json` for a sharded export. Null until the
             job completes.
-          example: "D:/exports/anima_int8/split_files/diffusion_models/anima_int8.safetensors"
+          example: "<OUTPUT_ROOT>/anima_int8/split_files/diffusion_models/anima_int8.safetensors"
         processed:
           type: integer
           description: Tensors written so far.
@@ -10847,7 +10847,7 @@ components:
           type: string
           nullable: true
           description: Pre-fillable destination; null when nothing is exportable.
-          example: "C:/SushiUI/models/quantized_exports/anima-base-v1.0_int8/split_files/diffusion_models/anima-base-v1.0_int8.safetensors"
+          example: "<OUTPUT_ROOT>/anima-base-v1.0_int8/split_files/diffusion_models/anima-base-v1.0_int8.safetensors"
         job:
           $ref: '#/components/schemas/QuantizedExportJob'
     ResolveCategoriesRequest:
@@ -20044,7 +20044,7 @@ components:
         path:
           type: string
           description: Directory path to scan
-          example: "D:\\datasets\\instruct_nl"
+          example: "<DATASET_ROOT>/instruct_nl"
         description:
           type: string
           nullable: true
@@ -20270,7 +20270,7 @@ components:
         path:
           type: string
           description: Directory path
-          example: "D:\\datasets\\instruct_nl"
+          example: "<DATASET_ROOT>/instruct_nl"
         description:
           type: string
           nullable: true

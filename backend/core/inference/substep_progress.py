@@ -61,7 +61,6 @@ class SubStepReporter:
         self._last_sent = 0.0
         self._reported_error = False
 
-    # -- lifecycle ---------------------------------------------------------
 
     def track_handle(self, handle: Any) -> None:
         """Take ownership of a ``RemovableHandle`` so ``close()`` removes it."""
@@ -85,7 +84,6 @@ class SubStepReporter:
             except Exception as exc:  # teardown must never take a generation down
                 print(f"[{self._label}] hook removal raised: {exc}")
 
-    # -- ticking -----------------------------------------------------------
 
     def on_block(self, k: int, n_blocks: int) -> None:
         """Report that block ``k`` of ``n_blocks`` (1-based) just ran."""

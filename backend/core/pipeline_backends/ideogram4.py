@@ -968,7 +968,6 @@ class Ideogram4Mixin:
         scheduler = self.ideogram4_components["scheduler"]
         advanced_cfg = self._ideogram4_advanced_cfg(params)
 
-        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident,
             should_keep_resident, compute_model_key, component_nbytes,
@@ -1155,7 +1154,6 @@ class Ideogram4Mixin:
         scheduler = self.ideogram4_components["scheduler"]
         advanced_cfg = self._ideogram4_advanced_cfg(params)
 
-        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident,
             should_keep_resident, compute_model_key, component_nbytes,
@@ -1349,7 +1347,6 @@ class Ideogram4Mixin:
             from PIL import ImageFilter
             mask_image = mask_image.filter(ImageFilter.GaussianBlur(mask_blur))
 
-        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident,
             should_keep_resident, compute_model_key, component_nbytes,

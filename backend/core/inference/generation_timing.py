@@ -124,7 +124,6 @@ class GenerationTimer:
         return out
 
 
-# Process-wide singleton (see module docstring for the concurrency argument).
 generation_timer = GenerationTimer()
 
 

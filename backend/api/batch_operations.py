@@ -29,9 +29,6 @@ def is_batch_operation_cancelled() -> bool:
     return _batch_operation_cancelled
 
 
-# ============================================================
-# Pydantic Models
-# ============================================================
 
 class BatchTaggerRequest(BaseModel):
     item_ids: List[int]
@@ -65,9 +62,6 @@ class BatchOperationResponse(BaseModel):
     message: str
 
 
-# ============================================================
-# Helper Functions
-# ============================================================
 
 async def save_item_to_txt_json(item, db):
     """
@@ -81,7 +75,6 @@ async def save_item_to_txt_json(item, db):
     from database.models import DatasetCaption
     import json
 
-    # Get tags caption
     tags_caption = db.query(DatasetCaption).filter(
         DatasetCaption.item_id == item.id,
         DatasetCaption.caption_type == "tags"
@@ -103,10 +96,8 @@ async def save_item_to_txt_json(item, db):
                 with open(json_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
 
-                # Update tags field
                 data['tags'] = tags_caption.content
 
-                # Write back to JSON
                 with open(json_path, 'w', encoding='utf-8') as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -117,11 +108,9 @@ async def save_item_to_txt_json(item, db):
         # Case 2: TXT file exists but no JSON - create JSON with tags field
         elif txt_path.exists():
             try:
-                # Read existing txt content (natural language)
                 with open(txt_path, 'r', encoding='utf-8') as f:
                     existing_content = f.read().strip()
 
-                # Create JSON with both tags and the existing content
                 data = {
                     'tags': tags_caption.content
                 }
@@ -130,7 +119,6 @@ async def save_item_to_txt_json(item, db):
                 if existing_content:
                     data['text'] = existing_content
 
-                # Write JSON file
                 with open(json_path, 'w', encoding='utf-8') as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -156,10 +144,8 @@ async def update_tag_statistics(dataset_id: int, db):
     from database.models import Dataset, DatasetCaption
     from sqlalchemy import func
 
-    # Initialize cache
     taglist_cache.initialize(settings.root_dir)
 
-    # Get all tags captions
     captions = db.query(DatasetCaption).join(
         DatasetCaption.item
     ).filter(
@@ -174,16 +160,13 @@ async def update_tag_statistics(dataset_id: int, db):
         for tag in tags:
             tag_counts[tag] = tag_counts.get(tag, 0) + 1
 
-    # Get categories for all tags using batch operation
     all_tag_names = list(tag_counts.keys())
     tag_categories = taglist_cache.get_categories_batch(all_tag_names)
 
-    # Update dataset tag_statistics with category information
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if dataset:
         tag_statistics = {}
         for tag, count in tag_counts.items():
-            # Get category from cache (O(1) lookup)
             category = tag_categories.get(tag, "General")
             tag_statistics[tag] = {
                 "count": count,
@@ -214,9 +197,6 @@ def get_tag_category(tag: str, tag_suggestions_context) -> str:
         return "General"
 
 
-# ============================================================
-# Batch Tagger Inference
-# ============================================================
 
 async def batch_tagger_inference(
     request: BatchTaggerRequest,
@@ -267,7 +247,6 @@ async def batch_tagger_inference(
             break
 
         try:
-            # Get item
             item = db.query(DatasetItem).filter(DatasetItem.id == item_id).first()
             if not item:
                 skipped += 1
@@ -280,7 +259,6 @@ async def batch_tagger_inference(
                 f"Processing {item.base_name} ({processed + 1}/{total})"
             )
 
-            # Load image as PIL Image
             try:
                 image = Image.open(item.image_path)
                 # Ensure image is in RGB mode
@@ -292,7 +270,6 @@ async def batch_tagger_inference(
                 processed += 1
                 continue
 
-            # Run tagger inference (predict() returns dict of predictions directly)
             predictions = tagger_manager.predict(
                 image,
                 gen_threshold=request.gen_threshold,
@@ -302,13 +279,11 @@ async def batch_tagger_inference(
                 thresholds=request.thresholds or {}
             )
 
-            # Get existing tags caption (single tags field per item)
             tags_caption = db.query(DatasetCaption).filter(
                 DatasetCaption.item_id == item.id,
                 DatasetCaption.caption_type == "tags"
             ).first()
 
-            # Parse existing tags if merge mode
             existing_tags_set = set()
             if tags_caption and request.merge_with_existing:
                 existing_tags_set = set(t.strip() for t in tags_caption.content.split(',') if t.strip())
@@ -319,7 +294,6 @@ async def batch_tagger_inference(
                 for tag, score in category_predictions:
                     predicted_tags[tag] = score
 
-            # Build final tag list
             final_tags = []
 
             if request.merge_with_existing and tags_caption:
@@ -342,7 +316,6 @@ async def batch_tagger_inference(
                 # Replace mode or no existing tags: Use only predictions
                 final_tags = list(predicted_tags.keys())
 
-            # Update or create caption
             content = ', '.join(final_tags)
 
             if tags_caption:
@@ -361,7 +334,6 @@ async def batch_tagger_inference(
 
             db.commit()
 
-            # Save to txt file
             await save_item_to_txt_json(item, db)
 
             updated += 1
@@ -375,10 +347,8 @@ async def batch_tagger_inference(
         processed += 1
         send_progress_callback(processed, total, f"Processed {processed}/{total} items")
 
-    # Update tag statistics
     if updated > 0:
         send_progress_callback(total, total, "Updating tag statistics...")
-        # Get dataset_id from first item
         first_item = db.query(DatasetItem).filter(DatasetItem.id == request.item_ids[0]).first()
         if first_item:
             await update_tag_statistics(first_item.dataset_id, db)
@@ -406,9 +376,6 @@ async def batch_tagger_inference(
     )
 
 
-# ============================================================
-# Batch Tag Reordering
-# ============================================================
 
 async def batch_reorder_tags(
     request: BatchReorderTagsRequest,
@@ -443,7 +410,6 @@ async def batch_reorder_tags(
 
     send_progress_callback(0, total, "Starting batch tag reordering...")
 
-    # Initialize taglist cache
     taglist_cache.initialize(settings.root_dir)
 
     for idx, item_id in enumerate(request.item_ids):
@@ -452,14 +418,12 @@ async def batch_reorder_tags(
             break
 
         try:
-            # Get item
             item = db.query(DatasetItem).filter(DatasetItem.id == item_id).first()
             if not item:
                 skipped += 1
                 processed += 1
                 continue
 
-            # Get tags caption
             tags_caption = db.query(DatasetCaption).filter(
                 DatasetCaption.item_id == item.id,
                 DatasetCaption.caption_type == "tags"
@@ -476,7 +440,6 @@ async def batch_reorder_tags(
                 f"Reordering {item.base_name} ({processed + 1}/{total})"
             )
 
-            # Parse tags
             tags = [t.strip() for t in tags_caption.content.split(',') if t.strip()]
 
             # Categorize tags using cache (O(1) lookup per tag)
@@ -494,17 +457,14 @@ async def batch_reorder_tags(
             reordered_tags = []
             for category in request.category_order:
                 reordered_tags.extend(categorized[category])
-            # Add unknown tags at the end
             reordered_tags.extend(categorized['Unknown'])
 
-            # Update caption
             new_content = ', '.join(reordered_tags)
             if new_content != tags_caption.content:
                 tags_caption.content = new_content
                 tags_caption.updated_at = datetime.utcnow()
                 db.commit()
 
-                # Save to txt file
                 await save_item_to_txt_json(item, db)
 
                 updated += 1
@@ -536,9 +496,6 @@ async def batch_reorder_tags(
     )
 
 
-# ============================================================
-# Batch Tag Replacement
-# ============================================================
 
 async def batch_replace_tag(
     request: BatchReplaceTagRequest,
@@ -581,14 +538,12 @@ async def batch_replace_tag(
             break
 
         try:
-            # Get item
             item = db.query(DatasetItem).filter(DatasetItem.id == item_id).first()
             if not item:
                 skipped += 1
                 processed += 1
                 continue
 
-            # Get tags caption
             tags_caption = db.query(DatasetCaption).filter(
                 DatasetCaption.item_id == item.id,
                 DatasetCaption.caption_type == "tags"
@@ -599,7 +554,6 @@ async def batch_replace_tag(
                 processed += 1
                 continue
 
-            # Parse tags
             tags = [t.strip() for t in tags_caption.content.split(',') if t.strip()]
 
             # Replace tag
@@ -626,12 +580,10 @@ async def batch_replace_tag(
                     f"Replacing in {item.base_name} ({processed + 1}/{total})"
                 )
 
-                # Update caption
                 tags_caption.content = ', '.join(new_tags)
                 tags_caption.updated_at = datetime.utcnow()
                 db.commit()
 
-                # Save to txt file
                 await save_item_to_txt_json(item, db)
 
                 updated += 1
@@ -646,7 +598,6 @@ async def batch_replace_tag(
         if processed % 10 == 0 or processed == total:
             send_progress_callback(processed, total, f"Processed {processed}/{total} items")
 
-    # Update tag statistics
     if updated > 0:
         send_progress_callback(total, total, "Updating tag statistics...")
         first_item = db.query(DatasetItem).filter(DatasetItem.id == request.item_ids[0]).first()
@@ -671,9 +622,6 @@ async def batch_replace_tag(
     )
 
 
-# ============================================================
-# Batch Backfill tag_data
-# ============================================================
 
 async def batch_backfill_tag_data(
     request: "BatchBackfillTagDataRequest",

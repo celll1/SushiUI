@@ -316,7 +316,6 @@ def scan_directory_structure(
         role = "main"
         group_name = stem
 
-        # Check reference/target suffixes
         for suffix in reference_suffixes:
             if stem.endswith(suffix):
                 group_name = stem[:-len(suffix)]
@@ -337,7 +336,6 @@ def scan_directory_structure(
             "original_stem": stem,
         })
 
-    # Build a sorted list of image group names for prefix matching (longest first)
     sorted_groups = sorted(image_stems.keys(), key=len, reverse=True)
 
     # Pass 2: Associate text/JSON files with image stems
@@ -464,7 +462,6 @@ def build_scan_preview(
             if "detected_type" in cap:
                 suffix_stats[suffix]["types"].add(cap["detected_type"])
 
-    # Build sample groups
     sample_groups = []
     for group_name, group in list(scan_groups.items())[:max_groups]:
         sample_groups.append({

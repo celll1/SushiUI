@@ -27,11 +27,9 @@ def classify_field(field_name: str, content: str, taglist: set) -> Tuple[str, bo
         is_tags_format: True if tags format, False if natural language or metadata
         tag_match_rate: 0.0-1.0 (percentage of tokens matching taglist)
     """
-    # Step 1: Metadata detection (highest priority)
     if is_metadata_field(field_name, content):
         return ('metadata', False, 0.0)
 
-    # Step 2: Training field detection (tags vs natural language)
     is_tags, match_rate = detect_caption_format(content, taglist)
 
     return ('training', is_tags, match_rate)
@@ -206,12 +204,10 @@ def detect_caption_format(content: str, taglist: set) -> Tuple[bool, float]:
             matched += 1
             continue
 
-        # Check with underscores replaced by spaces
         if normalized.replace('_', ' ') in taglist:
             matched += 1
             continue
 
-        # Check with spaces replaced by underscores
         if normalized.replace(' ', '_') in taglist:
             matched += 1
             continue
@@ -251,15 +247,12 @@ def has_sentence_pattern(text: str) -> bool:
     if len(sentences) > 0 and capitalized_count / len(sentences) > 0.3:
         return True
 
-    # Check for common sentence starters
     sentence_starters = ['the ', 'a ', 'an ', 'this ', 'that ', 'these ', 'those ',
                          'he ', 'she ', 'it ', 'they ', 'in ', 'on ', 'with ']
     text_lower = text.lower()
     if any(text_lower.startswith(starter) for starter in sentence_starters):
         return True
 
-    # Check for period-then-capital pattern (multiple sentences)
-    # e.g., "She is smiling. Her hair is long."
     if re.search(r'\.\s+[A-Z]', text):
         return True
 
@@ -321,10 +314,8 @@ def scan_json_fields(json_data: Dict[str, Any], taglist: set, prefix: str = "") 
     found_tags_field = False  # Track if we've already found a tags field
 
     for key, value in json_data.items():
-        # Build field path
         field_path = f"{prefix}.{key}" if prefix else key
 
-        # Handle nested objects (recursion)
         if isinstance(value, dict):
             # Pass found_tags_field state to nested recursion
             nested_results, found_tags_in_nested = _scan_json_fields_internal(
@@ -339,7 +330,6 @@ def scan_json_fields(json_data: Dict[str, Any], taglist: set, prefix: str = "") 
         if isinstance(value, list):
             continue
 
-        # Convert to string
         content = str(value)
 
         # Classify field

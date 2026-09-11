@@ -241,9 +241,6 @@ class LTX2Mixin:
                 if pipe is not None and getattr(pipe, "transformer", None) is current:
                     pipe.transformer = model
 
-    # ------------------------------------------------------------------
-    # Generation-time LoRA
-    # ------------------------------------------------------------------
 
     def _ltx2_lora_transformer(self):
         """The stock ``LTX2VideoTransformer3DModel``, block-loop wrapper peeled off.
@@ -1391,7 +1388,6 @@ class LTX2Mixin:
         audio_enable = bool(params.get("audio_enable", True))
         audio_mode = params.get("outpaint_video_audio_mode", "regenerate") or "regenerate"
 
-        # ---- Trim the decoded clip (pixel frames) BEFORE preprocessing ----
         trim_start = max(0, int(params.get("input_trim_start_frames", 0) or 0))
         trim_end = max(0, int(params.get("input_trim_end_frames", 0) or 0))
         total_src_frames = video_frames.shape[0]
@@ -1409,7 +1405,6 @@ class LTX2Mixin:
         # convention), not the raw upload. ----
         canonical_input_frames = _center_crop_resize_frames(trimmed_frames, width, height)
 
-        # ---- Placement math (pure, no pipeline/GPU dependency) ----
         vae_component = self.ltx2_components.get("vae")
         frame_scale_factor = int(getattr(vae_component, "temporal_compression_ratio", 8) or 8)
         latent_num_frames = (total_frames - 1) // frame_scale_factor + 1
@@ -1476,7 +1471,6 @@ class LTX2Mixin:
         from core.models.ltx2 import LTX2VideoCondition
         condition = LTX2VideoCondition(frames=cond_frames_float, index=latent_index, strength=1.0)
 
-        # ---- FBCache/Spectrum/Block-Swap: identical wiring to _generate_img2vid_ltx2 ----
         blocks_to_swap = int(params.get("blocks_to_swap", 0) or 0)
         fbcache = self._ltx2_build_fbcache(params, blocks_to_swap > 0)
         spectrum_video, spectrum_audio = self._ltx2_build_spectrum(

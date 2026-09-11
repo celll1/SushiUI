@@ -174,11 +174,6 @@ class AceStepMixin:
     """AceStepMixin: ACE-Step 1.5 (2B DiT + Oobleck VAE + Qwen3-Embedding
     text encoder) text-to-music generation backend."""
 
-    # ------------------------------------------------------------------
-    # Component staging (sequential text_encoder -> DiT -> VAE; mirrors the
-    # `_move` helper pattern used by the other single-file-loaded backends,
-    # e.g. MiniT2IMixin._minit2i_move).
-    # ------------------------------------------------------------------
 
     def _acestep_runtime_int8(self, params: Dict[str, Any], progress_callback=None):
         """Apply the one-time in-place INT8 conversion, if this request asks for it.
@@ -303,12 +298,6 @@ class AceStepMixin:
               f"({conductor.blocks_to_swap}/{len(layers)} layers)")
         return conductor
 
-    # ------------------------------------------------------------------
-    # Silence-latent asset (lazy, cached on self.acestep_components so it
-    # survives across generate calls for the currently loaded model, and is
-    # naturally invalidated on model reload since acestep_components is
-    # replaced wholesale by load_model()).
-    # ------------------------------------------------------------------
 
     def _acestep_ensure_silence_latent(self, device: str) -> torch.Tensor:
         """Return the cached [1, 750, 64] VAE-encoded silence latent, building
@@ -349,9 +338,6 @@ class AceStepMixin:
         tiled = silence_latent[0].repeat(repeats, 1)
         return tiled[:length, :].unsqueeze(0)
 
-    # ------------------------------------------------------------------
-    # Prompt assembly
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _acestep_build_text_prompt(
@@ -726,7 +712,6 @@ class AceStepMixin:
     #    so a leaf added to the trainer's scope cannot be dropped as foreign. --
     _ACESTEP_LORA_SD_PREFIX = "lora_unet_decoder_layers_"
 
-    # -- diffusers/PEFT key-format regexes (see comment block above) --
     _ACESTEP_LORA_DIFFUSERS_DIT_QKV_RE = re.compile(
         r"^transformer_blocks\.(\d+)\.(attn|cross_attn)\.to_(q|k|v)\.(lora_A|lora_B)\.weight$"
     )
@@ -1085,9 +1070,6 @@ class AceStepMixin:
                 print("[AceStep LoRA] No LoRAs in params, unloading existing LoRAs")
                 self._unload_lora_acestep()
 
-    # ------------------------------------------------------------------
-    # Main entry points
-    # ------------------------------------------------------------------
 
     @_restores_acestep_lora
     def _generate_txt2aud_acestep(
@@ -1139,7 +1121,6 @@ class AceStepMixin:
                        f"text_encoder={text_encoder is not None}, tokenizer={tokenizer is not None}",
             )
 
-        # ---- optional LoRA (see the "LoRA" section above for the apply/restore contract) ----
         self._apply_or_clear_lora_acestep(params.get("loras") or [])
 
         # ---- one-time in-place INT8 conversion (unet_quantization="int8") ----
@@ -1190,10 +1171,8 @@ class AceStepMixin:
             except Exception:
                 pass
 
-        # ---- one-time silence-latent asset (VAE encode of literal silence) ----
         silence_latent = self._acestep_ensure_silence_latent(device)  # [1, 750, 64] on device
 
-        # ---- text encoder stage ----
         self._acestep_move("text_encoder", device)
         try:
             tt = tokenizer(
@@ -1215,7 +1194,6 @@ class AceStepMixin:
             self._acestep_move("text_encoder", "cpu")
             self._acestep_empty_cache()
 
-        # ---- latent-space conditioning (src_latents / chunk_masks / timbre) ----
         latent_frames = int(round(round(audio_duration, 1) * 25))
         latent_frames = max(latent_frames, 1)
 
@@ -1241,7 +1219,6 @@ class AceStepMixin:
                 raw = [shift * t / (1.0 + (shift - 1.0) * t) for t in raw]
             custom_timesteps = torch.tensor(raw, device=device, dtype=model_dtype)
 
-        # ---- DiT stage: call the vendored generate_audio (internal sampling loop) ----
         self._acestep_move("dit", device)
         block_offloader = self._acestep_maybe_install_block_offload(params, dit, device)
         try:
@@ -1283,7 +1260,6 @@ class AceStepMixin:
             except Exception:
                 pass
 
-        # ---- validate latents (mirrors generate_music_decode.py's guards) ----
         if torch.isnan(pred_latents).any() or torch.isinf(pred_latents).any():
             raise RuntimeError(
                 f"ACE-Step generation produced NaN/Inf latents "
@@ -1292,7 +1268,6 @@ class AceStepMixin:
         if pred_latents.numel() > 0 and pred_latents.abs().sum() == 0:
             raise RuntimeError("ACE-Step generation produced all-zero latents.")
 
-        # ---- VAE decode stage ----
         self._acestep_move("vae", device)
         try:
             vae_dtype = next(vae.parameters()).dtype
@@ -1427,7 +1402,6 @@ class AceStepMixin:
             )
         is_repaint = mode == "repaint"
 
-        # ---- optional LoRA (see the "LoRA" section above for the apply/restore contract) ----
         self._apply_or_clear_lora_acestep(params.get("loras") or [])
 
         # ---- one-time in-place INT8 conversion (unet_quantization="int8") ----
@@ -1475,10 +1449,8 @@ class AceStepMixin:
             except Exception:
                 pass
 
-        # ---- one-time silence-latent asset (shared with txt2aud) ----
         silence_latent = self._acestep_ensure_silence_latent(device)  # [1, 750, 64] on device
 
-        # ---- load + normalize the reference audio, then VAE-encode it ----
         ref_wav, ref_sr = self._acestep_load_reference_audio(reference_audio)
         ref_wav = self._acestep_normalize_stereo_48k(ref_wav, ref_sr)  # [2, samples], CPU float32
 
@@ -1509,7 +1481,6 @@ class AceStepMixin:
         )
         lyrics_text = self._acestep_format_lyrics(lyrics, vocal_language)
 
-        # ---- text encoder stage ----
         self._acestep_move("text_encoder", device)
         try:
             tt = tokenizer(
@@ -1531,12 +1502,10 @@ class AceStepMixin:
             self._acestep_move("text_encoder", "cpu")
             self._acestep_empty_cache()
 
-        # ---- cover / repaint conditioning ----
         repaint_frame_range = None  # (s, e) in latent frames, repaint only
         clean_src_latents = None
         repaint_mask = None
         if is_repaint:
-            # ---- repaint conditioning (recipe section 5: mask/src_latents/repaint_mask) ----
             s, e = self._acestep_repaint_frame_range(repaint_start, repaint_end, latent_frames)
             repaint_frame_range = (s, e)
 
@@ -1554,7 +1523,6 @@ class AceStepMixin:
             repaint_mask[:, s:e] = True  # True = generate (free), False = preserve (held to ref)
             clean_src_latents = ref_latent  # FULL, unmodified reference latent (the "hold" target)
         else:
-            # ---- cover conditioning (recipe section 1a/1e) ----
             src_latents = ref_latent  # [1, T, 64] -- the reference latent (NOT silence)
             chunk_masks = torch.ones(1, latent_frames, 64, dtype=model_dtype, device=device)
             is_covers = torch.ones(1, dtype=torch.bool, device=device)
@@ -1563,7 +1531,6 @@ class AceStepMixin:
         timbre_packed = silence_latent[:, :silence_latent.shape[1], :].to(model_dtype)  # [1, 750, 64]
         refer_audio_order_mask = torch.zeros(1, dtype=torch.long, device=device)
 
-        # ---- optional custom timestep schedule for inference_steps != 8 ----
         custom_timesteps = None
         if inference_steps and inference_steps != 8:
             n = min(max(int(inference_steps), 1), 20)
@@ -1593,7 +1560,6 @@ class AceStepMixin:
             mode_kwargs["non_cover_text_hidden_states"] = text_hidden_states
             mode_kwargs["non_cover_text_attention_mask"] = text_attention_mask
 
-        # ---- DiT stage: call the vendored generate_audio (internal sampling loop) ----
         self._acestep_move("dit", device)
         block_offloader = self._acestep_maybe_install_block_offload(params, dit, device)
         try:
@@ -1635,7 +1601,6 @@ class AceStepMixin:
             except Exception:
                 pass
 
-        # ---- validate latents (mirrors generate_music_decode.py's guards) ----
         if torch.isnan(pred_latents).any() or torch.isinf(pred_latents).any():
             raise RuntimeError(
                 f"ACE-Step {mode} generation produced NaN/Inf latents "
@@ -1644,7 +1609,6 @@ class AceStepMixin:
         if pred_latents.numel() > 0 and pred_latents.abs().sum() == 0:
             raise RuntimeError(f"ACE-Step {mode} generation produced all-zero latents.")
 
-        # ---- VAE decode stage ----
         self._acestep_move("vae", device)
         try:
             vae_dtype = next(vae.parameters()).dtype
@@ -1661,7 +1625,6 @@ class AceStepMixin:
 
         waveform_out = waveform[0]  # [2, samples]
 
-        # ---- repaint-only: post-decode waveform splice (recipe section 5 step 8) ----
         if is_repaint:
             s, e = repaint_frame_range
             waveform_out = self._acestep_apply_repaint_waveform_splice(
@@ -1772,7 +1735,6 @@ class AceStepMixin:
                 detail="No reference_audio was provided.",
             )
 
-        # ---- optional LoRA (see the "LoRA" section below for the apply/restore contract) ----
         self._apply_or_clear_lora_acestep(params.get("loras") or [])
 
         # ---- one-time in-place INT8 conversion (unet_quantization="int8") ----
@@ -1821,10 +1783,8 @@ class AceStepMixin:
             except Exception:
                 pass
 
-        # ---- one-time silence-latent asset (shared with txt2aud/aud2aud) ----
         silence_latent = self._acestep_ensure_silence_latent(device)  # [1, 750, 64] on device
 
-        # ---- load + normalize + trim the input clip, then VAE-encode it ----
         ref_wav, ref_sr = self._acestep_load_reference_audio(reference_audio)
         ref_wav = self._acestep_normalize_stereo_48k(ref_wav, ref_sr)  # [2, samples], CPU float32
 
@@ -1861,7 +1821,6 @@ class AceStepMixin:
                 detail=f"VAE-encoded (trimmed) input latent has {t_ref} frames (need >= 1).",
             )
 
-        # ---- output timeline placement math (25 Hz latent rate) ----
         t_total = max(1, int(round(total_duration * 25.0)))
         if t_ref > t_total:
             raise ValidationError(
@@ -1899,7 +1858,6 @@ class AceStepMixin:
         )
         lyrics_text = self._acestep_format_lyrics(lyrics, vocal_language)
 
-        # ---- text encoder stage ----
         self._acestep_move("text_encoder", device)
         try:
             tt = tokenizer(
@@ -1949,7 +1907,6 @@ class AceStepMixin:
         timbre_packed = silence_latent[:, :silence_latent.shape[1], :].to(model_dtype)  # [1, 750, 64]
         refer_audio_order_mask = torch.zeros(1, dtype=torch.long, device=device)
 
-        # ---- optional custom timestep schedule for inference_steps != 8 ----
         custom_timesteps = None
         if inference_steps and inference_steps != 8:
             n = min(max(int(inference_steps), 1), 20)
@@ -1958,7 +1915,6 @@ class AceStepMixin:
                 raw = [shift * t / (1.0 + (shift - 1.0) * t) for t in raw]
             custom_timesteps = torch.tensor(raw, device=device, dtype=model_dtype)
 
-        # ---- DiT stage: call the vendored generate_audio (internal sampling loop) ----
         self._acestep_move("dit", device)
         block_offloader = self._acestep_maybe_install_block_offload(params, dit, device)
         try:
@@ -2000,7 +1956,6 @@ class AceStepMixin:
             except Exception:
                 pass
 
-        # ---- validate latents (mirrors generate_music_decode.py's guards) ----
         if torch.isnan(pred_latents).any() or torch.isinf(pred_latents).any():
             raise RuntimeError(
                 f"ACE-Step outpaint generation produced NaN/Inf latents "
@@ -2009,7 +1964,6 @@ class AceStepMixin:
         if pred_latents.numel() > 0 and pred_latents.abs().sum() == 0:
             raise RuntimeError("ACE-Step outpaint generation produced all-zero latents.")
 
-        # ---- VAE decode stage ----
         self._acestep_move("vae", device)
         try:
             vae_dtype = next(vae.parameters()).dtype

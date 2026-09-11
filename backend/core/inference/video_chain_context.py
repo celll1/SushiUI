@@ -360,9 +360,6 @@ def effective_segment_frames(
     return min(requested_frames, cap)
 
 
-# ---------------------------------------------------------------------------
-# 2. Shared-anchor frame arithmetic (design §4)
-# ---------------------------------------------------------------------------
 
 
 def anchor_global_frame(
@@ -499,9 +496,6 @@ class SegmentSpan:
         }
 
 
-# ---------------------------------------------------------------------------
-# 2b. Shot-aligned segment lengths (design §7.2c)
-# ---------------------------------------------------------------------------
 
 
 def grid_span_options(spec: VideoGridSpec, cap: int) -> List[int]:
@@ -874,9 +868,6 @@ def build_segment_spans(
     return spans
 
 
-# ---------------------------------------------------------------------------
-# 3. Canonical timeline (design §6.1) and its validators (design §14.1)
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -1051,9 +1042,6 @@ def assign_event_owners(
     return owners
 
 
-# ---------------------------------------------------------------------------
-# 4. Deterministic MiniMax-H3 structured-prompt parse (design §6.2, §17-4)
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -1211,9 +1199,6 @@ def extract_verbatim(text: str) -> List[str]:
     return [m.group(0) for m in _QUOTED_RE.finditer(text)]
 
 
-# ---------------------------------------------------------------------------
-# 5. Reference binding (design §5.1)
-# ---------------------------------------------------------------------------
 
 
 # `token_implied` is a binding this module DERIVED from the prompt text: a
@@ -1465,9 +1450,6 @@ def strip_reference_tokens(text: str) -> str:
     return re.sub(r"[ \t]{2,}", " ", _REFERENCE_TOKEN_RE.sub("", text)).strip()
 
 
-# ---------------------------------------------------------------------------
-# 6. Seeds (design §8) and plan hash (design §5.1)
-# ---------------------------------------------------------------------------
 
 
 def resolve_root_seed(root_seed: int, rng: Optional[random.Random] = None) -> int:
@@ -1584,9 +1566,6 @@ def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-# ---------------------------------------------------------------------------
-# 7. Persistent context and the segment compiler (design §6.3 / §6.4)
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -1864,9 +1843,6 @@ def compile_segment_prompt(
     return prompt.strip()
 
 
-# ---------------------------------------------------------------------------
-# 8. Manifest (design §5)
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -2447,9 +2423,6 @@ def plan_h3_chain_from_prompt(
     return manifest
 
 
-# ---------------------------------------------------------------------------
-# 9. Manifest validators (design §14.1)
-# ---------------------------------------------------------------------------
 
 
 def validate_manifest(manifest: ChainManifest) -> None:
@@ -2540,9 +2513,6 @@ def validate_manifest(manifest: ChainManifest) -> None:
             span.local_frame(event.start_frame)  # raises when out of range
 
 
-# ---------------------------------------------------------------------------
-# 10. Planned vs actual drift (design §4.1)
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)

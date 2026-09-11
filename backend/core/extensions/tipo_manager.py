@@ -30,7 +30,6 @@ class TIPOManager:
         try:
             print(f"[TIPO] Loading model: {model_name}")
 
-            # Check if tipo-kgen is installed
             try:
                 import kgen.models as models
                 from kgen.executor.tipo import tipo_runner, parse_tipo_request, parse_tipo_result
@@ -38,7 +37,6 @@ class TIPOManager:
 
                 print("[TIPO] Using tipo-kgen library")
 
-                # Load model and tokenizer through kgen (sets global variables)
                 models.load_model(
                     model_name,
                     device=self.device
@@ -48,7 +46,6 @@ class TIPOManager:
                 self.model = models.text_model
                 self.tokenizer = models.tokenizer
 
-                # Store kgen modules and functions for use in generation
                 self.kgen_models = models
                 self.tipo_runner = tipo_runner
                 self.parse_tipo_request = parse_tipo_request
@@ -115,7 +112,6 @@ class TIPOManager:
             return input_prompt
 
         try:
-            # Check if using tipo-kgen
             if hasattr(self, 'tipo_runner'):
                 return self._generate_with_kgen(
                     input_prompt, tag_length, nl_length,
@@ -154,12 +150,10 @@ class TIPOManager:
             print(f"[TIPO KGen] Tag length: {tag_length}, NL length: {nl_length}")
             print(f"[TIPO KGen] Treat as NL: {treat_as_nl}")
 
-            # Extract ban_tags from kwargs
             ban_tags = kwargs.get('ban_tags', '')
             if ban_tags:
                 print(f"[TIPO KGen] BAN_TAGS: '{ban_tags}'")
 
-            # Parse input based on treat_as_nl flag
             if treat_as_nl:
                 # NL mode: Use input as natural language prompt, no input tags
                 print("[TIPO KGen] NL mode: Treating entire input as natural language")
@@ -184,7 +178,6 @@ class TIPOManager:
             print(f"[TIPO KGen] NL prompt: '{nl_prompt}'")
             print(f"[TIPO KGen] Tag map: {tag_map}")
 
-            # Parse request
             meta, operations, general, nl_prompt_parsed = self.parse_tipo_request(
                 tag_map,
                 nl_prompt,
@@ -195,10 +188,8 @@ class TIPOManager:
 
             print(f"[TIPO KGen] Parsed - meta: {len(meta)}, operations: {len(operations)}, general: {len(general)}, nl: '{nl_prompt_parsed}'")
 
-            # Prepare BAN_TAGS for tipo_runner
             ban_tags_list = [t.strip() for t in ban_tags.split(',') if t.strip()] if ban_tags else []
 
-            # Run TIPO runner (model is already loaded globally by kgen.models.load_model)
             start_time = time.time()
 
             # tipo_runner accepts BAN_TAGS as a keyword argument
@@ -220,8 +211,6 @@ class TIPOManager:
             print(f"[TIPO KGen] Result type: {type(result)}")
             print(f"[TIPO KGen] Result keys: {result.keys() if isinstance(result, dict) else 'N/A'}")
 
-            # Return the result dict directly for formatting by the API layer
-            # This allows custom category ordering to be applied
             return result
 
         except Exception as e:
@@ -254,7 +243,6 @@ class TIPOManager:
 
             print(f"[TIPO Transform] Input token length: {inputs['input_ids'].shape[1]}")
 
-            # Generate
             with torch.no_grad():
                 outputs = self.model.generate(
                     **inputs,
@@ -361,7 +349,6 @@ class TIPOManager:
         }
 
 
-        # Parse line-by-line
         lines = output.strip().split('\n')
         print(f"[TIPO Parse DEBUG] Split into {len(lines)} lines")
 
@@ -372,7 +359,6 @@ class TIPOManager:
 
             print(f"[TIPO Parse DEBUG] Line {i}: {line[:100]}")  # First 100 chars of each line
 
-            # Parse key-value pairs
             if ':' in line:
                 key, value = line.split(':', 1)
                 key = key.strip().lower()
@@ -402,7 +388,6 @@ class TIPOManager:
                     result['long_nl'] = value
                     print(f"[TIPO Parse DEBUG] Set long_nl='{value[:100]}...'")
                 elif key == 'tag' or key == 'tags':
-                    # Parse comma-separated tags
                     tags = [t.strip() for t in value.split(',') if t.strip()]
                     result['tags'] = tags
                     print(f"[TIPO Parse DEBUG] Parsed {len(tags)} tags from tag field")
@@ -507,12 +492,10 @@ class TIPOManager:
         for tag in tags:
             tag_lower = tag.lower()
 
-            # Check keywords
             if tag_lower in meta_keywords:
                 meta_tags.append(tag)
                 continue
 
-            # Check patterns
             for pattern in meta_patterns:
                 if re.match(pattern, tag):
                     meta_tags.append(tag)
@@ -707,8 +690,6 @@ class TIPOManager:
                 parts.extend(items)
                 print(f"[TIPO Format DEBUG] Added {len(items)} quality tags")
             elif category == 'rating':
-                # Check both rating (string from TIPO) and rating_tags (list from input/tags)
-                # Use rating_tags (from tag categorization) in priority, fall back to rating string
                 if parsed.get('rating_tags'):
                     items = parsed['rating_tags']
                     parts.extend(items)
@@ -763,15 +744,11 @@ class TIPOManager:
         Returns:
             Merged result dict with input tags preserved and prioritized
         """
-        # Parse input tags
-        # IMPORTANT: Always split by comma, even for single tags like "1girl"
         input_tags = [t.strip() for t in input_prompt.split(',') if t.strip()]
 
         if not input_tags:
             return kgen_result
 
-        # Use kgen's tag separator to categorize input tags
-        # IMPORTANT: Always use seperate_tags, even for single tags
         if hasattr(self, 'seperate_tags'):
             input_tag_map = self.seperate_tags(input_tags)
         else:
@@ -783,7 +760,6 @@ class TIPOManager:
 
         print(f"[TIPO Merge] Input tag map: {input_tag_map}")
 
-        # Create a copy of kgen_result to modify
         merged = dict(kgen_result)
 
         # Track seen tags (case-insensitive) to avoid duplicates
@@ -803,12 +779,10 @@ class TIPOManager:
             elif category == 'characters':
                 kgen_key = 'characters'
 
-            # Get existing tags in this category from kgen
             existing_tags = merged.get(kgen_key, [])
             if not isinstance(existing_tags, list):
                 existing_tags = []
 
-            # Add ALL input tags first (they ALWAYS take priority)
             new_tags = []
             for tag in input_category_tags:
                 new_tags.append(tag)
@@ -878,11 +852,9 @@ class TIPOManager:
 
             value = kgen_result.get(kgen_key, [])
 
-            # Handle list values (most categories)
             if isinstance(value, list) and value:
                 parts.extend(value)
                 print(f"[TIPO KGen Format] Added {len(value)} items from {category}")
-            # Handle string values (NL fields)
             elif isinstance(value, str) and value:
                 parts.append(value)
                 print(f"[TIPO KGen Format] Added string from {category}")

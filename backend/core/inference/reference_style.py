@@ -40,9 +40,6 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 import torch
 
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
 
 @dataclass
 class StyleTransferConfig:
@@ -99,12 +96,10 @@ class StyleTransferConfig:
     # j and j + axis_dim//2 within its axis chunk (GPT-NeoX style).
     rope_layout: Literal["interleaved", "rotate_half"] = "interleaved"
 
-    # --- value-mode path (implemented) ---
     value_mode: str = "target_adain"  # "target_adain" | "ref_raw"
     value_adain_strength: float = 0.65
     ref_value_mix: float = 1.0
 
-    # --- deferred / stubbed (no-op at these defaults; carried for parity) ---
     late_release: float = 0.0   # fraction of steps after which injection fades out; 0 = never
     rope_offset: int = 0        # positional offset for the reference RoPE grid; 0 = none
 
@@ -204,9 +199,6 @@ class StyleTransferConfig:
         return cached
 
 
-# ---------------------------------------------------------------------------
-# Frequency-scale vector (RoPE-frequency-content suppression on the ref Key)
-# ---------------------------------------------------------------------------
 
 def frequency_scale_vector(
     head_dim: int,
@@ -257,9 +249,6 @@ def frequency_scale_vector(
     return vec.to(dtype)
 
 
-# ---------------------------------------------------------------------------
-# AdaIN
-# ---------------------------------------------------------------------------
 
 def _stats_over_tokens(x: torch.Tensor, eps: float) -> Tuple[torch.Tensor, torch.Tensor]:
     """Per-(batch,head,dim) mean/std over the token axis (``dim=-3`` for BSHD
@@ -318,9 +307,6 @@ def cross_batch_adain_qk(
     return q_out, k_out
 
 
-# ---------------------------------------------------------------------------
-# Controlled reference Value
-# ---------------------------------------------------------------------------
 
 def make_ref_value(
     target_v_img: torch.Tensor,
@@ -344,9 +330,6 @@ def make_ref_value(
     return base * (1.0 - ref_value_mix) + ref_v_raw * ref_value_mix
 
 
-# ---------------------------------------------------------------------------
-# KV injection
-# ---------------------------------------------------------------------------
 
 def inject_kv(
     k: torch.Tensor,
@@ -423,9 +406,6 @@ def inject_kv(
     return k_out, v_out
 
 
-# ---------------------------------------------------------------------------
-# Multi-reference KV injection ("stack" / "common_concept" combine modes)
-# ---------------------------------------------------------------------------
 
 # One active reference's already-finalized per-block state, as produced by
 # ``StyleContext.collect_block_refs``: ``(ref_k, ref_v, ref_q, ref_k_strength,
@@ -652,9 +632,6 @@ class StyleContext:
         return out
 
 
-# ---------------------------------------------------------------------------
-# Config construction from a plain params dict (API/frontend boundary)
-# ---------------------------------------------------------------------------
 
 def style_config_from_dict(d: Dict[str, Any]) -> StyleTransferConfig:
     """Build a ``StyleTransferConfig`` from the plain dict assembled by

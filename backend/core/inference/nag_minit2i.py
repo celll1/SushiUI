@@ -118,7 +118,6 @@ class MiniT2INAGWrapper:
         self._orig_forwards = {}
         self._install()
 
-    # ---- block patching -------------------------------------------------
     def _install(self):
         import types
         for block in self.net.double_blocks:
@@ -145,7 +144,6 @@ class MiniT2INAGWrapper:
             block._nag_pos_idx = pos_idx
             block._nag_neg_idx = neg_idx
 
-    # ---- forward --------------------------------------------------------
     def __call__(self, x, t, text, mask):
         """x0 prediction with NAG. Detects the caller's batch layout:
           batch 2 -> CFG: [cond, uncond]; batch 1 -> distilled/no-cfg: [cond].

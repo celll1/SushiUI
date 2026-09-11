@@ -12,9 +12,6 @@ import math
 import os
 
 
-# ====================
-# Priority 1: 最も重複が多い関数群
-# ====================
 
 def process_controlnet_configs(
     controlnet_configs: List[Dict],
@@ -333,13 +330,11 @@ def create_progress_callback_factory(
                 print(f"Generation status update error: {e}")
             return
 
-        # Calculate display_total for img2img/inpaint "Do full steps"
         if img2img_fix_steps is not None and steps is not None:
             display_total = steps if img2img_fix_steps else total_steps
         else:
             display_total = total_steps
 
-        # Generate preview image from latent (based on preview_interval)
         preview_image = None
         send_metrics = None
 
@@ -388,7 +383,6 @@ def create_progress_callback_factory(
                 )
                 if preview_pil:
                     buffered = BytesIO()
-                    # Use quality 75 for better compression (was 85)
                     preview_pil.save(buffered, format="JPEG", quality=75)
                     preview_image = base64.b64encode(buffered.getvalue()).decode()
             except Exception as e:
@@ -398,7 +392,6 @@ def create_progress_callback_factory(
         if should_generate_preview:
             send_metrics = cfg_metrics
 
-        # Handle step=-1 (initial noise) display
         if step == -1:
             # Initial noise: display as step 0
             display_step = 0
@@ -407,7 +400,6 @@ def create_progress_callback_factory(
             display_step = step + 1
             status_text = f"Step {display_step}/{display_total}"
 
-        # Send synchronously from callback thread
         websocket_manager.send_progress_sync(
             display_step,
             display_total,
@@ -479,7 +471,6 @@ def create_db_image_record(
         width = params.get("width", 512)
         height = params.get("height", 512)
 
-    # Get sampler and ancestral seed
     sampler = params.get("sampler", "euler")
     ancestral_seed_value = params.get("ancestral_seed", -1)
 
@@ -503,7 +494,6 @@ def create_db_image_record(
         model_hash=model_hash if model_hash else None,
     )
 
-    # Add img2img/inpaint specific fields
     if source_image_hash:
         record.source_image_hash = source_image_hash
     if mask_data_base64:
@@ -729,9 +719,6 @@ def record_model_variant(params: Dict[str, Any], pipeline_manager) -> Optional[s
         return None
 
 
-# ====================
-# Priority 2: 中程度の重複
-# ====================
 
 def create_lora_step_callback(
     lora_manager,
@@ -1173,9 +1160,6 @@ def sanitize_params_for_logging(params: Dict[str, Any]) -> Dict[str, Any]:
     return params_for_log
 
 
-# ====================
-# Priority 3: 低頻度の重複だが簡単に抽出可能
-# ====================
 
 def set_prompt_chunking_settings(
     pipeline_manager,
@@ -1262,9 +1246,6 @@ def apply_generation_timings(params: Dict[str, Any], total_seconds: float) -> No
         params[key] = value
 
 
-# ---------------------------------------------------------------------------
-# Video chain provenance (design sec.13)
-# ---------------------------------------------------------------------------
 
 _CHAIN_ID_MAX_LEN = 128
 _SHA256_HEX_LEN = 64
@@ -1384,9 +1365,6 @@ def resolve_chain_provenance(raw: Dict[str, Any]) -> Dict[str, Any]:
     return resolved
 
 
-# ---------------------------------------------------------------------------
-# Per-architecture video request resolution (design sec.8 / sec.9)
-# ---------------------------------------------------------------------------
 
 def resolve_video_defaults(params: Dict[str, Any], provided_keys, arch: Optional[str],
                            base: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1424,9 +1402,6 @@ def resolve_video_defaults(params: Dict[str, Any], provided_keys, arch: Optional
     return resolved
 
 
-# ---------------------------------------------------------------------------
-# Per-architecture image request resolution
-# ---------------------------------------------------------------------------
 
 def resolve_image_defaults(params: Dict[str, Any], provided_keys, arch: Optional[str],
                            base: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1463,9 +1438,6 @@ def resolve_image_defaults(params: Dict[str, Any], provided_keys, arch: Optional
     return resolved
 
 
-# ---------------------------------------------------------------------------
-# Per-architecture audio request resolution
-# ---------------------------------------------------------------------------
 
 def resolve_audio_defaults(params: Dict[str, Any], provided_keys, arch: Optional[str],
                            base: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -2726,9 +2698,6 @@ def plan_audio_pin_latents(
     return free, pinned
 
 
-# ---------------------------------------------------------------------------
-# Keyframe placement (MiniMax-H3 `fl2va`, POST /generate/img2vid)
-# ---------------------------------------------------------------------------
 
 # The model card's scope, quoted once and reused by every message that has to
 # state it. MiniMax documents `fl2va` for zero, one or two input images at the

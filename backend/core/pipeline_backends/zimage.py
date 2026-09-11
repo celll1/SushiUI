@@ -414,8 +414,6 @@ class ZImageMixin:
         """
         components = self._zimage_lora_components()
         if components[0].module is None:
-            # Reset the bookkeeping even on this exit: skipping it is how the
-            # previous model's Linears survive a reload.
             self._zimage_lora_session.bind(components[0])
             if lora_configs:
                 print("[Z-Image LoRA] WARNING: Z-Image components not loaded")
@@ -596,7 +594,6 @@ class ZImageMixin:
             is_ancestral = sampler in ["euler_a", "dpm2_a"]
             print(f"[Z-Image] Using FlowMatchEulerDiscreteScheduler for sampler '{sampler}' (stochastic={is_ancestral})")
 
-            # Create config dict and enable stochastic_sampling for ancestral samplers
             scheduler_config = dict(config)
             scheduler_config["stochastic_sampling"] = is_ancestral
 
@@ -618,7 +615,6 @@ class ZImageMixin:
 
         print("[Z-Image] Starting txt2img generation")
 
-        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
             discard_resident, should_keep_resident, compute_model_key, component_nbytes,
@@ -664,18 +660,14 @@ class ZImageMixin:
 
         try:
 
-            # Extract components
             transformer = self.zimage_components["transformer"]
             vae = self.zimage_components["vae"]
             text_encoder = self.zimage_components["text_encoder"]
             tokenizer = self.zimage_components["tokenizer"]
 
-            # Get scheduler based on user-selected sampler
-            # Z-Image uses Flow Match schedulers (different from SD/SDXL)
             sampler = params.get("sampler", "euler")
             scheduler = self._get_zimage_scheduler(sampler)
 
-            # Set attention backend based on global settings or params
             attention_type = params.get("attention_type", settings.attention_type)
 
             # Only switch if attention type has changed (avoid redundant switching overhead)
@@ -691,7 +683,6 @@ class ZImageMixin:
                 from core.models.zimage_transformer import set_zimage_attention_backend
                 set_zimage_attention_backend(attention_type)  # Ensure it's set (for safety)
 
-            # Load or unload LoRAs
             lora_configs = params.get("loras", [])
             print(f"[Z-Image] DEBUG: lora_configs received: {lora_configs}")
             print(f"[Z-Image] DEBUG: lora_configs type: {type(lora_configs)}")
@@ -701,14 +692,12 @@ class ZImageMixin:
                 # Unload previous LoRAs first (if any)
                 if hasattr(self, '_zimage_lora_wrapped_modules') and self._zimage_lora_wrapped_modules:
                     self._unload_lora_zimage()
-                # Load new LoRAs
                 self._load_lora_zimage(lora_configs)
             else:
                 # No LoRAs requested - unload if any are loaded
                 if hasattr(self, '_zimage_lora_wrapped_modules') and self._zimage_lora_wrapped_modules:
                     self._unload_lora_zimage()
 
-            # Prepare generator
             seed = params.get("seed", -1)
             if seed == -1:
                 seed = random.randint(0, 2**32 - 1)
@@ -719,11 +708,9 @@ class ZImageMixin:
             # Determine ancestral seed for database storage (stochastic_sampling uses internal RNG)
             ancestral_seed = params.get("ancestral_seed", -1)
             if ancestral_seed == -1:
-                # Generate random seed for reproducibility tracking
                 actual_ancestral_seed = random.randint(0, 2147483647)
                 print(f"[Z-Image] Generated random ancestral seed: {actual_ancestral_seed}")
             else:
-                # Use specified seed
                 actual_ancestral_seed = ancestral_seed
                 print(f"[Z-Image] Using specified ancestral seed: {ancestral_seed}")
 
@@ -755,7 +742,6 @@ class ZImageMixin:
                 move_zimage_vae_to_cpu
             )
 
-            # Get quantization parameters
             transformer_quantization = params.get("unet_quantization")  # Transformer (U-Net equivalent)
             text_encoder_quantization = params.get("text_encoder_quantization")  # Text Encoder (Z-Image only)
 
@@ -767,9 +753,6 @@ class ZImageMixin:
             transformer = self._zimage_runtime_int8(
                 params, progress_callback=progress_callback) or transformer
 
-            # ============================================================
-            # Stage 1: Text Encoding
-            # ============================================================
             if not is_resident(self, "text_encoder", _kh_model_key):
                 text_encoder = move_zimage_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
             log_device_status("Ready for Z-Image text encoding", None, zimage_components={
@@ -801,10 +784,6 @@ class ZImageMixin:
                 "vae": vae
             })
 
-            # ============================================================
-            # Stage 2: Denoising Loop
-            # ============================================================
-            # Block Swap parameters
             enable_block_swap = params.get("enable_block_swap", False)
             blocks_to_swap = params.get("blocks_to_swap", 20)
             use_pinned_memory = params.get("use_pinned_memory", False)
@@ -834,7 +813,6 @@ class ZImageMixin:
                 # Block Swap mode: keep Transformer on CPU for Block Swap initialization
                 print("[Z-Image] Block Swap enabled - keeping Transformer on CPU for Block Swap initialization")
 
-                # Create block offloader
                 from core.memory_management import create_block_offloader_for_model
 
                 block_offloader = create_block_offloader_for_model(
@@ -850,7 +828,6 @@ class ZImageMixin:
                 # Attach block offloader to transformer
                 transformer._block_offloader = block_offloader
 
-                # Prepare block devices (this moves blocks to GPU/CPU according to strategy)
                 block_offloader.prepare_block_devices_before_forward()
                 # Adapters are already installed here, and the sweep above put a
                 # LyCORIS branch's bare parameters on the device for good; see
@@ -911,9 +888,6 @@ class ZImageMixin:
                 "vae": vae
             })
 
-            # ============================================================
-            # Stage 3: VAE Decode
-            # ============================================================
             if not is_resident(self, "vae", _kh_model_key):
                 move_zimage_vae_to_gpu(vae)
             log_device_status("Ready for Z-Image VAE decode", None, zimage_components={
@@ -988,7 +962,6 @@ class ZImageMixin:
 
         print("[Z-Image] Starting img2img generation")
 
-        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
             discard_resident, should_keep_resident, compute_model_key, component_nbytes,
@@ -1031,18 +1004,14 @@ class ZImageMixin:
         _kh_gen_succeeded = False
 
         try:
-            # Extract components
             transformer = self.zimage_components["transformer"]
             vae = self.zimage_components["vae"]
             text_encoder = self.zimage_components["text_encoder"]
             tokenizer = self.zimage_components["tokenizer"]
 
-            # Get scheduler based on user-selected sampler
-            # Z-Image uses Flow Match schedulers (different from SD/SDXL)
             sampler = params.get("sampler", "euler")
             scheduler = self._get_zimage_scheduler(sampler)
 
-            # Set attention backend
             attention_type = params.get("attention_type", settings.attention_type)
             if attention_type != self.current_attention_type:
                 print(f"[Z-Image] Switching attention backend: {self.current_attention_type} -> {attention_type}")
@@ -1056,7 +1025,6 @@ class ZImageMixin:
                 from core.models.zimage_transformer import set_zimage_attention_backend
                 set_zimage_attention_backend(attention_type)
 
-            # Load or unload LoRAs
             lora_configs = params.get("loras", [])
             if lora_configs:
                 if hasattr(self, '_zimage_lora_wrapped_modules') and self._zimage_lora_wrapped_modules:
@@ -1066,7 +1034,6 @@ class ZImageMixin:
                 if hasattr(self, '_zimage_lora_wrapped_modules') and self._zimage_lora_wrapped_modules:
                     self._unload_lora_zimage()
 
-            # Prepare generator
             seed = params.get("seed", -1)
             if seed == -1:
                 seed = random.randint(0, 2**32 - 1)
@@ -1077,11 +1044,9 @@ class ZImageMixin:
             # Determine ancestral seed for database storage (stochastic_sampling uses internal RNG)
             ancestral_seed = params.get("ancestral_seed", -1)
             if ancestral_seed == -1:
-                # Generate random seed for reproducibility tracking
                 actual_ancestral_seed = random.randint(0, 2147483647)
                 print(f"[Z-Image] Generated random ancestral seed: {actual_ancestral_seed}")
             else:
-                # Use specified seed
                 actual_ancestral_seed = ancestral_seed
                 print(f"[Z-Image] Using specified ancestral seed: {ancestral_seed}")
 
@@ -1112,7 +1077,6 @@ class ZImageMixin:
                 move_zimage_vae_to_cpu
             )
 
-            # Get quantization parameters
             transformer_quantization = params.get("unet_quantization")
             text_encoder_quantization = params.get("text_encoder_quantization")
 
@@ -1124,9 +1088,6 @@ class ZImageMixin:
             transformer = self._zimage_runtime_int8(
                 params, progress_callback=progress_callback) or transformer
 
-            # ============================================================
-            # Stage 1: Text Encoding
-            # ============================================================
             if not is_resident(self, "text_encoder", _kh_model_key):
                 text_encoder = move_zimage_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
             log_device_status("Ready for Z-Image text encoding", None, zimage_components={
@@ -1158,9 +1119,6 @@ class ZImageMixin:
                 "vae": vae
             })
 
-            # ============================================================
-            # Stage 2: VAE Encode Input Image
-            # ============================================================
             if not is_resident(self, "vae", _kh_model_key):
                 move_zimage_vae_to_gpu(vae)
             log_device_status("Ready for Z-Image VAE encode (img2img)", None, zimage_components={
@@ -1174,7 +1132,6 @@ class ZImageMixin:
                 print(f"[Z-Image] Resizing input image from {init_image.size} to {width}x{height}")
                 init_image = init_image.resize((width, height), Image.Resampling.LANCZOS)
 
-            # Prepare image tensor
             import numpy as np
             image_array = np.array(init_image).astype(np.float32) / 255.0
             image_tensor = torch.from_numpy(image_array).permute(2, 0, 1).unsqueeze(0)  # HWC -> BCHW
@@ -1190,13 +1147,11 @@ class ZImageMixin:
                 mean, logvar = torch.chunk(h, 2, dim=1)
                 std = torch.exp(0.5 * logvar)
 
-                # Generate noise with generator
                 noise = torch.randn(mean.shape, dtype=mean.dtype, device=mean.device, generator=generator)
                 init_latents = mean + std * noise
 
                 init_latents = normalize(init_latents, vae)
 
-                # Clean up intermediate tensors
                 del h, mean, logvar, std
 
             print(f"[Z-Image] Encoded input image to latents: {init_latents.shape}")
@@ -1223,18 +1178,13 @@ class ZImageMixin:
             # Offload VAE to CPU after encoding
             move_zimage_vae_to_cpu(vae)
 
-            # ============================================================
-            # Stage 3: Add Noise to Latents (Flow Matching Style)
-            # ============================================================
             device = torch.device(self.device)
 
-            # Calculate VAE scale factor for dynamic shift
             if hasattr(vae, "config") and hasattr(vae.config, "block_out_channels"):
                 vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
             else:
                 vae_scale_factor = 8
 
-            # Calculate dynamic shift
             from core.zimage_utils import calculate_shift
             image_seq_len = (init_latents.shape[2] // 2) * (init_latents.shape[3] // 2)
             mu = calculate_shift(
@@ -1245,24 +1195,19 @@ class ZImageMixin:
                 scheduler.config.get("max_shift", 1.15),
             )
 
-            # Set scheduler parameters
             scheduler.sigma_min = 0.0
             scheduler_kwargs = {"mu": mu}
 
-            # Prepare full timesteps first
             scheduler.set_timesteps(num_inference_steps, device=device, **scheduler_kwargs)
             timesteps = scheduler.timesteps
 
-            # Calculate timestep to start from (based on strength)
             init_timestep = int(num_inference_steps * denoising_strength)
             t_start = max(num_inference_steps - init_timestep, 0)
 
-            # Get partial timesteps for img2img
             timesteps_img2img = timesteps[t_start:]
 
             print(f"[Z-Image] img2img: Using {len(timesteps_img2img)}/{len(timesteps)} timesteps (t_start={t_start}, strength={denoising_strength})")
 
-            # Add noise to init_latents at the starting timestep
             noise = torch.randn(init_latents.shape, generator=generator, device=device, dtype=torch.float32)
 
             # Flow Matching noise addition
@@ -1279,9 +1224,6 @@ class ZImageMixin:
 
             print(f"[Z-Image] Noised latents shape: {noised_latents.shape}, dtype: {noised_latents.dtype}")
 
-            # ============================================================
-            # Stage 4: Denoising Loop
-            # ============================================================
             enable_block_swap = params.get("enable_block_swap", False)
             blocks_to_swap = params.get("blocks_to_swap", 20)
             use_pinned_memory = params.get("use_pinned_memory", False)
@@ -1317,7 +1259,6 @@ class ZImageMixin:
                     "vae": vae
                 })
 
-            # Run denoising loop with noised latents and partial timesteps
             latents = self._zimage_denoising_loop(
                 transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,
                 height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
@@ -1429,7 +1370,6 @@ class ZImageMixin:
         Returns:
             (generated_image, seed)
         """
-        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
             discard_resident, should_keep_resident, compute_model_key, component_nbytes,
@@ -1475,14 +1415,12 @@ class ZImageMixin:
         _kh_gen_succeeded = False
 
         try:
-            # Get components
             text_encoder = self.zimage_components["text_encoder"]
             tokenizer = self.zimage_components["tokenizer"]
             transformer = self.zimage_components["transformer"]
             vae = self.zimage_components["vae"]
             scheduler = self.zimage_components["scheduler"]
 
-            # Get parameters
             prompt = params.get("prompt", "")
             negative_prompt = params.get("negative_prompt", "")
             num_inference_steps = params.get("steps", 8)
@@ -1494,7 +1432,6 @@ class ZImageMixin:
             mask_blur = params.get("mask_blur", 0)
             max_sequence_length = params.get("max_sequence_length", 256)
 
-            # Generate seed
             if seed == -1:
                 seed = torch.randint(0, 2**32, (1,)).item()
             generator = torch.Generator(device=self.device).manual_seed(seed)
@@ -1502,11 +1439,9 @@ class ZImageMixin:
             # Determine ancestral seed for database storage (stochastic_sampling uses internal RNG)
             ancestral_seed = params.get("ancestral_seed", -1)
             if ancestral_seed == -1:
-                # Generate random seed for reproducibility tracking
                 actual_ancestral_seed = random.randint(0, 2147483647)
                 print(f"[Z-Image] Generated random ancestral seed: {actual_ancestral_seed}")
             else:
-                # Use specified seed
                 actual_ancestral_seed = ancestral_seed
                 print(f"[Z-Image] Using specified ancestral seed: {ancestral_seed}")
 
@@ -1527,7 +1462,6 @@ class ZImageMixin:
                 move_zimage_vae_to_cpu
             )
 
-            # Get quantization parameters
             transformer_quantization = params.get("unet_quantization")
             text_encoder_quantization = params.get("text_encoder_quantization")
 
@@ -1545,9 +1479,6 @@ class ZImageMixin:
             transformer = self._zimage_runtime_int8(
                 params, progress_callback=progress_callback) or transformer
 
-            # ============================================================
-            # Stage 1: Text Encoding
-            # ============================================================
             if not is_resident(self, "text_encoder", _kh_model_key):
                 text_encoder = move_zimage_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
             log_device_status("Ready for Z-Image text encoding", None, zimage_components={
@@ -1579,9 +1510,6 @@ class ZImageMixin:
                 "vae": vae
             })
 
-            # ============================================================
-            # Stage 2: VAE Encode Input Image and Mask
-            # ============================================================
             if not is_resident(self, "vae", _kh_model_key):
                 move_zimage_vae_to_gpu(vae)
             log_device_status("Ready for Z-Image VAE encode (inpaint)", None, zimage_components={
@@ -1599,20 +1527,17 @@ class ZImageMixin:
                 print(f"[Z-Image] Resizing mask from {mask_image.size} to {width}x{height}")
                 mask_image = mask_image.resize((width, height), Image.Resampling.LANCZOS)
 
-            # Apply mask blur if requested
             if mask_blur > 0:
                 from PIL import ImageFilter
                 mask_image = mask_image.filter(ImageFilter.GaussianBlur(radius=mask_blur))
                 print(f"[Z-Image] Applied Gaussian blur to mask (radius={mask_blur})")
 
-            # Prepare image tensor
             import numpy as np
             image_array = np.array(init_image).astype(np.float32) / 255.0
             image_tensor = torch.from_numpy(image_array).permute(2, 0, 1).unsqueeze(0)  # HWC -> BCHW
             image_tensor = image_tensor * 2.0 - 1.0  # Normalize to [-1, 1]
             image_tensor = image_tensor.to(device=self.device, dtype=vae.dtype)
 
-            # Prepare mask tensor (white = 1 = inpaint, black = 0 = keep)
             mask_array = np.array(mask_image.convert('L')).astype(np.float32) / 255.0  # Grayscale
             mask_tensor = torch.from_numpy(mask_array).unsqueeze(0).unsqueeze(0)  # 1CHW
             mask_tensor = mask_tensor.to(device=self.device, dtype=vae.dtype)
@@ -1625,16 +1550,13 @@ class ZImageMixin:
                 mean, logvar = torch.chunk(h, 2, dim=1)
                 std = torch.exp(0.5 * logvar)
 
-                # Generate noise with generator
                 noise = torch.randn(mean.shape, dtype=mean.dtype, device=mean.device, generator=generator)
                 init_latents = mean + std * noise
 
                 init_latents = normalize(init_latents, vae)
 
-                # Store original latents for mask blending
                 original_latents = init_latents.clone()
 
-                # Clean up intermediate tensors
                 del h, mean, logvar, std
 
             # Resize mask to latent dimensions (downsample by VAE scale factor)
@@ -1670,18 +1592,13 @@ class ZImageMixin:
             # Offload VAE to CPU after encoding
             move_zimage_vae_to_cpu(vae)
 
-            # ============================================================
-            # Stage 3: Add Noise to Latents (Flow Matching Style)
-            # ============================================================
             device = torch.device(self.device)
 
-            # Calculate VAE scale factor for dynamic shift
             if hasattr(vae, "config") and hasattr(vae.config, "block_out_channels"):
                 vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
             else:
                 vae_scale_factor = 8
 
-            # Calculate dynamic shift
             from core.zimage_utils import calculate_shift
             image_seq_len = (init_latents.shape[2] // 2) * (init_latents.shape[3] // 2)
             mu = calculate_shift(
@@ -1692,27 +1609,21 @@ class ZImageMixin:
                 scheduler.config.get("max_shift", 1.15),
             )
 
-            # Set scheduler parameters
             scheduler.sigma_min = 0.0
             scheduler_kwargs = {"mu": mu}
 
-            # Prepare full timesteps first
             scheduler.set_timesteps(num_inference_steps, device=device, **scheduler_kwargs)
             timesteps = scheduler.timesteps
 
-            # Calculate timestep to start from (based on strength)
             init_timestep = int(num_inference_steps * denoising_strength)
             t_start = max(num_inference_steps - init_timestep, 0)
 
-            # Get partial timesteps for inpaint
             timesteps_inpaint = timesteps[t_start:]
 
             print(f"[Z-Image] inpaint: Using {len(timesteps_inpaint)}/{len(timesteps)} timesteps (t_start={t_start}, strength={denoising_strength})")
 
-            # Save original unnoised latents (for mask blending in loop)
             original_latents = init_latents.clone()
 
-            # Add noise to init_latents at the starting timestep
             noise = torch.randn(init_latents.shape, generator=generator, device=device, dtype=torch.float32)
 
             # Flow Matching noise addition (apply to entire image, mask blending happens in loop)
@@ -1727,9 +1638,6 @@ class ZImageMixin:
 
             print(f"[Z-Image] Noised latents shape: {noised_latents.shape}, dtype: {noised_latents.dtype}")
 
-            # ============================================================
-            # Stage 4: Denoising Loop with Mask Blending
-            # ============================================================
             enable_block_swap = params.get("enable_block_swap", False)
             blocks_to_swap = params.get("blocks_to_swap", 20)
             use_pinned_memory = params.get("use_pinned_memory", False)
@@ -1765,7 +1673,6 @@ class ZImageMixin:
                     "vae": vae
                 })
 
-            # Run denoising loop with mask blending
             latents = self._zimage_denoising_loop(
                 transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,
                 height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
@@ -1932,7 +1839,6 @@ class ZImageMixin:
         _t_phase = _time.perf_counter()
         device = next(text_encoder.parameters()).device
 
-        # Check if Text Encoder has FP8 weights
         has_fp8_weights = False
         if text_encoder_quantization and text_encoder_quantization.startswith('fp8_'):
             for module in text_encoder.modules():
@@ -1993,7 +1899,6 @@ class ZImageMixin:
                     output_hidden_states=True,
                 ).hidden_states[-2]
 
-        # Extract embeddings per prompt (masked by attention mask)
         prompt_embeds_list = []
         for i in range(len(prompt_embeds)):
             prompt_embeds_list.append(prompt_embeds[i][prompt_masks[i]])
@@ -2407,7 +2312,6 @@ class ZImageMixin:
 
         print(f"[Z-Image] Starting denoising loop on {device}")
 
-        # Calculate VAE scale factor
         vae = self.zimage_components["vae"]
         if hasattr(vae, "config") and hasattr(vae.config, "block_out_channels"):
             vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
@@ -2415,7 +2319,6 @@ class ZImageMixin:
             vae_scale_factor = 8
         vae_scale = vae_scale_factor * 2
 
-        # Calculate latent dimensions
         height_latent = 2 * (int(height) // vae_scale)
         width_latent = 2 * (int(width) // vae_scale)
         batch_size = len(prompt_embeds_list)
@@ -2429,7 +2332,6 @@ class ZImageMixin:
             latents = torch.randn(shape, generator=generator, device=device, dtype=torch.float32)
             print(f"[Z-Image] Starting from random latents (txt2img)")
 
-        # Calculate dynamic shift for flow matching
         image_seq_len = (latents.shape[2] // 2) * (latents.shape[3] // 2)
 
         # Use local calculate_shift implementation (from zimage_utils.py or fallback)
@@ -2441,7 +2343,6 @@ class ZImageMixin:
             scheduler.config.get("max_shift", 1.15),
         )
 
-        # Set scheduler parameters
         scheduler.sigma_min = 0.0
 
         # Prepare timesteps (use override if provided for img2img, otherwise calculate normally)
@@ -2622,8 +2523,6 @@ class ZImageMixin:
                 print(f"[Z-Image] Step {i+1}/{len(timesteps)} | t={t.item():.2f} | Skipping last step (flow matching termination)")
                 continue
 
-            # Calculate normalized step for progress bar (map timestep index to user-requested steps)
-            # For Heun: len(timesteps)=39, num_inference_steps=20 → normalize i to 0-19 range
             normalized_step = int((i / len(timesteps)) * num_inference_steps)
 
             # step_callback fires before the model forward so step-range LoRA
@@ -2681,8 +2580,6 @@ class ZImageMixin:
             elif spectrum_skip:
                 noise_pred = spectrum.forecast(i)
             else:
-                # Prepare model input (concat positive + negative if CFG)
-                # Note: For FP8 quantization, keep input in BF16/FP16, don't convert to FP8
                 if has_fp8_weights:
                     # FP8 quantized: use BF16 input (autocast will handle conversion)
                     input_dtype = torch.bfloat16
@@ -2744,7 +2641,6 @@ class ZImageMixin:
                                 negpip_pos_rows or [None] * len(prompt_embeds_list)
                             )
 
-                # Add channel dimension and split into list
                 latent_model_input = latent_model_input.unsqueeze(2)
                 latent_model_input_list = list(latent_model_input.unbind(dim=0))
 
@@ -2800,7 +2696,6 @@ class ZImageMixin:
                         from core.models.zimage_transformer import ZImageAttention
                         ZImageAttention._negpip_ctx = None
 
-                # Apply CFG if enabled
                 if apply_cfg:
                     # CFG output order matches input: [negative, positive]
                     neg_out = model_out_list[:batch_size]  # negative (uncond)
@@ -2858,7 +2753,6 @@ class ZImageMixin:
                 # This ensures non-masked area follows the same noise schedule
                 if i < len(timesteps) - 1:  # Not the last step
                     next_t = timesteps[i + 1] if i + 1 < len(timesteps) else torch.tensor([0.0], device=device)
-                    # Generate noise for original latents
                     noise_for_original = torch.randn_like(original_latents_device)
 
                     # Flow Matching: add noise at next timestep level
@@ -2909,7 +2803,6 @@ class ZImageMixin:
         with torch.no_grad():
             image = vae.decode(latents, return_dict=False)[0]
 
-        # Convert to PIL images
         from PIL import Image
         image = (image / 2 + 0.5).clamp(0, 1)
         _cf = getattr(self, "_color_flatten_strength", 0)

@@ -304,7 +304,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             return "minimax_music3"
         if self.is_sensenova_model:
             return "sensenova"
-        # Detect SDXL vs SD1.5 by inspecting the loaded pipeline class
         pipe = self.txt2img_pipeline
         if pipe is not None:
             try:
@@ -538,10 +537,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         self._sushi_load_warnings = []
 
         try:
-            # === Step 1: Complete cleanup of existing pipelines ===
             print("[Pipeline] Cleaning up existing pipelines and releasing resources...")
 
-            # Get list of all existing pipelines
             pipelines_to_cleanup = [self.txt2img_pipeline, self.img2img_pipeline, self.inpaint_pipeline]
 
             # Keep track of already-freed components to avoid double-freeing
@@ -549,7 +546,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
             for pipeline in pipelines_to_cleanup:
                 if pipeline is not None:
-                    # Remove offload hooks if present
                     if hasattr(pipeline, '_all_hooks') and pipeline._all_hooks:
                         print(f"[Pipeline] Removing {len(pipeline._all_hooks)} hooks from pipeline")
                         pipeline._all_hooks.clear()
@@ -564,21 +560,17 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     if hasattr(pipeline, '_original_unet'):
                         delattr(pipeline, '_original_unet')
 
-                    # Move each component to CPU and free from CUDA memory
                     component_names = ['unet', 'text_encoder', 'text_encoder_2', 'vae']
                     for comp_name in component_names:
                         if hasattr(pipeline, comp_name):
                             comp = getattr(pipeline, comp_name)
                             if comp is not None and id(comp) not in freed_components:
-                                # Move to CPU to free CUDA memory
                                 if hasattr(comp, 'to'):
                                     comp.to('cpu')
-                                # Delete the component
                                 delattr(pipeline, comp_name)
                                 freed_components.add(id(comp))
                                 del comp
 
-            # Delete pipeline references
             if self.txt2img_pipeline is not None:
                 del self.txt2img_pipeline
                 self.txt2img_pipeline = None
@@ -607,7 +599,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             # Always use fp16 (default in ModelLoader)
             torch_dtype = torch.float16 if self.device == "cuda" else torch.float32
 
-            # Load base pipeline or Z-Image components
             print("[Pipeline] Loading new model...")
             model_result = ModelLoader.load_model(
                 source_type=source_type,
@@ -660,7 +651,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "model_hash": model_hash,
                 }
 
-                # Save this model as the last loaded model
                 self._save_last_model(source_type, source, pipeline_type)
 
                 print("[Pipeline] FLUX.2 model loaded successfully")
@@ -713,7 +703,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 print("[Pipeline] Anima model loaded successfully")
                 return
 
-            # Check if Lens (microsoft/Lens MMDiT)
             if isinstance(model_result, dict) and model_result.get("type") == "lens":
                 print("[Pipeline] Lens model detected (component-based dict returned)")
                 self.lens_components = model_result
@@ -1226,7 +1215,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 print("[Pipeline] SenseNova model loaded successfully")
                 return
 
-            # Check if Z-Image
             if isinstance(model_result, dict) and "transformer" in model_result:
                 # Z-Image component-based model
                 print("[Pipeline] Z-Image model detected (component-based dict returned)")
@@ -1259,7 +1247,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     model_hash = get_cached_file_hash(source)
                     print(f"[Pipeline] Model hash: {model_hash[:16]}...")
 
-                # Get VAE type from loaded components (flux or sdxl)
                 zimage_vae_type = model_result.get("vae_type", "flux")
 
                 self.current_model_info = {
@@ -1273,15 +1260,12 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 self.current_model_info.update(
                     self._fold_component_latent_identity(model_result, "zimage"))
 
-                # Save this model as the last loaded model
                 self._save_last_model(source_type, source, pipeline_type)
 
                 print("[Pipeline] Z-Image model loaded successfully")
                 return
 
-            # Check if FLUX.2 (detected by "transformer" key with Flux2Transformer2DModel-specific keys)
             if isinstance(model_result, dict) and "transformer" in model_result and "scheduler" in model_result:
-                # Check if it's FLUX.2 by looking at config or class name
                 transformer = model_result.get("transformer")
                 is_flux2 = (
                     transformer is not None and
@@ -1327,7 +1311,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     self.current_model_info.update(
                         self._fold_component_latent_identity(model_result, "flux2"))
 
-                    # Save this model as the last loaded model
                     self._save_last_model(source_type, source, pipeline_type)
 
                     print("[Pipeline] FLUX.2 Klein model loaded successfully")
@@ -1347,19 +1330,15 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             # Log component devices after loading
             self._log_component_devices(base_pipeline, "After model loading")
 
-            # === Step 3: Create all pipeline variants from base ===
             print("[Pipeline] Creating pipeline variants...")
 
-            # Set txt2img pipeline
             self.txt2img_pipeline = base_pipeline
 
-            # Create img2img pipeline
             if is_sdxl:
                 self.img2img_pipeline = StableDiffusionXLImg2ImgPipeline(**base_pipeline.components)
             else:
                 self.img2img_pipeline = StableDiffusionImg2ImgPipeline(**base_pipeline.components)
 
-            # Create inpaint pipeline
             if is_sdxl:
                 self.inpaint_pipeline = StableDiffusionXLInpaintPipeline(**base_pipeline.components)
             else:
@@ -1382,12 +1361,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             self.current_model = model_id
             self.current_attention_type = "normal"  # Reset on model load
 
-            # Detect v-prediction status
             is_v_prediction = False
             if hasattr(base_pipeline, 'scheduler') and hasattr(base_pipeline.scheduler, 'config'):
                 is_v_prediction = base_pipeline.scheduler.config.get("prediction_type") == "v_prediction"
 
-            # Calculate model hash for local files (with caching)
             model_hash = ""
             if source_type in ["safetensors", "diffusers"] and os.path.exists(source):
                 from utils.hash_cache import get_cached_file_hash
@@ -1435,7 +1412,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             self.current_model_info.update(
                 self._fold_sd_latent_identity(base_pipeline, model_type_detected))
 
-            # Save this model as the last loaded model
             self._save_last_model(source_type, source, pipeline_type)
 
         except Exception as e:
@@ -1703,9 +1679,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 torch.cuda.empty_cache()
             print("[VisionEncoder] Unloaded.")
 
-    # ------------------------------------------------------------------
-    # Per-generation VAE / TE overrides (RP2b)
-    # ------------------------------------------------------------------
     def _vae_override_targets(self) -> List[tuple]:
         """Return the (kind, container, key) slots currently holding the active
         VAE. ``kind`` is "attr" (setattr) for the diffusers image pipelines or
@@ -2399,7 +2372,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         """Log the device placement of all pipeline components"""
         print(f"\n[Pipeline] Component devices - {context}:")
 
-        # Check U-Net
         if hasattr(pipeline, 'unet') and pipeline.unet is not None:
             try:
                 unet_device = next(pipeline.unet.parameters()).device
@@ -2407,7 +2379,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             except StopIteration:
                 print(f"  U-Net: No parameters found (meta device?)")
 
-        # Check Text Encoder
         if hasattr(pipeline, 'text_encoder') and pipeline.text_encoder is not None:
             try:
                 te_device = next(pipeline.text_encoder.parameters()).device
@@ -2415,7 +2386,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             except StopIteration:
                 print(f"  Text Encoder: No parameters found (meta device?)")
 
-        # Check Text Encoder 2 (SDXL)
         if hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None:
             try:
                 te2_device = next(pipeline.text_encoder_2.parameters()).device
@@ -2423,7 +2393,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             except StopIteration:
                 print(f"  Text Encoder 2: No parameters found (meta device?)")
 
-        # Check VAE
         if hasattr(pipeline, 'vae') and pipeline.vae is not None:
             try:
                 vae_device = next(pipeline.vae.parameters()).device
@@ -2431,7 +2400,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             except StopIteration:
                 print(f"  VAE: No parameters found (meta device?)")
 
-        # Check for hooks
         if hasattr(pipeline, '_all_hooks'):
             print(f"  Offload hooks: {len(pipeline._all_hooks)} hooks registered")
         else:
@@ -2565,7 +2533,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
     def _build_token_weights(self, clean_text: str, parsed_fragments, tokenizer, device, dtype):
         """Build per-token weight array from parsed emphasis fragments"""
-        # Build token weight array
         token_weights = []
         current_text = ""
         previous_token_count = 0
@@ -2574,7 +2541,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             if not text:
                 continue
 
-            # Add this fragment to accumulated text
             current_text += text
 
             # Tokenize accumulated text
@@ -2585,13 +2551,11 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             )
             current_token_count = current_tokens.input_ids.shape[1]
 
-            # Add weights for the NEW tokens
             num_new_tokens = current_token_count - previous_token_count
             token_weights.extend([weight] * num_new_tokens)
 
             previous_token_count = current_token_count
 
-        # Convert to tensor
         if len(token_weights) == 0:
             return None
 
@@ -2661,17 +2625,14 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             return pipeline
 
         try:
-            # Load ControlNet models - separate LLLite from standard ControlNets
             controlnets = []
             control_images = []
             lllite_models = []
 
             for cn_config in controlnet_images:
-                # Detect if model is LLLite
                 model_path = cn_config["model_path"]
                 is_lllite = controlnet_manager.is_lllite_model(model_path)
 
-                # Load ControlNet model
                 controlnet = controlnet_manager.load_controlnet(
                     model_path,
                     device=self.device,
@@ -2704,7 +2665,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 else:
                     print(f"[Pipeline] No layer weights specified for this ControlNet")
 
-                # Prepare control image
                 control_image = controlnet_manager.prepare_controlnet_image(
                     cn_config["image"],
                     width,
@@ -2722,7 +2682,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     controlnets.append(controlnet)
                     control_images.append(control_image)
 
-            # Apply LLLite models directly to U-Net
             if lllite_models:
                 print(f"Applying {len(lllite_models)} LLLite model(s) to U-Net")
                 for lllite_data in lllite_models:
@@ -2737,7 +2696,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                       (f" (with {len(lllite_models)} LLLite(s))" if lllite_models else ""))
                 return pipeline
 
-            # Create ControlNet pipeline
             if is_sdxl:
                 if len(controlnets) == 1:
                     cn_pipeline = StableDiffusionXLControlNetPipeline(
@@ -2787,7 +2745,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                         feature_extractor=getattr(pipeline, 'feature_extractor', None),
                     )
 
-            # Store control images for later use
             cn_pipeline.control_images = control_images
             cn_pipeline.controlnet_configs = controlnet_images
 
@@ -2850,7 +2807,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         has_pos_emphasis = bool(re.search(r'(?<!\\)[\(\[]', prompt))
         has_neg_emphasis = bool(re.search(r'(?<!\\)[\(\[]', negative_prompt))
 
-        # Get clean prompts
         clean_prompt = prompt
         if has_pos_emphasis:
             parsed = parse_prompt_attention(prompt)
@@ -2923,11 +2879,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             # NoBOS mode: strip all BOS/EOS tokens
             processed_chunks = []
             for chunk_emb in chunk_embeds_list:
-                # Remove first (BOS) and last (EOS) tokens
                 processed_chunks.append(chunk_emb[:, 1:-1, :])
             prompt_embeds = torch.cat(processed_chunks, dim=1)
 
-        # Apply emphasis weights if present (skipped for NegPip, which weights V)
         if has_pos_emphasis and not skip_emphasis:
             prompt_embeds = apply_emphasis_to_embeds(
                 prompt, prompt_embeds,
@@ -3000,7 +2954,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     processed_chunks.append(chunk_emb)
             negative_prompt_embeds = torch.cat(processed_chunks, dim=1)
 
-        # Apply emphasis weights (skipped for NegPip, which weights V)
         if negative_prompt and has_neg_emphasis and not skip_emphasis:
             negative_prompt_embeds = apply_emphasis_to_embeds(
                 negative_prompt, negative_prompt_embeds,
@@ -3053,13 +3006,11 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if pipeline is None:
             return None, None, None, None
 
-        # Check if SDXL by checking if text_encoder_2 exists
         is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
 
         device = self.device
         dtype = pipeline.dtype if hasattr(pipeline, 'dtype') else torch.float16
 
-        # Parse prompts for emphasis syntax
         import re
         has_pos_emphasis = bool(re.search(r'(?<!\\)[\(\[]', prompt))
         has_neg_emphasis = bool(re.search(r'(?<!\\)[\(\[]', negative_prompt))
@@ -3083,7 +3034,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if prompt_embeds.shape[1] > 2:  # Ensure there are enough tokens
             prompt_embeds = prompt_embeds[:, 1:-1, :]
 
-        # Apply emphasis weights if present (skipped for NegPip, which weights V)
         if has_pos_emphasis and not skip_emphasis:
             prompt_embeds = apply_emphasis_to_embeds(
                 prompt, prompt_embeds,
@@ -3110,7 +3060,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if negative_prompt_embeds.shape[1] > 2:
             negative_prompt_embeds = negative_prompt_embeds[:, 1:-1, :]
 
-        # Apply emphasis weights if present (skipped for NegPip, which weights V)
         if negative_prompt and has_neg_emphasis and not skip_emphasis:
             negative_prompt_embeds = apply_emphasis_to_embeds(
                 negative_prompt, negative_prompt_embeds,
@@ -3181,7 +3130,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if tokenizer:
             from core.prompts.prompt_parser import parse_prompt_attention
 
-            # Get clean prompt for length check
             clean_prompt = prompt
             if has_pos_emphasis:
                 parsed = parse_prompt_attention(prompt)
@@ -3192,10 +3140,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         else:
             needs_chunking = False
 
-        # Check if NoBOS mode is enabled
         needs_nobos_processing = self.prompt_chunking_mode == "nobos"
 
-        # Use chunked encoding for long prompts
         if needs_chunking:
             return self._encode_prompt_chunked(prompt, negative_prompt, pipeline, skip_emphasis=skip_emphasis)
         elif needs_nobos_processing:
@@ -3211,7 +3157,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
         # If no emphasis syntax, just encode normally
         if not has_pos_emphasis and not has_neg_emphasis:
-            # Use pipeline's encode_prompt for correct embeddings
             base_embeds = pipeline.encode_prompt(
                 prompt=prompt,
                 device=device,
@@ -3219,7 +3164,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 do_classifier_free_guidance=False
             )
 
-            # Extract embeddings
             prompt_embeds = base_embeds[0]
             pooled_prompt_embeds = base_embeds[2] if len(base_embeds) > 2 and is_sdxl else None
 
@@ -3242,11 +3186,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # Has emphasis but fits in single chunk - use pipeline.encode_prompt then apply weights
         from core.prompts.prompt_parser import parse_prompt_attention, apply_emphasis_to_embeds
 
-        # Parse to get clean text
         parsed_pos = parse_prompt_attention(prompt) if has_pos_emphasis else [(prompt, 1.0)]
         clean_prompt = "".join([text for text, _ in parsed_pos])
 
-        # Use pipeline's encode_prompt for correct embeddings
         base_embeds = pipeline.encode_prompt(
             prompt=clean_prompt,
             device=device,
@@ -3254,7 +3196,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             do_classifier_free_guidance=False
         )
 
-        # Extract embeddings
         prompt_embeds = base_embeds[0]
         pooled_prompt_embeds = base_embeds[2] if len(base_embeds) > 2 and is_sdxl else None
 
@@ -3862,8 +3803,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             if hasattr(self, flag):
                 setattr(self, flag, False)
             if attr == "ltx2_components":
-                # Reset the offload guard so a later LTX-2.3 load re-attaches
-                # the cpu-offload hooks on the fresh pipeline.
                 self._ltx2_offload_enabled = False
             elif attr == "minimax_h3_components":
                 # See prompt_cache's module docstring for why unload clears it.
@@ -4172,7 +4111,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
     def _generate_txt2img_sd(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Union[Image.Image, torch.Tensor], int, int]:
         """SD1.5/SDXL txt2img body — always call through generate_txt2img, which
         owns the offload-on-failure contract."""
-        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
             discard_resident, should_keep_resident, compute_model_key, component_nbytes,
@@ -4240,7 +4178,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # Debug: Check ControlNet presence after extensions
         print(f"[Pipeline] After extensions - controlnet_images in params: {'controlnet_images' in params}, value: {bool(params.get('controlnet_images'))}")
 
-        # Set sampler and schedule type if specified
         sampler = params.get("sampler", "euler")
         schedule_type = params.get("schedule_type", "uniform")
         if sampler:
@@ -4249,10 +4186,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             except Exception as e:
                 print(f"Warning: Could not set sampler to {sampler} with schedule {schedule_type}: {e}")
 
-        # Check if SDXL
         is_sdxl = isinstance(self.txt2img_pipeline, StableDiffusionXLPipeline)
 
-        # Check for prompt editing syntax
         prompt_processor = None
         has_prompt_editing = '[' in params["prompt"] and ':' in params["prompt"] and ']' in params["prompt"]
 
@@ -4262,12 +4197,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             num_steps = params.get("steps", settings.default_steps)
             prompt_processor.parse(params["prompt"], num_steps)
 
-            # Use the initial (cleaned) prompt for encoding
             initial_prompt = prompt_processor.current_prompt
         else:
             initial_prompt = params["prompt"]
 
-        # ===== STAGE 1: TEXT ENCODING =====
         from core.vram_optimization import log_device_status, move_text_encoders_to_gpu, move_text_encoders_to_cpu
 
         cpu_text_encoding = params.get("cpu_text_encoding", False)
@@ -4321,7 +4254,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             )
             print(f"[NAG] NAG negative embeddings shape: {nag_negative_prompt_embeds.shape if nag_negative_prompt_embeds is not None else None}")
 
-        # Build NegPip signed per-token weights (clean embeds were encoded above)
         negpip_weights = None
         if use_negpip:
             _negpip_dtype = self.txt2img_pipeline.dtype if hasattr(self.txt2img_pipeline, "dtype") else torch.float16
@@ -4376,9 +4308,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         else:
             move_text_encoders_to_cpu(self.txt2img_pipeline)
 
-        # ===== STAGE 1.5: VISION ENCODER (optional) =====
-        # Apply vision encoder if loaded and reference images are provided.
-        # Skipped for FLUX.2 (handled separately via encode_flux2_image_refs).
         _ve_ref_images = params.get("ref_images", [])
         if (
             self.vision_encoder is not None
@@ -4396,10 +4325,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             print(f"[txt2img][VE] Combined prompt embeddings shape: {prompt_embeds.shape}")
             print(f"[txt2img][VE] Combined negative embeddings shape: {negative_prompt_embeds.shape}")
 
-        # ===== STAGE 2: U-NET INFERENCE =====
         from core.vram_optimization import move_unet_to_gpu
 
-        # Get quantization option from params
         unet_quantization = params.get("unet_quantization", None)
         use_torch_compile = params.get("use_torch_compile", False)
         print(f"[Pipeline] U-Net quantization parameter: {repr(unet_quantization)}")
@@ -4413,7 +4340,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
         log_device_status("Ready for U-Net inference", self.txt2img_pipeline, vision_encoder=getattr(self, 'vision_encoder', None))
 
-        # Handle ControlNet and Reference Guide
         all_controlnet_images = params.get("controlnet_images", [])
         # Separate Reference Guide entries from ControlNet entries
         ref_guide_configs = [c for c in all_controlnet_images if c.get("is_reference_guide")]
@@ -4433,7 +4359,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 is_sdxl
             )
 
-        # Prepare generation parameters
         gen_params = {
             "num_inference_steps": params.get("steps", settings.default_steps),
             "guidance_scale": params.get("cfg_scale", settings.default_cfg_scale),
@@ -4444,7 +4369,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             gen_params["prompt_embeds"] = prompt_embeds
             if negative_prompt_embeds is not None:
                 gen_params["negative_prompt_embeds"] = negative_prompt_embeds
-            # Add pooled embeds for SDXL
             if is_sdxl:
                 if pooled_prompt_embeds is not None:
                     gen_params["pooled_prompt_embeds"] = pooled_prompt_embeds
@@ -4463,42 +4387,33 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             gen_params["width"] = params.get("width", 1024)
             gen_params["height"] = params.get("height", 1024)
 
-        # Create generator and get actual seed
         seed = params.get("seed", -1)
         if seed < 0:
-            # Generate random seed
             actual_seed = random.randint(0, 2**32 - 1)
         else:
             actual_seed = seed
 
         generator = torch.Generator(device=self.device).manual_seed(actual_seed)
 
-        # Create ancestral generator for stochastic samplers
         ancestral_seed = params.get("ancestral_seed", -1)
         if ancestral_seed == -1:
-            # Generate random seed for ancestral sampling (reproducible when saved)
             actual_ancestral_seed = random.randint(0, 2147483647)
             ancestral_generator = torch.Generator(device=self.device).manual_seed(actual_ancestral_seed)
             print(f"[Pipeline] Generated random ancestral seed: {actual_ancestral_seed}")
         else:
-            # Use specified seed for ancestral sampling
             actual_ancestral_seed = ancestral_seed
             ancestral_generator = torch.Generator(device=self.device).manual_seed(ancestral_seed)
             print(f"[Pipeline] Using specified ancestral seed: {ancestral_seed}")
 
-        # Add ControlNet images if using ControlNet pipeline
         if hasattr(pipeline_to_use, 'control_images'):
             gen_params["image"] = pipeline_to_use.control_images
 
-            # Add controlnet_conditioning_scale for strength control
             controlnet_scales = [cn["strength"] for cn in pipeline_to_use.controlnet_configs]
             if len(controlnet_scales) == 1:
                 gen_params["controlnet_conditioning_scale"] = controlnet_scales[0]
             else:
                 gen_params["controlnet_conditioning_scale"] = controlnet_scales
 
-            # Add control_guidance_start and control_guidance_end for step range control
-            # Convert from 0-1000 range to 0.0-1.0 fraction
             total_steps = params.get("steps", 20)
             guidance_starts = [cn.get("start_step", 0) / 1000.0 for cn in pipeline_to_use.controlnet_configs]
             guidance_ends = [cn.get("end_step", 1000) / 1000.0 for cn in pipeline_to_use.controlnet_configs]
@@ -4512,25 +4427,20 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
             print(f"[Pipeline] ControlNet guidance: start={guidance_starts}, end={guidance_ends}")
 
-        # Add progress callback if provided
         if progress_callback:
             gen_params["callback"] = progress_callback
             gen_params["callback_steps"] = 1
 
-        # Create combined step callback for prompt editing and LoRA step range
         if prompt_processor or step_callback:
-            # Store embeds cache for prompt editing
             embeds_cache = {}
 
             def combined_step_callback(pipe, step_index, timestep, callback_kwargs):
-                # Handle prompt editing
                 if prompt_processor:
                     new_prompt = prompt_processor.get_prompt_at_step(step_index, params.get("steps", settings.default_steps))
 
                     if new_prompt is not None:
                         print(f"[PromptEditing] Step {step_index}: Re-encoding prompt")
 
-                        # Check if we've already encoded this prompt
                         if new_prompt not in embeds_cache:
                             # Re-encode the new prompt
                             new_embeds, new_neg_embeds, new_pooled, new_neg_pooled = self._encode_prompt_with_weights(
@@ -4542,7 +4452,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                         else:
                             new_embeds, new_neg_embeds, new_pooled, new_neg_pooled = embeds_cache[new_prompt]
 
-                        # Update the embeddings in callback_kwargs
                         if 'prompt_embeds' in callback_kwargs:
                             callback_kwargs['prompt_embeds'] = new_embeds
                         if 'negative_prompt_embeds' in callback_kwargs:
@@ -4552,7 +4461,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                         if new_neg_pooled is not None and 'negative_pooled_prompt_embeds' in callback_kwargs:
                             callback_kwargs['negative_pooled_prompt_embeds'] = new_neg_pooled
 
-                # Handle LoRA step range callback
                 if step_callback:
                     callback_kwargs = step_callback(pipe, step_index, timestep, callback_kwargs)
 
@@ -4560,19 +4468,15 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
             gen_params["callback_on_step_end"] = combined_step_callback
 
-        # Generate image
         try:
             # Always use custom sampling loop for consistent behavior
             print("[Pipeline] Using custom sampling loop")
 
-            # Prepare prompt embeddings callback for prompt editing
-            # embeds_cache is already pre-calculated above with all variations
             prompt_embeds_callback_fn = None
             if prompt_processor:
                 def prompt_embeds_callback_fn(step_index):
                     new_prompt = prompt_processor.get_prompt_at_step(step_index, params.get("steps", settings.default_steps))
                     if new_prompt is not None and new_prompt in embeds_cache:
-                        # Move embeddings from CPU to GPU on-demand
                         cpu_embeds = embeds_cache[new_prompt]
                         device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
                         gpu_embeds = (
@@ -4584,7 +4488,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                         return gpu_embeds
                     return None
 
-            # Prepare ControlNet parameters
             controlnet_kwargs = {}
             print(f"[Pipeline] ControlNet check: controlnet_images={bool(controlnet_images)}, has_control_images={hasattr(pipeline_to_use, 'control_images')}, pipeline_type={type(pipeline_to_use).__name__}")
             if controlnet_images and hasattr(pipeline_to_use, 'control_images'):
@@ -4603,7 +4506,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 if controlnet_images:
                     print(f"[Pipeline] WARNING: ControlNet images specified but pipeline_to_use doesn't have control_images attribute")
 
-            # Detect v-prediction and apply guidance_rescale if needed
             is_v_prediction = pipeline_to_use.scheduler.config.get("prediction_type") == "v_prediction"
             guidance_rescale = 0.7 if is_v_prediction else 0.0
             if is_v_prediction:
@@ -4749,7 +4651,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 restore_processors(pipeline_to_use.unet, self.original_processors)
                 self.original_processors = None
 
-            # Delete GPU embed tensors
             prompt_embeds = None
             negative_prompt_embeds = None
             pooled_prompt_embeds = None
@@ -4789,7 +4690,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     move_vae_to_cpu(pipeline_to_use)
                     discard_resident(self, "vae")
 
-            # Move TAESD preview decoder to CPU
             from core.utils.taesd import taesd_manager
             taesd_manager.offload_to_cpu()
 
@@ -4922,10 +4822,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     raise RuntimeError("No model loaded. Please load a model first.")
 
                 print("Creating img2img pipeline from txt2img pipeline...")
-                # Check if SDXL
                 is_sdxl = isinstance(self.txt2img_pipeline, StableDiffusionXLPipeline)
 
-                # Create img2img pipeline from txt2img components
                 if is_sdxl:
                     self.img2img_pipeline = StableDiffusionXLImg2ImgPipeline(**self.txt2img_pipeline.components)
                 else:
@@ -4948,7 +4846,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
     def _generate_img2img_sd(self, params: Dict[str, Any], init_image: Optional[Image.Image] = None, progress_callback=None, step_callback=None) -> tuple[Union[Image.Image, torch.Tensor], int, int]:
         """SD1.5/SDXL img2img body — always call through generate_img2img, which
         owns the offload-on-failure contract."""
-        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
             discard_resident, should_keep_resident, compute_model_key, component_nbytes,
@@ -4998,7 +4895,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             if ext.enabled:
                 params = ext.process_before_generation(self.img2img_pipeline, params)
 
-        # Set sampler and schedule type if specified
         sampler = params.get("sampler", "euler")
         schedule_type = params.get("schedule_type", "uniform")
         if sampler:
@@ -5007,18 +4903,14 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             except Exception as e:
                 print(f"Warning: Could not set sampler to {sampler} with schedule {schedule_type}: {e}")
 
-        # Create generator and get actual seed
         seed = params.get("seed", -1)
         if seed < 0:
-            # Generate random seed
             actual_seed = random.randint(0, 2**32 - 1)
         else:
             actual_seed = seed
 
-        # Check if SDXL
         is_sdxl = isinstance(self.img2img_pipeline, StableDiffusionXLImg2ImgPipeline)
 
-        # Get resize parameters
         target_width = params.get("width")
         target_height = params.get("height")
         resize_mode = params.get("resize_mode", "image")
@@ -5086,7 +4978,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
                 init_image = init_image.resize((target_width, target_height), resampling)
 
-        # Check for prompt editing syntax
         prompt_processor = None
         has_prompt_editing = '[' in params["prompt"] and ':' in params["prompt"] and ']' in params["prompt"]
 
@@ -5099,7 +4990,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         else:
             initial_prompt = params["prompt"]
 
-        # ===== STAGE 1: TEXT ENCODING =====
         from core.vram_optimization import log_device_status, move_text_encoders_to_gpu, move_text_encoders_to_cpu, move_vae_to_gpu, move_vae_to_cpu
 
         cpu_text_encoding = params.get("cpu_text_encoding", False)
@@ -5107,7 +4997,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             move_text_encoders_to_gpu(self.img2img_pipeline)
         log_device_status("Ready for text encoding (img2img)", self.img2img_pipeline, vision_encoder=getattr(self, 'vision_encoder', None))
 
-        # Handle ControlNet and Reference Guide
         all_controlnet_images = params.get("controlnet_images", [])
         ref_guide_configs = [c for c in all_controlnet_images if c.get("is_reference_guide")]
         controlnet_images = [c for c in all_controlnet_images if not c.get("is_reference_guide")]
@@ -5170,7 +5059,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             )
             print(f"[NAG] NAG negative embeddings shape: {nag_negative_prompt_embeds.shape}")
 
-        # Build NegPip signed per-token weights (clean embeds were encoded above)
         negpip_weights = None
         if use_negpip:
             _negpip_dtype = pipeline_to_use.dtype if hasattr(pipeline_to_use, "dtype") else torch.float16
@@ -5224,7 +5112,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         else:
             move_text_encoders_to_cpu(pipeline_to_use)
 
-        # ===== STAGE 1.5: VISION ENCODER (optional) =====
         _ve_ref_images = params.get("ref_images", [])
         if (
             self.vision_encoder is not None
@@ -5242,20 +5129,13 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             print(f"[img2img][VE] Combined prompt embeddings shape: {prompt_embeds.shape}")
             print(f"[img2img][VE] Combined negative embeddings shape: {negative_prompt_embeds.shape}")
 
-        # ===== STAGE 2: U-NET INFERENCE (after VAE operations) =====
-        # Note: For img2img, we need VAE first for initial latent encoding
 
-        # Handle latent resize mode by encoding, resizing latent, then decoding.
-        # Never applies to latent passthrough (init_latents_override is resized
-        # directly, with no VAE round-trip at all -- see above).
         if resize_mode == "latent" and target_width and target_height and init_latents_override is None:
             if init_image.size != (target_width, target_height):
                 print(f"Using latent resize mode: {init_image.size} -> {target_width}x{target_height} with {resampling_method}")
 
-                # Move VAE to GPU for latent resize encoding/decoding
                 move_vae_to_gpu(pipeline_to_use)
 
-                # Prepare image for VAE encoding
                 image_tensor = self.img2img_pipeline.image_processor.preprocess(init_image)
                 image_tensor = image_tensor.to(device=self.device, dtype=self.img2img_pipeline.vae.dtype)
 
@@ -5266,7 +5146,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     latent = self.img2img_pipeline.vae.encode(image_tensor).latent_dist.sample()
                     latent = vae_normalize(latent, self.img2img_pipeline.vae)
 
-                # Calculate target latent size (VAE downsamples by 8x)
                 latent_height = target_height // 8
                 latent_width = target_width // 8
 
@@ -5277,20 +5156,17 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     resized_latent = vae_denormalize(resized_latent, self.img2img_pipeline.vae)
                     decoded = self.img2img_pipeline.vae.decode(resized_latent).sample
 
-                # Convert back to PIL Image
                 decoded = (decoded / 2 + 0.5).clamp(0, 1)
                 decoded = decoded.cpu().permute(0, 2, 3, 1).float().numpy()
                 decoded = (decoded * 255).round().astype("uint8")
                 init_image = Image.fromarray(decoded[0])
 
-                # Clean up intermediate tensors from latent resize
                 del image_tensor, latent, resized_latent, decoded
 
                 # Move VAE back to CPU after latent resize operations
                 move_vae_to_cpu(pipeline_to_use)
                 torch.cuda.empty_cache()
 
-        # Calculate proper steps for img2img
         requested_steps = params.get("steps", settings.default_steps)
         denoising_strength = params.get("denoising_strength", 0.75)
         fix_steps = params.get("img2img_fix_steps", True)
@@ -5299,7 +5175,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if fix_steps:
             print(f"[img2img] Do full steps enabled: {requested_steps} requested -> {total_steps} scheduler steps, t_start={t_start}, actual={actual_steps}")
 
-        # Prepare generation parameters
         gen_params = {
             "image": init_image,
             "strength": denoising_strength,
@@ -5313,7 +5188,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             gen_params["prompt_embeds"] = prompt_embeds
             if negative_prompt_embeds is not None:
                 gen_params["negative_prompt_embeds"] = negative_prompt_embeds
-            # Add pooled embeds for SDXL
             if is_sdxl:
                 if pooled_prompt_embeds is not None:
                     gen_params["pooled_prompt_embeds"] = pooled_prompt_embeds
@@ -5323,27 +5197,21 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             gen_params["prompt"] = params["prompt"]
             gen_params["negative_prompt"] = params.get("negative_prompt", "")
 
-        # Add progress callback if provided
         if progress_callback:
             gen_params["callback"] = progress_callback
             gen_params["callback_steps"] = 1
 
-        # Add step callback for LoRA step range if provided
         if step_callback:
             gen_params["callback_on_step_end"] = step_callback
 
-        # Generate image using custom sampling loop
         try:
             print("[Pipeline] Using custom img2img sampling loop")
 
-            # Prepare prompt embeddings callback for prompt editing
-            # embeds_cache is already pre-calculated above with all variations
             prompt_embeds_callback_fn = None
             if prompt_processor:
                 def prompt_embeds_callback_fn(step_index):
                     new_prompt = prompt_processor.get_prompt_at_step(step_index, total_steps)
                     if new_prompt is not None and new_prompt in embeds_cache:
-                        # Move embeddings from CPU to GPU on-demand
                         cpu_embeds = embeds_cache[new_prompt]
                         device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
                         gpu_embeds = (
@@ -5355,7 +5223,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                         return gpu_embeds
                     return None
 
-            # Prepare ControlNet parameters
             controlnet_kwargs = {}
             if controlnet_images and hasattr(pipeline_to_use, 'control_images'):
                 controlnet_kwargs['controlnet_images'] = pipeline_to_use.control_images
@@ -5367,20 +5234,16 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 controlnet_kwargs['control_guidance_start'] = guidance_starts if len(guidance_starts) > 1 else guidance_starts[0]
                 controlnet_kwargs['control_guidance_end'] = guidance_ends if len(guidance_ends) > 1 else guidance_ends[0]
 
-            # Create ancestral generator for stochastic samplers
             ancestral_seed = params.get("ancestral_seed", -1)
             if ancestral_seed == -1:
-                # Generate random ancestral seed for reproducibility tracking
                 actual_ancestral_seed = random.randint(0, 2147483647)
                 ancestral_generator = torch.Generator(device=self.device).manual_seed(actual_ancestral_seed)
                 print(f"[Pipeline] Generated random ancestral seed: {actual_ancestral_seed}")
             else:
-                # Use specified ancestral seed
                 actual_ancestral_seed = ancestral_seed
                 ancestral_generator = torch.Generator(device=self.device).manual_seed(ancestral_seed)
                 print(f"[Pipeline] Using specified ancestral seed: {ancestral_seed}")
 
-            # Detect v-prediction and apply guidance_rescale if needed
             is_v_prediction = pipeline_to_use.scheduler.config.get("prediction_type") == "v_prediction"
             guidance_rescale = 0.7 if is_v_prediction else 0.0
             if is_v_prediction:
@@ -5406,15 +5269,12 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 else:
                     print(f"[Pipeline] Attention processor already set to: {attention_type} (skipping)")
 
-            # Use t_start directly for custom sampling loop
             t_start_override = t_start if fix_steps else None
             if fix_steps:
                 print(f"[img2img] Using t_start={t_start_override} for Do full steps mode")
 
-            # Move U-Net to GPU for inference
             from core.vram_optimization import move_unet_to_gpu
 
-            # Get quantization option from params
             unet_quantization = params.get("unet_quantization", None)
             use_torch_compile = params.get("use_torch_compile", False)
             if not is_resident(self, "unet", _kh_model_key):
@@ -5537,7 +5397,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 restore_processors(pipeline_to_use.unet, self.original_processors)
                 self.original_processors = None
 
-            # Delete GPU embed tensors
             prompt_embeds = None
             negative_prompt_embeds = None
             pooled_prompt_embeds = None
@@ -5572,7 +5431,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     move_vae_to_cpu(pipeline_to_use)
                     discard_resident(self, "vae")
 
-            # Move TAESD preview decoder to CPU
             from core.utils.taesd import taesd_manager
             taesd_manager.offload_to_cpu()
 
@@ -5711,7 +5569,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 if not self.txt2img_pipeline:
                     raise RuntimeError("No model loaded. Please load a model first.")
 
-                # Check if current model is SDXL
                 is_sdxl = isinstance(self.txt2img_pipeline, StableDiffusionXLPipeline)
 
                 if is_sdxl:
@@ -5740,7 +5597,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
     ) -> tuple[Image.Image, int, int]:
         """SD1.5/SDXL inpaint body — always call through generate_inpaint, which
         owns the offload-on-failure contract."""
-        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
             discard_resident, should_keep_resident, compute_model_key, component_nbytes,
@@ -5790,7 +5646,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             if ext.enabled:
                 params = ext.process_before_generation(self.inpaint_pipeline, params)
 
-        # Set scheduler (sampler + schedule type)
         sampler_name = params.get("sampler", "euler")
         schedule_type = params.get("schedule_type", "uniform")
 
@@ -5800,21 +5655,17 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             schedule_type=schedule_type
         )
 
-        # Handle seed
         seed = params.get("seed", -1)
         if seed == -1:
             seed = torch.randint(0, 2**32 - 1, (1,)).item()
         generator = torch.Generator(device=self.device).manual_seed(seed)
 
-        # Create ancestral generator for stochastic samplers
         ancestral_seed = params.get("ancestral_seed", -1)
         if ancestral_seed == -1:
-            # Generate random seed for ancestral sampling (reproducible when saved)
             actual_ancestral_seed = random.randint(0, 2147483647)
             ancestral_generator = torch.Generator(device=self.device).manual_seed(actual_ancestral_seed)
             print(f"[Pipeline] Generated random ancestral seed: {actual_ancestral_seed}")
         else:
-            # Use specified seed for ancestral sampling
             actual_ancestral_seed = ancestral_seed
             ancestral_generator = torch.Generator(device=self.device).manual_seed(ancestral_seed)
             print(f"[Pipeline] Using specified ancestral seed: {ancestral_seed}")
@@ -5829,7 +5680,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if mask_image.size != (target_width, target_height):
             mask_image = mask_image.resize((target_width, target_height), Image.Resampling.LANCZOS)
 
-        # Calculate proper steps for inpaint
         requested_steps = params.get("steps", settings.default_steps)
         denoising_strength = params.get("denoising_strength", 0.75)
         fix_steps = params.get("img2img_fix_steps", True)
@@ -5838,7 +5688,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if fix_steps:
             print(f"[inpaint] Do full steps enabled: {requested_steps} requested -> {total_steps} scheduler steps, t_start={t_start}, actual={actual_steps}")
 
-        # Check for prompt editing syntax
         prompt_processor = None
         has_prompt_editing = '[' in params["prompt"] and ':' in params["prompt"] and ']' in params["prompt"]
 
@@ -5850,7 +5699,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         else:
             initial_prompt = params["prompt"]
 
-        # ===== STAGE 1: TEXT ENCODING =====
         from core.vram_optimization import log_device_status, move_text_encoders_to_gpu, move_text_encoders_to_cpu, move_vae_to_gpu, move_vae_to_cpu
 
         cpu_text_encoding = params.get("cpu_text_encoding", False)
@@ -5861,7 +5709,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # Determine if SDXL
         is_sdxl = isinstance(self.inpaint_pipeline, StableDiffusionXLInpaintPipeline)
 
-        # Handle ControlNet and Reference Guide
         all_controlnet_images = params.get("controlnet_images", [])
         ref_guide_configs = [c for c in all_controlnet_images if c.get("is_reference_guide")]
         controlnet_images = [c for c in all_controlnet_images if not c.get("is_reference_guide")]
@@ -5974,7 +5821,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             )
             print(f"[NAG] NAG negative embeddings shape: {nag_negative_prompt_embeds.shape}")
 
-        # Build NegPip signed per-token weights (clean embeds were encoded above)
         negpip_weights = None
         if use_negpip:
             _negpip_dtype = pipeline_to_use.dtype if hasattr(pipeline_to_use, "dtype") else torch.float16
@@ -5986,7 +5832,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             )
             print(f"[NegPip] Auto-activated (inpaint, negative emphasis weights detected)")
 
-        # Move embeddings to device
         device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
         prompt_embeds = prompt_embeds.to(device)
         negative_prompt_embeds = negative_prompt_embeds.to(device)
@@ -6013,7 +5858,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         else:
             move_text_encoders_to_cpu(pipeline_to_use)
 
-        # ===== STAGE 1.5: VISION ENCODER (optional) =====
         _ve_ref_images = params.get("ref_images", [])
         if (
             self.vision_encoder is not None
@@ -6031,13 +5875,11 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             print(f"[inpaint][VE] Combined prompt embeddings shape: {prompt_embeds.shape}")
             print(f"[inpaint][VE] Combined negative embeddings shape: {negative_prompt_embeds.shape}")
 
-        # Prepare callback for prompt editing
         prompt_embeds_callback_fn = None
         if prompt_processor:
             def prompt_embeds_callback_fn(step_index):
                 new_prompt = prompt_processor.get_prompt_at_step(step_index, total_steps)
                 if new_prompt is not None and new_prompt in embeds_cache:
-                    # Move embeddings from CPU to GPU on-demand
                     cpu_embeds = embeds_cache[new_prompt]
                     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
                     gpu_embeds = (
@@ -6049,7 +5891,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     return gpu_embeds
                 return None
 
-        # Prepare ControlNet parameters
         controlnet_kwargs = {}
         if controlnet_images and hasattr(pipeline_to_use, 'control_images'):
             controlnet_kwargs['controlnet_images'] = pipeline_to_use.control_images
@@ -6061,7 +5902,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             controlnet_kwargs['control_guidance_start'] = guidance_starts if len(guidance_starts) > 1 else guidance_starts[0]
             controlnet_kwargs['control_guidance_end'] = guidance_ends if len(guidance_ends) > 1 else guidance_ends[0]
 
-        # Create ancestral generator for stochastic samplers
         ancestral_seed = params.get("ancestral_seed", -1)
         if ancestral_seed == -1:
             ancestral_generator = None
@@ -6069,7 +5909,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             ancestral_generator = torch.Generator(device=self.device).manual_seed(ancestral_seed)
             print(f"[Pipeline] Using separate ancestral seed: {ancestral_seed}")
 
-        # Detect v-prediction and apply guidance_rescale if needed
         is_v_prediction = pipeline_to_use.scheduler.config.get("prediction_type") == "v_prediction"
         guidance_rescale = 0.7 if is_v_prediction else 0.0
         if is_v_prediction:
@@ -6095,15 +5934,12 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             else:
                 print(f"[Pipeline] Attention processor already set to: {attention_type} (skipping)")
 
-        # Use t_start directly for custom sampling loop
         t_start_override = t_start if fix_steps else None
         if fix_steps:
             print(f"[inpaint] Using t_start={t_start_override} for Do full steps mode")
 
-        # ===== STAGE 2: U-NET INFERENCE =====
         from core.vram_optimization import move_unet_to_gpu
 
-        # Get quantization option from params
         unet_quantization = params.get("unet_quantization", None)
         use_torch_compile = params.get("use_torch_compile", False)
         if not is_resident(self, "unet", _kh_model_key):
@@ -6265,7 +6101,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 restore_processors(pipeline_to_use.unet, self.original_processors)
                 self.original_processors = None
 
-            # Delete GPU embed tensors
             prompt_embeds = None
             negative_prompt_embeds = None
             pooled_prompt_embeds = None
@@ -6304,7 +6139,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     move_vae_to_cpu(pipeline_to_use)
                     discard_resident(self, "vae")
 
-            # Move TAESD preview decoder to CPU
             from core.utils.taesd import taesd_manager
             taesd_manager.offload_to_cpu()
 
@@ -6899,9 +6733,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
         return result_image, actual_seed, actual_ancestral_seed
 
-    # =============================================================
-    # Anima generation methods
-    # =============================================================
 
     def cancel_generation(self):
         """Request cancellation of current generation"""

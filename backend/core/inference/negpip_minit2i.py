@@ -44,9 +44,6 @@ from core.attention import AttentionMode
 from core.inference.nag_dit import nag_guidance
 
 
-# ---------------------------------------------------------------------------
-# Signed per-token weight vector (FLAN-T5 aligned)
-# ---------------------------------------------------------------------------
 def build_signed_weight_vector_t5(prompt, tokenizer, seq_len, device, dtype):
     """Signed per-token weight vector aligned to the FLAN-T5 text sequence.
 
@@ -215,7 +212,6 @@ class MiniT2INegPipWrapper:
         self._orig_forwards = {}
         self._install()
 
-    # ---- block patching -------------------------------------------------
     def _install(self):
         import types
         for block in self.net.double_blocks:
@@ -247,7 +243,6 @@ class MiniT2INegPipWrapper:
             return torch.ones(lt, device=device, dtype=dtype)
         return w.to(device=device, dtype=dtype)
 
-    # ---- forward --------------------------------------------------------
     def __call__(self, x, t, text, mask):
         """Runs like the transformer/NAG-wrapper the euler loop uses:
         ``call_target(x, t, text, mask)`` -> x0. The batch is built by the CALLER:

@@ -28,10 +28,8 @@ def get_model_columns(model_class):
     """
     columns = {}
     for column in model_class.__table__.columns:
-        # Get SQLite type representation
         col_type = column.type.compile(dialect=create_engine('sqlite://').dialect)
 
-        # Add nullable constraint
         nullable = "" if column.nullable else " NOT NULL"
 
         # Add default value if present
@@ -58,11 +56,9 @@ def get_db_columns(engine, table_name):
     """
     inspector = inspect(engine)
 
-    # Check if table exists
     if not inspector.has_table(table_name):
         return set()
 
-    # Get columns
     columns = inspector.get_columns(table_name)
     return {col['name'] for col in columns}
 
@@ -166,11 +162,6 @@ def _reconcile_indices(conn, db_name: str, table_name: str, applied: list) -> No
     2. Inline ``CONSTRAINT … UNIQUE (…)`` clauses in the CREATE TABLE DDL —
        detected via the table's DDL text and handled by a full table rebuild.
     """
-    # -------------------------------------------------------------------
-    # Plan: per-table list of (inline_constraint_fragments_to_remove,
-    #        legacy_standalone_index_names_to_drop,
-    #        new_index_sqls_to_create)
-    # -------------------------------------------------------------------
     plan = {
         # tagger_training_metrics was originally created with an inline
         # CONSTRAINT uq_tagger_run_step UNIQUE (run_id, step).
@@ -194,7 +185,6 @@ def _reconcile_indices(conn, db_name: str, table_name: str, applied: list) -> No
         return
     inline_triggers, legacy_names, create_sqls = plan[table_name]
 
-    # ---- Check for inline constraint fragments in the CREATE TABLE DDL ----
     ddl_row = conn.execute(text(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name=:t"
     ), {"t": table_name}).fetchone()
@@ -205,7 +195,6 @@ def _reconcile_indices(conn, db_name: str, table_name: str, applied: list) -> No
         _rebuild_table_remove_inline_constraints(conn, db_name, table_name, create_sqls, applied)
         return
 
-    # ---- Normal path: drop standalone legacy indices, create new ones ----
     rows = conn.execute(text(
         "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=:t"
     ), {"t": table_name}).fetchall()
@@ -250,7 +239,6 @@ def _rebuild_table_remove_inline_constraints(
 
     Column list is derived from the live table to stay schema-agnostic.
     """
-    # Fetch column names in ordinal order
     col_rows = conn.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
     cols = [r[1] for r in col_rows]  # r[1] = name
     cols_csv = ", ".join(cols)

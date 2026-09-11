@@ -120,10 +120,8 @@ class NAGAttnProcessor2_0:
         if attn.group_norm is not None:
             hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
 
-        # Prepare query from hidden_states (image features)
         query = attn.to_q(hidden_states)
 
-        # Check if this is cross-attention with NAG-formatted embeddings
         is_cross_attention_original = encoder_hidden_states is not None
         if encoder_hidden_states is None:
             # Self-attention: use original processing
@@ -166,7 +164,6 @@ class NAGAttnProcessor2_0:
             # Origin batch size (number of images being generated, usually 1)
             origin_batch_size = 1
 
-            # Compute key and value for ALL 3 contexts at once
             key = attn.to_k(encoder_hidden_states)  # [3, seq, dim] - cfg_neg, cfg_pos, nag_neg
             value = attn.to_v(encoder_hidden_states)
 
@@ -200,9 +197,6 @@ class NAGAttnProcessor2_0:
                 w = _align_token_weights(tw, context_batch, value.shape[2], value.device, value.dtype)
                 value = value * w[:, None, :, None]
 
-            # Compute attention with matching batch sizes (3)
-            # Result indices for context_batch=3 (CFG + NAG):
-            # 0: uncond→cfg_negative, 1: cond→cfg_positive, 2: cond→nag_negative
             hidden_states_all = self._compute_attention(query_expanded, key, value, attention_mask)
             hidden_states_all = hidden_states_all.transpose(1, 2).reshape(context_batch, -1, attn.heads * head_dim).to(query.dtype)
 
@@ -276,7 +270,6 @@ class NAGAttnProcessor2_0:
             # hidden_states = guidance (batch=2)
             # We need to extract uncond result and combine with NAG guidance result
 
-            # Extract uncond result (index 0 or 1)
             A_uncond = hidden_states_all[0:origin_batch_size]  # uncond→cfg_negative
 
             # Debug: compare uncond vs cond
@@ -377,10 +370,8 @@ def set_nag_processors(unet, nag_scale: float, nag_tau: float, nag_alpha: float,
     Returns:
         dict: Original processors for restoration
     """
-    # Get current processors
     original_processors = unet.attn_processors.copy()
 
-    # Create new processor dict with NAG processors for attn2
     new_processors = {}
     for name, processor in unet.attn_processors.items():
         if "attn2" in name:  # Cross-attention only
@@ -396,7 +387,6 @@ def set_nag_processors(unet, nag_scale: float, nag_tau: float, nag_alpha: float,
         else:
             new_processors[name] = processor
 
-    # Set processors using diffusers' method
     unet.set_attn_processor(new_processors)
 
     # Verify processors were set
@@ -413,7 +403,6 @@ def restore_original_processors(unet, original_processors: dict):
     if not original_processors:
         return
 
-    # Use diffusers' method to restore
     unet.set_attn_processor(original_processors)
 
     print("[NAG] Restored original attention processors")

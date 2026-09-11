@@ -57,9 +57,6 @@ from core.models.ideogram4.vendor.transformer import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Signed per-token weight vector aligned to Ideogram 4's packed sequence
-# ---------------------------------------------------------------------------
 
 def build_ideogram4_text_weights(
     prompt: str,
@@ -208,9 +205,6 @@ def build_ideogram4_negpip_weights(
     return weights
 
 
-# ---------------------------------------------------------------------------
-# NegPip attention processor (signed V scaling on text tokens)
-# ---------------------------------------------------------------------------
 
 class Ideogram4NegPipAttnProcessor:
     """Ideogram4 self-attention processor that scales V by signed per-token weights.
@@ -297,9 +291,6 @@ def restore_ideogram4_processors(transformer, originals):
             module.set_processor(originals[name])
 
 
-# ---------------------------------------------------------------------------
-# Combined NAG + NegPip processor (composition)
-# ---------------------------------------------------------------------------
 
 def make_negpip_nag_processor_class():
     """Build a NAG-processor subclass that also applies NegPip signed V scaling.

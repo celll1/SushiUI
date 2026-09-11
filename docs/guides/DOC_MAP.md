@@ -51,7 +51,7 @@ machine-local working material.
 | `docs/guides/INT8_CONVROT_TRAINING_DESIGN.md` | INT8 ConvRot investigation and measurement status. |
 | `docs/guides/TRAINING_DIAGNOSTICS_AND_AUXILIARY_LOSSES.md` | Shipped convergence diagnostics, crop-decode loss, and REPA target-source boundary. |
 | `docs/guides/CONVERGENCE_PHASE1_SENSENOVA.md` | Phase 1 diagnostic measurements on SenseNova. |
-| `docs/guides/LYCORIS_ADAPTER_DESIGN.md` | **The adapter subsystem's durable note.** LyCORIS 4.0.0 assessment, the shared LoRA/LoHa/LoKr/DoRA engine at `backend/core/adapters/` (spec, target topology, tensor grouping, codec registry, `AdapterSession`, execution-backend registry), the two capability axes, and the shipped boundary. Read it before touching anything adapter-, LoRA-variant- or `adapter_type`-related; per-architecture family enablement is summarised in `docs/guides/MODEL_FACTS.md`. |
+| `docs/guides/LYCORIS_ADAPTER_DESIGN.md` | Current adapter subsystem contract: capability axes, algebra, topology, codecs, sessions, block swap, and execution backends. |
 | `docs/guides/VAE_TRAINING.md` | VAE decoder training contract. |
 | `docs/guides/VAE_DECODE_BEHAVIOR.md` | VAE tiled-decode behavior and measured non-locality. |
 | `docs/guides/VAE_TRAINING_RESOLUTION.md` | VAE crop/resolution semantics and scaling measurements. |

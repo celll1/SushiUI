@@ -1750,6 +1750,11 @@ AUDIO_GEN_DEFAULTS: Dict[str, Any] = {
     # Int8Linear/Fp8Linear for a quantized checkpoint -- so the quantized-GEMM
     # path selection governs real modules here.
     "quantized_gemm_mode": GENERATION_DEFAULTS["quantized_gemm_mode"],
+    # Common immutable-weight block streaming. Zero disables it; audio routes
+    # do not need the image API's separate enable_block_swap compatibility flag.
+    "blocks_to_swap": 0,
+    "use_pinned_memory": GENERATION_DEFAULTS["use_pinned_memory"],
+    "block_swap_ring_size": GENERATION_DEFAULTS["block_swap_ring_size"],
 }
 
 TXT2AUD_DEFAULTS: Dict[str, Any] = dict(AUDIO_GEN_DEFAULTS)
@@ -1850,6 +1855,9 @@ AUD2AUD_DEFAULTS: Dict[str, Any] = {
     # OUTPAINT_AUDIO_DEFAULTS).
     "unet_quantization": GENERATION_DEFAULTS["unet_quantization"],
     "quantized_gemm_mode": GENERATION_DEFAULTS["quantized_gemm_mode"],
+    "blocks_to_swap": 0,
+    "use_pinned_memory": GENERATION_DEFAULTS["use_pinned_memory"],
+    "block_swap_ring_size": GENERATION_DEFAULTS["block_swap_ring_size"],
 }
 
 # Per-architecture overlay twin of `AUDIO_GEN_ARCH_OVERLAYS`, for

@@ -14937,6 +14937,20 @@ components:
             conversion above produces the same classes). No effect on MiniMax
             Music 3, which holds plain floating-point Linear weights.
           example: null
+        blocks_to_swap:
+          type: integer
+          minimum: 0
+          default: 0
+          description: "Number of trailing ACE-Step DiT layers, or trailing blocks in each MiniMax Music 3 compute stage, streamed from CPU through the common immutable-weight conductor. 0 disables block offload."
+        use_pinned_memory:
+          type: boolean
+          default: false
+          description: "Use pinned host storage for common block-offload transfers."
+        block_swap_ring_size:
+          type: integer
+          minimum: 1
+          default: 2
+          description: "GPU staging-ring slot count for common block offload. Two slots allow next-block prefetch."
         loras:
           type: array
           default: []
@@ -15148,6 +15162,20 @@ components:
             loader swaps in `Int8Linear`/`Fp8Linear`, and the runtime `int8`
             conversion above produces the same classes).
           example: null
+        blocks_to_swap:
+          type: integer
+          minimum: 0
+          default: 0
+          description: "Number of trailing ACE-Step DiT layers, or trailing blocks in each MiniMax Music 3 compute stage, streamed from CPU. 0 disables block offload."
+        use_pinned_memory:
+          type: boolean
+          default: false
+          description: "Use pinned host storage for common block-offload transfers."
+        block_swap_ring_size:
+          type: integer
+          minimum: 1
+          default: 2
+          description: "GPU staging-ring slot count for common block offload."
         reference_audio:
           type: string
           format: binary
@@ -15347,6 +15375,20 @@ components:
             loader swaps in `Int8Linear`/`Fp8Linear`, and the runtime `int8`
             conversion above produces the same classes).
           example: null
+        blocks_to_swap:
+          type: integer
+          minimum: 0
+          default: 0
+          description: "Number of trailing ACE-Step DiT layers, or trailing blocks in each MiniMax Music 3 compute stage, streamed from CPU. 0 disables block offload."
+        use_pinned_memory:
+          type: boolean
+          default: false
+          description: "Use pinned host storage for common block-offload transfers."
+        block_swap_ring_size:
+          type: integer
+          minimum: 1
+          default: 2
+          description: "GPU staging-ring slot count for common block offload."
         reference_audio:
           type: string
           format: binary

@@ -283,6 +283,7 @@ def _blend_guidance(
     guidance: float,
     sigma_now: float,
     advanced_cfg: Optional[Dict[str, Any]] = None,
+    collect_metrics: bool = True,
 ) -> Tuple[torch.Tensor, Any, Optional[float]]:
     """CFG blend. ``guidance`` is the Krea convention scale (== cfg_scale - 1).
 
@@ -319,7 +320,7 @@ def _blend_guidance(
     cfg_base = 1.0 + guidance  # standard CFG scale
 
     current_snr = None
-    if snr_alpha > 0.0 or developer_mode:
+    if snr_alpha > 0.0 or (developer_mode and collect_metrics):
         uncond_norm = torch.norm(v_uncond).item()
         if uncond_norm > 1e-8:
             current_snr = (torch.norm(v_cond - v_uncond).item() ** 2) / (uncond_norm ** 2)
@@ -336,7 +337,8 @@ def _blend_guidance(
         v = dynamic_thresholding(v, percentile=dyn_percentile, clamp_value=dyn_mimic)
 
     cfg_metrics = (
-        calculate_cfg_metrics(v_uncond, v_cond, cfg_now, developer_mode) if developer_mode else None
+        calculate_cfg_metrics(v_uncond, v_cond, cfg_now, developer_mode)
+        if developer_mode and collect_metrics else None
     )
     return v, cfg_metrics, cfg_now
 
@@ -416,6 +418,9 @@ def _run_loop(
 
     for i, t in enumerate(timesteps):
         raise_if_cancelled()
+        collect_cfg_metrics = callback_requests(
+            progress_callback, "wants_cfg_metrics", i, total_steps
+        )
         # FlowMatchEuler timesteps == sigmas * num_train_timesteps, so sigma = t/num_train
         # (robust to the trimmed img2img/inpaint schedule, unlike indexing sigmas[i]).
         sigma_now = timestep_scalars[i] / num_train
@@ -522,7 +527,9 @@ def _run_loop(
                 return_dict=False,
             )[0].to(torch.float32)
 
-        v, cfg_metrics, cfg_now = _blend_guidance(v_cond, v_uncond, guidance, sigma_now, advanced_cfg)
+        v, cfg_metrics, cfg_now = _blend_guidance(
+            v_cond, v_uncond, guidance, sigma_now, advanced_cfg, collect_cfg_metrics
+        )
 
         # --- CFG-decoupled style guidance (Krea2) ---
         # Disabled by default (style_guidance_scale is None/<=0): this block is
@@ -597,6 +604,7 @@ def _run_loop(
             forced_advanced_cfg["cfg_schedule_type"] = "constant"
             v, cfg_metrics, _ = _blend_guidance(
                 cond_rewritten, v_uncond, cfg_now - 1.0, sigma_now, forced_advanced_cfg,
+                collect_cfg_metrics,
             )
 
         pred_x0 = None

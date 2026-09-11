@@ -411,6 +411,7 @@ def _apply_advanced_cfg(
     sigma_now: float,
     sigma_max: float,
     advanced_cfg: Optional[Dict[str, Any]],
+    collect_metrics: bool = True,
 ):
     """Apply CFG + optional advanced features (schedule / SNR-rescale /
     dynamic-threshold) and return (v_after, cfg_now, cfg_metrics).
@@ -443,7 +444,7 @@ def _apply_advanced_cfg(
         return v_cond, guidance_scale, None
 
     current_snr = None
-    if snr_alpha > 0.0 or developer_mode:
+    if snr_alpha > 0.0 or (developer_mode and collect_metrics):
         uncond_norm = torch.norm(v_uncond).item()
         if uncond_norm > 1e-8:
             current_snr = (torch.norm(v_cond - v_uncond).item() ** 2) / (uncond_norm ** 2)
@@ -464,7 +465,7 @@ def _apply_advanced_cfg(
         v = dynamic_thresholding(v, percentile=dyn_percentile, clamp_value=dyn_mimic)
 
     cfg_metrics = calculate_cfg_metrics(v_uncond, v_cond, cfg_now, developer_mode) \
-        if developer_mode else None
+        if developer_mode and collect_metrics else None
     return v, cfg_now, cfg_metrics
 
 
@@ -631,6 +632,9 @@ def sample_txt2img(
     for i in range(num_inference_steps):
         sp_i += 1
         raise_if_cancelled()
+        collect_cfg_metrics = callback_requests(
+            step_callback, "wants_cfg_metrics", i, num_inference_steps
+        )
         timestep = scheduler.get_timestep(i, device=torch.device(device), dtype=dtype)
         timestep_batch = timestep.expand(latents.shape[0])
 
@@ -716,6 +720,7 @@ def sample_txt2img(
 
             v, _cfg_now, cfg_metrics = _apply_advanced_cfg(
                 v_cond, v_uncond, guidance_scale, sigma_now_f, sigma_max_f, advanced_cfg,
+                collect_cfg_metrics,
             )
 
             # --- CFG-decoupled style guidance (Anima) ---
@@ -786,6 +791,7 @@ def sample_txt2img(
                     forced_advanced_cfg["cfg_schedule_type"] = "constant"
                     v, _, cfg_metrics = _apply_advanced_cfg(
                         cond_rewritten, v_uncond, _cfg_now, sigma_now_f, sigma_max_f, forced_advanced_cfg,
+                        collect_cfg_metrics,
                     )
 
             if spectrum is not None:
@@ -891,6 +897,9 @@ def sample_img2img(
     for i in range(start_step, num_inference_steps):
         sp_i += 1
         raise_if_cancelled()
+        collect_cfg_metrics = callback_requests(
+            step_callback, "wants_cfg_metrics", i - start_step, total_style_steps
+        )
         timestep = scheduler.get_timestep(i, device=torch.device(device), dtype=dtype)
         timestep_batch = timestep.expand(latents.shape[0])
 
@@ -961,6 +970,7 @@ def sample_img2img(
 
             v, _cfg_now, cfg_metrics = _apply_advanced_cfg(
                 v_cond, v_uncond, guidance_scale, sigma_now_f, sigma_max_f, advanced_cfg,
+                collect_cfg_metrics,
             )
 
             # --- CFG-decoupled style guidance (Anima) --- see sample_txt2img's
@@ -992,6 +1002,7 @@ def sample_img2img(
                     forced_advanced_cfg["cfg_schedule_type"] = "constant"
                     v, _, cfg_metrics = _apply_advanced_cfg(
                         cond_rewritten, v_uncond, _cfg_now, sigma_now_f, sigma_max_f, forced_advanced_cfg,
+                        collect_cfg_metrics,
                     )
 
             if spectrum is not None:
@@ -1106,6 +1117,9 @@ def sample_inpaint(
     for i in range(start_step, num_inference_steps):
         sp_i += 1
         raise_if_cancelled()
+        collect_cfg_metrics = callback_requests(
+            step_callback, "wants_cfg_metrics", i - start_step, total_style_steps
+        )
         timestep = scheduler.get_timestep(i, device=torch.device(device), dtype=dtype)
         timestep_batch = timestep.expand(latents.shape[0])
 
@@ -1176,6 +1190,7 @@ def sample_inpaint(
 
             v, _cfg_now, cfg_metrics = _apply_advanced_cfg(
                 v_cond, v_uncond, guidance_scale, sigma_now_f, sigma_max_f, advanced_cfg,
+                collect_cfg_metrics,
             )
 
             # --- CFG-decoupled style guidance (Anima) --- see sample_txt2img's
@@ -1207,6 +1222,7 @@ def sample_inpaint(
                     forced_advanced_cfg["cfg_schedule_type"] = "constant"
                     v, _, cfg_metrics = _apply_advanced_cfg(
                         cond_rewritten, v_uncond, _cfg_now, sigma_now_f, sigma_max_f, forced_advanced_cfg,
+                        collect_cfg_metrics,
                     )
 
             if spectrum is not None:

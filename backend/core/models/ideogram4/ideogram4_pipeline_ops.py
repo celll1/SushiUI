@@ -503,6 +503,7 @@ def _blend_guidance(
     gw: float,
     sigma_now: float,
     advanced_cfg: Optional[Dict[str, Any]] = None,
+    collect_metrics: bool = True,
 ) -> Tuple[torch.Tensor, Any, float]:
     """Asymmetric CFG blend (== standard CFG with cfg=gw) plus optional schedule/threshold.
 
@@ -533,7 +534,7 @@ def _blend_guidance(
     )
 
     current_snr = None
-    if snr_alpha > 0.0 or developer_mode:
+    if snr_alpha > 0.0 or (developer_mode and collect_metrics):
         uncond_norm = torch.norm(v_uncond).item()
         if uncond_norm > 1e-8:
             current_snr = (torch.norm(v_cond - v_uncond).item() ** 2) / (uncond_norm ** 2)
@@ -554,7 +555,8 @@ def _blend_guidance(
         v = dynamic_thresholding(v, percentile=dyn_percentile, clamp_value=dyn_mimic)
 
     cfg_metrics = (
-        calculate_cfg_metrics(v_uncond, v_cond, cfg_now, developer_mode) if developer_mode else None
+        calculate_cfg_metrics(v_uncond, v_cond, cfg_now, developer_mode)
+        if developer_mode and collect_metrics else None
     )
     return v, cfg_metrics, cfg_now
 
@@ -599,6 +601,7 @@ def _dual_branch_velocity(
     gw_i: float,
     sigma_t: float,
     advanced_cfg: Optional[Dict[str, Any]],
+    collect_metrics: bool = True,
 ) -> Tuple[torch.Tensor, Any, float, torch.Tensor, torch.Tensor]:
     """One dual-branch forward pass returning the guided velocity (float32).
 
@@ -628,7 +631,9 @@ def _dual_branch_velocity(
     )[0]
     neg_v = neg_out.to(torch.float32)
 
-    v, cfg_metrics, cfg_now = _blend_guidance(pos_v, neg_v, gw_i, sigma_t, advanced_cfg)
+    v, cfg_metrics, cfg_now = _blend_guidance(
+        pos_v, neg_v, gw_i, sigma_t, advanced_cfg, collect_metrics
+    )
     return v, cfg_metrics, cfg_now, pos_v, neg_v
 
 
@@ -652,6 +657,7 @@ def _ideogram4_style_step(
     sigma_t: float,
     num_train_timesteps: int,
     advanced_cfg: Optional[Dict[str, Any]],
+    collect_metrics: bool = True,
 ) -> Tuple[torch.Tensor, Any]:
     """One style-active denoise step for Ideogram 4: a REF capture forward (the style
     reference re-noised to this step's CURRENT sigma, packed into the SAME
@@ -711,6 +717,7 @@ def _ideogram4_style_step(
 
         v, cfg_metrics, cfg_now, cond_s, v_uncond = _dual_branch_velocity(
             transformer, unconditional_transformer, latents, cond, t_model, gw_i, sigma_t, advanced_cfg,
+            collect_metrics,
         )
 
         # --- CFG-decoupled style guidance (Ideogram4) ---
@@ -764,6 +771,7 @@ def _ideogram4_style_step(
             forced_advanced_cfg["cfg_schedule_type"] = "constant"
             v, cfg_metrics, _ = _blend_guidance(
                 cond_rewritten, v_uncond, cfg_now, sigma_t, forced_advanced_cfg,
+                collect_metrics,
             )
     finally:
         set_ideogram4_style_context(style_processors, None)
@@ -786,6 +794,7 @@ def _ideogram4_style_step_multi(
     sigma_t: float,
     num_train_timesteps: int,
     advanced_cfg: Optional[Dict[str, Any]],
+    collect_metrics: bool = True,
 ) -> Tuple[torch.Tensor, Any]:
     """Multi-reference (N>1) style-active denoise step for Ideogram 4: one REF
     capture forward PER reference (each with its OWN ``StyleTransferConfig`` --
@@ -859,6 +868,7 @@ def _ideogram4_style_step_multi(
         # the extra `cfg_now`/`cond_s`/`v_uncond` returns are discarded unused.
         v, cfg_metrics, _cfg_now, _cond_s, _v_uncond = _dual_branch_velocity(
             transformer, unconditional_transformer, latents, cond, t_model, gw_i, sigma_t, advanced_cfg,
+            collect_metrics,
         )
     finally:
         set_ideogram4_style_context(style_processors, None)
@@ -1013,6 +1023,9 @@ def _run_loop(
     timestep_scalars = snapshot_schedule_scalars(timesteps)
     for i, t in enumerate(timesteps):
         raise_if_cancelled()
+        collect_cfg_metrics = callback_requests(
+            progress_callback, "wants_cfg_metrics", i, total_steps
+        )
         sigma_t = timestep_scalars[i] / num_train_timesteps
         t_model = (1.0 - (t.float() / num_train_timesteps)).expand(batch).to(transformer.dtype)
 
@@ -1029,7 +1042,7 @@ def _run_loop(
             v, cfg_metrics = _ideogram4_style_step_multi(
                 transformer, unconditional_transformer, style_refs, style_combine_mode,
                 style_processors, i, total_steps, t, latents, cond, guidance[i], sigma_t,
-                num_train_timesteps, advanced_cfg,
+                num_train_timesteps, advanced_cfg, collect_cfg_metrics,
             )
             if spectrum is not None:
                 spectrum.record(i, v)
@@ -1037,7 +1050,7 @@ def _run_loop(
             v, cfg_metrics = _ideogram4_style_step(
                 transformer, unconditional_transformer, style_cfg, style_ref_x0, style_eps_ref,
                 style_processors, i, total_steps, t, latents, cond, guidance[i], sigma_t,
-                num_train_timesteps, advanced_cfg,
+                num_train_timesteps, advanced_cfg, collect_cfg_metrics,
             )
             if spectrum is not None:
                 spectrum.record(i, v)
@@ -1050,7 +1063,7 @@ def _run_loop(
                 real_uncond._fbcache_step = i
             v, cfg_metrics, _cfg_now, _pos_v, _neg_v = _dual_branch_velocity(
                 transformer, unconditional_transformer, latents, cond, t_model,
-                guidance[i], sigma_t, advanced_cfg,
+                guidance[i], sigma_t, advanced_cfg, collect_cfg_metrics,
             )
             if spectrum is not None:
                 spectrum.record(i, v)

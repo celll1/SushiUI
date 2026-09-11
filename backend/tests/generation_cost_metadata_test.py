@@ -45,21 +45,26 @@ def test_peak_vram_is_reported_only_when_the_endpoint_armed_it():
     unarmed = {}
     apply_generation_timings(unarmed, 1.0)
     assert "peak_vram_gb" not in unarmed
+    assert "peak_vram_reserved_gb" not in unarmed
 
     import torch
 
     if torch.cuda.is_available():
         assert isinstance(armed["peak_vram_gb"], float)
+        assert isinstance(armed["peak_vram_reserved_gb"], float)
     else:
         assert "peak_vram_gb" not in armed
+        assert "peak_vram_reserved_gb" not in armed
 
 
 def test_a_per_phase_peak_reset_folds_into_the_generation_peak():
     generation_timer.reset()
     generation_timer._peak_armed = True          # holds with or without a GPU
     generation_timer._peak_vram_bytes = 7 * 1024 ** 3
+    generation_timer._peak_vram_reserved_bytes = 9 * 1024 ** 3
     generation_timer.note_peak_vram()            # a phase reset would call this
     assert generation_timer.peak_vram_dict()["peak_vram_gb"] >= 7.0
+    assert generation_timer.peak_vram_dict()["peak_vram_reserved_gb"] >= 9.0
 
 
 def test_the_minimax_h3_phase_reset_calls_the_fold():
@@ -83,5 +88,5 @@ def test_the_metadata_writer_carries_the_cost_keys():
                         "utils", "image_utils.py")
     with open(path, encoding="utf-8") as handle:
         source = handle.read()
-    for key in ("generation_time", "peak_vram_gb"):
+    for key in ("generation_time", "peak_vram_gb", "peak_vram_reserved_gb"):
         assert f'"{key}"' in source

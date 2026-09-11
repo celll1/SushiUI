@@ -16,6 +16,7 @@ in `video_utils.save_video_with_metadata`'s docstring.
 
 import os
 import sys
+import json
 
 import numpy as np
 import pytest
@@ -43,12 +44,16 @@ def test_non_lossless_writes_single_mp4_no_proxy(monkeypatch, patched_env):
     monkeypatch.setattr(video_utils, "_encode_raw_frames", lambda cmd, frames: (calls.append(cmd), (0, ""))[1])
 
     filename, preview_filename = video_utils.save_video_with_metadata(
-        _frames(), None, None, {"frame_rate": 24.0, "seed": 1}, "test_vid",
+        _frames(), None, None,
+        {"frame_rate": 24.0, "seed": 1, "peak_vram_reserved_gb": 3.25},
+        "test_vid",
     )
     assert filename.endswith(".mp4")
     assert preview_filename is None
     assert len(calls) == 1
     assert "libx264" in calls[0]
+    sidecar = json.loads(next(patched_env.glob("*.json")).read_text(encoding="utf-8"))
+    assert sidecar["peak_vram_reserved_gb"] == 3.25
 
 
 def test_lossless_master_is_mkv_with_h264_proxy_from_source_frames(monkeypatch, patched_env):

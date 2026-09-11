@@ -360,7 +360,9 @@ def save_video_with_metadata(
         "lossless": bool(lossless),
         # What it cost, measured around this generation (`apply_generation_timings`).
         # Absent keys mean "not measured on this path", never zero.
-        **{key: params[key] for key in ("generation_time", "peak_vram_gb")
+        **{key: params[key] for key in (
+            "generation_time", "peak_vram_gb", "peak_vram_reserved_gb"
+        )
            if params.get(key) is not None},
         **chain_meta,
     }

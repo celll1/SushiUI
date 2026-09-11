@@ -1235,7 +1235,8 @@ def apply_generation_timings(params: Dict[str, Any], total_seconds: float) -> No
     instrument them — total is always recorded. ``peak_vram_gb`` is present only
     where the endpoint armed the tracking by calling ``generation_timer.reset()``
     before the generation; an endpoint that did not reports nothing rather than
-    the previous generation's peak.
+    the previous generation's peak. Allocated and reserved peaks are both
+    recorded so allocator-cache changes can be separated from live tensors.
     """
     from core.inference.generation_timing import generation_timer
 

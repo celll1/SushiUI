@@ -35,6 +35,9 @@ import numpy as np
 from config.settings import settings
 
 
+_FFMPEG_STDIN_CHUNK_BYTES = 4 * 1024 * 1024
+
+
 def _locate_ffmpeg() -> str:
     """Return an absolute path to an ffmpeg executable.
 
@@ -88,6 +91,36 @@ def _write_wav(audio, audio_sample_rate: int, wav_path: str) -> int:
         wf.writeframes(interleaved.tobytes())
 
     return num_channels
+
+
+def _encode_raw_frames(cmd, frames: np.ndarray) -> Tuple[int, str]:
+    """Stream contiguous RGB bytes to ffmpeg without a full-size bytes copy."""
+    contiguous = np.ascontiguousarray(frames)
+    raw = memoryview(contiguous).cast("B")
+
+    # A file-backed stderr sink cannot fill a pipe while ffmpeg consumes stdin.
+    with tempfile.TemporaryFile() as stderr_file:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=stderr_file,
+        )
+        assert proc.stdin is not None
+        try:
+            for offset in range(0, len(raw), _FFMPEG_STDIN_CHUNK_BYTES):
+                proc.stdin.write(raw[offset:offset + _FFMPEG_STDIN_CHUNK_BYTES])
+        except BrokenPipeError:
+            pass
+        finally:
+            proc.stdin.close()
+
+        returncode = proc.wait()
+        stderr_file.seek(0, os.SEEK_END)
+        stderr_size = stderr_file.tell()
+        stderr_file.seek(max(0, stderr_size - 2000))
+        stderr = stderr_file.read().decode("utf-8", errors="replace")
+    return returncode, stderr
 
 
 # Design sec.13. Order is the design's own; values are ids, integers and
@@ -248,21 +281,15 @@ def save_video_with_metadata(
         cmd += ["-metadata", f"{k}={v}"]
     cmd += [master_path]
 
-    proc = subprocess.run(
-        cmd,
-        input=frames.tobytes(),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if proc.returncode != 0:
-        err = proc.stderr.decode("utf-8", errors="replace")[-2000:]
+    returncode, err = _encode_raw_frames(cmd, frames)
+    if returncode != 0:
         # Clean up partial artifacts before surfacing the error.
         if audio_written and os.path.exists(wav_path):
             try:
                 os.remove(wav_path)
             except OSError:
                 pass
-        raise RuntimeError(f"ffmpeg video encode failed (code {proc.returncode}):\n{err}")
+        raise RuntimeError(f"ffmpeg video encode failed (code {returncode}):\n{err}")
 
     # Browser-playable H.264 proxy (see docstring). Only lossless runs pay
     # this cost -- a non-lossless master is already browser-playable. A
@@ -286,14 +313,8 @@ def save_video_with_metadata(
             preview_cmd += ["-c:a", "aac"]
         preview_cmd += [preview_path]
 
-        preview_proc = subprocess.run(
-            preview_cmd,
-            input=frames.tobytes(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        if preview_proc.returncode != 0:
-            err = preview_proc.stderr.decode("utf-8", errors="replace")[-2000:]
+        preview_returncode, err = _encode_raw_frames(preview_cmd, frames)
+        if preview_returncode != 0:
             print(f"[VideoSave] browser-playable proxy encode failed ({err}); master file is intact")
             if os.path.exists(preview_path):
                 try:

@@ -87,6 +87,11 @@ evicts that copy, block-swap offloads it, runtime INT8 discards it, and the
 active component slot follows the object tracked by keep-hot. Real-model host
 RAM and warm-generation timing remain in the verification backlog.
 
+Video encoding now streams bounded views of the contiguous RGB array to
+FFmpeg. It no longer materializes a video-sized `bytes` object for the master
+and a second one for the lossless preview. Focused tests cover byte order,
+non-contiguous input, bounded writes and master/proxy failure behavior.
+
 ## Findings suitable for equivalent implementation
 
 | Priority | Finding | Cost removed | Required proof |
@@ -242,9 +247,10 @@ The following are not approved as equivalent static cleanup:
 - Reusing a fixed Z-Image inpaint noise tensor. The current per-step random draw
   is suspicious for reproducibility and allocation cost, but changing it alters
   RNG/output semantics and belongs in a separate correctness review.
-- Streaming video frames to both lossless and proxy encoders instead of calling
-  `frames.tobytes()` for each output. This can reduce host RAM copies, not VRAM,
-  and requires subprocess/codec failure tests.
+- **Implemented:** stream video frames to both lossless and proxy encoders in
+  bounded chunks. This removes the duplicate full-video host copies without
+  changing the raw RGB byte stream; subprocess/codec failure behavior has
+  focused coverage.
 
 ## Implementation sequence
 
@@ -262,6 +268,8 @@ The following are not approved as equivalent static cleanup:
 7. **Completed to the static-safe boundary:** extract callback demand,
    schedule-snapshot and callback-composition helpers; retain distinct
    numerical loops.
+8. **Completed:** stream raw video frames into FFmpeg without whole-video
+   `bytes` copies.
 
 ## GPU verification backlog
 

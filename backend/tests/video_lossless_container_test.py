@@ -8,7 +8,7 @@ is encoded from the SAME source frames for gallery playback -- NOT
 transcoded from the master (that would be a second lossy hop on top of the
 proxy's own compression, for no benefit).
 
-`subprocess.run` is monkeypatched (no real ffmpeg needed) -- this test checks
+The ffmpeg streaming helper is monkeypatched (no real ffmpeg needed) -- this test checks
 the COMMANDS ffmpeg is asked to run and the returned filenames, not actual
 pixels; the byte-exact roundtrip itself is documented as empirically verified
 in `video_utils.save_video_with_metadata`'s docstring.
@@ -25,16 +25,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from utils import video_utils  # noqa: E402
 
 
-class _FakeProc:
-    def __init__(self, returncode=0):
-        self.returncode = returncode
-        self.stdout = b""
-        self.stderr = b""
-
-
 @pytest.fixture
 def patched_env(monkeypatch, tmp_path):
-    """Patch outputs_dir and ffmpeg lookup only; subprocess.run is left to
+    """Patch outputs_dir and ffmpeg lookup only; the encoder is left to
     each test so failure-branch tests can vary its behaviour per call."""
     monkeypatch.setattr(video_utils.settings, "outputs_dir", str(tmp_path))
     monkeypatch.setattr(video_utils, "_locate_ffmpeg", lambda: "ffmpeg")
@@ -47,7 +40,7 @@ def _frames():
 
 def test_non_lossless_writes_single_mp4_no_proxy(monkeypatch, patched_env):
     calls = []
-    monkeypatch.setattr(video_utils.subprocess, "run", lambda cmd, **kw: (calls.append(cmd), _FakeProc(0))[1])
+    monkeypatch.setattr(video_utils, "_encode_raw_frames", lambda cmd, frames: (calls.append(cmd), (0, ""))[1])
 
     filename, preview_filename = video_utils.save_video_with_metadata(
         _frames(), None, None, {"frame_rate": 24.0, "seed": 1}, "test_vid",
@@ -60,7 +53,7 @@ def test_non_lossless_writes_single_mp4_no_proxy(monkeypatch, patched_env):
 
 def test_lossless_master_is_mkv_with_h264_proxy_from_source_frames(monkeypatch, patched_env):
     calls = []
-    monkeypatch.setattr(video_utils.subprocess, "run", lambda cmd, **kw: (calls.append(cmd), _FakeProc(0))[1])
+    monkeypatch.setattr(video_utils, "_encode_raw_frames", lambda cmd, frames: (calls.append(cmd), (0, ""))[1])
 
     filename, preview_filename = video_utils.save_video_with_metadata(
         _frames(), None, None, {"frame_rate": 24.0, "seed": 1}, "test_vid",
@@ -102,15 +95,15 @@ def test_lossless_proxy_failure_falls_back_to_master_only(monkeypatch, patched_e
     preview_filename is None, and the partial proxy file is removed."""
     calls = []
 
-    def fake_run(cmd, **kw):
+    def fake_encode(cmd, frames):
         calls.append(cmd)
         with open(cmd[-1], "wb") as f:
             f.write(b"partial" if len(calls) == 2 else b"master")
         if len(calls) == 2:
-            return _FakeProc(returncode=1)
-        return _FakeProc(returncode=0)
+            return 1, "proxy failure"
+        return 0, ""
 
-    monkeypatch.setattr(video_utils.subprocess, "run", fake_run)
+    monkeypatch.setattr(video_utils, "_encode_raw_frames", fake_encode)
 
     filename, preview_filename = video_utils.save_video_with_metadata(
         _frames(), None, None, {"frame_rate": 24.0, "seed": 1}, "test_vid",
@@ -123,3 +116,32 @@ def test_lossless_proxy_failure_falls_back_to_master_only(monkeypatch, patched_e
     proxy_path = calls[1][-1]
     assert not os.path.exists(proxy_path), "partial proxy file must be unlinked on encode failure"
     assert os.path.exists(os.path.join(patched_env, filename))
+
+
+def test_raw_frames_are_streamed_in_bounded_views(monkeypatch):
+    frames = np.arange(5 * 4 * 3 * 3, dtype=np.uint8).reshape(5, 4, 3, 3)
+    writes = []
+
+    class FakeStdin:
+        def write(self, chunk):
+            writes.append(bytes(chunk))
+
+        def close(self):
+            pass
+
+    class FakePopen:
+        def __init__(self, *args, **kwargs):
+            self.stdin = FakeStdin()
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(video_utils, "_FFMPEG_STDIN_CHUNK_BYTES", 17)
+    monkeypatch.setattr(video_utils.subprocess, "Popen", FakePopen)
+
+    returncode, stderr = video_utils._encode_raw_frames(["ffmpeg"], frames[:, :, ::-1, :])
+
+    assert returncode == 0
+    assert stderr == ""
+    assert all(len(chunk) <= 17 for chunk in writes)
+    assert b"".join(writes) == np.ascontiguousarray(frames[:, :, ::-1, :]).tobytes()

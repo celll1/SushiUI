@@ -60,14 +60,12 @@ function GeneratePageContent() {
   }, [activeTab, archCapabilities, canImg2Txt]);
 
   useEffect(() => {
-    // Load max gallery images setting
     const savedMaxImages = localStorage.getItem('floating_gallery_max_images');
     if (savedMaxImages) {
       setMaxGalleryImages(parseInt(savedMaxImages));
     }
   }, []);
 
-  // Stop generate forever when switching panels
   useEffect(() => {
     setGenerateForever(false);
   }, [activeTab, setGenerateForever]);

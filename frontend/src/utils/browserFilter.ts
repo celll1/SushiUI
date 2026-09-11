@@ -52,7 +52,6 @@ function patternToMatcher(pattern: string): (tag: string) => boolean {
   if (!p.includes("*")) {
     return (tag) => tag.toLowerCase() === p;
   }
-  // Convert glob to regex: escape special chars then replace * with .*
   const escaped = p.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
   const re = new RegExp(`^${escaped}$`);
   return (tag) => re.test(tag.toLowerCase());
@@ -95,7 +94,6 @@ export function compileFilter(
     if (q.tagCountMin !== null && tags.length < q.tagCountMin) return false;
     if (q.tagCountMax !== null && tags.length > q.tagCountMax) return false;
 
-    // Build category set for this entry
     const catSet = new Set<string>();
     for (const t of tags) {
       const cat = categoryMap.get(t);

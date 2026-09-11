@@ -23,7 +23,6 @@ const progressCallbacks: Set<ProgressCallback> = new Set();
  */
 export function onCategoryLoaded(callback: ProgressCallback): () => void {
   progressCallbacks.add(callback);
-  // Return unsubscribe function
   return () => progressCallbacks.delete(callback);
 }
 
@@ -160,9 +159,7 @@ export function addToRecentTags(tag: string): void {
   if (typeof window === 'undefined') return;
 
   const recent = getRecentTags();
-  // Remove tag if it already exists
   const filtered = recent.filter(t => t !== tag);
-  // Add to front
   filtered.unshift(tag);
   // Keep only MAX_RECENT_TAGS
   const trimmed = filtered.slice(0, MAX_RECENT_TAGS);
@@ -208,7 +205,6 @@ export function removeFromRecentTags(tag: string): void {
 function normalizeTag(tag: string): string {
   let normalized = tag.trim();
 
-  // Remove excessive escaping: \\ → nothing
   normalized = normalized.replace(/\\\\/g, '');
   normalized = normalized.replace(/\\/g, '');
 
@@ -421,10 +417,8 @@ async function loadCategory(category: keyof typeof categories, fileTimestamps?: 
     console.log(`[TagSuggestions] Loading ${category} tags`);
     const startTime = performance.now();
 
-    // Get file modification timestamp if available
     const fileModTime = fileTimestamps?.[category];
 
-    // Check if we have a valid cached index
     const cached = await getCachedIndex(category);
 
     // If cache exists and file hasn't been modified, use cache without fetching
@@ -462,7 +456,6 @@ async function loadCategory(category: keyof typeof categories, fileTimestamps?: 
     const data: TagData = await response.json();
     const dataHash = await calculateHash(data);
 
-    // Build new index
     console.log(`[TagSuggestions] Building new index for ${category}`);
     const index = buildIndex(data, category);
 
@@ -504,10 +497,8 @@ async function loadTagOtherNames(fileTimestamps?: Record<string, number>): Promi
     console.log('[TagSuggestions] Loading tag other names');
     const startTime = performance.now();
 
-    // Get file modification timestamp if available
     const fileModTime = fileTimestamps?.['other_names'];
 
-    // Check if we have a valid cached index
     const cached = await getCachedIndex('other_names');
 
     // If cache exists and file hasn't been modified, use cache without fetching
@@ -549,7 +540,6 @@ async function loadTagOtherNames(fileTimestamps?: Record<string, number>): Promi
     const data: TagOtherNames = await response.json();
     const dataHash = await calculateHash(data);
 
-    // Build new index
     console.log(`[TagSuggestions] Building new index for other_names`);
     const index = new Map<string, { originalTag: string; displayName: string }>();
     for (const [originalTag, otherNames] of Object.entries(data)) {
@@ -592,12 +582,10 @@ async function loadTagOtherNames(fileTimestamps?: Record<string, number>): Promi
  * Fetches file timestamps first to avoid unnecessary data fetches
  */
 export async function loadAllTags(): Promise<void> {
-  // Fetch file timestamps first (lightweight check)
   console.log('[TagSuggestions] Fetching file timestamps...');
   const fileTimestamps = await fetchFileTimestamps();
   console.log('[TagSuggestions] File timestamps:', fileTimestamps);
 
-  // Load all categories in parallel, each will notify via callbacks when done
   const promises = [
     ...Object.keys(categories).map((cat) => loadCategory(cat as keyof typeof categories, fileTimestamps)),
     loadTagOtherNames(fileTimestamps)
@@ -661,14 +649,12 @@ export type TagFilterMode = 'all' | 'categories_only' | 'other_names_only' | str
 function getFilterCycle(): TagFilterMode[] {
   const cycle: TagFilterMode[] = ['all', 'categories_only'];
 
-  // Add all loaded categories
   for (const categoryKey of Object.keys(categories)) {
     if (categories[categoryKey].loaded) {
       cycle.push(categoryKey);
     }
   }
 
-  // Add other names if loaded
   if (otherNamesLoaded) {
     cycle.push('other_names_only');
   }
@@ -708,7 +694,6 @@ export function getFilterDisplayName(mode: TagFilterMode): string {
   if (mode === 'categories_only') return 'Categories Only';
   if (mode === 'other_names_only') return 'Other Names Only';
 
-  // Check if it's a category key
   if (categories[mode]) {
     return categories[mode].name;
   }
@@ -741,7 +726,6 @@ export async function searchTags(
   const searchStartTime = performance.now();
   const results: Array<{ tag: string; count: number; category: string; alias?: string }> = [];
 
-  // Apply filter mode logic
   const shouldIncludeSpecialTags = filterMode === 'all' || filterMode === 'categories_only';
   const shouldIncludeCategoryTags = filterMode === 'all' || filterMode === 'categories_only' || categories[filterMode as string];
   const shouldIncludeOtherNames = filterMode === 'all' || filterMode === 'other_names_only';
@@ -755,7 +739,6 @@ export async function searchTags(
     }
   }
 
-  // Use index for fast lookup (first 2 characters)
   const searchPrefix = normalizedInput.substring(0, Math.min(2, normalizedInput.length));
   let totalScanned = 0;
 
@@ -792,7 +775,6 @@ export async function searchTags(
         // Use pre-stored normalizedTag; fallback for entries loaded from old IndexedDB caches
         const normalizedTag = nt ?? normalizeTag(tag);
 
-        // Check if the normalized tag starts with the normalized input
         if (normalizedTag.startsWith(normalizedInput)) {
           // Check if tag already exists in results from a different category
           const existing = tagMap.get(tag);
@@ -824,7 +806,6 @@ export async function searchTags(
       }
     }
 
-    // Add deduplicated tags to results
     for (const { tag, count, category } of tagMap.values()) {
       results.push({ tag, count, category });
     }
@@ -876,11 +857,9 @@ export async function searchTags(
   const searchTime = (performance.now() - searchStartTime).toFixed(2);
   console.log(`[TagSuggestions] Found ${results.length} matches in ${searchTime}ms (scanned ${totalScanned} tags, min count: ${minCount})`);
 
-  // Get recent tags for prioritization (cached, max 500ms stale)
   const recentTags = getRecentTagsCached();
   const recentTagsSet = new Set(recentTags);
 
-  // Sort: special tags first, then recent tags, then by count (descending)
   const sorted = results.sort((a, b) => {
     // Special tags (count = -1) come first
     if (a.count === -1 && b.count !== -1) return -1;
@@ -975,7 +954,6 @@ export function getCurrentTag(text: string, cursorPos: number): string {
     return "";
   }
 
-  // Find the start: search backwards for comma, newline, or start of string
   let start = cursorPos - 1;
   while (start >= 0) {
     const char = text[start];
@@ -989,9 +967,6 @@ export function getCurrentTag(text: string, cursorPos: number): string {
     start = 0;
   }
 
-  // Find the end: search forwards from cursor
-  // Stop at comma, newline, OR if we encounter a space followed by a non-space
-  // (indicating the start of another tag)
   let end = cursorPos;
   let foundSpace = false;
   while (end < text.length) {
@@ -1017,7 +992,6 @@ export function getCurrentTag(text: string, cursorPos: number): string {
     end++;
   }
 
-  // Extract the segment containing the cursor
   const segment = text.substring(start, end);
 
   // Trim to get the actual tag
@@ -1028,7 +1002,6 @@ export function getCurrentTag(text: string, cursorPos: number): string {
     return "";
   }
 
-  // Calculate where the trimmed tag actually starts and ends
   const trimmedStart = start + segment.indexOf(currentTag);
   const trimmedEnd = trimmedStart + currentTag.length;
 
@@ -1053,7 +1026,6 @@ export function replaceCurrentTag(
   cursorPos: number,
   newTag: string
 ): { text: string; cursorPos: number } {
-  // Find the start: search backwards for comma, newline, or start of string
   let start = cursorPos - 1;
   while (start >= 0) {
     const char = text[start];
@@ -1067,8 +1039,6 @@ export function replaceCurrentTag(
     start = 0;
   }
 
-  // Find the end: search forwards from cursor
-  // Stop at comma, newline, OR if we encounter a space followed by a non-space
   let end = cursorPos;
   let foundSpace = false;
   while (end < text.length) {
@@ -1101,7 +1071,6 @@ export function replaceCurrentTag(
   // Format the tag for display
   const formattedTag = formatTagForDisplay(newTag);
 
-  // Build new text with proper spacing
   const trimmedBefore = beforeTag.trimEnd();
   const trimmedAfter = afterTag.trimStart();
 
@@ -1139,7 +1108,6 @@ export function deleteTagAtCursor(
   // - "novel illustration" → delete entire tag
   // - "whi red eyes" → delete entire segment (even if incomplete)
 
-  // Find the start: search backwards from cursor for comma, newline, or start of string
   let tagSegmentStart = cursorPos - 1;
   while (tagSegmentStart >= 0) {
     const char = text[tagSegmentStart];
@@ -1208,8 +1176,6 @@ export function deleteTagAtCursor(
       deleteEnd++;
     }
   } else if (hasLeadingDelimiter) {
-    // Delete leading delimiter + tag
-    // deleteStart already set above
     deleteEnd = tagSegmentEnd;
   } else {
     // No delimiters, just delete the tag segment
@@ -1217,7 +1183,6 @@ export function deleteTagAtCursor(
     deleteEnd = tagSegmentEnd;
   }
 
-  // Build result
   const before = text.substring(0, deleteStart);
   const after = text.substring(deleteEnd);
 
@@ -1289,18 +1254,15 @@ export function swapTagWithAdjacent(
   cursorPos: number,
   direction: 'left' | 'right'
 ): { text: string; cursorPos: number } | null {
-  // Get all tags
   const tags = getAllTags(text);
 
   if (tags.length < 2) {
     return null; // Need at least 2 tags to swap
   }
 
-  // Find the tag containing the cursor
   let currentTagIndex = -1;
   for (let i = 0; i < tags.length; i++) {
     const tag = tags[i];
-    // Check if cursor is within this tag (including whitespace around it)
     if (cursorPos >= tag.start && cursorPos <= tag.end) {
       currentTagIndex = i;
       break;
@@ -1325,12 +1287,10 @@ export function swapTagWithAdjacent(
   const firstTag = currentTagIndex < swapIndex ? currentTag : swapTag;
   const secondTag = currentTagIndex < swapIndex ? swapTag : currentTag;
 
-  // Extract parts of the text
   const before = text.substring(0, firstTag.start);
   const between = text.substring(firstTag.end, secondTag.start);
   const after = text.substring(secondTag.end);
 
-  // Build new text with swapped tags
   const newText = before + secondTag.tag + between + firstTag.tag + after;
 
   // Calculate new cursor position (keep cursor in the same tag, which has moved)

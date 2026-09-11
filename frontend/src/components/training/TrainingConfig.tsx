@@ -1267,7 +1267,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     .map((arch) => ({ arch, label: archDisplayName(archCapabilities, arch) }))
     .sort((a, b) => a.label.localeCompare(b.label));
 
-  // Filter models by architecture (unchecked = hidden; unknown arch = shown).
   const filteredModels = availableModels.filter(
     (model) => !hiddenArchs.includes(model.architecture)
   );
@@ -1439,7 +1438,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (incoming.sample_steps !== undefined || incoming.sample_cfg_scale !== undefined) {
       sampleDefaultsExplicitlySetRef.current = true;
     }
-    // --- UI-only / non-params states ---
     if (incoming.run_name) setRunName(incoming.run_name);
     if (incoming.base_model_path !== undefined) {
       const bmp = incoming.base_model_path || "";
@@ -1508,7 +1506,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       setLocalVisionEncoderLrText(incoming.vision_encoder_lr != null ? String(incoming.vision_encoder_lr) : "");
     }
 
-    // --- timestep_sampling (nested object expands to several UI states) ---
     if (incoming.timestep_sampling) {
       // Mark this synchronously: the model-default effect can run after the
       // restore timer clears restoringFromYAMLRef.
@@ -1525,7 +1522,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       if (ts.beta !== undefined) setTimestepBeta(ts.beta);
     }
 
-    // --- priority_training (object expands to 3 UI states) ---
     if (incoming.priority_training) {
       setPriorityEnabled(true);
       const entries = incoming.priority_training.entries || [];
@@ -1533,9 +1529,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       setPriorityMultiplier(incoming.priority_training.multiplier || 1);
     }
 
-    // --- Single batched params update: merge every known top-level field ---
-    // Fields that need special defaulting/coercion are handled explicitly;
-    // all others are forwarded when present (undefined means "don't touch").
     const patch: Partial<TrainingRunCreateRequest> = {};
     for (const key of PARAM_KEYS) {
       if (incoming[key] !== undefined) {
@@ -1623,7 +1616,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
       // Populate all form fields from loaded parameters
       setRunName(params.run_name || "");
-      // Apply all params via centralized helper (single source of truth for restoration)
       applyParamsToState(params);
 
       console.log(`[TrainingConfig] Successfully loaded all parameters for training run ${runId}`);
@@ -1777,9 +1769,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseModelPath, bundleVaeDefaultsByArch]);
 
-  // Apply architecture-specific training-preview defaults once for a newly
-  // selected model. Values restored/imported or edited by the user remain
-  // explicit and are never replaced by a later architecture change.
   useEffect(() => {
     if (!baseModelPath) return;
     if (restoringFromYAMLRef.current) {
@@ -1979,7 +1968,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   }, [requiredValues, params]);
 
 
-  // Reset optimizer hyperparameters when optimizer changes
   useEffect(() => {
     // Skip during YAML restoration — params are already being restored correctly
     if (restoringFromYAMLRef.current) return;
@@ -2127,7 +2115,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       const randomDataset = selectedDatasets[Math.floor(Math.random() * selectedDatasets.length)];
       const response = await getRandomCaption(randomDataset.dataset_id, randomDataset.caption_types);
 
-      // Set the positive prompt
       const updated = [...samplePrompts];
       updated[promptIndex] = { ...updated[promptIndex], positive: response.caption };
 
@@ -2235,7 +2222,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
   // Apply reference image dimensions (floor to multiple of 8) to sample width/height
   const applyRefImageSize = () => {
-    // Find the first prompt that has a preview loaded
     const firstIndex = samplePrompts.findIndex((_, i) => referenceImagePreviews[i]);
     if (firstIndex === -1) return;
     const url = referenceImagePreviews[firstIndex];
@@ -2256,7 +2242,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     }
   };
 
-  // Load condition/reference image previews when samplePrompts paths are set
   useEffect(() => {
     samplePrompts.forEach(async (prompt, index) => {
       if (prompt.condition_image_path && !conditionImagePreviews[index]) {
@@ -2303,7 +2288,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       const txt2imgParams = localStorage.getItem("txt2img_params");
       if (txt2imgParams) {
         const params = JSON.parse(txt2imgParams);
-        // Update sample generation parameters
         if (params.prompt) {
           const updated = [...samplePrompts];
           updated[0].positive = params.prompt;
@@ -2398,7 +2382,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     }
   };
 
-  // Load preset into form
   const handleLoadPreset = (preset: TrainingPreset) => {
     const config = preset.config || {};
     // The preset carries its own optimizer hyperparameters; without this the
@@ -2416,7 +2399,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     setTimeout(() => { skipOptimizerHyperparamResetRef.current = false; }, 0);
   };
 
-  // Delete preset
   const handleDeletePreset = async (presetId: number) => {
     if (!confirm("Are you sure you want to delete this preset?")) return;
 
@@ -2483,7 +2465,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     setLoading(true);
     setError(null);
 
-    // Build requestData via centralized helper (single source of truth)
     const requestData = getRequestData();
 
     console.log("[TrainingConfig] Request data:", requestData);
@@ -2497,14 +2478,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
     try {
       if (editRunId) {
-        // Update existing run
         const updatedRun = await updateTrainingRun(editRunId, requestData);
         console.log("[TrainingConfig] Training run updated:", updatedRun);
         if (onRunUpdated) {
           onRunUpdated(updatedRun);
         }
       } else {
-        // Create new run
         const newRun = await createTrainingRun(requestData);
         console.log("[TrainingConfig] Training run created:", newRun);
         onRunCreated(newRun);

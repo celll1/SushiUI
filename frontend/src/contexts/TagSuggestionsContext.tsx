@@ -55,7 +55,6 @@ export function TagSuggestionsProvider({ children }: { children: React.ReactNode
       setLoadStatus((prev) => ({ ...prev, [category]: loaded }));
     });
 
-    // Load all tags in background (non-blocking)
     loadAllTags()
       .then(() => {
         console.log("[TagSuggestionsProvider] All tags loaded successfully");

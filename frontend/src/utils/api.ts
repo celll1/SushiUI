@@ -14,7 +14,6 @@ const api = axios.create({
   timeout: 600000, // 10 minutes in milliseconds
 });
 
-// Add auth token to requests if available (session storage - cleared on browser close)
 api.interceptors.request.use(
   (config) => {
     const token = sessionStorage.getItem("auth_token");
@@ -28,7 +27,6 @@ api.interceptors.request.use(
   }
 );
 
-// Handle 401 errors (unauthorized)
 api.interceptors.response.use(
   (response) => response,
   (error) => {
@@ -852,7 +850,6 @@ export interface OutpaintParams extends GenerationParams {
   // own stepping math or the final saved image. false = off (prior preview
   // behavior).
   outpaint_preview_unpinned_x0?: boolean;
-  // --- Placement (outpaint-only) ---
   canvas_width?: number;
   canvas_height?: number;
   place_x?: number;
@@ -948,7 +945,6 @@ export interface OutpaintVideoParams extends VideoChainProvenance {
   num_videos_per_prompt?: number;  // default 1
   max_sequence_length?: number;    // default 1024
   audio_enable?: boolean;          // default true
-  // --- Placement (outpaint-only) ---
   total_frames?: number;           // output timeline length; (n-1)%8==0, default 121
   input_offset_frames?: number;    // where the (trimmed) clip lands, in pixel frames of the OUTPUT timeline
   input_trim_start_frames?: number; // trim applied to the UPLOADED clip before placement
@@ -960,7 +956,6 @@ export interface OutpaintVideoParams extends VideoChainProvenance {
   // client-side with `outpaintVideoDefaultsForArch`.
   outpaint_video_audio_mode?: "regenerate" | "preserve_input";
   video_lossless?: boolean;        // FFV1 bit-exact encode (not browser-playable)
-  // --- Acceleration (same knobs as the image/video GenerationParams schema) ---
   blocks_to_swap?: number;
   // MiniMax-H3 only, not bit-exact -- see Txt2VidParams.fuse_output_proj.
   fuse_output_proj?: boolean;
@@ -1042,7 +1037,6 @@ export interface InpaintVideoParams {
   // separately by generateInpaintVideo.
   spatial_mask_manifest?: string;
   video_lossless?: boolean;        // FFV1: carries the preserved frames' exactness into the FILE
-  // --- Acceleration (same knobs as the other video routes) ---
   blocks_to_swap?: number;
   // MiniMax-H3 only, not bit-exact -- see Txt2VidParams.fuse_output_proj.
   fuse_output_proj?: boolean;
@@ -1233,9 +1227,6 @@ export interface GeneratedImage {
   audio_duration?: string;
 }
 
-// ---------------------------------------------------------------------------
-// Video generation (LTX-2.3) — txt2vid (JSON) / img2vid (multipart keyframe)
-// ---------------------------------------------------------------------------
 
 export interface Txt2VidParams extends VideoChainProvenance {
   prompt: string;
@@ -1387,9 +1378,7 @@ export interface Txt2AudParams {
                                // (the autoregressive stage may stop earlier), ceiling 360s.
   seed?: number;               // default -1
   inference_steps?: number;   // ACE-Step ONLY (turbo distilled default 8, per-song). MiniMax Music 3 does not
-                               // read this field -- see num_inference_steps below.
   guidance_scale?: number;    // ACE-Step ONLY (turbo is CFG-distilled; default 1.0). MiniMax Music 3 does not
-                               // read this field -- see flow_guidance_scale below.
   shift?: number;              // ACE-Step ONLY; default 3.0. No MiniMax Music 3 equivalent.
   sampler_mode?: string;       // ACE-Step ONLY; accepted for forward-compat, currently a no-op.
   vocal_language?: string;     // ACE-Step ONLY; default "en". Not a MiniMax Music 3 parameter.
@@ -1506,7 +1495,6 @@ export interface OutpaintAudioParams {
   shift?: number;               // ACE-Step ONLY; default 3.0
   vocal_language?: string;      // ACE-Step ONLY; default "en"
   loras?: LoRAConfig[];
-  // --- Placement (ACE-Step ONLY), all in SECONDS ---
   total_duration?: number;         // output timeline length; (0, 240], default 60.0
   input_offset_sec?: number;       // where the (trimmed) clip lands, snapped server-side to 1/25s
   input_trim_start_sec?: number;   // trim applied to the UPLOADED clip before placement
@@ -1546,9 +1534,6 @@ export interface OutpaintAudioParams {
   quantized_gemm_mode?: QuantizedGemmMode;
 }
 
-// ---------------------------------------------------------------------------
-// Schema defaults — fetched once at startup, backend is source of truth
-// ---------------------------------------------------------------------------
 
 export interface GenerationDefaultsResponse {
   img2txt: Partial<Omit<Img2TxtParams, "image">> & Record<string, unknown>;
@@ -2867,9 +2852,7 @@ export const generateImg2Img = async (
     if (!image) {
       throw new Error("generateImg2Img requires either an image or a latentId");
     }
-    // Handle both File objects and data URLs
     if (typeof image === 'string') {
-      // Convert data URL or URL to blob
       const response = await fetch(image);
       const blob = await response.blob();
       formData.append("image", blob, "input.png");
@@ -3036,7 +3019,6 @@ export const generateImg2Img = async (
 export const generateUpscale = async (params: UpscaleParams, image: File | string) => {
   const formData = new FormData();
 
-  // Handle both File objects and data URLs
   if (typeof image === 'string') {
     const response = await fetch(image);
     const blob = await response.blob();
@@ -3085,9 +3067,6 @@ export const fetchUpscalerModels = async (): Promise<{ models: UpscalerModelInfo
   return response.data;
 };
 
-// ---------------------------------------------------------------------------
-// Standalone VAE / Text-Encoder override candidates (RP3)
-// ---------------------------------------------------------------------------
 
 export interface VaeEntry {
   name: string;
@@ -3378,9 +3357,6 @@ export const cancelMiniMaxH3ReferenceBank = async (): Promise<MiniMaxH3Reference
   return response.data;
 };
 
-// ---------------------------------------------------------------------------
-// Video generation (LTX-2.3)
-// ---------------------------------------------------------------------------
 
 // txt2vid: JSON POST /generate/txt2vid. Response is the standard
 // GenerationResponse ({ success, image, actual_seed, warnings }); image.filename
@@ -3450,7 +3426,6 @@ export const generateImg2Vid = async (
 ) => {
   const formData = new FormData();
 
-  // Handle both File objects and data URLs
   if (typeof image === "string") {
     const response = await fetch(image);
     const blob = await response.blob();
@@ -3653,9 +3628,6 @@ export const generateRef2Vid = async (
   return response.data;
 };
 
-// ---------------------------------------------------------------------------
-// Audio generation (ACE-Step 1.5)
-// ---------------------------------------------------------------------------
 
 // txt2aud: JSON POST /generate/txt2aud. Response is the standard
 // GenerationResponse ({ success, image, actual_seed, warnings }); image.filename
@@ -3710,7 +3682,6 @@ export const generateTxt2Aud = async (params: Txt2AudParams) => {
 export const generateAud2Aud = async (params: Aud2AudParams, referenceAudio: File | string) => {
   const formData = new FormData();
 
-  // Handle both File objects and data URLs (mirrors generateImg2Vid's `image` handling).
   if (typeof referenceAudio === "string") {
     const response = await fetch(referenceAudio);
     const blob = await response.blob();
@@ -3781,7 +3752,6 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
 
   const formData = new FormData();
 
-  // Handle both File objects and data URLs for image
   if (typeof image === 'string') {
     const response = await fetch(image);
     const blob = await response.blob();
@@ -3790,7 +3760,6 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
     formData.append("image", image);
   }
 
-  // Handle both File objects and data URLs for mask
   if (typeof mask === 'string') {
     const response = await fetch(mask);
     const blob = await response.blob();
@@ -4000,8 +3969,6 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
 
   const formData = new FormData();
 
-  // Handle both File objects and data URLs for image (no mask -- outpaint
-  // builds its own canvas + mask from the placement fields below).
   if (typeof image === 'string') {
     const response = await fetch(image);
     const blob = await response.blob();
@@ -4228,7 +4195,6 @@ export const generateOutpaintVideo = async (
 ) => {
   const formData = new FormData();
 
-  // Handle both File objects and data URLs (mirrors generateImg2Vid's `image` handling).
   if (typeof video === "string") {
     const response = await fetch(video);
     const blob = await response.blob();
@@ -4526,7 +4492,6 @@ export const generateInpaintVideo = async (
 export const generateOutpaintAudio = async (params: OutpaintAudioParams, referenceAudio: File | string) => {
   const formData = new FormData();
 
-  // Handle both File objects and data URLs (mirrors generateAud2Aud's `reference_audio` handling).
   if (typeof referenceAudio === "string") {
     const response = await fetch(referenceAudio);
     const blob = await response.blob();
@@ -4653,8 +4618,6 @@ export const getModels = async () => {
   return response.data;
 };
 
-// Create a from-scratch MiniT2I model (latent or pixel) for Full-FT training.
-// variant: "b16" | "l16"; vaeType: "sdxl" | "flux1" | "none" (none = pixel-space).
 export const createScratchMiniT2I = async (
   variant: string,
   vaeType: string,
@@ -6018,9 +5981,6 @@ export const getGPUStats = async (): Promise<GPUStatsResponse> => {
 
 export default api;
 
-// ============================================================
-// Dataset Management API
-// ============================================================
 
 export interface CaptionProcessingConfig {
   caption_types?: string[];  // Caption types to use for training (e.g., ["tags", "natural_language"]). Empty = auto-select.
@@ -6192,9 +6152,6 @@ export const deleteDatasetLatentCache = async (
   return response.data;
 };
 
-// ============================================================
-// TXT File Synchronization API
-// ============================================================
 
 export interface SaveToTxtResponse {
   success: boolean;
@@ -6223,9 +6180,6 @@ export const restoreItemCaptionFromTxt = async (itemId: number): Promise<SaveToT
   return response.data;
 };
 
-// ============================================================
-// Caption Processing Presets API
-// ============================================================
 
 export interface CaptionProcessingPreset {
   id: number;
@@ -6506,9 +6460,6 @@ export const getRandomCaption = async (
   return response.data;
 };
 
-// ============================================================
-// Training API
-// ============================================================
 
 /** One structured notice from a training run (a setting overridden or ignored).
  *  Same shape as the `training_log` WebSocket message minus the envelope —
@@ -7360,7 +7311,6 @@ export const getTrainingMetrics = async (
   maxPoints: number = 1000
 ): Promise<TrainingMetrics> => {
   const params: any = { max_points: maxPoints };
-  // Use new DB endpoint with uniform sampling (backend handles sampling)
   const response = await api.get(`/training/runs/${runId}/metrics_db`, { params });
   return response.data;
 };
@@ -7455,9 +7405,6 @@ export const getTrainingSampleQueue = async (
   return response.data;
 };
 
-// ---------------------------------------------------------------------------
-// Runtime LR schedule: decay now / cancel, and the state the trainer publishes
-// ---------------------------------------------------------------------------
 
 // The vocabulary itself is mirrored once, in TrainingConfig.tsx's
 // LR_SCHEDULER_OPTIONS (each name with the note its control shows);
@@ -7523,8 +7470,6 @@ export interface LrScheduleCommandResult {
   // only record of which one was pressed.
   op: LrRetargetOp | null;
   result: string;
-  // Set when the result belongs to a trigger: the registration itself, or an
-  // event one of them fired. Absent for an operator's own command.
   trigger_id?: string | null;
   at: number;
   global_step: number;
@@ -7781,9 +7726,6 @@ export const queueLrScheduleRetarget = async (
   return response.data;
 };
 
-// ---------------------------------------------------------------------------
-// Conditional triggers (§20): a condition registered now, pressed by the run
-// ---------------------------------------------------------------------------
 
 export type LrTriggerPredicate = "plateau" | "below" | "above";
 
@@ -7982,9 +7924,6 @@ export const visualizeDebugLatent = async (
   return response.data;
 };
 
-// ============================================================
-// Training Presets API
-// ============================================================
 
 export interface TrainingPreset {
   id: number;
@@ -8037,9 +7976,6 @@ export const deleteTrainingPreset = async (id: number): Promise<void> => {
   await api.delete(`/training/presets/${id}`);
 };
 
-// ============================================================
-// Dataset Caption Update API
-// ============================================================
 
 export interface CaptionUpdateRequest {
   caption_type: string;
@@ -8055,9 +7991,6 @@ export const updateItemCaption = async (
   return response.data;
 };
 
-// ============================================================
-// Reference Images API
-// ============================================================
 
 export interface ReferenceImagesResponse {
   status: string;
@@ -8095,9 +8028,6 @@ export const removeItemReferenceImage = async (
   return response.data;
 };
 
-// ============================================================
-// Batch Operations API
-// ============================================================
 
 export interface BatchTaggerRequest {
   item_ids: number[];
@@ -8166,9 +8096,7 @@ export const backfillTagData = async (datasetId: number): Promise<BatchOperation
 
 // Tag Dictionary Search API was removed - use tagSuggestions.ts instead
 
-// ==================== Debug VRAM Inspection ====================
 
-// ==================== Dataset Scan Preview ====================
 
 export interface ScanPreviewGroup {
   group_name: string;
@@ -8191,7 +8119,6 @@ export const scanDatasetPreview = async (datasetId: number): Promise<ScanPreview
   return response.data;
 };
 
-// ==================== Debug ====================
 
 export const debugVramInspection = async () => {
   const response = await api.get("/debug/vram");
@@ -8203,7 +8130,6 @@ export const debugVramForceRelease = async () => {
   return response.data;
 };
 
-// ==================== Tagger Training ====================
 
 export interface TaggerTrainingRun {
   run_id: string;

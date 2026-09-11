@@ -41,10 +41,8 @@ export default function FloatingGallery({ images, maxImages }: FloatingGalleryPr
       setIsEditorOpen(editorOpen);
     };
 
-    // Check immediately
     checkEditorState();
 
-    // Set up a MutationObserver to watch for dataset changes
     const observer = new MutationObserver(checkEditorState);
     observer.observe(document.body, {
       attributes: true,

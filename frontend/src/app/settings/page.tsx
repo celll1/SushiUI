@@ -88,7 +88,6 @@ export default function SettingsPage() {
   const [tagSuggestionMinCount, setTagSuggestionMinCount] = useState(50);
   const [floatingGalleryMaxImages, setFloatingGalleryMaxImages] = useState(30);
 
-  // Send size mode settings
   const [sendSizeMode, setSendSizeMode] = useState<"absolute" | "scale">("absolute");
   const [sendDefaultScale, setSendDefaultScale] = useState(1.0);
 
@@ -449,7 +448,6 @@ export default function SettingsPage() {
 
   useEffect(() => {
     updateStorageInfo();
-    // Load settings from localStorage
     if (typeof window !== 'undefined') {
       setRestoreOnCancel(localStorage.getItem('restore_image_on_cancel') === 'true');
       setIncludeMetadataInDownloads(localStorage.getItem('include_metadata_in_downloads') === 'true');
@@ -479,7 +477,6 @@ export default function SettingsPage() {
         setResolutionStep(parseInt(savedResolutionStep));
       }
 
-      // Load custom presets
       const savedAspectRatioPresets = localStorage.getItem('aspect_ratio_presets');
       if (savedAspectRatioPresets) {
         try {
@@ -498,7 +495,6 @@ export default function SettingsPage() {
         }
       }
 
-      // Load panel visibility settings
       const savedTxt2imgVisibility = localStorage.getItem('txt2img_visibility');
       if (savedTxt2imgVisibility) {
         try {
@@ -526,7 +522,6 @@ export default function SettingsPage() {
         }
       }
 
-      // Load send size mode settings
       const savedSendSizeMode = localStorage.getItem('send_size_mode');
       if (savedSendSizeMode && (savedSendSizeMode === 'absolute' || savedSendSizeMode === 'scale')) {
         setSendSizeMode(savedSendSizeMode);
@@ -540,13 +535,11 @@ export default function SettingsPage() {
         }
       }
 
-      // Load developer mode setting
       const savedDeveloperMode = localStorage.getItem('developer_mode');
       if (savedDeveloperMode === 'true') {
         setDeveloperMode(true);
       }
 
-      // Load font size setting
       const savedFontSize = localStorage.getItem('ui_font_size');
       if (savedFontSize) {
         const size = parseInt(savedFontSize);
@@ -556,7 +549,6 @@ export default function SettingsPage() {
         }
       }
 
-      // Load advanced CFG settings visibility
       const savedShowAdvancedCFG = localStorage.getItem('show_advanced_cfg');
       if (savedShowAdvancedCFG === 'true') {
         setShowAdvancedCFG(true);

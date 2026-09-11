@@ -146,7 +146,6 @@ export default function UpscalePanel({ onTabChange }: UpscalePanelProps = {}) {
     loadInitialData();
   }, []);
 
-  // Fetch upscaler models
   const loadUpscalerModels = useCallback(async () => {
     try {
       const data = await fetchUpscalerModels();
@@ -160,7 +159,6 @@ export default function UpscalePanel({ onTabChange }: UpscalePanelProps = {}) {
     loadUpscalerModels();
   }, [loadUpscalerModels]);
 
-  // Fetch samplers / schedule types (diffusion backend, reused from Img2ImgPanel source)
   useEffect(() => {
     const loadSamplers = async () => {
       try {
@@ -243,14 +241,12 @@ export default function UpscalePanel({ onTabChange }: UpscalePanelProps = {}) {
     };
   }, []);
 
-  // Save params to localStorage
   useEffect(() => {
     if (isMounted && !isInitialLoad) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(params));
     }
   }, [params, isMounted, isInitialLoad]);
 
-  // Save preview to localStorage
   useEffect(() => {
     if (isMounted && generatedImage) {
       saveImagePreview(PREVIEW_KEYS, generatedImage);

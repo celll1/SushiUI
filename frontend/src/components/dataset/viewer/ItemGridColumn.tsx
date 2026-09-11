@@ -93,7 +93,6 @@ export default function ItemGridColumn({
     }
   }, [tagFilter]);
 
-  // Update parent when internal array changes
   const updateParentFilter = useCallback((tags: string[]) => {
     onTagFilterChange(tags.join(","));
   }, [onTagFilterChange]);
@@ -123,7 +122,6 @@ export default function ItemGridColumn({
         setShowSuggestions(suggestions.length > 0);
         setSelectedSuggestionIndex(0);
 
-        // Update category map
         if (suggestions.length > 0) {
           setTagCategories(prev => {
             const newCategories = { ...prev };
@@ -136,7 +134,6 @@ export default function ItemGridColumn({
           });
         }
 
-        // Update position - show above input
         if (inputRef.current) {
           const rect = inputRef.current.getBoundingClientRect();
           const suggestionsHeight = 256;
@@ -218,8 +215,6 @@ export default function ItemGridColumn({
   };
 
   const handleBlur = () => {
-    // Close suggestions when input loses focus
-    // Use setTimeout to allow click events on suggestions to fire first
     setTimeout(() => {
       setShowSuggestions(false);
     }, 200);

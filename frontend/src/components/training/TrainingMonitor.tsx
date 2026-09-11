@@ -236,7 +236,6 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
     return () => clearInterval(interval);
   }, [currentRun.status, currentRun.id, currentRun.config_yaml]);
 
-  // Update time display every second
   useEffect(() => {
     if (currentRun.status !== "running") {
       return;
@@ -277,7 +276,6 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
     if (viewerImage) setSelectedStepIndex(viewerImage.stepIndex);
   }, [viewerImage]);
 
-  // Load sample images
   useEffect(() => {
     if (!hasSampleImages) {
       setSamples([]);
@@ -439,7 +437,6 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
     }
   }, [currentRun.phase]);
 
-  // Load debug latents
   useEffect(() => {
     loadDebugLatents();
 
@@ -459,7 +456,6 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
     }
   };
 
-  // Load debug visualization when step is selected
   useEffect(() => {
     if (selectedDebugStep !== null && viewMode === "debug") {
       loadDebugVisualization(selectedDebugStep);
@@ -523,7 +519,6 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
     }
   };
 
-  // Calculate elapsed time and ETA
   const calculateTimeInfo = () => {
     if (!currentRun.started_at || currentRun.status === "pending") {
       return { elapsed: "N/A", eta: "N/A", averageSecondsPerIteration: null };

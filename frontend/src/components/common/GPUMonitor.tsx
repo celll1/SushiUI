@@ -22,10 +22,8 @@ export default function GPUMonitor() {
       }
     };
 
-    // Fetch immediately
     fetchStats();
 
-    // Update every 2 seconds
     const interval = setInterval(fetchStats, 2000);
 
     return () => clearInterval(interval);

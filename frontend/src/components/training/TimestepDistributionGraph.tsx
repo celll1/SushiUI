@@ -41,7 +41,6 @@ function logitNormalPdf(t: number, mean: number, std: number): number {
 function betaPdf(x: number, alpha: number, beta: number): number {
   if (x <= 0 || x >= 1) return 0;
 
-  // Use log-gamma for numerical stability
   const logBeta = logGamma(alpha) + logGamma(beta) - logGamma(alpha + beta);
   const logPdf = (alpha - 1) * Math.log(x) + (beta - 1) * Math.log(1 - x) - logBeta;
   return Math.exp(logPdf);
@@ -107,16 +106,13 @@ export default function TimestepDistributionGraph({
   const safeMinTimestep = safeNum(minTimestep, 0.0);
   const safeMaxTimestep = safeNum(maxTimestep, 1.0);
 
-  // Check if we have valid parameters for rendering
   const isValidForRender =
     safeMinTimestep < safeMaxTimestep &&
     safeStd > 0 &&
     safeAlpha > 0 &&
     safeBeta > 0;
 
-  // Generate points for the distribution curve
   const { path, maxY, points } = useMemo(() => {
-    // Return empty if invalid parameters
     if (!isValidForRender) {
       return { path: "", maxY: 1, points: [] };
     }
@@ -159,10 +155,8 @@ export default function TimestepDistributionGraph({
       pts.push({ x: t, y: isFinite(y) ? y : 0 });
     }
 
-    // Find max Y for normalization
     const maxYVal = Math.max(...pts.map(p => p.y), 0.001);
 
-    // Build SVG path
     const padding = 4;
     const graphWidth = width - padding * 2;
     const graphHeight = height - padding * 2 - 15; // Leave room for axis labels
@@ -181,7 +175,6 @@ export default function TimestepDistributionGraph({
     return { path: pathStr, maxY: maxYVal, points: pts };
   }, [distribution, isValidForRender, safeMinTimestep, safeMaxTimestep, safeMean, safeStd, safeAlpha, safeBeta, width, height]);
 
-  // Calculate mean timestep for the indicator
   const expectedMean = useMemo(() => {
     if (!isValidForRender) return 0.5;
 

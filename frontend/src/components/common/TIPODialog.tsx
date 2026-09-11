@@ -32,7 +32,6 @@ export default function TIPODialog({ isOpen, onClose, settings, onSettingsChange
 
   useEffect(() => {
     if (isOpen) {
-      // Load category order from CategoryOrderPanel settings
       const categoryOrder = getCategoryOrder();
       setLocalSettings({
         ...settings,
@@ -46,7 +45,6 @@ export default function TIPODialog({ isOpen, onClose, settings, onSettingsChange
   }, [isOpen, settings]);
 
   const handleSave = () => {
-    // Save TIPO settings to localStorage
     onSettingsChange(localSettings);
 
     // Also save category order back to CategoryOrderPanel settings

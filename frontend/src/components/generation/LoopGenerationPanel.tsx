@@ -123,7 +123,6 @@ export default function LoopGenerationPanel({
   const [expandedStep, setExpandedStep] = useState<string | null>(null);
   const [showAdvancedCFG, setShowAdvancedCFG] = useState(false);
 
-  // Load showAdvancedCFG from localStorage
   useEffect(() => {
     const savedShowAdvancedCFG = localStorage.getItem('show_advanced_cfg');
     if (savedShowAdvancedCFG === 'true') {
@@ -142,13 +141,11 @@ export default function LoopGenerationPanel({
     let initialHeight = mainHeight;
 
     if (config.steps.length > 0) {
-      // Use last step's output size as initial size
       const lastStep = config.steps[config.steps.length - 1];
       initialWidth = lastStep.width || mainWidth;
       initialHeight = lastStep.height || mainHeight;
     }
 
-    // Read global send size mode settings
     const sendSizeMode = (typeof window !== 'undefined'
       ? localStorage.getItem('send_size_mode')
       : null) as "absolute" | "scale" | null;
@@ -456,7 +453,6 @@ export default function LoopGenerationPanel({
                   <div>
                     <Slider
                       label={`Scale (${(() => {
-                        // Calculate output size based on base size and scale
                         const currentIndex = config.steps.findIndex(s => s.id === step.id);
                         let baseWidth = mainWidth;
                         let baseHeight = mainHeight;

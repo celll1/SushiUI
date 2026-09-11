@@ -12,7 +12,6 @@ import { useEffect } from "react";
 
 function LayoutContent({ children }: { children: React.ReactNode }) {
   useEffect(() => {
-    // Apply saved font size on initial load
     if (typeof window !== 'undefined') {
       const savedFontSize = localStorage.getItem('ui_font_size');
       if (savedFontSize) {

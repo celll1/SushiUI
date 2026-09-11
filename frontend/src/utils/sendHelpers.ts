@@ -77,18 +77,15 @@ export function sendToPanel(
   console.log("[sendToPanel] sendPrompt:", sendPrompt, "sendParameters:", sendParameters);
   console.log("[sendToPanel] sourceParams.prompt:", sourceParams.prompt);
 
-  // Load existing params and merge
   const targetParams = JSON.parse(localStorage.getItem(targetStorageKey) || "{}");
   console.log("[sendToPanel] Existing targetParams:", targetParams);
 
-  // Send prompt if requested
   if (sendPrompt) {
     targetParams.prompt = sourceParams.prompt;
     targetParams.negative_prompt = sourceParams.negative_prompt;
     console.log("[sendToPanel] Set prompt to:", targetParams.prompt);
   }
 
-  // Send parameters if requested
   if (sendParameters) {
     targetParams.steps = sourceParams.steps;
     targetParams.cfg_scale = sourceParams.cfg_scale !== undefined ? roundFloat(sourceParams.cfg_scale, 2) : sourceParams.cfg_scale;
@@ -99,7 +96,6 @@ export function sendToPanel(
     targetParams.width = sourceParams.width;
     targetParams.height = sourceParams.height;
 
-    // Add Advanced CFG parameters
     if (sourceParams.cfg_schedule_type !== undefined) {
       targetParams.cfg_schedule_type = sourceParams.cfg_schedule_type;
     }
@@ -122,7 +118,6 @@ export function sendToPanel(
       targetParams.dynamic_threshold_mimic_scale = sourceParams.dynamic_threshold_mimic_scale;
     }
 
-    // Add NAG parameters
     if (sourceParams.nag_enable !== undefined) {
       targetParams.nag_enable = sourceParams.nag_enable;
     }
@@ -142,7 +137,6 @@ export function sendToPanel(
       targetParams.nag_negative_prompt = sourceParams.nag_negative_prompt;
     }
 
-    // Add attention processor type
     if (sourceParams.attention_type !== undefined) {
       targetParams.attention_type = sourceParams.attention_type;
     }
@@ -155,7 +149,6 @@ export function sendToPanel(
     }
   }
 
-  // Save merged params once
   if (sendPrompt || sendParameters) {
     console.log("[sendToPanel] Saving merged params:", targetParams);
     localStorage.setItem(targetStorageKey, JSON.stringify(targetParams));

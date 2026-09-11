@@ -61,9 +61,6 @@ export default function BatchOperationsPanel({
   const targetCount = selectedItemIds.length > 0 ? selectedItemIds.length : totalItems;
   const targetItemIds = selectedItemIds.length > 0 ? selectedItemIds : [];
 
-  // ============================================================
-  // Batch Tagger Inference
-  // ============================================================
 
   const handleBatchTagger = async () => {
     if (!taggerSettings) {
@@ -113,9 +110,6 @@ export default function BatchOperationsPanel({
     }
   };
 
-  // ============================================================
-  // Batch Tag Reordering
-  // ============================================================
 
   const handleBatchReorder = async () => {
     const categoryOrder = captionProcessingConfig?.category_order || [
@@ -160,9 +154,6 @@ export default function BatchOperationsPanel({
     }
   };
 
-  // ============================================================
-  // Batch Tag Replacement
-  // ============================================================
 
   const handleBatchReplace = async () => {
     if (!fromTag || !toTag) {
@@ -206,9 +197,6 @@ export default function BatchOperationsPanel({
     }
   };
 
-  // ============================================================
-  // Backfill tag_data
-  // ============================================================
 
   const [showBackfillConfirm, setShowBackfillConfirm] = useState(false);
 
@@ -231,9 +219,6 @@ export default function BatchOperationsPanel({
     }
   };
 
-  // ============================================================
-  // Cancel Operation
-  // ============================================================
 
   const handleCancel = async () => {
     try {

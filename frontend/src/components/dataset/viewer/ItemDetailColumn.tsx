@@ -98,7 +98,6 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
       const details = await getDatasetItem(datasetId, item.id);
       setDetailedItem(details);
 
-      // Extract tags from captions
       const tagCaption = details.captions?.find(c => c.caption_type === "tags");
       if (tagCaption) {
         const tagList = tagCaption.content.split(",").map(t => t.trim()).filter(Boolean);
@@ -109,7 +108,6 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
           future: [],
         });
 
-        // Load categories from tag_data if available (fast path)
         if (tagCaption.tag_data && tagCaption.tag_data.length > 0) {
           const categories: Record<string, string> = {};
           for (const item of tagCaption.tag_data) {
@@ -148,7 +146,6 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
     }
   }, [detailedItem]);
 
-  // Update item reference when item changes
   useEffect(() => {
     if (item) {
       previousItemIdRef.current = item.id;
@@ -207,7 +204,6 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
     }
   }, [isResizing]);
 
-  // Build tag_data with categories for backend
   const buildTagData = async (tags: string[]): Promise<Array<{ tag: string; category: string }>> => {
     const tagData: Array<{ tag: string; category: string }> = [];
 
@@ -398,7 +394,6 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
 
     pushHistory([...tags, tag]);
 
-    // Store category for this tag
     setTagCategories(prev => ({
       ...prev,
       [tag]: category
@@ -415,7 +410,6 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
     setIsTagging(true);
 
     try {
-      // Convert image to base64
       const imageResponse = await fetch(`/api/serve-image?path=${encodeURIComponent(item.image_path)}`);
       const imageBlob = await imageResponse.blob();
       const base64 = await new Promise<string>((resolve) => {
@@ -427,7 +421,6 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
         reader.readAsDataURL(imageBlob);
       });
 
-      // Build thresholds dict (using addThreshold for prediction)
       const thresholds: { [key: string]: number } = {};
       taggerSettings.categoryThresholds.forEach(cat => {
         if (cat.enabled) {
@@ -448,7 +441,6 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
         thresholds
       );
 
-      // Process predictions: merge with existing tags
       const existingTags = new Set(tags);
       const predictedTags = new Map<string, { confidence: number; category: string }>(); // tag -> {confidence, category}
 
@@ -459,7 +451,6 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
         });
       });
 
-      // Build category threshold map for quick lookup
       const removeThresholdMap = new Map<string, number>();
       const addThresholdMap = new Map<string, number>();
       taggerSettings.categoryThresholds.forEach(cat => {
@@ -467,7 +458,6 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
         addThresholdMap.set(cat.id, cat.addThreshold);
       });
 
-      // Build new tag list
       const newTags: string[] = [];
 
       // Special handling for Rating and Quality: pick top prediction only
@@ -483,7 +473,6 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
         return category?.toLowerCase() === "quality";
       });
 
-      // Get top predicted rating and quality tags
       let topRatingTag: string | null = null;
       let topRatingConfidence = 0;
       let topQualityTag: string | null = null;
@@ -500,7 +489,6 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
         }
       });
 
-      // 1. Keep existing tags (with special handling for rating/quality)
       existingTags.forEach(tag => {
         const predicted = predictedTags.get(tag);
         if (!predicted) {
@@ -518,7 +506,6 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
         }
       });
 
-      // 2. Add new predicted tags
       predictedTags.forEach(({ confidence, category }, tag) => {
         if (category === "rating" || category === "quality") {
           // Rating/Quality: handled separately below
@@ -540,7 +527,6 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
         newTags.push(topQualityTag);
       }
 
-      // Update tags with history
       pushHistory(newTags);
 
       console.log(`[Tagger] Inference complete: ${tags.length} → ${newTags.length} tags (removed: ${tags.length - newTags.filter(t => existingTags.has(t)).length}, added: ${newTags.filter(t => !existingTags.has(t)).length})`);
@@ -662,7 +648,6 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
                     alt={`Reference ${idx + 1}`}
                     className="w-full h-full object-cover cursor-pointer hover:opacity-80 transition-opacity"
                     onClick={() => {
-                      // Open reference image in expanded view
                       const img = new Image();
                       img.src = `/api/serve-image?path=${encodeURIComponent(refPath)}`;
                       const win = window.open('', '_blank', 'width=800,height=600');
@@ -718,7 +703,6 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
             });
             const metadataCaptions = captions.filter(c => c.field_category === 'metadata');
 
-            // Get unique caption types from training captions
             const uniqueTrainingTypes = Array.from(
               new Set(trainingCaptions.map(c => c.caption_type))
             );

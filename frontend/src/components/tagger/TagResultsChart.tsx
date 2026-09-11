@@ -197,7 +197,6 @@ export default function TagResultsChart({
     );
   }
 
-  // Group tags by category
   const grouped: Record<string, SigLIP2TagResult[]> = {};
   for (const t of tags) {
     (grouped[t.category] ??= []).push(t);

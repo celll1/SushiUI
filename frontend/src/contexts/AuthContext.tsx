@@ -26,7 +26,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const checkAuthStatus = async () => {
     try {
-      // Check if auth is enabled
       const statusResponse = await api.get("/auth/status");
       const authEnabled = statusResponse.data.auth_enabled;
       setIsAuthEnabled(authEnabled);
@@ -38,7 +37,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      // Check if we have a valid token (session storage - cleared on browser close)
       const token = sessionStorage.getItem("auth_token");
       if (!token) {
         setIsAuthenticated(false);

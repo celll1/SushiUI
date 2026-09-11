@@ -57,11 +57,9 @@ export default function ImageTaggerPanel({ onInsert, onOverwrite, currentPrompt 
   const [globalThresholdMode, setGlobalThresholdMode] = useState<boolean>(false);
   const [globalThreshold, setGlobalThreshold] = useState<number>(0.45);
 
-  // Load saved settings
   useEffect(() => {
     checkTaggerStatus();
 
-    // Load thresholds
     const savedThresholds = localStorage.getItem(STORAGE_KEY_THRESHOLDS);
     if (savedThresholds) {
       try {
@@ -71,7 +69,6 @@ export default function ImageTaggerPanel({ onInsert, onOverwrite, currentPrompt 
       }
     }
 
-    // Load model version
     const savedVersion = localStorage.getItem(STORAGE_KEY_MODEL_VERSION);
     if (savedVersion) {
       setSelectedModelVersion(savedVersion);
@@ -104,7 +101,6 @@ export default function ImageTaggerPanel({ onInsert, onOverwrite, currentPrompt 
     }
   }, [selectedTags, predictions]);
 
-  // Save thresholds when changed
   const saveThresholds = (newThresholds: CategoryThreshold[]) => {
     setCategoryThresholds(newThresholds);
     localStorage.setItem(STORAGE_KEY_THRESHOLDS, JSON.stringify(newThresholds));
@@ -189,7 +185,6 @@ export default function ImageTaggerPanel({ onInsert, onOverwrite, currentPrompt 
     setError(null);
 
     try {
-      // Build individual thresholds dict
       const thresholds: { [key: string]: number } = {};
       categoryThresholds.forEach(cat => {
         thresholds[cat.id] = cat.threshold;
@@ -217,7 +212,6 @@ export default function ImageTaggerPanel({ onInsert, onOverwrite, currentPrompt 
       });
       setSelectedTags(allTags);
 
-      // Save selected model version
       localStorage.setItem(STORAGE_KEY_MODEL_VERSION, selectedModelVersion);
     } catch (err: any) {
       console.error("[Tagger] Prediction failed:", err);
@@ -242,14 +236,12 @@ export default function ImageTaggerPanel({ onInsert, onOverwrite, currentPrompt 
 
     const tagsByCategory: { [key: string]: string[] } = {};
 
-    // Group selected tags by category
     Object.entries(predictions).forEach(([category, tags]) => {
       tagsByCategory[category] = tags
         .filter(([tag, _]) => selectedTags.has(tag))
         .map(([tag, _]) => tag);
     });
 
-    // Sort by category order
     const orderedTags: string[] = [];
     categoryThresholds.forEach(catThreshold => {
       if (catThreshold.enabled && tagsByCategory[catThreshold.id]) {
@@ -291,7 +283,6 @@ export default function ImageTaggerPanel({ onInsert, onOverwrite, currentPrompt 
 
   const updateGlobalThreshold = (threshold: number) => {
     setGlobalThreshold(threshold);
-    // Apply to all categories
     const newThresholds = categoryThresholds.map(cat => ({
       ...cat,
       threshold: threshold

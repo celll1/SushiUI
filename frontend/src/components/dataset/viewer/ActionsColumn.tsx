@@ -57,12 +57,10 @@ export default function ActionsColumn({
   const [selectedTag, setSelectedTag] = useState<{ tag: string; count: number } | null>(null);
   const [isCategorizing, setIsCategorizing] = useState(false);
 
-  // Get unique categories from tag statistics
   const allCategories = tagStatistics
     ? Array.from(new Set(Object.values(tagStatistics).map(s => s.category)))
     : [];
 
-  // Sort tags by count (most common first) and filter by visible categories
   const sortedTags = tagStatistics
     ? Object.entries(tagStatistics)
         .filter(([_, stats]) => visibleCategories.has(stats.category.toLowerCase()))

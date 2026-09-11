@@ -62,7 +62,6 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
       // Get metadata setting from localStorage
       const includeMetadata = localStorage.getItem('include_metadata_in_downloads') === 'true';
 
-      // Extract filename from imageUrl
       const filename = imageUrl.split('/').pop() || 'image.png';
 
       // Use API endpoint for metadata-aware download

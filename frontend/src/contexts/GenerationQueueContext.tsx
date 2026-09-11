@@ -292,7 +292,6 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
   const [chainPause, setChainPause] = useState<ChainDriftPause | null>(null);
   const [chainStoppedMessage, setChainStoppedMessage] = useState<string | null>(null);
 
-  // Use refs that are synchronously updated alongside state
   const queueRef = useRef<QueueItem[]>(queue);
   const currentItemRef = useRef<QueueItem | null>(currentItem);
   // Written synchronously by pauseChain/clearChainPause so a pause raised in
@@ -420,7 +419,6 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
       setChainPause(null);
     }
 
-    // Remove all pending items with this loopGroupId
     setQueue((prev) => prev.filter((item) =>
       !(item.loopGroupId === loopGroupId && item.status === "pending")
     ));
@@ -464,7 +462,6 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
     // Case 1: Cancelling main generation (Base)
     if (!isLoopStep) {
       console.log(`[QueueContext] Cancelling main generation and all related loop steps for group: ${loopGroupId}`);
-      // Remove all items in this loop group (main + all loop steps)
       setQueue((prev) => prev.filter((i) => i.loopGroupId !== loopGroupId));
 
       // Clear loopGroupId from currentItem if it belongs to this group
@@ -590,7 +587,6 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
       setCurrentItem(updatedItem);
       setProgressSnapshot(null);
 
-      // Update the item in queue to generating status
       setQueue((prev) =>
         prev.map((item) =>
           item.id === nextItem!.id ? updatedItem : item
@@ -616,7 +612,6 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
     const elapsedMs = currentItemValue.startTime ? endTime - currentItemValue.startTime : 0;
     console.log(`[QueueContext] Generation took ${(elapsedMs / 1000).toFixed(2)}s`);
 
-    // Remove completed item from queue
     setQueue((prev) => prev.filter((item) => item.id !== currentItemValue.id));
     currentItemRef.current = null;
     setCurrentItem(null);

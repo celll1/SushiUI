@@ -101,7 +101,6 @@ import SendToStudioButton from "../studio/SendToStudioButton";
 // into a video request (or vice versa) on a tab switch, so video keeps its
 // own `video_blocks_to_swap` field instead.
 interface OutpaintPanelParams extends ApiOutpaintParams {
-  // --- Video temporal outpaint (outpaint_vid, LTX-2.3) ---
   frame_rate?: number;
   num_inference_steps?: number;
   guidance_scale?: number;
@@ -123,7 +122,6 @@ interface OutpaintPanelParams extends ApiOutpaintParams {
   outpaint_video_audio_mode_arch?: string | null;
   video_lossless?: boolean;
   video_blocks_to_swap?: number;
-  // --- Audio temporal outpaint (outpaint_aud, ACE-Step 1.5 extend) ---
   lyrics?: string;
   inference_steps?: number;
   shift?: number;
@@ -304,7 +302,6 @@ const DEFAULT_PARAMS: OutpaintPanelParams = {
   block_swap_ring_size: 2,
   loop_decode: "full",
   skip_gallery: false,
-  // --- Placement (outpaint-only) ---
   canvas_width: 1536,
   canvas_height: 1536,
   place_x: 0,
@@ -316,7 +313,6 @@ const DEFAULT_PARAMS: OutpaintPanelParams = {
   input_crop_w: 0,
   input_crop_h: 0,
   outpaint_fill_mode: "replicate",
-  // --- Video temporal outpaint (outpaint_vid, LTX-2.3) ---
   width: 768,
   height: 512,
   frame_rate: 24.0,
@@ -334,7 +330,6 @@ const DEFAULT_PARAMS: OutpaintPanelParams = {
   video_lossless: false,
   video_blocks_to_swap: 0,
   fuse_output_proj: false,
-  // --- Audio temporal outpaint (outpaint_aud, ACE-Step 1.5 extend) ---
   lyrics: "",
   inference_steps: 8,
   shift: 3.0,
@@ -773,7 +768,6 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
     loadInitialData();
   }, []);
 
-  // Reset torch.compile when developer mode is disabled
   useEffect(() => {
     if (!developerMode) {
       setParams(prev => (prev.use_torch_compile ? { ...prev, use_torch_compile: false } : prev));
@@ -1034,9 +1028,6 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
     return () => window.removeEventListener('outpaint_params_updated', handleParamsUpdate);
   }, []);
 
-  // Initialize placement (canvas + centered rect) whenever a NEW input image
-  // is loaded and the placement hasn't been customized yet (place_width===0,
-  // the backend's "use native size" sentinel).
   const initializePlacementForImage = useCallback((width: number, height: number) => {
     setParams(prev => {
       if ((prev.place_width ?? 0) > 0) return prev; // already customized -- don't clobber
@@ -1065,7 +1056,6 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
     }
   }, [inputImageSize, initializePlacementForImage]);
 
-  // Save params to localStorage whenever they change
   useEffect(() => {
     if (isMounted && !isInitialLoad) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(params));
@@ -1141,7 +1131,6 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
         video_lossless: (vidDefaults.video_lossless as boolean) ?? DEFAULT_PARAMS.video_lossless,
         video_blocks_to_swap: vidDefaults.blocks_to_swap as number ?? DEFAULT_PARAMS.video_blocks_to_swap,
         fuse_output_proj: (vidDefaults.fuse_output_proj as boolean) ?? DEFAULT_PARAMS.fuse_output_proj,
-        // --- Audio temporal outpaint (outpaint_aud) ---
         lyrics: (audDefaults.lyrics as string) ?? DEFAULT_PARAMS.lyrics,
         inference_steps: audDefaults.inference_steps as number ?? DEFAULT_PARAMS.inference_steps,
         shift: audDefaults.shift as number ?? DEFAULT_PARAMS.shift,
@@ -1298,7 +1287,6 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
     setParams(prev => ({ ...prev, ...patch }));
   };
 
-  // --- Video temporal outpaint (outpaint_vid) input clip handling ---
 
   const processVideoFile = (file: File) => {
     if (!file.type.startsWith('video/')) {
@@ -1722,7 +1710,6 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
     });
   }, [isVideo, isAudio, loadedArchType, generationDefaults, params.image_defaults_arch]);
 
-  // --- Audio temporal outpaint (outpaint_aud) input clip handling ---
 
   const processAudioFile = (file: File) => {
     if (!file.type.startsWith('audio/')) {
@@ -1981,10 +1968,6 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
 
   const [visibility] = useState({ lora: true, controlnet: true });
 
-  // Add generation request to queue. Three modality branches: image
-  // (outpaint), video (outpaint_vid, LTX-2.3), and audio (outpaint_aud,
-  // ACE-Step 1.5 extend) -- mutually exclusive on the loaded model's
-  // modality, matching Txt2ImgPanel/Img2ImgPanel's isVideo/isAudio dispatch.
   const handleAddToQueue = async () => {
     if (!params.prompt) {
       alert("Please enter a prompt");

@@ -55,7 +55,6 @@ function findEmphasisAtCursor(
 
   if (closeParen === -1) return null;
 
-  // Check if this matches emphasis syntax (allow negative weights for NegPip)
   const emphasisText = text.substring(openParen, closeParen + 1);
   const weightMatch = emphasisText.match(/^\((.*?)(?::(-?[0-9.]+))?\)$/);
 
@@ -99,7 +98,6 @@ function adjustPromptWeight(
       start = selectionStart;
       end = selectionEnd;
 
-      // Find start of tag (search backwards for comma or start of string)
       while (start > 0 && text[start - 1] !== ',') {
         start--;
       }
@@ -108,7 +106,6 @@ function adjustPromptWeight(
         start++;
       }
 
-      // Find end of tag (search forwards for comma or end of string)
       while (end < text.length && text[end] !== ',') {
         end++;
       }
@@ -124,7 +121,6 @@ function adjustPromptWeight(
     selectedText = text.substring(start, end);
   }
 
-  // Check if selected text already has weight syntax (allow negative weights for NegPip)
   const weightMatch = selectedText.match(/^\((.*?)(?::(-?[0-9.]+))?\)$/);
 
   // Weight range allows negatives: a negative weight triggers NegPip (the token's
@@ -143,7 +139,6 @@ function adjustPromptWeight(
     const newWeight = Math.max(WEIGHT_MIN, Math.min(WEIGHT_MAX, currentWeight + increment));
 
     if (Math.abs(newWeight - 1.0) < 0.01) {
-      // Close to 1.0, remove emphasis
       newText = innerText;
     } else {
       newText = `(${innerText}:${newWeight.toFixed(2)})`;
@@ -211,7 +206,6 @@ export default function Textarea({
   }, [resizeStorageKey]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    // Call original onKeyDown if provided
     if (onKeyDown) {
       onKeyDown(e);
     }
@@ -254,7 +248,6 @@ export default function Textarea({
         increment
       );
 
-      // Call onChange directly with a synthetic event
       if (onChange) {
         const syntheticEvent = {
           target: {

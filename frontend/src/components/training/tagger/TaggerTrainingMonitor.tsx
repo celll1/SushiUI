@@ -64,9 +64,6 @@ function formatArrivalTime(etaSec: number | null, nowMs: number): string {
   return `${arrival.getMonth() + 1}/${arrival.getDate()} ${hhmm}`;
 }
 
-// ---------------------------------------------------------------------------
-// FP/FN Scatter Plot component
-// ---------------------------------------------------------------------------
 function FpFnScatterPlot({ data }: { data: FpFnScatterData }) {
   const W = 280, H = 280;
   const margin = { top: 28, right: 16, bottom: 36, left: 40 };
@@ -274,7 +271,6 @@ export default function TaggerTrainingMonitor({
         for (const r of data) rawMap.set(keyOf(r), r);
         rawMetricsRef.current = rawMap;
 
-        // Extract epoch boundaries from the full undecimented data
         setEpochBoundaries(extractEpochBoundaries(rawMap));
 
         // Apply the same global-stride decimation as the WS flush path so the
@@ -356,7 +352,6 @@ export default function TaggerTrainingMonitor({
         timestamp: new Date().toISOString(),
       };
 
-      // Update scatter data immediately (arrives infrequently — every 500 steps)
       if (m.fp_fn_scatter && m.fp_fn_scatter.n_tags > 0) {
         setScatterData(m.fp_fn_scatter);
       }
@@ -417,8 +412,6 @@ export default function TaggerTrainingMonitor({
           const incoming = wsBufferRef.current.splice(0);
           if (incoming.length === 0) return;
 
-          // 1. Merge incoming WS events into the raw accumulator (never decimated).
-          //    epoch events carry f1/threshold; step events carry loss/lr — merge both.
           const keyOf = (r: TaggerTrainingMetric) => `${r.resume_seq ?? 0}:${r.step}`;
           const rawMap = rawMetricsRef.current;
           for (const r of incoming) {
@@ -464,7 +457,6 @@ export default function TaggerTrainingMonitor({
             sorted = out;
           }
           setMetrics(sorted);
-          // Update epoch boundaries from the full raw map (never decimated)
           setEpochBoundaries(extractEpochBoundaries(rawMap));
         }, 1000);
       }
@@ -633,7 +625,6 @@ export default function TaggerTrainingMonitor({
     return () => clearInterval(tick);
   }, [run.status]);
 
-  // Load full metrics history on mount (for resumed/completed runs)
   useEffect(() => {
     fetchMetrics();
   }, [fetchMetrics]);

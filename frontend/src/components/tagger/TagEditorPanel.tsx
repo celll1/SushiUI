@@ -161,7 +161,6 @@ export default function TagEditorPanel({
     [tagSuggestionsCtx]
   );
 
-  // Load tags when image changes
   useEffect(() => {
     setInputValue("");
     setTagSearch("");
@@ -345,7 +344,6 @@ export default function TagEditorPanel({
     }
   }, [modelLoaded, inferring, image.rel_path, tags.length, applyTags, resolveCategories]);
 
-  // Group tags by category (and semantic sub-group when enabled), filtered by search
   const groupedTags = useMemo((): TagGroupEntry[] => {
     const search = tagSearch.toLowerCase();
     const filtered = search

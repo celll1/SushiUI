@@ -274,7 +274,6 @@ export default function TrainingMetricsChart({
     setCustom(inventory.filter((d) => next.has(d.key)).map((d) => d.key));
   }, [inventory]);
 
-  // Close the picker on an outside press.
   useEffect(() => {
     if (!pickerOpen) return;
     const onDown = (e: PointerEvent) => {

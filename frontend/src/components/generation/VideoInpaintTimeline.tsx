@@ -84,7 +84,6 @@ const transformFields: Array<{
 const DENSE_GROUP_THRESHOLD = 60;
 
 export interface VideoInpaintTimelineProps {
-  // ---- Shared clip geometry / Regenerate range track --------------------
   /** Frames of the uploaded clip before trim. */
   rawFrames: number;
   trimStart: number;
@@ -102,7 +101,6 @@ export interface VideoInpaintTimelineProps {
   /** The SAME input <video>'s live playhead (from `useVideoPlayhead`), in RAW clip frames/seconds. Omitted = degrades the same as videoSrc absent. */
   player?: VideoPlayheadState;
 
-  // ---- Mask keyframes track ----------------------------------------------
   keyframes: VideoMaskKeyframe[];
   onChange: (keyframes: VideoMaskKeyframe[]) => void;
   onEditKeyframe: (keyframe: VideoMaskKeyframe) => void;

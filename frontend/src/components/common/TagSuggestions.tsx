@@ -51,7 +51,6 @@ export default function TagSuggestions({
   const touchStartX = useRef<number>(0);
   const touchEndX = useRef<number>(0);
 
-  // Detect mobile
   useEffect(() => {
     const checkMobile = () => {
       setIsMobile(window.innerWidth < 768);
@@ -107,7 +106,6 @@ export default function TagSuggestions({
     }
   }, [selectedIndex]);
 
-  // Handle touch gestures for mobile swipe
   const handleTouchStart = (e: React.TouchEvent) => {
     touchStartX.current = e.touches[0].clientX;
   };
@@ -130,7 +128,6 @@ export default function TagSuggestions({
       }
     }
 
-    // Reset
     touchStartX.current = 0;
     touchEndX.current = 0;
   };

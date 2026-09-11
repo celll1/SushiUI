@@ -246,7 +246,7 @@ measured. They are deliberately not enabled by default in this static pass.
 
 | Candidate | Disposition | Gate before implementation |
 |---|---|---|
-| Cross-generation prompt-embedding cache | MiniMax-H3's plain text-only path already has a bounded eight-entry CPU LRU keyed by encoder, projection, prompt and conditioning width. Do not generalize it yet. | Each architecture needs keys for tokenizer/parser settings, maximum length, clip skip, adapter/textual-inversion state, quantization and model reload. Compare host RAM and repeated-prompt latency; cached tensors stay on CPU. |
+| Cross-generation prompt-embedding cache | Expanded with a shared eight-entry CPU LRU to Krea2 and MiniT2I; MiniMax-H3 retains its specialized cache. | Live encoder identity, model/adapter/quantization identity, tokenizer settings, all encoded prompt variants, sequence length, dtype and device are keyed. Hits skip both the encoder forward and its GPU stage. |
 | Keep VAE resident between image encode and final decode | Implemented through the existing opt-in `keep_models_hot` budget policy; no second switch was added. | SDXL img2img produced pixel-identical output. The measured request used 7.180 GB peak allocated versus 6.586 GB cold and reduced recorded generation time from 1.826 s to 0.682 s. |
 | Asynchronous preview decode | Rejected. The existing message contract couples progress, preview and CFG metrics for one step. GPU decode shares the generation stream; deferring only JPEG/base64 still cannot emit that message until conversion completes. | Overlap would require a second CUDA stream plus latent retention, or split/stale WebSocket messages. Both add memory and change observable ordering for negligible expected gain after demand-driven preview landed. |
 | Remove phase-boundary `empty_cache()` | Rejected generally; the VAE keep-hot path skips only the offload/flush pair it makes unnecessary. | Mutually exclusive multi-GB stages rely on cache release for fragmentation tolerance. There is no architecture-neutral equivalent removal. |
@@ -284,6 +284,9 @@ the equivalent-refactoring implementation scope:
    `bytes` copies.
 9. **Completed:** make keep-hot headroom incremental over the current resident
    set and honor its VAE decision through intermediate encode phases.
+10. **Completed to the safe boundary:** add bounded cross-generation prompt
+    conditioning reuse for Krea2 and MiniT2I. Retain MiniMax-H3's specialized
+    cache and reject approximate keys on the remaining architectures.
 
 ## CPU numerical verification follow-up
 
@@ -351,11 +354,24 @@ does not exceed noise or when it moves the cost to a less acceptable resource.
    synchronization. Demand-driven preview already removes work on unrequested
    steps, so the remaining overlap candidate is not an equivalent low-risk
    optimization.
-4. **Cross-generation prompt embeddings.** Reuse the bounded CPU-cache pattern
-   already shipped for MiniMax-H3, but give each architecture an explicit key
-   provider covering model/tokenizer/parser, length, clip-skip, adapter,
-   textual-inversion and quantization state. Architectures without a complete
-   invalidation identity are rejected rather than cached approximately.
+4. **Cross-generation prompt embeddings — completed to the safe boundary.** A
+   shared eight-entry CPU LRU now covers Krea2 and MiniT2I. Their encode helpers
+   own both staging and every positive/negative/NAG encode, so a hit can safely
+   skip the entire text-encoder phase. Entries are isolated by a weak reference
+   to the live encoder plus model/adapter/quantization identity, tokenizer
+   settings, cleaned prompt variants, length, dtype and device; returned trees
+   are independent copies.
+
+   SD1.5/SDXL are excluded because prompt editing, chunking, emphasis,
+   textual-inversion replacement, clip-skip and vision tokens make the current
+   encode result request-stateful. Anima, Flux2, Lens, Z-Image and Ideogram 4
+   stage the encoder outside one or more positive/NAG/NegPip encode calls, so a
+   local hit cannot yet skip the phase without changing that orchestration.
+   SenseNova may include image-reference conditioning, while LTX-2.3 and the
+   audio pipelines delegate or interleave conditioning with their own pipeline
+   state. Approximate caching on those paths is rejected; MiniMax-H3's existing
+   path-specific cache remains separate because it also owns projection and
+   token-count bookkeeping.
 
 The first available real-model probe uses the already loaded SenseNova model;
 other families are tested only when a local checkpoint is available. API

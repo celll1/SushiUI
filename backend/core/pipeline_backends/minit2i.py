@@ -175,10 +175,7 @@ class MiniT2IMixin:
     def _minit2i_encode(self, prompt, negative_prompt, prompt_length, device, dtype,
                         nag_negative_prompt=None, model_key: Optional[str] = None,
                         keep_te: bool = False):
-        """Encode prompt (+ optional negative, + optional NAG-negative) with FLAN-T5,
-        then free TE to CPU (default) or leave it resident (keep-models-hot).
-        NAG-negative uses the same encoder path as the negative prompt; returns
-        (nag_text, nag_mask) or (None, None) when not requested."""
+        """Return cached or freshly encoded positive, negative and NAG conditioning."""
         from core.models.minit2i.minit2i_pipeline_ops import encode_prompt
         from core.inference.negpip_minit2i import negpip_eligible, clean_prompt
         from core.keep_hot import is_resident, mark_resident, discard_resident
@@ -192,10 +189,28 @@ class MiniT2IMixin:
             enc_nag = clean_prompt(nag_negative_prompt) if (nag_negative_prompt and str(nag_negative_prompt).strip()) else nag_negative_prompt
         else:
             enc_prompt, enc_negative, enc_nag = prompt, negative_prompt, nag_negative_prompt
-        if model_key is None or not is_resident(self, "text_encoder", model_key):
-            self._minit2i_move("text_encoder", device)
         te = self.minit2i_components["text_encoder"]
         tok = self.minit2i_components["tokenizer"]
+        cache_key = (
+            "minit2i", model_key, enc_prompt, enc_negative, enc_nag,
+            int(prompt_length), str(dtype),
+        )
+        from core.inference.prompt_embedding_cache import (
+            generation_prompt_cache, tokenizer_cache_key,
+        )
+        cache_key = cache_key + (tokenizer_cache_key(tok), str(device))
+        cached, cache_hit = generation_prompt_cache.get(te, cache_key, device)
+        if cache_hit:
+            if not keep_te:
+                self._minit2i_move("text_encoder", "cpu")
+                if model_key is not None:
+                    discard_resident(self, "text_encoder")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            return cached
+
+        if model_key is None or not is_resident(self, "text_encoder", model_key):
+            self._minit2i_move("text_encoder", device)
         text, mask = encode_prompt(te, tok, enc_prompt, prompt_length, device)
         neg_text = neg_mask = None
         if enc_negative and enc_negative.strip():
@@ -205,6 +220,8 @@ class MiniT2IMixin:
         if enc_nag is not None and str(enc_nag).strip():
             nag_text, nag_mask = encode_prompt(te, tok, enc_nag, prompt_length, device)
             nag_text = nag_text.to(dtype)
+        result = (text.to(dtype), mask, neg_text, neg_mask, nag_text, nag_mask)
+        generation_prompt_cache.put(te, cache_key, result)
         if keep_te and model_key is not None:
             mark_resident(self, "text_encoder", model_key)
         else:
@@ -213,7 +230,7 @@ class MiniT2IMixin:
                 discard_resident(self, "text_encoder")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-        return text.to(dtype), mask, neg_text, neg_mask, nag_text, nag_mask
+        return result
 
     def _minit2i_style_triple(self, style_dict: Dict[str, Any], cfg: Dict[str, Any], device, dtype,
                               model_key: Optional[str] = None, ref_index: int = 0,

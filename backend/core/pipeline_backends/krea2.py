@@ -523,27 +523,45 @@ class Krea2Mixin:
     @torch.no_grad()
     def _krea2_encode(self, prompt, negative_prompt, cfg, device, dtype,
                        model_key: Optional[str] = None, keep_te: bool = False):
-        """Stage the TE to GPU (unless already kept resident), encode positive
-        (+ negative when CFG on), then either free TE to CPU (default) or leave
-        it resident (keep-models-hot: mark_resident, deferred final decision is
-        still corrected by the caller's outer cleanup on exception)."""
+        """Return positive/negative conditioning, encoding and staging on a miss."""
         from core.models.krea2.krea2_pipeline_ops import encode_prompt
         from core.keep_hot import is_resident, mark_resident, discard_resident
 
         select_layers = self.krea2_components["text_encoder_select_layers"]
         max_len = cfg["max_sequence_length"]
 
-        if model_key is None or not is_resident(self, "text_encoder", model_key):
-            self._krea2_move("text_encoder", device)
         te = self.krea2_components["text_encoder"]
         tok = self.krea2_components["tokenizer"]
+        neg_prompt = negative_prompt if (negative_prompt and negative_prompt.strip()) else ""
+        cache_key = (
+            "krea2", model_key, prompt, neg_prompt, cfg["guidance"] > 0.0,
+            tuple(select_layers), max_len, str(dtype),
+        )
+        from core.inference.prompt_embedding_cache import (
+            generation_prompt_cache, tokenizer_cache_key,
+        )
+        cache_key = cache_key + (tokenizer_cache_key(tok), str(device))
+        cached, cache_hit = generation_prompt_cache.get(te, cache_key, device)
+        if cache_hit:
+            if not keep_te:
+                self._krea2_move("text_encoder", "cpu")
+                if model_key is not None:
+                    discard_resident(self, "text_encoder")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            return cached
+
+        if model_key is None or not is_resident(self, "text_encoder", model_key):
+            self._krea2_move("text_encoder", device)
 
         prompt_embeds, prompt_mask = encode_prompt(te, tok, prompt, select_layers, max_len, device)
         neg_embeds = neg_mask = None
         if cfg["guidance"] > 0.0:
-            neg_prompt = negative_prompt if (negative_prompt and negative_prompt.strip()) else ""
             neg_embeds, neg_mask = encode_prompt(te, tok, neg_prompt, select_layers, max_len, device)
             neg_embeds = neg_embeds.to(dtype)
+
+        result = (prompt_embeds.to(dtype), prompt_mask, neg_embeds, neg_mask)
+        generation_prompt_cache.put(te, cache_key, result)
 
         if keep_te and model_key is not None:
             mark_resident(self, "text_encoder", model_key)
@@ -554,7 +572,7 @@ class Krea2Mixin:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-        return prompt_embeds.to(dtype), prompt_mask, neg_embeds, neg_mask
+        return result
 
     def _krea2_cleanup(self, model_key: Optional[str] = None,
                        keep_te: bool = False, keep_transformer: bool = False,

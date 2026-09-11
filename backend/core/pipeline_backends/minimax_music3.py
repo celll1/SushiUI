@@ -435,6 +435,29 @@ class MiniMaxMusic3Mixin:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+    def _minimax_music3_maybe_install_block_offload(
+        self, params, model, modules, device, stage
+    ):
+        requested = int(params.get("blocks_to_swap", 0) or 0)
+        if requested <= 0:
+            return None
+        if modules is None or len(modules) < 2:
+            raise ValueError(f"MiniMax Music 3 {stage} block list is unavailable")
+        from core.memory_management import FrozenModuleOffloadConductor
+
+        conductor = FrozenModuleOffloadConductor(
+            root=model,
+            modules=modules,
+            blocks_to_swap=requested,
+            device=device,
+            use_pinned_memory=bool(params.get("use_pinned_memory", False)),
+            ring_size=int(params.get("block_swap_ring_size", 2) or 2),
+        )
+        conductor.register_hooks()
+        print(f"[MiniMaxMusic3] Common {stage} block offload enabled "
+              f"({conductor.blocks_to_swap}/{len(modules)} blocks)")
+        return conductor
+
     # ------------------------------------------------------------------
     # txt2aud
     # ------------------------------------------------------------------
@@ -604,6 +627,8 @@ class MiniMaxMusic3Mixin:
         # default allow_partial_failure=False (must raise on a partial move,
         # not continue with a split-device component).
         self._minimax_music3_move(("language_model", "rvq_depth_decoder"), device)
+        ar_offloader = self._minimax_music3_maybe_install_block_offload(
+            params, language_model, language_model.model.layers, device, "AR")
         # The pipeline's own co-residency guard (generate_ar) only inspects
         # modules carrying an accelerate `_hf_hook`; under this backend's
         # manual staging there are none, so that guard can never fire here.
@@ -626,6 +651,8 @@ class MiniMaxMusic3Mixin:
                 progress_callback=_combined_progress,
             )
         finally:
+            if ar_offloader is not None:
+                ar_offloader.cleanup()
             self._minimax_music3_move(("language_model", "rvq_depth_decoder"), "cpu", allow_partial_failure=True)
             self._minimax_music3_empty_cache()
 
@@ -641,6 +668,8 @@ class MiniMaxMusic3Mixin:
 
         # ---- Stage 2: flow-matching (transformer + condition encoder) ----
         self._minimax_music3_move(("transformer", "condition_encoder"), device)
+        flow_offloader = self._minimax_music3_maybe_install_block_offload(
+            params, transformer, transformer.transformer_blocks, device, "flow")
         try:
             latent_chunks = pipeline.denoise_chunks(
                 ar_result.frame_hiddens,
@@ -650,6 +679,8 @@ class MiniMaxMusic3Mixin:
                 progress_callback=_combined_progress,
             )
         finally:
+            if flow_offloader is not None:
+                flow_offloader.cleanup()
             self._minimax_music3_move(("transformer", "condition_encoder"), "cpu", allow_partial_failure=True)
             self._minimax_music3_empty_cache()
 
@@ -1159,6 +1190,8 @@ class MiniMaxMusic3Mixin:
 
         # ---- Stage 1: autoregressive resume (LM + depth decoder co-resident) ----
         self._minimax_music3_move(("language_model", "rvq_depth_decoder"), device)
+        ar_offloader = self._minimax_music3_maybe_install_block_offload(
+            params, language_model, language_model.model.layers, device, "AR")
         lm_device = next(language_model.parameters()).device
         depth_device = next(rvq_depth_decoder.parameters()).device
         if lm_device != depth_device:
@@ -1186,6 +1219,8 @@ class MiniMaxMusic3Mixin:
                 resume_prefix_codes=sidecar.prefix_codes,
             )
         finally:
+            if ar_offloader is not None:
+                ar_offloader.cleanup()
             self._minimax_music3_move(("language_model", "rvq_depth_decoder"), "cpu", allow_partial_failure=True)
             self._minimax_music3_empty_cache()
 
@@ -1195,6 +1230,8 @@ class MiniMaxMusic3Mixin:
         # ---- Stage 2: flow-matching -- restricted to the NEW frame region only; see this method's docstring
         # "Flow-stage scope" for why the preceding song's own frame-hiddens are not re-derived here. ----
         self._minimax_music3_move(("transformer", "condition_encoder"), device)
+        flow_offloader = self._minimax_music3_maybe_install_block_offload(
+            params, transformer, transformer.transformer_blocks, device, "flow")
         try:
             latent_chunks = pipeline.denoise_chunks(
                 ar_result.frame_hiddens,
@@ -1204,6 +1241,8 @@ class MiniMaxMusic3Mixin:
                 progress_callback=_combined_progress,
             )
         finally:
+            if flow_offloader is not None:
+                flow_offloader.cleanup()
             self._minimax_music3_move(("transformer", "condition_encoder"), "cpu", allow_partial_failure=True)
             self._minimax_music3_empty_cache()
 
@@ -1677,6 +1716,8 @@ class MiniMaxMusic3Mixin:
         vocoder = comps["vocoder"]
 
         self._minimax_music3_move(("language_model", "rvq_depth_decoder"), device)
+        ar_offloader = self._minimax_music3_maybe_install_block_offload(
+            params, language_model, language_model.model.layers, device, "AR")
         lm_device = next(language_model.parameters()).device
         depth_device = next(rvq_depth_decoder.parameters()).device
         if lm_device != depth_device:
@@ -1702,12 +1743,16 @@ class MiniMaxMusic3Mixin:
                 resume_prefix_codes=sidecar.prefix_codes,
             )
         finally:
+            if ar_offloader is not None:
+                ar_offloader.cleanup()
             self._minimax_music3_move(("language_model", "rvq_depth_decoder"), "cpu", allow_partial_failure=True)
             self._minimax_music3_empty_cache()
 
         ar_result.frame_hiddens = ar_result.frame_hiddens.detach().to("cpu")
 
         self._minimax_music3_move(("transformer", "condition_encoder"), device)
+        flow_offloader = self._minimax_music3_maybe_install_block_offload(
+            params, transformer, transformer.transformer_blocks, device, "flow")
         try:
             latent_chunks = pipeline.denoise_chunks(
                 ar_result.frame_hiddens,
@@ -1717,6 +1762,8 @@ class MiniMaxMusic3Mixin:
                 progress_callback=_combined_progress,
             )
         finally:
+            if flow_offloader is not None:
+                flow_offloader.cleanup()
             self._minimax_music3_move(("transformer", "condition_encoder"), "cpu", allow_partial_failure=True)
             self._minimax_music3_empty_cache()
 
@@ -1964,6 +2011,8 @@ class MiniMaxMusic3Mixin:
         rvq_depth_decoder = comps["rvq_depth_decoder"]
 
         self._minimax_music3_move(("language_model", "rvq_depth_decoder"), device)
+        ar_offloader = self._minimax_music3_maybe_install_block_offload(
+            params, language_model, language_model.model.layers, device, "AR")
         lm_device = next(language_model.parameters()).device
         depth_device = next(rvq_depth_decoder.parameters()).device
         if lm_device != depth_device:
@@ -1989,12 +2038,16 @@ class MiniMaxMusic3Mixin:
                 progress_callback=_combined_progress,
             )
         finally:
+            if ar_offloader is not None:
+                ar_offloader.cleanup()
             self._minimax_music3_move(("language_model", "rvq_depth_decoder"), "cpu", allow_partial_failure=True)
             self._minimax_music3_empty_cache()
 
         recovered_frame_hiddens = recovered_frame_hiddens.detach().to("cpu")
 
         self._minimax_music3_move(("transformer", "condition_encoder"), device)
+        flow_offloader = self._minimax_music3_maybe_install_block_offload(
+            params, transformer, transformer.transformer_blocks, device, "flow")
         try:
             latent_chunks = pipeline.denoise_chunks(
                 recovered_frame_hiddens,
@@ -2004,6 +2057,8 @@ class MiniMaxMusic3Mixin:
                 progress_callback=_combined_progress,
             )
         finally:
+            if flow_offloader is not None:
+                flow_offloader.cleanup()
             self._minimax_music3_move(("transformer", "condition_encoder"), "cpu", allow_partial_failure=True)
             self._minimax_music3_empty_cache()
 

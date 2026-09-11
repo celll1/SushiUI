@@ -416,6 +416,10 @@ class Txt2AudRequest(BaseModel):
     # QUANTIZED_LINEAR_ARCHS). None leaves the process flags untouched. Not
     # applied for MiniMax Music 3 (it holds plain floating-point Linears).
     quantized_gemm_mode: Optional[str] = TXT2AUD_DEFAULTS["quantized_gemm_mode"]
+    blocks_to_swap: int = Field(TXT2AUD_DEFAULTS["blocks_to_swap"], ge=0)
+    use_pinned_memory: bool = TXT2AUD_DEFAULTS["use_pinned_memory"]
+    block_swap_ring_size: int = Field(
+        TXT2AUD_DEFAULTS["block_swap_ring_size"], ge=1)
     # MiniMax Music 3 ONLY. `None` (the base default here) has no defensible
     # ACE-Step-shaped value -- ACE-Step has no per-CHUNK step concept at all
     # -- so an omitted field is resolved from `audio_defaults_for_arch`'s
@@ -3792,6 +3796,9 @@ async def generate_aud2aud(
     # Weight-only quantization; see the Txt2AudRequest fields for both axes.
     unet_quantization: Optional[str] = Form(AUD2AUD_DEFAULTS["unet_quantization"]),
     quantized_gemm_mode: Optional[str] = Form(AUD2AUD_DEFAULTS["quantized_gemm_mode"]),
+    blocks_to_swap: int = Form(AUD2AUD_DEFAULTS["blocks_to_swap"], ge=0),
+    use_pinned_memory: bool = Form(AUD2AUD_DEFAULTS["use_pinned_memory"]),
+    block_swap_ring_size: int = Form(AUD2AUD_DEFAULTS["block_swap_ring_size"], ge=1),
     # MiniMax Music 3 repaint only (design doc phase plan item 8). `Form(None)`
     # sentinels, resolved below via `aud2aud_defaults_for_arch` -- mirrors
     # `/generate/outpaint/audio`'s identical resolution of its own per-arch
@@ -3909,6 +3916,9 @@ async def generate_aud2aud(
         # Normalized here (not after start_generation) so an invalid value is a
         # 400 rather than a 500 from inside the run.
         "quantized_gemm_mode": _normalize_media_qgm(quantized_gemm_mode),
+        "blocks_to_swap": blocks_to_swap,
+        "use_pinned_memory": use_pinned_memory,
+        "block_swap_ring_size": block_swap_ring_size,
     }
 
     # Read the uploaded reference audio clip.
@@ -4171,6 +4181,9 @@ async def generate_outpaint_audio(
     # Weight-only quantization; see the Txt2AudRequest fields for both axes.
     unet_quantization: Optional[str] = Form(OUTPAINT_AUDIO_DEFAULTS["unet_quantization"]),
     quantized_gemm_mode: Optional[str] = Form(OUTPAINT_AUDIO_DEFAULTS["quantized_gemm_mode"]),
+    blocks_to_swap: int = Form(OUTPAINT_AUDIO_DEFAULTS["blocks_to_swap"], ge=0),
+    use_pinned_memory: bool = Form(OUTPAINT_AUDIO_DEFAULTS["use_pinned_memory"]),
+    block_swap_ring_size: int = Form(OUTPAINT_AUDIO_DEFAULTS["block_swap_ring_size"], ge=1),
     reference_audio: UploadFile = File(...),
     db: Session = Depends(get_gallery_db)
 ):
@@ -4395,6 +4408,9 @@ async def generate_outpaint_audio(
         # Normalized here (not after start_generation) so an invalid value is a
         # 400 rather than a 500 from inside the run.
         "quantized_gemm_mode": _normalize_media_qgm(quantized_gemm_mode),
+        "blocks_to_swap": blocks_to_swap,
+        "use_pinned_memory": use_pinned_memory,
+        "block_swap_ring_size": block_swap_ring_size,
     }
 
     _gen_id = start_generation("outpaint_aud")

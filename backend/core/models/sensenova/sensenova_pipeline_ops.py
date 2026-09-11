@@ -30,6 +30,7 @@ from PIL import Image, ImageFilter
 
 from core.inference.cancellation import raise_if_cancelled
 from core.inference.generation_timing import time_phase
+from core.inference.schedule_utils import snapshot_schedule_scalars
 
 from .latent_space import decode as latent_decode
 from .latent_space import encode as latent_encode
@@ -1041,6 +1042,7 @@ def _euler_run(
 
     n = len(ts) - 1
     total = n - start_idx
+    timestep_scalars = snapshot_schedule_scalars(ts)
     patch = gen_geometry(transformer).patch
     gen_w, gen_h = prefix.gen_size
     style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
@@ -1049,6 +1051,7 @@ def _euler_run(
             raise_if_cancelled()
             t = ts[i]
             t_next = ts[i + 1]
+            t_scalar = timestep_scalars[i]
 
             # Embeds built ONCE per step, reused across every CFG branch --
             # see _build_step_context's docstring (this was H1: the earlier
@@ -1062,7 +1065,7 @@ def _euler_run(
                 inject too), outside it otherwise."""
                 has_img_cond = prefix.img_cond_past_key_values is not None
                 has_uncond = prefix.uncond_past_key_values is not None
-                in_interval = cfg_interval[0] <= float(t) <= cfg_interval[1]
+                in_interval = cfg_interval[0] <= t_scalar <= cfg_interval[1]
                 if prefix.has_reference_images:
                     # encode_prompt already applied upstream's own needs_cfg gates
                     # when it chose the branch set, so re-testing the scales here

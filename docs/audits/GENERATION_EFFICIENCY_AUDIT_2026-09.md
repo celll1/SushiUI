@@ -64,6 +64,28 @@ needed to make cached blocks reusable. Only demonstrably duplicate terminal
 flushes are direct cleanup candidates; phase-boundary calls require a GPU
 fragmentation benchmark.
 
+## Implementation status
+
+The statically equivalent units are implemented. Generation now enters a
+common no-grad boundary; routine diagnostics and optional callback products are
+demand-driven; safe SD preview clones and duplicate terminal cache flushes are
+removed; routine VRAM logging avoids module scans; failed quantization returns
+the original object; and denoise schedules are copied to CPU scalars once per
+loop. Schedule snapshots cover SD1.5/SDXL, Z-Image, Flux2, Anima, Lens, Krea2,
+Ideogram 4, MiniT2I and SenseNova.
+
+The callback helper is also the tested pure-orchestration extraction used by
+Anima. It preserves both progress reporting and Diffusers-format step callbacks
+instead of dropping one or calling it with the sampler's incompatible
+signature. Numerical denoise, mask and visit-schedule loops remain separate.
+
+Runtime-FP8 failure paths no longer clone an unchanged full-precision model.
+A successful cross-generation FP8 cache is deliberately not added yet: it
+would retain both the original and quantized CPU models, needs a bounded
+eviction policy, and must be reconciled with keep-hot object identity. This is
+the remaining measurement-gated item, not a statically equivalent memory
+cleanup.
+
 ## Findings suitable for equivalent implementation
 
 | Priority | Finding | Cost removed | Required proof |
@@ -177,15 +199,15 @@ resident-object bookkeeping need dedicated tests before implementation.
 
 | Architecture | Static result |
 |---|---|
-| SD1.5 / SDXL | Highest autograd risk; unconditional reductions; discarded metrics; per-step preview clone; three large duplicated sampling loops |
-| Z-Image | Local inference guards exist; unconditional LoRA norm, FP32 preview work, scalar synchronization and runtime-FP8 identity/caching remain |
-| Flux2 | Local guards exist; FP32 preview work and runtime-FP8 identity/caching remain; three mode backends duplicate staging/setup |
-| Anima | Local guards exist; preview work and scalar reads remain; three mode paths duplicate orchestration |
-| Lens | Local guards exist; preview work, scalar reads and a duplicate terminal cache flush remain |
-| Krea2 | Local guards exist; preview work, scalar reads and a duplicate terminal cache flush remain |
-| Ideogram 4 | Local guards exist; preview work, repeated scalar reads and a duplicate terminal cache flush remain |
-| MiniT2I | Predicted-clean value is sampler state, not removable; scalar reads can be consolidated |
-| SenseNova U1.5 | Preview construction is already callback-conditional; a CFG-path scalar synchronization remains |
+| SD1.5 / SDXL | Common no-grad, demand-driven previews/metrics, non-copying preview views and schedule snapshots implemented; numerical loops remain separate |
+| Z-Image | Diagnostics, preview work and scalar synchronization reduced; successful runtime-FP8 caching remains measurement-gated |
+| Flux2 | Preview work and scalar synchronization reduced; successful runtime-FP8 caching remains measurement-gated |
+| Anima | Preview/metric demand, scalar snapshots and dual-callback composition implemented |
+| Lens | Preview/metric demand, scalar snapshots and duplicate terminal-flush removal implemented |
+| Krea2 | Preview/metric demand, scalar snapshots and duplicate terminal-flush removal implemented |
+| Ideogram 4 | Preview/metric demand, scalar snapshots and duplicate terminal-flush removal implemented |
+| MiniT2I | Predicted-clean sampler state retained; schedule synchronization consolidated |
+| SenseNova U1.5 | Existing callback-conditional preview retained; schedule synchronization consolidated |
 | LTX-2.3 | Diffusers pipeline owns most denoising; common no-grad boundary is defensive; phase staging requires GPU measurement |
 | MiniMax-H3 | Predicted-clean video latent is already callback-conditional; common boundary is defensive; large component staging requires GPU measurement |
 | ACE-Step 1.5 | Common boundary is defensive; staged LM/DiT/VAE cleanup should be benchmarked rather than statically collapsed |
@@ -193,13 +215,10 @@ resident-object bookkeeping need dedicated tests before implementation.
 
 ## Adjacent correctness finding
 
-Anima passes `progress_callback or step_callback` into all three samplers. The
-progress callback is normally present, so a separately supplied step callback
-is dropped. The generic LoRA step callback also follows the Diffusers callback
-signature, while Anima's sampler callback uses the internal five-argument
-preview signature. This is not an efficiency refactor and must not be folded
-into one casually: Anima needs an explicit callback adapter/composition rule
-with step-range LoRA tests.
+Anima previously passed `progress_callback or step_callback` into all three
+samplers. The explicit callback adapter now invokes both contracts and forwards
+preview/metric demand predicates from the progress callback. Its calling
+convention and step-only behavior have focused regression coverage.
 
 ## Measurement-dependent or non-equivalent ideas
 
@@ -226,23 +245,21 @@ The following are not approved as equivalent static cleanup:
   `frames.tobytes()` for each output. This can reduce host RAM copies, not VRAM,
   and requires subprocess/codec failure tests.
 
-## Proposed implementation commits
+## Implementation sequence
 
-1. **Disable autograd for API generation.** Add the executor regression test
-   and compare representative seeded outputs.
-2. **Remove hot-path diagnostics.** Gate sampler reductions, adapter norms and
-   detailed device scans behind developer logging.
-3. **Make preview work demand-driven.** Add callback demand predicates, skip
-   discarded predicted-clean/metric computation, then remove proven-safe SD
-   preview clones.
-4. **Collapse schedule synchronizations.** Snapshot exact scalar schedules and
-   hoist invariants one architecture family at a time.
-5. **Deduplicate terminal cleanup.** Remove only adjacent allocator flushes;
-   retain phase boundaries pending measurements.
-6. **Repair runtime quantization ownership.** Introduce explicit success and
-   cache identity semantics with host-RAM and keep-hot tests.
-7. **Consolidate orchestration.** Extract tested staging/style/callback helpers
-   only after behavior is covered; retain distinct numerical loops.
+1. **Completed:** disable autograd for API generation.
+2. **Completed:** remove hot-path diagnostics and detailed routine scans.
+3. **Completed:** make preview and CFG metric work demand-driven and remove
+   proven-safe SD preview copies.
+4. **Completed:** snapshot denoise schedule scalars by architecture family.
+5. **Completed:** remove only the three proven duplicate terminal allocator
+   flushes; retain phase boundaries pending measurement.
+6. **Partially completed:** failure/unsupported quantization preserves original
+   identity without cloning. Successful persistent caching remains gated on
+   host-RAM, eviction and keep-hot tests.
+7. **Completed to the static-safe boundary:** extract callback demand,
+   schedule-snapshot and callback-composition helpers; retain distinct
+   numerical loops.
 
 ## GPU verification backlog
 
@@ -254,3 +271,8 @@ three hot generations to reveal fragmentation. Video/audio families need one
 short and one realistic-duration case; component staging and host RAM must be
 recorded in addition to VRAM. Phase-boundary allocator changes and persistent
 quantization caches are not complete until these measurements pass.
+
+For runtime FP8 specifically, measure peak and steady-state host RAM with the
+original plus one cached quantized text encoder/transformer, define a one-entry
+or byte-budget eviction rule per component, and test mode switches together
+with keep-hot invalidation before persisting successful copies.

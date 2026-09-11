@@ -49,8 +49,7 @@ machine-local working material.
 | `docs/guides/SENSENOVA_TRAINING_DESIGN.md` | SenseNova training contract and implemented/pending boundary. |
 | `docs/decisions/TRAINING_RUN_STORAGE_V2.md` | Accepted staged migration from central detailed training history to a lightweight catalogue plus per-run databases. |
 | `docs/guides/INT8_CONVROT_TRAINING_DESIGN.md` | INT8 ConvRot investigation and measurement status. |
-| `docs/guides/CONVERGENCE_ACCELERATION_DESIGN.md` | Convergence-acceleration candidates and the gates each one has to pass. |
-| `docs/guides/CONVERGENCE_ACCELERATION_PLAN.md` | Phase plan for that design: implemented phases, gate results, and the measurements behind each decision. |
+| `docs/guides/TRAINING_DIAGNOSTICS_AND_AUXILIARY_LOSSES.md` | Shipped convergence diagnostics, crop-decode loss, and REPA target-source boundary. |
 | `docs/guides/CONVERGENCE_PHASE1_SENSENOVA.md` | Phase 1 diagnostic measurements on SenseNova. |
 | `docs/guides/LYCORIS_ADAPTER_DESIGN.md` | **The adapter subsystem's durable note.** LyCORIS 4.0.0 assessment, the shared LoRA/LoHa/LoKr/DoRA engine at `backend/core/adapters/` (spec, target topology, tensor grouping, codec registry, `AdapterSession`, execution-backend registry), the two capability axes, and the shipped boundary. Read it before touching anything adapter-, LoRA-variant- or `adapter_type`-related; per-architecture family enablement is summarised in `docs/guides/MODEL_FACTS.md`. |
 | `docs/guides/VAE_TRAINING.md` | VAE decoder training contract. |

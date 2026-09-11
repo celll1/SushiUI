@@ -234,7 +234,6 @@ def preview_arch_kwargs(
         "latent_scaling_factor": latent_scaling_of(getattr(pipeline, "vae", None)),
         "is_sdxl": pipeline is not None and "XL" in pipeline.__class__.__name__,
         "is_zimage": is_zimage,
-        "is_deus": model_type == "deus",
         # Z-Image with SDXL VAE (4ch) needs TAESD-XL instead of TAEF1.
         "is_zimage_sdxl_vae": is_zimage and info.get("vae_type") == "sdxl",
         "is_flux2": model_type == "flux2",
@@ -264,7 +263,6 @@ def create_progress_callback_factory(
     websocket_manager,
     is_sdxl: bool,
     is_zimage: bool = False,
-    is_deus: bool = False,
     is_zimage_sdxl_vae: bool = False,
     is_flux2: bool = False,
     is_anima: bool = False,
@@ -294,7 +292,6 @@ def create_progress_callback_factory(
         websocket_manager: WebSocketマネージャー
         is_sdxl: SDXLモデルかどうか
         is_zimage: Z-Imageモデルかどうか
-        is_deus: DEUSモデルかどうか
         is_zimage_sdxl_vae: Z-ImageでSDXL VAE（4ch）を使用しているかどうか
         is_flux2: FLUX.2モデルかどうか（32chLatent、TAESDプレビュー不可）
         vae_preview_kind: VAEを差し替えたチェックポイントのプレビューデコーダ種別
@@ -352,7 +349,7 @@ def create_progress_callback_factory(
             try:
                 # Debug: Log model type being used for preview
                 if step == -1 or step == 0:
-                    print(f"[ProgressCallback] Using TAESD preview: is_sdxl={is_sdxl}, is_zimage={is_zimage}, is_deus={is_deus}, is_zimage_sdxl_vae={is_zimage_sdxl_vae}, is_flux2={is_flux2}, is_anima={is_anima}, is_lens={is_lens}, vae_preview_kind={vae_preview_kind}, image_size={image_width}x{image_height}, preview_predicted_x0={preview_predicted_x0}, preview_interval={preview_interval}")
+                    print(f"[ProgressCallback] Using TAESD preview: is_sdxl={is_sdxl}, is_zimage={is_zimage}, is_zimage_sdxl_vae={is_zimage_sdxl_vae}, is_flux2={is_flux2}, is_anima={is_anima}, is_lens={is_lens}, vae_preview_kind={vae_preview_kind}, image_size={image_width}x{image_height}, preview_predicted_x0={preview_predicted_x0}, preview_interval={preview_interval}")
 
                 # Choose which latent to decode based on preview_predicted_x0 option
                 # If preview_predicted_x0 is True and pred_original_sample is available, use it
@@ -366,7 +363,6 @@ def create_progress_callback_factory(
                     latent_to_decode,
                     is_sdxl=is_sdxl,
                     is_zimage=is_zimage,
-                    is_deus=is_deus,
                     is_zimage_sdxl_vae=is_zimage_sdxl_vae,
                     is_flux2=is_flux2,
                     is_anima=is_anima,

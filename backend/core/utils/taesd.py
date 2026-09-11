@@ -82,13 +82,12 @@ class TAESDManager:
         if moved:
             torch.cuda.empty_cache()
 
-    def load_taesd(self, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, is_anima: bool = False, is_lens: bool = False):
+    def load_taesd(self, is_sdxl: bool = False, is_zimage: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, is_anima: bool = False, is_lens: bool = False):
         """Load appropriate TAESD model
 
         Args:
             is_sdxl: True for SDXL models
             is_zimage: True for Z-Image models (uses TAEF1 for 16ch FLUX VAE)
-            is_deus: True for DEUS models (uses TAESD-XL, same as SDXL)
             is_zimage_sdxl_vae: True for Z-Image models using SDXL VAE (4ch, uses TAESD-XL)
             is_flux2: True for FLUX.2 models (32ch latent, no TAESD available yet)
             is_anima: True for Anima models (16ch Qwen-Image VAE; no compatible TAE,
@@ -105,10 +104,6 @@ class TAESDManager:
         if is_flux2:
             print("[TAESD] FLUX.2 models use 32-channel latents - no compatible preview decoder available")
             return None
-        # DEUS uses SDXL VAE (same scaling factor 0.13025), so use TAESD-XL
-        if is_deus:
-            is_sdxl = True
-
         # Z-Image with SDXL VAE (4ch) uses TAESD-XL instead of TAEF1
         if is_zimage_sdxl_vae:
             is_zimage = False
@@ -239,14 +234,13 @@ class TAESDManager:
             self._log_decode_error("TAEF2", e)
             return None
 
-    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, is_anima: bool = False, is_lens: bool = False, is_ideogram4: bool = False, is_minit2i: bool = False, minit2i_vae_type: str = "none", is_krea2: bool = False, image_width: Optional[int] = None, image_height: Optional[int] = None, preview_decoder: str = "matrix", vae_preview_kind: Optional[str] = None, latent_scaling_factor: Optional[float] = None) -> Optional[Image.Image]:
+    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, is_anima: bool = False, is_lens: bool = False, is_ideogram4: bool = False, is_minit2i: bool = False, minit2i_vae_type: str = "none", is_krea2: bool = False, image_width: Optional[int] = None, image_height: Optional[int] = None, preview_decoder: str = "matrix", vae_preview_kind: Optional[str] = None, latent_scaling_factor: Optional[float] = None) -> Optional[Image.Image]:
         """Decode latent to preview image
 
         Args:
             latent: Latent tensor to decode
             is_sdxl: True for SDXL models
             is_zimage: True for Z-Image models (16ch FLUX VAE)
-            is_deus: True for DEUS models (uses TAESD-XL, same as SDXL)
             is_zimage_sdxl_vae: True for Z-Image models using SDXL VAE (4ch)
             is_flux2: True for FLUX.2 models (32ch latent, uses first 3 channels as RGB)
             is_anima: True for Anima models (16ch Qwen-Image latent, uses first 3 channels as RGB)
@@ -268,7 +262,7 @@ class TAESDManager:
         if vae_preview_kind is not None:
             if vae_preview_kind not in _VAE_PREVIEW_KINDS:
                 return None
-            is_deus = is_zimage_sdxl_vae = is_lens = is_ideogram4 = False
+            is_zimage_sdxl_vae = is_lens = is_ideogram4 = False
             is_minit2i = is_krea2 = False
             minit2i_vae_type = "none"
             is_sdxl = vae_preview_kind == "taesdxl"
@@ -329,10 +323,6 @@ class TAESDManager:
         if is_flux2:
             return self._decode_flux2_latent_preview(latent, image_width, image_height)
 
-        # DEUS uses SDXL VAE (same scaling factor 0.13025), so use TAESD-XL
-        if is_deus:
-            is_sdxl = True
-
         # Z-Image with SDXL VAE (4ch) uses TAESD-XL and SDXL scaling factor
         if is_zimage_sdxl_vae:
             is_zimage = False
@@ -341,7 +331,7 @@ class TAESDManager:
         try:
             # Load TAESD model (may be cached, so this should be fast if already loaded)
             load_start_time = time.time()
-            decoder = self.load_taesd(is_sdxl, is_zimage, is_deus, is_zimage_sdxl_vae, is_flux2)
+            decoder = self.load_taesd(is_sdxl, is_zimage, is_zimage_sdxl_vae, is_flux2)
             load_time = (time.time() - load_start_time) * 1000
 
             if decoder is None:

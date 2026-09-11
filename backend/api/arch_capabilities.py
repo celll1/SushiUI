@@ -812,7 +812,6 @@ for _a in ["zimage", "flux2", "ideogram4", "minit2i", "krea2", "ltx2", "acestep"
 
 # attention_impl (generation side): only the FLUX.2 inference path consumes it;
 # every other arch is conduit-only or ignores the selector.
-# "deus" is intentionally omitted: model_loader never assigns arch type "deus".
 for _a in ["sd15", "sdxl", "zimage", "ideogram4", "lens", "minit2i", "anima", "krea2", "ltx2", "acestep",
            "minimax_music3"]:
     _add(_a, "attention_impl",

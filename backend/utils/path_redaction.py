@@ -204,7 +204,7 @@ _SEG = r"[^\\/\s,;()\[\]\"'\r\n]"
 #: * POSIX absolute (``/home/bob/vae``) — REQUIRES at least two
 #:   slash-separated, whitespace-free segments AND a root out of ``_POSIX_ROOTS``.
 #:   Shape alone matched ordinary prose: measured on this repo's own warning
-#:   strings, ``NAG / NegPip / DEUS / style transfer / Spectrum / FBCache``
+#:   strings, ``NAG / NegPip / style transfer / Spectrum / FBCache``
 #:   lost four feature names and ``row(s)/column(s)`` lost its slash, i.e. the
 #:   redactor rewrote a degradation notice into a false statement. Prose slashes
 #:   are surrounded by spaces or followed by one segment only; a path is not.

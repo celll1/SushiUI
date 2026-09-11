@@ -1740,7 +1740,7 @@ export const fetchTimestepDefaultsByArch = async (): Promise<Record<string, Reco
   (await api.get("/schema/timestep-defaults-by-arch")).data;
 
 // Per-architecture default bundle_vae (full-parameter save VAE embedding);
-// e.g. { _default: false, sd15: true, sdxl: true, deus: true }.
+// e.g. { _default: false, sd15: true, sdxl: true }.
 export const fetchBundleVaeDefaultsByArch = async (): Promise<Record<string, boolean>> =>
   (await api.get("/schema/bundle-vae-defaults-by-arch")).data;
 

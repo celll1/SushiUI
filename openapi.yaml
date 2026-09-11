@@ -171,7 +171,7 @@ paths:
       summary: Per-architecture default bundle_vae values
       description: |
         Returns a map of model architecture -> default `bundle_vae` boolean for
-        full-parameter training saves. sd15/sdxl/deus default `true` (their
+        full-parameter training saves. sd15/sdxl default `true` (their
         comfy-layout checkpoints are consumed by A1111/ComfyUI, which require the
         `first_stage_model.*` VAE section); other architectures default `false`.
         The `_default` key is the global fallback. The frontend applies the selected
@@ -190,7 +190,6 @@ paths:
                 _default: false
                 sd15: true
                 sdxl: true
-                deus: true
   /schema/arch-capabilities:
     get:
       summary: Per-architecture table of generation features that have no effect
@@ -12624,7 +12623,7 @@ components:
             forecasting the output from a Chebyshev polynomial fit (ridge regression)
             over actual passes. Most effective at high step counts (>=30); little
             benefit on low-step/distilled models. Auto-disabled with prompt-editing,
-            ControlNet, or DEUS (per-step conditioning changes).
+            or ControlNet (per-step conditioning changes).
           example: false
         spectrum_w:
           type: number
@@ -22974,7 +22973,7 @@ components:
           description: |
             Full-parameter training only: also embed the VAE weights into the saved
             single-file checkpoint. `null` (default) resolves to the per-architecture
-            default: `true` for sd15/sdxl/deus (their comfy-layout checkpoints are
+            default: `true` for sd15/sdxl (their comfy-layout checkpoints are
             consumed by A1111/ComfyUI, which require the `first_stage_model.*` VAE
             section), `false` for all other architectures (their loaders fall back to
             the default VAE resolution when the section is absent). An explicit

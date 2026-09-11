@@ -839,8 +839,6 @@ def train_step(
     if profile_vram:
         print_vram_usage("[train_step] After UNet forward")
 
-    # DEUS debug check removed (architecture no longer maintained)
-
     prediction_target = getattr(trainer, 'prediction_target', 'epsilon')  # Default: epsilon for backward compatibility
     target = get_target_unified(
         noise_process=noise_process,

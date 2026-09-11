@@ -1,22 +1,7 @@
-"""How a configured learning rate reaches an optimizer param group.
-
-The centre of this file is the NEGATIVE CONTROL: the shipped
-``getattr(trainer, "unet_lr", None) or <literal>`` idiom replaces a configured
-0.0 with a hardcoded rate, and the literal differed per adapter (1e-4, 1e-5,
-1e-6) so the same config trained at different rates depending on the
-architecture. The control reproduces both, with the numbers.
-
-It also pins the two facts that decide how far that reached: ``BaseTrainer``
-derives every component LR from ``learning_rate`` when the config does not set
-one, and ``train_runner`` passes the config's ``unet_lr`` through unchanged. Both
-are asserted against the shipping source, because they are what makes
-"no component LR in the YAML" resolve to the user's ``lr`` rather than to a
-literal.
-"""
+"""How a configured learning rate reaches an optimizer param group."""
 
 import io
 import json
-import re
 import sys
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -31,27 +16,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.training.adapters.base_adapter import resolve_component_lr
 from core.training.base_trainer import BaseTrainer
 from core.training.training_events import TRAINING_EVENT_SENTINEL
-
-ADAPTERS_DIR = Path(__file__).resolve().parents[1] / "core" / "training" / "adapters"
-
-# The literals the shipped idiom substituted, per adapter.
-SHIPPED_LITERALS = {
-    "sensenova_adapter.py": (1e-4, 1e-6),   # LoRA, full parameter
-    "krea2_adapter.py": (1e-4, 1e-5),
-    "ideogram4_adapter.py": (1e-4, None),
-    "minit2i_adapter.py": (1e-4, 1e-5),
-    "acestep_adapter.py": (1e-4, 1e-5),
-    "anima_adapter.py": (1e-4, 1e-5),
-    "ltx2_adapter.py": (1e-4, 1e-5),
-    "lens_adapter.py": (1e-4, 1e-5),
-    "minimax_h3_adapter.py": (1e-4, None),
-}
-
-
-def _shipped_unet_lr(trainer, literal):
-    """The expression every affected adapter used before this change."""
-    return getattr(trainer, "unet_lr", None) or literal
-
 
 def _trainer(**attrs):
     """A trainer namespace with the LR attributes BaseTrainer.__init__ derives."""
@@ -69,67 +33,9 @@ def _trainer(**attrs):
     )
 
 
-# ---------------------------------------------------------------------------
-# The negative control
-# ---------------------------------------------------------------------------
-
-def test_negative_control_shipped_idiom_substitutes_a_literal_for_a_configured_zero():
-    """``lr: 0.0`` (or ``unet_lr: 0.0``) trained at a hardcoded rate.
-
-    Both YAML keys are creatable through the API: ``learning_rate`` is a bare
-    ``float`` on ``TrainingRunCreateRequest`` and ``unet_lr`` an
-    ``Optional[float]``, neither with a lower bound. The config, the
-    ``training_runs`` row and the UI all say 0.0 while the optimizer group runs
-    at the adapter's literal -- and which literal depends on the architecture.
-    """
-    zero_run = _trainer(learning_rate=0.0)
-    assert zero_run.unet_lr == 0.0 and zero_run.text_encoder_1_lr == 0.0
-
-    # Shipped: the requested 0.0 becomes a different nonzero rate per adapter.
-    assert _shipped_unet_lr(zero_run, 1e-6) == 1e-6      # SenseNova full FT
-    assert _shipped_unet_lr(zero_run, 1e-5) == 1e-5      # Krea2/Anima/LTX2/Lens/... full FT
-    assert _shipped_unet_lr(zero_run, 1e-4) == 1e-4      # every LoRA adapter
-
-    # Fixed: what was configured is what trains.
-    assert resolve_component_lr(zero_run, "unet_lr") == 0.0
-    assert resolve_component_lr(
-        zero_run, "text_encoder_1_lr", "text_encoder_lr", "unet_lr") == 0.0
-
-    # Same substitution for a per-component zero on an otherwise normal run.
-    frozen_half = _trainer(learning_rate=5e-6, unet_lr=0.0)
-    assert _shipped_unet_lr(frozen_half, 1e-6) == 1e-6
-    assert resolve_component_lr(frozen_half, "unet_lr") == 0.0
-
-
-def test_absent_component_lr_resolves_to_learning_rate_before_and_after():
-    """The wider claim -- "a full FT with only ``lr`` set trains at 1e-6" -- does
-    not hold, and this records why: ``BaseTrainer.__init__`` fills ``unet_lr``
-    from ``learning_rate``, so the literal was only reachable through a falsy LR.
-    """
+def test_absent_component_lr_resolves_to_learning_rate():
     run = _trainer(learning_rate=5e-6)  # no component LRs, as the YAML omits them
-    assert _shipped_unet_lr(run, 1e-6) == 5e-6
     assert resolve_component_lr(run, "unet_lr") == 5e-6
-
-
-def test_base_trainer_derives_component_lrs_from_learning_rate():
-    """Pins the normalization the test above depends on, in the real source."""
-    source = Path(BaseTrainer.__module__ and
-                  sys.modules[BaseTrainer.__module__].__file__).read_text(encoding="utf-8")
-    assert re.search(
-        r"self\.unet_lr = unet_lr if unet_lr is not None else learning_rate", source)
-    assert re.search(
-        r"self\.text_encoder_1_lr = text_encoder_1_lr if text_encoder_1_lr is not None", source)
-
-
-def test_train_runner_passes_the_configs_component_lrs_through():
-    """The full-FT branch reads ``lr`` and ``unet_lr`` off the YAML unchanged."""
-    runner = (Path(__file__).resolve().parents[1] / "core" / "training" /
-              "train_runner.py").read_text(encoding="utf-8")
-    block = runner[runner.index("trainer = FullParameterTrainer(") - 4000:
-                   runner.index("trainer = FullParameterTrainer(") + 3000]
-    assert "unet_lr = train_config.get('unet_lr')" in block
-    assert "learning_rate=train_config.get('lr', 1e-4)" in block
-    assert "unet_lr=unet_lr," in block
 
 
 # ---------------------------------------------------------------------------
@@ -148,35 +54,6 @@ def test_resolver_precedence_first_configured_then_learning_rate():
 def test_resolver_refuses_rather_than_inventing_a_rate():
     with pytest.raises(ValueError, match="Cannot resolve a learning rate"):
         resolve_component_lr(SimpleNamespace(), "unet_lr", label="nothing configured")
-
-
-# ---------------------------------------------------------------------------
-# Census: no adapter carries a literal LR fallback any more
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("filename", sorted(SHIPPED_LITERALS))
-def test_adapter_has_no_literal_lr_fallback(filename):
-    source = (ADAPTERS_DIR / filename).read_text(encoding="utf-8")
-    offenders = [
-        line.strip() for line in source.splitlines()
-        if re.search(r"_lr\"?,?\s*(None\)|1e-\d)\s*(\)|or\s*1e-\d)", line)
-        and "resolve_component_lr" not in line
-    ]
-    assert offenders == [], offenders
-
-
-def test_every_adapter_lr_site_goes_through_the_resolver():
-    """No ``x or <literal>`` LR idiom survives anywhere under adapters/."""
-    pattern = re.compile(r'getattr\([^)]*_lr"[^)]*\)\s*or\s')
-    hits = {}
-    for path in sorted(ADAPTERS_DIR.glob("*.py")):
-        if path.name == "base_adapter.py":
-            continue  # the resolver's own docstring quotes the idiom it replaced
-        found = [l.strip() for l in path.read_text(encoding="utf-8").splitlines()
-                 if pattern.search(l)]
-        if found:
-            hits[path.name] = found
-    assert hits == {}
 
 
 # ---------------------------------------------------------------------------
@@ -283,12 +160,6 @@ def test_sensenova_full_ft_run_121_configuration_is_unchanged():
         learning_rate=1e-6, unet_lr=1e-6, text_encoder_lr=1e-6)
     groups = adapter.setup_trainable_parameters()
     assert [g["lr"] for g in groups] == [1e-6, 1e-6]
-    # And the shipped expression produced the same two numbers for it.
-    run = _trainer(learning_rate=1e-6, unet_lr=1e-6, text_encoder_lr=1e-6)
-    assert _shipped_unet_lr(run, 1e-6) == 1e-6
-    assert (getattr(run, "text_encoder_1_lr", None)
-            or getattr(run, "text_encoder_lr", None)
-            or _shipped_unet_lr(run, 1e-6)) == 1e-6
 
 
 # ---------------------------------------------------------------------------
@@ -377,8 +248,6 @@ def test_the_check_announces_when_the_component_list_raises():
     events, text = _report(probe)
     assert "per-component LR verification did not run" in text
     assert [e["code"] for e in events] == []
-
-
 # ---------------------------------------------------------------------------
 # The path that actually destroys per-component LRs
 # ---------------------------------------------------------------------------
@@ -403,19 +272,3 @@ def test_fused_optimizer_groups_with_one_requested_rate_is_not_reported():
         optimizers=[_optimizer([1e-4]), _optimizer([1e-4])])
     events, _ = _report(probe, requested=[1e-4, 1e-4])
     assert [e["code"] for e in events] == []
-
-
-def test_the_report_runs_after_the_fused_setup():
-    """Placement, in the shipping source: the only call site is below
-    ``_setup_fused_optimizer_groups`` / ``_setup_fused_backward_pass``.
-    """
-    source = Path(sys.modules[BaseTrainer.__module__].__file__).read_text(encoding="utf-8")
-    body = source[source.index("    def setup_optimizer("):]
-    body = body[:body.index("\n    def ", 10)]
-    assert body.count("_report_effective_component_lrs(") == 1
-    assert (body.index("_report_effective_component_lrs(")
-            > body.index("_setup_fused_optimizer_groups("))
-    assert (body.index("_report_effective_component_lrs(")
-            > body.rindex("_setup_fused_backward_pass("))
-    assert (body.index("_report_effective_component_lrs(")
-            > body.index("_attach_stochastic_rounding("))

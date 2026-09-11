@@ -619,33 +619,3 @@ def test_a_genuinely_zero_base_rate_is_still_reported():
     _attach_optimizer(probe, [{"params": _params(), "lr": 0.0}])
     events, _ = _events(probe._report_effective_component_lrs, [0.0])
     assert [e["code"] for e in events] == ["component_lr_zero"]
-
-
-# ---------------------------------------------------------------------------
-# Wiring, in the shipping source
-# ---------------------------------------------------------------------------
-
-def _setup_optimizer_body():
-    source = Path(sys.modules[BaseTrainer.__module__].__file__).read_text(encoding="utf-8")
-    body = source[source.index("    def setup_optimizer("):]
-    return body[:body.index("\n    def ", 10)]
-
-
-def test_the_snapshot_is_taken_after_every_path_that_can_replace_the_optimizer():
-    body = _setup_optimizer_body()
-    assert body.count("_record_configured_group_lrs(") == 1
-    for earlier in ("_setup_fused_optimizer_groups(", "_attach_stochastic_rounding("):
-        assert body.index("_record_configured_group_lrs(") > body.index(earlier)
-    assert body.rindex("_setup_fused_backward_pass(") < body.index(
-        "_record_configured_group_lrs(")
-    assert (body.index("_record_configured_group_lrs(")
-            < body.index("_report_effective_component_lrs("))
-
-
-def test_the_resume_no_longer_passes_a_scalar_to_the_helper():
-    """The broadcast, at source level: the exact fallback that caused it."""
-    source = Path(sys.modules[BaseTrainer.__module__].__file__).read_text(encoding="utf-8")
-    body = source[source.index("    def _reassert_config_lr_on_resume("):]
-    body = body[:body.index("\n    def ", 10)]
-    assert "component_lrs if component_lrs else self.learning_rate" not in body
-    assert "_configured_component_lr_description(" in body

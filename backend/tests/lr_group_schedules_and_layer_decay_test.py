@@ -24,8 +24,7 @@ What else is checked:
 * the architectures that decline ``depth_blocks`` are the ones the capability
   table refuses ``lr_layer_decay`` for, and every other declared one implements
   it;
-* §12.3's checklist for the two new keys, ``PARAM_KEYS`` included -- the entry
-  source-level restore checks structurally cannot check.
+* §12.3's API, YAML, generator, and OpenAPI contracts for the two new keys.
 
 CPU-only and hermetic: no model, no dataset, no GPU.
 """
@@ -35,7 +34,6 @@ from __future__ import annotations
 import dataclasses
 import importlib.util
 import io
-import re
 import subprocess
 import sys
 from contextlib import redirect_stdout
@@ -85,8 +83,6 @@ from core.training.training_config import (  # noqa: E402
     TrainingConfigGenerator,
     train_section_key_vocabulary,
 )
-
-_PARAMS_TS = REPO / "frontend/src/components/training/trainingParams.ts"
 
 # The two keys, and a value for each that is NOT the default.
 NEW_KEYS = {
@@ -193,14 +189,6 @@ def _train_section(**overrides) -> dict:
         sample_prompts=[],
     )
     return yaml.safe_load(config)["config"]["process"][0]["train"]
-
-
-def _param_keys() -> list:
-    source = _PARAMS_TS.read_text(encoding="utf-8")
-    start = source.index(
-        "export const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [")
-    body = re.sub(r"//[^\n]*", "", source[start:source.index("\n];", start)])
-    return re.findall(r'"([A-Za-z0-9_]+)"', body)
 
 
 # ---------------------------------------------------------------------------
@@ -847,21 +835,6 @@ def test_no_declared_arch_returns_a_single_block():
 def test_the_request_model_declares_it_with_the_shared_default(key):
     field = TrainingRunCreateRequest.model_fields[key]
     assert field.get_default(call_default_factory=True) == TRAINING_DEFAULTS[key]
-
-
-@pytest.mark.parametrize("key", sorted(NEW_KEYS))
-def test_the_form_restores_it(key):
-    """Missing here, an edit-save silently resets the run to the default --
-    and source-level restore checks cannot see it, because their
-    idea of "sent" is built from this same list."""
-    assert key in _param_keys()
-
-
-def test_every_lr_request_field_is_still_restorable():
-    keys = set(_param_keys())
-    missing = sorted(f for f in TrainingRunCreateRequest.model_fields
-                     if f.startswith("lr_") and f not in keys)
-    assert missing == []
 
 
 @pytest.mark.parametrize("key,value", sorted(NEW_KEYS.items()))

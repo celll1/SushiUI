@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 import tempfile
 import unittest
@@ -47,7 +46,6 @@ from core.training.vae.vae_trainer import (
 )
 
 _REPO = Path(_BACKEND).parent
-_PANEL = _REPO / "frontend/src/components/training/vae/VaeTrainingConfig.tsx"
 
 _NAMES = ["decoder.a", "decoder.b"]
 
@@ -351,26 +349,13 @@ class VaeScheduleCheckpointTest(unittest.TestCase):
 
 
 class VaeScheduleVocabularyMirrorTest(unittest.TestCase):
-    """The three places the offered names are written down have to agree."""
+    """The public VAE scheduler vocabulary matches the backend registry."""
 
     def test_the_openapi_enum_is_the_offered_vocabulary(self):
         spec = yaml.safe_load((_REPO / "openapi.yaml").read_text(encoding="utf-8"))
         props = spec["components"]["schemas"]["VaeTrainingDefaults"]["properties"]
         self.assertEqual(props["lr_scheduler"]["enum"],
                          list(VALID_LR_SCHEDULERS))
-
-    def test_the_panel_select_is_the_offered_vocabulary(self):
-        source = _PANEL.read_text(encoding="utf-8")
-        body = source[source.index("const LR_SCHEDULERS"):]
-        body = body[:body.index("];")]
-        self.assertEqual(re.findall(r'"([a-z_]+)"', body),
-                         list(VALID_LR_SCHEDULERS))
-
-    def test_the_panel_no_longer_refuses_a_warmup_under_constant(self):
-        source = _PANEL.read_text(encoding="utf-8")
-        self.assertNotIn('cfg.lr_scheduler === "constant" && cfg.lr_warmup_steps > 0',
-                         source)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -2220,13 +2220,14 @@ def custom_sampling_loop(
     current_pooled_prompt_embeds = pooled_prompt_embeds
     current_negative_pooled_prompt_embeds = negative_pooled_prompt_embeds
 
-    print(f"\n[CustomSampling] [Debug] ========== SCHEDULER INITIALIZATION ==========")
-    print(f"[CustomSampling] [Debug] Scheduler timesteps (first 5): {scheduler.timesteps[:5].tolist()}")
-    print(f"[CustomSampling] [Debug] Scheduler timesteps (last 5): {scheduler.timesteps[-5:].tolist()}")
-    print(f"[CustomSampling] [Debug] init_noise_sigma: {scheduler.init_noise_sigma}")
-    print(f"[CustomSampling] [Debug] Latents shape: {latents.shape}, dtype: {latents.dtype}")
-    print(f"[CustomSampling] [Debug] Latents AFTER init_noise_sigma scaling:")
-    print(f"[CustomSampling] [Debug]   - min: {latents.min().item():.4f}, max: {latents.max().item():.4f}, mean: {latents.mean().item():.4f}")
+    if developer_mode:
+        print(f"\n[CustomSampling] [Debug] ========== SCHEDULER INITIALIZATION ==========")
+        print(f"[CustomSampling] [Debug] Scheduler timesteps (first 5): {scheduler.timesteps[:5].tolist()}")
+        print(f"[CustomSampling] [Debug] Scheduler timesteps (last 5): {scheduler.timesteps[-5:].tolist()}")
+        print(f"[CustomSampling] [Debug] init_noise_sigma: {scheduler.init_noise_sigma}")
+        print(f"[CustomSampling] [Debug] Latents shape: {latents.shape}, dtype: {latents.dtype}")
+        print(f"[CustomSampling] [Debug] Latents AFTER init_noise_sigma scaling:")
+        print(f"[CustomSampling] [Debug]   - min: {latents.min().item():.4f}, max: {latents.max().item():.4f}, mean: {latents.mean().item():.4f}")
 
     print(f"[CustomSampling] Starting sampling loop with {num_inference_steps} steps")
     print(f"[CustomSampling] Actual timesteps: {len(timesteps)} (some schedulers like DPM2 use 2x steps)")
@@ -2245,7 +2246,7 @@ def custom_sampling_loop(
 
     # Track previous SNR for SNR-based adaptive CFG
     previous_snr = None
-    first_iteration_debug = True
+    first_iteration_debug = developer_mode
 
     _flatten_inject_steps = _setup_inloop_flatten(
         pipeline, timesteps, spectrum, fbcache_ctrl,
@@ -3332,7 +3333,7 @@ def custom_img2img_sampling_loop(
 
     # Track previous SNR for SNR-based adaptive CFG
     previous_snr = None
-    first_iteration_debug = True
+    first_iteration_debug = developer_mode
 
     # Send initial noise preview (step 0) before denoising loop starts
     if progress_callback is not None:
@@ -5124,8 +5125,7 @@ def custom_inpaint_sampling_loop(
     # Track previous SNR for SNR-based adaptive CFG
     previous_snr = None
 
-    # Debug flag for first iteration logging (used throughout the loop)
-    first_iteration_debug = True
+    first_iteration_debug = developer_mode
 
     # Send initial noise preview (step 0) before denoising loop starts.
     # Total is len(_outpaint_visit_schedule), not len(timesteps): identical to

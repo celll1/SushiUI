@@ -470,10 +470,6 @@ class ZImageMixin:
                   f"{getattr(base, 'out_features', None)}); skipping this module")
             return SHAPE_MISMATCH
 
-        print(f"[Z-Image LoRA DEBUG] Branch '{request.file.branch_name}' on "
-              f"{request.module_path}: {group.algorithm} alpha={branch.alpha}, "
-              f"rank={branch.rank}, strength={request.file.strength:.2f}")
-
         # Strength is folded into the branch's own scale by ``add_branch``, never
         # multiplied onto its delta -- a post-multiply is different arithmetic and
         # loses bit-identity with the single-LoRA numerics this replaces.
@@ -795,8 +791,7 @@ class ZImageMixin:
                 if not is_resident(self, "transformer", _kh_model_key):
                     transformer = move_zimage_transformer_to_gpu(transformer, transformer_quantization)
 
-                # DEBUG: Verify LoRA is still applied after GPU move
-                if lora_configs:
+                if lora_configs and params.get("developer_mode", False):
                     for attn_name, attn_module in transformer.named_modules():
                         if "ZImageAttention" in attn_module.__class__.__name__:
                             if hasattr(attn_module, "to_q"):

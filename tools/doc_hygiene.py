@@ -37,16 +37,21 @@ LEDGER = "docs/legal/THIRD_PARTY_PROVENANCE.md"
 # satisfy local rules.
 EXEMPT_PREFIXES = ("docs/legal/licenses/",)
 
-# This machine's own roots. A generic or conspicuously fictional example path
-# is fine; these are the ones that identify the author's environment.
-PRIVATE_PATTERNS = (
-    # The project's own GitHub URL contains the owner's account name and is
-    # meant to be published; a local checkout path is not.
-    (re.compile(r"(?i)[a-z]:[\\/]{1,2}celll1|celll1[\\/]webui"),
-     "the repository owner's local checkout path"),
-    (re.compile(r"(?i)\b<redacted-local-user>\b"), "the repository owner's user name"),
-    (re.compile(r"(?i)(?<![A-Za-z])M:[\\/]"), "the author's model/dataset drive"),
-)
+# Resolve private values from the machine running the check. Embedding them in
+# this public tool would itself disclose the value the check is meant to catch.
+PRIVATE_VALUES = tuple({
+    value.replace("\\", "/").rstrip("/").casefold()
+    for value in (
+        REPO,
+        os.environ.get("USERPROFILE", ""),
+        os.environ.get("HOME", ""),
+        os.environ.get("USERNAME", ""),
+        os.environ.get("USER", ""),
+    )
+    if len(value.strip()) >= 4
+})
+
+WINDOWS_ABSOLUTE_PATH = re.compile(r"(?i)(?<![A-Za-z0-9_])[a-z]:[\\/]")
 
 BINARY_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".ico", ".gif", ".pdf",
                    ".safetensors", ".gguf", ".zip", ".woff", ".woff2", ".ttf",
@@ -120,10 +125,12 @@ def check_private_paths(files: list[str], report) -> None:
         if "\x00" in text[:4096]:
             continue
         for number, line in enumerate(text.splitlines(), 1):
-            for pattern, what in PRIVATE_PATTERNS:
-                if pattern.search(line):
-                    report(f"{path}:{number}", f"records {what}")
-                    break
+            normalized = line.replace("\\", "/").casefold()
+            if any(value in normalized for value in PRIVATE_VALUES):
+                report(f"{path}:{number}", "records a value from the local environment")
+                continue
+            if path.startswith("docs/") and WINDOWS_ABSOLUTE_PATH.search(line):
+                report(f"{path}:{number}", "uses a machine-specific absolute path")
 
 
 def check_links(files: list[str], report) -> None:

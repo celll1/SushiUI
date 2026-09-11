@@ -474,8 +474,8 @@ pack/unpack 関数がモジュールメソッドである arch（anima、zimage�
 | 形式 | 例 | 解決 |
 |---|---|---|
 | `registry:<key>` | `registry:flux1` | 表A `vae_store.VAE_REGISTRY`（`vae_store.py:59-111`）で `class/default_repo/scaling` を引く。表B（`components/vae_registry.py:30-45`）は表A へ統合し、`preview` フィールドを表A に移す（表の数を減らす方向の変更） |
-| `file:<path>` | `file:M:/model/vae/flux2_vae.safetensors` | standalone: 単一ファイル（LDM 素キー or diffusers キー）/ diffusers ディレクトリ。現行 `load_override_vae`（`pipeline.py:1851-1901`）の 2 分岐と同じ判定を共有関数化して使う |
-| `model:<path>` | `model:M:/model/flux2/flux2-dev.safetensors` | **抽出**: ヘッダのみで `has_backbone` を確認し、`split_prefixed_state_dict(sd, ["vae.", "first_stage_model."])` で VAE 部分だけをロードする（§7.2） |
+| `file:<path>` | `file:<MODEL_ROOT>/vae/flux2_vae.safetensors` | standalone: 単一ファイル（LDM 素キー or diffusers キー）/ diffusers ディレクトリ。現行 `load_override_vae`（`pipeline.py:1851-1901`）の 2 分岐と同じ判定を共有関数化して使う |
+| `model:<path>` | `model:<MODEL_ROOT>/flux2/flux2-dev.safetensors` | **抽出**: ヘッダのみで `has_backbone` を確認し、`split_prefixed_state_dict(sd, ["vae.", "first_stage_model."])` で VAE 部分だけをロードする（§7.2） |
 
 戻り値 `ResolvedVAE(module, latent_channels, scale_factor, scale_temporal, ndim, norm, norm_pack,
 vae_class, config_dict, family, content_hash, provenance, locator, struct_native, identity_native)`。
@@ -1147,7 +1147,7 @@ std ではなく RMS を採るのは、平均が 0 でない（+0.236）一方�
    スナップし、16× VAE で 4096² の要求に `sensenova_resolution` 警告が出ないこと（§10.5）。
 5. 上記を満たしても**品質の主張はしない**。8× と 16× の優劣も主張しない。品質は所有者が実データで判断する。
 
-#### 実測（`M:/model/sensenova/sensenova_int8.safetensors`、42層 MoT、gen 側 294 Linear）
+#### 実測（SenseNova int8 checkpoint、42層 MoT、gen 側 294 Linear）
 
 条件 1・2 は CPU テストで担保済み。条件 3・4 を実重みで実行した結果を記録する。
 `registry:sdxl`（4ch）と `registry:flux1`（16ch）の両方、いずれも 8×。

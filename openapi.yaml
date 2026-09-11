@@ -7108,7 +7108,7 @@ paths:
             architecture answers identically with or without it.
           schema:
             type: string
-          example: 'M:/model/minit2i/b16_flux1.safetensors'
+          example: '<MODEL_ROOT>/minit2i/b16_flux1.safetensors'
       responses:
         '200':
           description: Candidate VAE sources, grouped by form
@@ -20412,7 +20412,7 @@ components:
           description: |
             Absolute directory path. The `vae-*` namespace for `layout: vae`,
             and the `latents` directory itself for the older layouts.
-          example: 'M:\sushiUI\cache\datasets\a1b2c3d4-.../sdxl__c4__dtfloat16\vae-e9a645c32c26a19e'
+          example: '<CACHE_ROOT>/datasets/a1b2c3d4-.../sdxl__c4__dtfloat16/vae-e9a645c32c26a19e'
         layout:
           type: string
           enum: [vae, arch, dataset]
@@ -20478,7 +20478,7 @@ components:
           example: a1b2c3d4-1111-2222-3333-444455556666
         base_cache_dir:
           type: string
-          example: 'M:\sushiUI\cache\datasets'
+          example: '<CACHE_ROOT>/datasets'
         item_count:
           type: integer
           description: Dataset items, for a coverage comparison against `entries`
@@ -23733,7 +23733,7 @@ components:
             also accepted and retains the best_f1/latest selection order.
             Empty auto-selects the newest usable directory under the repo's
             `tagger_models/`.
-          example: 'D:\celll1\webui_cl\tagger_models\<uuid>\v2_01a\model.onnx'
+          example: '<TAGGER_MODEL_ROOT>/<uuid>/v2_01a/model.onnx'
         repa_siglip2_repo:
           type: 'string'
           default: 'google/siglip2-so400m-patch14-384'

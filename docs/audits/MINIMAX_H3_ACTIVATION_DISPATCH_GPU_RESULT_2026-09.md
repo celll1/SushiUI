@@ -80,6 +80,6 @@ Reproduce a passing condition from the repository root:
 
 ```powershell
 venv\Scripts\python.exe backend\core\training\probes\minimax_h3_activation_dispatch.py `
-  --model M:\model\minimax_h3 --clip long --blocks-to-swap 40 --repeats 3 `
+  --model <MODEL_ROOT>/minimax_h3 --clip long --blocks-to-swap 40 --repeats 3 `
   --out docs\audits\results\minimax_h3_activation_dispatch_long_swap40_r3_2026-09-10.json
 ```

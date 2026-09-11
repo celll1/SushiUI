@@ -1,6 +1,6 @@
 # SenseNova und ブランチは訓練が必要か — 実測調査
 
-日付 2026-09-02 / ベース `M:/model/sensenova/sensenova_int8.safetensors`（plain int8、588 Int8Linear、weight-only dequant）
+日付 2026-09-02 / ベース `<MODEL_ROOT>/sensenova/sensenova_int8.safetensors`（plain int8、588 Int8Linear、weight-only dequant）
 プローブ `backend/core/training/probes/sensenova_und_discrimination.py`
 材料 dataset 37 = run 121/122 が実際に学習した kouyoku_senki_exs-tia、28ペア
 （キャプション集合ビルダと生 JSON は `tmp/sensenova_und/` に残置。tmp/ は追跡外なので

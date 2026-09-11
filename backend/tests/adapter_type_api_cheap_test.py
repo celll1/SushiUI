@@ -410,9 +410,11 @@ def test_block_swap_effect_follows_the_declared_install_order():
     from core.adapters.capability import (AFTER_SPLIT, BEFORE_SPLIT,
                                           BLOCK_SWAP_ADAPTER_ORDER,
                                           BLOCK_SWAP_REFUSAL_CODE,
-                                          BLOCK_SWAP_WARNING_CODE)
+                                          BLOCK_SWAP_WARNING_CODE,
+                                          PACKED_WITH_BLOCK)
     expected = {AFTER_SPLIT: ("refused", BLOCK_SWAP_REFUSAL_CODE),
-                BEFORE_SPLIT: ("not_offloaded", BLOCK_SWAP_WARNING_CODE)}
+                BEFORE_SPLIT: ("not_offloaded", BLOCK_SWAP_WARNING_CODE),
+                PACKED_WITH_BLOCK: ("offloaded", None)}
     payload = adapter_families_payload()
     for arch, order in BLOCK_SWAP_ADAPTER_ORDER.items():
         entry = payload[arch]["block_swap"]

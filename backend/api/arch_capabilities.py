@@ -1737,21 +1737,22 @@ def adapter_families_payload() -> Dict[str, Dict[str, Any]]:
                                           BLOCK_SWAP_ADAPTER_ORDER,
                                           BLOCK_SWAP_REFUSAL_CODE,
                                           BLOCK_SWAP_WARNING_CODE,
+                                          PACKED_WITH_BLOCK,
                                           ENABLED_ADAPTER_PAIRS,
                                           TRAINABLE_ADAPTER_PAIRS,
                                           adapter_refusal_reason,
                                           adapter_training_refusal_reason)
     from core.adapters.spec import FAMILY_NAMES
 
-    # A LyCORIS branch's factors are bare parameters, which no offloader moves;
-    # what that costs depends on when the branch is installed relative to the
-    # block split, which is why the order is declared per architecture.
+    # Legacy Linear-selective offloaders can strand bare LyCORIS factors; the
+    # hook conductor instead packs every recursive parameter with its block.
     # This dict is POLICY, not a read: it restates the consequence
     # `AdapterSession` draws from each order (refuse vs advise). Pinned by
     # `adapter_type_api_cheap_test.test_block_swap_effect_follows_the_declared_install_order`.
     block_swap_effect = {
         AFTER_SPLIT: ("refused", BLOCK_SWAP_REFUSAL_CODE),
         BEFORE_SPLIT: ("not_offloaded", BLOCK_SWAP_WARNING_CODE),
+        PACKED_WITH_BLOCK: ("offloaded", None),
     }
 
     payload: Dict[str, Dict[str, Any]] = {}

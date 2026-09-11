@@ -275,8 +275,8 @@ paths:
           `effect: "refused"` (the branch would be built on the host and never
           moved -- refused up front with `code`), `"not_offloaded"` (correct
           output, and the branch stays resident instead of being offloaded with
-          its block) or `"not_applicable"` (that architecture builds no
-          generation-time offloader). Ordinary LoRA is unaffected either way.
+          its block), `"offloaded"` (the branch is recursively packed with its
+          block), or `"not_applicable"`. Ordinary LoRA is unaffected either way.
         * `arch_display_names` — architecture id -> its user-facing spelling
           (`sensenova` -> `SenseNova U1.5`). An id with no entry falls back to
           itself.
@@ -10963,29 +10963,29 @@ components:
           properties:
             order:
               type: string
-              enum: [before_split, after_split, no_block_swap]
+              enum: [before_split, after_split, no_block_swap, packed_with_block]
               description: >-
-                Whether this architecture's generate function installs adapters
-                before or after its offloader splits the blocks, or builds no
-                generation-time offloader at all.
+                Whether adapters install before/after a Linear-selective split,
+                are recursively packed with the block, or have no block swap.
               example: before_split
             effect:
               type: string
-              enum: [refused, not_offloaded, not_applicable]
+              enum: [refused, not_offloaded, offloaded, not_applicable]
               description: >-
                 `refused` -- the request is refused up front, because a branch
                 built on the host for a swapped-out block is never moved to the
                 compute device. `not_offloaded` -- the branch's parameters stay
                 on the compute device for the whole denoise loop instead of
                 being offloaded with their block; output is unaffected.
-                `not_applicable` -- no generation-time offloader here.
+                `offloaded` -- recursive branch parameters are packed with the
+                block. `not_applicable` -- no generation-time offloader here.
               example: not_offloaded
             code:
               type: string
               nullable: true
               description: >-
                 The `warnings[]`/`ErrorResponse` code this effect is reported
-                under, or `null` for `not_applicable`.
+                under, or `null` for `offloaded`/`not_applicable`.
               example: lora_blockswap_not_offloaded
 
     ArchCapabilities:

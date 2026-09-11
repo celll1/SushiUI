@@ -37,7 +37,7 @@ machine-local working material.
 | `docs/guides/SPECTRUM.md` | Spectrum forecasting behavior, parameters, and constraints. |
 | `docs/guides/MINIMAX_H3_HYBRID_LOADER_DESIGN.md` | Current MiniMax-H3 hybrid-loader contract. |
 | `docs/guides/MINIMAX_MUSIC3_DESIGN.md` | Current MiniMax Music 3 integration contract and implemented boundary. |
-| `docs/decisions/SENSENOVA_TEXT_OUTPUT_DESIGN.md` | Accepted design for SenseNova img2txt inference, caption/tag training, and mixed image/text objectives; implementation is pending. |
+| `docs/decisions/SENSENOVA_TEXT_OUTPUT_DESIGN.md` | Implemented SenseNova img2txt inference, caption/tag training, and mixed image/text objectives; real-checkpoint quality evaluation remains separate. |
 
 ## Training and data
 
@@ -46,7 +46,7 @@ machine-local working material.
 | `docs/reference/DATASETS.md` | Dataset formats and validation requirements. |
 | `docs/guides/DYNAMIC_CROP_BUCKETING.md` | Epoch-dynamic crop and bucket behavior. |
 | `docs/guides/SDXL_REGULARIZATION.md` | SD/SDXL regularization behavior. |
-| `docs/guides/SENSENOVA_TRAINING_DESIGN.md` | SenseNova training contract and implemented/pending boundary. |
+| `docs/guides/SENSENOVA_TRAINING_DESIGN.md` | SenseNova training contract and measured validation boundary. |
 | `docs/decisions/TRAINING_RUN_STORAGE_V2.md` | Accepted staged migration from central detailed training history to a lightweight catalogue plus per-run databases. |
 | `docs/guides/INT8_CONVROT_TRAINING_DESIGN.md` | INT8 ConvRot investigation and measurement status. |
 | `docs/guides/TRAINING_DIAGNOSTICS_AND_AUXILIARY_LOSSES.md` | Shipped convergence diagnostics, crop-decode loss, and REPA target-source boundary. |
@@ -67,7 +67,6 @@ machine-local working material.
 |---|---|
 | `backend/core/docs/ATTENTION_PROCESSORS.md` | Attention backend selection. |
 | `backend/core/memory_management/README.md` | Memory-management subsystem overview. |
-| `backend/core/memory_management/BLOCK_SWAP.md` | Current block-swap behavior. |
 | `backend/core/memory_management/RING_BUFFER_OPTIMIZER.md` | Optimizer-state residency mechanism. |
 | `backend/core/training/optimizers/RINGBUFFER_OPTIMIZERS.md` | Ring-buffer optimizer contracts. |
 | `docs/audits/ACTIVATION_DISPATCH_ARCH_COVERAGE_REPORT_2026-09.md` | Static activation-dispatch coverage and architecture boundaries. |

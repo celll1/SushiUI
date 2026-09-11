@@ -2439,6 +2439,41 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
         print()
 
+    def _maybe_install_sd_unet_block_offload(self, params, pipeline, device):
+        if not bool(params.get("enable_block_swap", False)):
+            return None
+        requested = int(params.get("blocks_to_swap", 0) or 0)
+        if requested <= 0:
+            return None
+        if bool(params.get("use_torch_compile", False)):
+            raise ValueError(
+                "SD1.5/SDXL Block Swap cannot be combined with torch.compile; "
+                "the compiled graph bypasses per-stage forward hooks"
+            )
+        unet = pipeline.unet
+        graph = getattr(unet, "_orig_mod", unet)
+        units = list(getattr(graph, "down_blocks", ()))
+        mid = getattr(graph, "mid_block", None)
+        if mid is not None:
+            units.append(mid)
+        units.extend(getattr(graph, "up_blocks", ()))
+        if len(units) < 2:
+            raise ValueError("SD1.5/SDXL Block Swap could not find U-Net down/mid/up stages")
+        from core.memory_management import FrozenModuleOffloadConductor
+
+        conductor = FrozenModuleOffloadConductor(
+            root=graph,
+            modules=units,
+            blocks_to_swap=requested,
+            device=device,
+            use_pinned_memory=bool(params.get("use_pinned_memory", False)),
+            ring_size=int(params.get("block_swap_ring_size", 2) or 2),
+        )
+        conductor.register_hooks()
+        print(f"[Pipeline] Common U-Net block offload enabled "
+              f"({conductor.blocks_to_swap}/{len(units)} stages)")
+        return conductor
+
     def _save_last_model(self, source_type: str, source: str, pipeline_type: str,
                          text_encoder_file: Optional[str] = None,
                          clip_projection_file: Optional[str] = None,
@@ -4181,9 +4216,11 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             component_bytes=_kh_total_bytes,
         ) if _kh_requested else False
         _kh_keep_te = _kh_requested and _kh_guard_ok and not _kh_cpu_text_encoding
-        _kh_keep_unet = _kh_requested and _kh_guard_ok and not _kh_has_loras
+        _kh_keep_unet = (_kh_requested and _kh_guard_ok and not _kh_has_loras
+                         and not bool(params.get("enable_block_swap", False)))
         _kh_keep_vae = _kh_requested and _kh_guard_ok
         _kh_gen_succeeded = False
+        _sd_block_offloader = None
 
         # VAE tiling option: decode bounded by tile size (large-image OOM relief).
         self._apply_vae_tiling(getattr(self.txt2img_pipeline, "vae", None),
@@ -4371,6 +4408,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             print(f"[Pipeline] Applying U-Net quantization: {unet_quantization}")
         if not is_resident(self, "unet", _kh_model_key):
             move_unet_to_gpu(self.txt2img_pipeline, quantization=unet_quantization, use_torch_compile=use_torch_compile)
+        _sd_block_offloader = self._maybe_install_sd_unet_block_offload(
+            params, self.txt2img_pipeline, self.device)
 
         log_device_status("Ready for U-Net inference", self.txt2img_pipeline, vision_encoder=getattr(self, 'vision_encoder', None))
 
@@ -4702,6 +4741,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             traceback.print_exc()
             raise
         finally:
+            if _sd_block_offloader is not None:
+                _sd_block_offloader.cleanup()
             # Restore original attention processors if they were changed
             if self.original_processors is not None:
                 from core.inference.attention_processors import restore_processors
@@ -4942,9 +4983,11 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             component_bytes=_kh_total_bytes,
         ) if _kh_requested else False
         _kh_keep_te = _kh_requested and _kh_guard_ok and not _kh_cpu_text_encoding
-        _kh_keep_unet = _kh_requested and _kh_guard_ok and not _kh_has_loras
+        _kh_keep_unet = (_kh_requested and _kh_guard_ok and not _kh_has_loras
+                         and not bool(params.get("enable_block_swap", False)))
         _kh_keep_vae = _kh_requested and _kh_guard_ok
         _kh_gen_succeeded = False
+        _sd_block_offloader = None
 
         # VAE tiling option: decode bounded by tile size (large-image OOM relief).
         self._apply_vae_tiling(getattr(self.img2img_pipeline, "vae", None),
@@ -5376,6 +5419,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             use_torch_compile = params.get("use_torch_compile", False)
             if not is_resident(self, "unet", _kh_model_key):
                 move_unet_to_gpu(pipeline_to_use, quantization=unet_quantization, use_torch_compile=use_torch_compile)
+            _sd_block_offloader = self._maybe_install_sd_unet_block_offload(
+                params, pipeline_to_use, self.device)
 
             log_device_status("Ready for U-Net inference (img2img)", pipeline_to_use, vision_encoder=getattr(self, 'vision_encoder', None))
 
@@ -5484,6 +5529,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             traceback.print_exc()
             raise
         finally:
+            if _sd_block_offloader is not None:
+                _sd_block_offloader.cleanup()
             # Restore original attention processors if they were changed
             if self.original_processors is not None:
                 from core.inference.attention_processors import restore_processors
@@ -5728,9 +5775,11 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             component_bytes=_kh_total_bytes,
         ) if _kh_requested else False
         _kh_keep_te = _kh_requested and _kh_guard_ok and not _kh_cpu_text_encoding
-        _kh_keep_unet = _kh_requested and _kh_guard_ok and not _kh_has_loras
+        _kh_keep_unet = (_kh_requested and _kh_guard_ok and not _kh_has_loras
+                         and not bool(params.get("enable_block_swap", False)))
         _kh_keep_vae = _kh_requested and _kh_guard_ok
         _kh_gen_succeeded = False
+        _sd_block_offloader = None
 
         # VAE tiling option: decode bounded by tile size (large-image OOM relief).
         self._apply_vae_tiling(getattr(self.inpaint_pipeline, "vae", None),
@@ -6059,6 +6108,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         use_torch_compile = params.get("use_torch_compile", False)
         if not is_resident(self, "unet", _kh_model_key):
             move_unet_to_gpu(pipeline_to_use, quantization=unet_quantization, use_torch_compile=use_torch_compile)
+        _sd_block_offloader = self._maybe_install_sd_unet_block_offload(
+            params, pipeline_to_use, self.device)
 
         log_device_status("Ready for U-Net inference (inpaint)", pipeline_to_use, vision_encoder=getattr(self, 'vision_encoder', None))
 
@@ -6206,6 +6257,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             traceback.print_exc()
             raise
         finally:
+            if _sd_block_offloader is not None:
+                _sd_block_offloader.cleanup()
             # Restore original attention processors if they were changed
             if self.original_processors is not None:
                 from core.inference.attention_processors import restore_processors

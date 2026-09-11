@@ -76,3 +76,26 @@ working copy but intentionally records its removal from the public tree.
   directly or through an explicit sub-index.
 - Keep the worktree's ignored archive present after its tracked source is
   removed.
+
+## Local account identifier history rewrite
+
+One historical revision of the hygiene checker embedded the repository owner's
+local account identifier as a literal detection pattern. Removing it from the
+current tree is insufficient because the blob remains addressable in Git
+history.
+
+The rewrite procedure is deliberately separate from ordinary document cleanup:
+
+1. create and verify an ignored Git bundle containing every current ref;
+2. identify every local and remote-tracking ref that contains the affected
+   revision;
+3. rewrite only the offending source literal without changing unrelated file
+   contents;
+4. verify every rewritten ref, compare the current tree with its pre-rewrite
+   tree, and search all reachable revisions for the identifier;
+5. retain the private bundle until the repository owner confirms the rewritten
+   remote history is healthy.
+
+The backup necessarily contains the removed identifier and must not be
+published. Rewriting the local refs does not update the hosted repository;
+force-pushing affected branches remains an explicit owner action.

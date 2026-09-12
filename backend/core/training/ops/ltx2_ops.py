@@ -164,6 +164,8 @@ def load_components(trainer) -> None:
           f"audio_latents_per_second={trainer.ltx2_audio_latents_per_second:.4f}, "
           f"use_cross_timestep={trainer.ltx2_use_cross_timestep}")
 
+    setup_attention_backend(trainer, trainer.attention_backend)
+
     # Cast VAE to the desired dtype.
     trainer.vae = trainer.vae.to(dtype=trainer.vae_dtype)
 
@@ -316,11 +318,17 @@ def setup_wrapper(trainer) -> None:
 
 
 def setup_attention_backend(trainer, backend: str):
-    """LTX-2.3 uses the diffusers attention dispatcher (SDPA by default). No
-    per-block attn-mode vocabulary to set (unlike Anima's vendored kernel), so
-    this is a no-op stub that keeps the arch-handler contract satisfied.
-    """
-    return
+    """Select the Diffusers attention kernel used by every LTX-2.3 processor."""
+    if trainer.transformer is None:
+        raise RuntimeError("LTX-2.3 transformer is not loaded")
+    resolved = trainer._resolve_training_backend(backend)
+    if resolved not in {"native", "flash"}:
+        raise ValueError(
+            f"LTX-2.3 training cannot dispatch attention backend {resolved!r}; "
+            "supported backends are 'native' and 'flash'"
+        )
+    trainer.transformer.set_attention_backend(resolved)
+    print(f"{trainer.log_prefix} [OK] LTX-2.3 attention backend '{resolved}' set via Diffusers")
 
 
 # ----------------------------------------------------------------------

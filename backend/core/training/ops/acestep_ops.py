@@ -139,6 +139,8 @@ def load_components(trainer) -> None:
             disable_scaled_mm(_module, label=f"acestep training {_label}")
             disable_int8_mm(_module, label=f"acestep training {_label}")
 
+    setup_attention_backend(trainer, trainer.attention_backend)
+
     # Gradient checkpointing: AceStepDiTLayer/AceStepEncoderLayer subclass
     # transformers' GradientCheckpointingLayer, so the standard PreTrainedModel
     # toggle applies.
@@ -268,11 +270,29 @@ def setup_block_swap(trainer) -> None:
 
 
 def setup_attention_backend(trainer, backend: str):
-    """ACE-Step uses the transformers attention dispatcher (SDPA/eager by
-    config, see ``AceStepAttention.forward``'s ``ALL_ATTENTION_FUNCTIONS``
-    lookup). No per-block attn-mode vocabulary to set, so this is a no-op stub
-    that keeps the arch-handler contract satisfied (mirrors ltx2_ops)."""
-    return
+    """Select the Transformers attention implementation used by ACE-Step."""
+    if trainer.transformer is None:
+        raise RuntimeError("ACE-Step transformer is not loaded")
+    resolved = trainer._resolve_training_backend(backend)
+    implementation = {
+        "native": "sdpa",
+        "flash": "flash_attention_2",
+    }.get(resolved)
+    if implementation is None:
+        raise ValueError(
+            f"ACE-Step training cannot dispatch attention backend {resolved!r}; "
+            "supported backends are 'native' and 'flash'"
+        )
+    trainer.transformer.set_attn_implementation(implementation)
+    actual = trainer.transformer.config._attn_implementation
+    if actual != implementation:
+        raise RuntimeError(
+            f"ACE-Step attention backend did not apply: requested {implementation!r}, got {actual!r}"
+        )
+    print(
+        f"{trainer.log_prefix} [OK] ACE-Step attention backend '{resolved}' "
+        f"set as Transformers '{implementation}'"
+    )
 
 
 # ----------------------------------------------------------------------

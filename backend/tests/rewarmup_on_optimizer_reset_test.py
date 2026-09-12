@@ -48,6 +48,7 @@ class RearmHarness:
 
     _rearm_warmup_after_optimizer_reset = BaseTrainer._rearm_warmup_after_optimizer_reset
     _fast_forward_lr_schedulers = BaseTrainer._fast_forward_lr_schedulers
+    _split_fresh_param_groups_for_warmup = BaseTrainer._split_fresh_param_groups_for_warmup
     # Both are @staticmethod on BaseTrainer; reading them off the class yields a
     # plain function, so they must be re-wrapped or the harness would rebind
     # them as instance methods and pass `self` as the first argument.
@@ -153,6 +154,56 @@ def test_partial_resume_rewarms_only_the_fresh_param_group():
     assert h._rearm_warmup_after_optimizer_reset(60000) is True
     assert h.lr_scheduler.lr_lambdas[0](60000) == pytest.approx(0.5)
     assert h.lr_scheduler.lr_lambdas[0](60500) == pytest.approx(0.5)
+    assert h.lr_scheduler.lr_lambdas[1](60000) == pytest.approx(0.0)
+    assert h.lr_scheduler.lr_lambdas[1](60500) == pytest.approx(0.25)
+
+
+def test_fused_mixed_group_rewarms_only_fresh_tensor_without_group_split():
+    from core.training.optimizers.fresh_param_warmup import fresh_param_warmup_factor
+
+    h = RearmHarness(warmup=1000)
+    old, new = torch.nn.Parameter(torch.zeros(2)), torch.nn.Parameter(torch.zeros(2))
+    h.optimizer = torch.optim.AdamW([{"params": [old, new], "lr": 1e-6}])
+    h.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
+        h.optimizer, _plateau_then_half(1000),
+    )
+    h.optimizers, h.lr_schedulers = [h.optimizer], [h.lr_scheduler]
+    h.fused_optimizer_groups = None
+    h.use_fused_backward = True
+    h._optimizer_state_partially_fresh = True
+    h._optimizer_fresh_param_group_indices = {id(h.optimizer): {0}}
+    h._optimizer_fresh_param_ids = {id(h.optimizer): {id(new)}}
+    h._fast_forward_lr_schedulers(60000)
+
+    assert h._rearm_warmup_after_optimizer_reset(60000) is True
+    assert len(h.optimizer.param_groups) == 1
+    assert fresh_param_warmup_factor(h.optimizer, old) == 1.0
+    assert fresh_param_warmup_factor(h.optimizer, new) == 0.0
+    h.lr_scheduler.last_epoch = 60500
+    assert fresh_param_warmup_factor(h.optimizer, new) == pytest.approx(0.5)
+    h.lr_scheduler.last_epoch = 61000
+    assert fresh_param_warmup_factor(h.optimizer, new) == 1.0
+    assert not hasattr(h.optimizer, "_sushi_fresh_param_warmup")
+
+
+def test_nonfused_mixed_group_is_split_and_only_fresh_group_rewarms():
+    h = RearmHarness(warmup=1000)
+    old, new = torch.nn.Parameter(torch.zeros(2)), torch.nn.Parameter(torch.zeros(2))
+    h.optimizer = torch.optim.AdamW([{"params": [old, new], "lr": 1e-6}])
+    h.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
+        h.optimizer, _plateau_then_half(1000),
+    )
+    h.optimizers, h.lr_schedulers = [h.optimizer], [h.lr_scheduler]
+    h.fused_optimizer_groups = None
+    h.use_fused_backward = False
+    h._optimizer_state_partially_fresh = True
+    h._optimizer_fresh_param_group_indices = {id(h.optimizer): {0}}
+    h._optimizer_fresh_param_ids = {id(h.optimizer): {id(new)}}
+    h._fast_forward_lr_schedulers(60000)
+
+    assert h._rearm_warmup_after_optimizer_reset(60000) is True
+    assert [group["params"] for group in h.optimizer.param_groups] == [[old], [new]]
+    assert h.lr_scheduler.lr_lambdas[0](60000) == pytest.approx(0.5)
     assert h.lr_scheduler.lr_lambdas[1](60000) == pytest.approx(0.0)
     assert h.lr_scheduler.lr_lambdas[1](60500) == pytest.approx(0.25)
 

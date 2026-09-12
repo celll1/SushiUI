@@ -52,8 +52,10 @@ class _Probe:
     save_optimizer_state = BaseTrainer.save_optimizer_state
     load_optimizer_state = BaseTrainer.load_optimizer_state
     _split_saved_optimizer_states = staticmethod(BaseTrainer._split_saved_optimizer_states)
+    _merge_named_optimizer_states = staticmethod(BaseTrainer._merge_named_optimizer_states)
     _repartition_optimizer_states = BaseTrainer._repartition_optimizer_states
     _load_one_optimizer_state = BaseTrainer._load_one_optimizer_state
+    _load_optimizer_state_by_parameter_name = BaseTrainer._load_optimizer_state_by_parameter_name
     _remap_optimizer_state_by_group_prefix = (
         BaseTrainer._remap_optimizer_state_by_group_prefix)
     _optimizer_state_entry_fits_param = staticmethod(
@@ -419,6 +421,36 @@ def test_a_different_parameter_set_resets_and_says_so(tmp_path):
     # against), not proof the parameter set changed.
     assert "may not have changed at all" in events[0]["message"]
     assert "grouped-optimizer resumes reset every group" in events[0]["message"]
+
+
+def test_named_fused_resume_restores_across_shifted_chunk_boundaries(tmp_path):
+    trained = _fused_probe(tmp_path, num_groups=3, n_params=6)
+    trained._build_ema_param_name_map = lambda: {
+        id(parameter): f"model.p{index}"
+        for index, parameter in enumerate(trained.params)
+    }
+    _train(trained)
+    before = [moment.clone() for moment in _moments(trained)]
+    _quiet(trained.save_optimizer_state, 12)
+
+    resumed = _fused_probe(tmp_path, num_groups=3, n_params=7, seed=9)
+    logical_names = ["model.p0", "model.new", "model.p1", "model.p2",
+                     "model.p3", "model.p4", "model.p5"]
+    resumed._build_ema_param_name_map = lambda: {
+        id(parameter): name
+        for parameter, name in zip(resumed.params, logical_names)
+    }
+
+    ok, text = _quiet(resumed.load_optimizer_state, 12)
+
+    assert ok is True
+    assert "by model path" in text
+    moments = _moments(resumed)
+    assert moments[1] is None
+    for live_index, saved_index in ((0, 0), (2, 1), (3, 2), (4, 3), (5, 4), (6, 5)):
+        assert torch.equal(moments[live_index], before[saved_index])
+    fresh_ids = set().union(*resumed._optimizer_fresh_param_ids.values())
+    assert fresh_ids == {id(resumed.params[1])}
 
 
 def test_pre_fix_file_resumed_under_a_different_group_count_says_predates_not_changed(tmp_path):

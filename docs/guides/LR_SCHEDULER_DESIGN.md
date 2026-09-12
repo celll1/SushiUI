@@ -1350,7 +1350,7 @@ lambda を持つ `LambdaLR` を返す。数値パラメータ・タイムライ�
 |---|---|---|---|
 | param group の `name` / `component` | アダプタは書かない（§1-6）ので `_name_configured_groups` は `_build_component_lr_list` か `group{i}` に落ちていた | LoRA は `component_param_groups` の 1 箇所、フル FT・ControlNet・VE は各アダプタが `name`（細分ラベル）と `component`（`LORA_COMPONENT_*`）の**両方**を書く | 全 run。resume の LR 再表明ログのラベルが `U-Net` → `unet` 等に変わる。`.lr_schedule.json` の `groups[].name` も同様 |
 | `lr_<component>` メトリクス | `_build_component_lr_list` 由来、長さ不一致で `g{i}` | 同じ優先順を**先頭に残した**うえで、一致しないときだけ `_configured_group_names`、最後に `g{i}`。`.dNN` 付きは最終深度（係数 1.0）だけ emit（§11.4） | LLRD を使う run のみ。使わない run の系列名は 1 つも変わらない |
-| optimizer state の復元 | グループ数が変われば prefix remap が index で寄せる | 深さ分割の署名（`name` と param 数）が食い違う resume は**復元を拒否して既存の fresh optimizer 経路へ**（§17.3）。`.dNN` がどちらにも無ければ判定自体しない | LLRD を切り替えた／ブロック数か trainable 集合が変わった resume |
+| optimizer state の復元 | グループ数が変われば prefix remap が index で寄せる | 名前メタデータを持つ新 checkpoint はモデル path で復元する。メタデータの無い旧 checkpoint で深さ分割の署名（`name` と param 数）が食い違う resume は**復元を拒否して既存の fresh optimizer 経路へ**（§17.3）。`.dNN` がどちらにも無ければ判定自体しない | LLRD を切り替えた／ブロック数か trainable 集合が変わった resume |
 
 §10 / §11 / §17 が実コードと合わなかった点:
 
@@ -1493,6 +1493,33 @@ P7 が**やっていない**こと: VAE への実行時コマンド（`training_
 
 回帰条件は蓄積数の増減、スキップ・部分蓄積、MNT 再計算、warmup 中の延長、
 旧 YAML の設定往復、グループ別 plateau の設定往復を含む。
+
+### 18.11 trainable tensor 変更時の限定再 warmup（2026-09-12）
+
+optimizer sidecar は各 param group と同順の `_sushi_param_names`（安定した dotted model
+path）を保存する。resume 時は group 番号や group 内の位置ではなくこの名前で moment を復元し、
+追加・削除・並べ替え・group 再編成のいずれでも、対応しない**生きた tensor だけ**を fresh とする。
+形状が同じ別 tensor を位置だけで取り違えない。名前の無い旧 sidecar は従来の group-prefix
+復元を使い、LLRD 構造変更については安全のため全 optimizer state を fresh にする。
+fused optimizer groups の chunk 境界を tensor の追加が跨いで動かした場合も、保存された全 chunk
+を一度名前空間上で統合してから各 live optimizer へ配り直す。
+
+`rewarmup_on_optimizer_reset` が有効な部分復元では次の規則を使う。
+
+- 通常の `optimizer.step()` は、混在 group を restored / fresh の最大 2 cohort に分け、fresh
+  cohort の scheduler lambda だけに再 warmup を合成する。tensor ごとの group は作らない。
+- fused-backward の parameter update seam は group を分けず、fresh tensor の更新に渡す CPU
+  scalar LR だけを一時的に縮小する。restored tensor は同じ group の元 LR を使う。
+- 判定は Python の `id(parameter)` 集合で行う。CUDA tensor を読まず、GPU sync も追加 kernel
+  も発生させない。warmup 終了を最初に観測した時点で optimizer 上の cohort 属性を削除し、
+  以後の update は属性確認だけの fast path に戻る。
+
+2026-09-12 の300万回 CPU microbenchmarkでは、fused update から呼ぶ判定は warmup 中
+171–185 ns/tensor、終了後48 ns/tensorだった（CUDA workは0）。
+
+optimizer 実装を互換な 8-bit 形式間で変更した場合も名前メタデータを変換後へ引き継ぐ。
+したがって今後 trainable 対象を任意の位置で広げても、checkpoint がこのメタデータを持つ限り、
+新しく学習対象になった tensor の moment と LR warmup だけが新規開始になる。
 
 
 ## 19. 実行時のスケジュール変更（要求: 任意 step での方式・パラメータ変更、D21–D30）

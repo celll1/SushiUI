@@ -31,6 +31,7 @@ import sys
 import unittest
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 
@@ -40,6 +41,7 @@ if _BACKEND not in sys.path:
 
 import core.training.optimizers.adamw8bit_ringbuffer as rb  # noqa: E402
 import core.training.optimizers.lion8bit_ringbuffer as lb  # noqa: E402
+from core.training.optimizers.fresh_param_warmup import arm_fresh_param_warmup  # noqa: E402
 
 SEED = 20260825
 LR = 1e-3
@@ -64,6 +66,7 @@ class _RecordingExtension:
 
     def __init__(self):
         self.steps: list[int] = []
+        self.lrs: list[float] = []
 
     def init_quantization_maps(self, *args, **kwargs):
         pass
@@ -72,10 +75,12 @@ class _RecordingExtension:
                           beta1, beta2, eps, lr, weight_decay, gnorm_scale,
                           step, cautious):
         self.steps.append(int(step))
+        self.lrs.append(float(lr))
 
     def lion_8bit_update(self, param, grad, state, absmax, beta1, beta2, eps,
                          lr, weight_decay, gnorm_scale, step, cautious):
         self.steps.append(int(step))
+        self.lrs.append(float(lr))
 
 
 def _with_extension(module, ext, factory):
@@ -318,6 +323,32 @@ class SilentSkipTest(unittest.TestCase):
         model(torch.randn(4, IN)).pow(2).mean().backward()
         self.assertEqual(len(ext.steps), len(list(model.parameters())))
         self.assertEqual(set(ext.steps), {1})
+
+    def test_adamw_hook_scales_only_the_fresh_tensor_lr(self):
+        model = _linear_model()
+        opt, ext = self._adamw(model)
+        fresh = model[1].weight
+        arm_fresh_param_warmup(
+            opt, SimpleNamespace(last_epoch=100), {id(fresh)}, 100, 10,
+        )
+        rb.patch_adamw8bit_ringbuffer(model, opt)
+
+        model(torch.randn(4, IN)).pow(2).mean().backward()
+
+        self.assertEqual(sorted(ext.lrs), [0.0, LR])
+
+    def test_lion_hook_scales_only_the_fresh_tensor_lr(self):
+        model = _linear_model()
+        opt, ext = self._lion(model)
+        fresh = model[1].weight
+        arm_fresh_param_warmup(
+            opt, SimpleNamespace(last_epoch=100), {id(fresh)}, 100, 10,
+        )
+        lb.register_lion8bit_fused_backward(opt, model)
+
+        model(torch.randn(4, IN)).pow(2).mean().backward()
+
+        self.assertEqual(sorted(ext.lrs), [0.0, LR])
 
 
 if __name__ == "__main__":

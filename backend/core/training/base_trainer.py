@@ -5430,8 +5430,8 @@ class BaseTrainer(ABC):
         Save optimizer state dict to .pt file.
 
         Under fused optimizer groups all N optimizers are written, under
-        ``_sushi_fused_group_states``. A single-optimizer run writes the plain
-        ``state_dict()`` it always wrote, so its files are unchanged.
+        ``_sushi_fused_group_states``. A single-optimizer run keeps the plain
+        top-level ``state_dict()`` format and adds only reserved metadata keys.
 
         A fused file read by a build that predates this key fails safely and
         quietly: ``optimizer.load_state_dict()`` raises ``KeyError`` on the
@@ -5453,12 +5453,20 @@ class BaseTrainer(ABC):
         # AdamW8bit -> AdamW8bit_RingBuffer) can detect the source format and
         # convert the state instead of crashing.
         states = []
+        name_builder = getattr(self, "_build_ema_param_name_map", None)
+        parameter_names = name_builder() if callable(name_builder) else {}
         for optimizer in optimizers:
             state = optimizer.state_dict()
             try:
                 state["_sushi_opt_class"] = type(optimizer).__name__
             except Exception:
                 pass
+            names = [
+                [parameter_names.get(id(parameter)) for parameter in group["params"]]
+                for group in optimizer.param_groups
+            ]
+            if names and all(name is not None for group in names for name in group):
+                state["_sushi_param_names"] = names
             states.append(state)
 
         if len(states) == 1:
@@ -5571,6 +5579,31 @@ class BaseTrainer(ABC):
             return self._load_one_optimizer_state(
                 optimizers[0], saved_states[0], optimizer_file.name)
 
+        merged_named = self._merge_named_optimizer_states(saved_states)
+        if merged_named is not None:
+            current_builder = getattr(self, "_build_ema_param_name_map", None)
+            current_map = current_builder() if callable(current_builder) else {}
+            live_parameters = [
+                parameter
+                for optimizer in optimizers
+                for group in optimizer.param_groups
+                for parameter in group["params"]
+            ]
+            if live_parameters and all(id(p) in current_map for p in live_parameters):
+                print(f"{self.log_prefix} Restoring {len(saved_states)} saved optimizer "
+                      f"group(s) into {len(optimizers)} live group(s) by model path")
+                results = [
+                    self._load_one_optimizer_state(
+                        optimizer, merged_named,
+                        f"{optimizer_file.name} [named group {index}]",
+                    )
+                    for index, optimizer in enumerate(optimizers)
+                ]
+                # An entirely new live chunk legitimately restores no moments;
+                # the other chunks still did, and its exact tensors were marked
+                # fresh for targeted re-warmup by the named loader.
+                return any(results)
+
         live_counts = [sum(len(g["params"]) for g in optimizer.param_groups)
                        for optimizer in optimizers]
         saved_counts = [self._optimizer_state_param_count(state) for state in saved_states]
@@ -5663,6 +5696,50 @@ class BaseTrainer(ABC):
         if isinstance(payload, dict) and isinstance(payload.get(FUSED_GROUP_STATES_KEY), list):
             return list(payload[FUSED_GROUP_STATES_KEY]), True
         return [payload], False
+
+    @staticmethod
+    def _merge_named_optimizer_states(saved_states):
+        """Combine independently-numbered optimizer chunks for a named load."""
+        if not saved_states:
+            return None
+        merged = {"state": {}, "param_groups": [], "_sushi_param_names": []}
+        next_id = 0
+        for state in saved_states:
+            groups = state.get("param_groups")
+            names_by_group = state.get("_sushi_param_names")
+            if (not isinstance(groups, list) or not isinstance(names_by_group, list)
+                    or len(groups) != len(names_by_group)):
+                return None
+            source_state = {int(key): value for key, value in state.get("state", {}).items()}
+            for group, names in zip(groups, names_by_group):
+                source_ids = group.get("params", [])
+                if len(source_ids) != len(names) or any(name is None for name in names):
+                    return None
+                merged_group = dict(group)
+                merged_group["params"] = []
+                for source_id in source_ids:
+                    merged_group["params"].append(next_id)
+                    source_id = int(source_id)
+                    if source_id in source_state:
+                        merged["state"][next_id] = source_state[source_id]
+                    next_id += 1
+                merged["param_groups"].append(merged_group)
+                merged["_sushi_param_names"].append(list(names))
+        metadata_keys = set.intersection(*(
+            set(state) - {"state", "param_groups", "_sushi_param_names"}
+            for state in saved_states
+        ))
+        for key in metadata_keys:
+            values = [state[key] for state in saved_states]
+            try:
+                if all(value == values[0] for value in values[1:]):
+                    merged[key] = values[0]
+            except (RuntimeError, TypeError):
+                pass
+        step_counts = [state.get("step_count") for state in saved_states]
+        if all(isinstance(value, int) for value in step_counts):
+            merged["step_count"] = max(step_counts)
+        return merged
 
     def _repartition_optimizer_states(
         self, saved_states: List[Dict[str, Any]], optimizers: List[Any]
@@ -5800,11 +5877,102 @@ class BaseTrainer(ABC):
         }
         return new_state, report, fresh_total
 
+    def _load_optimizer_state_by_parameter_name(
+        self, optimizer, optimizer_state, saved_names, current_names, label,
+    ) -> bool:
+        """Restore moments by stable model path and mark unmatched tensors fresh."""
+        saved_groups = optimizer_state.get("param_groups", [])
+        if len(saved_names) != len(saved_groups):
+            raise RuntimeError("optimizer parameter-name metadata is malformed")
+        saved_by_name = {}
+        saved_state = {int(k): v for k, v in optimizer_state.get("state", {}).items()}
+        for names, group in zip(saved_names, saved_groups):
+            if len(names) != len(group.get("params", [])):
+                raise RuntimeError("optimizer parameter-name metadata length mismatch")
+            for name, saved_id in zip(names, group["params"]):
+                saved_id = int(saved_id)
+                if name is not None and saved_id in saved_state:
+                    if name in saved_by_name:
+                        raise RuntimeError(f"duplicate optimizer parameter name {name!r}")
+                    saved_by_name[name] = saved_state[saved_id]
+
+        live = optimizer.state_dict()
+        remapped, fresh_ids, fresh_groups = {}, set(), set()
+        if len(current_names) != len(optimizer.param_groups):
+            raise RuntimeError("live optimizer parameter-name metadata is malformed")
+        live_name_set = set()
+        kept = 0
+        for group_index, (names, group, live_group) in enumerate(zip(
+            current_names, optimizer.param_groups, live["param_groups"],
+        )):
+            if len(names) != len(group["params"]):
+                raise RuntimeError("live optimizer parameter-name metadata length mismatch")
+            for name, parameter, live_id in zip(
+                names, group["params"], live_group["params"],
+            ):
+                if name in live_name_set:
+                    raise RuntimeError(f"duplicate live optimizer parameter name {name!r}")
+                live_name_set.add(name)
+                entry = saved_by_name.get(name)
+                if entry is None:
+                    fresh_ids.add(id(parameter))
+                    fresh_groups.add(group_index)
+                    continue
+                if not self._optimizer_state_entry_fits_param(entry, parameter):
+                    raise RuntimeError(
+                        f"saved optimizer state for {name!r} does not fit its live tensor"
+                    )
+                remapped[int(live_id)] = entry
+                kept += 1
+        fresh = sum(len(group) for group in current_names) - kept
+        fresh_id_map = getattr(self, "_optimizer_fresh_param_ids", None)
+        if fresh_id_map is None:
+            fresh_id_map = self._optimizer_fresh_param_ids = {}
+        fresh_group_map = getattr(
+            self, "_optimizer_fresh_param_group_indices", None
+        )
+        if fresh_group_map is None:
+            fresh_group_map = self._optimizer_fresh_param_group_indices = {}
+        fresh_id_map[id(optimizer)] = fresh_ids
+        fresh_group_map[id(optimizer)] = fresh_groups
+        self._optimizer_state_partially_fresh = bool(
+            getattr(self, "_optimizer_state_partially_fresh", False) or fresh > 0
+        )
+        if kept == 0:
+            print(f"{self.log_prefix} Named optimizer state load from {label}: "
+                  f"no tensor matched; {fresh} start fresh")
+            return False
+
+        partial = {"state": remapped, "param_groups": live["param_groups"]}
+        partial.update({
+            key: value for key, value in optimizer_state.items()
+            if key not in {"state", "param_groups", "_sushi_param_names"}
+        })
+        optimizer.load_state_dict(partial)
+        print(f"{self.log_prefix} Named optimizer state load OK from {label}: "
+              f"{kept} tensor(s) restored, {fresh} start fresh")
+        return True
+
     def _load_one_optimizer_state(self, optimizer, optimizer_state, label: str) -> bool:
         """Load one saved state dict into one optimizer."""
         from .optimizers.host_state_allocator import HostStateResidencyError
 
-        changed = depth_split_structure_changed(optimizer, optimizer_state)
+        saved_names = optimizer_state.get("_sushi_param_names")
+        current_names = None
+        named_restore_available = False
+        if saved_names:
+            name_builder = getattr(self, "_build_ema_param_name_map", None)
+            current_map = name_builder() if callable(name_builder) else {}
+            current_names = [
+                [current_map.get(id(parameter)) for parameter in group["params"]]
+                for group in optimizer.param_groups
+            ]
+            named_restore_available = all(
+                name is not None for group in current_names for name in group
+            )
+
+        changed = (None if named_restore_available else
+                   depth_split_structure_changed(optimizer, optimizer_state))
         if changed is not None:
             print(f"{self.log_prefix} Not restoring optimizer state from {label}: "
                   f"{changed}. Restoring by index would give one depth's moments "
@@ -5857,6 +6025,24 @@ class BaseTrainer(ABC):
                 # absmax2) that must be on the CUDA device.
                 print(f"{self.log_prefix} Moving optimizer state tensors to {self.device}...")
                 optimizer_state = move_tensors_to_device(optimizer_state, self.device)
+
+            if saved_names and named_restore_available:
+                loaded = self._load_optimizer_state_by_parameter_name(
+                    optimizer, optimizer_state, saved_names, current_names, label,
+                )
+                finalize_loaded_state_devices(
+                    optimizer, self.device, host_resident,
+                )
+                if _carry_step > 0 and hasattr(optimizer, "step_count"):
+                    optimizer.step_count = _carry_step
+                    print(f"{self.log_prefix} [OptConvert] carried "
+                          f"step_count={_carry_step}")
+                assert_loaded_state_host_resident(self, [optimizer])
+                return loaded
+            if saved_names and not named_restore_available:
+                print(f"{self.log_prefix} Parameter-name optimizer restore is "
+                      f"unavailable because at least one live tensor has no stable "
+                      f"model path; using the legacy layout-safe restore path")
 
             # Attempt to load state dict with error handling
             try:
@@ -7092,9 +7278,9 @@ class BaseTrainer(ABC):
             lr(step) = base_lr * schedule(step) * min(1, (step - resume) / W)
 
         so the underlying schedule keeps its absolute position. After a partial
-        state load, only wholly fresh parameter groups receive the ramp; groups
-        whose moments were restored retain their exact schedule. Every scheduler
-        this project builds is a ``LambdaLR``
+        state load, fresh tensors receive the ramp while restored tensors retain
+        their exact schedule, even when both shared one parameter group. Every
+        scheduler this project builds is a ``LambdaLR``
         (``lr_schedules.build_lr_scheduler``), and fused optimizers are handled
         independently too.
 
@@ -7141,6 +7327,8 @@ class BaseTrainer(ABC):
         anchor = resume_scheduler_position(self, global_step)
         rearmed = 0
         rearmed_groups = 0
+        rearmed_tensor_cohorts = 0
+        split_groups = False
         skipped = 0
         schedulers = all_lr_schedulers(self)
         optimizers = all_optimizers(self)
@@ -7165,6 +7353,40 @@ class BaseTrainer(ABC):
                 fresh_groups.get(id(optimizers[scheduler_index]), set())
                 if targeted else set(range(len(lambdas)))
             )
+            optimizer = (optimizers[scheduler_index]
+                         if scheduler_index < len(optimizers) else None)
+            fresh_ids = set(getattr(
+                self, "_optimizer_fresh_param_ids", {}
+            ).get(id(optimizer), set())) if optimizer is not None else set()
+            mixed_ids = {
+                id(parameter)
+                for group_index in selected
+                for parameter in (optimizer.param_groups[group_index]["params"]
+                                  if optimizer is not None else ())
+                if id(parameter) in fresh_ids
+                if len(optimizer.param_groups[group_index]["params"]) > sum(
+                    id(candidate) in fresh_ids
+                    for candidate in optimizer.param_groups[group_index]["params"])
+            }
+            if mixed_ids:
+                if (getattr(self, "use_fused_backward", False)
+                        and getattr(self, "fused_optimizer_groups", None) is None):
+                    from .optimizers.fresh_param_warmup import arm_fresh_param_warmup
+                    arm_fresh_param_warmup(
+                        optimizer, scheduler, mixed_ids, anchor, warmup,
+                    )
+                    rearmed_tensor_cohorts += 1
+                    selected = {
+                        index for index in selected
+                        if not any(id(p) in mixed_ids
+                                   for p in optimizer.param_groups[index]["params"])
+                    }
+                else:
+                    selected = self._split_fresh_param_groups_for_warmup(
+                        optimizer, scheduler, fresh_ids, selected,
+                    )
+                    split_groups = True
+                    lambdas = scheduler.lr_lambdas
             scheduler.lr_lambdas = [
                 self._compose_warmup_lambda(fn, anchor, warmup)
                 if group_index in selected else fn
@@ -7172,8 +7394,20 @@ class BaseTrainer(ABC):
             ]
             rearmed_groups += len(selected)
             if not selected:
+                if mixed_ids:
+                    rearmed += 1
                 continue
             rearmed += 1
+
+        if split_groups:
+            live_groups = [group for opt in optimizers for group in opt.param_groups]
+            self._configured_group_lrs = [
+                float(group.get("initial_lr", group["lr"])) for group in live_groups
+            ]
+            self._configured_group_names = [
+                str(group.get("name", f"group{index}"))
+                for index, group in enumerate(live_groups)
+            ]
 
         if not rearmed:
             print(f"{self.log_prefix} WARNING: optimizer state was NOT restored and "
@@ -7187,9 +7421,46 @@ class BaseTrainer(ABC):
               f"Re-arming the configured {length} warmup from step {anchor} "
               f"over {rearmed_groups} fresh parameter group(s) in "
               f"{rearmed} schedule(s)"
+              + (f" and {rearmed_tensor_cohorts} fresh tensor cohort(s)"
+                 if rearmed_tensor_cohorts else "")
               + (f" ({skipped} non-LambdaLR skipped)" if skipped else "")
               + " -- the underlying schedule keeps its position.")
         return True
+
+    def _split_fresh_param_groups_for_warmup(
+        self, optimizer, scheduler, fresh_ids, selected,
+    ):
+        """Split mixed groups into restored/fresh cohorts for ordinary steps."""
+        new_groups = []
+        new_base_lrs = []
+        new_lambdas = []
+        new_last_lrs = []
+        fresh_indices = set()
+        last_lrs = list(getattr(scheduler, "_last_lr", []))
+        for index, group in enumerate(optimizer.param_groups):
+            params = list(group["params"])
+            fresh = [p for p in params if id(p) in fresh_ids]
+            restored = [p for p in params if id(p) not in fresh_ids]
+            pieces = [(restored, False), (fresh, True)] if restored and fresh else [
+                (params, index in selected)
+            ]
+            for piece, is_fresh in pieces:
+                clone = dict(group)
+                clone["params"] = piece
+                if is_fresh and restored:
+                    clone["name"] = f"{group.get('name', f'group{index}')}.fresh"
+                new_groups.append(clone)
+                new_base_lrs.append(scheduler.base_lrs[index])
+                new_lambdas.append(scheduler.lr_lambdas[index])
+                new_last_lrs.append(last_lrs[index] if index < len(last_lrs)
+                                    else clone["lr"])
+                if is_fresh:
+                    fresh_indices.add(len(new_groups) - 1)
+        optimizer.param_groups[:] = new_groups
+        scheduler.base_lrs = new_base_lrs
+        scheduler.lr_lambdas = new_lambdas
+        scheduler._last_lr = new_last_lrs
+        return fresh_indices
 
     @staticmethod
     def _compose_warmup_lambda(inner, anchor: int, warmup: int):

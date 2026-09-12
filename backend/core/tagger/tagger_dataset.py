@@ -19,12 +19,8 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 from transformers import AutoProcessor
 
-from .tag_vocabulary import (
-    QUALITY_TAG_GROUPS,
-    RATING_TAGS,
-    TagVocabulary,
-    normalize_tag,
-)
+from .tag_labels import build_label_and_mask
+from .tag_vocabulary import TagVocabulary, normalize_tag
 
 
 def resolve_caption_tags(
@@ -355,58 +351,8 @@ class TaggerDataset(Dataset):
     def _build_label_and_mask(
         self, tags: List[str]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        voc = self.vocabulary
-        # Size to the LIVE vocabulary, not the cached self.num_tags. Online
-        # Danbooru vocab expansion grows the vocabulary during training; each
-        # DataLoader worker re-pickles the vocab at its (grown) size at the epoch
-        # boundary, so voc.tag_to_idx can exceed the stale self.num_tags captured
-        # at dataset construction -> IndexError at label[idx]. Using voc.num_tags
-        # (== len(tag_to_idx)) guarantees every index fits; the MixedDataLoader
-        # still pads up to any further mid-epoch head growth.
-        n_tags = voc.num_tags
-        label     = torch.zeros(n_tags, dtype=torch.float32)
-        loss_mask = torch.ones(n_tags,  dtype=torch.float32)
-
-        tag_set = set(tags)
-        for tag in tag_set:
-            if tag in voc.tag_to_idx:
-                label[voc.tag_to_idx[tag]] = 1.0
-
-        # Rating tags: mask out if none present in this sample
-        has_rating = any(normalize_tag(r) in tag_set for r in RATING_TAGS)
-        if not has_rating:
-            for idx in voc.rating_indices:
-                loss_mask[idx] = 0.0
-
-        # Quality tags: behavior depends on quality_masking_mode.
-        #
-        # Detect which quality groups have at least one tag present on this sample.
-        present_groups: set = set()
-        for group_name, gtags in QUALITY_TAG_GROUPS.items():
-            if any(normalize_tag(t) in tag_set for t in gtags):
-                present_groups.add(group_name)
-
-        if not present_groups:
-            # No quality tag → mask ALL quality indices (both modes agree).
-            for group_indices in voc.quality_indices.values():
-                for idx in group_indices:
-                    loss_mask[idx] = 0.0
-        elif self.quality_masking_mode == "intra_group":
-            # tagutl-style: within each present group, mask non-positive siblings.
-            # Sibling masking avoids penalising "best=0" on a sample that an
-            # annotator chose to label "high" instead — within-group distinctions
-            # are often noisy / prevalence-imbalanced (e.g. normal_quality
-            # dominates → ASL's high γ_neg would over-suppress best_quality).
-            # Tags in the *other* group stay unmasked → trained as negatives
-            # (high vs low is a meaningful, clean distinction).
-            for group_name in present_groups:
-                for idx in voc.quality_indices[group_name]:
-                    if label[idx] == 0.0:
-                        loss_mask[idx] = 0.0
-        # else "cross_group": leave loss_mask[*]=1 — all non-positive quality
-        # tags train as negatives (legacy behavior, assumes clean labels).
-
-        return label, loss_mask
+        # The live vocabulary may grow after dataset construction.
+        return build_label_and_mask(tags, self.vocabulary, self.quality_masking_mode)
 
 
 

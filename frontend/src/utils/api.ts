@@ -8212,6 +8212,8 @@ export interface TaggerTrainingRunCreateRequest {
   batch_size?: number;
   num_workers?: number;
   num_workers_override?: number | null;
+  tag_refresh_enable?: boolean;
+  tag_refresh_interval_seconds?: number;
   save_every_n_steps?: number;
   save_every_n_epochs?: number;
   keep_last_n_checkpoints?: number;
@@ -8263,6 +8265,9 @@ export interface TaggerTrainingRunCreateRequest {
   train_f1_threshold_search_every_n_steps?: number;
   train_f1_initial_threshold?: number;
   train_f1_buffer_batches?: number;
+  save_tag_metrics?: boolean;
+  hard_rate_lo?: number;
+  hard_rate_hi?: number;
   // Online Danbooru augmentation
   enable_danbooru_augmentation?: boolean;
   // Query mode (first-class collection mode)
@@ -8284,6 +8289,11 @@ export interface TaggerTrainingRunCreateRequest {
   danbooru_max_posts_per_query?: number;
   danbooru_api_interval?: number;
   danbooru_dl_speed_kbps?: number;
+  danbooru_speed_check_enable?: boolean;
+  danbooru_speed_degraded_kbps?: number;
+  danbooru_speed_min_slow_streak?: number;
+  danbooru_speed_min_slow_seconds?: number;
+  danbooru_speed_cooldown_seconds?: number;
   danbooru_buffer_size?: number | null;
   danbooru_vocab_expand?: boolean;
   danbooru_new_tag_min_count?: number;

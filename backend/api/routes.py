@@ -19799,7 +19799,7 @@ from api.batch_operations import (
 from core.datasets.batch_jobs import (
     BatchJobConflict,
     batch_jobs,
-    resolve_dataset_item_ids,
+    resolve_dataset_selection,
 )
 
 
@@ -19807,7 +19807,9 @@ def _start_dataset_batch(dataset_id: int, request, db: Session) -> str:
     if db.query(Dataset.id).filter(Dataset.id == dataset_id).first() is None:
         raise HTTPException(status_code=404, detail="Dataset not found")
     try:
-        request.item_ids = resolve_dataset_item_ids(db, dataset_id, request.item_ids)
+        request.item_ids = resolve_dataset_selection(
+            db, dataset_id, request.item_ids, request.selection
+        )
         return batch_jobs.start(dataset_id, request.operation_id)
     except BatchJobConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

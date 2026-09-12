@@ -77,6 +77,13 @@ def resolve_dataset_item_ids(db, dataset_id: int, requested_ids: Iterable[int]) 
             )
         ]
 
+    _validate_dataset_item_ids(db, dataset_id, requested)
+    return requested
+
+
+def _validate_dataset_item_ids(db, dataset_id: int, requested: list[int]) -> None:
+    from database.models import DatasetItem
+
     found: set[int] = set()
     for start in range(0, len(requested), 900):
         chunk = requested[start:start + 900]
@@ -94,4 +101,30 @@ def resolve_dataset_item_ids(db, dataset_id: int, requested_ids: Iterable[int]) 
             f"Item IDs do not belong to dataset {dataset_id}: {sample}"
             + (" ..." if len(missing) > 10 else "")
         )
-    return requested
+
+
+def resolve_dataset_selection(db, dataset_id: int, requested_ids, selection) -> list[int]:
+    if selection is None:
+        return resolve_dataset_item_ids(db, dataset_id, requested_ids)
+
+    from database.models import DatasetItem
+    from .queries import exact_tag_item_ids
+
+    excluded = list(dict.fromkeys(int(item_id) for item_id in selection.excluded_ids))
+    if excluded:
+        _validate_dataset_item_ids(db, dataset_id, excluded)
+    requested_tags = (
+        [tag.strip() for tag in selection.tags.split(",") if tag.strip()]
+        if selection.tags else []
+    )
+    if requested_tags:
+        item_ids = exact_tag_item_ids(
+            db, dataset_id, requested_tags, search=selection.search
+        )
+    else:
+        query = db.query(DatasetItem.id).filter(DatasetItem.dataset_id == dataset_id)
+        if selection.search:
+            query = query.filter(DatasetItem.base_name.like(f"%{selection.search}%"))
+        item_ids = [row[0] for row in query.order_by(DatasetItem.id).all()]
+    excluded_set = set(excluded)
+    return [item_id for item_id in item_ids if item_id not in excluded_set]

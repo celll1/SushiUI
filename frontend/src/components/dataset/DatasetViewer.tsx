@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { listDatasetGridItems, DatasetGridItem, Dataset, getDataset, getDatasetTagStatistics, getAllDatasetItemIds } from "@/utils/api";
+import { listDatasetGridItems, DatasetGridItem, Dataset, getDataset, getDatasetTagStatistics } from "@/utils/api";
 import ItemGridColumn from "./viewer/ItemGridColumn";
 import ItemDetailColumn from "./viewer/ItemDetailColumn";
 import ActionsColumn from "./viewer/ActionsColumn";
@@ -25,6 +25,8 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
   const [dataset, setDataset] = useState<Dataset | null>(null);
   const [items, setItems] = useState<DatasetGridItem[]>([]);
   const [selectedItems, setSelectedItems] = useState<Set<number>>(new Set());
+  const [allMatchingSelected, setAllMatchingSelected] = useState(false);
+  const [excludedItems, setExcludedItems] = useState<Set<number>>(new Set());
   const [currentItem, setCurrentItem] = useState<DatasetGridItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -50,6 +52,8 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
     setItems([]);
     setCurrentItem(null);
     setSelectedItems(new Set());
+    setAllMatchingSelected(false);
+    setExcludedItems(new Set());
     setTagStatistics(undefined);
     setTagCategoryCache({});
     statisticsRequestRef.current += 1;
@@ -134,6 +138,13 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
   };
 
   const handleToggleSelection = (itemId: number) => {
+    if (allMatchingSelected) {
+      const next = new Set(excludedItems);
+      if (next.has(itemId)) next.delete(itemId);
+      else next.add(itemId);
+      setExcludedItems(next);
+      return;
+    }
     const newSelected = new Set(selectedItems);
     if (newSelected.has(itemId)) {
       newSelected.delete(itemId);
@@ -143,32 +154,28 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
     setSelectedItems(newSelected);
   };
 
-  const handleSelectAll = async () => {
-    try {
-      // Fetch all item IDs (respecting current search/tag filters)
-      const response = await getAllDatasetItemIds(
-        datasetId,
-        search || undefined,
-        tagFilter || undefined
-      );
-      setSelectedItems(new Set(response.item_ids));
-    } catch (err) {
-      console.error("Failed to select all items:", err);
-    }
+  const handleSelectAll = () => {
+    setAllMatchingSelected(true);
+    setSelectedItems(new Set());
+    setExcludedItems(new Set());
   };
 
   const handleDeselectAll = () => {
     setSelectedItems(new Set());
+    setAllMatchingSelected(false);
+    setExcludedItems(new Set());
   };
 
   const handleSearchChange = (value: string) => {
     setSearch(value);
     setPage(1);
+    handleDeselectAll();
   };
 
   const handleTagFilterChange = (value: string) => {
     setTagFilter(value);
     setPage(1);
+    handleDeselectAll();
   };
 
   const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
@@ -190,6 +197,8 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
         <ItemGridColumn
           items={items}
           selectedItems={selectedItems}
+          allMatchingSelected={allMatchingSelected}
+          excludedItems={excludedItems}
           currentItem={currentItem}
           search={search}
           tagFilter={tagFilter}
@@ -252,6 +261,10 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
           onLoadStatistics={loadTagStatistics}
           onRefresh={() => loadItems()}
           selectedItemIds={Array.from(selectedItems)}
+          allMatchingSelected={allMatchingSelected}
+          excludedItemIds={Array.from(excludedItems)}
+          activeSearch={debouncedSearch}
+          activeTagFilter={debouncedTagFilter}
           totalItems={total}
           captionProcessingConfig={dataset?.caption_processing}
           taggerSettings={taggerSettings}

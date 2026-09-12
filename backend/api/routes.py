@@ -12590,15 +12590,37 @@ async def browser_image(rel_path: str, size: int = 0):
 @router.get("/tagger/browser/tags")
 async def browser_get_tags(rel_path: str):
     """Read .txt sidecar file for rel_path. Returns tags list and raw text."""
-    import os as _os
+    from core.tagger.browser_sidecars import read_image_sidecar
+
     abs_path = _resolve_browser_path(rel_path)
-    txt = _os.path.splitext(abs_path)[0] + ".txt"
-    if not _os.path.isfile(txt):
-        return {"tags": [], "raw": ""}
-    with open(txt, "r", encoding="utf-8") as f:
-        content = f.read().strip()
-    tags = [t.strip() for t in content.split(",") if t.strip()]
-    return {"tags": tags, "raw": content}
+    tags, raw = read_image_sidecar(abs_path)
+    return {"tags": tags, "raw": raw}
+
+
+class BrowserGetTagsBatchRequest(BaseModel):
+    rel_paths: List[str]
+
+
+@router.post("/tagger/browser/tags/batch")
+async def browser_get_tags_batch(req: BrowserGetTagsBatchRequest):
+    """Read sidecars in one request while preserving per-file failures."""
+    import asyncio as _asyncio
+    from core.tagger.browser_sidecars import read_image_sidecar
+
+    resolved = [(_resolve_browser_path(rel_path), rel_path) for rel_path in req.rel_paths]
+
+    def read_all():
+        items = []
+        for abs_path, rel_path in resolved:
+            try:
+                tags, _ = read_image_sidecar(abs_path)
+                items.append({"rel_path": rel_path, "tags": tags})
+            except (OSError, UnicodeError) as exc:
+                print(f"[TaggerBrowser] Could not read sidecar for {rel_path}: {exc}")
+                items.append({"rel_path": rel_path, "error": "Unable to read sidecar"})
+        return items
+
+    return {"items": await _asyncio.to_thread(read_all)}
 
 
 class BrowserSaveTagsRequest(BaseModel):
@@ -12609,12 +12631,11 @@ class BrowserSaveTagsRequest(BaseModel):
 @router.post("/tagger/browser/tags")
 async def browser_save_tags(req: BrowserSaveTagsRequest):
     """Write tags to .txt sidecar file (comma-separated)."""
-    import os as _os
+    import asyncio as _asyncio
+    from core.tagger.browser_sidecars import write_image_sidecar
+
     abs_path = _resolve_browser_path(req.rel_path)
-    txt = _os.path.splitext(abs_path)[0] + ".txt"
-    content = ", ".join(req.tags)
-    with open(txt, "w", encoding="utf-8") as f:
-        f.write(content)
+    await _asyncio.to_thread(write_image_sidecar, abs_path, req.tags)
     return {"saved": True}
 
 

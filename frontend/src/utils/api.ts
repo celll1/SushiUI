@@ -5838,6 +5838,10 @@ export interface BrowserTagsResponse {
   raw: string;
 }
 
+export type BrowserTagsBatchItem =
+  | { rel_path: string; tags: string[]; error?: never }
+  | { rel_path: string; tags?: never; error: string };
+
 export type BrowserBatchEvent =
   | { type: "done"; i: number; total: number; rel_path: string; n_tags: number }
   | { type: "skip"; i: number; total: number; rel_path: string }
@@ -5880,6 +5884,13 @@ export const browserGetTags = async (
     params: { rel_path },
   });
   return response.data as BrowserTagsResponse;
+};
+
+export const browserGetTagsBatch = async (
+  rel_paths: string[]
+): Promise<BrowserTagsBatchItem[]> => {
+  const response = await api.post("/tagger/browser/tags/batch", { rel_paths });
+  return (response.data as { items: BrowserTagsBatchItem[] }).items;
 };
 
 export const browserSaveTags = async (

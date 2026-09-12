@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo, useCallback } from "react";
 import {
   BrowserImageEntry,
   browserImageUrl,
-  browserGetTags,
+  browserGetTagsBatch,
   browserSaveTags,
 } from "@/utils/api";
 import InputWithTagSuggestions from "@/components/common/InputWithTagSuggestions";
@@ -47,6 +47,8 @@ export default function BulkTagEditorPanel({
 }: BulkTagEditorPanelProps) {
   // rel_path → tags loaded from disk
   const [loadedTags, setLoadedTags] = useState<Map<string, string[]>>(new Map());
+  const [loadErrors, setLoadErrors] = useState<string[]>([]);
+  const [reloadToken, setReloadToken] = useState(0);
   const [loading, setLoading] = useState(false);
   const [inputValue, setInputValue] = useState("");
   // Pending bulk operations (staged, not yet applied)
@@ -57,26 +59,44 @@ export default function BulkTagEditorPanel({
   const [applyError, setApplyError] = useState<string | null>(null);
 
   const tagSuggestionsCtx = useTagSuggestions();
+  const selectionKey = useMemo(
+    () => selectedImages.map((image) => image.rel_path).join("\0"),
+    [selectedImages]
+  );
+  const selectedPaths = useMemo(
+    () => selectionKey ? selectionKey.split("\0") : [],
+    [selectionKey]
+  );
 
   useEffect(() => {
+    let cancelled = false;
     setLoading(true);
+    setLoadedTags(new Map());
+    setLoadErrors([]);
     setBulkAdd(new Map());
     setBulkRemove(new Set());
     setApplyError(null);
     setInputValue("");
-    Promise.all(
-      selectedImages.map((img) =>
-        browserGetTags(img.rel_path)
-          .then(({ tags }) => [img.rel_path, tags] as const)
-          .catch(() => [img.rel_path, []] as const)
-      )
-    ).then((results) => {
-      const map = new Map<string, string[]>();
-      for (const [rp, tags] of results) map.set(rp, tags);
-      setLoadedTags(map);
-      setLoading(false);
-    });
-  }, [selectedImages.map((i) => i.rel_path).join("\0")]); // eslint-disable-line react-hooks/exhaustive-deps
+    browserGetTagsBatch(selectedPaths)
+      .then((items) => {
+        if (cancelled) return;
+        const tags = new Map<string, string[]>();
+        const errors: string[] = [];
+        for (const item of items) {
+          if (item.error) errors.push(item.rel_path);
+          else tags.set(item.rel_path, item.tags);
+        }
+        setLoadedTags(tags);
+        setLoadErrors(errors);
+      })
+      .catch(() => {
+        if (!cancelled) setLoadErrors(selectedPaths);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [selectedPaths, reloadToken]);
 
   // Union of all tags with coverage count
   const tagCoverage = useMemo(() => {
@@ -94,13 +114,22 @@ export default function BulkTagEditorPanel({
 
   // Resolve categories for all union tags
   const [tagCategories, setTagCategories] = useState<Map<string, string>>(new Map());
+  const categoryLookupKey = useMemo(
+    () => [...tagCoverage.counts.keys()].sort().join("\0"),
+    [tagCoverage.counts]
+  );
   useEffect(() => {
-    const allTags = [...tagCoverage.counts.keys()];
-    if (allTags.length === 0) return;
+    const allTags = categoryLookupKey ? categoryLookupKey.split("\0") : [];
+    let cancelled = false;
+    if (allTags.length === 0) {
+      setTagCategories(new Map());
+      return;
+    }
     tagSuggestionsCtx.getCategoriesForTags(allTags)
-      .then(setTagCategories)
+      .then((categories) => { if (!cancelled) setTagCategories(categories); })
       .catch(() => {});
-  }, [tagCoverage.counts.size]); // eslint-disable-line react-hooks/exhaustive-deps
+    return () => { cancelled = true; };
+  }, [categoryLookupKey, tagSuggestionsCtx]);
 
   const groupedTags = useMemo(() => {
     const groups = new Map<CategoryName, string[]>(CATEGORY_ORDER.map((c) => [c, []]));
@@ -144,12 +173,13 @@ export default function BulkTagEditorPanel({
   }, []);
 
   const handleApply = useCallback(async () => {
-    if (applying || selectedImages.length === 0) return;
+    if (applying || selectedImages.length === 0 || loadErrors.length > 0) return;
     setApplying(true);
     setApplyError(null);
     setProgress({ done: 0, total: selectedImages.length });
 
     const updates: Array<{ relPath: string; hasTags: boolean }> = [];
+    const savedTags = new Map<string, string[]>();
     let errorCount = 0;
 
     for (const img of selectedImages) {
@@ -161,21 +191,26 @@ export default function BulkTagEditorPanel({
       try {
         await browserSaveTags(img.rel_path, next);
         updates.push({ relPath: img.rel_path, hasTags: next.length > 0 });
-        setLoadedTags((prev) => new Map([...prev, [img.rel_path, next]]));
+        savedTags.set(img.rel_path, next);
       } catch {
         errorCount++;
       }
       setProgress((p) => p ? { ...p, done: p.done + 1 } : p);
     }
 
-    setBulkAdd(new Map());
-    setBulkRemove(new Set());
+    if (savedTags.size > 0) {
+      setLoadedTags((previous) => new Map([...previous, ...savedTags]));
+    }
+    if (errorCount === 0) {
+      setBulkAdd(new Map());
+      setBulkRemove(new Set());
+    }
     setApplying(false);
     setProgress(null);
 
     if (errorCount > 0) setApplyError(`${errorCount} 件の保存に失敗しました`);
     if (updates.length > 0) onTagsSaved(updates);
-  }, [applying, selectedImages, loadedTags, bulkAdd, bulkRemove, onTagsSaved]);
+  }, [applying, selectedImages, loadedTags, loadErrors, bulkAdd, bulkRemove, onTagsSaved]);
 
   const hasPending = bulkAdd.size > 0 || bulkRemove.size > 0;
 
@@ -223,11 +258,20 @@ export default function BulkTagEditorPanel({
       <div className="px-2 py-1.5 flex-shrink-0 flex items-center gap-2">
         <button
           onClick={handleApply}
-          disabled={!hasPending || applying}
+          disabled={!hasPending || applying || loading || loadErrors.length > 0}
           className="px-3 py-1 text-sm bg-blue-600 hover:bg-blue-500 disabled:opacity-40 rounded"
         >
           {applying ? "適用中..." : "適用"}
         </button>
+        {loadErrors.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setReloadToken((value) => value + 1)}
+            className="px-2 py-1 text-xs bg-yellow-700 hover:bg-yellow-600 rounded"
+          >
+            再読込
+          </button>
+        )}
         {hasPending && (
           <span className="text-xs text-gray-400">
             {bulkAdd.size > 0 && `+${bulkAdd.size} 追加`}
@@ -247,6 +291,11 @@ export default function BulkTagEditorPanel({
         )}
         {applyError && <span className="text-red-400 text-xs">{applyError}</span>}
       </div>
+      {loadErrors.length > 0 && (
+        <p className="px-2 pb-1 text-xs text-red-400">
+          {loadErrors.length}件のsidecarを読み込めないため、上書きを停止しています。
+        </p>
+      )}
 
       {/* Category-grouped union tags (scrollable) */}
       <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-2">

@@ -29,7 +29,7 @@ def test_prediction_tag_names_preserves_response_order_and_deduplicates():
 
 
 def test_write_image_sidecar_replaces_complete_file(tmp_path):
-    from core.tagger.browser_sidecars import write_image_sidecar
+    from core.tagger.browser_sidecars import read_image_sidecar, write_image_sidecar
 
     image_path = tmp_path / "sample.png"
     image_path.write_bytes(b"image placeholder")
@@ -38,6 +38,7 @@ def test_write_image_sidecar_replaces_complete_file(tmp_path):
 
     assert write_image_sidecar(str(image_path), ["a", "b"]) == str(sidecar)
     assert sidecar.read_text(encoding="utf-8") == "a, b"
+    assert read_image_sidecar(str(image_path)) == (["a", "b"], "a, b")
     assert list(tmp_path.glob("*.tmp")) == []
 
 

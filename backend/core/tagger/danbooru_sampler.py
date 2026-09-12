@@ -1052,8 +1052,10 @@ class DanbooruSampleBuffer:
                                 self._cooc_collected[query] = _cc
                                 if self._cooc_collect_per_epoch > 0 and _cc >= self._cooc_collect_per_epoch:
                                     self._exhausted_tags.add(query)
-                            # Per-tag per-epoch cap for query / new_tag / low_f1.
-                            if _per_tag_cap > 0 and kind in ("new_tag", "low_f1", "query"):
+                            # Per-tag per-epoch cap for paths sharing _collect_count.
+                            if _per_tag_cap > 0 and kind in (
+                                "new_tag", "low_f1", "query", "train_count"
+                            ):
                                 _pc = self._collect_count.get(query, 0) + 1
                                 self._collect_count[query] = _pc
                                 if _pc >= _per_tag_cap:

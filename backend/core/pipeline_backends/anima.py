@@ -335,6 +335,100 @@ class AnimaMixin:
         # Sanity: only proceed if nag_active agrees (defensive, mirrors reference).
         return neg if nag_active(nag_enable, nag_scale, neg.get("prompt_embeds")) else None
 
+    def _anima_encode_conditioning(
+        self,
+        text_encoder,
+        qwen3_tokenizer,
+        t5_tokenizer,
+        prompt,
+        negative_prompt,
+        guidance_scale,
+        params,
+        enc_device,
+        output_device,
+        compute_dtype,
+        model_key,
+        keep_text_encoder,
+        cpu_text_encoding,
+        text_encoder_quantization,
+    ):
+        """Own Anima's positive, CFG and NAG text-encoder phase."""
+        from core.inference.prompt_embedding_cache import (
+            conditioning_cache_key, generation_prompt_cache, tokenizer_cache_key,
+        )
+        from core.keep_hot import discard_resident, is_resident, mark_resident
+        from core.models.anima.anima_pipeline_ops import encode_prompt
+
+        use_negpip = self._anima_negpip_active(params)
+        nag_text = params.get("nag_negative_prompt", "") or negative_prompt or ""
+        nag_enabled = bool(params.get("nag_enable", False)) \
+            and abs(float(params.get("nag_scale", 1.0) or 1.0) - 1.0) > 1e-5 \
+            and bool(nag_text)
+        encoder_dtype = getattr(text_encoder, "dtype", None)
+        if encoder_dtype is None:
+            encoder_dtype = next(text_encoder.parameters()).dtype
+        cache_key = conditioning_cache_key(
+            "anima", model_key, qwen3_tokenizer, enc_device, encoder_dtype,
+            prompt,
+            negative_prompt if guidance_scale > 1.0 else None,
+            nag_text if nag_enabled else None,
+            guidance_scale > 1.0,
+            nag_enabled,
+            use_negpip,
+            tokenizer_cache_key(t5_tokenizer),
+            str(compute_dtype),
+        )
+        cached, cache_hit = generation_prompt_cache.get(
+            text_encoder, cache_key, output_device,
+        )
+        was_resident = is_resident(self, "text_encoder", model_key)
+        if cache_hit:
+            if not keep_text_encoder and not cpu_text_encoding:
+                self._anima_move("text_encoder", "cpu")
+                discard_resident(self, "text_encoder")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            return cached, (keep_text_encoder and was_resident)
+
+        if not cpu_text_encoding and not was_resident:
+            text_encoder = self._anima_move(
+                "text_encoder", output_device, text_encoder_quantization,
+            )
+        cond = encode_prompt(
+            text_encoder, qwen3_tokenizer, t5_tokenizer, prompt,
+            device=enc_device, dtype=compute_dtype, skip_emphasis=use_negpip,
+        )
+        uncond = None
+        if guidance_scale > 1.0:
+            uncond = encode_prompt(
+                text_encoder, qwen3_tokenizer, t5_tokenizer, negative_prompt,
+                device=enc_device, dtype=compute_dtype, skip_emphasis=use_negpip,
+            )
+        nag_neg = self._anima_encode_nag_neg(
+            params, encode_prompt, text_encoder, qwen3_tokenizer, t5_tokenizer,
+            enc_device, compute_dtype,
+        )
+        result = (cond, uncond, nag_neg)
+        generation_prompt_cache.put(text_encoder, cache_key, result)
+
+        if keep_text_encoder:
+            mark_resident(self, "text_encoder", model_key)
+        elif not cpu_text_encoding:
+            self._anima_move("text_encoder", "cpu")
+            discard_resident(self, "text_encoder")
+        if cpu_text_encoding:
+            def embeds_to_gpu(value):
+                if value is None:
+                    return None
+                return {
+                    key: item.to(output_device) if isinstance(item, torch.Tensor) else item
+                    for key, item in value.items()
+                }
+            result = tuple(embeds_to_gpu(value) for value in result)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return result, keep_text_encoder
+
     @staticmethod
     def _anima_build_nag_wrapper(params, transformer, nag_neg_embeds):
         """Build an AnimaNAGWrapper for the conditional pass, or None when NAG
@@ -714,7 +808,7 @@ class AnimaMixin:
         print("[Anima] Starting txt2img generation")
         self._anima_set_attention_backend(params)
         from core.models.anima.anima_pipeline_ops import (
-            encode_prompt, sample_txt2img, vae_decode_latents,
+            sample_txt2img, vae_decode_latents,
         )
 
         device = self.device
@@ -797,40 +891,12 @@ class AnimaMixin:
 
         try:
             # Stage 1: text encoding
-            if not cpu_text_encoding and not is_resident(self, "text_encoder", _kh_model_key):
-                text_encoder = self._anima_move("text_encoder", device, text_encoder_quantization)
-            # NegPip auto-activates on any negative emphasis weight. When active
-            # we encode CLEAN embeddings (skip_emphasis) so the signed V scaling
-            # carries all the emphasis; otherwise the default emphasis path runs.
-            use_negpip = self._anima_negpip_active(params)
-            cond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
-                                  prompt, device=enc_device, dtype=compute_dtype,
-                                  skip_emphasis=use_negpip)
-            uncond = None
-            if guidance_scale > 1.0:
-                uncond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
-                                       negative_prompt, device=enc_device, dtype=compute_dtype,
-                                       skip_emphasis=use_negpip)
-            nag_neg = self._anima_encode_nag_neg(
-                params, encode_prompt, text_encoder, qwen3_tokenizer, t5_tokenizer,
-                enc_device, compute_dtype,
+            (cond, uncond, nag_neg), _kh_keep_te = self._anima_encode_conditioning(
+                text_encoder, qwen3_tokenizer, t5_tokenizer,
+                prompt, negative_prompt, guidance_scale, params,
+                enc_device, device, compute_dtype, _kh_model_key, _kh_keep_te,
+                cpu_text_encoding, text_encoder_quantization,
             )
-            # Offload text encoder after encoding (unless kept hot for the next
-            # queued generation on the same model_key).
-            if _kh_keep_te:
-                mark_resident(self, "text_encoder", _kh_model_key)
-            elif not cpu_text_encoding:
-                self._anima_move("text_encoder", "cpu")
-            if cpu_text_encoding:
-                def _embeds_to_gpu(d):
-                    return {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in d.items()}
-                cond = _embeds_to_gpu(cond)
-                if uncond is not None:
-                    uncond = _embeds_to_gpu(uncond)
-                if nag_neg is not None:
-                    nag_neg = _embeds_to_gpu(nag_neg)
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
 
             # Stage 2: denoising
             if is_resident(self, "transformer", _kh_model_key):
@@ -1006,7 +1072,7 @@ class AnimaMixin:
         print("[Anima] Starting img2img generation")
         self._anima_set_attention_backend(params)
         from core.models.anima.anima_pipeline_ops import (
-            encode_prompt, sample_img2img, vae_encode_image, vae_decode_latents,
+            sample_img2img, vae_encode_image, vae_decode_latents,
         )
 
         device = self.device
@@ -1092,35 +1158,12 @@ class AnimaMixin:
                 torch.cuda.empty_cache()
 
             # Text encoding
-            if not cpu_text_encoding and not is_resident(self, "text_encoder", _kh_model_key):
-                text_encoder = self._anima_move("text_encoder", device, text_encoder_quantization)
-            use_negpip = self._anima_negpip_active(params)
-            cond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
-                                  prompt, device=enc_device, dtype=compute_dtype,
-                                  skip_emphasis=use_negpip)
-            uncond = None
-            if guidance_scale > 1.0:
-                uncond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
-                                       negative_prompt, device=enc_device, dtype=compute_dtype,
-                                       skip_emphasis=use_negpip)
-            nag_neg = self._anima_encode_nag_neg(
-                params, encode_prompt, text_encoder, qwen3_tokenizer, t5_tokenizer,
-                enc_device, compute_dtype,
+            (cond, uncond, nag_neg), _kh_keep_te = self._anima_encode_conditioning(
+                text_encoder, qwen3_tokenizer, t5_tokenizer,
+                prompt, negative_prompt, guidance_scale, params,
+                enc_device, device, compute_dtype, _kh_model_key, _kh_keep_te,
+                cpu_text_encoding, text_encoder_quantization,
             )
-            if _kh_keep_te:
-                mark_resident(self, "text_encoder", _kh_model_key)
-            elif not cpu_text_encoding:
-                self._anima_move("text_encoder", "cpu")
-            if cpu_text_encoding:
-                def _embeds_to_gpu(d):
-                    return {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in d.items()}
-                cond = _embeds_to_gpu(cond)
-                if uncond is not None:
-                    uncond = _embeds_to_gpu(uncond)
-                if nag_neg is not None:
-                    nag_neg = _embeds_to_gpu(nag_neg)
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
 
             # Denoise
             if is_resident(self, "transformer", _kh_model_key):
@@ -1291,7 +1334,7 @@ class AnimaMixin:
         print("[Anima] Starting inpaint generation")
         self._anima_set_attention_backend(params)
         from core.models.anima.anima_pipeline_ops import (
-            encode_prompt, sample_inpaint, vae_encode_image, vae_decode_latents,
+            sample_inpaint, vae_encode_image, vae_decode_latents,
             make_mask_latents,
         )
 
@@ -1389,35 +1432,12 @@ class AnimaMixin:
             )
 
             # Text encoding
-            if not cpu_text_encoding and not is_resident(self, "text_encoder", _kh_model_key):
-                text_encoder = self._anima_move("text_encoder", device, text_encoder_quantization)
-            use_negpip = self._anima_negpip_active(params)
-            cond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
-                                  prompt, device=enc_device, dtype=compute_dtype,
-                                  skip_emphasis=use_negpip)
-            uncond = None
-            if guidance_scale > 1.0:
-                uncond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
-                                       negative_prompt, device=enc_device, dtype=compute_dtype,
-                                       skip_emphasis=use_negpip)
-            nag_neg = self._anima_encode_nag_neg(
-                params, encode_prompt, text_encoder, qwen3_tokenizer, t5_tokenizer,
-                enc_device, compute_dtype,
+            (cond, uncond, nag_neg), _kh_keep_te = self._anima_encode_conditioning(
+                text_encoder, qwen3_tokenizer, t5_tokenizer,
+                prompt, negative_prompt, guidance_scale, params,
+                enc_device, device, compute_dtype, _kh_model_key, _kh_keep_te,
+                cpu_text_encoding, text_encoder_quantization,
             )
-            if _kh_keep_te:
-                mark_resident(self, "text_encoder", _kh_model_key)
-            elif not cpu_text_encoding:
-                self._anima_move("text_encoder", "cpu")
-            if cpu_text_encoding:
-                def _embeds_to_gpu(d):
-                    return {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in d.items()}
-                cond = _embeds_to_gpu(cond)
-                if uncond is not None:
-                    uncond = _embeds_to_gpu(uncond)
-                if nag_neg is not None:
-                    nag_neg = _embeds_to_gpu(nag_neg)
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
 
             # Denoise
             if is_resident(self, "transformer", _kh_model_key):

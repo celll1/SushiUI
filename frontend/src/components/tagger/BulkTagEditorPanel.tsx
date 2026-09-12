@@ -16,12 +16,14 @@ import {
 } from "./taggerCategories";
 
 interface BulkTagEditorPanelProps {
+  workspaceId: string;
   selectedImages: BrowserImageEntry[];
   onTagsSaved: (updates: Array<{ relPath: string; hasTags: boolean }>) => void;
   onDeselectAll: () => void;
 }
 
 export default function BulkTagEditorPanel({
+  workspaceId,
   selectedImages,
   onTagsSaved,
   onDeselectAll,
@@ -58,7 +60,7 @@ export default function BulkTagEditorPanel({
     setBulkRemove(new Set());
     setApplyError(null);
     setInputValue("");
-    browserGetTagsBatch(selectedPaths)
+    browserGetTagsBatch(workspaceId, selectedPaths)
       .then((items) => {
         if (cancelled) return;
         const tags = new Map<string, string[]>();
@@ -77,7 +79,7 @@ export default function BulkTagEditorPanel({
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [selectedPaths, reloadToken]);
+  }, [workspaceId, selectedPaths, reloadToken]);
 
   // Union of all tags with coverage count
   const tagCoverage = useMemo(() => {
@@ -170,7 +172,7 @@ export default function BulkTagEditorPanel({
         if (!next.includes(t)) next = [...next, t];
       }
       try {
-        await browserSaveTags(img.rel_path, next);
+        await browserSaveTags(workspaceId, img.rel_path, next);
         updates.push({ relPath: img.rel_path, hasTags: next.length > 0 });
         savedTags.set(img.rel_path, next);
       } catch {
@@ -191,7 +193,7 @@ export default function BulkTagEditorPanel({
 
     if (errorCount > 0) setApplyError(`${errorCount} 件の保存に失敗しました`);
     if (updates.length > 0) onTagsSaved(updates);
-  }, [applying, selectedImages, loadedTags, loadErrors, bulkAdd, bulkRemove, onTagsSaved]);
+  }, [workspaceId, applying, selectedImages, loadedTags, loadErrors, bulkAdd, bulkRemove, onTagsSaved]);
 
   const hasPending = bulkAdd.size > 0 || bulkRemove.size > 0;
 
@@ -203,7 +205,7 @@ export default function BulkTagEditorPanel({
           {selectedImages.map((img) => (
             <img
               key={img.rel_path}
-              src={browserImageUrl(img.rel_path, 48)}
+              src={browserImageUrl(workspaceId, img.rel_path, 48)}
               alt={img.rel_path}
               className="w-10 h-10 object-cover rounded flex-shrink-0 border border-gray-600"
               // eslint-disable-next-line @next/next/no-img-element

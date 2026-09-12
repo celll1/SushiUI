@@ -4,6 +4,7 @@ import { useRef, useState, useEffect, useCallback } from "react";
 import { BrowserImageEntry, browserImageUrl } from "@/utils/api";
 
 interface ThumbnailGridProps {
+  workspaceId: string;
   images: BrowserImageEntry[];
   selectedIds: Set<string>;
   primaryId: string | null;
@@ -15,6 +16,7 @@ const CARD_H = 128;
 const BUFFER_ROWS = 4;
 
 export default function ThumbnailGrid({
+  workspaceId,
   images,
   selectedIds,
   primaryId,
@@ -140,7 +142,7 @@ export default function ThumbnailGrid({
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
-                  src={browserImageUrl(img.rel_path, 160)}
+                  src={browserImageUrl(workspaceId, img.rel_path, 160)}
                   alt={img.rel_path}
                   className="w-full object-cover"
                   style={{ height: CARD_H - 24 }}

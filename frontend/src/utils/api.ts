@@ -5879,8 +5879,7 @@ export const getSigLIP2LoadedVocabulary = async (): Promise<VocabularyData> => {
 
 // ---------------------------------------------------------------------------
 // Tagger Browser API
-// Security: absolute paths are never sent to/from the client.
-// All file operations use rel_path (relative to the server-side browser root).
+// After opening a folder, file operations use an opaque workspace ID and rel_path.
 // ---------------------------------------------------------------------------
 
 /** Image entry returned by /tagger/browser/list — no absolute path field. */
@@ -5893,6 +5892,12 @@ export interface BrowserImageEntry {
 
 export interface BrowserListResponse {
   images: BrowserImageEntry[];
+}
+
+export interface BrowserWorkspaceResponse {
+  ok: boolean;
+  workspace_id: string | null;
+  display_name: string | null;
 }
 
 export interface BrowserTagsResponse {
@@ -5914,61 +5919,68 @@ export type BrowserBatchEvent =
 /** Set browser root by typed path. Returns display_name (folder basename only). */
 export const browserSetDirectory = async (
   dir: string
-): Promise<{ ok: boolean; display_name: string | null }> => {
+): Promise<BrowserWorkspaceResponse> => {
   const response = await api.post("/tagger/browser/set-directory", { dir });
-  return response.data as { ok: boolean; display_name: string | null };
+  return response.data as BrowserWorkspaceResponse;
 };
 
 /** Open native OS folder picker. Returns display_name (folder basename only). */
-export const browserPickDirectory = async (): Promise<{
-  ok: boolean;
-  display_name: string | null;
-}> => {
+export const browserPickDirectory = async (): Promise<BrowserWorkspaceResponse> => {
   const response = await api.post("/tagger/browser/pick-directory");
-  return response.data as { ok: boolean; display_name: string | null };
+  return response.data as BrowserWorkspaceResponse;
 };
 
 /** List images under the active browser root. */
 export const browserListImages = async (
+  workspace_id: string,
   recursive = false,
   includeTags = false
 ): Promise<BrowserListResponse> => {
   const response = await api.get("/tagger/browser/list", {
-    params: { recursive, include_tags: includeTags },
+    params: { workspace_id, recursive, include_tags: includeTags },
   });
   return response.data as BrowserListResponse;
 };
 
 export const browserGetTags = async (
+  workspace_id: string,
   rel_path: string
 ): Promise<BrowserTagsResponse> => {
   const response = await api.get("/tagger/browser/tags", {
-    params: { rel_path },
+    params: { workspace_id, rel_path },
   });
   return response.data as BrowserTagsResponse;
 };
 
 export const browserGetTagsBatch = async (
+  workspace_id: string,
   rel_paths: string[]
 ): Promise<BrowserTagsBatchItem[]> => {
-  const response = await api.post("/tagger/browser/tags/batch", { rel_paths });
+  const response = await api.post("/tagger/browser/tags/batch", { workspace_id, rel_paths });
   return (response.data as { items: BrowserTagsBatchItem[] }).items;
 };
 
 export const browserSaveTags = async (
+  workspace_id: string,
   rel_path: string,
   tags: string[]
 ): Promise<void> => {
-  await api.post("/tagger/browser/tags", { rel_path, tags });
+  await api.post("/tagger/browser/tags", { workspace_id, rel_path, tags });
 };
 
 /** Build URL for an image served by rel_path. */
-export const browserImageUrl = (rel_path: string, size = 0): string => {
+export const browserImageUrl = (
+  workspace_id: string,
+  rel_path: string,
+  size = 0
+): string => {
   const encoded = encodeURIComponent(rel_path);
-  return `/api/v1/tagger/browser/image?rel_path=${encoded}&size=${size}`;
+  const workspace = encodeURIComponent(workspace_id);
+  return `/api/v1/tagger/browser/image?workspace_id=${workspace}&rel_path=${encoded}&size=${size}`;
 };
 
 export const browserBatchInfer = (
+  workspace_id: string,
   rel_paths: string[],
   options: { overwrite?: boolean; use_ood_detection?: boolean },
   onProgress: (ev: BrowserBatchEvent) => void
@@ -5980,7 +5992,7 @@ export const browserBatchInfer = (
       const res = await fetch("/api/v1/tagger/browser/batch-infer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rel_paths, ...options }),
+        body: JSON.stringify({ workspace_id, rel_paths, ...options }),
         signal: ctrl.signal,
       });
       if (!res.ok) {

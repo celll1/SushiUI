@@ -248,10 +248,21 @@ async def scan_dataset_index(
 
     print(f"[Dataset Scan] Found {total_images} images, {len(suffix_captions_by_stem)} groups with suffix captions")
 
-    existing_items_rows = db.query(DatasetItem.id, DatasetItem.image_path).filter(
-        DatasetItem.dataset_id == dataset_id
-    ).all()
-    existing_paths: dict[str, int] = {row.image_path: row.id for row in existing_items_rows}
+    from sqlalchemy import exists
+
+    has_file_caption = exists().where(
+        DatasetCaption.item_id == DatasetItem.id,
+        DatasetCaption.source == "file",
+    )
+    existing_items_rows = db.query(
+        DatasetItem.id,
+        DatasetItem.image_path,
+        has_file_caption.label("has_file_caption"),
+    ).filter(DatasetItem.dataset_id == dataset_id).all()
+    existing_paths: dict[str, tuple[int, bool]] = {
+        row.image_path: (row.id, bool(row.has_file_caption))
+        for row in existing_items_rows
+    }
     # Track which existing paths are still on disk (for purge at the end)
     seen_existing_paths: set[str] = set()
     # mtime threshold: captions updated after this are re-processed
@@ -422,8 +433,10 @@ async def scan_dataset_index(
                 # Decide existing-vs-new BEFORE opening the image so unchanged
                 # existing items skip the PIL open entirely — their dimensions are
                 # already stored. Only NEW images need to be opened for width/height.
-                existing_item_id = existing_paths.get(image_path)
-                if existing_item_id is not None:
+                existing_entry = existing_paths.get(image_path)
+                caption_refresh_started = None
+                if existing_entry is not None:
+                    existing_item_id, had_file_caption = existing_entry
                     # Image already registered — mark as seen (for purge logic)
                     seen_existing_paths.add(image_path)
                     files_processed += 1
@@ -454,6 +467,12 @@ async def scan_dataset_index(
                         except OSError:
                             pass
 
+                    has_current_sidecar = bool(
+                        caption_files or suffix_captions_by_stem.get(group_key)
+                    )
+                    if had_file_caption and not has_current_sidecar and not read_exif_enabled:
+                        any_caption_updated = True
+
                     if not any_caption_updated:
                         # No changes — skip entirely (no Image.open: dimensions are
                         # already stored on the existing item).
@@ -468,6 +487,7 @@ async def scan_dataset_index(
                     # Captions updated — re-process for this existing item. No
                     # Image.open needed (dimensions already in DB).
                     item_id_for_captions = existing_item_id
+                    caption_refresh_started = datetime.utcnow()
                     if files_processed % 10 == 0 or total_images < 100:
                         _send_progress(progress, 
                             files_processed,
@@ -792,6 +812,21 @@ async def scan_dataset_index(
                         print(f"[Dataset Scan] Failed to read EXIF captions for {image_path}: {e}")
                 _exif += time.time() - _ts
 
+                if caption_refresh_started is not None:
+                    db.flush()
+                    stale_file_captions = db.query(DatasetCaption).filter(
+                        DatasetCaption.item_id == item_id_for_captions,
+                        DatasetCaption.source == "file",
+                        (
+                            DatasetCaption.updated_at.is_(None)
+                            | (DatasetCaption.updated_at < caption_refresh_started)
+                        ),
+                    )
+                    removed_captions = stale_file_captions.count()
+                    if removed_captions:
+                        stale_file_captions.delete(synchronize_session=False)
+                        captions_updated += removed_captions
+
                 # Per-item timing probe: surface which items (and which phase) stall
                 # in the live backend, since every phase is fast in isolation.
                 _caps_ms = (time.time() - _t_caps) * 1000
@@ -865,7 +900,7 @@ async def scan_dataset_index(
     # subtract their tag counts from the existing tag_statistics.
     purged_tag_counts: dict[str, int] = {}   # tag -> count to subtract
     if stale_paths:
-        stale_item_ids = [existing_paths[p] for p in stale_paths]
+        stale_item_ids = [existing_paths[p][0] for p in stale_paths]
         if incremental and dataset.tag_statistics:
             import json as _json_purge
             purged_caps = db.query(DatasetCaption).filter(
@@ -907,10 +942,28 @@ async def scan_dataset_index(
     # incremental=False (regular UI scan): always full recompute
     if incremental:
         existing_stats: dict = dataset.tag_statistics or {}
-        if items_found == 0 and items_purged == 0:
+        if (
+            items_found == 0
+            and items_purged == 0
+            and captions_found == 0
+            and captions_updated == 0
+        ):
             # Case 1: nothing changed structurally — reuse cached stats
             print(f"[Dataset Scan] No structural change — reusing cached tag statistics ({len(existing_stats)} tags)")
             tag_statistics = existing_stats
+        elif captions_found or captions_updated:
+            print("[Dataset Scan] Caption changes detected — rebuilding tag statistics")
+            tag_statistics = compute_tag_statistics(
+                dataset_id,
+                db,
+                root_dir=settings.root_dir,
+                progress=lambda processed, unique_tags: _send_progress(
+                    progress,
+                    total_images,
+                    total_steps,
+                    f"Computing tag statistics: {processed} captions, {unique_tags} unique tags",
+                ),
+            )
         else:
             # Case 2: differential update
             print(f"[Dataset Scan] Incremental tag statistics update: -{items_purged} / +{items_found} items")

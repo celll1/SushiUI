@@ -28,7 +28,8 @@ from .config import (
     to_diffusers_backend,
     validate_backend,
 )
-from .dispatch import AttentionMode, dispatch_attention, dispatch_attention_varlen
+from .contracts import AttentionFallbackPolicy, AttentionMode
+from .dispatch import dispatch_attention, dispatch_attention_varlen
 from .observed import begin_generation, observed_backends
 from .registry import BACKENDS, AttentionBackend
 
@@ -36,6 +37,7 @@ __all__ = [
     "dispatch_attention",
     "dispatch_attention_varlen",
     "AttentionMode",
+    "AttentionFallbackPolicy",
     "normalize_backend",
     "resolve_backend",
     "to_diffusers_backend",

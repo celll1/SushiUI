@@ -61,8 +61,8 @@ class AttentionBackend:
 #     hard cap of 128; head_dims outside this set (SD1.5 40/80/160,
 #     Ideogram4 256, MiniT2I l16 52) are refused -> native. Confirmed against
 #     the installed sageattention.core kernels.
-#   * Requires equal q/kv head counts -> supports_gqa=False (Z-Image GQA
-#     auto-downgrades to native for sage).
+#   * The installed top-level API accepts q-head counts divisible by the
+#     kv-head count.
 #
 # flash:
 #   * FlashAttention-2, supports backward -> trainable=True.
@@ -105,7 +105,7 @@ BACKENDS = {
         max_head_dim=128,
         allowed_head_dims={64, 96, 128},
         needs_half_dtype=True,
-        supports_gqa=False,
+        supports_gqa=True,
     ),
     # tq:
     #   * Triton-Quantized attention with a full (Triton) backward -> trainable=True.
@@ -137,12 +137,9 @@ BACKENDS = {
     #                 flash / sage / tq all run rather than downgrading. sage is
     #                 refused in TRAINING mode by the shared MODE guard, which is
     #                 the only downgrade this arch can hit.
-    #   SenseNova   : conduit-routed (vendored Qwen3Attention.forward_gen calls
-    #                 dispatch_attention via `_flash_or_sdpa`). head_dim 128,
-    #                 GQA (32 q heads / 8 kv heads, h_kv != h_q) -- the GQA
-    #                 guard auto-downgrades sage (supports_gqa=False) to
-    #                 native; flash and tq both declare supports_gqa=True and
-    #                 run. No mask on this path, so supports_mask never fires.
+    #   SenseNova   : conduit-routed, head_dim 128, GQA (32 q / 8 kv heads).
+    #                 Flash, Sage and TQ accept that grouping; native currently
+    #                 pre-expands K/V according to the measured local policy.
     "tq": AttentionBackend(
         name="tq",
         fn=_tq_attn,

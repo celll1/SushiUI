@@ -33,6 +33,12 @@ from .observed import begin_generation, observed_backends
 from .planned import dispatch_planned_attention
 from .registry import BACKENDS, AttentionBackend
 from .sol import sol_attention_available
+from .tq_policy import (
+    TQ_BACKWARD_MODES,
+    get_tq_backward_policy,
+    resolve_tq_backward_mode,
+    set_tq_backward_policy,
+)
 
 __all__ = [
     "dispatch_attention",
@@ -54,4 +60,8 @@ __all__ = [
     "AttentionBackend",
     "BACKENDS",
     "sol_attention_available",
+    "TQ_BACKWARD_MODES",
+    "get_tq_backward_policy",
+    "resolve_tq_backward_mode",
+    "set_tq_backward_policy",
 ]

@@ -417,6 +417,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const attentionBackend = params.attention_backend ?? "native";
   // Attention implementation registry (conduit|diffusers). See DEFAULT_CONFIG note.
   const attentionImpl = params.attention_impl ?? "conduit";
+  const tqBackwardMode = params.tq_backward_mode ?? "auto";
   const minSnrGamma = params.min_snr_gamma ?? 5.0;
   const reconstructionLossWeight = params.reconstruction_loss_weight ?? 0.0;
   const audioLossWeight = params.audio_loss_weight ?? 1.0;
@@ -4983,9 +4984,31 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 </option>
               </select>
               <p className="text-xs text-gray-500 mt-1">
-                TQ (Triton-Quantized) applies to Z-Image, Lens, MiniT2I, and Anima training. Other architectures fall back to native.
+                TQ runs through the conduit on supported 64/128-dimension attention; unsupported masks and dimensions use native.
               </p>
             </div>
+
+            {attentionBackend === "tq" && (
+              <div className="space-y-1">
+                <label htmlFor="tq-backward-mode" className="block text-xs text-gray-300">
+                  TQ Backward
+                </label>
+                <select
+                  id="tq-backward-mode"
+                  value={tqBackwardMode}
+                  onChange={(e) => updateParam("tq_backward_mode", e.target.value)}
+                  className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+                >
+                  <option value="auto">Auto (FA2 hybrid when available)</option>
+                  <option value="triton">Triton exact-P (deterministic, lowest VRAM)</option>
+                  <option value="fa2">FA2 hybrid (fast, non-deterministic)</option>
+                  <option value="fa2_deterministic">FA2 hybrid deterministic</option>
+                </select>
+                <p className="text-xs text-gray-500 mt-1">
+                  Auto is fastest on the bundled FA2 environment. Triton preserves bit-exact repeatability and the lowest peak VRAM.
+                </p>
+              </div>
+            )}
 
             {/* Attention Impl */}
             <div className="space-y-1">

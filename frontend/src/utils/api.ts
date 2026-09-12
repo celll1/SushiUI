@@ -6800,6 +6800,7 @@ export interface TrainingRunCreateRequest {
   torch_compile_dynamic?: boolean | null;
   attention_backend?: string;
   attention_impl?: string;  // "conduit" | "diffusers" (training registry selector; SDXL/SD1.5)
+  tq_backward_mode?: "auto" | "triton" | "fa2" | "fa2_deterministic";
   use_flash_attention?: boolean;
   min_snr_gamma?: number;
   text_encoding_mode?: string;

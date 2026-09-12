@@ -15698,6 +15698,9 @@ class TrainingRunCreateRequest(BaseModel):
     # (which selects WHICH kernel). Persisted into the run config via training_config
     # so resumes reproduce the same registry. TRAINING-ONLY this pass.
     attention_impl: Optional[str] = TRAINING_DEFAULTS["attention_impl"]
+    tq_backward_mode: Literal[
+        "auto", "triton", "fa2", "fa2_deterministic"
+    ] = TRAINING_DEFAULTS["tq_backward_mode"]
     min_snr_gamma: float = 5.0  # Min-SNR gamma for loss weighting (default: 5.0, set to 0 to disable)
 
     # Text encoding settings

@@ -221,25 +221,20 @@ def setup_block_swap(trainer) -> None:
 def setup_attention_backend(trainer, backend: str):
     """Set the attention backend for Anima (Cosmos DiT) models.
 
-    Anima's vendored attention dispatches on a per-block ``attn_mode`` whose
-    vocabulary is ``'torch'|'flash'`` (no 'native'/'sage'). Map native->'torch',
-    flash->'flash' (R9); sage is refused upstream by ``resolve_backend`` and
-    arrives here as native. Masked attention (and any failure) still falls
-    back to SDPA inside the vendored kernel.
+    The selected canonical backend and training mode are stamped on the model
+    and its LLM adapter. Capability resolution has already refused backends
+    without backward support; runtime failures remain strict in the conduit.
     """
     if trainer.transformer is None:
         print(f"{trainer.log_prefix} WARNING: Transformer not loaded, skipping attention backend setup")
         return
     b = trainer._resolve_training_backend(backend)
-    attn_mode = 'flash' if b == 'flash' else 'torch'
     try:
-        n = 0
-        for m in trainer.transformer.modules():
-            if hasattr(m, "attn_mode"):
-                m.attn_mode = attn_mode
-                n += 1
-        print(f"{trainer.log_prefix} [OK] Anima attention backend '{b}' (attn_mode='{attn_mode}') "
-              f"set on {n} block(s)")
+        from core.attention import AttentionMode
+        from core.models.anima.anima_attention import set_attention_backend
+
+        n = set_attention_backend(trainer.transformer, b, AttentionMode.TRAINING)
+        print(f"{trainer.log_prefix} [OK] Anima attention backend '{b}' set on {n} module(s)")
     except Exception as e:
         print(f"{trainer.log_prefix} WARNING: Failed to set Anima attention backend '{b}': {e}")
         print(f"{trainer.log_prefix} Ensure flash-attn is installed for flash: pip install flash-attn")

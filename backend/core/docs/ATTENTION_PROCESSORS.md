@@ -52,7 +52,6 @@ semantics:
 | LTX-2.3 | Diffusers | native / FA2 are applied through `set_attention_backend`; other kernels are refused |
 | ACE-Step 1.5 | Transformers | native / FA2 are applied through `set_attn_implementation`; other kernels are refused |
 | Ideogram4 | Diffusers varlen path | head dimension 256 limits the local quantized kernels |
-| Anima training | vendored torch / FA2 switch | inference still uses the conduit |
 
 An external dispatcher is an owned exception, not permission to accept and
 ignore the global setting. Unsupported combinations must fail before the first

@@ -16,7 +16,6 @@ import torch
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 from torch import nn
-import torch.nn.functional as F
 
 from . import anima_attention as attention
 
@@ -867,6 +866,8 @@ class LLMAdapterAttention(nn.Module):
         self.k_norm = LLMAdapterRMSNorm(self.head_dim)
         self.v_proj = nn.Linear(context_dim, inner_dim, bias=False)
         self.o_proj = nn.Linear(inner_dim, query_dim, bias=False)
+        self._attn_backend = "native"
+        self._attn_mode = attention.AttentionMode.INFERENCE
 
     def forward(self, x, mask=None, context=None, position_embeddings=None, position_embeddings_context=None):
         context = x if context is None else context
@@ -886,7 +887,15 @@ class LLMAdapterAttention(nn.Module):
             cos, sin = position_embeddings_context
             k = _adapter_apply_rotary_pos_emb(k, cos, sin)
 
-        out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask)
+        out = attention.dispatch_attention(
+            q,
+            k,
+            v,
+            attn_mask=mask,
+            backend=self._attn_backend,
+            mode=self._attn_mode,
+            layout="BHSD",
+        )
         out = out.transpose(1, 2).reshape(*input_shape, -1).contiguous()
         return self.o_proj(out)
 
@@ -1306,7 +1315,11 @@ class Anima(nn.Module):
         t_embedding_B_T_D, adaln_lora_B_T_3D = self.t_embedder(timesteps_B_T)
         t_embedding_B_T_D = self.t_embedding_norm(t_embedding_B_T_D)
 
-        attn_params = attention.AttentionParams.create_attention_params(self.attn_mode, self.split_attn)
+        attn_params = attention.AttentionParams.create_attention_params(
+            self.attn_mode,
+            self.split_attn,
+            attention.AttentionMode.TRAINING if self.training else attention.AttentionMode.INFERENCE,
+        )
         use_fp32 = x_B_T_H_W_D.dtype == torch.float16
 
         # Training-free reference-style transfer: stamp block_idx + the

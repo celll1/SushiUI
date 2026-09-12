@@ -145,8 +145,8 @@ BACKENDS = {
     #   Ideogram4   : native / native (diffusers dispatch; also head_dim 256).
     #   Lens        : tq / tq        (conduit; head_dim 64).
     #   MiniT2I     : tq(b16 64) / native(l16 52->56 padded)  | same for training.
-    #   Anima       : tq / native    (inference: conduit _attention_backend='tq';
-    #                 training: attn_mode{'torch','flash'} mapping blocks tq).
+    #   Anima       : tq / tq        (model-local conduit routing, including
+    #                 the LLM adapter; masked calls resolve to native).
     #   MiniMax-H3  : conduit-routed (vendored transformer calls
     #                 dispatch_attention with the request's attention_type).
     #                 head_dim 128, equal q/kv heads, no mask -- one packed

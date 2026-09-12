@@ -26112,6 +26112,8 @@ components:
         display_calibration:
           type: boolean
           default: false
+          deprecated: true
+          description: Compatibility field; calibrated probabilities are always returned
         min_best_thr:
           type: number
           default: 0.30

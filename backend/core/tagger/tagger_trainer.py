@@ -138,16 +138,6 @@ def _compute_f1_macro(
     return _compute_all_metrics(all_preds, all_labels, threshold)["f1"]
 
 
-def _compute_pr_metrics(
-    all_preds: torch.Tensor,
-    all_labels: torch.Tensor,
-    threshold: float = 0.5,
-) -> Dict[str, float]:
-    """Thin wrapper around _compute_all_metrics that returns precision and recall."""
-    m = _compute_all_metrics(all_preds, all_labels, threshold)
-    return {"precision": m["precision"], "recall": m["recall"]}
-
-
 def _find_best_threshold(
     all_preds: torch.Tensor,
     all_labels: torch.Tensor,
@@ -1900,42 +1890,9 @@ class TaggerTrainer:
         amp_dtype: Optional[torch.dtype],
         max_batches: Optional[int] = None,
     ) -> Dict[str, Any]:
-        model.eval()
-        all_preds  = []
-        all_labels = []
-
-        with torch.no_grad():
-            for i, batch in enumerate(loader):
-                if max_batches is not None and i >= max_batches:
-                    break
-                if batch is None:
-                    continue
-                pv, pam, ss, labels, _ = batch
-                pv    = pv.to(device)
-                pam   = pam.to(device)
-                ss    = ss.to(device)
-
-                if amp_dtype is not None:
-                    with torch.autocast(device_type="cuda", dtype=amp_dtype):
-                        logits = model(pv, pam, ss)
-                else:
-                    logits = model(pv, pam, ss)
-
-                # Vocab may have expanded mid-training: the val loader's workers
-                # hold a stale vocabulary snapshot and emit old-width labels, so
-                # pad them to the current logit width before comparing.
-                if labels.shape[1] < logits.shape[1]:
-                    labels = torch.nn.functional.pad(
-                        labels, (0, logits.shape[1] - labels.shape[1]), value=0.0
-                    )
-
-                # float16 to halve memory usage (84k tags × many samples)
-                probs = torch.sigmoid(logits).to(torch.float16).cpu()
-                all_preds.append(probs)
-                all_labels.append(labels.to(torch.float16))
-
-        all_preds  = torch.cat(all_preds,  dim=0)
-        all_labels = torch.cat(all_labels, dim=0)
+        all_preds, all_labels = self._collect_val_preds(
+            model, loader, device, amp_dtype, max_batches=max_batches,
+        )
 
         threshold, f1 = _find_best_threshold(all_preds, all_labels)
         m = _compute_all_metrics(all_preds, all_labels, threshold=threshold)
@@ -1976,6 +1933,8 @@ class TaggerTrainer:
                     )
                 all_preds.append(torch.sigmoid(logits).to(torch.float16).cpu())
                 all_labels.append(labels.to(torch.float16))
+        if not all_preds:
+            raise RuntimeError("Validation produced no readable batches")
         return torch.cat(all_preds, dim=0), torch.cat(all_labels, dim=0)
 
     def _final_threshold_search(

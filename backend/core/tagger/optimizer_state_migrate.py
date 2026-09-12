@@ -80,7 +80,7 @@ def _find_param_index(
     return None
 
 
-def _is_8bit_state(state: Dict[str, Any]) -> bool:
+def is_8bit_optimizer_state(state: Dict[str, Any]) -> bool:
     """Detect bitsandbytes 8-bit optimizer state by characteristic keys."""
     return any(k in state for k in ("state1", "state2", "absmax1", "absmax2"))
 
@@ -119,7 +119,7 @@ def _migrate_one_param_state(
     # function (the caller guards on dict equality), but if state1 already
     # matches the new shape we still skip the reset to avoid needless
     # momentum loss on edge-case calls.
-    if _is_8bit_state(state):
+    if is_8bit_optimizer_state(state):
         s1 = state.get("state1")
         if torch.is_tensor(s1) and tuple(s1.shape) == tuple(new_shape):
             stats["mode"] = "no_op_8bit"

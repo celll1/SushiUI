@@ -102,3 +102,56 @@ def dataset_item_page(
     else:
         items = query.all()
     return items, total
+
+
+def dataset_item_cursor_page(
+    db,
+    dataset_id: int,
+    *,
+    after_id: int | None,
+    page_size: int,
+    search: str | None,
+    tags: str | None,
+    include_total: bool,
+):
+    """Return a lightweight keyset page and an optional first-page count."""
+    from database.models import DatasetItem
+
+    query = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id)
+    if search:
+        query = query.filter(DatasetItem.base_name.like(f"%{search}%"))
+
+    exact_ids = None
+    if tags:
+        requested = [tag.strip() for tag in tags.split(",") if tag.strip()]
+        if requested:
+            exact_ids = exact_tag_item_ids(db, dataset_id, requested, search=search)
+
+    total = None
+    if exact_ids is not None:
+        total = len(exact_ids) if include_total else None
+        if after_id is not None:
+            exact_ids = [item_id for item_id in exact_ids if item_id > after_id]
+        candidate_ids = exact_ids[:page_size + 1]
+        query = db.query(DatasetItem).filter(DatasetItem.id.in_(candidate_ids))
+    else:
+        if include_total:
+            total = query.count()
+        if after_id is not None:
+            query = query.filter(DatasetItem.id > after_id)
+        query = query.order_by(DatasetItem.id).limit(page_size + 1)
+
+    query = query.options(load_only(
+        DatasetItem.id,
+        DatasetItem.dataset_id,
+        DatasetItem.item_type,
+        DatasetItem.base_name,
+        DatasetItem.image_path,
+        DatasetItem.width,
+        DatasetItem.height,
+        DatasetItem.file_size,
+    ))
+    rows = query.order_by(DatasetItem.id).all() if exact_ids is not None else query.all()
+    has_more = len(rows) > page_size
+    items = rows[:page_size]
+    return items, total, (items[-1].id if has_more and items else None), has_more

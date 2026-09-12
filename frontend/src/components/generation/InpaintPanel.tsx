@@ -51,6 +51,7 @@ import VideoMaskFrameEditor from "./VideoMaskFrameEditor";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { useSnapshotHistory } from "@/hooks/useSnapshotHistory";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
+import { useGenerationPanelProgress, useRestoreImageOnCancel } from "@/hooks/useGenerationPanelProgress";
 import { useVideoPlayhead } from "@/hooks/useVideoPlayhead";
 import { releaseVideoFrameGrabber } from "@/utils/videoFrameGrabber";
 import { centerCropToCanvas } from "@/utils/canvasFit";
@@ -93,7 +94,7 @@ import { fixFloatingPointParams } from "@/utils/numberUtils";
 import { readGlobalAttentionType } from "@/utils/attentionSettings";
 import { newId } from "@/utils/id";
 import { useStartup } from "@/contexts/StartupContext";
-import { QueueItem, useGenerationQueue } from "@/contexts/GenerationQueueContext";
+import { queueItemBelongsToPanel, useGenerationQueue } from "@/contexts/GenerationQueueContext";
 import SendToStudioButton from "../studio/SendToStudioButton";
 import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
 
@@ -659,13 +660,6 @@ const LOOP_GENERATION_STORAGE_KEY = "inpaint_loop_generation";
 const INPUT_IMAGE_STORAGE_KEY = "inpaint_input_image";
 const MASK_IMAGE_STORAGE_KEY = "inpaint_mask_image";
 const REF_IMAGES_STORAGE_KEY = "inpaint_ref_images";
-
-// Progress-bar denominator to show until the first WebSocket tick arrives.
-function dispatchTotalSteps(item: QueueItem): number {
-  const p = item.params as any;
-  if (item.type === "inpaint_vid") return p.num_inference_steps || 8;
-  return Math.ceil((p.steps || 20) * (p.denoising_strength || 0.75));
-}
 
 interface InpaintPanelProps {
   onTabChange?: (tab: "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale") => void;
@@ -3163,72 +3157,47 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
 
   const { addToQueue, cancelLoopGroup, currentItem, queue, generateForever, setGenerateForever, progressSnapshot, completedResults, lastFailure } = useGenerationQueue();
 
-  // Once per new item this panel owns, reset the display for the run that
-  // just started -- reproducing what the deleted dispatch loop did at
-  // dispatch time (GenerationQueueProcessor now owns dispatch itself, and has
-  // no view of this panel's state).
-  const clearedForItemRef = useRef<string | null>(null);
-  // The panel's own session gallery. Bumped once per completed-result
-  // revision so this effect (which re-runs whenever currentItem changes, not
-  // just on a new result) cannot append the same result twice.
+  // Result effects also run when the queue advances; revisions prevent duplicates.
   const lastGalleryRevisionRef = useRef<number | null>(null);
-  // What was on screen when the current run started, for restore-on-cancel.
+  // The previous image is panel-local, so the global dispatcher cannot restore it.
   const previousImageRef = useRef<string | null>(null);
-  const lastFailureRevisionRef = useRef(0);
 
-  useEffect(() => {
-    if (!currentItem || !["inpaint", "inpaint_vid"].includes(currentItem.type)) {
-      isOwnRunRef.current = false;
-      setIsGenerating(false);
-      return;
-    }
-    isOwnRunRef.current = true;
-    setIsGenerating(true);
-    if (clearedForItemRef.current !== currentItem.id) {
-      clearedForItemRef.current = currentItem.id;
+  useGenerationPanelProgress({
+    panel: "inpaint",
+    currentItem,
+    progressSnapshot,
+    reportSubProgress,
+    isOwnRunRef,
+    setIsGenerating,
+    setProgress,
+    setTotalSteps,
+    setProgressMessage,
+    setPreviewImage,
+    onItemStart: (item) => {
       previousImageRef.current = generatedImage;
-      setProgress(0);
-      setProgressMessage("");
-      setPreviewImage(null);
       setCfgMetrics([]);
       setGeneratedImage(null);
-      setTotalSteps(dispatchTotalSteps(currentItem));
-      if (currentItem.type === "inpaint_vid") {
+      if (item.type === "inpaint_vid") {
         setGeneratedVideo(null);
         setGeneratedVideoPlaybackUrl(null);
         setGeneratedVideoInfo(null);
         setGeneratedVideoSeed(null);
         setGeneratedVideoWarnings([]);
       }
-    }
-    if (progressSnapshot?.itemId !== currentItem.id) return;
-    setProgress(progressSnapshot.step);
-    setTotalSteps(progressSnapshot.totalSteps);
-    setProgressMessage(progressSnapshot.message);
-    reportSubProgress(progressSnapshot.step, progressSnapshot.subProgress);
-    if (progressSnapshot.previewImage) setPreviewImage(progressSnapshot.previewImage);
-    // generatedImage is read only to snapshot it, and re-running on every
-    // change of it would re-snapshot mid-run.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentItem, progressSnapshot, reportSubProgress]);
+    },
+  });
 
-  // Restore-on-cancel: only this panel holds the image the cancelled run
-  // replaced, and only the dispatcher can tell a cancel from a failure.
-  useEffect(() => {
-    if (!lastFailure || lastFailure.panel !== "inpaint") return;
-    if (lastFailure.revision === lastFailureRevisionRef.current) return;
-    lastFailureRevisionRef.current = lastFailure.revision;
-    if (!lastFailure.cancelled) return;
-    if (localStorage.getItem("restore_image_on_cancel") !== "true") return;
-    if (previousImageRef.current) {
-      setGeneratedImage(previousImageRef.current);
-      setPreviewImage(null);
-    }
-  }, [lastFailure]);
+  useRestoreImageOnCancel({
+    panel: "inpaint",
+    lastFailure,
+    previousImageRef,
+    setGeneratedImage,
+    setPreviewImage,
+  });
 
   useEffect(() => {
     const result = completedResults.inpaint;
-    if (!result || (currentItem && ["inpaint", "inpaint_vid"].includes(currentItem.type))) return;
+    if (!result || queueItemBelongsToPanel(currentItem, "inpaint")) return;
     setPreviewImage(null);
     if (result.kind === "video") {
       setGeneratedVideo(result.url);
@@ -3926,7 +3895,7 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
   // video branch has no mask and one clip per request.
   useEffect(() => {
     const hasPendingItems = queue.some(item =>
-      item.status === "pending" && (item.type === "inpaint" || item.type === "inpaint_vid"));
+      item.status === "pending" && queueItemBelongsToPanel(item, "inpaint"));
     const isCurrentItemNull = currentItem === null;
 
     if (generateForever && !isVideo && !hasPendingItems && isCurrentItemNull && !isGenerating && params.prompt && inputImagePreview && maskImage) {

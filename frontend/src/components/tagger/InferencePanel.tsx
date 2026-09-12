@@ -32,7 +32,6 @@ interface CategoryThresholds {
   [category: string]: number;
 }
 
-// ─── OOD score badge ─────────────────────────────────────────────────────────
 
 function OodBadge({ distance, p50, p95 }: { distance: number; p50: number | null; p95: number | null }) {
   let label = `${distance.toFixed(2)}`;
@@ -41,16 +40,13 @@ function OodBadge({ distance, p50, p95 }: { distance: number; p50: number | null
     const tail = Math.max(p95 - p50, 1e-6);
     const fullOodBoundary = p95 + 2 * tail;
     if (distance <= p95) {
-      // No OOD correction applied
       cls = "bg-green-900 text-green-300 border border-green-700";
       label += " In-dist";
     } else if (distance <= fullOodBoundary) {
-      // Ramp zone: correction gradually increases
       const t = (distance - p95) / (2 * tail);
       cls = "bg-yellow-900 text-yellow-300 border border-yellow-700";
       label += ` OOD~ (${(t * 100).toFixed(0)}%)`;
     } else {
-      // Full OOD correction
       cls = "bg-orange-900 text-orange-300 border border-orange-700";
       label += " OOD ⚠";
     }
@@ -63,7 +59,6 @@ function OodBadge({ distance, p50, p95 }: { distance: number; p50: number | null
   );
 }
 
-// ─── Main component ───────────────────────────────────────────────────────────
 
 export default function InferencePanel({ modelStatus }: InferencePanelProps) {
   const router = useRouter();
@@ -165,7 +160,6 @@ export default function InferencePanel({ modelStatus }: InferencePanelProps) {
   const [negTagInput,   setNegTagInput]   = useState("");
   const [showNegInput,  setShowNegInput]  = useState(false);
 
-  // ── Image loading ───────────────────────────────────────────────────────────
 
   const loadFile = (file: File) => {
     const reader = new FileReader();
@@ -192,7 +186,6 @@ export default function InferencePanel({ modelStatus }: InferencePanelProps) {
     if (item) loadFile(item.getAsFile()!);
   }, []);
 
-  // ── Threshold helpers ───────────────────────────────────────────────────────
 
   const thresholdFor = (category: string): number =>
     thresholdMode === "per-category" ? (categoryThresholds[category] ?? globalThreshold) : globalThreshold;
@@ -202,7 +195,6 @@ export default function InferencePanel({ modelStatus }: InferencePanelProps) {
     return allTags.filter(t => (t.raw_prob ?? t.prob) >= thresholdFor(t.category));
   };
 
-  // ── Inference ───────────────────────────────────────────────────────────────
 
   const handlePredict = async () => {
     if (!imageBase64) return;
@@ -239,7 +231,6 @@ export default function InferencePanel({ modelStatus }: InferencePanelProps) {
     }
   };
 
-  // ── Known tag handlers ──────────────────────────────────────────────────────
 
   const addKnownTag = (which: "pos" | "neg") => (tag: string) => {
     const t = tag.trim();
@@ -258,7 +249,6 @@ export default function InferencePanel({ modelStatus }: InferencePanelProps) {
     else setKnownTagsNeg((cur) => cur.filter((t) => t !== tag));
   };
 
-  // ── Tag selection ───────────────────────────────────────────────────────────
 
   const handleTagToggle = (tag: string) => {
     setSelectedTags((prev) => {
@@ -281,7 +271,6 @@ export default function InferencePanel({ modelStatus }: InferencePanelProps) {
 
   const handleDeselectAll = () => setSelectedTags(new Set());
 
-  // ── Send to panels ──────────────────────────────────────────────────────────
 
   const sendTagsTo = (storageKey: string) => {
     if (selectedTags.size === 0) return;
@@ -310,12 +299,10 @@ export default function InferencePanel({ modelStatus }: InferencePanelProps) {
     }
   };
 
-  // ─────────────────────────────────────────────────────────────────────────
 
   return (
     <div className="flex h-full flex-col gap-2.5 p-3">
 
-      {/* ── Tab bar ── */}
       {modelLoaded && (
         <div className="flex gap-1 border-b border-gray-700 flex-shrink-0 -mb-1">
           <button
@@ -339,18 +326,14 @@ export default function InferencePanel({ modelStatus }: InferencePanelProps) {
         </div>
       )}
 
-      {/* ── Analysis tab ── */}
       {activeTab === "analysis" && (
         <TagMetricsAnalysis data={tagMetrics} loading={metricsLoading} error={metricsError} />
       )}
 
-      {/* ── Inference tab ── */}
       <div className={`flex flex-col gap-3 flex-1 min-h-0 ${activeTab !== "inference" ? "hidden" : ""}`}>
 
-        {/* ── Top section: image + 2-column options ── */}
         <div className="flex gap-2.5 shrink-0">
 
-          {/* Drop zone */}
           <div
             className={`flex h-48 w-56 shrink-0 cursor-pointer items-center justify-center rounded-md border border-dashed transition-colors ${
               dragging ? "border-violet-400 bg-violet-900/20" : "border-gray-600 hover:border-gray-500"
@@ -382,7 +365,6 @@ export default function InferencePanel({ modelStatus }: InferencePanelProps) {
               onChange={(e) => { const f = e.target.files?.[0]; if (f) loadFile(f); }} />
           </div>
 
-          {/* Options: 2-column grid */}
           <div className="flex-1 flex flex-col gap-2 min-w-0">
             <button
               type="button"
@@ -393,10 +375,8 @@ export default function InferencePanel({ modelStatus }: InferencePanelProps) {
             </button>
             <div className={`grid gap-3 ${showAdvanced ? "grid-cols-2" : "grid-cols-1"}`}>
 
-              {/* ── Column 1: Threshold + Inference mode ── */}
               <div className="flex flex-col gap-2">
 
-                {/* Threshold */}
                 <div className="border border-gray-700 rounded p-2 space-y-1.5">
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-gray-400">Threshold</span>
@@ -441,7 +421,6 @@ export default function InferencePanel({ modelStatus }: InferencePanelProps) {
                   )}
                 </div>
 
-                {/* Inference mode */}
                 {hasTagMetrics && (
                   <div className="border border-gray-700 rounded p-2 space-y-1.5">
                     <div className="flex items-center gap-1">
@@ -528,7 +507,6 @@ export default function InferencePanel({ modelStatus }: InferencePanelProps) {
               {showAdvanced && (
               <div className="flex flex-col gap-2">
 
-                {/* Conditional inference */}
                 <div className="border border-gray-700 rounded p-2 space-y-1.5">
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-gray-400">Conditional</span>
@@ -651,7 +629,6 @@ export default function InferencePanel({ modelStatus }: InferencePanelProps) {
               )}
             </div>
 
-            {/* ── Predict button + status ── */}
             <button
               onClick={handlePredict}
               disabled={!imageBase64 || (!modelLoaded && !useTrainingModel) || running}
@@ -685,7 +662,6 @@ export default function InferencePanel({ modelStatus }: InferencePanelProps) {
               </div>
             )}
 
-            {/* Send-to buttons */}
             {result && (
               <div className="flex flex-wrap gap-2">
                 {(["txt2img_params", "img2img_params", "inpaint_params"] as const).map((key, i) => (
@@ -711,7 +687,6 @@ export default function InferencePanel({ modelStatus }: InferencePanelProps) {
           </div>
         </div>
 
-        {/* ── Results chart (multi-column, fills remaining space) ── */}
         {result && (
           <div className="flex-1 overflow-y-auto min-h-0">
             <TagResultsChart
@@ -732,7 +707,6 @@ export default function InferencePanel({ modelStatus }: InferencePanelProps) {
   );
 }
 
-// ─── OOD Reference Builder ────────────────────────────────────────────────────
 
 interface OodReferenceBuilderProps {
   building: boolean;

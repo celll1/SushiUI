@@ -29,7 +29,6 @@ function buildMatcher(query: string, mode: FilterMode): ((tag: string) => boolea
     if (!re) return null;
     return (tag) => re.test(tag);
   }
-  // regex
   try {
     const re = new RegExp(query, "i");
     return (tag) => re.test(tag);
@@ -87,7 +86,6 @@ export default function VocabularyBrowser({ runId, useLoadedModel, defaultOpen =
     ];
   }, [vocab]);
 
-  // Category counts
   const categoryCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const { category } of allTags) {
@@ -96,17 +94,14 @@ export default function VocabularyBrowser({ runId, useLoadedModel, defaultOpen =
     return counts;
   }, [allTags]);
 
-  // Filtered tags
   const filteredTags = useMemo(() => {
     setRegexError(null);
     let tags = allTags;
 
-    // Category filter
     if (selectedCategory !== "All") {
       tags = tags.filter(t => t.category === selectedCategory);
     }
 
-    // Text filter
     if (query) {
       let matcher: ((tag: string) => boolean) | null;
       if (filterMode === "regex") {
@@ -132,7 +127,6 @@ export default function VocabularyBrowser({ runId, useLoadedModel, defaultOpen =
 
   return (
     <div className="border border-gray-700 rounded">
-      {/* Header toggle */}
       <button
         onClick={() => setOpen(o => !o)}
         className="w-full flex items-center justify-between px-3 py-2 text-sm font-medium text-gray-300 hover:text-white hover:bg-gray-800 rounded transition-colors"
@@ -155,7 +149,6 @@ export default function VocabularyBrowser({ runId, useLoadedModel, defaultOpen =
 
           {vocab && (
             <>
-              {/* Category stats */}
               <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-gray-500">
                 {categories.map(cat => (
                   <span key={cat} className={TAG_CATEGORY_TEXT_CLASS[cat] ?? "text-gray-500"}>
@@ -164,7 +157,6 @@ export default function VocabularyBrowser({ runId, useLoadedModel, defaultOpen =
                 ))}
               </div>
 
-              {/* Filter row */}
               <div className="flex gap-2 flex-wrap">
                 <input
                   type="text"
@@ -193,7 +185,6 @@ export default function VocabularyBrowser({ runId, useLoadedModel, defaultOpen =
                 <p className="text-xs text-red-400">Regex error: {regexError}</p>
               )}
 
-              {/* Category filter buttons */}
               <div className="flex flex-wrap gap-1">
                 <button
                   onClick={() => setSelectedCategory("All")}
@@ -212,7 +203,6 @@ export default function VocabularyBrowser({ runId, useLoadedModel, defaultOpen =
                 ))}
               </div>
 
-              {/* Tag list */}
               <div className="max-h-64 overflow-y-auto space-y-0.5 border border-gray-700 rounded p-1">
                 {displayed.length === 0 ? (
                   <div className="text-sm text-gray-500 p-2 text-center">No tags match</div>
@@ -228,7 +218,6 @@ export default function VocabularyBrowser({ runId, useLoadedModel, defaultOpen =
                 )}
               </div>
 
-              {/* Count */}
               <div className="text-xs text-gray-500">
                 Showing {displayed.length.toLocaleString()} / {filteredTags.length.toLocaleString()} tags
                 {filteredTags.length > MAX_DISPLAY && (

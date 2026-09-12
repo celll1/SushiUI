@@ -30,6 +30,8 @@ class UserSettings(GalleryBase):
     controlnet_dirs = Column(JSON, default=list)  # Additional directories for ControlNets
     cache_dir = Column(String, nullable=True)  # Custom cache directory (default: backend/cache)
     training_dir = Column(String, nullable=True)  # Custom training output directory (default: training)
+    dataset_editor_command = Column(String, nullable=True)
+    dataset_editor_args = Column(JSON, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Generation settings
@@ -65,6 +67,8 @@ class UserSettings(GalleryBase):
             "controlnet_dirs": self.controlnet_dirs or [],
             "cache_dir": self.cache_dir,
             "training_dir": self.training_dir,
+            "dataset_editor_command": self.dataset_editor_command,
+            "dataset_editor_args": self.dataset_editor_args or [],
             "inpaint_use_dedicated_model": self.inpaint_use_dedicated_model if self.inpaint_use_dedicated_model is not None else False,
             "video_frame_slider_max": self.video_frame_slider_max,
             "slider_bounds": self.slider_bounds or {},

@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Scan, Save } from "lucide-react";
-import { getDataset, getDatasetHealth, scanDataset, updateCaptionProcessing, updateDatasetExifConfig, CaptionProcessingConfig, DatasetHealth, ScanFieldSummary } from "@/utils/api";
+import { Copy, ExternalLink, FolderOpen, Scan, Save } from "lucide-react";
+import { getDataset, getDatasetHealth, launchDatasetEditor, openDatasetFolder, scanDataset, updateCaptionProcessing, updateDatasetExifConfig, CaptionProcessingConfig, DatasetHealth, ScanFieldSummary } from "@/utils/api";
 import DatasetViewer from "./DatasetViewer";
 import LatentCacheRow from "./LatentCacheRow";
 import CaptionProcessingSettings from "../datasets/CaptionProcessingSettings";
@@ -111,6 +111,34 @@ export default function DatasetEditor({ datasetId, onClose }: DatasetEditorProps
     }
   };
 
+  const handleOpenFolder = async () => {
+    try {
+      await openDatasetFolder(datasetId);
+    } catch (err) {
+      console.error("Failed to open dataset folder:", err);
+      setScanMessage("Could not open the dataset folder");
+    }
+  };
+
+  const handleLaunchEditor = async () => {
+    try {
+      await launchDatasetEditor(datasetId);
+    } catch (err) {
+      console.error("Failed to launch dataset editor:", err);
+      setScanMessage("Configure a valid dataset editor in Settings first");
+    }
+  };
+
+  const handleCopyPath = async () => {
+    try {
+      await navigator.clipboard.writeText(dataset.path);
+      setScanMessage("Dataset path copied");
+    } catch (err) {
+      console.error("Failed to copy dataset path:", err);
+      setScanMessage("Could not copy the dataset path");
+    }
+  };
+
   const [savingExif, setSavingExif] = useState(false);
   const handleToggleReadExif = async () => {
     if (!dataset) return;
@@ -151,6 +179,27 @@ export default function DatasetEditor({ datasetId, onClose }: DatasetEditorProps
             <span className="text-xs text-gray-400">{dataset.total_items} items</span>
           </div>
           <div className="flex items-center space-x-2">
+            <button
+              onClick={() => void handleCopyPath()}
+              className="rounded bg-gray-700 p-1.5 hover:bg-gray-600"
+              title="Copy dataset path"
+            >
+              <Copy className="h-3.5 w-3.5" />
+            </button>
+            <button
+              onClick={() => void handleOpenFolder()}
+              className="rounded bg-gray-700 p-1.5 hover:bg-gray-600"
+              title="Open dataset folder"
+            >
+              <FolderOpen className="h-3.5 w-3.5" />
+            </button>
+            <button
+              onClick={() => void handleLaunchEditor()}
+              className="rounded bg-gray-700 p-1.5 hover:bg-gray-600"
+              title="Open in configured dataset editor"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+            </button>
             {activeTab === "viewer" && (
               <label
                 className="flex items-center space-x-1.5 text-xs text-gray-300 cursor-pointer select-none"

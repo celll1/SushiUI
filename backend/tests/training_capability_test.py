@@ -151,7 +151,7 @@ def test_method_scope_narrows_rather_than_hides():
 
 
 def test_route_serves_the_new_capability_keys():
-    source = (BACKEND / "api" / "routes.py").read_text(encoding="utf-8")
+    source = (BACKEND / "api" / "schema_routes.py").read_text(encoding="utf-8")
     for key in ("training_feature_unsupported", "training_feature_params",
                 "training_feature_labels", "training_sample_supported_params",
                 "training_sample_notes", "arch_display_names"):

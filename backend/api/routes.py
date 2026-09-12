@@ -53,15 +53,8 @@ from api.param_defaults import (
     LR_RETARGET_DEFAULTS,
     LR_PREVIEW_DEFAULTS,
     LR_TRIGGER_DEFAULTS,
-    TRAINING_SAMPLE_DEFAULTS_BY_ARCH,
-    TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH,
     BUNDLE_VAE_DEFAULTS_BY_ARCH,
-    CFG_UNCOND_DROP_DEFAULTS_BY_ARCH,
     VIDEO_GEN_ARCH_OVERLAYS,
-    OUTPAINT_VIDEO_ARCH_OVERLAYS,
-    INPAINT_VIDEO_ARCH_OVERLAYS,
-    AUDIO_GEN_ARCH_OVERLAYS,
-    AUD2AUD_GEN_ARCH_OVERLAYS,
     OUTPAINT_AUDIO_ARCH_OVERLAYS,
     IMAGE_GEN_ARCH_OVERLAYS,
     PROMPT_ASSIST_DEFAULTS, MUSIC_PROMPT_ASSIST_DEFAULTS, MUSIC_LYRICS_ASSIST_DEFAULTS,
@@ -144,8 +137,24 @@ from api.studio_render_jobs import (
     request_cancel_render_job,
     submit_render_job,
 )
+from api.schema_routes import (
+    get_arch_capabilities,
+    get_bundle_vae_defaults_by_arch,
+    get_generation_defaults,
+    get_lr_retarget_defaults,
+    get_lr_trigger_defaults,
+    get_prompt_assist_defaults,
+    get_prompt_assist_music_defaults,
+    get_prompt_assist_music_lyrics_defaults,
+    get_tagger_training_defaults,
+    get_timestep_defaults_by_arch,
+    get_training_defaults,
+    get_vae_training_defaults,
+    router as schema_router,
+)
 
 router = APIRouter()
+router.include_router(schema_router)
 
 minimax_h3_prompt_assistant = MiniMaxH3PromptAssistant(
     PROMPT_ASSIST_DEFAULTS["cache_max_entries"]
@@ -743,65 +752,6 @@ def _reject_if_sensenova_too_many_ref_images(ref_image_list: list):
         )
 
 
-@router.get("/schema/generation-defaults")
-async def get_generation_defaults():
-    """Return default parameter values for all generation modes.
-
-    ``video_arch_overlays`` carries the per-architecture video overrides, so a
-    client resolves a video default as `base | overlay[arch]` — exactly what the
-    video routes do server-side for every field a request omits.
-    ``outpaint_video_arch_overlays`` is the same thing for the keys that exist
-    only on `/generate/outpaint/video` (chiefly `total_frames`, whose base value
-    is on LTX-2.3's grid), applied on top of the video overlay, and
-    ``inpaint_video_arch_overlays`` for `/generate/inpaint/video`'s own keys.
-
-    ``audio_arch_overlays`` / ``aud2aud_arch_overlays`` / ``outpaint_audio_arch_overlays``
-    are the audio equivalent (``param_defaults.audio_defaults_for_arch`` and its
-    aud2aud/outpaint twins), introduced alongside MiniMax Music 3: ``txt2aud``
-    above is ACE-Step-shaped, and Music 3 overlays its own ``audio_duration``/
-    ``num_inference_steps``/``flow_guidance_scale`` on top of it, exactly as
-    MiniMax-H3 overlays video geometry on top of LTX-2.3's shape.
-
-    ``image_arch_overlays`` is the same thing for the four image routes
-    (``param_defaults.image_defaults_for_arch``): a client resolves an image
-    default as `base | overlay[arch]`, matching what those routes do
-    server-side for `steps`/`cfg_scale` on a loaded SenseNova model.
-    """
-    return {
-        "video_arch_overlays": VIDEO_GEN_ARCH_OVERLAYS,
-        "outpaint_video_arch_overlays": OUTPAINT_VIDEO_ARCH_OVERLAYS,
-        "inpaint_video_arch_overlays": INPAINT_VIDEO_ARCH_OVERLAYS,
-        "audio_arch_overlays": AUDIO_GEN_ARCH_OVERLAYS,
-        "aud2aud_arch_overlays": AUD2AUD_GEN_ARCH_OVERLAYS,
-        "outpaint_audio_arch_overlays": OUTPAINT_AUDIO_ARCH_OVERLAYS,
-        "image_arch_overlays": IMAGE_GEN_ARCH_OVERLAYS,
-        "img2txt": IMG2TXT_DEFAULTS,
-        "txt2img": TXT2IMG_DEFAULTS,
-        "img2img": IMG2IMG_DEFAULTS,
-        "inpaint":  INPAINT_DEFAULTS,
-        "outpaint": OUTPAINT_DEFAULTS,
-        "upscale": UPSCALE_DEFAULTS,
-        "txt2vid": TXT2VID_DEFAULTS,
-        "img2vid": IMG2VID_DEFAULTS,
-        "ref2vid": REF2VID_DEFAULTS,
-        "outpaint_vid": OUTPAINT_VIDEO_DEFAULTS,
-        "inpaint_vid": INPAINT_VIDEO_DEFAULTS,
-        "txt2aud": TXT2AUD_DEFAULTS,
-        "aud2aud": AUD2AUD_DEFAULTS,
-        "outpaint_aud": OUTPAINT_AUDIO_DEFAULTS,
-        "studio_render": STUDIO_RENDER_DEFAULTS,
-        # Defaults of ONE `loras[]` entry; a list default cannot carry its
-        # elements' defaults.
-        "lora_item": LORA_ITEM_DEFAULTS,
-        # User-overridable slider/number-input UPPER BOUNDS registry (see
-        # param_defaults.py's PARAM_BOUNDS docstring for the eligibility rule).
-        # Consumed by frontend/src/utils/paramBounds.ts's resolveBound() and
-        # by the Settings page's "Slider Bounds" card, which renders one row
-        # per entry -- never hardcoded on the frontend.
-        "param_bounds": PARAM_BOUNDS,
-    }
-
-
 @router.post("/studio/render-jobs", status_code=202, tags=["studio"])
 async def create_studio_render_job(
     manifest: str = Form(..., description="Frame-based Studio render manifest JSON"),
@@ -914,261 +864,6 @@ async def cancel_studio_render_job(job_id: str):
     if state is None:
         raise HTTPException(status_code=404, detail="Studio render job not found")
     return {"success": True, "job_id": job_id, "state": state}
-
-@router.get("/schema/prompt-assist-defaults")
-async def get_prompt_assist_defaults():
-    """Return MiniMax-H3 prompt-assistant defaults."""
-    return PROMPT_ASSIST_DEFAULTS
-
-@router.get("/schema/prompt-assist-music-defaults")
-async def get_prompt_assist_music_defaults():
-    """Return MiniMax Music 3 caption-rewriter defaults."""
-    return MUSIC_PROMPT_ASSIST_DEFAULTS
-
-@router.get("/schema/prompt-assist-music-lyrics-defaults")
-async def get_prompt_assist_music_lyrics_defaults():
-    """Return MiniMax Music 3 lyrics-assistant defaults."""
-    return MUSIC_LYRICS_ASSIST_DEFAULTS
-
-@router.get("/schema/training-defaults")
-async def get_training_defaults():
-    """Return default parameter values for LoRA/Full-FT training."""
-    return {
-        **TRAINING_DEFAULTS,
-        "_sample_defaults_by_arch": TRAINING_SAMPLE_DEFAULTS_BY_ARCH,
-    }
-
-@router.get("/schema/tagger-training-defaults")
-async def get_tagger_training_defaults():
-    """Return default parameter values for tagger training."""
-    return TAGGER_TRAINING_DEFAULTS
-
-@router.get("/schema/vae-training-defaults")
-async def get_vae_training_defaults():
-    """Return default parameter values for VAE (decoder-only) training.
-
-    Backs `training_method: "vae_decoder"` / `network.type: vae_decoder` runs.
-    The first block of keys (batch_size … max_step_saves_to_keep) is written
-    into the shared `process.train` / `process.save` YAML sections; everything
-    from `vae_source` onwards is written into a dedicated `process.vae` section.
-    """
-    return VAE_TRAINING_DEFAULTS
-
-@router.get("/schema/lr-retarget-defaults")
-async def get_lr_retarget_defaults():
-    """Return what an omitted field of a runtime LR retarget resolves to.
-
-    `null` for `length` is not 0: it means the run's own `lr_warmup_steps`
-    (D31), which only the run knows. Same for `at` (the claim step) and
-    `groups` (every param group).
-
-    Defaults only. The vocabularies (ops, anchors, shapes) are mirrored in the
-    client and pinned against the registry by a test, which fails a build
-    rather than emptying a select at runtime.
-    """
-    return {**LR_RETARGET_DEFAULTS,
-            "n_points": LR_PREVIEW_DEFAULTS["n_points"]}
-
-@router.get("/schema/lr-trigger-defaults")
-async def get_lr_trigger_defaults():
-    """Return what an omitted field of a conditional LR trigger resolves to.
-
-    One key. `interval`, `patience`, `min_delta` and `threshold` are absent on
-    purpose (D46): a usable value for any of them depends on the run's own loss
-    scale, so this build asks for them rather than inventing one.
-    """
-    return dict(LR_TRIGGER_DEFAULTS)
-
-@router.get("/schema/timestep-defaults-by-arch")
-async def get_timestep_defaults_by_arch():
-    """Per-architecture default timestep_sampling configs.
-
-    The frontend applies the selected model's entry when the base model changes
-    (user edits still win). Most architectures default to uniform; only MiniT2I
-    differs (logit_normal mean=-0.8/std=0.8). "_default" is the global fallback.
-    """
-    return TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH
-
-@router.get("/schema/bundle-vae-defaults-by-arch")
-async def get_bundle_vae_defaults_by_arch():
-    """Per-architecture default bundle_vae for full-parameter saves.
-
-    sd15/sdxl default True (comfy-layout checkpoints consumed by
-    A1111/ComfyUI require the first_stage_model.* VAE section); other
-    architectures default False. "_default" is the global fallback. The frontend
-    applies the selected model's entry when the base model changes (user edits win).
-    """
-    return BUNDLE_VAE_DEFAULTS_BY_ARCH
-
-
-@router.get("/schema/arch-capabilities")
-async def get_arch_capabilities():
-    """Per-architecture table of generation features that have NO effect.
-
-    Mirrors `api/arch_capabilities.ARCH_UNSUPPORTED` verbatim: an architecture
-    key maps feature name -> a one-line factual reason the feature is ignored
-    there. The backend already uses this table to emit an `unsupported_param`
-    warning after the fact; exposing it lets the generation panels hide a
-    control on an architecture that would ignore it, driven by the same matrix
-    instead of a second hardcoded arch list in the frontend.
-
-    `feature_params` maps each feature to the request parameter keys that arm
-    it, so a caller can go from a parameter name back to its feature.
-
-    `supported_values` is the exemption list: values of an arming parameter that
-    the architecture DOES honor even though the feature is listed unsupported
-    (e.g. `unet_quantization="int8"` on Krea 2, which converts an unquantized
-    transformer in place, while the FP8 values there remain checkpoint-driven).
-
-    `runtime_int8_archs` is the architectures whose transformer the in-place
-    weight-only INT8 converter is wired for, i.e. the ones that honor
-    `unet_quantization="int8"`. It mirrors `RUNTIME_INT8_ARCHS` in
-    `core/models/common/int8_runtime_quantize.py` (the module that implements
-    the conversion), so a client offering the value reads it from here rather
-    than keeping its own copy of the list. It cannot be inferred from
-    `unsupported`/`supported_values`: an architecture that honors
-    `unet_quantization` outright (anima) has no entry in either map.
-
-    `quantized_linear_archs` is the architectures whose LOADERS swap in the
-    quantized Linear classes (`Int8Linear` / `Fp8Linear`), i.e. the ones where
-    `quantized_gemm_mode` selects anything. It mirrors `QUANTIZED_LINEAR_ARCHS`
-    in the same module and is a superset of `runtime_int8_archs` in general (an
-    architecture can READ a quantized checkpoint without owning an in-place
-    converter). Served so a caller -- and this API's own documentation -- names
-    the set from the backend tuple instead of keeping a hand-written copy that
-    drifts.
-
-    `training_unsupported` is a DIFFERENT axis: architecture -> training method
-    -> why that method is refused there (not ignored -- the trainer raises), so
-    the training UI filters its method dropdown from the same table.
-
-    `training_feature_unsupported` is a THIRD axis: architecture -> training
-    CONFIG FEATURE (block swap, fused optimizer groups, reference images, text
-    encoder training, in-training samples, VAE settings) -> `{reason, methods?}`,
-    where `methods` narrows the claim to those training methods. An architecture
-    absent from the map supports the feature, so a client hides a section only
-    when the backend says the mechanism is not there. `training_feature_params`
-    and `training_feature_labels` are its sibling maps, same role as
-    `feature_params`/`feature_labels` on the generation axis.
-
-    `training_sample_supported_params` allowlists architecture-specific
-    controls within the otherwise common sample section. A client offers a
-    sampler or schedule only where the trainer consumes it, while still being
-    able to load and save older configs carrying those keys. `training_sample_
-    notes` documents supported paths with a narrower preview contract.
-
-    `training_required_values` is a FOURTH axis, and the only one that says what
-    a parameter must BE rather than what is missing: architecture -> training
-    config parameter -> `{value, reason, methods?, values?, unless?}`.
-    SenseNova implements full fine-tuning under a contract that fixes the
-    optimizer, and every SenseNova run is batch 1 unless `enable_bucketing` is
-    on. `values` is the full admitted set when the contract admits more than
-    one, `value` being its default member; `unless` is the config that LIFTS
-    the requirement, so an entry carrying one must not be shown as an
-    unconditional pin. `train_runner` applies these before the model loads,
-    either by REFUSING a different value or by OVERWRITING it (the two
-    encoding modes),
-    and each `reason` says which -- an overwritten control is a user choice the
-    run drops silently, so both kinds have to be visible to a client. Pin the
-    control to the value rather than offering a default the run rejects or
-    discards. Absent means unconstrained.
-
-    `training_feature_advisory` is a FIFTH axis and the only one that refuses
-    nothing: architecture -> training CONFIG FEATURE -> `{level, reason,
-    methods?}` for a feature that IS implemented and IS accepted, so a client
-    keeps the control visible and enabled and shows the reason beside it. See
-    `TRAINING_FEATURE_ADVISORY` in `api/arch_capabilities.py` for the levels and
-    the partition it must satisfy against `training_feature_unsupported`.
-
-    `adapter_families` is which LoRA-family algebras each architecture can
-    APPLY, read from `core.adapters.capability.ENABLED_ADAPTER_PAIRS` (the one
-    place a family is enabled) with the refusal text generated by the same
-    function the generation path refuses with. Paired with the `adapter_type`
-    that `GET /loras` detects per file, it is what lets a client tell BEFORE
-    generating whether a selected checkpoint will be accepted. `block_swap`
-    says what a LyCORIS family costs under a live block offloader on that
-    architecture -- refused, or resident-and-not-offloaded -- because a
-    LoHa/LoKr branch's factors are bare parameters that no offloader moves.
-
-    `arch_display_names` is the user-facing spelling of an architecture id
-    ("sensenova" -> "SenseNova U1.5"), served from the backend's own
-    `ARCH_DISPLAY_NAMES` so a client's architecture filter labels come from one
-    table. An id with no entry falls back to itself.
-
-    `cfg_null_stage` is architecture -> at which stage the TRAINER can build
-    that architecture's inference CFG uncond condition: `null` (it cannot),
-    `"collated"` or `"encode"`. `null` is what makes an explicitly supplied
-    `cfg_uncond_drop_rate` -- INCLUDING `0.0` -- a 400 rather than a value the
-    run ignores; the matching `training_feature_unsupported[arch]
-    ["cfg_uncond_drop"]` entry carries the reason to show. `cfg_uncond_drop_
-    defaults` is what an OMITTED `cfg_uncond_drop_rate` resolves to for that
-    architecture (absent = the mechanism is not in play there), so a client
-    displays the resolved default instead of keeping its own copy of it.
-
-    `video_constraints` is the per-video-arch `TemporalSpec` (valid clip
-    lengths, production bounds, fixed fps, canvas envelope) that the video
-    routes validate against, so a client can build a valid clip-length list
-    instead of hardcoding one.
-
-    `chain_context` is what a long-form video CHAIN's continuation segments
-    receive from their predecessor on that architecture (and, under `variants`,
-    on the loaded transformer variant). It is the source
-    `/video-chain/plan|validate` refuse an unadvertised `continuation_mode`
-    from, so a client picks a mode from here rather than from a checkpoint name.
-
-    `audio_outpaint_placements` is the audio equivalent of
-    `video_constraints[...].outpaint_placements`: which `placement` values
-    `POST /generate/outpaint/audio` accepts for a given architecture.
-    MiniMax Music 3 lists only `["extend_forward"]` (its autoregressive stage
-    is a causal language model); ACE-Step has no entry at all, since its own
-    placement is a continuous timeline offset, not an enumerated set.
-
-    `aud2aud_music3_repaint_modes` is the sibling table for `POST
-    /generate/aud2aud`'s `music3_repaint_mode` field (repaint mode only,
-    design doc phase plan item 8): MiniMax Music 3 lists
-    `["regenerate", "rerender"]`; ACE-Step has no entry (its own aud2aud has
-    no such sub-mode concept at all).
-    """
-    from api.arch_capabilities import (
-        CFG_NULL_STAGE_BY_ARCH, TEXT_OUTPUT_MODES,
-        ARCH_DISPLAY_NAMES, ARCH_SUPPORTED_VALUES, ARCH_UNSUPPORTED,
-        FEATURE_PARAMS, FEATURE_LABELS,
-        QUANTIZED_LINEAR_ARCHS, RUNTIME_INT8_ARCHS, TRAINING_UNSUPPORTED,
-        TRAINING_FEATURE_UNSUPPORTED, TRAINING_FEATURE_PARAMS,
-        TRAINING_FEATURE_LABELS, TRAINING_REQUIRED_VALUES,
-        TRAINING_FEATURE_ADVISORY, TRAINING_SAMPLE_NOTES,
-        TRAINING_SAMPLE_SUPPORTED_PARAMS,
-        AUDIO_OUTPAINT_PLACEMENTS, AUD2AUD_MUSIC3_REPAINT_MODES,
-        adapter_families_payload, chain_context_payload,
-        video_constraints_payload,
-    )
-    return {
-        "unsupported": ARCH_UNSUPPORTED,
-        "text_output_modes": {k: list(v) for k, v in TEXT_OUTPUT_MODES.items()},
-        "supported_values": ARCH_SUPPORTED_VALUES,
-        "feature_params": FEATURE_PARAMS,
-        "feature_labels": FEATURE_LABELS,
-        "training_unsupported": TRAINING_UNSUPPORTED,
-        "training_feature_unsupported": TRAINING_FEATURE_UNSUPPORTED,
-        "training_feature_params": TRAINING_FEATURE_PARAMS,
-        "training_feature_labels": TRAINING_FEATURE_LABELS,
-        "training_required_values": TRAINING_REQUIRED_VALUES,
-        "training_feature_advisory": TRAINING_FEATURE_ADVISORY,
-        "training_sample_supported_params": TRAINING_SAMPLE_SUPPORTED_PARAMS,
-        "training_sample_notes": TRAINING_SAMPLE_NOTES,
-        "adapter_families": adapter_families_payload(),
-        "arch_display_names": ARCH_DISPLAY_NAMES,
-        "cfg_null_stage": CFG_NULL_STAGE_BY_ARCH,
-        "cfg_uncond_drop_defaults": CFG_UNCOND_DROP_DEFAULTS_BY_ARCH,
-        "video_constraints": video_constraints_payload(),
-        "chain_context": chain_context_payload(),
-        "runtime_int8_archs": list(RUNTIME_INT8_ARCHS),
-        "quantized_linear_archs": list(QUANTIZED_LINEAR_ARCHS),
-        "audio_outpaint_placements": {k: list(v) for k, v in AUDIO_OUTPAINT_PLACEMENTS.items()},
-        "aud2aud_music3_repaint_modes": {k: list(v) for k, v in AUD2AUD_MUSIC3_REPAINT_MODES.items()},
-    }
-
-
 
 # Conservative per-pixel peak VRAM table.  Used to estimate how much
 # headroom we need before starting generation so the GPU coordinator

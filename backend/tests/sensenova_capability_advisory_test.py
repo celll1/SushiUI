@@ -242,7 +242,7 @@ def test_the_patch_harness_itself_is_sound():
 
 @pytest.mark.parametrize("declaration,match", [
     # The partition: the same pair in both tables.
-    ('_add_training_feature_advisory("sensenova", "block_swap", "experimental", "x")\n',
+    ('_add_training_feature_advisory("sd15", "block_swap", "experimental", "x")\n',
      "both unsupported and advisory"),
     # A level outside the vocabulary.
     ('_add_training_feature_advisory("sensenova", "vae", "probably_fine", "x")\n',

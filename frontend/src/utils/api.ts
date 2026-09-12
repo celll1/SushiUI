@@ -6174,6 +6174,22 @@ export const getDatasetTagStatistics = async (
   return response.data.tag_statistics;
 };
 
+export interface DatasetHealth {
+  dataset_id: number;
+  healthy: boolean;
+  last_scanned_at: string | null;
+  counts: Record<string, number>;
+  samples: Record<string, string[]>;
+}
+
+export const getDatasetHealth = async (
+  id: number,
+  signal?: AbortSignal
+): Promise<DatasetHealth> => {
+  const response = await api.get(`/datasets/${id}/health`, { signal });
+  return response.data as DatasetHealth;
+};
+
 export const deleteDataset = async (id: number): Promise<void> => {
   await api.delete(`/datasets/${id}`);
 };

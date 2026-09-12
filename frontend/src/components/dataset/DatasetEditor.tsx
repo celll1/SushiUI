@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { X, Scan, Save } from "lucide-react";
-import { getDataset, scanDataset, updateCaptionProcessing, updateDatasetExifConfig, CaptionProcessingConfig, ScanFieldSummary } from "@/utils/api";
+import { Scan, Save } from "lucide-react";
+import { getDataset, getDatasetHealth, scanDataset, updateCaptionProcessing, updateDatasetExifConfig, CaptionProcessingConfig, DatasetHealth, ScanFieldSummary } from "@/utils/api";
 import DatasetViewer from "./DatasetViewer";
 import LatentCacheRow from "./LatentCacheRow";
 import CaptionProcessingSettings from "../datasets/CaptionProcessingSettings";
@@ -23,6 +23,8 @@ export default function DatasetEditor({ datasetId, onClose }: DatasetEditorProps
   const [activeTab, setActiveTab] = useState<"viewer" | "caption-processing">("viewer");
   const [captionConfig, setCaptionConfig] = useState<CaptionProcessingConfig>({});
   const [savingConfig, setSavingConfig] = useState(false);
+  const [health, setHealth] = useState<DatasetHealth | null>(null);
+  const [checkingHealth, setCheckingHealth] = useState(false);
 
   useEffect(() => {
     loadDataset();
@@ -97,9 +99,16 @@ export default function DatasetEditor({ datasetId, onClose }: DatasetEditorProps
     }
   };
 
-  const handleSave = async () => {
-    console.log("Saving dataset:", dataset);
-    // TODO: Implement save
+  const handleHealthCheck = async () => {
+    setCheckingHealth(true);
+    try {
+      setHealth(await getDatasetHealth(datasetId));
+    } catch (err) {
+      console.error("Failed to inspect dataset health:", err);
+      setScanMessage("Dataset health check failed");
+    } finally {
+      setCheckingHealth(false);
+    }
   };
 
   const [savingExif, setSavingExif] = useState(false);
@@ -156,6 +165,15 @@ export default function DatasetEditor({ datasetId, onClose }: DatasetEditorProps
                 />
                 <span>Read EXIF</span>
               </label>
+            )}
+            {activeTab === "viewer" && (
+              <button
+                onClick={handleHealthCheck}
+                disabled={checkingHealth || scanning}
+                className="px-2.5 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition-colors disabled:opacity-50"
+              >
+                {checkingHealth ? "Checking..." : "Health"}
+              </button>
             )}
             {activeTab === "viewer" && (
               <button
@@ -255,6 +273,24 @@ export default function DatasetEditor({ datasetId, onClose }: DatasetEditorProps
           ))}
           <div className="text-gray-500">
             Other fields: {scanSummary.other.updated} updated · {scanSummary.other.added} new
+          </div>
+        </div>
+      )}
+
+      {!scanning && health && (
+        <div className={`mx-4 mt-2 rounded border p-3 text-xs ${health.healthy ? "border-green-700 bg-green-950/20" : "border-yellow-700 bg-yellow-950/20"}`}>
+          <div className="mb-1 font-medium">
+            {health.healthy ? "Dataset is consistent" : "Dataset needs attention"}
+          </div>
+          <div className="flex flex-wrap gap-x-3 gap-y-1 text-gray-400">
+            {Object.entries(health.counts)
+              .filter(([key, value]) => key !== "total_items" && value > 0)
+              .map(([key, value]) => (
+                <span key={key} title={(health.samples[key] ?? []).join("\n")}>
+                  {key.replaceAll("_", " ")}: {value.toLocaleString()}
+                </span>
+              ))}
+            <span>items: {(health.counts.total_items ?? 0).toLocaleString()}</span>
           </div>
         </div>
       )}

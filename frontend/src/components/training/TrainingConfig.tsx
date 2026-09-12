@@ -417,7 +417,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const attentionBackend = params.attention_backend ?? "native";
   // Attention implementation registry (conduit|diffusers). See DEFAULT_CONFIG note.
   const attentionImpl = params.attention_impl ?? "conduit";
-  const tqBackwardMode = params.tq_backward_mode ?? "auto";
+  const tqBackwardMode = params.tq_backward_mode ?? "triton";
   const minSnrGamma = params.min_snr_gamma ?? 5.0;
   const reconstructionLossWeight = params.reconstruction_loss_weight ?? 0.0;
   const audioLossWeight = params.audio_loss_weight ?? 1.0;
@@ -4999,13 +4999,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   onChange={(e) => updateParam("tq_backward_mode", e.target.value)}
                   className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
                 >
-                  <option value="auto">Auto (FA2 hybrid when available)</option>
                   <option value="triton">Triton exact-P (deterministic, lowest VRAM)</option>
                   <option value="fa2">FA2 hybrid (fast, non-deterministic)</option>
-                  <option value="fa2_deterministic">FA2 hybrid deterministic</option>
+                  <option value="fa2_deterministic">FA2 hybrid deterministic (high overhead)</option>
+                  <option value="auto">Auto (FA2 hybrid when available)</option>
                 </select>
                 <p className="text-xs text-gray-500 mt-1">
-                  Auto is fastest on the bundled FA2 environment. Triton preserves bit-exact repeatability and the lowest peak VRAM.
+                  Triton preserves bit-exact repeatability and compact saved activations. FA2 hybrid trades backward VRAM and determinism for speed.
                 </p>
               </div>
             )}

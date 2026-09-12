@@ -1,9 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { listDatasetItems, DatasetItem, Dataset, getDataset, getAllDatasetItemIds } from "@/utils/api";
-import { normalizeTagForMatching } from "@/utils/tagSuggestions";
-import { useTagSuggestions } from "@/contexts/TagSuggestionsContext";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { listDatasetGridItems, DatasetGridItem, Dataset, getDataset, getDatasetTagStatistics, getAllDatasetItemIds } from "@/utils/api";
 import ItemGridColumn from "./viewer/ItemGridColumn";
 import ItemDetailColumn from "./viewer/ItemDetailColumn";
 import ActionsColumn from "./viewer/ActionsColumn";
@@ -24,14 +22,15 @@ interface TaggerSettings {
 }
 
 export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
-  const tagSuggestionsContext = useTagSuggestions();
   const [dataset, setDataset] = useState<Dataset | null>(null);
-  const [items, setItems] = useState<DatasetItem[]>([]);
+  const [items, setItems] = useState<DatasetGridItem[]>([]);
   const [selectedItems, setSelectedItems] = useState<Set<number>>(new Set());
-  const [currentItem, setCurrentItem] = useState<DatasetItem | null>(null);
+  const [currentItem, setCurrentItem] = useState<DatasetGridItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [tagFilter, setTagFilter] = useState(""); // Comma-separated tags
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [debouncedTagFilter, setDebouncedTagFilter] = useState("");
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const pageSize = 50;
@@ -40,80 +39,97 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
   const [tagCategoryCache, setTagCategoryCache] = useState<Record<string, string>>({});
   // Tag statistics with categories (tag -> {category, count})
   const [tagStatistics, setTagStatistics] = useState<Record<string, { category: string; count: number }> | undefined>(undefined);
+  const [statisticsLoading, setStatisticsLoading] = useState(false);
+  const itemRequestRef = useRef(0);
+  const statisticsRequestRef = useRef(0);
 
   // Tagger settings (shared across batch operations)
   const [taggerSettings, setTaggerSettings] = useState<TaggerSettings | null>(null);
 
   useEffect(() => {
+    setItems([]);
+    setCurrentItem(null);
+    setSelectedItems(new Set());
+    setTagStatistics(undefined);
+    setTagCategoryCache({});
+    statisticsRequestRef.current += 1;
+    const controller = new AbortController();
     const loadDataset = async () => {
-      if (!tagSuggestionsContext.isLoaded) {
-        return; // Wait for tag suggestions to load
-      }
-
       try {
-        const data = await getDataset(datasetId);
+        const data = await getDataset(datasetId, false, controller.signal);
         setDataset(data);
-
-        // Build tag category cache using tagSuggestions (batch operation)
-        if (data.tag_statistics) {
-          const tags = Object.keys(data.tag_statistics);
-
-          // Batch categorize all tags at once (much faster than individual searches)
-          const categoryMap = await tagSuggestionsContext.getCategoriesForTags(tags);
-
-          const categoryRecord: Record<string, string> = {};
-          const statsWithCategories: Record<string, { category: string; count: number }> = {};
-
-          for (const [tag, stats] of Object.entries(data.tag_statistics)) {
-            const category = categoryMap.get(tag) || "Unknown";
-            categoryRecord[tag] = category;
-            statsWithCategories[tag] = {
-              category,
-              count: stats.count
-            };
-          }
-
-          setTagCategoryCache(categoryRecord);
-          setTagStatistics(statsWithCategories);
-          console.log(`[DatasetViewer] Loaded ${Object.keys(categoryRecord).length} tag categories using batch categorization`);
-        }
       } catch (err) {
-        console.error("[DatasetViewer] Failed to load dataset:", err);
+        if ((err as any)?.code !== "ERR_CANCELED") {
+          console.error("[DatasetViewer] Failed to load dataset:", err);
+        }
       }
     };
 
     loadDataset();
-  }, [datasetId, tagSuggestionsContext.isLoaded]);
+    return () => controller.abort();
+  }, [datasetId]);
 
   useEffect(() => {
-    loadItems();
-  }, [datasetId, page, search, tagFilter]);
+    const timer = window.setTimeout(() => {
+      setDebouncedSearch(search);
+      setDebouncedTagFilter(tagFilter);
+    }, search || tagFilter ? 250 : 0);
+    return () => window.clearTimeout(timer);
+  }, [search, tagFilter]);
 
-  const loadItems = async () => {
+  const loadItems = useCallback(async (signal?: AbortSignal) => {
+    const requestId = ++itemRequestRef.current;
     setLoading(true);
     try {
-      const response = await listDatasetItems(
+      const response = await listDatasetGridItems(
         datasetId,
         page,
         pageSize,
-        search || undefined,
-        tagFilter || undefined
+        debouncedSearch || undefined,
+        debouncedTagFilter || undefined,
+        signal,
       );
+      if (requestId !== itemRequestRef.current) return;
       setItems(response.items);
       setTotal(response.total);
-
-      // Auto-select first item if none selected
-      if (!currentItem && response.items.length > 0) {
-        setCurrentItem(response.items[0]);
-      }
+      setCurrentItem(current => (
+        response.items.find(candidate => candidate.id === current?.id)
+        || response.items[0]
+        || null
+      ));
     } catch (err) {
-      console.error("Failed to load dataset items:", err);
+      if ((err as any)?.code !== "ERR_CANCELED") {
+        console.error("Failed to load dataset items:", err);
+      }
     } finally {
-      setLoading(false);
+      if (requestId === itemRequestRef.current) setLoading(false);
     }
-  };
+  }, [datasetId, page, pageSize, debouncedSearch, debouncedTagFilter]);
 
-  const handleSelectItem = (item: DatasetItem) => {
+  useEffect(() => {
+    const controller = new AbortController();
+    loadItems(controller.signal);
+    return () => controller.abort();
+  }, [loadItems]);
+
+  const loadTagStatistics = useCallback(async () => {
+    const requestId = ++statisticsRequestRef.current;
+    setStatisticsLoading(true);
+    try {
+      const statistics = await getDatasetTagStatistics(datasetId);
+      if (requestId !== statisticsRequestRef.current) return;
+      setTagStatistics(statistics);
+      setTagCategoryCache(Object.fromEntries(
+        Object.entries(statistics).map(([tag, value]) => [tag, value.category || "Unknown"])
+      ));
+    } catch (err) {
+      console.error("Failed to load tag statistics:", err);
+    } finally {
+      if (requestId === statisticsRequestRef.current) setStatisticsLoading(false);
+    }
+  }, [datasetId]);
+
+  const handleSelectItem = (item: DatasetGridItem) => {
     setCurrentItem(item);
   };
 
@@ -158,7 +174,7 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
   const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
 
-  const handleSelectItemMobile = useCallback((item: DatasetItem) => {
+  const handleSelectItemMobile = useCallback((item: DatasetGridItem) => {
     handleSelectItem(item);
     setMobileDetailOpen(true);
   }, [handleSelectItem]);
@@ -232,7 +248,9 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
         <ActionsColumn
           datasetId={datasetId}
           tagStatistics={tagStatistics}
-          onRefresh={loadItems}
+          statisticsLoading={statisticsLoading}
+          onLoadStatistics={loadTagStatistics}
+          onRefresh={() => loadItems()}
           selectedItemIds={Array.from(selectedItems)}
           totalItems={total}
           captionProcessingConfig={dataset?.caption_processing}

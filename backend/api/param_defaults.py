@@ -2207,6 +2207,9 @@ DATASET_DEFAULTS: Dict[str, Any] = {
     "caption_type": "tags",
     "persist_sidecar": False,
     "preview_size": 256,
+    "page": 1,
+    "page_size": 50,
+    "include_tag_statistics": True,
 }
 
 

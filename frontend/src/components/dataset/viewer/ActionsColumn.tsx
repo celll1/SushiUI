@@ -13,6 +13,8 @@ interface TagStatistic {
 interface ActionsColumnProps {
   datasetId: number;
   tagStatistics?: Record<string, TagStatistic>;
+  statisticsLoading: boolean;
+  onLoadStatistics: () => Promise<void>;
   onRefresh: () => void;
   selectedItemIds: number[];
   totalItems: number;
@@ -42,6 +44,8 @@ const getCategoryColor = (category: string): string => {
 export default function ActionsColumn({
   datasetId,
   tagStatistics,
+  statisticsLoading,
+  onLoadStatistics,
   onRefresh,
   selectedItemIds,
   totalItems,
@@ -92,6 +96,7 @@ export default function ActionsColumn({
     setIsCategorizing(true);
     try {
       await addTagToCategory(selectedTag.tag, targetCategory, selectedTag.count);
+      await onLoadStatistics();
       alert(`Tag "${selectedTag.tag}" added to ${targetCategory} category`);
       setSelectedTag(null);
       onRefresh(); // Refresh dataset to update tag categories
@@ -149,7 +154,16 @@ export default function ActionsColumn({
 
         {/* Tag List */}
         <div className="bg-gray-800 rounded-lg p-3">
-          {sortedTags.length > 0 ? (
+          {tagStatistics === undefined ? (
+            <button
+              type="button"
+              onClick={onLoadStatistics}
+              disabled={statisticsLoading}
+              className="w-full rounded bg-gray-700 px-3 py-2 text-xs text-gray-200 hover:bg-gray-600 disabled:opacity-50"
+            >
+              {statisticsLoading ? "Loading statistics…" : "Load tag statistics"}
+            </button>
+          ) : sortedTags.length > 0 ? (
             <div className="space-y-1 max-h-96 overflow-y-auto">
               {sortedTags.map(([tag, stats]) => {
                 const colorClass = getCategoryColor(stats.category);

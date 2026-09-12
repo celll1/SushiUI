@@ -2,15 +2,15 @@
 
 import { useState, useEffect } from "react";
 import { Search, ChevronLeft, ChevronRight, Image as ImageIcon } from "lucide-react";
-import { listDatasetItems, DatasetItem, datasetItemPreviewUrl } from "@/utils/api";
+import { listDatasetGridItems, DatasetGridItem, datasetItemPreviewUrl } from "@/utils/api";
 
 interface ItemBrowserProps {
   datasetId: number;
-  onSelectItem?: (item: DatasetItem) => void;
+  onSelectItem?: (item: DatasetGridItem) => void;
 }
 
 export default function ItemBrowser({ datasetId, onSelectItem }: ItemBrowserProps) {
-  const [items, setItems] = useState<DatasetItem[]>([]);
+  const [items, setItems] = useState<DatasetGridItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
@@ -24,7 +24,7 @@ export default function ItemBrowser({ datasetId, onSelectItem }: ItemBrowserProp
   const loadItems = async () => {
     setLoading(true);
     try {
-      const response = await listDatasetItems(datasetId, page, pageSize, search || undefined);
+      const response = await listDatasetGridItems(datasetId, page, pageSize, search || undefined);
       setItems(response.items);
       setTotal(response.total);
     } catch (err) {

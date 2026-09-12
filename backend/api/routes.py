@@ -12882,12 +12882,31 @@ async def create_dataset(request: DatasetCreateRequest, db: Session = Depends(ge
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/datasets/{dataset_id}")
-async def get_dataset(dataset_id: int, db: Session = Depends(get_datasets_db)):
+async def get_dataset(
+    dataset_id: int,
+    include_tag_statistics: bool = DATASET_DEFAULTS["include_tag_statistics"],
+    db: Session = Depends(get_datasets_db),
+):
     """Get dataset by ID"""
-    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    query = db.query(Dataset)
+    if not include_tag_statistics:
+        from sqlalchemy.orm import defer
+        query = query.options(defer(Dataset.tag_statistics))
+    dataset = query.filter(Dataset.id == dataset_id).first()
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    return dataset.to_dict()
+    return dataset.to_dict(include_tag_statistics=include_tag_statistics)
+
+
+@router.get("/datasets/{dataset_id}/tag-statistics")
+async def get_dataset_tag_statistics(
+    dataset_id: int,
+    db: Session = Depends(get_datasets_db),
+):
+    row = db.query(Dataset.tag_statistics).filter(Dataset.id == dataset_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    return {"tag_statistics": row[0] or {}}
 
 class CaptionProcessingUpdateRequest(BaseModel):
     caption_processing: Dict[str, Any]
@@ -14492,8 +14511,8 @@ async def scan_dataset(
 @router.get("/datasets/{dataset_id}/items")
 async def list_dataset_items(
     dataset_id: int,
-    page: int = 1,
-    page_size: int = 50,
+    page: int = DATASET_DEFAULTS["page"],
+    page_size: int = DATASET_DEFAULTS["page_size"],
     search: Optional[str] = None,
     tags: Optional[str] = None,  # Comma-separated tags to filter by
     db: Session = Depends(get_datasets_db)
@@ -14507,34 +14526,15 @@ async def list_dataset_items(
         search: Text search in filename (base_name)
         tags: Comma-separated tags to filter (e.g. "1girl,solo"). Item must contain ALL specified tags.
     """
-    query = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id)
-
-    # Filename search
-    if search:
-        query = query.filter(DatasetItem.base_name.like(f"%{search}%"))
-
-    exact_ids = None
-    if tags:
-        tag_list = [t.strip().lower() for t in tags.split(',') if t.strip()]
-        if tag_list:
-            from core.datasets.queries import exact_tag_item_ids
-            exact_ids = exact_tag_item_ids(
-                db, dataset_id, tag_list, search=search
-            )
-
-    total = len(exact_ids) if exact_ids is not None else query.count()
-    offset = (page - 1) * page_size
-    if exact_ids is not None:
-        page_ids = exact_ids[offset:offset + page_size]
-        items = (
-            db.query(DatasetItem)
-            .filter(DatasetItem.id.in_(page_ids))
-            .order_by(DatasetItem.id)
-            .all()
-            if page_ids else []
-        )
-    else:
-        items = query.order_by(DatasetItem.id).offset(offset).limit(page_size).all()
+    from core.datasets.queries import dataset_item_page
+    items, total = dataset_item_page(
+        db,
+        dataset_id,
+        page=page,
+        page_size=page_size,
+        search=search,
+        tags=tags,
+    )
 
     return {
         "items": [item.to_dict() for item in items],
@@ -19958,6 +19958,33 @@ async def batch_cancel_endpoint(dataset_id: int, operation_id: Optional[str] = N
     return {
         "message": "Batch operation cancellation requested",
         "cancelled_operations": cancelled,
+    }
+
+
+@router.get("/datasets/{dataset_id}/items/grid")
+async def list_dataset_grid_items(
+    dataset_id: int,
+    page: int = DATASET_DEFAULTS["page"],
+    page_size: int = DATASET_DEFAULTS["page_size"],
+    search: Optional[str] = None,
+    tags: Optional[str] = None,
+    db: Session = Depends(get_datasets_db),
+):
+    from core.datasets.queries import dataset_item_page
+    items, total = dataset_item_page(
+        db,
+        dataset_id,
+        page=page,
+        page_size=page_size,
+        search=search,
+        tags=tags,
+        grid_projection=True,
+    )
+    return {
+        "items": [item.to_grid_dict() for item in items],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
     }
 
 

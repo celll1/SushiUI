@@ -7908,7 +7908,7 @@ paths:
     get:
       tags: [datasets]
       summary: Get dataset by ID
-      description: Returns the full dataset payload including tag_statistics.
+      description: Returns dataset detail; tag_statistics can be omitted for a lightweight initial view.
       operationId: getDataset
       parameters:
         - name: dataset_id
@@ -7916,6 +7916,12 @@ paths:
           required: true
           schema:
             type: integer
+        - name: include_tag_statistics
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
       responses:
         '200':
           description: Dataset detail
@@ -7948,6 +7954,33 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+
+  /datasets/{dataset_id}/tag-statistics:
+    get:
+      tags: [datasets]
+      summary: Load the cached tag statistics for one dataset
+      operationId: getDatasetTagStatistics
+      parameters:
+        - {name: dataset_id, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200':
+          description: Cached tag counts and categories
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tag_statistics]
+                properties:
+                  tag_statistics:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      additionalProperties: true
+        '404':
+          description: Dataset not found
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
 
   /datasets/{dataset_id}/caption-processing:
     patch:
@@ -8296,6 +8329,37 @@ paths:
                     type: integer
                   page_size:
                     type: integer
+
+  /datasets/{dataset_id}/items/grid:
+    get:
+      tags: [datasets]
+      summary: List lightweight dataset item projections for the viewer grid
+      operationId: listDatasetGridItems
+      parameters:
+        - {name: dataset_id, in: path, required: true, schema: {type: integer}}
+        - {name: page, in: query, required: false, schema: {type: integer, default: 1}}
+        - {name: page_size, in: query, required: false, schema: {type: integer, default: 50}}
+        - {name: search, in: query, required: false, schema: {type: string}}
+        - name: tags
+          in: query
+          required: false
+          schema: {type: string}
+          description: Comma-separated exact tags; every tag must be present
+      responses:
+        '200':
+          description: Paginated lightweight item list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total, page, page_size]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/DatasetGridItem'}
+                  total: {type: integer}
+                  page: {type: integer}
+                  page_size: {type: integer}
 
   /datasets/{dataset_id}/items/ids:
     get:
@@ -20601,6 +20665,19 @@ components:
           type: string
           nullable: true
           description: Parent directory; defaults to the first configured models dir
+
+    DatasetGridItem:
+      type: object
+      required: [id, dataset_id, item_type, base_name, width, height, file_size]
+      properties:
+        id: {type: integer}
+        dataset_id: {type: integer}
+        item_type: {type: string}
+        base_name: {type: string}
+        width: {type: integer, nullable: true}
+        height: {type: integer, nullable: true}
+        file_size: {type: integer, nullable: true}
+        thumbnail_url: {type: string, nullable: true}
 
     Dataset:
       type: object

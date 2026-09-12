@@ -5,6 +5,7 @@ import { Undo2, Redo2, Copy, Clipboard, Sparkles, Settings, X } from "lucide-rea
 import {
   getDatasetItem,
   DatasetItem,
+  DatasetGridItem,
   updateItemCaption,
   categorizeDatasetTags,
   datasetItemMediaUrl,
@@ -19,7 +20,7 @@ import { normalizeTagForMatching } from "@/utils/tagSuggestions";
 import TaggerSettingsDialog, { TaggerSettings } from "./TaggerSettingsDialog";
 
 interface ItemDetailColumnProps {
-  item: DatasetItem | null;
+  item: DatasetGridItem | null;
   datasetId: number;
   tagCategoryCache: Record<string, string>; // Pre-loaded category map from parent
   onTaggerSettingsChange?: (settings: any) => void; // Notify parent of tagger settings changes
@@ -72,6 +73,7 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
   const [lyricsDraft, setLyricsDraft] = useState<string>("");
   const [isSavingLyrics, setIsSavingLyrics] = useState(false);
   const tagSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const detailRequestRef = useRef(0);
 
   // Notify parent when tagger settings change
   useEffect(() => {
@@ -93,11 +95,13 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
     }
   }, [tags, tagCategoryCache]);
 
-  const loadItemDetails = useCallback(async () => {
+  const loadItemDetails = useCallback(async (signal?: AbortSignal) => {
     if (!item) return;
+    const requestId = ++detailRequestRef.current;
 
     try {
-      const details = await getDatasetItem(datasetId, item.id);
+      const details = await getDatasetItem(datasetId, item.id, signal);
+      if (requestId !== detailRequestRef.current) return;
       setDetailedItem(details);
 
       const tagCaption = details.captions?.find(c => c.caption_type === "tags");
@@ -126,13 +130,18 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
         setHistory({ past: [], present: [], future: [] });
       }
     } catch (err) {
-      console.error("Failed to load item details:", err);
+      if ((err as any)?.code !== "ERR_CANCELED") {
+        console.error("Failed to load item details:", err);
+      }
     }
   }, [item, datasetId]);
 
   useEffect(() => {
     if (item) {
-      loadItemDetails();
+      setDetailedItem(null);
+      const controller = new AbortController();
+      loadItemDetails(controller.signal);
+      return () => controller.abort();
     }
   }, [item, loadItemDetails]);
 
@@ -514,9 +523,9 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
           <div className="text-[10px] text-gray-400">
             {item.item_type === "audio" ? (
               <>
-                {item.audio_meta?.sample_rate ? `${item.audio_meta.sample_rate}Hz` : ""}
-                {item.audio_meta?.channels ? ` • ${item.audio_meta.channels}ch` : ""}
-                {item.audio_meta?.duration ? ` • ${item.audio_meta.duration.toFixed(1)}s` : ""}
+                {detailedItem?.audio_meta?.sample_rate ? `${detailedItem.audio_meta.sample_rate}Hz` : ""}
+                {detailedItem?.audio_meta?.channels ? ` • ${detailedItem.audio_meta.channels}ch` : ""}
+                {detailedItem?.audio_meta?.duration ? ` • ${detailedItem.audio_meta.duration.toFixed(1)}s` : ""}
                 {" • "}
               </>
             ) : (
@@ -575,8 +584,8 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
             <div className="text-xs font-medium text-gray-200 truncate mb-1" title={item.base_name}>
               {item.base_name}
             </div>
-            <div className="text-[10px] text-gray-400 truncate" title={item.image_path}>
-              {item.image_path}
+            <div className="text-[10px] text-gray-400 truncate" title={detailedItem?.image_path}>
+              {detailedItem?.image_path || "Loading details…"}
             </div>
             {/* Item type badge */}
             {detailedItem?.item_type === "reference" && (

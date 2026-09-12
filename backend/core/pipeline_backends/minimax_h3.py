@@ -392,7 +392,9 @@ class MiniMaxH3Mixin:
         print(f"[MiniMax-H3] Residual probe (debug/research): {len(records)} record(s) -> {out_path}")
 
 
-    def _minimax_h3_apply_attention_backend(self, transformer, params: Dict[str, Any]) -> str:
+    def _minimax_h3_apply_attention_backend(
+        self, transformer, params: Dict[str, Any], layout: Dict[str, Any]
+    ) -> str:
         """Stamp the inference attention backend on the transformer. Returns it.
 
         The vendored ``MiniMaxH3Transformer3DModel`` propagates ``_attn_backend``
@@ -406,13 +408,29 @@ class MiniMaxH3Mixin:
         downgraded. Measure, do not assume -- the conduit logs the backend it
         actually used.
         """
-        from core.attention import normalize_backend
+        from core.attention import normalize_backend, validate_mechanism
+        from core.models.minimax_h3.sparse_attention import build_h3_attention_plan
 
         requested = params.get("attention_type", settings.attention_type)
         backend = normalize_backend(requested)
         inner = getattr(transformer, "transformer", transformer)
         inner._attn_backend = backend
+        method = validate_mechanism(params.get("attention_method"))
+        inner._attention_plan = build_h3_attention_plan(
+            method,
+            layout,
+            temporal_radius=float(params.get("h3_attention_temporal_radius", 16.0)),
+            spatial_radius=float(params.get("h3_attention_spatial_radius", 8.0)),
+            block_size=int(params.get("h3_attention_block_size", 128)),
+        )
         print(f"[MiniMax-H3] Attention backend: {backend} (from attention_type={requested!r})")
+        if inner._attention_plan is not None:
+            print(
+                "[MiniMax-H3] Attention mechanism: h3_video_window "
+                f"(temporal_radius={inner._attention_plan.temporal_radius:g}, "
+                f"spatial_radius={inner._attention_plan.spatial_radius:g}, "
+                f"block_size={inner._attention_plan.block_size}; FlexAttention)"
+            )
         return backend
 
 
@@ -618,6 +636,11 @@ class MiniMaxH3Mixin:
 
         components = self.minimax_h3_components or {}
         current = components.get("transformer")
+        raw = current.transformer if isinstance(current, MiniMaxH3BlockLoopWrapper) else current
+        if raw is not None:
+            raw._attention_plan = None
+            if hasattr(raw, "_stamp_attention_backend"):
+                raw._stamp_attention_backend()
         if isinstance(current, MiniMaxH3BlockLoopWrapper):
             components["transformer"] = current.transformer
         if offloader is not None:
@@ -3169,7 +3192,7 @@ class MiniMaxH3Mixin:
                 # itself rather than moving all 21 GB on and some of it back off.
                 transformer, offloader, probe_records = self._ensure_minimax_h3_swap_and_offload(
                     params, torch_device)
-                self._minimax_h3_apply_attention_backend(transformer, params)
+                self._minimax_h3_apply_attention_backend(transformer, params, layout)
                 # ~150s per step means the per-step callback alone looks like a hang, so
                 # block-level forward hooks tick progress from inside the step. Removed
                 # in the `finally` below: a surviving hook would fire on the next

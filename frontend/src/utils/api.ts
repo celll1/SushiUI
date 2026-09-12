@@ -8127,6 +8127,7 @@ export const removeItemReferenceImage = async (
 
 export interface BatchTaggerRequest {
   item_ids: number[];
+  operation_id?: string;
   gen_threshold?: number;
   char_threshold?: number;
   thresholds?: Record<string, number>;
@@ -8138,6 +8139,7 @@ export interface BatchTaggerRequest {
 export interface BatchReorderTagsRequest {
   item_ids: number[];
   category_order: string[];
+  operation_id?: string;
 }
 
 export interface BatchReplaceTagRequest {
@@ -8145,6 +8147,7 @@ export interface BatchReplaceTagRequest {
   from_tag: string;
   to_tag: string;
   normalize_match?: boolean;
+  operation_id?: string;
 }
 
 export interface BatchOperationResponse {
@@ -8154,6 +8157,7 @@ export interface BatchOperationResponse {
   skipped_count: number;
   failed_count: number;
   message: string;
+  operation_id?: string;
 }
 
 export const batchTaggerInference = async (
@@ -8180,13 +8184,23 @@ export const batchReplaceTag = async (
   return response.data;
 };
 
-export const cancelBatchOperation = async (datasetId: number): Promise<{ message: string }> => {
-  const response = await api.post(`/datasets/${datasetId}/batch-cancel`);
+export const cancelBatchOperation = async (
+  datasetId: number,
+  operationId?: string
+): Promise<{ message: string; cancelled_operations: number }> => {
+  const response = await api.post(`/datasets/${datasetId}/batch-cancel`, undefined, {
+    params: operationId ? { operation_id: operationId } : undefined,
+  });
   return response.data;
 };
 
-export const backfillTagData = async (datasetId: number): Promise<BatchOperationResponse> => {
-  const response = await api.post(`/datasets/${datasetId}/backfill-tag-data`);
+export const backfillTagData = async (
+  datasetId: number,
+  operationId?: string
+): Promise<BatchOperationResponse> => {
+  const response = await api.post(`/datasets/${datasetId}/backfill-tag-data`, undefined, {
+    params: operationId ? { operation_id: operationId } : undefined,
+  });
   return response.data;
 };
 

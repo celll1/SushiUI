@@ -19715,8 +19715,24 @@ from api.batch_operations import (
     batch_reorder_tags,
     batch_replace_tag,
     batch_backfill_tag_data,
-    cancel_batch_operation,
 )
+from core.datasets.batch_jobs import (
+    BatchJobConflict,
+    batch_jobs,
+    resolve_dataset_item_ids,
+)
+
+
+def _start_dataset_batch(dataset_id: int, request, db: Session) -> str:
+    if db.query(Dataset.id).filter(Dataset.id == dataset_id).first() is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    try:
+        request.item_ids = resolve_dataset_item_ids(db, dataset_id, request.item_ids)
+        return batch_jobs.start(dataset_id, request.operation_id)
+    except BatchJobConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 @router.post("/datasets/{dataset_id}/batch-tagger", response_model=BatchOperationResponse)
 async def batch_tagger_endpoint(
@@ -19728,15 +19744,22 @@ async def batch_tagger_endpoint(
     Run tagger inference on multiple items.
     If item_ids is empty, process all items in the dataset.
     """
-    # If no items specified, get all items from dataset
-    if not request.item_ids:
-        all_items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).all()
-        request.item_ids = [item.id for item in all_items]
+    operation_id = _start_dataset_batch(dataset_id, request, db)
 
     def send_progress(current: int, total: int, message: str):
         manager.send_progress_sync(current, total, message)
 
-    result = await batch_tagger_inference(request, db, send_progress)
+    try:
+        result = await batch_tagger_inference(
+            request,
+            db,
+            send_progress,
+            dataset_id=dataset_id,
+            should_cancel=lambda: batch_jobs.is_cancelled(operation_id),
+        )
+        result.operation_id = operation_id
+    finally:
+        batch_jobs.finish(operation_id)
 
     print(f"[BatchTagger] {result.message}")
     print(f"[BatchTagger] Processed: {result.processed_count}, Updated: {result.updated_count}, Skipped: {result.skipped_count}, Failed: {result.failed_count}")
@@ -19753,15 +19776,22 @@ async def batch_reorder_tags_endpoint(
     Reorder tags by category for multiple items.
     If item_ids is empty, process all items in the dataset.
     """
-    # If no items specified, get all items from dataset
-    if not request.item_ids:
-        all_items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).all()
-        request.item_ids = [item.id for item in all_items]
+    operation_id = _start_dataset_batch(dataset_id, request, db)
 
     def send_progress(current: int, total: int, message: str):
         manager.send_progress_sync(current, total, message)
 
-    result = await batch_reorder_tags(request, db, send_progress)
+    try:
+        result = await batch_reorder_tags(
+            request,
+            db,
+            send_progress,
+            dataset_id=dataset_id,
+            should_cancel=lambda: batch_jobs.is_cancelled(operation_id),
+        )
+        result.operation_id = operation_id
+    finally:
+        batch_jobs.finish(operation_id)
 
     print(f"[BatchReorder] {result.message}")
     print(f"[BatchReorder] Processed: {result.processed_count}, Updated: {result.updated_count}, Skipped: {result.skipped_count}, Failed: {result.failed_count}")
@@ -19778,15 +19808,22 @@ async def batch_replace_tag_endpoint(
     Replace a specific tag with another tag for multiple items.
     If item_ids is empty, process all items in the dataset.
     """
-    # If no items specified, get all items from dataset
-    if not request.item_ids:
-        all_items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).all()
-        request.item_ids = [item.id for item in all_items]
+    operation_id = _start_dataset_batch(dataset_id, request, db)
 
     def send_progress(current: int, total: int, message: str):
         manager.send_progress_sync(current, total, message)
 
-    result = await batch_replace_tag(request, db, send_progress)
+    try:
+        result = await batch_replace_tag(
+            request,
+            db,
+            send_progress,
+            dataset_id=dataset_id,
+            should_cancel=lambda: batch_jobs.is_cancelled(operation_id),
+        )
+        result.operation_id = operation_id
+    finally:
+        batch_jobs.finish(operation_id)
 
     print(f"[BatchReplace] {result.message}")
     print(f"[BatchReplace] Processed: {result.processed_count}, Updated: {result.updated_count}, Skipped: {result.skipped_count}, Failed: {result.failed_count}")
@@ -19796,6 +19833,7 @@ async def batch_replace_tag_endpoint(
 @router.post("/datasets/{dataset_id}/backfill-tag-data", response_model=BatchOperationResponse)
 async def backfill_tag_data_endpoint(
     dataset_id: int,
+    operation_id: Optional[str] = None,
     db: Session = Depends(get_datasets_db)
 ):
     """
@@ -19806,11 +19844,26 @@ async def backfill_tag_data_endpoint(
     tags in 'content' but no category information in 'tag_data'.
     """
     request = BatchBackfillTagDataRequest(dataset_id=dataset_id)
+    if db.query(Dataset.id).filter(Dataset.id == dataset_id).first() is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    try:
+        active_operation_id = batch_jobs.start(dataset_id, operation_id)
+    except BatchJobConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     def send_progress(current: int, total: int, message: str):
         manager.send_progress_sync(current, total, message)
 
-    result = await batch_backfill_tag_data(request, db, send_progress)
+    try:
+        result = await batch_backfill_tag_data(
+            request,
+            db,
+            send_progress,
+            should_cancel=lambda: batch_jobs.is_cancelled(active_operation_id),
+        )
+        result.operation_id = active_operation_id
+    finally:
+        batch_jobs.finish(active_operation_id)
 
     print(f"[BackfillTagData] {result.message}")
     print(f"[BackfillTagData] Processed: {result.processed_count}, Updated: {result.updated_count}, Failed: {result.failed_count}")
@@ -19819,12 +19872,13 @@ async def backfill_tag_data_endpoint(
 
 
 @router.post("/datasets/{dataset_id}/batch-cancel")
-async def batch_cancel_endpoint(dataset_id: int):
-    """
-    Cancel the current batch operation
-    """
-    cancel_batch_operation()
-    return {"message": "Batch operation cancellation requested"}
+async def batch_cancel_endpoint(dataset_id: int, operation_id: Optional[str] = None):
+    """Cancel one operation, or active operations in this dataset for old clients."""
+    cancelled = batch_jobs.cancel(dataset_id, operation_id)
+    return {
+        "message": "Batch operation cancellation requested",
+        "cancelled_operations": cancelled,
+    }
 
 
 

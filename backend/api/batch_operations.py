@@ -1,8 +1,8 @@
 """
 Batch operations for dataset items (tagger inference, tag reordering, tag replacement)
 """
-from typing import List, Dict, Any, Optional
-from pydantic import BaseModel
+from typing import Callable, List, Dict, Any, Optional
+from pydantic import BaseModel, Field
 import asyncio
 from datetime import datetime
 
@@ -10,28 +10,9 @@ from core.datasets.sidecars import write_indexed_caption
 from utils.taglist_cache import taglist_cache
 from config.settings import settings
 
-# Global cancellation flag for batch operations
-_batch_operation_cancelled = False
-
-def reset_cancellation_flag():
-    """Reset the global cancellation flag"""
-    global _batch_operation_cancelled
-    _batch_operation_cancelled = False
-
-def cancel_batch_operation():
-    """Set the global cancellation flag"""
-    global _batch_operation_cancelled
-    _batch_operation_cancelled = True
-
-def is_batch_operation_cancelled() -> bool:
-    """Check if batch operation is cancelled"""
-    global _batch_operation_cancelled
-    return _batch_operation_cancelled
-
-
-
 class BatchTaggerRequest(BaseModel):
     item_ids: List[int]
+    operation_id: Optional[str] = Field(default=None, max_length=128)
     gen_threshold: float = 0.45
     char_threshold: float = 0.45
     thresholds: Optional[Dict[str, float]] = None
@@ -42,12 +23,14 @@ class BatchTaggerRequest(BaseModel):
 class BatchReorderTagsRequest(BaseModel):
     item_ids: List[int]
     category_order: List[str]
+    operation_id: Optional[str] = Field(default=None, max_length=128)
 
 class BatchReplaceTagRequest(BaseModel):
     item_ids: List[int]
     from_tag: str
     to_tag: str
     normalize_match: bool = True  # Use normalized matching (whitespace, underscores)
+    operation_id: Optional[str] = Field(default=None, max_length=128)
 
 class BatchBackfillTagDataRequest(BaseModel):
     dataset_id: int
@@ -60,6 +43,7 @@ class BatchOperationResponse(BaseModel):
     skipped_count: int
     failed_count: int
     message: str
+    operation_id: Optional[str] = None
 
 
 
@@ -149,7 +133,10 @@ def get_tag_category(tag: str, tag_suggestions_context) -> str:
 async def batch_tagger_inference(
     request: BatchTaggerRequest,
     db,
-    send_progress_callback
+    send_progress_callback,
+    *,
+    dataset_id: int,
+    should_cancel: Callable[[], bool],
 ) -> BatchOperationResponse:
     """
     Run tagger inference on multiple items
@@ -157,8 +144,6 @@ async def batch_tagger_inference(
     from database.models import DatasetItem, DatasetCaption
     from core.extensions.tagger_manager import tagger_manager
     from PIL import Image
-
-    reset_cancellation_flag()
 
     total = len(request.item_ids)
 
@@ -190,12 +175,15 @@ async def batch_tagger_inference(
         )
 
     for idx, item_id in enumerate(request.item_ids):
-        if is_batch_operation_cancelled():
+        if should_cancel():
             send_progress_callback(processed, total, "Batch operation cancelled")
             break
 
         try:
-            item = db.query(DatasetItem).filter(DatasetItem.id == item_id).first()
+            item = db.query(DatasetItem).filter(
+                DatasetItem.id == item_id,
+                DatasetItem.dataset_id == dataset_id,
+            ).first()
             if not item:
                 skipped += 1
                 processed += 1
@@ -297,16 +285,14 @@ async def batch_tagger_inference(
 
     if updated > 0:
         send_progress_callback(total, total, "Updating tag statistics...")
-        first_item = db.query(DatasetItem).filter(DatasetItem.id == request.item_ids[0]).first()
-        if first_item:
-            await update_tag_statistics(first_item.dataset_id, db)
+        await update_tag_statistics(dataset_id, db)
 
     # Unload tagger model to free VRAM/memory
     if tagger_manager.loaded:
         print("[BatchTagger] Unloading tagger model to free VRAM")
         tagger_manager.unload_model()
 
-    cancelled = is_batch_operation_cancelled()
+    cancelled = should_cancel()
     status = "cancelled" if cancelled else "completed"
     message = f"Batch tagger: {updated} updated, {skipped} skipped, {failed} failed"
     if cancelled:
@@ -328,15 +314,16 @@ async def batch_tagger_inference(
 async def batch_reorder_tags(
     request: BatchReorderTagsRequest,
     db,
-    send_progress_callback
+    send_progress_callback,
+    *,
+    dataset_id: int,
+    should_cancel: Callable[[], bool],
 ) -> BatchOperationResponse:
     """
     Reorder tags by category for multiple items
     """
     from database.models import DatasetItem, DatasetCaption
     from datetime import datetime
-
-    reset_cancellation_flag()
 
     total = len(request.item_ids)
 
@@ -361,12 +348,15 @@ async def batch_reorder_tags(
     taglist_cache.initialize(settings.root_dir)
 
     for idx, item_id in enumerate(request.item_ids):
-        if is_batch_operation_cancelled():
+        if should_cancel():
             send_progress_callback(processed, total, "Batch operation cancelled")
             break
 
         try:
-            item = db.query(DatasetItem).filter(DatasetItem.id == item_id).first()
+            item = db.query(DatasetItem).filter(
+                DatasetItem.id == item_id,
+                DatasetItem.dataset_id == dataset_id,
+            ).first()
             if not item:
                 skipped += 1
                 processed += 1
@@ -426,7 +416,7 @@ async def batch_reorder_tags(
         processed += 1
         send_progress_callback(processed, total, f"Processed {processed}/{total} items")
 
-    cancelled = is_batch_operation_cancelled()
+    cancelled = should_cancel()
     status = "cancelled" if cancelled else "completed"
     message = f"Batch reorder: {updated} updated, {skipped} skipped, {failed} failed"
     if cancelled:
@@ -448,15 +438,16 @@ async def batch_reorder_tags(
 async def batch_replace_tag(
     request: BatchReplaceTagRequest,
     db,
-    send_progress_callback
+    send_progress_callback,
+    *,
+    dataset_id: int,
+    should_cancel: Callable[[], bool],
 ) -> BatchOperationResponse:
     """
     Replace a specific tag with another tag for multiple items
     """
     from database.models import DatasetItem, DatasetCaption
     from datetime import datetime
-
-    reset_cancellation_flag()
 
     total = len(request.item_ids)
 
@@ -481,12 +472,15 @@ async def batch_replace_tag(
     send_progress_callback(0, total, f"Starting batch tag replacement: '{request.from_tag}' → '{request.to_tag}'...")
 
     for idx, item_id in enumerate(request.item_ids):
-        if is_batch_operation_cancelled():
+        if should_cancel():
             send_progress_callback(processed, total, "Batch operation cancelled")
             break
 
         try:
-            item = db.query(DatasetItem).filter(DatasetItem.id == item_id).first()
+            item = db.query(DatasetItem).filter(
+                DatasetItem.id == item_id,
+                DatasetItem.dataset_id == dataset_id,
+            ).first()
             if not item:
                 skipped += 1
                 processed += 1
@@ -548,11 +542,9 @@ async def batch_replace_tag(
 
     if updated > 0:
         send_progress_callback(total, total, "Updating tag statistics...")
-        first_item = db.query(DatasetItem).filter(DatasetItem.id == request.item_ids[0]).first()
-        if first_item:
-            await update_tag_statistics(first_item.dataset_id, db)
+        await update_tag_statistics(dataset_id, db)
 
-    cancelled = is_batch_operation_cancelled()
+    cancelled = should_cancel()
     status = "cancelled" if cancelled else "completed"
     message = f"Batch replace: {updated} updated, {skipped} skipped, {failed} failed"
     if cancelled:
@@ -575,6 +567,8 @@ async def batch_backfill_tag_data(
     request: "BatchBackfillTagDataRequest",
     db,
     send_progress_callback=None,
+    *,
+    should_cancel: Callable[[], bool] = lambda: False,
 ) -> BatchOperationResponse:
     """
     Populate tag_data JSON for all is_tags_format=True captions that currently
@@ -629,7 +623,7 @@ async def batch_backfill_tag_data(
     batch_size = request.batch_size
 
     while True:
-        if is_batch_operation_cancelled():
+        if should_cancel():
             break
 
         batch = (
@@ -679,8 +673,9 @@ async def batch_backfill_tag_data(
 
         db.commit()
         send_progress(processed, total, f"Backfilled {processed}/{total} captions...")
+        await asyncio.sleep(0)
 
-    cancelled = is_batch_operation_cancelled()
+    cancelled = should_cancel()
     status = "cancelled" if cancelled else "completed"
     message = f"Backfill tag_data: {updated} updated, {failed} failed"
     if cancelled:

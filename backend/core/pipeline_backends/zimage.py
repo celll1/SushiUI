@@ -746,8 +746,6 @@ class ZImageMixin:
             # Import VRAM optimization functions
             from core.vram_optimization import (
                 log_device_status,
-                move_zimage_text_encoder_to_gpu,
-                move_zimage_text_encoder_to_cpu,
                 move_zimage_transformer_to_gpu,
                 move_zimage_transformer_to_cpu,
                 move_zimage_vae_to_gpu,
@@ -765,35 +763,16 @@ class ZImageMixin:
             transformer = self._zimage_runtime_int8(
                 params, progress_callback=progress_callback) or transformer
 
-            if text_encoder_quantization not in (None, "", "none") or not is_resident(self, "text_encoder", _kh_model_key):
-                text_encoder = move_zimage_text_encoder_to_gpu(
-                    text_encoder, text_encoder_quantization,
-                    cache_owner=self.zimage_components, cache_identity=_kh_model_key,
-                )
-            log_device_status("Ready for Z-Image text encoding", None, zimage_components={
-                "text_encoder": text_encoder,
-                "transformer": transformer,
-                "vae": vae
-            })
-
-            prompt_embeds_list, negative_prompt_embeds_list, do_classifier_free_guidance = \
-                self._zimage_encode_prompt(
-                    text_encoder, tokenizer, prompt, negative_prompt,
-                    guidance_scale, max_sequence_length, text_encoder_quantization
-                )
-
-            # NAG: encode the nag-negative prompt while the text encoder is still on GPU
-            # (None when NAG is off -> generation path is unchanged).
-            nag_negative_embeds_list = self._zimage_encode_nag_negative(
-                text_encoder, tokenizer, params, prompt, max_sequence_length,
-                text_encoder_quantization
+            (
+                prompt_embeds_list, negative_prompt_embeds_list,
+                do_classifier_free_guidance, nag_negative_embeds_list,
+                text_encoder, _kh_keep_te,
+            ) = self._zimage_encode_conditioning(
+                text_encoder, tokenizer, params, prompt, negative_prompt,
+                guidance_scale, max_sequence_length, text_encoder_quantization,
+                _kh_model_key, _kh_keep_te,
             )
-
-            # Offload Text Encoder to CPU to free VRAM (unless kept hot -- see
-            # core/keep_hot.py; the finally block below records the residency).
-            if not _kh_keep_te:
-                move_zimage_text_encoder_to_cpu(text_encoder)
-            log_device_status("Text encoding complete, Text Encoder offloaded to CPU", None, zimage_components={
+            log_device_status("Z-Image text conditioning ready", None, zimage_components={
                 "text_encoder": text_encoder,
                 "transformer": transformer,
                 "vae": vae
@@ -1095,8 +1074,6 @@ class ZImageMixin:
             # Import VRAM optimization functions
             from core.vram_optimization import (
                 log_device_status,
-                move_zimage_text_encoder_to_gpu,
-                move_zimage_text_encoder_to_cpu,
                 move_zimage_transformer_to_gpu,
                 move_zimage_transformer_to_cpu,
                 move_zimage_vae_to_gpu,
@@ -1114,35 +1091,16 @@ class ZImageMixin:
             transformer = self._zimage_runtime_int8(
                 params, progress_callback=progress_callback) or transformer
 
-            if text_encoder_quantization not in (None, "", "none") or not is_resident(self, "text_encoder", _kh_model_key):
-                text_encoder = move_zimage_text_encoder_to_gpu(
-                    text_encoder, text_encoder_quantization,
-                    cache_owner=self.zimage_components, cache_identity=_kh_model_key,
-                )
-            log_device_status("Ready for Z-Image text encoding", None, zimage_components={
-                "text_encoder": text_encoder,
-                "transformer": transformer,
-                "vae": vae
-            })
-
-            prompt_embeds_list, negative_prompt_embeds_list, do_classifier_free_guidance = \
-                self._zimage_encode_prompt(
-                    text_encoder, tokenizer, prompt, negative_prompt,
-                    guidance_scale, max_sequence_length, text_encoder_quantization
-                )
-
-            # NAG: encode the nag-negative prompt while the text encoder is still on GPU
-            # (None when NAG is off -> generation path is unchanged).
-            nag_negative_embeds_list = self._zimage_encode_nag_negative(
-                text_encoder, tokenizer, params, prompt, max_sequence_length,
-                text_encoder_quantization
+            (
+                prompt_embeds_list, negative_prompt_embeds_list,
+                do_classifier_free_guidance, nag_negative_embeds_list,
+                text_encoder, _kh_keep_te,
+            ) = self._zimage_encode_conditioning(
+                text_encoder, tokenizer, params, prompt, negative_prompt,
+                guidance_scale, max_sequence_length, text_encoder_quantization,
+                _kh_model_key, _kh_keep_te,
             )
-
-            # Offload Text Encoder to CPU (unless kept hot -- TE is not touched
-            # again in this generation, so this is also TE's keep-hot exit point).
-            if not _kh_keep_te:
-                move_zimage_text_encoder_to_cpu(text_encoder)
-            log_device_status("Text encoding complete, Text Encoder offloaded to CPU", None, zimage_components={
+            log_device_status("Z-Image text conditioning ready", None, zimage_components={
                 "text_encoder": text_encoder,
                 "transformer": transformer,
                 "vae": vae
@@ -1491,8 +1449,6 @@ class ZImageMixin:
             # Import VRAM optimization functions
             from core.vram_optimization import (
                 log_device_status,
-                move_zimage_text_encoder_to_gpu,
-                move_zimage_text_encoder_to_cpu,
                 move_zimage_transformer_to_gpu,
                 move_zimage_transformer_to_cpu,
                 move_zimage_vae_to_gpu,
@@ -1516,35 +1472,16 @@ class ZImageMixin:
             transformer = self._zimage_runtime_int8(
                 params, progress_callback=progress_callback) or transformer
 
-            if text_encoder_quantization not in (None, "", "none") or not is_resident(self, "text_encoder", _kh_model_key):
-                text_encoder = move_zimage_text_encoder_to_gpu(
-                    text_encoder, text_encoder_quantization,
-                    cache_owner=self.zimage_components, cache_identity=_kh_model_key,
-                )
-            log_device_status("Ready for Z-Image text encoding", None, zimage_components={
-                "text_encoder": text_encoder,
-                "transformer": transformer,
-                "vae": vae
-            })
-
-            prompt_embeds_list, negative_prompt_embeds_list, do_classifier_free_guidance = \
-                self._zimage_encode_prompt(
-                    text_encoder, tokenizer, prompt, negative_prompt,
-                    guidance_scale, max_sequence_length, text_encoder_quantization
-                )
-
-            # NAG: encode the nag-negative prompt while the text encoder is still on GPU
-            # (None when NAG is off -> generation path is unchanged).
-            nag_negative_embeds_list = self._zimage_encode_nag_negative(
-                text_encoder, tokenizer, params, prompt, max_sequence_length,
-                text_encoder_quantization
+            (
+                prompt_embeds_list, negative_prompt_embeds_list,
+                do_classifier_free_guidance, nag_negative_embeds_list,
+                text_encoder, _kh_keep_te,
+            ) = self._zimage_encode_conditioning(
+                text_encoder, tokenizer, params, prompt, negative_prompt,
+                guidance_scale, max_sequence_length, text_encoder_quantization,
+                _kh_model_key, _kh_keep_te,
             )
-
-            # Offload Text Encoder to CPU (unless kept hot -- TE is not touched
-            # again in this generation, so this is also TE's keep-hot exit point).
-            if not _kh_keep_te:
-                move_zimage_text_encoder_to_cpu(text_encoder)
-            log_device_status("Text encoding complete, Text Encoder offloaded to CPU", None, zimage_components={
+            log_device_status("Z-Image text conditioning ready", None, zimage_components={
                 "text_encoder": text_encoder,
                 "transformer": transformer,
                 "vae": vae
@@ -1803,6 +1740,86 @@ class ZImageMixin:
                 keep_vae=_kh_keep_vae,
             )
 
+    def _zimage_encode_conditioning(
+        self, text_encoder, tokenizer, params, prompt, negative_prompt,
+        guidance_scale, max_sequence_length, text_encoder_quantization,
+        model_key, keep_text_encoder,
+    ):
+        """Own Z-Image CFG/NAG encoding and text-encoder residency."""
+        from core.inference.prompt_embedding_cache import (
+            conditioning_cache_key, generation_prompt_cache,
+        )
+        from core.keep_hot import discard_resident, is_resident
+        from core.vram_optimization import (
+            move_zimage_text_encoder_to_cpu,
+            move_zimage_text_encoder_to_gpu,
+        )
+
+        prompt_key = (prompt,) if isinstance(prompt, str) else tuple(prompt)
+        do_cfg = (
+            abs(float(guidance_scale) - 1.0) > 1e-5
+            and abs(float(guidance_scale)) > 1e-5
+        )
+        if do_cfg:
+            if negative_prompt is None:
+                negative_key = tuple("" for _ in prompt_key)
+            elif isinstance(negative_prompt, str):
+                negative_key = (negative_prompt,)
+            else:
+                negative_key = tuple(negative_prompt)
+        else:
+            negative_key = None
+
+        try:
+            nag_scale = float(params.get("nag_scale", 1.0))
+        except (TypeError, ValueError):
+            nag_scale = 1.0
+        nag_active = bool(params.get("nag_enable", False)) and abs(nag_scale - 1.0) > 1e-5
+        nag_prompt = (params.get("nag_negative_prompt", "") or "") if nag_active else None
+        # Runtime quantization restores the CPU source before every request, so its
+        # transient GPU copy cannot truthfully satisfy cross-request residency.
+        keep_text_encoder = (
+            keep_text_encoder
+            and text_encoder_quantization in (None, "", "none")
+        )
+        cache_key = conditioning_cache_key(
+            "zimage", model_key, tokenizer, self.device,
+            next(text_encoder.parameters()).dtype,
+            prompt_key, negative_key, do_cfg, nag_prompt,
+            max_sequence_length, text_encoder_quantization,
+            getattr(tokenizer, "chat_template", None),
+        )
+        cached, cache_hit = generation_prompt_cache.get(text_encoder, cache_key, self.device)
+        was_resident = is_resident(self, "text_encoder", model_key)
+        if cache_hit:
+            if not keep_text_encoder:
+                move_zimage_text_encoder_to_cpu(text_encoder)
+                discard_resident(self, "text_encoder")
+            return (*cached, text_encoder, keep_text_encoder and was_resident)
+
+        cache_owner = text_encoder
+        if text_encoder_quantization not in (None, "", "none") or not was_resident:
+            text_encoder = move_zimage_text_encoder_to_gpu(
+                text_encoder, text_encoder_quantization,
+                cache_owner=self.zimage_components, cache_identity=model_key,
+            )
+            self.zimage_components["text_encoder"] = text_encoder
+
+        prompt_embeds, negative_embeds, do_cfg = self._zimage_encode_prompt(
+            text_encoder, tokenizer, prompt, negative_prompt,
+            guidance_scale, max_sequence_length, text_encoder_quantization,
+        )
+        nag_embeds = self._zimage_encode_nag_negative(
+            text_encoder, tokenizer, params, prompt, max_sequence_length,
+            text_encoder_quantization,
+        )
+        result = (prompt_embeds, negative_embeds, do_cfg, nag_embeds)
+        generation_prompt_cache.put(cache_owner, cache_key, result)
+        if not keep_text_encoder:
+            move_zimage_text_encoder_to_cpu(text_encoder)
+            discard_resident(self, "text_encoder")
+        return (*result, text_encoder, keep_text_encoder)
+
     def _zimage_encode_single(self, text_encoder, tokenizer, prompts, max_sequence_length,
                               has_fp8_weights, device):
         """Encode a list of prompt strings with the Qwen text encoder (penultimate layer),
@@ -1830,6 +1847,16 @@ class ZImageMixin:
                                       output_hidden_states=True).hidden_states[-2]
         return [embeds[i][masks[i]] for i in range(len(embeds))]
 
+    @staticmethod
+    def _zimage_has_fp8_weights(text_encoder, text_encoder_quantization):
+        if not text_encoder_quantization or not text_encoder_quantization.startswith("fp8_"):
+            return False
+        return any(
+            getattr(module, "weight", None) is not None
+            and module.weight.dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
+            for module in text_encoder.modules()
+        )
+
     def _zimage_encode_nag_negative(self, text_encoder, tokenizer, params, prompt,
                                     max_sequence_length, text_encoder_quantization=None):
         """Encode the NAG-negative prompt (only when NAG is active) using the same encoder
@@ -1848,13 +1875,9 @@ class ZImageMixin:
             nag_negative_prompt = ""
 
         device = next(text_encoder.parameters()).device
-        has_fp8_weights = False
-        if text_encoder_quantization and text_encoder_quantization.startswith('fp8_'):
-            for module in text_encoder.modules():
-                if hasattr(module, 'weight') and module.weight is not None:
-                    if module.weight.dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
-                        has_fp8_weights = True
-                        break
+        has_fp8_weights = self._zimage_has_fp8_weights(
+            text_encoder, text_encoder_quantization,
+        )
 
         prompt_list = [prompt] if isinstance(prompt, str) else list(prompt)
         nag_neg_list = [nag_negative_prompt for _ in prompt_list]
@@ -1867,130 +1890,32 @@ class ZImageMixin:
         self, text_encoder, tokenizer, prompt, negative_prompt,
         guidance_scale, max_sequence_length, text_encoder_quantization=None
     ):
-        """
-        Stage 1: Text Encoding for Z-Image
-        Encodes prompt and negative prompt using Qwen text encoder.
-        Text encoder is on GPU when this is called, and will be moved to CPU after.
-
-        Returns:
-            prompt_embeds_list: List of text embeddings (one per image)
-            negative_prompt_embeds_list: List of negative embeddings (if CFG enabled)
-            do_classifier_free_guidance: bool
-        """
+        """Encode the positive and optional CFG-negative prompt groups."""
         _t_phase = _time.perf_counter()
         device = next(text_encoder.parameters()).device
-
-        has_fp8_weights = False
-        if text_encoder_quantization and text_encoder_quantization.startswith('fp8_'):
-            for module in text_encoder.modules():
-                if hasattr(module, 'weight') and module.weight is not None:
-                    if module.weight.dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
-                        has_fp8_weights = True
-                        break
-
-        # Format prompts using Qwen chat template
-        if isinstance(prompt, str):
-            prompt = [prompt]
-
-        # CFG is enabled when guidance_scale is not 1.0 (consistent with SD/SDXL)
-        # CFG=1.0 or CFG=0.0: no CFG (positive only)
-        # CFG!=1.0 and CFG!=0.0: CFG enabled
-        # Note: CFG=0.0 is treated as "positive only" (same as CFG=1.0)
-        do_classifier_free_guidance = abs(guidance_scale - 1.0) > 1e-5 and abs(guidance_scale) > 1e-5
-
-        print(f"[Z-Image] Encoding prompt with Text Encoder on {device}")
-
-        formatted_prompts = []
-        for p in prompt:
-            messages = [{"role": "user", "content": p}]
-            formatted_prompt = tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-                enable_thinking=True,
-            )
-            formatted_prompts.append(formatted_prompt)
-
-        # Tokenize prompts
-        text_inputs = tokenizer(
-            formatted_prompts,
-            padding="max_length",
-            max_length=max_sequence_length,
-            truncation=True,
-            return_tensors="pt",
+        has_fp8_weights = self._zimage_has_fp8_weights(
+            text_encoder, text_encoder_quantization,
+        )
+        prompt_list = [prompt] if isinstance(prompt, str) else list(prompt)
+        do_classifier_free_guidance = (
+            abs(guidance_scale - 1.0) > 1e-5 and abs(guidance_scale) > 1e-5
         )
 
-        text_input_ids = text_inputs.input_ids.to(device)
-        prompt_masks = text_inputs.attention_mask.to(device).bool()
-
-        # Encode prompts (use penultimate layer output)
-        # For FP8 quantized Text Encoder, use autocast for mixed precision
-        with torch.no_grad():
-            if has_fp8_weights:
-                with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                    prompt_embeds = text_encoder(
-                        input_ids=text_input_ids,
-                        attention_mask=prompt_masks,
-                        output_hidden_states=True,
-                    ).hidden_states[-2]
-            else:
-                prompt_embeds = text_encoder(
-                    input_ids=text_input_ids,
-                    attention_mask=prompt_masks,
-                    output_hidden_states=True,
-                ).hidden_states[-2]
-
-        prompt_embeds_list = []
-        for i in range(len(prompt_embeds)):
-            prompt_embeds_list.append(prompt_embeds[i][prompt_masks[i]])
-
-        # Encode negative prompts if CFG is enabled
+        print(f"[Z-Image] Encoding prompt with Text Encoder on {device}")
+        prompt_embeds_list = self._zimage_encode_single(
+            text_encoder, tokenizer, prompt_list, max_sequence_length,
+            has_fp8_weights, device,
+        )
         negative_prompt_embeds_list = []
         if do_classifier_free_guidance:
             if negative_prompt is None:
-                negative_prompt = ["" for _ in prompt]
+                negative_prompt = ["" for _ in prompt_list]
             elif isinstance(negative_prompt, str):
                 negative_prompt = [negative_prompt]
-
-            neg_formatted = []
-            for p in negative_prompt:
-                messages = [{"role": "user", "content": p}]
-                formatted_prompt = tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                    enable_thinking=True,
-                )
-                neg_formatted.append(formatted_prompt)
-
-            neg_inputs = tokenizer(
-                neg_formatted,
-                padding="max_length",
-                max_length=max_sequence_length,
-                truncation=True,
-                return_tensors="pt",
+            negative_prompt_embeds_list = self._zimage_encode_single(
+                text_encoder, tokenizer, list(negative_prompt), max_sequence_length,
+                has_fp8_weights, device,
             )
-
-            neg_input_ids = neg_inputs.input_ids.to(device)
-            neg_masks = neg_inputs.attention_mask.to(device).bool()
-
-            with torch.no_grad():
-                if has_fp8_weights:
-                    with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                        neg_embeds = text_encoder(
-                            input_ids=neg_input_ids,
-                            attention_mask=neg_masks,
-                            output_hidden_states=True,
-                        ).hidden_states[-2]
-                else:
-                    neg_embeds = text_encoder(
-                        input_ids=neg_input_ids,
-                        attention_mask=neg_masks,
-                        output_hidden_states=True,
-                    ).hidden_states[-2]
-
-            for i in range(len(neg_embeds)):
-                negative_prompt_embeds_list.append(neg_embeds[i][neg_masks[i]])
 
         print(f"[Z-Image] Text encoding complete: {len(prompt_embeds_list)} prompts encoded")
 

@@ -14,6 +14,7 @@ from core.pipeline_backends.ideogram4 import Ideogram4Mixin
 from core.pipeline_backends.krea2 import Krea2Mixin
 from core.pipeline_backends.lens import LensMixin
 from core.pipeline_backends.minit2i import MiniT2IMixin
+from core.pipeline_backends.zimage import ZImageMixin
 
 
 class _Encoder:
@@ -354,3 +355,60 @@ def test_ideogram4_cache_owns_main_and_nag_encodes(monkeypatch):
     assert not manager._ideogram4_encode_conditioning(*keep_args)[2]
     mark_resident(manager, "text_encoder", "model")
     assert manager._ideogram4_encode_conditioning(*keep_args)[2]
+
+
+def test_zimage_cache_owns_cfg_and_nag_encodes(monkeypatch):
+    import core.vram_optimization as vram
+
+    generation_prompt_cache.clear()
+    manager = ZImageMixin()
+    manager.device = torch.device("cpu")
+    encoder = torch.nn.Linear(1, 1)
+    manager.zimage_components = {"text_encoder": encoder}
+    stages = []
+    offloads = []
+    forwards = []
+    monkeypatch.setattr(
+        vram,
+        "move_zimage_text_encoder_to_gpu",
+        lambda module, *_args, **_kwargs: stages.append(module) or module,
+    )
+    monkeypatch.setattr(
+        vram,
+        "move_zimage_text_encoder_to_cpu",
+        lambda module: offloads.append(module),
+    )
+
+    def encode_prompt(*_args):
+        forwards.append("cfg")
+        return [torch.ones(2, 3)], [torch.zeros(2, 3)], True
+
+    def encode_nag(*_args):
+        forwards.append("nag")
+        return [torch.full((2, 3), 2.0)]
+
+    manager._zimage_encode_prompt = encode_prompt
+    manager._zimage_encode_nag_negative = encode_nag
+    tokenizer = _Encoder()
+    params = {"nag_enable": True, "nag_scale": 2.0, "nag_negative_prompt": "nag"}
+    args = (
+        encoder, tokenizer, params, "positive", "negative", 3.5, 32,
+        None, "model", False,
+    )
+
+    first = manager._zimage_encode_conditioning(*args)
+    second = manager._zimage_encode_conditioning(*args)
+
+    assert stages == [encoder]
+    assert offloads == [encoder, encoder]
+    assert forwards == ["cfg", "nag"]
+    assert not first[-1] and not second[-1]
+    for first_group, second_group in zip(first[:2] + (first[3],), second[:2] + (second[3],)):
+        for first_value, second_value in zip(first_group, second_group):
+            assert torch.equal(first_value, second_value)
+            assert first_value.data_ptr() != second_value.data_ptr()
+
+    keep_args = args[:-1] + (True,)
+    assert not manager._zimage_encode_conditioning(*keep_args)[-1]
+    mark_resident(manager, "text_encoder", "model")
+    assert manager._zimage_encode_conditioning(*keep_args)[-1]

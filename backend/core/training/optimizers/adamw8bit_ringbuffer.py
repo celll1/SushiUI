@@ -57,6 +57,7 @@ from .fused_grad_norm import record_fused_grad_norm, record_fused_grad_observati
 
 # Updated-parameter census (G-RB3): which parameters an update actually reached
 from .update_census import record_param_update
+from .fresh_param_warmup import fresh_param_warmup_factor
 
 # Stochastic rounding helpers (shared with Lion8bit_RingBuffer)
 from .stochastic_rounding import (
@@ -1151,7 +1152,7 @@ def patch_adamw8bit_ringbuffer(model: Optional[nn.Module], optimizer: AdamW8bit_
 
             # Perform 8-bit update
             beta1, beta2 = group['betas']
-            lr = group['lr']
+            lr = group['lr'] * fresh_param_warmup_factor(optimizer, param)
             weight_decay = group['weight_decay']
             eps = group['eps']
             gnorm_scale = 1.0

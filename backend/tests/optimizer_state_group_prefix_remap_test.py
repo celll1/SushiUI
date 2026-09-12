@@ -38,6 +38,7 @@ from core.training.base_trainer import BaseTrainer
 
 class _Trainer:
     _load_one_optimizer_state = BaseTrainer._load_one_optimizer_state
+    _load_optimizer_state_by_parameter_name = BaseTrainer._load_optimizer_state_by_parameter_name
     _remap_optimizer_state_by_group_prefix = BaseTrainer._remap_optimizer_state_by_group_prefix
     _optimizer_state_entry_fits_param = staticmethod(
         BaseTrainer._optimizer_state_entry_fits_param)
@@ -224,6 +225,91 @@ def test_run127_lion_layout_restores_old_group_and_marks_only_norms_fresh(monkey
         assert torch.equal(live.state[parameter]["exp_avg"], moment)
     assert all(parameter not in live.state for parameter in norms)
     assert trainer._optimizer_fresh_param_group_indices[id(live)] == {1}
+
+
+def test_named_state_survives_reorder_and_identifies_an_inserted_tensor():
+    old_a, old_b = _params(2, numel=4, seed=11)
+    _, saved = _stepped([[old_a, old_b]])
+    want_a = saved["state"][0]["exp_avg"].clone()
+    want_b = saved["state"][1]["exp_avg"].clone()
+    saved["_sushi_param_names"] = [["model.a", "model.b"]]
+
+    new = _params(1, numel=4, seed=12)[0]
+    live = _adamw([[old_b, new, old_a]])
+    trainer = _Trainer()
+    trainer._build_ema_param_name_map = lambda: {
+        id(old_a): "model.a", id(old_b): "model.b", id(new): "model.new",
+    }
+
+    ok, _ = _load(trainer, live, saved)
+
+    assert ok is True
+    assert torch.equal(_moment(live, old_a), want_a)
+    assert torch.equal(_moment(live, old_b), want_b)
+    assert new not in live.state
+    assert trainer._optimizer_fresh_param_ids[id(live)] == {id(new)}
+
+
+def test_named_state_uses_saved_parameter_ids_not_flat_offsets():
+    old_a, old_b = _params(2, numel=4, seed=13)
+    _, saved = _stepped([[old_a, old_b]])
+    saved["state"] = {10: saved["state"][0], 30: saved["state"][1]}
+    saved["param_groups"][0]["params"] = [10, 30]
+    saved["_sushi_param_names"] = [["model.a", "model.b"]]
+
+    live = _adamw([[old_b, old_a]])
+    trainer = _Trainer()
+    trainer._build_ema_param_name_map = lambda: {
+        id(old_a): "model.a", id(old_b): "model.b",
+    }
+
+    assert _load(trainer, live, saved)[0] is True
+    assert torch.equal(_moment(live, old_a), saved["state"][10]["exp_avg"])
+    assert torch.equal(_moment(live, old_b), saved["state"][30]["exp_avg"])
+
+
+def test_names_make_layer_decay_group_relayout_safe():
+    shallow, deep = _params(2, numel=4, seed=14)
+    _, saved = _stepped([[shallow, deep]])
+    saved["param_groups"][0]["name"] = "model.d00"
+    saved["_sushi_param_names"] = [["model.shallow", "model.deep"]]
+
+    live = _adamw([[deep], [shallow]])
+    live.param_groups[0]["name"] = "model.d01"
+    live.param_groups[1]["name"] = "model.d00"
+    trainer = _Trainer()
+    trainer._build_ema_param_name_map = lambda: {
+        id(shallow): "model.shallow", id(deep): "model.deep",
+    }
+
+    ok, printed = _load(trainer, live, saved)
+
+    assert ok is True
+    assert "Named optimizer state load OK" in printed
+    assert "Not restoring optimizer state" not in printed
+    assert torch.equal(_moment(live, shallow), saved["state"][0]["exp_avg"])
+    assert torch.equal(_moment(live, deep), saved["state"][1]["exp_avg"])
+
+
+def test_optimizer_sidecar_records_stable_parameter_names(tmp_path):
+    first, second = _params(2, numel=4, seed=21)
+
+    class SaveHarness:
+        save_optimizer_state = BaseTrainer.save_optimizer_state
+        _build_ema_param_name_map = lambda self: {
+            id(first): "model.first", id(second): "model.second",
+        }
+        _safe_unlink = staticmethod(lambda path: path.unlink())
+        optimizer = _adamw([[first, second]])
+        fused_optimizer_groups = None
+        output_dir = tmp_path
+        run_name = "named"
+        log_prefix = "[test]"
+
+    SaveHarness().save_optimizer_state(7)
+    payload = torch.load(tmp_path / "named_step_000007_optimizer.pt", map_location="cpu")
+
+    assert payload["_sushi_param_names"] == [["model.first", "model.second"]]
 
 
 def test_shrinking_group_keeps_the_leading_prefix():

@@ -24,6 +24,7 @@ from .stochastic_rounding import (
     should_use_stochastic_rounding,
 )
 from .update_census import record_param_update
+from .fresh_param_warmup import parameter_warmup_lr
 
 _INDEX_ATTR = "_sushiui_bnb_param_index"
 
@@ -96,10 +97,11 @@ def adamw8bit_step_param(self, p, group):
         # through a pointer of that type, so both become FP32 for the call and the
         # result is rounded back stochastically. The state stays uint8: init_state
         # allocates it with an explicit dtype, not from the parameter's.
-        with fp32_master_update(p, pool):
+        with parameter_warmup_lr(self, p, group), fp32_master_update(p, pool):
             _bnb_update(self, p, group)
     else:
-        _bnb_update(self, p, group)
+        with parameter_warmup_lr(self, p, group):
+            _bnb_update(self, p, group)
 
     # See adafactor_fused: setup_update_census arms the census for every
     # fused-backward optimizer, so every one of them has to report.

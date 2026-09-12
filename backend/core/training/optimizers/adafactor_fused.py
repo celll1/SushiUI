@@ -20,6 +20,7 @@ import torch
 from transformers import Adafactor
 
 from .update_census import record_param_update
+from .fresh_param_warmup import fresh_param_warmup_factor
 
 
 @torch.no_grad()
@@ -78,6 +79,7 @@ def adafactor_step_param(self, p, group):
     state["step"] += 1
     state["RMS"] = Adafactor._rms(p_data_fp32)
     lr = Adafactor._get_lr(group, state)
+    lr *= fresh_param_warmup_factor(self, p)
 
     beta2t = 1.0 - math.pow(state["step"], group["decay_rate"])
     update = (grad ** 2) + group["eps"][0]

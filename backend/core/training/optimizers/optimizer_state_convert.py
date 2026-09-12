@@ -452,6 +452,8 @@ def maybe_convert_optimizer_state(
         except Exception as e:
             print(f"{log_prefix} [OptConvert] conversion failed: {e}")
             return None, 0
+        if "_sushi_param_names" in saved_state_dict:
+            converted["_sushi_param_names"] = saved_state_dict["_sushi_param_names"]
         print(f"{log_prefix} [OptConvert] converted optimizer state "
               f"torch_adamw -> bnb_adamw8bit "
               f"({len(converted['state'])} params, carry step={carry_step})")
@@ -481,9 +483,19 @@ def maybe_convert_optimizer_state(
               f"{dst_fmt}; optimizer state will reset")
         return None, 0
 
-    # Use the TARGET optimizer's param_groups so group-level keys always match.
+    # Positional loads need the target groups. A named load instead needs the
+    # source IDs beside the saved names; BaseTrainer replaces the groups with
+    # the live optimizer's after it remaps those IDs by model path.
     target_groups = target_optimizer.state_dict().get("param_groups", [])
-    converted = {"state": converted_state, "param_groups": target_groups}
+    converted = {
+        "state": converted_state,
+        "param_groups": (
+            copy.deepcopy(saved_state_dict.get("param_groups", []))
+            if "_sushi_param_names" in saved_state_dict else target_groups
+        ),
+    }
+    if "_sushi_param_names" in saved_state_dict:
+        converted["_sushi_param_names"] = saved_state_dict["_sushi_param_names"]
     print(f"{log_prefix} [OptConvert] converted optimizer state {src_fmt} -> {dst_fmt} "
           f"({len(converted_state)} 8-bit params converted, {skipped} small params "
           f"fresh-init, carry step={carry_step})")

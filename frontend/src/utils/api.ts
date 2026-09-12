@@ -986,6 +986,11 @@ export interface OutpaintVideoParams extends VideoChainProvenance {
   attention_method?: string;
   h3_attention_temporal_radius?: number;
   h3_attention_spatial_radius?: number;
+  h3_sol_attention_tau?: number;
+  h3_sol_attention_threshold_type?: "diag" | "exact";
+  h3_sol_attention_dense_steps?: number;
+  h3_sol_attention_dense_layers?: number;
+  h3_sol_attention_kv_splits?: 1 | 2 | 4;
   // MiniMax-H3 ref2va only (extend_forward). Sizing of each reference image
   // file appended separately by generateOutpaintVideo (not a field here --
   // mirrors how `video`/`bridge_video` are function arguments, not params).
@@ -1065,6 +1070,11 @@ export interface InpaintVideoParams {
   attention_method?: string;
   h3_attention_temporal_radius?: number;
   h3_attention_spatial_radius?: number;
+  h3_sol_attention_tau?: number;
+  h3_sol_attention_threshold_type?: "diag" | "exact";
+  h3_sol_attention_dense_steps?: number;
+  h3_sol_attention_dense_layers?: number;
+  h3_sol_attention_kv_splits?: 1 | 2 | 4;
   // Generation-time LoRA (see Txt2VidParams.loras).
   loras?: LoRAConfig[];
   // MiniMax-H3 ref2va only: how a reference IMAGE is sized before it is
@@ -1264,6 +1274,11 @@ export interface Txt2VidParams extends VideoChainProvenance {
   attention_method?: string;
   h3_attention_temporal_radius?: number;
   h3_attention_spatial_radius?: number;
+  h3_sol_attention_tau?: number;
+  h3_sol_attention_threshold_type?: "diag" | "exact";
+  h3_sol_attention_dense_steps?: number;
+  h3_sol_attention_dense_layers?: number;
+  h3_sol_attention_kv_splits?: 1 | 2 | 4;
   // Generation-time LoRA. Applied by MiniMax-H3 (core.models.minimax_h3.minimax_h3_lora);
   // LTX-2.3 has no LoRA loader on its video path at all -- accepted and
   // ignored, with an unsupported_param warning when non-empty.
@@ -3399,6 +3414,11 @@ export const generateTxt2Vid = async (params: Txt2VidParams) => {
     attention_method: resolveGlobalAttentionMethod(params.attention_method),
     h3_attention_temporal_radius: params.h3_attention_temporal_radius ?? 16.0,
     h3_attention_spatial_radius: params.h3_attention_spatial_radius ?? 8.0,
+    h3_sol_attention_tau: params.h3_sol_attention_tau,
+    h3_sol_attention_threshold_type: params.h3_sol_attention_threshold_type,
+    h3_sol_attention_dense_steps: params.h3_sol_attention_dense_steps,
+    h3_sol_attention_dense_layers: params.h3_sol_attention_dense_layers,
+    h3_sol_attention_kv_splits: params.h3_sol_attention_kv_splits,
     loras: params.loras || [],
     // Acceleration (block swap / FBCache / Spectrum) -- same fields/defaults
     // as /generate/outpaint/video and /generate/inpaint/video.
@@ -3476,6 +3496,11 @@ export const generateImg2Vid = async (
   formData.append("attention_method", resolveGlobalAttentionMethod(params.attention_method));
   formData.append("h3_attention_temporal_radius", String(params.h3_attention_temporal_radius ?? 16.0));
   formData.append("h3_attention_spatial_radius", String(params.h3_attention_spatial_radius ?? 8.0));
+  if (params.h3_sol_attention_tau !== undefined) formData.append("h3_sol_attention_tau", String(params.h3_sol_attention_tau));
+  if (params.h3_sol_attention_threshold_type !== undefined) formData.append("h3_sol_attention_threshold_type", params.h3_sol_attention_threshold_type);
+  if (params.h3_sol_attention_dense_steps !== undefined) formData.append("h3_sol_attention_dense_steps", String(params.h3_sol_attention_dense_steps));
+  if (params.h3_sol_attention_dense_layers !== undefined) formData.append("h3_sol_attention_dense_layers", String(params.h3_sol_attention_dense_layers));
+  if (params.h3_sol_attention_kv_splits !== undefined) formData.append("h3_sol_attention_kv_splits", String(params.h3_sol_attention_kv_splits));
   // Optional LAST-frame keyframe (MiniMax-H3 fl2va). Same File-or-data-URL
   // handling as `image` above; omitted entirely when null/undefined, which is
   // what makes the backend's `File(None)` sentinel mean "no end anchor".
@@ -3587,6 +3612,11 @@ export const generateRef2Vid = async (
   formData.append("attention_method", resolveGlobalAttentionMethod(params.attention_method));
   formData.append("h3_attention_temporal_radius", String(params.h3_attention_temporal_radius ?? 16.0));
   formData.append("h3_attention_spatial_radius", String(params.h3_attention_spatial_radius ?? 8.0));
+  if (params.h3_sol_attention_tau !== undefined) formData.append("h3_sol_attention_tau", String(params.h3_sol_attention_tau));
+  if (params.h3_sol_attention_threshold_type !== undefined) formData.append("h3_sol_attention_threshold_type", params.h3_sol_attention_threshold_type);
+  if (params.h3_sol_attention_dense_steps !== undefined) formData.append("h3_sol_attention_dense_steps", String(params.h3_sol_attention_dense_steps));
+  if (params.h3_sol_attention_dense_layers !== undefined) formData.append("h3_sol_attention_dense_layers", String(params.h3_sol_attention_dense_layers));
+  if (params.h3_sol_attention_kv_splits !== undefined) formData.append("h3_sol_attention_kv_splits", String(params.h3_sol_attention_kv_splits));
 
   // The reference files. Each list keeps its order; a video's soundtrack is
   // positional, so a video with no sound sends an EMPTY part to hold its slot
@@ -4269,6 +4299,11 @@ export const generateOutpaintVideo = async (
   formData.append("attention_method", resolveGlobalAttentionMethod(params.attention_method));
   formData.append("h3_attention_temporal_radius", String(params.h3_attention_temporal_radius ?? 16.0));
   formData.append("h3_attention_spatial_radius", String(params.h3_attention_spatial_radius ?? 8.0));
+  if (params.h3_sol_attention_tau !== undefined) formData.append("h3_sol_attention_tau", String(params.h3_sol_attention_tau));
+  if (params.h3_sol_attention_threshold_type !== undefined) formData.append("h3_sol_attention_threshold_type", params.h3_sol_attention_threshold_type);
+  if (params.h3_sol_attention_dense_steps !== undefined) formData.append("h3_sol_attention_dense_steps", String(params.h3_sol_attention_dense_steps));
+  if (params.h3_sol_attention_dense_layers !== undefined) formData.append("h3_sol_attention_dense_layers", String(params.h3_sol_attention_dense_layers));
+  if (params.h3_sol_attention_kv_splits !== undefined) formData.append("h3_sol_attention_kv_splits", String(params.h3_sol_attention_kv_splits));
 
   // Acceleration (block swap / FBCache / Spectrum)
   formData.append("blocks_to_swap", String(params.blocks_to_swap ?? 0));
@@ -4446,6 +4481,11 @@ export const generateInpaintVideo = async (
   formData.append("attention_method", resolveGlobalAttentionMethod(params.attention_method));
   formData.append("h3_attention_temporal_radius", String(params.h3_attention_temporal_radius ?? 16.0));
   formData.append("h3_attention_spatial_radius", String(params.h3_attention_spatial_radius ?? 8.0));
+  if (params.h3_sol_attention_tau !== undefined) formData.append("h3_sol_attention_tau", String(params.h3_sol_attention_tau));
+  if (params.h3_sol_attention_threshold_type !== undefined) formData.append("h3_sol_attention_threshold_type", params.h3_sol_attention_threshold_type);
+  if (params.h3_sol_attention_dense_steps !== undefined) formData.append("h3_sol_attention_dense_steps", String(params.h3_sol_attention_dense_steps));
+  if (params.h3_sol_attention_dense_layers !== undefined) formData.append("h3_sol_attention_dense_layers", String(params.h3_sol_attention_dense_layers));
+  if (params.h3_sol_attention_kv_splits !== undefined) formData.append("h3_sol_attention_kv_splits", String(params.h3_sol_attention_kv_splits));
 
   formData.append("blocks_to_swap", String(params.blocks_to_swap ?? 0));
   formData.append("fuse_output_proj", String(params.fuse_output_proj ?? false));

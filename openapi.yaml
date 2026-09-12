@@ -13415,8 +13415,10 @@ components:
             is an experimental MiniMax-H3 inference mode: condition/reference,
             audio and mixed boundary blocks remain dense, while pairs of pure
             generated-video blocks use a local 3D window through FlexAttention.
-            It is approximate and reports a warning; LTX-2.3 ignores it with an
-            unsupported-parameter warning.
+            `h3_sol_attn` uses NVIDIA's official forward-only Sol-Attn kernel;
+            the conditioning prefix remains an exact K/V sink and its query rows
+            are recomputed densely. Both H3 methods are approximate and report a
+            warning; LTX-2.3 ignores them with an unsupported-parameter warning.
           example: dense
         h3_attention_temporal_radius:
           type: number
@@ -13430,6 +13432,36 @@ components:
           default: 8.0
           description: "MiniMax-H3 normalized rotary-space coordinate radius used only by h3_video_window."
           example: 8.0
+        h3_sol_attention_tau:
+          type: number
+          minimum: 0
+          default: 1.0
+          description: "Sol-Attn routing threshold multiplier used only by h3_sol_attn."
+          example: 1.0
+        h3_sol_attention_threshold_type:
+          type: string
+          enum: [diag, exact]
+          default: diag
+          description: "Sol-Attn threshold estimator used only by h3_sol_attn."
+          example: diag
+        h3_sol_attention_dense_steps:
+          type: integer
+          minimum: 0
+          default: 1
+          description: "Initial denoising steps kept dense before h3_sol_attn activates."
+          example: 1
+        h3_sol_attention_dense_layers:
+          type: integer
+          minimum: 0
+          default: 2
+          description: "Initial transformer layers kept dense on every step."
+          example: 2
+        h3_sol_attention_kv_splits:
+          type: integer
+          enum: [1, 2, 4]
+          default: 1
+          description: "Official Sol-Attn KV split count; values above 1 require a kernel/device combination that supports them."
+          example: 1
         loras:
           type: array
           default: []
@@ -14053,6 +14085,27 @@ components:
           minimum: 0
           default: 8.0
           description: "MiniMax-H3 spatial window radius; used only by h3_video_window."
+        h3_sol_attention_tau:
+          type: number
+          minimum: 0
+          default: 1.0
+          description: "Sol-Attn routing threshold multiplier used only by h3_sol_attn."
+        h3_sol_attention_threshold_type:
+          type: string
+          enum: [diag, exact]
+          default: diag
+        h3_sol_attention_dense_steps:
+          type: integer
+          minimum: 0
+          default: 1
+        h3_sol_attention_dense_layers:
+          type: integer
+          minimum: 0
+          default: 2
+        h3_sol_attention_kv_splits:
+          type: integer
+          enum: [1, 2, 4]
+          default: 1
         blocks_to_swap:
           type: integer
           default: 0
@@ -14572,6 +14625,27 @@ components:
           minimum: 0
           default: 8.0
           description: "MiniMax-H3 spatial window radius; used only by h3_video_window."
+        h3_sol_attention_tau:
+          type: number
+          minimum: 0
+          default: 1.0
+          description: "Sol-Attn routing threshold multiplier used only by h3_sol_attn."
+        h3_sol_attention_threshold_type:
+          type: string
+          enum: [diag, exact]
+          default: diag
+        h3_sol_attention_dense_steps:
+          type: integer
+          minimum: 0
+          default: 1
+        h3_sol_attention_dense_layers:
+          type: integer
+          minimum: 0
+          default: 2
+        h3_sol_attention_kv_splits:
+          type: integer
+          enum: [1, 2, 4]
+          default: 1
         blocks_to_swap:
           type: integer
           default: 0

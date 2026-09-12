@@ -66,7 +66,14 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     # that drives diffusers' own attention dispatch instead declares it below.
     "attention_type": ["attention_type"],
     "attention_method": [
-        "attention_method", "h3_attention_temporal_radius", "h3_attention_spatial_radius"
+        "attention_method",
+        "h3_attention_temporal_radius",
+        "h3_attention_spatial_radius",
+        "h3_sol_attention_tau",
+        "h3_sol_attention_threshold_type",
+        "h3_sol_attention_dense_steps",
+        "h3_sol_attention_dense_layers",
+        "h3_sol_attention_kv_splits",
     ],
     "vae_drift_correction": ["vae_drift_correction"],
     "flatten_in_loop": ["flatten_in_loop"],
@@ -599,7 +606,7 @@ _add("ltx2", "audio_conditioning",
 _add("ltx2", "attention_type",
      "LTX-2.3 runs diffusers' own attention dispatch rather than SushiUI's attention conduit, so the attention backend is not selectable per generation for this architecture")
 _add("ltx2", "attention_method",
-     "h3_video_window uses MiniMax-H3 packed modality and position metadata that LTX-2.3 does not expose")
+     "H3 sparse attention uses MiniMax-H3 packed modality and position metadata that LTX-2.3 does not expose")
 _add("ltx2", "fuse_output_proj",
      "output-tail head fusion is a MiniMax-H3-specific chunking optimization (core.models.minimax_h3.adaln_chunking); LTX-2.3 has no equivalent output-head structure")
 

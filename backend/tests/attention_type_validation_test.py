@@ -204,9 +204,18 @@ class OpenApiEnumTest(unittest.TestCase):
 
 
 class MechanismApiTest(unittest.TestCase):
+    _SOL_FIELDS = {
+        "h3_sol_attention_tau",
+        "h3_sol_attention_threshold_type",
+        "h3_sol_attention_dense_steps",
+        "h3_sol_attention_dense_layers",
+        "h3_sol_attention_kv_splits",
+    }
+
     def test_mechanism_is_explicit_and_dense_by_default(self):
         self.assertEqual(validate_mechanism(None), "dense")
         self.assertEqual(validate_mechanism(" H3_VIDEO_WINDOW "), "h3_video_window")
+        self.assertEqual(validate_mechanism(" H3_SOL_ATTN "), "h3_sol_attn")
         with self.assertRaises(ValueError):
             validate_mechanism("banana")
 
@@ -216,6 +225,10 @@ class MechanismApiTest(unittest.TestCase):
         from api.routes import Txt2VidRequest, router
 
         self.assertEqual(Txt2VidRequest.model_fields["attention_method"].default, "dense")
+        self.assertEqual(
+            self._SOL_FIELDS,
+            self._SOL_FIELDS & set(Txt2VidRequest.model_fields),
+        )
         paths = {
             "/generate/img2vid",
             "/generate/ref2vid",
@@ -229,11 +242,47 @@ class MechanismApiTest(unittest.TestCase):
             found.add(route.path)
             params = inspect.signature(route.endpoint).parameters
             self.assertTrue(
-                {"attention_method", "h3_attention_temporal_radius", "h3_attention_spatial_radius"}
+                {
+                    "attention_method",
+                    "h3_attention_temporal_radius",
+                    "h3_attention_spatial_radius",
+                    *self._SOL_FIELDS,
+                }
                 <= set(params),
                 route.path,
             )
         self.assertEqual(found, paths)
+
+    def test_sol_parameters_are_normalized_and_invalid_values_refused(self):
+        from api.error_handlers import ValidationError
+        from api.routes import _validated_h3_sol_attention_params
+
+        params = {
+            "h3_sol_attention_tau": "1.25",
+            "h3_sol_attention_threshold_type": " EXACT ",
+            "h3_sol_attention_dense_steps": "0",
+            "h3_sol_attention_dense_layers": "2",
+            "h3_sol_attention_kv_splits": "1",
+        }
+        _validated_h3_sol_attention_params(params)
+        self.assertEqual(params, {
+            "h3_sol_attention_tau": 1.25,
+            "h3_sol_attention_threshold_type": "exact",
+            "h3_sol_attention_dense_steps": 0,
+            "h3_sol_attention_dense_layers": 2,
+            "h3_sol_attention_kv_splits": 1,
+        })
+        for key, value in (
+            ("h3_sol_attention_tau", float("nan")),
+            ("h3_sol_attention_threshold_type", "unknown"),
+            ("h3_sol_attention_dense_steps", -1),
+            ("h3_sol_attention_dense_layers", -1),
+            ("h3_sol_attention_kv_splits", 3),
+        ):
+            invalid = dict(params)
+            invalid[key] = value
+            with self.subTest(key=key), self.assertRaises(ValidationError):
+                _validated_h3_sol_attention_params(invalid)
 
 
 class FrontendAttentionSenderTest(unittest.TestCase):
@@ -318,6 +367,13 @@ class FrontendAttentionSenderTest(unittest.TestCase):
                     "resolveGlobalAttentionMethod(params.attention_method)",
                     self._function_source(source, name),
                 )
+
+    def test_frontend_mechanism_vocabulary_includes_sol_attention(self):
+        helper_path = os.path.join(
+            _REPO, "frontend", "src", "utils", "attentionSettings.ts")
+        with open(helper_path, encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertIn('"h3_sol_attn"', source)
 
     def test_every_generation_panel_uses_the_shared_setting_reader(self):
         for name in (

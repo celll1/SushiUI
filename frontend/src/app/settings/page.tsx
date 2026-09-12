@@ -881,9 +881,10 @@ export default function SettingsPage() {
                   >
                     <option value="dense">Dense (exact default)</option>
                     <option value="h3_video_window">H3 Video Window (experimental)</option>
+                    <option value="h3_sol_attn">H3 Sol-Attn (experimental)</option>
                   </select>
                   <p className="text-xs text-gray-500 mt-1">
-                    Changes which token pairs may interact, independently of Attention Type below. H3 Video Window is an approximate MiniMax-H3 inference mode; other architectures ignore it with a warning.
+                    Changes which token pairs may interact, independently of Attention Type below. The H3 modes are approximate MiniMax-H3 inference modes; other architectures ignore them with a warning.
                   </p>
                 </div>
 

@@ -1196,6 +1196,8 @@ def test_the_frontend_exposes_both_settings_and_clears_them_with_the_split():
     tsx = (root / "components" / "training" / "TrainingConfig.tsx").read_text(
         encoding="utf-8"
     )
+    definitions = (root / "components" / "training"
+                   / "trainingConfigDefinitions.tsx").read_text(encoding="utf-8")
     api_ts = (root / "utils" / "api.ts").read_text(encoding="utf-8")
     # The form no longer copies each field into the request by hand: PARAM_KEYS
     # minus COMPUTED_REQUEST_KEYS is what passThroughParams() sends (e256f8a7),
@@ -1205,8 +1207,8 @@ def test_the_frontend_exposes_both_settings_and_clears_them_with_the_split():
 
     assert "sensenova_four_phase_shared_prefix?: boolean;" in api_ts
     assert 'sensenova_four_phase_grad_reduction?: "sum" | "mean";' in api_ts
-    assert "sensenova_four_phase_shared_prefix: false," in tsx
-    assert 'sensenova_four_phase_grad_reduction: "sum",' in tsx
+    assert "sensenova_four_phase_shared_prefix: false," in definitions
+    assert 'sensenova_four_phase_grad_reduction: "sum",' in definitions
     for key in ("sensenova_four_phase_shared_prefix",
                 "sensenova_four_phase_grad_reduction"):
         assert f'"{key}"' in _ts_array(param_keys, "PARAM_KEYS"), key

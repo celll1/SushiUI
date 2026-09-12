@@ -689,12 +689,8 @@ class AnimaMixin:
     def _anima_set_attention_backend(self, params: Dict[str, Any]) -> None:
         """Route Anima's attention kernel through the unified conduit.
 
-        Mirrors ``pipeline_backends/zimage.py``: the selected backend
-        (``attention_type`` from params, else the global setting) is pushed onto
-        the ``anima_attention`` module-global that ``anima_attention.attention()``
-        reads. Both the image self-attention (``anima_models.Attention.forward``)
-        and the cross-attention (patched by ``nag_anima`` / ``negpip_anima``)
-        call that one primitive, so NAG/NegPip honor the selection too.
+        The selected backend is stamped on the loaded model, including its LLM
+        adapter, so concurrent model instances cannot change each other's path.
 
         Anima has no dedicated sage kernel; a ``sage`` request is handled by the
         conduit (sage->native guard) without crashing.
@@ -708,7 +704,10 @@ class AnimaMixin:
             print(f"[Anima] Switching attention backend: "
                   f"{getattr(self, 'current_attention_type', None)} -> {backend}")
             self.current_attention_type = backend
-        anima_attention.set_attention_backend(backend)
+        transformer = self.anima_components["transformer"]
+        anima_attention.set_attention_backend(
+            transformer, backend, anima_attention.AttentionMode.INFERENCE
+        )
 
     def _anima_style_triple(self, style_dict: Dict[str, Any], width: int, height: int, device,
                              seed, ref_index: int = 0):

@@ -428,6 +428,14 @@ class MiniMaxH3Mixin:
             sol_dense_layers=int(params.get("h3_sol_attention_dense_layers", 2)),
             sol_kv_splits=int(params.get("h3_sol_attention_kv_splits", 1)),
         )
+        if method == "h3_sol_attn":
+            from core.attention.sol import sol_attention_available
+
+            if not sol_attention_available():
+                raise RuntimeError(
+                    "h3_sol_attn requires the optional official sol-attn package; "
+                    "install backend/requirements-attention-experimental.txt"
+                )
         print(f"[MiniMax-H3] Attention backend: {backend} (from attention_type={requested!r})")
         if inner._attention_plan is not None:
             from api.generation_status import add_warning

@@ -1272,6 +1272,13 @@ VIDEO_GEN_DEFAULTS: Dict[str, Any] = {
     # height/width occupy the normalized [0, 32] spatial grid.
     "h3_attention_temporal_radius": 16.0,
     "h3_attention_spatial_radius": 8.0,
+    # Official Sol-Attn routing and dense warm-up policy. The optional kernel is
+    # forward-only and remains experimental until its GPU gate passes.
+    "h3_sol_attention_tau": 1.0,
+    "h3_sol_attention_threshold_type": "diag",
+    "h3_sol_attention_dense_steps": 1,
+    "h3_sol_attention_dense_layers": 2,
+    "h3_sol_attention_kv_splits": 1,
     # Generation-time LoRA (same shape as every other arch's params["loras"]:
     # list of {"path": str, "strength": float, ...}). Applied today by
     # MiniMax-H3 (core.models.minimax_h3.minimax_h3_lora, hooked into

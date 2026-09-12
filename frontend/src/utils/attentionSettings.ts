@@ -4,7 +4,7 @@ export type InferenceAttentionType = (typeof INFERENCE_ATTENTION_TYPES)[number];
 export const ATTENTION_IMPLEMENTATIONS = ["conduit", "diffusers"] as const;
 export type AttentionImplementation = (typeof ATTENTION_IMPLEMENTATIONS)[number];
 
-export const ATTENTION_METHODS = ["dense", "h3_video_window"] as const;
+export const ATTENTION_METHODS = ["dense", "h3_video_window", "h3_sol_attn"] as const;
 export type AttentionMethod = (typeof ATTENTION_METHODS)[number];
 
 export const isInferenceAttentionType = (value: unknown): value is InferenceAttentionType =>

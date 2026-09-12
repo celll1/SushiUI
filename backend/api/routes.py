@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, conint, field_validator
 from datetime import datetime
 from pathlib import Path
 import contextvars
+import math
 import os
 import re
 import sys
@@ -226,6 +227,35 @@ def _validated_h3_attention_radius(value: float, param: str) -> float:
     return value
 
 
+def _validated_h3_sol_attention_params(params: Dict[str, Any]) -> None:
+    tau = float(params["h3_sol_attention_tau"])
+    if not math.isfinite(tau) or tau < 0:
+        raise CustomValidationError(
+            "Invalid h3_sol_attention_tau value",
+            detail=f"h3_sol_attention_tau must be finite and >= 0; got {tau!r}",
+        )
+    params["h3_sol_attention_tau"] = tau
+    threshold = str(params["h3_sol_attention_threshold_type"]).strip().lower()
+    if threshold not in {"diag", "exact"}:
+        raise CustomValidationError(
+            "Invalid h3_sol_attention_threshold_type value",
+            detail="h3_sol_attention_threshold_type must be 'diag' or 'exact'",
+        )
+    params["h3_sol_attention_threshold_type"] = threshold
+    for key in ("h3_sol_attention_dense_steps", "h3_sol_attention_dense_layers"):
+        value = int(params[key])
+        if value < 0:
+            raise CustomValidationError(f"Invalid {key} value", detail=f"{key} must be >= 0")
+        params[key] = value
+    splits = int(params["h3_sol_attention_kv_splits"])
+    if splits not in {1, 2, 4}:
+        raise CustomValidationError(
+            "Invalid h3_sol_attention_kv_splits value",
+            detail="h3_sol_attention_kv_splits must be 1, 2, or 4",
+        )
+    params["h3_sol_attention_kv_splits"] = splits
+
+
 # Pydantic models for requests
 class LoginRequest(BaseModel):
     username: str
@@ -355,6 +385,11 @@ class Txt2VidRequest(BaseModel):
     attention_method: str = TXT2VID_DEFAULTS["attention_method"]
     h3_attention_temporal_radius: float = TXT2VID_DEFAULTS["h3_attention_temporal_radius"]
     h3_attention_spatial_radius: float = TXT2VID_DEFAULTS["h3_attention_spatial_radius"]
+    h3_sol_attention_tau: float = TXT2VID_DEFAULTS["h3_sol_attention_tau"]
+    h3_sol_attention_threshold_type: str = TXT2VID_DEFAULTS["h3_sol_attention_threshold_type"]
+    h3_sol_attention_dense_steps: int = TXT2VID_DEFAULTS["h3_sol_attention_dense_steps"]
+    h3_sol_attention_dense_layers: int = TXT2VID_DEFAULTS["h3_sol_attention_dense_layers"]
+    h3_sol_attention_kv_splits: int = TXT2VID_DEFAULTS["h3_sol_attention_kv_splits"]
     # Training-free reference-style transfer (video self-attention KV
     # injection; see core.inference.style_ltx2). An entry with
     # is_style_transfer=true carries the style reference; extracted by
@@ -2941,6 +2976,7 @@ async def generate_txt2vid(
         params.get("attention_method"), TXT2VID_DEFAULTS["attention_method"])
     for key in ("h3_attention_temporal_radius", "h3_attention_spatial_radius"):
         params[key] = _validated_h3_attention_radius(params[key], key)
+    _validated_h3_sol_attention_params(params)
     # Chain provenance (design sec.13): validated here, before the run opens, so
     # a malformed stamp is a 400 rather than an unusable gallery row.
     params.update(resolve_chain_provenance(params))
@@ -4308,6 +4344,11 @@ async def generate_img2vid(
     attention_method: str = Form(IMG2VID_DEFAULTS["attention_method"]),
     h3_attention_temporal_radius: float = Form(IMG2VID_DEFAULTS["h3_attention_temporal_radius"]),
     h3_attention_spatial_radius: float = Form(IMG2VID_DEFAULTS["h3_attention_spatial_radius"]),
+    h3_sol_attention_tau: float = Form(IMG2VID_DEFAULTS["h3_sol_attention_tau"]),
+    h3_sol_attention_threshold_type: str = Form(IMG2VID_DEFAULTS["h3_sol_attention_threshold_type"]),
+    h3_sol_attention_dense_steps: int = Form(IMG2VID_DEFAULTS["h3_sol_attention_dense_steps"]),
+    h3_sol_attention_dense_layers: int = Form(IMG2VID_DEFAULTS["h3_sol_attention_dense_layers"]),
+    h3_sol_attention_kv_splits: int = Form(IMG2VID_DEFAULTS["h3_sol_attention_kv_splits"]),
     controlnets: str = Form("[]"),  # JSON string; only is_style_transfer entries are meaningful for LTX-2.3
     # Generation-time LoRA. See Txt2VidRequest.loras.
     loras: str = Form("[]"),
@@ -4458,6 +4499,11 @@ async def generate_img2vid(
             h3_attention_temporal_radius, "h3_attention_temporal_radius"),
         "h3_attention_spatial_radius": _validated_h3_attention_radius(
             h3_attention_spatial_radius, "h3_attention_spatial_radius"),
+        "h3_sol_attention_tau": h3_sol_attention_tau,
+        "h3_sol_attention_threshold_type": h3_sol_attention_threshold_type,
+        "h3_sol_attention_dense_steps": h3_sol_attention_dense_steps,
+        "h3_sol_attention_dense_layers": h3_sol_attention_dense_layers,
+        "h3_sol_attention_kv_splits": h3_sol_attention_kv_splits,
         # The uploaded FILENAME, not the bytes: it is what the gallery row and
         # the capability warning can carry, and `None` is what "no last frame"
         # means for both. The image itself is read below.
@@ -4481,6 +4527,7 @@ async def generate_img2vid(
         # it (the default in IMG2VID_DEFAULTS is None).
         "input_audio": recover_upload_filename(_input_audio.filename) if _input_audio is not None else None,
     }
+    _validated_h3_sol_attention_params(params)
 
     # Generation-time LoRA (JSON string, same convention as the image routes'
     # multipart `loras` field). See Txt2VidRequest.loras.
@@ -4947,6 +4994,11 @@ async def generate_ref2vid(
     attention_method: str = Form(REF2VID_DEFAULTS["attention_method"]),
     h3_attention_temporal_radius: float = Form(REF2VID_DEFAULTS["h3_attention_temporal_radius"]),
     h3_attention_spatial_radius: float = Form(REF2VID_DEFAULTS["h3_attention_spatial_radius"]),
+    h3_sol_attention_tau: float = Form(REF2VID_DEFAULTS["h3_sol_attention_tau"]),
+    h3_sol_attention_threshold_type: str = Form(REF2VID_DEFAULTS["h3_sol_attention_threshold_type"]),
+    h3_sol_attention_dense_steps: int = Form(REF2VID_DEFAULTS["h3_sol_attention_dense_steps"]),
+    h3_sol_attention_dense_layers: int = Form(REF2VID_DEFAULTS["h3_sol_attention_dense_layers"]),
+    h3_sol_attention_kv_splits: int = Form(REF2VID_DEFAULTS["h3_sol_attention_kv_splits"]),
     reference_image_size: str = Form(REF2VID_DEFAULTS["reference_image_size"]),
     # The references. Every list is read in UPLOAD ORDER, and that order is
     # semantic -- it labels the references in the prompt presentation and lays
@@ -5146,6 +5198,11 @@ async def generate_ref2vid(
             h3_attention_temporal_radius, "h3_attention_temporal_radius"),
         "h3_attention_spatial_radius": _validated_h3_attention_radius(
             h3_attention_spatial_radius, "h3_attention_spatial_radius"),
+        "h3_sol_attention_tau": h3_sol_attention_tau,
+        "h3_sol_attention_threshold_type": h3_sol_attention_threshold_type,
+        "h3_sol_attention_dense_steps": h3_sol_attention_dense_steps,
+        "h3_sol_attention_dense_layers": h3_sol_attention_dense_layers,
+        "h3_sol_attention_kv_splits": h3_sol_attention_kv_splits,
         "reference_image_size": reference_image_size,
         # The uploaded FILENAMES, in packed order -- what the gallery row can
         # carry. The bytes never reach the database. Passed through
@@ -5160,6 +5217,7 @@ async def generate_ref2vid(
         "keyframe_images": [recover_upload_filename(f.filename) for f in _keyframes] or None,
         "keyframe_frame_indices": list(_keyframe_indices) or None,
     }
+    _validated_h3_sol_attention_params(params)
 
     # Generation-time LoRA (JSON string). See Txt2VidRequest.loras.
     import json
@@ -5446,6 +5504,11 @@ async def generate_outpaint_video(
     attention_method: str = Form(OUTPAINT_VIDEO_DEFAULTS["attention_method"]),
     h3_attention_temporal_radius: float = Form(OUTPAINT_VIDEO_DEFAULTS["h3_attention_temporal_radius"]),
     h3_attention_spatial_radius: float = Form(OUTPAINT_VIDEO_DEFAULTS["h3_attention_spatial_radius"]),
+    h3_sol_attention_tau: float = Form(OUTPAINT_VIDEO_DEFAULTS["h3_sol_attention_tau"]),
+    h3_sol_attention_threshold_type: str = Form(OUTPAINT_VIDEO_DEFAULTS["h3_sol_attention_threshold_type"]),
+    h3_sol_attention_dense_steps: int = Form(OUTPAINT_VIDEO_DEFAULTS["h3_sol_attention_dense_steps"]),
+    h3_sol_attention_dense_layers: int = Form(OUTPAINT_VIDEO_DEFAULTS["h3_sol_attention_dense_layers"]),
+    h3_sol_attention_kv_splits: int = Form(OUTPAINT_VIDEO_DEFAULTS["h3_sol_attention_kv_splits"]),
     blocks_to_swap: int = Form(OUTPAINT_VIDEO_DEFAULTS["blocks_to_swap"]),
     fuse_output_proj: bool = Form(OUTPAINT_VIDEO_DEFAULTS["fuse_output_proj"]),
     fbcache_enable: bool = Form(OUTPAINT_VIDEO_DEFAULTS["fbcache_enable"]),
@@ -5866,6 +5929,11 @@ async def generate_outpaint_video(
             h3_attention_temporal_radius, "h3_attention_temporal_radius"),
         "h3_attention_spatial_radius": _validated_h3_attention_radius(
             h3_attention_spatial_radius, "h3_attention_spatial_radius"),
+        "h3_sol_attention_tau": h3_sol_attention_tau,
+        "h3_sol_attention_threshold_type": h3_sol_attention_threshold_type,
+        "h3_sol_attention_dense_steps": h3_sol_attention_dense_steps,
+        "h3_sol_attention_dense_layers": h3_sol_attention_dense_layers,
+        "h3_sol_attention_kv_splits": h3_sol_attention_kv_splits,
         "blocks_to_swap": blocks_to_swap,
         "fuse_output_proj": fuse_output_proj,
         "fbcache_enable": fbcache_enable,
@@ -5896,6 +5964,7 @@ async def generate_outpaint_video(
         "reference_image_size": reference_image_size,
         "reference_images": [recover_upload_filename(f.filename) for f in _ref_image_files] or None,
     }
+    _validated_h3_sol_attention_params(params)
 
     # Generation-time LoRA (JSON string). See Txt2VidRequest.loras.
     import json
@@ -6186,6 +6255,11 @@ async def generate_inpaint_video(
     attention_method: str = Form(INPAINT_VIDEO_DEFAULTS["attention_method"]),
     h3_attention_temporal_radius: float = Form(INPAINT_VIDEO_DEFAULTS["h3_attention_temporal_radius"]),
     h3_attention_spatial_radius: float = Form(INPAINT_VIDEO_DEFAULTS["h3_attention_spatial_radius"]),
+    h3_sol_attention_tau: float = Form(INPAINT_VIDEO_DEFAULTS["h3_sol_attention_tau"]),
+    h3_sol_attention_threshold_type: str = Form(INPAINT_VIDEO_DEFAULTS["h3_sol_attention_threshold_type"]),
+    h3_sol_attention_dense_steps: int = Form(INPAINT_VIDEO_DEFAULTS["h3_sol_attention_dense_steps"]),
+    h3_sol_attention_dense_layers: int = Form(INPAINT_VIDEO_DEFAULTS["h3_sol_attention_dense_layers"]),
+    h3_sol_attention_kv_splits: int = Form(INPAINT_VIDEO_DEFAULTS["h3_sol_attention_kv_splits"]),
     blocks_to_swap: int = Form(INPAINT_VIDEO_DEFAULTS["blocks_to_swap"]),
     fuse_output_proj: bool = Form(INPAINT_VIDEO_DEFAULTS["fuse_output_proj"]),
     fbcache_enable: bool = Form(INPAINT_VIDEO_DEFAULTS["fbcache_enable"]),
@@ -6765,6 +6839,11 @@ async def generate_inpaint_video(
             h3_attention_temporal_radius, "h3_attention_temporal_radius"),
         "h3_attention_spatial_radius": _validated_h3_attention_radius(
             h3_attention_spatial_radius, "h3_attention_spatial_radius"),
+        "h3_sol_attention_tau": h3_sol_attention_tau,
+        "h3_sol_attention_threshold_type": h3_sol_attention_threshold_type,
+        "h3_sol_attention_dense_steps": h3_sol_attention_dense_steps,
+        "h3_sol_attention_dense_layers": h3_sol_attention_dense_layers,
+        "h3_sol_attention_kv_splits": h3_sol_attention_kv_splits,
         "blocks_to_swap": blocks_to_swap,
         "fuse_output_proj": fuse_output_proj,
         "fbcache_enable": fbcache_enable,
@@ -6794,6 +6873,7 @@ async def generate_inpaint_video(
         "reference_videos": [recover_upload_filename(f.filename) for f in _ref_video_files] or None,
         "reference_audios": [recover_upload_filename(f.filename) for f in _ref_audio_files] or None,
     }
+    _validated_h3_sol_attention_params(params)
 
     # Generation-time LoRA (JSON string). See Txt2VidRequest.loras.
     import json

@@ -70,12 +70,16 @@ def test_openapi_has_typed_dataset_task_contract():
 def test_frontend_exposes_task_views_and_scopes():
     api = (ROOT / "frontend/src/utils/api.ts").read_text(encoding="utf-8")
     panel = (ROOT / "frontend/src/components/training/TrainingConfig.tsx").read_text(encoding="utf-8")
+    definitions = (ROOT / "frontend/src/components/training/trainingConfigDefinitions.tsx").read_text(encoding="utf-8")
     params = (ROOT / "frontend/src/components/training/trainingParams.ts").read_text(encoding="utf-8")
     assert "task_views?: SenseNovaTaskView[]" in api
     assert "sensenova_train_scopes?: SenseNovaTrainScope[]" in api
     assert "sensenova_train_generation_norms?: boolean" in api
     assert "SenseNova task views" in panel
     assert "function isSenseNovaModel(" in panel
+    assert "function getModelArchitecture(" in panel
+    assert "  describeRequirementLift," in panel
+    assert "export const describeRequirementLift" in definitions
     assert '"sensenova_train_scopes"' in params
     assert '"sensenova_train_generation_norms"' in params
 

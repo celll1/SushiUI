@@ -7998,6 +7998,26 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorResponse'}
 
+  /datasets/{dataset_id}/health:
+    get:
+      tags: [datasets]
+      summary: Inspect dataset source and index consistency
+      operationId: getDatasetHealth
+      parameters:
+        - {name: dataset_id, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200':
+          description: On-demand health report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasetHealth'
+        '404':
+          description: Dataset not found
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+
   /datasets/{dataset_id}/caption-processing:
     patch:
       tags: [datasets]
@@ -20792,6 +20812,22 @@ components:
           type: string
           format: date-time
           nullable: true
+
+    DatasetHealth:
+      type: object
+      required: [dataset_id, healthy, counts, samples, last_scanned_at]
+      properties:
+        dataset_id: {type: integer}
+        healthy: {type: boolean}
+        last_scanned_at: {type: string, format: date-time, nullable: true}
+        counts:
+          type: object
+          additionalProperties: {type: integer}
+        samples:
+          type: object
+          additionalProperties:
+            type: array
+            items: {type: string}
 
     StructureDetectionResult:
       type: object

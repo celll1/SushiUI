@@ -12913,6 +12913,53 @@ async def get_dataset_tag_statistics(
         raise HTTPException(status_code=404, detail="Dataset not found")
     return {"tag_statistics": row[0] or {}}
 
+
+@router.get("/datasets/{dataset_id}/health")
+def get_dataset_health(
+    dataset_id: int,
+    db: Session = Depends(get_datasets_db),
+):
+    """Inspect source files and indexed coverage without burdening the list route."""
+    from sqlalchemy import exists
+    from core.datasets.health import inspect_dataset_rows
+
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    has_file_caption = exists().where(
+        DatasetCaption.item_id == DatasetItem.id,
+        DatasetCaption.source == "file",
+    )
+    indexed_at = (
+        db.query(func.max(DatasetCaption.updated_at))
+        .filter(DatasetCaption.item_id == DatasetItem.id)
+        .correlate(DatasetItem)
+        .scalar_subquery()
+    )
+    rows = (
+        db.query(
+            DatasetItem.base_name,
+            DatasetItem.image_path,
+            DatasetItem.item_type,
+            DatasetItem.related_images,
+            DatasetItem.width,
+            DatasetItem.height,
+            DatasetItem.total_captions,
+            DatasetItem.total_tags,
+            has_file_caption.label("has_file_caption"),
+            indexed_at.label("indexed_at"),
+        )
+        .filter(DatasetItem.dataset_id == dataset_id)
+        .order_by(DatasetItem.id)
+        .yield_per(2000)
+    )
+    result = inspect_dataset_rows(rows, last_scanned_at=dataset.last_scanned_at)
+    result["dataset_id"] = dataset_id
+    result["last_scanned_at"] = (
+        dataset.last_scanned_at.isoformat() if dataset.last_scanned_at else None
+    )
+    return result
+
 class CaptionProcessingUpdateRequest(BaseModel):
     caption_processing: Dict[str, Any]
 

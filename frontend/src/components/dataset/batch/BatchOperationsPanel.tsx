@@ -33,6 +33,7 @@ export default function BatchOperationsPanel({
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [progressMessage, setProgressMessage] = useState("");
+  const [activeOperationId, setActiveOperationId] = useState<string | null>(null);
 
   // Confirmation dialogs
   const [showTaggerConfirm, setShowTaggerConfirm] = useState(false);
@@ -71,6 +72,8 @@ export default function BatchOperationsPanel({
     setIsProcessing(true);
     setProgress(0);
     setProgressMessage("Starting batch tagger inference...");
+    const operationId = crypto.randomUUID();
+    setActiveOperationId(operationId);
     wsClient.connect();
 
     try {
@@ -83,6 +86,7 @@ export default function BatchOperationsPanel({
 
       const request: BatchTaggerRequest = {
         item_ids: targetItemIds,
+        operation_id: operationId,
         gen_threshold: taggerSettings.categoryThresholds.find((c: any) => c.id === "general")?.addThreshold || 0.45,
         char_threshold: taggerSettings.categoryThresholds.find((c: any) => c.id === "character")?.addThreshold || 0.45,
         thresholds,
@@ -100,12 +104,14 @@ export default function BatchOperationsPanel({
 
       setTimeout(() => {
         setIsProcessing(false);
+        setActiveOperationId(null);
         onOperationComplete();
       }, 2000);
 
     } catch (error) {
       console.error("[BatchTagger] Error:", error);
       setProgressMessage("Batch tagger failed. Check console for details.");
+      setActiveOperationId(null);
       setTimeout(() => setIsProcessing(false), 3000);
     }
   };
@@ -126,12 +132,15 @@ export default function BatchOperationsPanel({
     setIsProcessing(true);
     setProgress(0);
     setProgressMessage("Starting batch tag reordering...");
+    const operationId = crypto.randomUUID();
+    setActiveOperationId(operationId);
     wsClient.connect();
 
     try {
       const request: BatchReorderTagsRequest = {
         item_ids: targetItemIds,
         category_order: categoryOrder,
+        operation_id: operationId,
       };
 
       const result = await batchReorderTags(datasetId, request);
@@ -144,12 +153,14 @@ export default function BatchOperationsPanel({
 
       setTimeout(() => {
         setIsProcessing(false);
+        setActiveOperationId(null);
         onOperationComplete();
       }, 2000);
 
     } catch (error) {
       console.error("[BatchReorder] Error:", error);
       setProgressMessage("Batch reorder failed. Check console for details.");
+      setActiveOperationId(null);
       setTimeout(() => setIsProcessing(false), 3000);
     }
   };
@@ -165,11 +176,14 @@ export default function BatchOperationsPanel({
     setIsProcessing(true);
     setProgress(0);
     setProgressMessage(`Replacing '${fromTag}' with '${toTag}'...`);
+    const operationId = crypto.randomUUID();
+    setActiveOperationId(operationId);
     wsClient.connect();
 
     try {
       const request: BatchReplaceTagRequest = {
         item_ids: targetItemIds,
+        operation_id: operationId,
         from_tag: fromTag,
         to_tag: toTag,
         normalize_match: true,
@@ -185,6 +199,7 @@ export default function BatchOperationsPanel({
 
       setTimeout(() => {
         setIsProcessing(false);
+        setActiveOperationId(null);
         setFromTag("");
         setToTag("");
         onOperationComplete();
@@ -193,6 +208,7 @@ export default function BatchOperationsPanel({
     } catch (error) {
       console.error("[BatchReplace] Error:", error);
       setProgressMessage("Batch replace failed. Check console for details.");
+      setActiveOperationId(null);
       setTimeout(() => setIsProcessing(false), 3000);
     }
   };
@@ -205,16 +221,22 @@ export default function BatchOperationsPanel({
     setIsProcessing(true);
     setProgress(0);
     setProgressMessage("Backfilling tag_data...");
+    const operationId = crypto.randomUUID();
+    setActiveOperationId(operationId);
     wsClient.connect();
 
     try {
-      const result = await backfillTagData(datasetId);
+      const result = await backfillTagData(datasetId, operationId);
       console.log(`[BackfillTagData] ${result.message}`);
       setProgressMessage(result.message);
-      setTimeout(() => setIsProcessing(false), 2000);
+      setTimeout(() => {
+        setIsProcessing(false);
+        setActiveOperationId(null);
+      }, 2000);
     } catch (error) {
       console.error("[BackfillTagData] Error:", error);
       setProgressMessage("Backfill failed. Check console for details.");
+      setActiveOperationId(null);
       setTimeout(() => setIsProcessing(false), 3000);
     }
   };
@@ -222,7 +244,7 @@ export default function BatchOperationsPanel({
 
   const handleCancel = async () => {
     try {
-      await cancelBatchOperation(datasetId);
+      await cancelBatchOperation(datasetId, activeOperationId || undefined);
       setProgressMessage("Cancelling...");
     } catch (error) {
       console.error("[BatchOps] Failed to cancel:", error);

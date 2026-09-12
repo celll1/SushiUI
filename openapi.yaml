@@ -8789,6 +8789,12 @@ paths:
           required: true
           schema:
             type: integer
+        - name: operation_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Client-generated operation identity used for targeted cancellation
       responses:
         '200':
           description: Batch operation result
@@ -8808,6 +8814,12 @@ paths:
           required: true
           schema:
             type: integer
+        - name: operation_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Exact operation to cancel; omitted for legacy dataset-wide cancellation
       responses:
         '200':
           description: Cancellation requested
@@ -8818,6 +8830,8 @@ paths:
                 properties:
                   message:
                     type: string
+                  cancelled_operations:
+                    type: integer
 
   /caption-processing-presets:
     get:
@@ -20319,6 +20333,10 @@ components:
       required: [item_ids]
       description: Run tagger inference over multiple dataset items
       properties:
+        operation_id:
+          type: string
+          maxLength: 128
+          description: Client-generated operation identity used for targeted cancellation
         item_ids:
           type: array
           items:
@@ -20349,6 +20367,10 @@ components:
       type: object
       required: [item_ids, category_order]
       properties:
+        operation_id:
+          type: string
+          maxLength: 128
+          description: Client-generated operation identity used for targeted cancellation
         item_ids:
           type: array
           items:
@@ -20362,6 +20384,10 @@ components:
       type: object
       required: [item_ids, from_tag, to_tag]
       properties:
+        operation_id:
+          type: string
+          maxLength: 128
+          description: Client-generated operation identity used for targeted cancellation
         item_ids:
           type: array
           items:
@@ -20390,6 +20416,9 @@ components:
           type: integer
         message:
           type: string
+        operation_id:
+          type: string
+          nullable: true
 
     CreateScratchMiniT2IRequest:
       type: object

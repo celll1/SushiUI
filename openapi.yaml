@@ -7823,12 +7823,11 @@ paths:
               $ref: '#/components/schemas/BrowserBatchInferRequest'
       responses:
         '200':
-          description: Batch inference results
+          description: Server-sent progress events (`done`, `skip`, `error`, then `complete`)
           content:
-            application/json:
+            text/event-stream:
               schema:
-                type: object
-                additionalProperties: true
+                type: string
 
   /datasets:
     get:

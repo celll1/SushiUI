@@ -52,6 +52,7 @@ export default function DatasetBrowserPanel({
     total: number;
     errors: number;
   } | null>(null);
+  const [batchError, setBatchError] = useState<string | null>(null);
   const batchCtrlRef = useRef<AbortController | null>(null);
   const [picking, setPicking] = useState(false);
 
@@ -272,6 +273,7 @@ export default function DatasetBrowserPanel({
     const rel_paths = filteredImages.map((img) => img.rel_path);
     if (rel_paths.length === 0) return;
     setBatchRunning(true);
+    setBatchError(null);
     setBatchProgress({ done: 0, total: rel_paths.length, errors: 0 });
 
     const ctrl = browserBatchInfer(
@@ -292,6 +294,9 @@ export default function DatasetBrowserPanel({
             p ? { ...p, done: p.done + 1, errors: p.errors + 1 } : p
           );
         } else if (ev.type === "complete") {
+          setBatchRunning(false);
+        } else if (ev.type === "fatal") {
+          setBatchError(ev.error);
           setBatchRunning(false);
         }
       }
@@ -592,6 +597,9 @@ export default function DatasetBrowserPanel({
                     />
                   </div>
                 </div>
+              )}
+              {batchError && (
+                <p className="w-full text-xs text-red-400 break-all">{batchError}</p>
               )}
             </div>
           )}

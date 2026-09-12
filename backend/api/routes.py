@@ -12627,8 +12627,13 @@ class BrowserBatchInferRequest(BaseModel):
 @router.post("/tagger/browser/batch-infer")
 async def browser_batch_infer(req: BrowserBatchInferRequest):
     """Batch inference with SSE progress streaming. Writes .txt sidecar files."""
+    import asyncio as _asyncio
     import json as _json
     import os as _os
+    from pathlib import Path as _Path
+    from core.gpu_coordinator import gpu_coordinator
+    from core.tagger.browser_sidecars import prediction_tag_names, write_image_sidecar
+
     mgr = get_siglip2_inference_manager()
     if not mgr.status.get("loaded"):
         raise HTTPException(status_code=400, detail="No model loaded")
@@ -12646,12 +12651,18 @@ async def browser_batch_infer(req: BrowserBatchInferRequest):
                 yield f"data: {_json.dumps({'type': 'skip', 'i': i, 'total': total, 'rel_path': rel})}\n\n"
                 continue
             try:
-                from PIL import Image as _Image
-                img = _Image.open(abs_path).convert("RGB")
-                result = mgr.predict(img, use_ood_detection=req.use_ood_detection)
-                tags = result.get("tags", [])
-                with open(txt, "w", encoding="utf-8") as f:
-                    f.write(", ".join(tags))
+                image_bytes = await _asyncio.to_thread(_Path(abs_path).read_bytes)
+                async with gpu_coordinator.generation_slot(
+                    estimated_peak_gb=2.5,
+                    timeout=60.0,
+                ):
+                    result = await _asyncio.to_thread(
+                        mgr.predict,
+                        image_bytes,
+                        use_ood_detection=req.use_ood_detection,
+                    )
+                tags = prediction_tag_names(result)
+                await _asyncio.to_thread(write_image_sidecar, abs_path, tags)
                 yield f"data: {_json.dumps({'type': 'done', 'i': i, 'total': total, 'rel_path': rel, 'n_tags': len(tags)})}\n\n"
             except Exception as e:
                 yield f"data: {_json.dumps({'type': 'error', 'i': i, 'total': total, 'rel_path': rel, 'error': str(e)})}\n\n"

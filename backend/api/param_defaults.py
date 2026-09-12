@@ -2473,9 +2473,9 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # "diffusers" reproduces the pre-migration set_attention_backend path
     # byte-for-byte. TRAINING-ONLY this pass (FLUX.2/Ideogram4 not yet migrated).
     "attention_impl": "conduit",
-    # New runs prefer TQ 0.6's eligible FA2 hybrid. BaseTrainer preserves
-    # "triton" when an older resumed config lacks this key.
-    "tq_backward_mode": "auto",
+    # The repaired Triton path preserves deterministic gradients and TQ's
+    # compact backward state; FA2 hybrid remains an explicit speed trade-off.
+    "tq_backward_mode": "triton",
     "min_snr_gamma": 5.0,
     # Text / latent encoding
     # text_encoding_mode: "swap_onthefly" | "pre_encoded_cache" | "onthefly_gpu"

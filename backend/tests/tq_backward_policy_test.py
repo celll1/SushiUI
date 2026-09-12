@@ -46,8 +46,8 @@ def test_policy_rejects_unknown_value():
         set_tq_backward_policy("fastish")
 
 
-def test_missing_policy_preserves_old_resumes_only():
-    assert resolve_tq_backward_mode(None, resuming=False) == "auto"
+def test_missing_policy_uses_triton_for_all_configs():
+    assert resolve_tq_backward_mode(None, resuming=False) == "triton"
     assert resolve_tq_backward_mode(None, resuming=True) == "triton"
 
 
@@ -73,11 +73,11 @@ def test_api_and_openapi_share_the_new_run_default():
     from api.param_defaults import TRAINING_DEFAULTS
     from api.routes import TrainingRunCreateRequest
 
-    assert TRAINING_DEFAULTS["tq_backward_mode"] == "auto"
-    assert TrainingRunCreateRequest.model_fields["tq_backward_mode"].default == "auto"
+    assert TRAINING_DEFAULTS["tq_backward_mode"] == "triton"
+    assert TrainingRunCreateRequest.model_fields["tq_backward_mode"].default == "triton"
     repo = os.path.abspath(os.path.join(_BACKEND, ".."))
     with open(os.path.join(repo, "openapi.yaml"), encoding="utf-8") as handle:
         properties = yaml.safe_load(handle)["components"]["schemas"][
             "TrainingRunCreateRequest"
         ]["properties"]
-    assert properties["tq_backward_mode"]["default"] == "auto"
+    assert properties["tq_backward_mode"]["default"] == "triton"

@@ -17,8 +17,8 @@ _policy = TQBackwardPolicy(mode="triton", fa2_deterministic=False)
 
 
 def resolve_tq_backward_mode(value: Optional[str], *, resuming: bool) -> str:
-    """Preserve Triton for old resumes while new runs adopt TQ's auto policy."""
-    resolved = value if value is not None else ("triton" if resuming else "auto")
+    """Use deterministic Triton when an old or hand-written config omits the key."""
+    resolved = value if value is not None else "triton"
     if resolved not in TQ_BACKWARD_MODES:
         raise ValueError(
             f"tq_backward_mode must be one of {TQ_BACKWARD_MODES}; got {resolved!r}"

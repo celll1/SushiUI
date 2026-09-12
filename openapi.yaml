@@ -23131,7 +23131,7 @@ components:
         tq_backward_mode:
           type: string
           enum: ["auto", "triton", "fa2", "fa2_deterministic"]
-          default: "auto"
+          default: "triton"
           description: |
             Backward implementation used when `attention_backend=tq`.
             `auto` uses TQ's FA2 hybrid when eligible and installed; `triton`
@@ -23139,11 +23139,11 @@ components:
             VRAM; `fa2` selects the faster non-bit-exact hybrid; and
             `fa2_deterministic` enables deterministic FA2 dQ accumulation.
 
-            New runs default to `auto`. A resumed run whose saved configuration
-            lacks this field resolves to `triton` and persists that choice.
+            New and resumed runs default to `triton`. A resumed run whose saved
+            configuration lacks this field persists that choice.
             Explicit FA2 modes fail rather than silently falling back when FA2
             is unavailable or ineligible.
-          example: "auto"
+          example: "triton"
         bundle_vae:
           type: boolean
           nullable: true

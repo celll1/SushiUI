@@ -282,7 +282,7 @@ export const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   // runs the kernel (orthogonal to attention_backend). Overwritten by trainingDefaults
   // on startup; literal here is the no-backend fallback. Affects SDXL/SD1.5 training.
   attention_impl: "conduit",
-  tq_backward_mode: "auto",
+  tq_backward_mode: "triton",
   min_snr_gamma: 5.0,
   reconstruction_loss_weight: 0.0,
   // Deliberately unset, not 0: "not supplied" resolves the per-architecture
@@ -440,4 +440,3 @@ export function NumField({
     </div>
   );
 }
-

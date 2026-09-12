@@ -33,8 +33,8 @@ the resulting speed, numerical behavior, and memory use on the RTX 6000 Ada.
 2. **Per-run backward policy**
    - Add `tq_backward_mode = auto | triton | fa2 | fa2_deterministic` to the
      training configuration, REST schema, preset plumbing, and UI.
-   - New runs default to `auto`; resumed configurations that lack the key retain
-     `triton`, matching the behavior under which they started.
+   - Keep `triton` as the default. The repaired path is deterministic and keeps
+     compact saved activations; FA2 hybrid remains an explicit speed trade-off.
    - Keep explicit FA2 requests strict: missing/ineligible FA2 is an error during
      training, not a silent native or Triton fallback.
 

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
 from collections.abc import Mapping
 from typing import Any, Iterable, List
+
+from core.datasets.sidecars import read_text_sidecar, write_text_tags
 
 
 def prediction_tag_names(result: Mapping[str, Any]) -> List[str]:
@@ -30,32 +30,9 @@ def prediction_tag_names(result: Mapping[str, Any]) -> List[str]:
 
 def read_image_sidecar(image_path: str) -> tuple[List[str], str]:
     """Read an image sidecar; a missing sidecar is a valid empty value."""
-    sidecar_path = os.path.splitext(image_path)[0] + ".txt"
-    if not os.path.isfile(sidecar_path):
-        return [], ""
-    with open(sidecar_path, "r", encoding="utf-8") as handle:
-        content = handle.read().strip()
-    return [tag.strip() for tag in content.split(",") if tag.strip()], content
+    return read_text_sidecar(image_path)
 
 
 def write_image_sidecar(image_path: str, tags: Iterable[str]) -> str:
     """Atomically replace the image's comma-separated UTF-8 sidecar."""
-    sidecar_path = os.path.splitext(image_path)[0] + ".txt"
-    directory = os.path.dirname(sidecar_path) or "."
-    fd, temporary_path = tempfile.mkstemp(
-        dir=directory,
-        prefix=os.path.basename(sidecar_path) + ".",
-        suffix=".tmp",
-        text=True,
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(", ".join(tags))
-        os.replace(temporary_path, sidecar_path)
-    except BaseException:
-        try:
-            os.unlink(temporary_path)
-        except OSError:
-            pass
-        raise
-    return sidecar_path
+    return write_text_tags(image_path, tags).path

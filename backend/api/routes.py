@@ -15040,9 +15040,9 @@ async def save_item_caption_to_txt(
     item_id: int,
     db: Session = Depends(get_datasets_db)
 ):
-    """Save caption from DB to TXT/JSON file (auto-detect based on existing file)"""
-    import os
-    import json
+    """Persist the indexed tags caption through the canonical sidecar writer."""
+    import asyncio
+    from core.datasets.sidecars import SidecarFormatError, write_indexed_caption
 
     item = db.query(DatasetItem).filter(DatasetItem.id == item_id).first()
     if not item:
@@ -15057,47 +15057,23 @@ async def save_item_caption_to_txt(
         # No caption to save, return success (nothing to do)
         return {"success": True, "message": "No tags caption found, nothing to save"}
 
-    # Determine file paths
-    image_path = item.image_path
-    base_path = os.path.splitext(image_path)[0]
-    txt_path = base_path + ".txt"
-    json_path = base_path + ".json"
-
-    saved_files = []
-
     try:
-        if os.path.exists(txt_path):
-            with open(txt_path, 'w', encoding='utf-8') as f:
-                f.write(caption.content)
-            saved_files.append(txt_path)
-            print(f"[Dataset] Saved caption to TXT: {txt_path}")
-
-        if os.path.exists(json_path):
-            try:
-                with open(json_path, 'r', encoding='utf-8') as f:
-                    json_data = json.load(f)
-
-                json_data['caption'] = caption.content
-
-                with open(json_path, 'w', encoding='utf-8') as f:
-                    json.dump(json_data, f, ensure_ascii=False, indent=2)
-
-                saved_files.append(json_path)
-                print(f"[Dataset] Saved caption to JSON: {json_path}")
-            except Exception as json_err:
-                print(f"[Dataset] Failed to update JSON file {json_path}: {json_err}")
-
-        # If neither file exists, create a TXT file
-        if not saved_files:
-            with open(txt_path, 'w', encoding='utf-8') as f:
-                f.write(caption.content)
-            saved_files.append(txt_path)
-            print(f"[Dataset] Created new TXT file: {txt_path}")
-
+        result = await asyncio.to_thread(
+            write_indexed_caption,
+            item.image_path,
+            caption.content,
+            caption_type=caption.caption_type,
+            source_field=caption.source_field,
+        )
         return {
             "success": True,
-            "message": f"Saved to {len(saved_files)} file(s): {', '.join(saved_files)}"
+            "message": f"Saved to {result.path}",
+            "path": result.path,
+            "format": result.format,
+            "field": result.field,
         }
+    except SidecarFormatError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         print(f"[Dataset] Failed to save caption: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to write file: {str(e)}")

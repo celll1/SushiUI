@@ -4,9 +4,9 @@ Batch operations for dataset items (tagger inference, tag reordering, tag replac
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 import asyncio
-from pathlib import Path
 from datetime import datetime
 
+from core.datasets.sidecars import write_indexed_caption
 from utils.taglist_cache import taglist_cache
 from config.settings import settings
 
@@ -64,16 +64,8 @@ class BatchOperationResponse(BaseModel):
 
 
 async def save_item_to_txt_json(item, db):
-    """
-    Save item captions to txt/json file
-
-    Strategy:
-    - If .json exists: Add/update "tags" field in JSON
-    - Else if .txt exists: Create .json with tags field + keep txt as-is
-    - Else: Create new .txt file with tags
-    """
+    """Persist the indexed tags caption through the canonical sidecar writer."""
     from database.models import DatasetCaption
-    import json
 
     tags_caption = db.query(DatasetCaption).filter(
         DatasetCaption.item_id == item.id,
@@ -81,59 +73,15 @@ async def save_item_to_txt_json(item, db):
     ).first()
 
     if not tags_caption:
-        return
+        return None
 
-    # Get base path (image path without extension)
-    image_path = Path(item.image_path)
-    base_path = image_path.parent / image_path.stem
-    txt_path = base_path.with_suffix('.txt')
-    json_path = base_path.with_suffix('.json')
-
-    try:
-        # Case 1: JSON file exists - add/update tags field
-        if json_path.exists():
-            try:
-                with open(json_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-
-                data['tags'] = tags_caption.content
-
-                with open(json_path, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-
-                print(f"[BatchOps] Updated tags in existing JSON: {json_path}")
-            except Exception as e:
-                print(f"[BatchOps] Failed to update JSON file {json_path}: {e}")
-
-        # Case 2: TXT file exists but no JSON - create JSON with tags field
-        elif txt_path.exists():
-            try:
-                with open(txt_path, 'r', encoding='utf-8') as f:
-                    existing_content = f.read().strip()
-
-                data = {
-                    'tags': tags_caption.content
-                }
-
-                # If txt had content, preserve it under a suitable field
-                if existing_content:
-                    data['text'] = existing_content
-
-                with open(json_path, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-
-                print(f"[BatchOps] Created JSON with tags field: {json_path}")
-            except Exception as e:
-                print(f"[BatchOps] Failed to create JSON file {json_path}: {e}")
-
-        # Case 3: Neither exists - create new txt file
-        else:
-            with open(txt_path, 'w', encoding='utf-8') as f:
-                f.write(tags_caption.content)
-            print(f"[BatchOps] Created new txt file: {txt_path}")
-
-    except Exception as e:
-        print(f"[BatchOps] Failed to save caption files for {item.base_name}: {e}")
+    return await asyncio.to_thread(
+        write_indexed_caption,
+        item.image_path,
+        tags_caption.content,
+        caption_type=tags_caption.caption_type,
+        source_field=tags_caption.source_field,
+    )
 
 
 async def update_tag_statistics(dataset_id: int, db):

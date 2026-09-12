@@ -19846,16 +19846,6 @@ def _start_dataset_batch(dataset_id: int, request, db: Session) -> str:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def _commit_batch_revision(dataset_id: int, result, db: Session) -> None:
-    if not result.updated_count:
-        return
-    from core.datasets.revisions import bump_dataset_revision
-
-    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
-    if dataset is not None:
-        bump_dataset_revision(dataset)
-        db.commit()
-
 @router.post("/datasets/{dataset_id}/batch-tagger", response_model=BatchOperationResponse)
 async def batch_tagger_endpoint(
     dataset_id: int,
@@ -19880,7 +19870,6 @@ async def batch_tagger_endpoint(
             should_cancel=lambda: batch_jobs.is_cancelled(operation_id),
         )
         result.operation_id = operation_id
-        _commit_batch_revision(dataset_id, result, db)
     finally:
         batch_jobs.finish(operation_id)
 
@@ -19913,7 +19902,6 @@ async def batch_reorder_tags_endpoint(
             should_cancel=lambda: batch_jobs.is_cancelled(operation_id),
         )
         result.operation_id = operation_id
-        _commit_batch_revision(dataset_id, result, db)
     finally:
         batch_jobs.finish(operation_id)
 
@@ -19946,7 +19934,6 @@ async def batch_replace_tag_endpoint(
             should_cancel=lambda: batch_jobs.is_cancelled(operation_id),
         )
         result.operation_id = operation_id
-        _commit_batch_revision(dataset_id, result, db)
     finally:
         batch_jobs.finish(operation_id)
 
@@ -19987,7 +19974,6 @@ async def backfill_tag_data_endpoint(
             should_cancel=lambda: batch_jobs.is_cancelled(active_operation_id),
         )
         result.operation_id = active_operation_id
-        _commit_batch_revision(dataset_id, result, db)
     finally:
         batch_jobs.finish(active_operation_id)
 

@@ -16,6 +16,10 @@ import { wsClient } from "@/utils/websocket";
 interface BatchOperationsPanelProps {
   datasetId: number;
   selectedItemIds: number[];
+  allMatchingSelected: boolean;
+  excludedItemIds: number[];
+  activeSearch: string;
+  activeTagFilter: string;
   totalItems: number;
   captionProcessingConfig: any;
   taggerSettings: any;
@@ -25,6 +29,10 @@ interface BatchOperationsPanelProps {
 export default function BatchOperationsPanel({
   datasetId,
   selectedItemIds,
+  allMatchingSelected,
+  excludedItemIds,
+  activeSearch,
+  activeTagFilter,
   totalItems,
   captionProcessingConfig,
   taggerSettings,
@@ -58,9 +66,16 @@ export default function BatchOperationsPanel({
     return () => wsClient.unsubscribe(handleProgress);
   }, [isProcessing]);
 
-  // If no items selected, target all items (empty array means "all" in backend)
-  const targetCount = selectedItemIds.length > 0 ? selectedItemIds.length : totalItems;
-  const targetItemIds = selectedItemIds.length > 0 ? selectedItemIds : [];
+  const useQuerySelection = allMatchingSelected || selectedItemIds.length === 0;
+  const targetCount = useQuerySelection
+    ? Math.max(0, totalItems - (allMatchingSelected ? excludedItemIds.length : 0))
+    : selectedItemIds.length;
+  const selection = useQuerySelection ? {
+    mode: "query" as const,
+    search: activeSearch || undefined,
+    tags: activeTagFilter || undefined,
+    excluded_ids: allMatchingSelected ? excludedItemIds : [],
+  } : undefined;
 
 
   const handleBatchTagger = async () => {
@@ -85,7 +100,8 @@ export default function BatchOperationsPanel({
       });
 
       const request: BatchTaggerRequest = {
-        item_ids: targetItemIds,
+        item_ids: useQuerySelection ? [] : selectedItemIds,
+        selection,
         operation_id: operationId,
         gen_threshold: taggerSettings.categoryThresholds.find((c: any) => c.id === "general")?.addThreshold || 0.45,
         char_threshold: taggerSettings.categoryThresholds.find((c: any) => c.id === "character")?.addThreshold || 0.45,
@@ -138,7 +154,8 @@ export default function BatchOperationsPanel({
 
     try {
       const request: BatchReorderTagsRequest = {
-        item_ids: targetItemIds,
+        item_ids: useQuerySelection ? [] : selectedItemIds,
+        selection,
         category_order: categoryOrder,
         operation_id: operationId,
       };
@@ -182,7 +199,8 @@ export default function BatchOperationsPanel({
 
     try {
       const request: BatchReplaceTagRequest = {
-        item_ids: targetItemIds,
+        item_ids: useQuerySelection ? [] : selectedItemIds,
+        selection,
         operation_id: operationId,
         from_tag: fromTag,
         to_tag: toTag,
@@ -290,10 +308,10 @@ export default function BatchOperationsPanel({
 
       {/* Target Info */}
       <div className="text-xs text-gray-400">
-        {selectedItemIds.length > 0 ? (
+        {!useQuerySelection ? (
           <span>Target: {selectedItemIds.length} selected items</span>
         ) : (
-          <span>Target: All {totalItems} items</span>
+          <span>Target: {targetCount} matching items</span>
         )}
       </div>
 

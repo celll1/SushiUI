@@ -17,6 +17,10 @@ interface ActionsColumnProps {
   onLoadStatistics: () => Promise<void>;
   onRefresh: () => void;
   selectedItemIds: number[];
+  allMatchingSelected: boolean;
+  excludedItemIds: number[];
+  activeSearch: string;
+  activeTagFilter: string;
   totalItems: number;
   captionProcessingConfig?: any;
   taggerSettings?: any;
@@ -48,6 +52,10 @@ export default function ActionsColumn({
   onLoadStatistics,
   onRefresh,
   selectedItemIds,
+  allMatchingSelected,
+  excludedItemIds,
+  activeSearch,
+  activeTagFilter,
   totalItems,
   captionProcessingConfig,
   taggerSettings,
@@ -121,6 +129,10 @@ export default function ActionsColumn({
         <BatchOperationsPanel
           datasetId={datasetId}
           selectedItemIds={Array.from(selectedItemIds)}
+          allMatchingSelected={allMatchingSelected}
+          excludedItemIds={excludedItemIds}
+          activeSearch={activeSearch}
+          activeTagFilter={activeTagFilter}
           totalItems={totalItems}
           captionProcessingConfig={captionProcessingConfig}
           taggerSettings={taggerSettings}

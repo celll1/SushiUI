@@ -8199,6 +8199,7 @@ export const removeItemReferenceImage = async (
 
 export interface BatchTaggerRequest {
   item_ids: number[];
+  selection?: DatasetBatchSelection;
   operation_id?: string;
   gen_threshold?: number;
   char_threshold?: number;
@@ -8210,16 +8211,25 @@ export interface BatchTaggerRequest {
 
 export interface BatchReorderTagsRequest {
   item_ids: number[];
+  selection?: DatasetBatchSelection;
   category_order: string[];
   operation_id?: string;
 }
 
 export interface BatchReplaceTagRequest {
   item_ids: number[];
+  selection?: DatasetBatchSelection;
   from_tag: string;
   to_tag: string;
   normalize_match?: boolean;
   operation_id?: string;
+}
+
+export interface DatasetBatchSelection {
+  mode: "query";
+  search?: string;
+  tags?: string;
+  excluded_ids: number[];
 }
 
 export interface BatchOperationResponse {

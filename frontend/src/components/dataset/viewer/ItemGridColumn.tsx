@@ -10,6 +10,8 @@ import { useTagSuggestions } from "@/contexts/TagSuggestionsContext";
 interface ItemGridColumnProps {
   items: DatasetGridItem[];
   selectedItems: Set<number>;
+  allMatchingSelected: boolean;
+  excludedItems: Set<number>;
   currentItem: DatasetGridItem | null;
   search: string;
   tagFilter: string;
@@ -53,6 +55,8 @@ const getCategoryColor = (category: string): string => {
 export default function ItemGridColumn({
   items,
   selectedItems,
+  allMatchingSelected,
+  excludedItems,
   currentItem,
   search,
   tagFilter,
@@ -236,7 +240,7 @@ export default function ItemGridColumn({
             </button>
             <button
               onClick={onDeselectAll}
-              disabled={selectedItems.size === 0}
+              disabled={!allMatchingSelected && selectedItems.size === 0}
               className="p-1 hover:bg-gray-700 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
               title="Deselect All"
             >
@@ -244,9 +248,9 @@ export default function ItemGridColumn({
             </button>
           </div>
         </div>
-        {selectedItems.size > 0 && (
+        {(allMatchingSelected || selectedItems.size > 0) && (
           <div className="text-xs text-blue-400 mb-2">
-            {selectedItems.size} selected
+            {allMatchingSelected ? `${total - excludedItems.size} selected` : `${selectedItems.size} selected`}
           </div>
         )}
 
@@ -340,7 +344,7 @@ export default function ItemGridColumn({
                 >
                   <input
                     type="checkbox"
-                    checked={selectedItems.has(item.id)}
+                    checked={allMatchingSelected ? !excludedItems.has(item.id) : selectedItems.has(item.id)}
                     onChange={() => {}}
                     className="w-4 h-4 cursor-pointer"
                   />

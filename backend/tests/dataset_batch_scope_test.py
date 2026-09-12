@@ -4,8 +4,8 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from api.batch_operations import BatchReplaceTagRequest, batch_replace_tag
-from core.datasets.batch_jobs import BatchJobRegistry, resolve_dataset_item_ids
+from api.batch_operations import BatchReplaceTagRequest, BatchSelection, batch_replace_tag
+from core.datasets.batch_jobs import BatchJobRegistry, resolve_dataset_item_ids, resolve_dataset_selection
 from database.models import Dataset, DatasetBase, DatasetCaption, DatasetItem
 
 
@@ -70,6 +70,36 @@ def test_batch_query_cannot_mutate_an_item_in_another_dataset(tmp_path):
     assert result.updated_count == 0
     assert result.skipped_count == 1
     assert caption.content == "old"
+
+
+def test_query_selection_applies_filters_and_exclusions_on_the_server(tmp_path):
+    db = _session(tmp_path)
+    dataset = _dataset(db, "first")
+    kept = _item(db, dataset, tmp_path, "wanted_a", "cat, solo")
+    excluded = _item(db, dataset, tmp_path, "wanted_b", "cat, solo")
+    _item(db, dataset, tmp_path, "other", "cat, solo")
+    _item(db, dataset, tmp_path, "wanted_c", "dog")
+    selection = BatchSelection(
+        mode="query",
+        search="wanted",
+        tags="cat",
+        excluded_ids=[excluded.id],
+    )
+
+    assert resolve_dataset_selection(db, dataset.id, [], selection) == [kept.id]
+
+
+def test_query_selection_rejects_foreign_exclusions(tmp_path):
+    db = _session(tmp_path)
+    first = _dataset(db, "first")
+    second = _dataset(db, "second")
+    foreign = _item(db, second, tmp_path, "foreign", "tag")
+    selection = BatchSelection(
+        mode="query", excluded_ids=[foreign.id]
+    )
+
+    with pytest.raises(ValueError, match=str(foreign.id)):
+        resolve_dataset_selection(db, first.id, [], selection)
 
 
 def test_cancellation_is_scoped_by_operation_and_dataset():

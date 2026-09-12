@@ -1,7 +1,7 @@
 """
 Batch operations for dataset items (tagger inference, tag reordering, tag replacement)
 """
-from typing import Callable, List, Dict, Any, Optional
+from typing import Callable, List, Dict, Any, Optional, Literal
 from pydantic import BaseModel, Field
 import asyncio
 from datetime import datetime
@@ -9,9 +9,18 @@ from datetime import datetime
 from core.datasets.sidecars import write_indexed_caption
 from utils.taglist_cache import taglist_cache
 from config.settings import settings
+from api.param_defaults import DATASET_DEFAULTS
+
+
+class BatchSelection(BaseModel):
+    mode: Literal["query"]
+    search: Optional[str] = None
+    tags: Optional[str] = None
+    excluded_ids: List[int] = Field(default_factory=list)
 
 class BatchTaggerRequest(BaseModel):
     item_ids: List[int]
+    selection: Optional[BatchSelection] = DATASET_DEFAULTS["batch_selection"]
     operation_id: Optional[str] = Field(default=None, max_length=128)
     gen_threshold: float = 0.45
     char_threshold: float = 0.45
@@ -22,11 +31,13 @@ class BatchTaggerRequest(BaseModel):
 
 class BatchReorderTagsRequest(BaseModel):
     item_ids: List[int]
+    selection: Optional[BatchSelection] = DATASET_DEFAULTS["batch_selection"]
     category_order: List[str]
     operation_id: Optional[str] = Field(default=None, max_length=128)
 
 class BatchReplaceTagRequest(BaseModel):
     item_ids: List[int]
+    selection: Optional[BatchSelection] = DATASET_DEFAULTS["batch_selection"]
     from_tag: str
     to_tag: str
     normalize_match: bool = True  # Use normalized matching (whitespace, underscores)

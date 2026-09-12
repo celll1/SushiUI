@@ -20552,6 +20552,20 @@ components:
           default: false
           description: Persist the caption to its existing TXT/JSON sidecar before committing the DB update
 
+    DatasetBatchSelection:
+      type: object
+      required: [mode, excluded_ids]
+      properties:
+        mode: {type: string, enum: [query]}
+        search: {type: string, nullable: true}
+        tags:
+          type: string
+          nullable: true
+          description: Comma-separated exact tags; every tag must be present
+        excluded_ids:
+          type: array
+          items: {type: integer}
+
     BatchTaggerRequest:
       type: object
       required: [item_ids]
@@ -20566,6 +20580,10 @@ components:
           items:
             type: integer
           description: Item IDs to process; empty means all items in the dataset
+        selection:
+          allOf: [{$ref: '#/components/schemas/DatasetBatchSelection'}]
+          nullable: true
+          description: Server-resolved query selection; takes precedence over item_ids
         gen_threshold:
           type: number
           default: 0.45
@@ -20599,6 +20617,10 @@ components:
           type: array
           items:
             type: integer
+        selection:
+          allOf: [{$ref: '#/components/schemas/DatasetBatchSelection'}]
+          nullable: true
+          description: Server-resolved query selection; takes precedence over item_ids
         category_order:
           type: array
           items:
@@ -20616,6 +20638,10 @@ components:
           type: array
           items:
             type: integer
+        selection:
+          allOf: [{$ref: '#/components/schemas/DatasetBatchSelection'}]
+          nullable: true
+          description: Server-resolved query selection; takes precedence over item_ids
         from_tag:
           type: string
         to_tag:

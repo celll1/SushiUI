@@ -2210,6 +2210,7 @@ DATASET_DEFAULTS: Dict[str, Any] = {
     "page": 1,
     "page_size": 50,
     "include_tag_statistics": True,
+    "batch_selection": None,
 }
 
 

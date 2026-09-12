@@ -7,7 +7,7 @@ support) alongside the callable that runs its kernel. ``resolve_backend``
 (``config.py``) reads these descriptors to decide when a requested backend must
 be downgraded to native; the conduit (``dispatch.py``) reads ``fn`` to run it.
 
-Adding a future backend (e.g. TQ) is a ONE-branch change: add one
+Adding a backend is a ONE-branch change: add one
 ``AttentionBackend`` entry here and one callable in ``backends.py``. No conduit
 edits are required.
 """
@@ -124,39 +124,8 @@ BACKENDS = {
         supports_dropout=False,
         varlen_fn=_sage_attn_varlen,
     ),
-    # tq:
-    #   * Triton-Quantized attention with a full (Triton) backward -> trainable=True.
-    #   * No custom mask (sage-compatible API) -> supports_mask=False.
-    #   * head_dim must be a supported power of 2: {64, 128}; other dims (SD1.5
-    #     40/80/160, Ideogram4 256, MiniT2I l16 52) are refused -> native.
-    #     Confirmed against the installed tq_attention kernel (256 unsupported,
-    #     non-power-of-2 rejected by RHT).
-    #   * Broadcasts unequal q/kv heads (GQA verified) -> supports_gqa=True.
-    #   * Only reachable on conduit-routed paths; the diffusers set_attention_backend
-    #     path (FLUX.2 default processors, SDXL/FLUX.2 training) has no tq registry
-    #     entry, so to_diffusers_backend('tq') falls back to native with a warning.
-    #
-    # Per-architecture tq routing (inference / training; see
-    # tq-attention/RELEASE_NOTE_attention_unification.md for file:line evidence):
-    #   SDXL/SD1.5  : tq(SDXL 64) / native(SD1.5 40/80/160)  |  native (diffusers
-    #                 set_attention_backend -> native for training).
-    #   Z-Image     : tq / tq        (conduit; head_dim 128, GQA).
-    #   FLUX.2      : native / native (diffusers dispatch; no tq entry).
-    #   Ideogram4   : native / native (diffusers dispatch; also head_dim 256).
-    #   Lens        : tq / tq        (conduit; head_dim 64).
-    #   MiniT2I     : tq(b16 64) / native(l16 52->56 padded)  | same for training.
-    #   Anima       : tq / tq        (model-local conduit routing, including
-    #                 the LLM adapter; masked calls resolve to native).
-    #   MiniMax-H3  : conduit-routed (vendored transformer calls
-    #                 dispatch_attention with the request's attention_type).
-    #                 head_dim 128, equal q/kv heads, no mask -- one packed
-    #                 self-attention document -- so NO capability guard fires and
-    #                 flash / sage / tq all run rather than downgrading. sage is
-    #                 refused in TRAINING mode by the shared MODE guard, which is
-    #                 the only downgrade this arch can hit.
-    #   SenseNova   : conduit-routed, head_dim 128, GQA (32 q / 8 kv heads).
-    #                 Flash, Sage and TQ accept that grouping; native currently
-    #                 pre-expands K/V according to the measured local policy.
+    # TQ's RHT requires head_dim 64 or 128; masks and other dimensions must use
+    # native. Architecture routing belongs in docs/guides/MODEL_FACTS.md.
     "tq": AttentionBackend(
         name="tq",
         fn=_tq_attn,

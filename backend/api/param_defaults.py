@@ -2469,9 +2469,9 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # Attention implementation selector for training (which REGISTRY runs the
     # attention kernel; orthogonal to attention_backend, which selects WHICH
     # kernel). "conduit" routes through the unified backend/core/attention
-    # dispatch (new default; enables the tq backend in SDXL/SD1.5 training).
+    # dispatch (new default; enables tq in SDXL and FLUX.2 training).
     # "diffusers" reproduces the pre-migration set_attention_backend path
-    # byte-for-byte. TRAINING-ONLY this pass (FLUX.2/Ideogram4 not yet migrated).
+    # byte-for-byte where supported; Ideogram4 remains diffusers-owned.
     "attention_impl": "conduit",
     # The repaired Triton path preserves deterministic gradients and TQ's
     # compact backward state; FA2 hybrid remains an explicit speed trade-off.

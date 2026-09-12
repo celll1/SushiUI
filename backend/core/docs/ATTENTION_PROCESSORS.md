@@ -76,7 +76,9 @@ training iteration.
   mask/layout contract.
 - Treat `sage` as an inference-quality tradeoff, not a tolerance-equivalent
   training backend.
-- Use `tq` only on conduit-routed paths. Masked calls resolve to native.
+- Use `tq` only on conduit-routed paths. Masked calls resolve to native. Training
+  defaults to the deterministic Triton backward; FA2 hybrid policies trade a
+  larger transient backward allocation and repeatability for shape-dependent speed.
 - Use `h3_sol_attn` only for MiniMax-H3 inference. It is independent of the dense
   backend used during configured warm-up steps/layers and prefix-query restoration.
 

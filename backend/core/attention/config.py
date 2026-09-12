@@ -260,13 +260,12 @@ _DIFFUSERS_MAP = {
 def to_diffusers_backend(backend: Optional[str]) -> str:
     """Map our canonical backend string to the diffusers registry string.
 
-    Used by the FLUX.2 / SDXL diffusers ``set_attention_backend`` path so the
-    diffusers registry and our conduit share ONE source string.
+    Used by legacy diffusers-registry paths so they and the conduit share one
+    source string.
 
     Conduit-only backends (e.g. ``tq``) have no diffusers registry equivalent, so
-    they collapse to ``native`` here with a one-time warning -- the diffusers path
-    (FLUX.2 default processors, SDXL/FLUX.2 training) cannot run them. Such
-    backends are only effective on conduit-routed paths.
+    they collapse to ``native`` here with a one-time warning. Such backends are
+    effective only when the selected implementation is conduit-routed.
     """
     norm = normalize_backend(backend)
     mapped = _DIFFUSERS_MAP.get(norm, "native")

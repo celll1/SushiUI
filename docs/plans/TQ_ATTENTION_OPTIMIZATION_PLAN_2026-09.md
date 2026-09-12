@@ -64,3 +64,20 @@ the resulting speed, numerical behavior, and memory use on the RTX 6000 Ada.
   the installed torch/Triton/FA2 versions.
 
 No server restart or frontend build is part of this work.
+
+## Result
+
+- The BF16 output-gradient staging was fused into the existing delta preprocess;
+  all 28 TQ CUDA backward tests pass.
+- The representative BF16 image case improved from approximately 10.75 ms to
+  4.079 ms total. The repaired 3.119 ms backward matched the 3.374 ms FP16
+  control within run variance.
+- FA2 hybrid was 9-14% faster for image, video, and GQA cases, but slower for
+  short and causal cases and used substantially more transient backward memory.
+  Triton therefore remains the default and hybrid modes are explicit choices.
+- The forward fusion was rejected: measured preprocessing share shrinks with
+  sequence length, while combining dense RHT reduction with quantization would
+  change rounding without evidence of a net kernel-level win.
+- The reproducible matrix and raw table are in
+  `tq-attention/benchmarks/bench_bf16_backward_fix.py` and
+  `tq-attention/benchmarks/results_bf16_backward_fix.md`.

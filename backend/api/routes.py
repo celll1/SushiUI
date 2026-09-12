@@ -13589,6 +13589,7 @@ async def scan_dataset(
         probe_video_metadata,
         probe_audio_metadata,
         extract_poster_frame,
+        relative_group_key,
     )
     image_exts = {".png", ".jpg", ".jpeg", ".webp"}
     media_exts = image_exts | video_exts | audio_exts
@@ -13895,6 +13896,7 @@ async def scan_dataset(
                 continue
 
             image_path = main_images[0]
+            group_key = relative_group_key(dataset.path, dir_path, base_name)
 
             _t_item = time.time()
             try:
@@ -13917,8 +13919,8 @@ async def scan_dataset(
                         except OSError:
                             pass
                     # Also check suffix captions
-                    if not any_caption_updated and base_name in suffix_captions_by_stem:
-                        for _, sp in suffix_captions_by_stem[base_name]:
+                    if not any_caption_updated and group_key in suffix_captions_by_stem:
+                        for _, sp in suffix_captions_by_stem[group_key]:
                             try:
                                 if os.path.getmtime(sp) > last_scanned_ts:
                                     any_caption_updated = True
@@ -14214,8 +14216,8 @@ async def scan_dataset(
                         print(f"[Dataset Scan] Failed to read caption {caption_path}: {e}")
 
                 _ts = time.time()
-                if base_name in suffix_captions_by_stem:
-                    for suffix, suffix_path in suffix_captions_by_stem[base_name]:
+                if group_key in suffix_captions_by_stem:
+                    for suffix, suffix_path in suffix_captions_by_stem[group_key]:
                         try:
                             _, sext = os.path.splitext(suffix_path)
                             if sext.lower() == '.txt':

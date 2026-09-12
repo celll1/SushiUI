@@ -306,7 +306,8 @@ def scan_directory_structure(
     all_files = _collect_files(dir_path, recursive, max_depth, should_cancel=should_cancel)
 
     # Pass 1: Identify image stems
-    image_stems = {}  # stem -> [{"path", "role", "group_name"}]
+    image_stems = {}  # dataset-relative group -> media entries
+    groups_by_directory: Dict[str, List[Tuple[str, str]]] = {}
     for fpath in all_files:
         ext = os.path.splitext(fpath)[1].lower()
         if ext not in MEDIA_EXTS:
@@ -328,15 +329,21 @@ def scan_directory_structure(
                     role = "target"
                     break
 
-        if group_name not in image_stems:
-            image_stems[group_name] = []
-        image_stems[group_name].append({
+        directory = os.path.dirname(fpath)
+        group_key = relative_group_key(dir_path, directory, group_name)
+        if group_key not in image_stems:
+            image_stems[group_key] = []
+            groups_by_directory.setdefault(os.path.normcase(directory), []).append(
+                (group_name, group_key)
+            )
+        image_stems[group_key].append({
             "path": fpath,
             "role": role,
             "original_stem": stem,
         })
 
-    sorted_groups = sorted(image_stems.keys(), key=len, reverse=True)
+    for directory_groups in groups_by_directory.values():
+        directory_groups.sort(key=lambda pair: len(pair[0]), reverse=True)
 
     # Pass 2: Associate text/JSON files with image stems
     scan_groups = {}
@@ -355,8 +362,10 @@ def scan_directory_structure(
         stem = _get_stem(fpath)
 
         # Try exact match first
-        if stem in image_stems:
-            scan_groups[stem]["captions"].append({
+        directory = os.path.dirname(fpath)
+        exact_key = relative_group_key(dir_path, directory, stem)
+        if exact_key in image_stems:
+            scan_groups[exact_key]["captions"].append({
                 "path": fpath,
                 "suffix": "",
                 "ext": ext,
@@ -365,10 +374,10 @@ def scan_directory_structure(
 
         # Try prefix match (longest match wins)
         matched = False
-        for group_name in sorted_groups:
+        for group_name, group_key in groups_by_directory.get(os.path.normcase(directory), []):
             if stem.startswith(group_name + "_"):
                 suffix = stem[len(group_name) + 1:]
-                scan_groups[group_name]["captions"].append({
+                scan_groups[group_key]["captions"].append({
                     "path": fpath,
                     "suffix": suffix,
                     "ext": ext,
@@ -534,3 +543,11 @@ def _collect_files(
 def _get_stem(filepath: str) -> str:
     """Get filename stem (without extension) from full path."""
     return os.path.splitext(os.path.basename(filepath))[0]
+
+
+def relative_group_key(root: str, directory: str, stem: str) -> str:
+    """Identify equal basenames independently in separate dataset folders."""
+    relative_dir = os.path.relpath(directory, root)
+    if relative_dir == ".":
+        return stem
+    return Path(relative_dir, stem).as_posix()

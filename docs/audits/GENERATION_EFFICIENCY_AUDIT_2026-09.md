@@ -217,13 +217,13 @@ resident-object bookkeeping need dedicated tests before implementation.
 
 | Architecture | Static result |
 |---|---|
-| SD1.5 / SDXL | Common no-grad, demand-driven previews/metrics, non-copying preview views and schedule snapshots implemented; numerical loops remain separate |
-| Z-Image | Diagnostics, preview work and scalar synchronization reduced; bounded runtime-FP8 reuse implemented |
-| Flux2 | Preview work and scalar synchronization reduced; bounded runtime-FP8 reuse implemented with attention implementation/backend in its identity |
-| Anima | Preview/metric demand, scalar snapshots and dual-callback composition implemented |
-| Lens | Preview/metric demand, scalar snapshots and duplicate terminal-flush removal implemented |
+| SD1.5 / SDXL | Common no-grad, demand-driven previews/metrics, schedule snapshots and stable text-conditioning reuse implemented; mutable PEFT state bypasses reuse |
+| Z-Image | Diagnostics, preview work and scalar synchronization reduced; bounded runtime-FP8 and full CFG/NAG conditioning reuse implemented |
+| Flux2 | Preview work and scalar synchronization reduced; bounded runtime-FP8 and full CFG/NAG conditioning reuse implemented |
+| Anima | Preview/metric demand, scalar snapshots, dual-callback composition and full CFG/NAG conditioning reuse implemented |
+| Lens | Preview/metric demand, scalar snapshots, duplicate terminal-flush removal and prompt/NAG conditioning reuse implemented |
 | Krea2 | Preview/metric demand, scalar snapshots and duplicate terminal-flush removal implemented |
-| Ideogram 4 | Preview/metric demand, scalar snapshots and duplicate terminal-flush removal implemented |
+| Ideogram 4 | Preview/metric demand, scalar snapshots, duplicate terminal-flush removal and prompt/NAG conditioning reuse implemented |
 | MiniT2I | Predicted-clean sampler state retained; schedule synchronization consolidated |
 | SenseNova U1.5 | Existing callback-conditional preview retained; schedule synchronization consolidated |
 | LTX-2.3 | Diffusers pipeline owns most denoising; common no-grad boundary is defensive; phase staging requires GPU measurement |
@@ -246,7 +246,7 @@ measured. They are deliberately not enabled by default in this static pass.
 
 | Candidate | Disposition | Gate before implementation |
 |---|---|---|
-| Cross-generation prompt-embedding cache | Expanded with a shared eight-entry CPU LRU to Krea2 and MiniT2I; MiniMax-H3 retains its specialized cache. | Live encoder identity, model/adapter/quantization identity, tokenizer settings, all encoded prompt variants, sequence length, dtype and device are keyed. Hits skip both the encoder forward and its GPU stage. |
+| Cross-generation prompt-conditioning cache | Shared CPU LRU covers the image architectures whose conditioning has an immutable tensor boundary; MiniMax-H3 retains its specialized cache. | Live encoder identity and complete architecture inputs are keyed. Mutable PEFT state bypasses SD reuse. SenseNova's mutable prefix KV state and the pipeline-private video/audio paths remain uncached. |
 | Keep VAE resident between image encode and final decode | Implemented through the existing opt-in `keep_models_hot` budget policy; no second switch was added. | SDXL img2img produced pixel-identical output. The measured request used 7.180 GB peak allocated versus 6.586 GB cold and reduced recorded generation time from 1.826 s to 0.682 s. |
 | Asynchronous preview decode | Rejected. The existing message contract couples progress, preview and CFG metrics for one step. GPU decode shares the generation stream; deferring only JPEG/base64 still cannot emit that message until conversion completes. | Overlap would require a second CUDA stream plus latent retention, or split/stale WebSocket messages. Both add memory and change observable ordering for negligible expected gain after demand-driven preview landed. |
 | Remove phase-boundary `empty_cache()` | Rejected generally; the VAE keep-hot path skips only the offload/flush pair it makes unnecessary. | Mutually exclusive multi-GB stages rely on cache release for fragmentation tolerance. There is no architecture-neutral equivalent removal. |
@@ -285,8 +285,9 @@ the equivalent-refactoring implementation scope:
 9. **Completed:** make keep-hot headroom incremental over the current resident
    set and honor its VAE decision through intermediate encode phases.
 10. **Completed to the safe boundary:** add bounded cross-generation prompt
-    conditioning reuse for Krea2 and MiniT2I. Retain MiniMax-H3's specialized
-    cache and reject approximate keys on the remaining architectures.
+    conditioning reuse for Krea2, MiniT2I, Flux2, Anima, Lens, Ideogram 4,
+    Z-Image and stable SD1.5/SDXL text conditioning. Retain MiniMax-H3's
+    specialized cache and reject mutable or pipeline-private state.
 
 ## CPU numerical verification follow-up
 
@@ -306,7 +307,9 @@ The remaining CPU-capable proof is handled separately from the GPU backlog:
    equality.
 
 The combined CPU suite also re-runs callback demand/CFG equivalence, MiniMax-H3
-prompt-cache isolation and runtime-FP8 cache lifecycle checks: 77 tests pass.
+prompt-cache isolation and runtime-FP8 cache lifecycle checks. Focused prompt
+cache tests cover independent returns, eviction, owner lifetime, key policy and
+staging bypass for every newly supported family.
 
 ## GPU verification backlog
 
@@ -321,13 +324,12 @@ eviction, source restoration, block-swap offload, runtime-INT8 discard and the
 four Flux2/Z-Image text-encoder/transformer move paths; the real model sizes and
 host allocator behavior still require observation.
 
-The static pass intentionally does not load a real generation checkpoint.
-For a candidate branch, use identical model/component/adapters, seed, prompt,
-dimensions, scheduler and preview settings. Compare saved output hashes first;
-then use `generation_time`, phase timings, `peak_vram_gb` and
-`peak_vram_reserved_gb` from each output's metadata. A single cold run is not
-evidence for allocator changes: record warm runs separately and preserve the
-per-run sequence so reservation growth is visible.
+This prompt-cache refactor did not load additional real checkpoints. Existing
+SDXL measurement covers the VAE-residency change; broader architecture runtime
+acceptance comes from user generation feedback. For a benchmark, keep
+model/components/adapters, seed, prompt, dimensions, scheduler and preview
+settings identical. Compare output hashes first, then phase timings and both
+allocated and reserved peak VRAM. Record cold and warm runs separately.
 
 ## GPU completion plan
 
@@ -354,24 +356,27 @@ does not exceed noise or when it moves the cost to a less acceptable resource.
    synchronization. Demand-driven preview already removes work on unrequested
    steps, so the remaining overlap candidate is not an equivalent low-risk
    optimization.
-4. **Cross-generation prompt embeddings — completed to the safe boundary.** A
-   shared eight-entry CPU LRU now covers Krea2 and MiniT2I. Their encode helpers
-   own both staging and every positive/negative/NAG encode, so a hit can safely
-   skip the entire text-encoder phase. Entries are isolated by a weak reference
-   to the live encoder plus model/adapter/quantization identity, tokenizer
-   settings, cleaned prompt variants, length, dtype and device; returned trees
-   are independent copies.
+4. **Cross-generation prompt conditioning — completed to the safe boundary.**
+   The shared eight-entry CPU LRU now covers Krea2, MiniT2I, Flux2, Anima,
+   Lens, Ideogram 4 and Z-Image. Each architecture-owned helper controls both
+   staging and all positive/negative/NAG encodes, so a complete hit skips the
+   text-encoder phase. Entries use weak owner identity and return independent
+   tensor trees.
 
-   SD1.5/SDXL are excluded because prompt editing, chunking, emphasis,
-   textual-inversion replacement, clip-skip and vision tokens make the current
-   encode result request-stateful. Anima, Flux2, Lens, Z-Image and Ideogram 4
-   stage the encoder outside one or more positive/NAG/NegPip encode calls, so a
-   local hit cannot yet skip the phase without changing that orchestration.
-   SenseNova may include image-reference conditioning, while LTX-2.3 and the
-   audio pipelines delegate or interleave conditioning with their own pipeline
-   state. Approximate caching on those paths is rejected; MiniMax-H3's existing
-   path-specific cache remains separate because it also owns projection and
-   token-count bookkeeping.
+   SD1.5/SDXL key the encoder pair, tokenizer pair, model revision, custom-TE
+   bridge, prompt pair, emphasis decision, chunk policy, dtype and device.
+   Vision tokens are recomputed after the cached text-only result. Active or
+   installed PEFT state is deliberately uncached because adapter scales can
+   change without replacing the encoder object. Simple complete hits bypass
+   staging; NAG, prompt editing and regional-prompt requests reuse individual
+   results but retain staging unless every required encode can be proven ready.
+
+   SenseNova is not an embedding-cache target: its prefix call returns mutable,
+   resolution- and reference-dependent per-layer KV caches that denoising
+   writes and cleanup frees, with ownership changing under KV ring streaming.
+   LTX-2.3 and the audio pipelines continue to delegate or interleave
+   conditioning with private pipeline state. MiniMax-H3's specialized cache
+   remains separate because it also owns projection and token-count bookkeeping.
 
 The first available real-model probe uses the already loaded SenseNova model;
 other families are tested only when a local checkpoint is available. API

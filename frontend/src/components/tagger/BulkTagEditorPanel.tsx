@@ -20,6 +20,7 @@ interface BulkTagEditorPanelProps {
   selectedImages: BrowserImageEntry[];
   onTagsSaved: (updates: Array<{ relPath: string; hasTags: boolean }>) => void;
   onDeselectAll: () => void;
+  onPendingChange?: (pending: boolean) => void;
 }
 
 export default function BulkTagEditorPanel({
@@ -27,6 +28,7 @@ export default function BulkTagEditorPanel({
   selectedImages,
   onTagsSaved,
   onDeselectAll,
+  onPendingChange,
 }: BulkTagEditorPanelProps) {
   // rel_path → tags loaded from disk
   const [loadedTags, setLoadedTags] = useState<Map<string, string[]>>(new Map());
@@ -196,6 +198,7 @@ export default function BulkTagEditorPanel({
   }, [workspaceId, applying, selectedImages, loadedTags, loadErrors, bulkAdd, bulkRemove, onTagsSaved]);
 
   const hasPending = bulkAdd.size > 0 || bulkRemove.size > 0;
+  useEffect(() => onPendingChange?.(hasPending), [hasPending, onPendingChange]);
 
   return (
     <div className="flex flex-col h-full min-h-0">

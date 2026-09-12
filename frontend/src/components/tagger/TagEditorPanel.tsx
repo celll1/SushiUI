@@ -34,6 +34,7 @@ interface TagEditorPanelProps {
   hasPrev: boolean;
   hasNext: boolean;
   onTagsSaved?: (relPath: string, hasTags: boolean) => void;
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 interface ActionEntry {
@@ -64,8 +65,10 @@ export default function TagEditorPanel({
   hasPrev,
   hasNext,
   onTagsSaved,
+  onDirtyChange,
 }: TagEditorPanelProps) {
   const [tags, setTags] = useState<string[]>([]);
+  const [savedTags, setSavedTags] = useState<string[]>([]);
   const [tagCategories, setTagCategories] = useState<Map<string, string>>(new Map());
   const [inputValue, setInputValue] = useState("");
   const [tagSearch, setTagSearch] = useState("");
@@ -74,6 +77,7 @@ export default function TagEditorPanel({
   const [inferring, setInferring] = useState(false);
   const [inferError, setInferError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [semanticMode, setSemanticMode] = useState(false);
   const [actionHistory, setActionHistory] = useState<ActionEntry[]>([]);
   const [imgLoaded, setImgLoaded] = useState(false);
@@ -83,30 +87,17 @@ export default function TagEditorPanel({
   const [history, setHistory] = useState<string[][]>([[]]);
   const [historyIdx, setHistoryIdx] = useState(0);
 
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tagSuggestionsCtx = useTagSuggestions();
 
-  // Refs that stay current without triggering re-renders — used in unmount flush
-  const dirtyRef = useRef(false);
-  const tagsRef = useRef<string[]>([]);
-  const relPathRef = useRef(image.rel_path); // never changes for a given keyed instance
-  const onTagsSavedRef = useRef(onTagsSaved);
-  useEffect(() => { dirtyRef.current = dirty; }, [dirty]);
-  useEffect(() => { tagsRef.current = tags; }, [tags]);
-  useEffect(() => { onTagsSavedRef.current = onTagsSaved; }, [onTagsSaved]);
-
-  // Flush unsaved changes when the component unmounts (image switch)
+  useEffect(() => onDirtyChange?.(dirty), [dirty, onDirtyChange]);
   useEffect(() => {
-    return () => {
-      if (!dirtyRef.current) return;
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-      const rp = relPathRef.current;
-      const t = tagsRef.current;
-      browserSaveTags(workspaceId, rp, t)
-        .then(() => onTagsSavedRef.current?.(rp, t.length > 0))
-        .catch(() => {});
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!dirty) return;
+      event.preventDefault();
     };
-  }, [workspaceId]);
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [dirty]);
 
   // Resizable split between image and tag editor
   const splitContainerRef = useRef<HTMLDivElement>(null);
@@ -148,6 +139,7 @@ export default function TagEditorPanel({
     setDirty(false);
     setInferError(null);
     setLoadError(null);
+    setSaveError(null);
     setHistory([[]]);
     setHistoryIdx(0);
     setTagCategories(new Map());
@@ -158,6 +150,7 @@ export default function TagEditorPanel({
     browserGetTags(workspaceId, image.rel_path)
       .then(({ tags: loaded }) => {
         setTags(loaded);
+        setSavedTags(loaded);
         setHistory([loaded]);
         setHistoryIdx(0);
         resolveCategories(loaded);
@@ -169,24 +162,30 @@ export default function TagEditorPanel({
       });
   }, [workspaceId, image.rel_path]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-save with debounce
-  useEffect(() => {
-    if (!dirty) return;
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(async () => {
-      setSaving(true);
-      try {
-        await browserSaveTags(workspaceId, image.rel_path, tags);
-        setDirty(false);
-        onTagsSaved?.(image.rel_path, tags.length > 0);
-      } finally {
-        setSaving(false);
-      }
-    }, 500);
-    return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    };
-  }, [workspaceId, tags, dirty, image.rel_path, onTagsSaved]);
+  const handleSave = useCallback(async () => {
+    if (!dirty || saving) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await browserSaveTags(workspaceId, image.rel_path, tags);
+      setSavedTags(tags);
+      setDirty(false);
+      onTagsSaved?.(image.rel_path, tags.length > 0);
+    } catch (error) {
+      setSaveError(String(error));
+    } finally {
+      setSaving(false);
+    }
+  }, [workspaceId, image.rel_path, tags, dirty, saving, onTagsSaved]);
+
+  const handleDiscard = useCallback(() => {
+    setTags(savedTags);
+    setHistory([savedTags]);
+    setHistoryIdx(0);
+    setDirty(false);
+    setActionHistory([]);
+    setSaveError(null);
+  }, [savedTags]);
 
   const pushHistory = useCallback(
     (newTags: string[]) => {
@@ -280,7 +279,8 @@ export default function TagEditorPanel({
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLDivElement>) => {
       if (e.ctrlKey || e.metaKey) {
-        if (e.key === "z") { e.preventDefault(); undo(); }
+        if (e.key.toLowerCase() === "s") { e.preventDefault(); void handleSave(); }
+        else if (e.key === "z") { e.preventDefault(); undo(); }
         else if (e.key === "y") { e.preventDefault(); redo(); }
       } else if (!e.target || (e.target as HTMLElement).tagName !== "INPUT") {
         if (e.key === "ArrowLeft") onPrev();
@@ -295,7 +295,7 @@ export default function TagEditorPanel({
         }
       }
     },
-    [undo, redo, onPrev, onNext, actionHistory, replayAction]
+    [handleSave, undo, redo, onPrev, onNext, actionHistory, replayAction]
   );
 
   const handleInfer = useCallback(async () => {
@@ -323,7 +323,7 @@ export default function TagEditorPanel({
     } finally {
       setInferring(false);
     }
-  }, [modelLoaded, inferring, image.rel_path, tags.length, applyTags, resolveCategories]);
+  }, [workspaceId, modelLoaded, inferring, image.rel_path, tags.length, applyTags, resolveCategories]);
 
   const groupedTags = useMemo((): TagGroupEntry[] => {
     const search = tagSearch.toLowerCase();
@@ -481,6 +481,21 @@ export default function TagEditorPanel({
             {inferring ? "推論中..." : "推論"}
           </button>
           <button
+            onClick={() => void handleSave()}
+            disabled={!dirty || saving}
+            className="px-3 py-1.5 text-sm bg-green-700 hover:bg-green-600 disabled:opacity-40 rounded"
+            title="Ctrl+S"
+          >
+            {saving ? "保存中..." : "保存"}
+          </button>
+          <button
+            onClick={handleDiscard}
+            disabled={!dirty || saving}
+            className="px-2 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-40 rounded"
+          >
+            破棄
+          </button>
+          <button
             onClick={undo}
             disabled={historyIdx <= 0}
             className="px-2 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-40 rounded"
@@ -508,13 +523,18 @@ export default function TagEditorPanel({
             意味分類
           </button>
           <span className="ml-auto text-xs text-gray-500">
-            {saving ? "保存中..." : dirty ? "未保存" : `${tags.length} タグ`}
+            {dirty ? "未保存" : `${tags.length} タグ`}
           </span>
         </div>
 
         {inferError && (
           <p className="text-red-400 text-xs px-2 pt-1 flex-shrink-0">
             推論エラー: {inferError}
+          </p>
+        )}
+        {saveError && (
+          <p className="text-red-400 text-xs px-2 pt-1 flex-shrink-0">
+            保存エラー: {saveError}
           </p>
         )}
 

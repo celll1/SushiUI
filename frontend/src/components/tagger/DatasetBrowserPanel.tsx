@@ -43,6 +43,7 @@ export default function DatasetBrowserPanel({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [primaryId, setPrimaryId] = useState<string | null>(null);
   const [rangeAnchorId, setRangeAnchorId] = useState<string | null>(null);
+  const [editorDirty, setEditorDirty] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterMode>("all");
@@ -83,6 +84,13 @@ export default function DatasetBrowserPanel({
     setPrimaryId(null);
     setRangeAnchorId(null);
   }, []);
+
+  const confirmDiscard = useCallback(() => {
+    if (!editorDirty) return true;
+    if (!window.confirm("未保存のタグ編集を破棄しますか？")) return false;
+    setEditorDirty(false);
+    return true;
+  }, [editorDirty]);
 
   const loadImages = useCallback(
     async (includeTags = false, targetWorkspaceId = workspaceId) => {
@@ -128,6 +136,7 @@ export default function DatasetBrowserPanel({
 
   const handleLoad = useCallback(async () => {
     if (!dirPath.trim()) return;
+    if (!confirmDiscard()) return;
     setLoading(true);
     setLoadError(null);
     let openedWorkspaceId: string;
@@ -147,9 +156,10 @@ export default function DatasetBrowserPanel({
       return;
     }
     await loadImages(needsTagsLoaded(filterQuery), openedWorkspaceId);
-  }, [dirPath, loadImages, filterQuery]);
+  }, [dirPath, loadImages, filterQuery, confirmDiscard]);
 
   const handlePickDirectory = useCallback(async () => {
+    if (!confirmDiscard()) return;
     setPicking(true);
     try {
       const res = await browserPickDirectory();
@@ -163,7 +173,7 @@ export default function DatasetBrowserPanel({
     } finally {
       setPicking(false);
     }
-  }, [loadImages, filterQuery]);
+  }, [loadImages, filterQuery, confirmDiscard]);
 
   // Re-fetch when filter conditions change (debounced 300ms)
   useEffect(() => {
@@ -225,6 +235,7 @@ export default function DatasetBrowserPanel({
   // Multi-select handler
   const handleSelectMulti = useCallback(
     (rel_path: string, { ctrl, shift }: { ctrl: boolean; shift: boolean }) => {
+      if (editorDirty && (rel_path !== primaryId || ctrl || shift) && !confirmDiscard()) return;
       if (shift && rangeAnchorId) {
         const anchorIdx = filteredImages.findIndex((i) => i.rel_path === rangeAnchorId);
         const clickIdx = filteredImages.findIndex((i) => i.rel_path === rel_path);
@@ -253,7 +264,7 @@ export default function DatasetBrowserPanel({
         setRangeAnchorId(rel_path);
       }
     },
-    [filteredImages, rangeAnchorId]
+    [filteredImages, rangeAnchorId, primaryId, editorDirty, confirmDiscard]
   );
 
   // Navigation (single-image mode)
@@ -263,23 +274,26 @@ export default function DatasetBrowserPanel({
 
   const handlePrev = useCallback(() => {
     if (primaryIdx <= 0) return;
+    if (!confirmDiscard()) return;
     const newId = filteredImages[primaryIdx - 1].rel_path;
     setSelectedIds(new Set([newId]));
     setPrimaryId(newId);
     setRangeAnchorId(newId);
-  }, [filteredImages, primaryIdx]);
+  }, [filteredImages, primaryIdx, confirmDiscard]);
 
   const handleNext = useCallback(() => {
     if (primaryIdx < 0 || primaryIdx >= filteredImages.length - 1) return;
+    if (!confirmDiscard()) return;
     const newId = filteredImages[primaryIdx + 1].rel_path;
     setSelectedIds(new Set([newId]));
     setPrimaryId(newId);
     setRangeAnchorId(newId);
-  }, [filteredImages, primaryIdx]);
+  }, [filteredImages, primaryIdx, confirmDiscard]);
 
   // Batch inference
   const handleBatchInfer = useCallback(() => {
     if (!modelLoaded || batchRunning) return;
+    if (!confirmDiscard()) return;
     const rel_paths = filteredImages.map((img) => img.rel_path);
     if (rel_paths.length === 0) return;
     setBatchRunning(true);
@@ -313,7 +327,7 @@ export default function DatasetBrowserPanel({
       }
     );
     batchCtrlRef.current = ctrl;
-  }, [workspaceId, modelLoaded, batchRunning, filteredImages, overwriteMode]);
+  }, [workspaceId, modelLoaded, batchRunning, filteredImages, overwriteMode, confirmDiscard]);
 
   const handleBatchAbort = useCallback(() => {
     batchCtrlRef.current?.abort();
@@ -436,6 +450,7 @@ export default function DatasetBrowserPanel({
               <input
                 type="checkbox"
                 checked={recursive}
+                disabled={editorDirty}
                 onChange={(e) => setRecursive(e.target.checked)}
                 className="accent-blue-500"
               />
@@ -443,6 +458,7 @@ export default function DatasetBrowserPanel({
             </label>
             <select
               value={filter}
+              disabled={editorDirty}
               onChange={(e) => setFilter(e.target.value as FilterMode)}
               className="text-xs bg-gray-800 border border-gray-600 rounded px-1 py-0.5 text-white"
             >
@@ -478,7 +494,10 @@ export default function DatasetBrowserPanel({
 
           {/* Advanced filter panel (collapsible) */}
           {filterPanelOpen && (
-            <div className="flex flex-col gap-2 pt-1 border-t border-gray-700">
+            <fieldset
+              disabled={editorDirty}
+              className="flex flex-col gap-2 pt-1 border-t border-gray-700 disabled:opacity-50"
+            >
               <div>
                 <label className="text-xs text-gray-400 block mb-0.5">
                   含むタグ (AND、*ワイルドカード、&lt;category&gt;)
@@ -563,7 +582,7 @@ export default function DatasetBrowserPanel({
                   </button>
                 )}
               </div>
-            </div>
+            </fieldset>
           )}
 
           {/* Batch inference controls */}
@@ -648,7 +667,7 @@ export default function DatasetBrowserPanel({
           </div>
         ) : selectedIds.size === 1 && primaryImage ? (
           <TagEditorPanel
-            key={primaryImage.rel_path}
+            key={`${workspaceId}:${primaryImage.rel_path}`}
             workspaceId={workspaceId ?? ""}
             image={primaryImage}
             modelLoaded={modelLoaded}
@@ -657,13 +676,17 @@ export default function DatasetBrowserPanel({
             hasPrev={primaryIdx > 0}
             hasNext={primaryIdx < filteredImages.length - 1}
             onTagsSaved={handleTagsSaved}
+            onDirtyChange={setEditorDirty}
           />
         ) : (
           <BulkTagEditorPanel
             workspaceId={workspaceId ?? ""}
             selectedImages={selectedImageObjects}
             onTagsSaved={handleBulkTagsSaved}
-            onDeselectAll={clearSelection}
+            onDeselectAll={() => {
+              if (confirmDiscard()) clearSelection();
+            }}
+            onPendingChange={setEditorDirty}
           />
         )}
       </div>

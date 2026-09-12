@@ -62,7 +62,7 @@ export const OPTIMIZER_CONFIGS: Record<string, {
 
 // A conditional requirement's lift, as a phrase, used wherever a pin is
 // rendered so a conditional entry never reads as an absolute one.
-const describeRequirementLift = (
+export const describeRequirementLift = (
   unless: Record<string, string | number | boolean>
 ): string =>
   Object.entries(unless)

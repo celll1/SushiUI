@@ -25,6 +25,7 @@ import {
   ADAPTER_ALGORITHM_NOTES,
   captionTypeList,
   DEFAULT_PARAMS,
+  describeRequirementLift,
   FORCED_BF16_ARCHITECTURES,
   LR_SCHEDULER_OPTIONS,
   newSenseNovaTaskView,
@@ -557,11 +558,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     return model?.architecture === "sensenova";
   }
 
-  const getModelArchitecture = (modelPath: string): string | undefined => {
+  function getModelArchitecture(modelPath: string): string | undefined {
     if (modelPath.startsWith("scratch:minit2i:")) return "minit2i";
     const model = availableModels.find(m => m.path === modelPath);
     return model?.architecture;
-  };
+  }
 
   // Which end of the timestep_sampling [0,1] range is the CLEAN (noise-free)
   // latent for the selected architecture. Mirrors the backend's single source

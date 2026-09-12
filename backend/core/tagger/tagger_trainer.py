@@ -395,6 +395,42 @@ def _load_training_state(output_dir: str, name: str) -> Optional[Dict[str, Any]]
         return json.load(f)
 
 
+def _write_json_atomic(path: str, payload: Any) -> None:
+    temporary_path = f"{path}.tmp"
+    try:
+        with open(temporary_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False)
+        os.replace(temporary_path, path)
+    finally:
+        if os.path.isfile(temporary_path):
+            try:
+                os.remove(temporary_path)
+            except OSError:
+                pass
+
+
+def _save_danbooru_runtime_state(buffer: Any, output_dir: str, epoch: int) -> None:
+    """Persist resume state; promoted tags cannot be rediscovered after restart."""
+    snapshots = (
+        ("get_metrics", "danbooru_metrics.json"),
+        ("snapshot_dynamic_tags", "danbooru_dynamic_tags.json"),
+        ("snapshot_cooc_active_tags", "danbooru_cooc_active_tags.json"),
+        ("snapshot_query_tags", "danbooru_query_tags.json"),
+        ("snapshot_epoch_progress", "danbooru_epoch_progress.json"),
+    )
+    for method_name, filename in snapshots:
+        method = getattr(buffer, method_name, None)
+        if method is None:
+            continue
+        try:
+            payload = method()
+            if method_name == "snapshot_epoch_progress":
+                payload["epoch"] = epoch
+            _write_json_atomic(os.path.join(output_dir, filename), payload)
+        except Exception:
+            continue
+
+
 def _save_optimizer_state(optimizer: Any, output_dir: str, name: str) -> None:
     """Save optimizer state dict to <name>_optimizer.pt."""
     path = os.path.join(output_dir, f"{name}_optimizer.pt")
@@ -481,6 +517,45 @@ def _save_ood_reference(
         accumulator.save_reservoir(reservoir_path)
     except Exception as _e:
         print(f"[TaggerTrainer] WARNING: could not save ood_reference for {name}: {_e}")
+
+
+def _save_checkpoint_artifacts(
+    tag_metrics_accumulator: Any,
+    ood_accumulator: Any,
+    vocabulary: Any,
+    output_dir: str,
+    name: str,
+    *,
+    epoch_boundary: bool,
+    save_tag_metrics: bool,
+    hard_lo: float,
+    hard_hi: float,
+    calib_method: str,
+    calib_eps: float,
+    calib_prior_strength: float,
+    save_ood_reference: bool,
+) -> None:
+    """Save the vocabulary and inference sidecars paired with a checkpoint."""
+    _save_vocabulary_snapshot(vocabulary, output_dir, name)
+    _save_tag_metrics(
+        tag_metrics_accumulator,
+        output_dir,
+        name,
+        vocabulary,
+        epoch_boundary=epoch_boundary,
+        save_enabled=save_tag_metrics,
+        hard_lo=hard_lo,
+        hard_hi=hard_hi,
+        calib_method=calib_method,
+        calib_eps=calib_eps,
+        calib_prior_strength=calib_prior_strength,
+    )
+    _save_ood_reference(
+        ood_accumulator,
+        output_dir,
+        name,
+        save_enabled=save_ood_reference,
+    )
 
 
 def _resolve_checkpoint_vocab_path(output_dir: str, ckpt_name: str) -> Optional[str]:
@@ -596,15 +671,7 @@ def _load_optimizer_state(
 
 
 def _prune_step_checkpoints(output_dir: str, keep_last_n: int) -> None:
-    """Delete oldest step-based checkpoints, keeping the most recent *keep_last_n*.
-
-    Each checkpoint consists of three files:
-      step_XXXXXX.safetensors
-      step_XXXXXX_state.json
-      step_XXXXXX_optimizer.pt
-
-    Only step_* checkpoints are pruned; 'latest' and 'best_f1' are never touched.
-    """
+    """Delete complete old step bundles; latest and best_f1 are never touched."""
     if keep_last_n <= 0:
         return
 
@@ -618,7 +685,15 @@ def _prune_step_checkpoints(output_dir: str, keep_last_n: int) -> None:
     to_delete = step_names[:-keep_last_n] if len(step_names) > keep_last_n else []
 
     for _, name in to_delete:
-        for suffix in (".safetensors", "_state.json", "_optimizer.pt", "_vocabulary.json"):
+        for suffix in (
+            ".safetensors",
+            "_metadata.json",
+            "_state.json",
+            "_optimizer.pt",
+            "_vocabulary.json",
+            "_tag_metrics.npz",
+            "_ood_ref.npz",
+        ):
             path = os.path.join(output_dir, f"{name}{suffix}")
             if os.path.isfile(path):
                 os.remove(path)
@@ -1108,6 +1183,23 @@ class TaggerTrainer:
         _save_ood_ref_enabled = bool(cfg.get("save_ood_reference", True))
         _ood_emb_acc = OodEmbeddingAccumulator(max_samples=4000)
 
+        def _save_artifacts(name: str, epoch_boundary: bool) -> None:
+            _save_checkpoint_artifacts(
+                _tag_metrics_acc,
+                _ood_emb_acc,
+                self.vocabulary,
+                self.output_dir,
+                name,
+                epoch_boundary=epoch_boundary,
+                save_tag_metrics=_save_tag_metrics_enabled,
+                hard_lo=_hard_lo,
+                hard_hi=_hard_hi,
+                calib_method=_calib_method,
+                calib_eps=_calib_eps,
+                calib_prior_strength=_calib_prior_strength,
+                save_ood_reference=_save_ood_ref_enabled,
+            )
+
         # Training state
         best_f1         = 0.0
         best_threshold  = 0.5
@@ -1459,69 +1551,9 @@ class TaggerTrainer:
                         "progress": global_step / total_steps,
                     })
 
-                    # Snapshot Danbooru metrics to JSON (for the frontend panel)
                     _db_buf = getattr(train_loader, "_buffer", None)
                     if _db_buf is not None and hasattr(_db_buf, "get_metrics"):
-                        try:
-                            _m = _db_buf.get_metrics()
-                            _mp = os.path.join(self.output_dir, "danbooru_metrics.json")
-                            _tmp = _mp + ".tmp"
-                            with open(_tmp, "w", encoding="utf-8") as _mf:
-                                json.dump(_m, _mf, ensure_ascii=False)
-                            os.replace(_tmp, _mp)
-                        except Exception:
-                            pass
-                        # Persist the dynamic new-tag query list so it survives a
-                        # resume (the surveyor can't rediscover already-in-vocab
-                        # tags — see initial_dynamic_tags).
-                        if hasattr(_db_buf, "snapshot_dynamic_tags"):
-                            try:
-                                _dyn = _db_buf.snapshot_dynamic_tags()
-                                _dp = os.path.join(self.output_dir, "danbooru_dynamic_tags.json")
-                                _dtmp = _dp + ".tmp"
-                                with open(_dtmp, "w", encoding="utf-8") as _df:
-                                    json.dump(_dyn, _df, ensure_ascii=False)
-                                os.replace(_dtmp, _dp)
-                            except Exception:
-                                pass
-                        # Persist the cooc active-collection list (same rationale).
-                        if hasattr(_db_buf, "snapshot_cooc_active_tags"):
-                            try:
-                                _ct = _db_buf.snapshot_cooc_active_tags()
-                                _cp = os.path.join(self.output_dir, "danbooru_cooc_active_tags.json")
-                                _ctmp = _cp + ".tmp"
-                                with open(_ctmp, "w", encoding="utf-8") as _cf:
-                                    json.dump(_ct, _cf, ensure_ascii=False)
-                                os.replace(_ctmp, _cp)
-                            except Exception:
-                                pass
-                        # Persist the resolved Query collection pool (per-tag
-                        # collection of query-resolved tags continues across resume).
-                        if hasattr(_db_buf, "snapshot_query_tags"):
-                            try:
-                                _qt = _db_buf.snapshot_query_tags()
-                                _qp = os.path.join(self.output_dir, "danbooru_query_tags.json")
-                                _qtmp = _qp + ".tmp"
-                                with open(_qtmp, "w", encoding="utf-8") as _qf:
-                                    json.dump(_qt, _qf, ensure_ascii=False)
-                                os.replace(_qtmp, _qp)
-                            except Exception:
-                                pass
-                        # Persist per-epoch collection progress (collect_count +
-                        # exhausted_tags) tagged with the current epoch, so a
-                        # mid-epoch resume INTO THE SAME epoch continues collection
-                        # rather than re-collecting already-collected tags.
-                        if hasattr(_db_buf, "snapshot_epoch_progress"):
-                            try:
-                                _ep = _db_buf.snapshot_epoch_progress()
-                                _ep["epoch"] = epoch
-                                _epp = os.path.join(self.output_dir, "danbooru_epoch_progress.json")
-                                _eptmp = _epp + ".tmp"
-                                with open(_eptmp, "w", encoding="utf-8") as _epf:
-                                    json.dump(_ep, _epf, ensure_ascii=False)
-                                os.replace(_eptmp, _epp)
-                            except Exception:
-                                pass
+                        _save_danbooru_runtime_state(_db_buf, self.output_dir, epoch)
 
                 # Step-based checkpoint (model + state + optimizer + vocab)
                 if save_every_n_steps > 0 and global_step % save_every_n_steps == 0:
@@ -1536,16 +1568,7 @@ class TaggerTrainer:
                         dataset_fingerprint=current_fingerprint,
                     )
                     _save_optimizer_state(optimizer, self.output_dir, ckpt_name)
-                    _save_vocabulary_snapshot(self.vocabulary, self.output_dir, ckpt_name)
-                    _save_tag_metrics(_tag_metrics_acc, self.output_dir, ckpt_name,
-                                      self.vocabulary, epoch_boundary=False,
-                                      save_enabled=_save_tag_metrics_enabled,
-                                      hard_lo=_hard_lo, hard_hi=_hard_hi,
-                                      calib_method=_calib_method,
-                                      calib_eps=_calib_eps,
-                                      calib_prior_strength=_calib_prior_strength)
-                    _save_ood_reference(_ood_emb_acc, self.output_dir, ckpt_name,
-                                        save_enabled=_save_ood_ref_enabled)
+                    _save_artifacts(ckpt_name, epoch_boundary=False)
                     if keep_last_n_checkpoints > 0:
                         _prune_step_checkpoints(self.output_dir, keep_last_n_checkpoints)
                     self._emit("checkpoint", {
@@ -1634,16 +1657,7 @@ class TaggerTrainer:
                     dataset_fingerprint=current_fingerprint,
                 )
                 _save_optimizer_state(optimizer, self.output_dir, ckpt_name)
-                _save_vocabulary_snapshot(self.vocabulary, self.output_dir, ckpt_name)
-                _save_tag_metrics(_tag_metrics_acc, self.output_dir, ckpt_name,
-                                  self.vocabulary, epoch_boundary=False,
-                                  save_enabled=_save_tag_metrics_enabled,
-                                  hard_lo=_hard_lo, hard_hi=_hard_hi,
-                                  calib_method=_calib_method,
-                                  calib_eps=_calib_eps,
-                                  calib_prior_strength=_calib_prior_strength)
-                _save_ood_reference(_ood_emb_acc, self.output_dir, ckpt_name,
-                                    save_enabled=_save_ood_ref_enabled)
+                _save_artifacts(ckpt_name, epoch_boundary=False)
                 # Also update "latest" to the stop position
                 _save_model_checkpoint(model, self.output_dir, "latest", metadata, checkpoint_save_mode)
                 _save_training_state(
@@ -1654,16 +1668,7 @@ class TaggerTrainer:
                     dataset_fingerprint=current_fingerprint,
                 )
                 _save_optimizer_state(optimizer, self.output_dir, "latest")
-                _save_vocabulary_snapshot(self.vocabulary, self.output_dir, "latest")
-                _save_tag_metrics(_tag_metrics_acc, self.output_dir, "latest",
-                                  self.vocabulary, epoch_boundary=False,
-                                  save_enabled=_save_tag_metrics_enabled,
-                                  hard_lo=_hard_lo, hard_hi=_hard_hi,
-                                  calib_method=_calib_method,
-                                  calib_eps=_calib_eps,
-                                  calib_prior_strength=_calib_prior_strength)
-                _save_ood_reference(_ood_emb_acc, self.output_dir, "latest",
-                                    save_enabled=_save_ood_ref_enabled)
+                _save_artifacts("latest", epoch_boundary=False)
                 self._emit("checkpoint", {
                     "name": ckpt_name,
                     "step": global_step,
@@ -1723,16 +1728,7 @@ class TaggerTrainer:
                     best_threshold = epoch_thr
                     metadata = self._make_metadata(epoch, global_step, best_f1, best_threshold)
                     _save_model_checkpoint(model, self.output_dir, "best_f1", metadata, checkpoint_save_mode)
-                    _save_vocabulary_snapshot(self.vocabulary, self.output_dir, "best_f1")
-                    _save_tag_metrics(_tag_metrics_acc, self.output_dir, "best_f1",
-                                      self.vocabulary, epoch_boundary=True,
-                                      save_enabled=_save_tag_metrics_enabled,
-                                      hard_lo=_hard_lo, hard_hi=_hard_hi,
-                                      calib_method=_calib_method,
-                                      calib_eps=_calib_eps,
-                                      calib_prior_strength=_calib_prior_strength)
-                    _save_ood_reference(_ood_emb_acc, self.output_dir, "best_f1",
-                                        save_enabled=_save_ood_ref_enabled)
+                    _save_artifacts("best_f1", epoch_boundary=True)
                     self._emit("checkpoint", {"name": "best_f1", "f1": best_f1, "epoch": epoch})
 
             # Save latest checkpoint at epoch boundary.
@@ -1749,31 +1745,13 @@ class TaggerTrainer:
             else:
                 metadata = self._make_metadata(epoch, global_step, best_f1, best_threshold)
                 _save_model_checkpoint(model, self.output_dir, "latest", metadata, checkpoint_save_mode)
-                _save_vocabulary_snapshot(self.vocabulary, self.output_dir, "latest")
-                _save_tag_metrics(_tag_metrics_acc, self.output_dir, "latest",
-                                  self.vocabulary, epoch_boundary=True,
-                                  save_enabled=_save_tag_metrics_enabled,
-                                  hard_lo=_hard_lo, hard_hi=_hard_hi,
-                                  calib_method=_calib_method,
-                                  calib_eps=_calib_eps,
-                                  calib_prior_strength=_calib_prior_strength)
-                _save_ood_reference(_ood_emb_acc, self.output_dir, "latest",
-                                    save_enabled=_save_ood_ref_enabled)
+                _save_artifacts("latest", epoch_boundary=True)
 
                 # Epoch-based checkpoint (model only; training state = same as latest)
                 if save_every_n_epochs > 0 and epoch % save_every_n_epochs == 0:
                     ckpt_name = f"epoch_{epoch:04d}"
                     _save_model_checkpoint(model, self.output_dir, ckpt_name, metadata, checkpoint_save_mode)
-                    _save_vocabulary_snapshot(self.vocabulary, self.output_dir, ckpt_name)
-                    _save_tag_metrics(_tag_metrics_acc, self.output_dir, ckpt_name,
-                                      self.vocabulary, epoch_boundary=True,
-                                      save_enabled=_save_tag_metrics_enabled,
-                                      hard_lo=_hard_lo, hard_hi=_hard_hi,
-                                      calib_method=_calib_method,
-                                      calib_eps=_calib_eps,
-                                      calib_prior_strength=_calib_prior_strength)
-                    _save_ood_reference(_ood_emb_acc, self.output_dir, ckpt_name,
-                                        save_enabled=_save_ood_ref_enabled)
+                    _save_artifacts(ckpt_name, epoch_boundary=True)
                     self._emit("checkpoint", {"name": ckpt_name, "epoch": epoch, "step": global_step})
                 _save_training_state(
                     self.output_dir, "latest",

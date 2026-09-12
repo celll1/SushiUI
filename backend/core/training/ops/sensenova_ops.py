@@ -64,17 +64,26 @@ def resolve_full_finetune_branch(trainer: Any) -> str:
     two flags already have (``base_trainer`` for ``train_unet``,
     ``sensenova_adapter`` for ``train_text_encoder``).
     """
-    train_gen = bool(getattr(trainer, "train_unet", True))
-    train_und = bool(getattr(trainer, "train_text_encoder", False))
+    settings = getattr(trainer, "config", None) or {}
+    scopes = set(settings.get("sensenova_train_scopes") or ())
+    explicit = bool(settings.get("_sensenova_explicit_tasks") and scopes)
+    # Explicit native-only scopes can require a differentiable prefix without
+    # requiring either 8.10B-parameter INT8 decoder half to be materialized.
+    train_gen = (
+        "generation_decoder" in scopes
+        if explicit else bool(getattr(trainer, "train_unet", True))
+    )
+    train_und = (
+        "understanding_decoder" in scopes
+        if explicit else bool(getattr(trainer, "train_text_encoder", False))
+    )
     if train_gen and train_und:
         return "both"
     if train_gen:
         return "gen"
     if train_und:
         return "und"
-    settings = getattr(trainer, "config", None) or {}
-    if settings.get("_sensenova_explicit_tasks") \
-            and settings.get("sensenova_train_scopes"):
+    if explicit:
         # Explicit task runs may train only vision/shared/flow parameters.  No
         # decoder half is materialized in that case; the writer preserves both
         # original int8 halves while saving the selected native modules.

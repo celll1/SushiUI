@@ -97,6 +97,7 @@ export const ADAPTER_ALGORITHM_LABELS: Record<string, string> = {
 export const SENSENOVA_SCOPE_OPTIONS: { value: SenseNovaTrainScope; label: string }[] = [
   { value: "understanding_vision", label: "Understanding vision + projector" },
   { value: "understanding_decoder", label: "Understanding decoder" },
+  { value: "understanding_norms", label: "Understanding decoder norms" },
   { value: "shared", label: "Shared embeddings + LM head" },
   { value: "generation_decoder", label: "Generation decoder" },
   { value: "generation_norms", label: "Generation decoder norms" },

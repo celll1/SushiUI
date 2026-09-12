@@ -13242,138 +13242,18 @@ async def get_tag_dictionary_stats(db: Session = Depends(get_datasets_db)):
     return {"total_tags": total_tags or 0}
 
 async def compute_tag_statistics(dataset_id: int, db: Session, send_progress: bool = False, total_steps: int = 0, current_step: int = 0) -> dict:
-    """
-    Compute tag statistics for a dataset with categories.
-    Returns: {"tag": {"count": N, "category": "..."}, ...}
+    """Compatibility wrapper for the dataset statistics service."""
+    from core.datasets.statistics import compute_tag_statistics as compute
 
-    Category resolution priority (highest first):
-      1. tag_data with a known category (non-Unknown)
-      2. taglist_cache lookup (for captions without tag_data, or tag_data with Unknown)
-      3. "Unknown" (fallback when tag is not in taglist)
+    def report(processed: int, unique_tags: int) -> None:
+        if send_progress and total_steps > 0:
+            manager.send_progress_sync(
+                current_step,
+                total_steps,
+                f"Computing tag statistics: {processed} captions, {unique_tags} unique tags",
+            )
 
-    "Unknown is lowest priority": any known category overwrites a previously
-    stored "Unknown", but known categories never overwrite each other.
-
-    Optimized for large datasets (streaming processing, no full data load).
-    """
-    import json as _json
-
-    print(f"[Dataset] Computing tag statistics for dataset {dataset_id}...")
-    # Ensure category resolution uses the Gelbooru supplement + alias fallback
-    # (graceful when taglist_gel/ is absent). The gelbooru load is a one-time
-    # latch on the shared cache, so this is cheap on repeat calls.
-    taglist_cache.initialize(settings.root_dir, enable_gelbooru=True)
-
-    # Count total items
-    total_items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).count()
-    if total_items == 0:
-        print(f"[Dataset] No items found, returning empty statistics")
-        return {}
-
-    # Stream captions in batches to avoid loading all into memory
-    tag_counts: dict[str, int] = {}
-    tag_categories: dict[str, str] = {}  # tag -> category ("Unknown" = not yet resolved)
-    # Collect tags still needing resolution (no tag_data, or tag_data returned Unknown)
-    unresolved_tags: set[str] = set()
-    batch_size = 1000
-    offset = 0
-    processed = 0
-
-    def _set_category(tag: str, category: str) -> None:
-        """Set category for tag; Unknown is lowest priority and never overwrites a known category."""
-        existing = tag_categories.get(tag)
-        if existing is None or (existing == "Unknown" and category != "Unknown"):
-            tag_categories[tag] = category
-
-    while True:
-        batch = db.query(DatasetCaption).join(
-            DatasetItem, DatasetCaption.item_id == DatasetItem.id
-        ).filter(
-            DatasetItem.dataset_id == dataset_id,
-            DatasetCaption.caption_type == "tags"
-        ).offset(offset).limit(batch_size).all()
-
-        if not batch:
-            break
-
-        # Collect tags from captions without tag_data so we can batch-resolve them
-        content_tags_batch: list[str] = []
-
-        for caption in batch:
-            if caption.tag_data:
-                try:
-                    tag_data = _json.loads(caption.tag_data)
-                    for item in tag_data:
-                        tag = item.get("tag", "").strip()
-                        category = item.get("category", "Unknown")
-                        if tag:
-                            tag_counts[tag] = tag_counts.get(tag, 0) + 1
-                            _set_category(tag, category)
-                            if tag_categories.get(tag) == "Unknown":
-                                unresolved_tags.add(tag)
-                except Exception:
-                    # Malformed tag_data — fall back to content parse
-                    if caption.content:
-                        for tag in caption.content.split(","):
-                            tag = tag.strip()
-                            if tag:
-                                tag_counts[tag] = tag_counts.get(tag, 0) + 1
-                                content_tags_batch.append(tag)
-            else:
-                # No tag_data: parse from content, resolve via taglist_cache later
-                if caption.content:
-                    for tag in caption.content.split(","):
-                        tag = tag.strip()
-                        if tag:
-                            tag_counts[tag] = tag_counts.get(tag, 0) + 1
-                            content_tags_batch.append(tag)
-
-        # Batch-resolve tags from content-only captions using taglist_cache
-        if content_tags_batch:
-            unique_content_tags = list(set(content_tags_batch))
-            resolved = taglist_cache.get_categories_batch(unique_content_tags)
-            for tag in unique_content_tags:
-                category = resolved.get(tag, "Unknown")
-                _set_category(tag, category)
-            for tag in unique_content_tags:
-                if tag_categories.get(tag) != "Unknown":
-                    unresolved_tags.discard(tag)
-
-        processed += len(batch)
-        offset += batch_size
-
-        # Log progress every 10k captions
-        if processed % 10000 == 0:
-            print(f"[Dataset] Tag statistics: processed {processed} captions, {len(tag_counts)} unique tags so far")
-            if send_progress and total_steps > 0:
-                estimated_progress = current_step
-                manager.send_progress_sync(
-                    estimated_progress,
-                    total_steps,
-                    f"Computing tag statistics: {processed} captions, {len(tag_counts)} unique tags"
-                )
-
-    # Final pass: resolve any remaining Unknown tags via taglist_cache
-    if unresolved_tags:
-        print(f"[Dataset] Resolving {len(unresolved_tags)} remaining Unknown tags via taglist_cache...")
-        resolved = taglist_cache.get_categories_batch(list(unresolved_tags))
-        for tag in unresolved_tags:
-            category = resolved.get(tag, "Unknown")
-            if category != "Unknown":
-                tag_categories[tag] = category
-
-    print(f"[Dataset] Found {len(tag_counts)} unique tags from {processed} captions")
-
-    statistics = {}
-    for tag, count in tag_counts.items():
-        statistics[tag] = {
-            "count": count,
-            "category": tag_categories.get(tag, "Unknown")
-        }
-
-    unknown_count = sum(1 for v in statistics.values() if v["category"] == "Unknown")
-    print(f"[Dataset] Tag statistics computed: {len(statistics)} tags ({unknown_count} Unknown)")
-    return statistics
+    return compute(dataset_id, db, root_dir=settings.root_dir, progress=report)
 
 
 def _latent_cache_namespaces(dataset) -> tuple:

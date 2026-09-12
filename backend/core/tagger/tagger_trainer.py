@@ -1512,7 +1512,7 @@ class TaggerTrainer:
                 if _n2_eval > 0:
                     _train_f1_buffer.append((_step_probs, _step_labels))
                 if _n2_eval > 0 or _train_count_on:
-                    _tag_metrics_acc.update(_step_probs.float(), _step_labels.float())
+                    _tag_metrics_acc.update(_step_probs, _step_labels)
 
                 # ----- GPU-coordinator pause check (batch boundary) ----------
                 # Generation requests set ``pause_event`` and stash an offload

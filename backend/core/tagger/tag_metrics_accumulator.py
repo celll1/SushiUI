@@ -92,6 +92,16 @@ class TagMetricsAccumulator:
         self.last_epoch_delta = np.zeros(vocab_size, dtype=np.int32)
         self.epochs_elapsed: int = 0
 
+        self._tag_bin_offsets = (
+            torch.arange(vocab_size, dtype=torch.long).mul_(n_bins).unsqueeze(0)
+        )
+        self._scatter_ones = torch.ones(0, dtype=torch.int32)
+
+    def _ones(self, count: int) -> torch.Tensor:
+        if self._scatter_ones.numel() < count:
+            self._scatter_ones = torch.ones(count, dtype=torch.int32)
+        return self._scatter_ones[:count]
+
 
     def update(self, preds: torch.Tensor, labels: torch.Tensor) -> None:
         """Accumulate one batch of predictions.
@@ -114,23 +124,16 @@ class TagMetricsAccumulator:
 
         # ── total_hist (all predictions, regardless of label) ─────────
         # flat_idx[b, v] = v * n_bins + bin_idx[b, v]
-        flat_idx = (
-            torch.arange(V, dtype=torch.long).unsqueeze(0).expand(B, -1) * self.n_bins
-            + bin_idx
-        ).reshape(-1)  # [B*V]
-        ones = torch.ones(B * V, dtype=torch.int32)
-        total_flat = torch.zeros(V * self.n_bins, dtype=torch.int32)
-        total_flat.scatter_add_(0, flat_idx, ones)
-        self.total_hist_cur += total_flat.reshape(V, self.n_bins).numpy()
+        flat_idx = (self._tag_bin_offsets[:, :V] + bin_idx).reshape(-1)
+        total_flat = torch.from_numpy(self.total_hist_cur).view(-1)
+        total_flat.scatter_add_(0, flat_idx, self._ones(B * V))
 
         # ── pos_hist (positive samples only — sparse) ─────────────────
         pos_b, pos_v = torch.where(l)
         if len(pos_b) > 0:
             pos_flat_idx = pos_v * self.n_bins + bin_idx[pos_b, pos_v]
-            ones_pos = torch.ones(len(pos_b), dtype=torch.int32)
-            pos_flat = torch.zeros(V * self.n_bins, dtype=torch.int32)
-            pos_flat.scatter_add_(0, pos_flat_idx.long(), ones_pos)
-            self.pos_hist_cur += pos_flat.reshape(V, self.n_bins).numpy()
+            pos_flat = torch.from_numpy(self.pos_hist_cur).view(-1)
+            pos_flat.scatter_add_(0, pos_flat_idx.long(), self._ones(len(pos_b)))
 
 
     def rotate_epoch(self) -> None:
@@ -321,6 +324,9 @@ class TagMetricsAccumulator:
             [self.last_epoch_delta, np.zeros(pad, dtype=self.last_epoch_delta.dtype)]
         )
         self.vocab_size = new_vocab_size
+        self._tag_bin_offsets = (
+            torch.arange(new_vocab_size, dtype=torch.long).mul_(self.n_bins).unsqueeze(0)
+        )
 
 
     def deficient_tag_indices(

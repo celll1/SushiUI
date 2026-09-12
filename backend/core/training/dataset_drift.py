@@ -375,22 +375,13 @@ async def rescan_dataset_inline(
     *, progress_callback: Optional[Callable[[str], None]] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
-    """Run a full rescan of *dataset_id* by directly calling the
-    existing ``scan_dataset`` FastAPI route function with a manually-
-    provided db session.
-
-    Returns the same JSON dict the endpoint would return.
-
-    The route function is ``async`` and uses ``loop.run_in_executor``
-    internally for the heavy walk; we call it from an async context
-    so that all works seamlessly.
-    """
+    """Run the shared scanner with the training cancellation callback."""
     if progress_callback:
         try: progress_callback(f"Rescanning dataset {dataset_id}...")
         except Exception: pass
-    # Lazy import to avoid circular dependency at module load time.
-    from api.routes import scan_dataset
-    result = await scan_dataset(
+    # Deferred import breaks the module-load cycle with the API training routes.
+    from api.routes import _scan_dataset_impl
+    result = await _scan_dataset_impl(
         dataset_id=dataset_id, db=datasets_db, incremental=True,
         should_cancel=should_cancel,
     )

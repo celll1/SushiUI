@@ -47,6 +47,7 @@ machine-local working material.
 | [docs/guides/DYNAMIC_CROP_BUCKETING.md](DYNAMIC_CROP_BUCKETING.md) | Epoch-dynamic crop and bucket behavior. |
 | [docs/guides/SDXL_REGULARIZATION.md](SDXL_REGULARIZATION.md) | SD/SDXL regularization behavior. |
 | [docs/guides/SENSENOVA_TRAINING_DESIGN.md](SENSENOVA_TRAINING_DESIGN.md) | SenseNova training contract and measured validation boundary. |
+| [docs/guides/TAGGER.md](TAGGER.md) | Legacy WD and trainable SigLIP2 tagger ownership, safety, and resume contracts. |
 | [docs/decisions/TRAINING_RUN_STORAGE_V2.md](../decisions/TRAINING_RUN_STORAGE_V2.md) | Central catalogue and per-run database contract. |
 | [docs/guides/INT8_CONVROT_TRAINING_DESIGN.md](INT8_CONVROT_TRAINING_DESIGN.md) | INT8 ConvRot investigation and measurements. |
 | [docs/guides/LR_SCHEDULER_DESIGN.md](LR_SCHEDULER_DESIGN.md) | Learning-rate schedule controls and measured limits. |

@@ -96,6 +96,7 @@ changes.
 | Call the API directly (scripts, smoke tests) | `docs/guides/API_TESTING.md`, `examples/api/` |
 | WebSocket progress messages | `backend/api/WS_PROTOCOL.md` |
 | Training parameters / config | `backend/core/training/TRAINING_PARAMS_GUIDE.md`, `backend/core/training/API_REFERENCE.md` |
+| Tagger inference, sidecar editing, or training | `docs/guides/TAGGER.md` |
 | Anything adapter-related: LoRA variants, `backend/core/adapters/`, `adapter_type`, execution backends | `docs/guides/LYCORIS_ADAPTER_DESIGN.md` |
 | Fine-tune a VAE (`training_method: vae_decoder`; decoder by default, encoder behind a double gate) | `docs/guides/VAE_TRAINING.md` |
 | VAE decode behavior: tiling options, decoder non-locality, measured artifact facts | `docs/guides/VAE_DECODE_BEHAVIOR.md` |

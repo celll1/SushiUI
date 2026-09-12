@@ -6,7 +6,6 @@ import { TAG_ANALYSIS_CATEGORY_ORDER, TAG_CATEGORY_CHART_HEX } from "./taggerCat
 
 const ALL_CATEGORIES = TAG_ANALYSIS_CATEGORY_ORDER;
 
-// ── Glob-style tag query → RegExp ─────────────────────────────────────────────
 function buildTagRegex(query: string): RegExp | null {
   const q = query.trim();
   if (!q) return null;
@@ -19,7 +18,6 @@ function buildTagRegex(query: string): RegExp | null {
   return new RegExp(q.replace(/[.+^${}()|[\]\\]/g, "\\$&"), "i");
 }
 
-// ── Null-safe formatter helpers ────────────────────────────────────────────────
 const fmt = (v: number | null, digits = 3) =>
   v === null ? "—" : v.toFixed(digits);
 const fmtPct = (v: number | null, digits = 1) =>
@@ -27,7 +25,6 @@ const fmtPct = (v: number | null, digits = 1) =>
 const fmtInt = (v: number | null) =>
   v === null ? "—" : Math.round(v).toLocaleString();
 
-// ── Sort key extractor ─────────────────────────────────────────────────────────
 type SortKey = "tag" | "category" | "n_pos" | "global_freq" | "hard_rate" | "fp_rate_50" | "fn_rate_50" | "best_f1" | "best_thr";
 
 function getSortValue(data: TagMetricsData, idx: number, key: SortKey): number | string {
@@ -44,16 +41,12 @@ function getSortValue(data: TagMetricsData, idx: number, key: SortKey): number |
   }
 }
 
-// ── Props ──────────────────────────────────────────────────────────────────────
 interface TagMetricsAnalysisProps {
   data: TagMetricsData | null;
   loading: boolean;
   error: string | null;
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// Main component
-// ═════════════════════════════════════════════════════════════════════════════
 export default function TagMetricsAnalysis({ data, loading, error }: TagMetricsAnalysisProps) {
   if (loading) {
     return (
@@ -80,25 +73,18 @@ export default function TagMetricsAnalysis({ data, loading, error }: TagMetricsA
   return <AnalysisContent data={data} />;
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// Inner content (data guaranteed non-null)
-// ═════════════════════════════════════════════════════════════════════════════
 function AnalysisContent({ data }: { data: TagMetricsData }) {
-  // ── Filter state ─────────────────────────────────────────────────────────
   const [tagQuery,        setTagQuery]        = useState("");
   const [debouncedQuery,  setDebouncedQuery]  = useState("");
   const [selCategories,   setSelCategories]   = useState<Set<string>>(new Set());
   const [minNpos,         setMinNpos]         = useState(0);
   const [hideNaN,         setHideNaN]         = useState(false);
 
-  // View mode: table | charts
   const [viewMode, setViewMode] = useState<"table" | "charts">("table");
 
-  // Sort state (table only)
   const [sortKey, setSortKey]   = useState<SortKey>("n_pos");
   const [sortAsc, setSortAsc]   = useState(false); // desc by default
 
-  // Debounce tag query
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleQueryChange = (v: string) => {
     setTagQuery(v);
@@ -106,7 +92,6 @@ function AnalysisContent({ data }: { data: TagMetricsData }) {
     debounceRef.current = setTimeout(() => setDebouncedQuery(v), 200);
   };
 
-  // ── Filtered + sorted indices ─────────────────────────────────────────────
   const filteredIndices = useMemo(() => {
     const re = buildTagRegex(debouncedQuery);
     const indices: number[] = [];
@@ -150,16 +135,13 @@ function AnalysisContent({ data }: { data: TagMetricsData }) {
 
   return (
     <div className="flex flex-col flex-1 min-h-0 gap-2">
-      {/* ── Summary ── */}
       <div className="flex items-center gap-4 text-xs text-gray-500 flex-shrink-0">
         <span>総タグ数: <span className="text-gray-300">{data.n_tags.toLocaleString()}</span></span>
         <span>学習画像数: <span className="text-gray-300">{data.total_images.toLocaleString()}</span></span>
         <span>表示中: <span className="text-blue-300">{filteredIndices.length.toLocaleString()}</span> / {data.n_tags.toLocaleString()}</span>
       </div>
 
-      {/* ── Filter bar ── */}
       <div className="flex flex-wrap gap-2 items-center flex-shrink-0">
-        {/* Tag search */}
         <input
           type="text"
           value={tagQuery}
@@ -168,7 +150,6 @@ function AnalysisContent({ data }: { data: TagMetricsData }) {
           className="px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500 w-52"
         />
 
-        {/* Category checkboxes */}
         <div className="flex flex-wrap gap-1">
           <button
             onClick={() => setSelCategories(new Set())}
@@ -196,7 +177,6 @@ function AnalysisContent({ data }: { data: TagMetricsData }) {
           ))}
         </div>
 
-        {/* n_pos filter */}
         <select
           value={minNpos}
           onChange={(e) => setMinNpos(Number(e.target.value))}
@@ -209,7 +189,6 @@ function AnalysisContent({ data }: { data: TagMetricsData }) {
           <option value={500}>n_pos ≥ 500</option>
         </select>
 
-        {/* Hide NaN toggle */}
         <label className="flex items-center gap-1 cursor-pointer select-none">
           <input
             type="checkbox"
@@ -220,7 +199,6 @@ function AnalysisContent({ data }: { data: TagMetricsData }) {
           <span className="text-xs text-gray-400">F1なし非表示</span>
         </label>
 
-        {/* View toggle */}
         <div className="flex rounded overflow-hidden border border-gray-600 text-xs ml-auto">
           <button
             onClick={() => setViewMode("table")}
@@ -237,7 +215,6 @@ function AnalysisContent({ data }: { data: TagMetricsData }) {
         </div>
       </div>
 
-      {/* ── Content ── */}
       <div className="flex-1 min-h-0">
         {viewMode === "table" ? (
           <MetricsTable data={data} indices={sortedIndices} sortKey={sortKey} sortAsc={sortAsc} onSort={handleSort} />
@@ -249,9 +226,6 @@ function AnalysisContent({ data }: { data: TagMetricsData }) {
   );
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// Virtual-scroll table
-// ═════════════════════════════════════════════════════════════════════════════
 const ROW_H = 30;
 const BUFFER = 40;
 
@@ -303,7 +277,6 @@ function MetricsTable({ data, indices, sortKey, sortAsc, onSort }: MetricsTableP
 
   return (
     <div className="flex flex-col h-full border border-gray-700 rounded overflow-hidden">
-      {/* Header */}
       <div className="flex bg-gray-800 border-b border-gray-700 text-xs text-gray-400 flex-shrink-0">
         {COLUMNS.map((col) => (
           <button
@@ -316,7 +289,6 @@ function MetricsTable({ data, indices, sortKey, sortAsc, onSort }: MetricsTableP
         ))}
       </div>
 
-      {/* Scrollable body */}
       <div
         ref={containerRef}
         className="flex-1 overflow-y-auto"
@@ -342,7 +314,6 @@ function TableRow({ data, dataIdx }: { data: TagMetricsData; dataIdx: number }) 
 
   return (
     <div className="flex text-xs border-b border-gray-800 hover:bg-gray-800/50 items-center" style={{ height: ROW_H }}>
-      {/* Tag + category badge */}
       <div className="min-w-[200px] flex-1 px-2 flex items-center gap-1.5 overflow-hidden">
         <span
           className="inline-block px-1 rounded text-[10px] font-medium flex-shrink-0"
@@ -353,17 +324,14 @@ function TableRow({ data, dataIdx }: { data: TagMetricsData; dataIdx: number }) 
         <span className="text-gray-200 truncate">{data.tag_names[dataIdx]}</span>
       </div>
 
-      {/* n_pos */}
       <div className="w-20 shrink-0 px-2 text-gray-300 text-right">
         {fmtInt(data.n_pos[dataIdx])}
       </div>
 
-      {/* global_freq */}
       <div className="w-20 shrink-0 px-2 text-gray-400 text-right">
         {fmtPct(data.global_freq[dataIdx], 3)}
       </div>
 
-      {/* hard_rate with bar */}
       <div className="w-24 shrink-0 px-2 relative">
         {hr !== null && (
           <div
@@ -374,17 +342,14 @@ function TableRow({ data, dataIdx }: { data: TagMetricsData; dataIdx: number }) 
         <span className="relative text-gray-300 text-right block">{fmtPct(hr)}</span>
       </div>
 
-      {/* fp_rate_50 */}
       <div className="w-20 shrink-0 px-2 text-gray-400 text-right">
         {fmtPct(data.fp_rate_50[dataIdx])}
       </div>
 
-      {/* fn_rate_50 */}
       <div className="w-20 shrink-0 px-2 text-gray-400 text-right">
         {fmtPct(data.fn_rate_50[dataIdx])}
       </div>
 
-      {/* best_f1 with bar */}
       <div className="w-24 shrink-0 px-2 relative">
         {f1 !== null && (
           <div
@@ -395,7 +360,6 @@ function TableRow({ data, dataIdx }: { data: TagMetricsData; dataIdx: number }) 
         <span className="relative text-gray-200 text-right block">{fmt(f1)}</span>
       </div>
 
-      {/* best_thr */}
       <div className="w-20 shrink-0 px-2 text-gray-400 text-right">
         {fmt(data.best_thr[dataIdx], 2)}
       </div>
@@ -403,17 +367,12 @@ function TableRow({ data, dataIdx }: { data: TagMetricsData; dataIdx: number }) 
   );
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// Charts view — 2×2 grid
-// ═════════════════════════════════════════════════════════════════════════════
 function MetricsCharts({ data, indices }: { data: TagMetricsData; indices: number[] }) {
-  // Sub-filter for scatter: n_pos >= 20
   const scatterIndices = useMemo(
     () => indices.filter((i) => (data.n_pos[i] ?? 0) >= 20),
     [data, indices],
   );
 
-  // Random sample if too many points
   const sampleIndices = useMemo(() => {
     if (scatterIndices.length <= 5000) return scatterIndices;
     const sampled: number[] = [];
@@ -434,7 +393,6 @@ function MetricsCharts({ data, indices }: { data: TagMetricsData; indices: numbe
   );
 }
 
-// ─── Canvas scatter: FP/FN ────────────────────────────────────────────────────
 function FpFnScatterCanvas({
   data, indices, title,
 }: { data: TagMetricsData; indices: number[]; title: string }) {
@@ -456,7 +414,6 @@ function FpFnScatterCanvas({
 
     ctx.clearRect(0, 0, W, H);
 
-    // Grid
     ctx.strokeStyle = "#1f2937";
     ctx.lineWidth = 1;
     for (let t = 0; t <= 1; t += 0.25) {
@@ -466,7 +423,6 @@ function FpFnScatterCanvas({
       ctx.beginPath(); ctx.moveTo(ML, y); ctx.lineTo(ML + PW, y); ctx.stroke();
     }
 
-    // Reference lines
     ctx.strokeStyle = "#374151";
     ctx.setLineDash([3, 3]);
     ctx.lineWidth = 1;
@@ -476,7 +432,6 @@ function FpFnScatterCanvas({
     ctx.beginPath(); ctx.moveTo(ML, cy50); ctx.lineTo(ML + PW, cy50); ctx.stroke();
     ctx.setLineDash([]);
 
-    // Points
     const pts: Point[] = [];
     for (const i of indices) {
       const fp = data.fp_rate_50[i];
@@ -494,11 +449,9 @@ function FpFnScatterCanvas({
     }
     pointsRef.current = pts;
 
-    // Axes
     ctx.strokeStyle = "#374151"; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(ML, MT); ctx.lineTo(ML, MT + PH); ctx.lineTo(ML + PW, MT + PH); ctx.stroke();
 
-    // Labels
     ctx.fillStyle = "#9ca3af"; ctx.font = "10px sans-serif"; ctx.textAlign = "center";
     for (const t of [0, 0.25, 0.5, 0.75, 1]) {
       ctx.fillText(t.toFixed(2), ML + t * PW, MT + PH + 14);
@@ -516,7 +469,6 @@ function FpFnScatterCanvas({
     ctx.fillText("FN rate", 0, 0);
     ctx.restore();
 
-    // Title
     ctx.fillStyle = "#d1d5db"; ctx.font = "11px sans-serif"; ctx.textAlign = "center";
     ctx.fillText(title, ML + PW / 2, 16);
     ctx.fillStyle = "#4b5563"; ctx.font = "10px sans-serif";
@@ -558,7 +510,6 @@ function FpFnScatterCanvas({
   );
 }
 
-// ─── Canvas scatter: global_freq vs best_F1 ───────────────────────────────────
 function FreqF1ScatterCanvas({
   data, indices, title,
 }: { data: TagMetricsData; indices: number[]; title: string }) {
@@ -582,7 +533,6 @@ function FreqF1ScatterCanvas({
     if (!ctx) return;
     ctx.clearRect(0, 0, W, H);
 
-    // Grid
     ctx.strokeStyle = "#1f2937"; ctx.lineWidth = 1;
     for (let t = 0; t <= 1; t += 0.25) {
       const y = MT + t * PH;
@@ -594,7 +544,6 @@ function FreqF1ScatterCanvas({
       ctx.beginPath(); ctx.moveTo(x, MT); ctx.lineTo(x, MT + PH); ctx.stroke();
     }
 
-    // Points
     const pts: Point[] = [];
     for (const i of indices) {
       const freq = data.global_freq[i];
@@ -615,18 +564,15 @@ function FreqF1ScatterCanvas({
     }
     pointsRef.current = pts;
 
-    // Axes
     ctx.strokeStyle = "#374151"; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(ML, MT); ctx.lineTo(ML, MT + PH); ctx.lineTo(ML + PW, MT + PH); ctx.stroke();
 
-    // X-axis labels (log scale)
     ctx.fillStyle = "#9ca3af"; ctx.font = "10px sans-serif"; ctx.textAlign = "center";
     for (let logv = LOG_MIN; logv <= LOG_MAX; logv++) {
       const t = (logv - LOG_MIN) / (LOG_MAX - LOG_MIN);
       const x = ML + t * PW;
       ctx.fillText(`1e${logv}`, x, MT + PH + 14);
     }
-    // Y-axis labels
     ctx.textAlign = "right";
     for (const t of [0, 0.25, 0.5, 0.75, 1]) {
       ctx.fillText((1 - t).toFixed(2), ML - 4, MT + t * PH + 3);
@@ -679,7 +625,6 @@ function FreqF1ScatterCanvas({
   );
 }
 
-// ─── SVG histogram: best_F1 distribution ─────────────────────────────────────
 function BestF1Histogram({ data, indices }: { data: TagMetricsData; indices: number[] }) {
   const W = 280, H = 200;
   const ML = 40, MR = 12, MT = 24, MB = 32;
@@ -724,11 +669,9 @@ function BestF1Histogram({ data, indices }: { data: TagMetricsData; indices: num
           );
         })}
 
-        {/* Axes */}
         <line x1={ML} y1={MT} x2={ML} y2={MT + PH} stroke="#374151" />
         <line x1={ML} y1={MT + PH} x2={ML + PW} y2={MT + PH} stroke="#374151" />
 
-        {/* X ticks */}
         {[0, 0.2, 0.4, 0.6, 0.8, 1.0].map((t) => (
           <text key={t} x={ML + t * PW} y={MT + PH + 14} textAnchor="middle" fill="#9ca3af" fontSize={9}>
             {t.toFixed(1)}
@@ -738,12 +681,10 @@ function BestF1Histogram({ data, indices }: { data: TagMetricsData; indices: num
           best_F1
         </text>
 
-        {/* Y tick max */}
         <text x={ML - 4} y={MT + 4} textAnchor="end" fill="#9ca3af" fontSize={9}>
           {maxCount}
         </text>
 
-        {/* Null count note */}
         <text x={ML + PW} y={MT + 10} textAnchor="end" fill="#4b5563" fontSize={9}>
           NaN: {counts.nullCount}
         </text>
@@ -752,7 +693,6 @@ function BestF1Histogram({ data, indices }: { data: TagMetricsData; indices: num
   );
 }
 
-// ─── SVG bar chart: category avg F1 ──────────────────────────────────────────
 function CategoryF1BarChart({ data, indices }: { data: TagMetricsData; indices: number[] }) {
   const W = 280, H = 200;
   const ML = 40, MR = 12, MT = 24, MB = 50;
@@ -814,11 +754,9 @@ function CategoryF1BarChart({ data, indices }: { data: TagMetricsData; indices: 
           );
         })}
 
-        {/* Axes */}
         <line x1={ML} y1={MT} x2={ML} y2={MT + PH} stroke="#374151" />
         <line x1={ML} y1={MT + PH} x2={ML + PW} y2={MT + PH} stroke="#374151" />
 
-        {/* Y ticks */}
         {[0, 0.25, 0.5, 0.75, 1.0].map((t) => (
           <text key={t} x={ML - 4} y={MT + (1 - t) * PH + 3} textAnchor="end" fill="#9ca3af" fontSize={8}>
             {t.toFixed(2)}

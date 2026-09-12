@@ -16,7 +16,6 @@ function textColor(category: string): string {
   return TAG_CATEGORY_TEXT_CLASS[category] ?? "text-gray-400";
 }
 
-// ─── Single bar row ──────────────────────────────────────────────────────────
 
 interface BarRowProps {
   tag: string;
@@ -45,7 +44,6 @@ function BarRow({ tag, prob, category, selected, onToggle, showCategory = true }
       <span className="text-sm text-gray-200 flex-1 truncate min-w-0" title={tag}>
         {tag}
       </span>
-      {/* Bar — flexible width */}
       <div className="w-20 h-3 bg-gray-800 rounded overflow-hidden shrink-0">
         <div
           className={`h-full rounded transition-all ${barColor(category)}`}
@@ -60,7 +58,6 @@ function BarRow({ tag, prob, category, selected, onToggle, showCategory = true }
   );
 }
 
-// ─── Category group section ───────────────────────────────────────────────────
 
 interface CategoryGroupProps {
   category: string;
@@ -111,7 +108,6 @@ function CategoryGroup({ category, items, selectedTags, onToggle, onSelectGroup,
   );
 }
 
-// ─── Main chart component ────────────────────────────────────────────────────
 
 export interface TagResultsChartProps {
   tags: SigLIP2TagResult[];
@@ -152,7 +148,6 @@ export default function TagResultsChart({
   useEffect(() => { localStorage.setItem("tagger_num_cols", String(numCols)); }, [numCols]);
   useEffect(() => { localStorage.setItem("tagger_show_cal", showCal ? "1" : "0"); }, [showCal]);
 
-  // Resolve display probability: cal_prob when showCal and available, else prob
   const displayProb = (item: SigLIP2TagResult) =>
     showCal && item.cal_prob != null ? item.cal_prob : item.prob;
 
@@ -186,7 +181,6 @@ export default function TagResultsChart({
 
   return (
     <div className="space-y-1">
-      {/* Toolbar */}
       <div className="flex items-center gap-3 px-2 pb-1 flex-wrap">
         <button onClick={onSelectAll} className="text-xs text-blue-400 hover:text-blue-300 underline">
           Select all
@@ -198,7 +192,6 @@ export default function TagResultsChart({
           {selectedTags.size} / {totalCount}
         </span>
         <div className="ml-auto flex gap-1">
-          {/* Raw / Cal toggle (only when calibration is available) */}
           {hasCalibration && (
             <div className="flex rounded overflow-hidden border border-gray-600 text-xs">
               <button
@@ -217,7 +210,6 @@ export default function TagResultsChart({
               </button>
             </div>
           )}
-          {/* View mode */}
           <div className="flex rounded overflow-hidden border border-gray-600 text-xs">
             <button
               onClick={() => setViewMode("flat")}
@@ -232,7 +224,6 @@ export default function TagResultsChart({
               Grouped
             </button>
           </div>
-          {/* Column toggle */}
           <div className="flex rounded overflow-hidden border border-gray-600 text-xs">
             <button
               onClick={() => setNumCols(1)}
@@ -252,7 +243,6 @@ export default function TagResultsChart({
         </div>
       </div>
 
-      {/* Flat view */}
       {viewMode === "flat" && (
         <>
           {pinnedItems.length > 0 && (
@@ -291,10 +281,8 @@ export default function TagResultsChart({
         </>
       )}
 
-      {/* Grouped view */}
       {viewMode === "grouped" && (
         <>
-          {/* Quality / Rating always side-by-side */}
           {pinnedItems.length > 0 && (
             <div className={numCols === 2 ? "grid grid-cols-2 gap-2" : ""}>
               {qualityTop && (

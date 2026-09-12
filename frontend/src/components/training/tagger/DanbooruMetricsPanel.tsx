@@ -83,10 +83,8 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
         <span className="text-xs text-gray-500">refreshed every 3s</span>
       </div>
 
-      {/* Download-speed safety (throttle detection + cooldown + manual resume) */}
       <DanbooruSpeedStatus data={data} onResume={() => resumeTaggerDanbooru(runId)} />
 
-      {/* Stat cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
         <Stat label="Collected" value={(data.total_collected ?? 0).toLocaleString()} />
         <Stat label="Injection batches" value={(data.total_injected_batches ?? 0).toLocaleString()} />
@@ -94,7 +92,6 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
         <Stat label="Starvations" value={(data.buffer_starvation_count ?? 0).toLocaleString()} />
       </div>
 
-      {/* New-tag (dynamic query) stats — only when vocab expansion is active */}
       {hasNewTags && (
         <div className="grid grid-cols-3 gap-2 text-xs">
           <Stat label="New tags targeted" value={(data.dynamic_tags_count ?? 0).toLocaleString()} />
@@ -103,7 +100,6 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
         </div>
       )}
 
-      {/* Query mode stats — per-tag resolved collection + vocab expansion */}
       {hasQuery && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
           <Stat label="Query tags (pool)" value={(data.query_tags_count ?? 0).toLocaleString()} />
@@ -113,7 +109,6 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
         </div>
       )}
 
-      {/* Low-F1 deficiency stats — only when low-F1 collection is active */}
       {hasLowF1 && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
           <Stat label="Low-F1 targeted" value={(data.low_f1_tags_count ?? 0).toLocaleString()} />
@@ -123,7 +118,6 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
         </div>
       )}
 
-      {/* Train-count deficiency (exposure balancing) stats — only when active */}
       {hasTrainCount && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
           <Stat label="Train-count targeted" value={(data.train_count_tags_count ?? 0).toLocaleString()} />
@@ -133,7 +127,6 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
         </div>
       )}
 
-      {/* Co-occurrence vocab-discovery + active-collection stats — only when active */}
       {((data.total_cooc_proposed ?? 0) > 0 || (data.cooc_pending_count ?? 0) > 0 || (data.cooc_active_count ?? 0) > 0) && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
           <Stat label="Co-occur added" value={(data.total_cooc_proposed ?? 0).toLocaleString()} />
@@ -143,7 +136,6 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
         </div>
       )}
 
-      {/* Buffer fill bar */}
       <div>
         <div className="flex items-center justify-between text-xs text-gray-400 mb-1">
           <span>Buffer</span>
@@ -159,7 +151,6 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
         </div>
       </div>
 
-      {/* Tabs */}
       <div className="flex gap-1 border-b border-gray-700 text-xs">
         <TabBtn label="Top tags" active={tab === "top"} onClick={() => setTab("top")} />
         {hasQuery && (
@@ -180,7 +171,6 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
         <TabBtn label="Recent posts" active={tab === "recent"} onClick={() => setTab("recent")} />
       </div>
 
-      {/* Top tags */}
       {tab === "top" && (
         <div className="max-h-60 overflow-y-auto space-y-0.5 pr-1">
           {(data.top_tags ?? []).slice(0, 50).map((t) => (
@@ -321,7 +311,6 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
         </div>
       )}
 
-      {/* Recent posts */}
       {tab === "recent" && (
         <div className="max-h-60 overflow-y-auto space-y-1 pr-1">
           {[...(data.recent_posts ?? [])].reverse().slice(0, 30).map((p) => (

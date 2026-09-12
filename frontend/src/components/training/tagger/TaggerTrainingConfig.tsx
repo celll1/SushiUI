@@ -18,7 +18,6 @@ import { TAG_CATEGORY_ORDER } from "../../tagger/taggerCategories";
 interface TaggerTrainingConfigProps {
   onClose: () => void;
   onRunCreated: (run: TaggerTrainingRun) => void;
-  /** If provided, the form operates in edit mode for this run. */
   editRun?: TaggerTrainingRun;
 }
 
@@ -60,7 +59,6 @@ export default function TaggerTrainingConfig({
     setConfig(configFromDefaults(taggerTrainingDefaults, editRun));
   }, [taggerTrainingDefaults, editRun]);
 
-  // selectedDatasetIds tracks numeric dataset.id values
   const [selectedDatasetIds, setSelectedDatasetIds] = useState<number[]>(initialDatasetIds);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [saving, setSaving] = useState(false);
@@ -68,7 +66,6 @@ export default function TaggerTrainingConfig({
 
   const ALL_CATEGORIES = TAG_CATEGORY_ORDER.filter((category) => category !== "Unknown");
 
-  // Only show datasets that have tags-format captions
   const tagDatasets = datasets.filter((d) => d.has_tags_captions);
 
   useEffect(() => {
@@ -142,7 +139,6 @@ export default function TaggerTrainingConfig({
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-gray-700 flex-shrink-0">
         <h2 className="text-lg font-semibold">{isEditMode ? "Edit Training Run" : "New Tagger Training Run"}</h2>
         <button onClick={onClose} className="text-gray-400 hover:text-white transition-colors">
@@ -152,10 +148,8 @@ export default function TaggerTrainingConfig({
         </button>
       </div>
 
-      {/* Body */}
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
 
-        {/* Run name */}
         <section>
           <label className="block text-sm font-medium text-gray-300 mb-1">Run Name</label>
           <input
@@ -167,7 +161,6 @@ export default function TaggerTrainingConfig({
           />
         </section>
 
-        {/* GPU Selection */}
         <section>
           <GpuSelect
             value={config.gpu_index ?? null}
@@ -176,7 +169,6 @@ export default function TaggerTrainingConfig({
           />
         </section>
 
-        {/* Training method */}
         <section>
           <label className="block text-sm font-medium text-gray-300 mb-2">Training Method</label>
           <div className="flex gap-3">
@@ -196,7 +188,6 @@ export default function TaggerTrainingConfig({
           </div>
         </section>
 
-        {/* Vision encoder path */}
         <section>
           <label className="block text-sm font-medium text-gray-300 mb-1">
             Vision Encoder Path
@@ -213,7 +204,6 @@ export default function TaggerTrainingConfig({
           </p>
         </section>
 
-        {/* Init head from */}
         <section>
           <label className="block text-sm font-medium text-gray-300 mb-1">
             Init Head From <span className="text-gray-500 font-normal">(optional)</span>
@@ -230,7 +220,6 @@ export default function TaggerTrainingConfig({
           </p>
         </section>
 
-        {/* Dataset selection */}
         <section>
           <label className="block text-sm font-medium text-gray-300 mb-2">
             Datasets <span className="text-gray-500">(tags format only)</span>
@@ -272,11 +261,9 @@ export default function TaggerTrainingConfig({
 
         </section>
 
-        {/* Tag Filtering */}
         <section>
           <label className="block text-sm font-medium text-gray-300 mb-3">Tag Filtering</label>
 
-          {/* Excluded Categories */}
           <div className="mb-4">
             <label className="block text-xs text-gray-400 mb-2">
               Excluded Categories
@@ -313,7 +300,6 @@ export default function TaggerTrainingConfig({
             </div>
           </div>
 
-          {/* Ban Tags */}
           <div>
             <label className="block text-xs text-gray-400 mb-1">
               Ban Tags
@@ -328,7 +314,6 @@ export default function TaggerTrainingConfig({
             />
           </div>
 
-          {/* Tag alias resolution */}
           <div>
             <label className="flex items-center gap-2 cursor-pointer select-none">
               <input
@@ -342,7 +327,6 @@ export default function TaggerTrainingConfig({
             </label>
           </div>
 
-          {/* Gelbooru category supplement */}
           <div>
             <label className="flex items-center gap-2 cursor-pointer select-none">
               <input
@@ -468,7 +452,6 @@ export default function TaggerTrainingConfig({
           </div>
         </section>
 
-        {/* LoRA parameters */}
         {config.training_method === "lora" && (
           <section>
             <label className="block text-sm font-medium text-gray-300 mb-3">LoRA Parameters</label>
@@ -499,7 +482,6 @@ export default function TaggerTrainingConfig({
           </section>
         )}
 
-        {/* Custom Attention Pooling (Full FT only) */}
         {config.training_method === "full" && (
           <section>
             <label className="block text-sm font-medium text-gray-300 mb-3">
@@ -539,7 +521,6 @@ export default function TaggerTrainingConfig({
           </section>
         )}
 
-        {/* Training hyperparameters */}
         <section>
           <label className="block text-sm font-medium text-gray-300 mb-3">Training Parameters</label>
           <div className="grid grid-cols-2 gap-4">
@@ -823,7 +804,6 @@ export default function TaggerTrainingConfig({
           </div>
         </section>
 
-        {/* Optimizer */}
         <section>
           <label className="block text-sm font-medium text-gray-300 mb-2">Optimizer</label>
           <select
@@ -837,7 +817,6 @@ export default function TaggerTrainingConfig({
           </select>
         </section>
 
-        {/* Mixed precision */}
         <section>
           <label className="block text-sm font-medium text-gray-300 mb-2">Mixed Precision</label>
           <select
@@ -851,7 +830,6 @@ export default function TaggerTrainingConfig({
           </select>
         </section>
 
-        {/* Loss function selector */}
         <section>
           <label className="block text-sm font-medium text-gray-300 mb-3">
             Loss Function
@@ -869,7 +847,6 @@ export default function TaggerTrainingConfig({
           </select>
         </section>
 
-        {/* ASL parameters */}
         {config.loss_function === "asl" && (
           <section>
             <label className="block text-sm font-medium text-gray-300 mb-3">
@@ -919,7 +896,6 @@ export default function TaggerTrainingConfig({
           </section>
         )}
 
-        {/* CS-ASL / H-CS-ASL / LA-S-ASL shared parameters */}
         {(["cs_asl", "h_cs_asl", "la_s_asl"] as string[]).includes(config.loss_function ?? "") && (
           <section>
             <label className="block text-sm font-medium text-gray-300 mb-3">
@@ -997,7 +973,6 @@ export default function TaggerTrainingConfig({
           </section>
         )}
 
-        {/* H-CS-ASL: label weighting */}
         {config.loss_function === "h_cs_asl" && (
           <section>
             <label className="block text-sm font-medium text-gray-300 mb-3">
@@ -1015,7 +990,6 @@ export default function TaggerTrainingConfig({
           </section>
         )}
 
-        {/* Boolean options */}
         <section className="space-y-3">
           <label className="flex items-center gap-3 cursor-pointer">
             <input
@@ -1048,7 +1022,6 @@ export default function TaggerTrainingConfig({
           </label>
         </section>
 
-        {/* Online Danbooru Augmentation */}
         <section className="space-y-3 border-t border-gray-700 pt-4">
           <h3 className="text-sm font-semibold text-gray-300">Online Danbooru Augmentation</h3>
           <label className="flex items-center gap-3 cursor-pointer">
@@ -1068,7 +1041,6 @@ export default function TaggerTrainingConfig({
                 processes while this is running.
               </div>
 
-              {/* General augmentation pipeline settings (apply to all modes) */}
               <div className="flex items-center gap-3">
                 <label className="text-xs text-gray-400 w-48">Injection interval (base steps)</label>
                 <NumberInput
@@ -1130,7 +1102,6 @@ export default function TaggerTrainingConfig({
                 </span>
               </div>
 
-              {/* Download-speed safety (throttle/ban avoidance) */}
               <div className="pt-2 border-t border-gray-700 space-y-2">
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
@@ -1184,7 +1155,6 @@ export default function TaggerTrainingConfig({
                 <span className="text-xs text-gray-500">0 = auto (2 × batch_size).</span>
               </div>
 
-              {/* Query mode (first-class collection mode; owns the Tag Queries) */}
               <div className="pt-2 border-t border-gray-700">
                 <label className="flex items-center gap-3 cursor-pointer">
                   <input
@@ -1292,7 +1262,6 @@ export default function TaggerTrainingConfig({
                 )}
               </div>
 
-              {/* Vocab Expansion */}
               <div className="pt-2 border-t border-gray-700">
                 <label className="flex items-center gap-3 cursor-pointer">
                   <input
@@ -1366,7 +1335,6 @@ export default function TaggerTrainingConfig({
                       </span>
                     </div>
 
-                    {/* Tag categories to discover */}
                     <div className="flex items-start gap-3">
                       <label className="text-xs text-gray-400 w-48 pt-1">Tag categories</label>
                       <div className="flex flex-wrap gap-3">
@@ -1400,7 +1368,6 @@ export default function TaggerTrainingConfig({
                       </div>
                     </div>
 
-                    {/* Per-category min post count overrides */}
                     {(config.danbooru_new_tag_categories ?? [0, 3, 4]).length > 0 && (
                       <div className="flex items-start gap-3">
                         <label className="text-xs text-gray-400 w-48 pt-1">Per-category min count</label>
@@ -1443,7 +1410,6 @@ export default function TaggerTrainingConfig({
                       </div>
                     )}
 
-                    {/* Co-occurrence discovery (created-at independent) */}
                     <div className="pt-2 border-t border-gray-700/50">
                       <label className="flex items-center gap-3 cursor-pointer">
                         <input
@@ -1506,7 +1472,6 @@ export default function TaggerTrainingConfig({
                               })}
                             </div>
                           </div>
-                          {/* Active collection of promoted cooc tags */}
                           <div className="pt-2 border-t border-gray-700/50 space-y-2">
                             <p className="text-xs text-gray-500">
                               Active collection: keep collecting promoted cooc tags across epochs
@@ -1553,7 +1518,6 @@ export default function TaggerTrainingConfig({
                 )}
               </div>
 
-              {/* Low-F1 deficiency collection */}
               <div className="pt-2 border-t border-gray-700">
                 <label className="flex items-center gap-3 cursor-pointer">
                   <input
@@ -1625,7 +1589,6 @@ export default function TaggerTrainingConfig({
                 )}
               </div>
 
-              {/* Train-count deficiency collection */}
               <div className="pt-2 border-t border-gray-700">
                 <label className="flex items-center gap-3 cursor-pointer">
                   <input
@@ -1710,7 +1673,6 @@ export default function TaggerTrainingConfig({
                 )}
               </div>
 
-              {/* Score-based quality tag (applies to every collected post) */}
               <div className="pt-2 border-t border-gray-700 space-y-2">
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
@@ -1750,7 +1712,6 @@ export default function TaggerTrainingConfig({
                 )}
               </div>
 
-              {/* Collection path weights (last: balances the enabled paths above) */}
               <div className="pt-2 border-t border-gray-700 space-y-2">
                 <div className="text-sm text-gray-300">Collection Path Weights</div>
                 <p className="text-xs text-gray-500">
@@ -1815,7 +1776,6 @@ export default function TaggerTrainingConfig({
           )}
         </section>
 
-        {/* Error */}
         {error && (
           <div className="p-3 bg-red-900/30 border border-red-700 rounded text-sm text-red-400">
             {error}
@@ -1823,7 +1783,6 @@ export default function TaggerTrainingConfig({
         )}
       </div>
 
-      {/* Footer */}
       <div className="flex-shrink-0 p-4 border-t border-gray-700 flex justify-end gap-3">
         <button
           onClick={onClose}

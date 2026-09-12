@@ -118,14 +118,11 @@ function FpFnScatterPlot({ data }: { data: FpFnScatterData }) {
   const pw = W - margin.left - margin.right;
   const ph = H - margin.top - margin.bottom;
 
-  // n_pos range for opacity mapping
   const maxNpos = Math.max(...data.n_pos, 1);
 
-  // Map data coordinates → SVG pixel coordinates
   const px = (fp: number) => margin.left + fp * pw;
   const py = (fn: number) => margin.top + (1 - fn) * ph;
 
-  // Y-axis tick labels (0, 0.25, 0.5, 0.75, 1.0)
   const ticks = [0, 0.25, 0.5, 0.75, 1.0];
 
   return (
@@ -134,7 +131,6 @@ function FpFnScatterPlot({ data }: { data: FpFnScatterData }) {
         FP/FN Rate Distribution @ thr=0.5
       </div>
       <svg width={W} height={H} className="block">
-        {/* Grid lines */}
         {ticks.map((t) => (
           <line
             key={`gy-${t}`}
@@ -152,17 +148,14 @@ function FpFnScatterPlot({ data }: { data: FpFnScatterData }) {
           />
         ))}
 
-        {/* Reference lines: FP=0.5 and FN=0.5 */}
         <line x1={px(0.5)} y1={margin.top} x2={px(0.5)} y2={margin.top + ph}
           stroke="#6b7280" strokeWidth={1} strokeDasharray="4 3" />
         <line x1={margin.left} y1={py(0.5)} x2={margin.left + pw} y2={py(0.5)}
           stroke="#6b7280" strokeWidth={1} strokeDasharray="4 3" />
 
-        {/* Diagonal reference line FP=FN */}
         <line x1={px(0)} y1={py(0)} x2={px(1)} y2={py(1)}
           stroke="#4b5563" strokeWidth={0.8} />
 
-        {/* Data points */}
         {data.fp.map((fp, i) => {
           const fn = data.fn[i];
           if (isNaN(fp) || isNaN(fn)) return null;
@@ -178,7 +171,6 @@ function FpFnScatterPlot({ data }: { data: FpFnScatterData }) {
           );
         })}
 
-        {/* Y-axis labels */}
         {ticks.map((t) => (
           <text key={`ty-${t}`} x={margin.left - 4} y={py(t) + 4}
             textAnchor="end" fontSize={9} fill="#9ca3af">
@@ -186,7 +178,6 @@ function FpFnScatterPlot({ data }: { data: FpFnScatterData }) {
           </text>
         ))}
 
-        {/* X-axis labels */}
         {ticks.map((t) => (
           <text key={`tx-${t}`} x={px(t)} y={margin.top + ph + 14}
             textAnchor="middle" fontSize={9} fill="#9ca3af">
@@ -194,7 +185,6 @@ function FpFnScatterPlot({ data }: { data: FpFnScatterData }) {
           </text>
         ))}
 
-        {/* Axis labels */}
         <text x={margin.left + pw / 2} y={H - 2}
           textAnchor="middle" fontSize={10} fill="#6b7280">
           FP rate
@@ -207,7 +197,6 @@ function FpFnScatterPlot({ data }: { data: FpFnScatterData }) {
           FN rate
         </text>
 
-        {/* Border */}
         <rect x={margin.left} y={margin.top} width={pw} height={ph}
           fill="none" stroke="#374151" strokeWidth={1} />
       </svg>
@@ -281,9 +270,6 @@ export default function TaggerTrainingMonitor({
     onStatusChange(updated);
   }, [onStatusChange]);
 
-  // Extract epoch boundaries from a raw metric map.
-  // Only rows with epoch != null and step > 0 are considered.
-  // If multiple rows share the same epoch, the one with the largest step wins.
   const extractEpochBoundaries = useCallback(
     (rawMap: Map<string, TaggerTrainingMetric>): EpochBoundary[] => {
       const byEpoch = new Map<number, number>();
@@ -325,7 +311,6 @@ export default function TaggerTrainingMonitor({
     }
   }, [run.run_id, extractEpochBoundaries]);
 
-  // WebSocket: receive live tagger metrics during training
   useEffect(() => {
     wsClient.connect();
 
@@ -612,9 +597,7 @@ export default function TaggerTrainingMonitor({
     fetchMetrics();
   }, [fetchMetrics]);
 
-  // ────────────────────────────────────────────────────────────────────
   // Derived values for the progress header (elapsed / ETA / consistency)
-  // ────────────────────────────────────────────────────────────────────
 
   // Session start: prefer last_resumed_at (resume case) over started_at
   // (initial run case).  If neither is set, we can't show elapsed time.
@@ -715,7 +698,6 @@ export default function TaggerTrainingMonitor({
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-gray-700 flex-shrink-0">
         <div>
           <h2 className="text-lg font-semibold">{run.run_name}</h2>
@@ -733,10 +715,8 @@ export default function TaggerTrainingMonitor({
         </button>
       </div>
 
-      {/* Body */}
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
 
-        {/* Progress */}
         {(isActive || run.progress > 0) && (
           <section>
             <div className="flex items-center justify-between text-sm mb-1">
@@ -784,7 +764,6 @@ export default function TaggerTrainingMonitor({
                 style={{ width: `${(scanProgress ? scanProgress.pct : run.progress) * 100}%` }}
               />
             </div>
-            {/* Elapsed (session) / ETA / consistency indicator */}
             {(elapsedSec !== null || etaShortSec !== null) && (
               <div className="flex items-center justify-between text-xs mt-1.5 font-mono">
                 {elapsedSec !== null ? (
@@ -837,7 +816,6 @@ export default function TaggerTrainingMonitor({
           </section>
         )}
 
-        {/* Stats */}
         <section className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <div className="bg-gray-800 rounded p-3">
             <div className="text-xs text-gray-400 mb-1">Best F1</div>
@@ -865,9 +843,7 @@ export default function TaggerTrainingMonitor({
           </div>
         </section>
 
-        {/* Charts (col-span-2) + Side panel (col-span-1) */}
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          {/* Charts column */}
           <div className="lg:col-span-2 space-y-3">
             <TaggerMetricChart
               data={metrics}
@@ -918,12 +894,10 @@ export default function TaggerTrainingMonitor({
               epochBoundaries={epochBoundaries}
             />
 
-            {/* FP/FN scatter plot — shown once first scatter data arrives */}
             {scatterData && scatterData.n_tags > 0 && (
               <FpFnScatterPlot data={scatterData} />
             )}
 
-            {/* Error message */}
             {run.error_message && (
               <div>
                 <div className="text-sm font-medium text-red-400 mb-1">Error</div>
@@ -934,15 +908,12 @@ export default function TaggerTrainingMonitor({
             )}
           </div>
 
-          {/* Side column */}
           <div className="space-y-4 min-w-0">
-            {/* Danbooru augmentation metrics (only when enabled) */}
             <DanbooruMetricsPanel
               runId={run.run_id}
               active={run.status === "running" || run.status === "starting"}
             />
 
-            {/* Configuration (collapsible — grows long with all the augmentation params) */}
             <div>
               <button
                 type="button"
@@ -1204,7 +1175,6 @@ export default function TaggerTrainingMonitor({
               </>)}
             </div>
 
-            {/* Threshold F1 Curve */}
             {run.threshold_f1_curve && Object.keys(run.threshold_f1_curve).length > 0 && (() => {
               const curve = run.threshold_f1_curve!;
               const bestThr = Object.keys(curve).reduce((a, b) => curve[a] >= curve[b] ? a : b);
@@ -1248,7 +1218,6 @@ export default function TaggerTrainingMonitor({
               );
             })()}
 
-            {/* Checkpoint paths */}
             {(run.head_checkpoint_path || run.lora_checkpoint_path) && (
               <div>
                 <div className="text-sm font-medium text-gray-300 mb-2">Checkpoints</div>
@@ -1269,19 +1238,16 @@ export default function TaggerTrainingMonitor({
           </div>
         </section>
 
-        {/* Vocabulary browser */}
         <section>
           <VocabularyBrowser runId={run.run_id} />
         </section>
 
-        {/* Action error */}
         {error && (
           <div className="p-3 bg-red-900/30 border border-red-700 rounded text-sm text-red-400">
             {error}
           </div>
         )}
 
-        {/* Delete confirmation */}
         {confirmDelete && (
           <div className="p-4 bg-gray-800 border border-red-700 rounded">
             <p className="text-sm text-gray-300 mb-3">
@@ -1306,7 +1272,6 @@ export default function TaggerTrainingMonitor({
         )}
       </div>
 
-      {/* Footer actions */}
       <div className="flex-shrink-0 p-4 border-t border-gray-700 flex justify-between items-center">
         <button
           onClick={() => setConfirmDelete(true)}

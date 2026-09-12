@@ -43,7 +43,7 @@ export const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [
   "train_unet", "train_text_encoder", "train_image_encoder",
   "unet_lr", "text_encoder_lr", "text_encoder_1_lr", "text_encoder_2_lr", "image_encoder_lr",
   "weight_dtype", "training_dtype", "output_dtype", "vae_dtype",
-  "mixed_precision", "attention_backend", "attention_impl", "use_flash_attention", "min_snr_gamma", "reconstruction_loss_weight",
+  "mixed_precision", "attention_backend", "attention_impl", "tq_backward_mode", "use_flash_attention", "min_snr_gamma", "reconstruction_loss_weight",
   "audio_loss_weight",
   "text_encoding_mode", "text_encoding_swap_interval",
   "text_encoding_prefetch_depth",

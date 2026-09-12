@@ -2835,6 +2835,11 @@ class BaseTrainer(ABC):
             self.attention_impl = "diffusers" if self.resume_from_checkpoint else "conduit"
         else:
             self.attention_impl = attention_impl
+        from core.attention import resolve_tq_backward_mode, set_tq_backward_policy
+        self.tq_backward_mode = resolve_tq_backward_mode(
+            _tc.get("tq_backward_mode"), resuming=bool(self.resume_from_checkpoint)
+        )
+        set_tq_backward_policy(self.tq_backward_mode)
         self._persist_attention_impl()
         self.min_snr_gamma = min_snr_gamma
         # Hand-written YAML reaches the trainer without passing the Pydantic
@@ -4755,7 +4760,7 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} {'SDXL' if is_sdxl_model else 'SD1.5'} checkpoint loaded successfully as base model")
 
     def _persist_attention_impl(self):
-        """Write the resolved ``attention_impl`` back into the run config YAML.
+        """Persist resolved attention implementation and TQ backward policy.
 
         Makes the choice reproducible across resumes: once a run has resolved to
         "conduit" (fresh) or "diffusers" (resume of a pre-migration config), the
@@ -4775,18 +4780,25 @@ class BaseTrainer(ABC):
             with open(config_path, "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f)
             train = cfg["config"]["process"][0]["train"]
-            if train.get("attention_impl") == self.attention_impl:
+            if (
+                train.get("attention_impl") == self.attention_impl
+                and train.get("tq_backward_mode") == self.tq_backward_mode
+            ):
                 return
             train["attention_impl"] = self.attention_impl
+            train["tq_backward_mode"] = self.tq_backward_mode
             with open(config_path, "w", encoding="utf-8") as f:
                 yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
             # log_prefix is assigned later in __init__; this method runs before that,
             # so use a safe fallback to avoid an AttributeError masking the real work.
             _lp = getattr(self, "log_prefix", "[Trainer]")
-            print(f"{_lp} Persisted attention_impl='{self.attention_impl}' to run config")
+            print(
+                f"{_lp} Persisted attention_impl='{self.attention_impl}', "
+                f"tq_backward_mode='{self.tq_backward_mode}' to run config"
+            )
         except Exception as e:
             _lp = getattr(self, "log_prefix", "[Trainer]")
-            print(f"{_lp} [WARN] Could not persist attention_impl to run config: {e}")
+            print(f"{_lp} [WARN] Could not persist attention settings to run config: {e}")
 
     def _resolve_training_backend(self, backend: str) -> str:
         """Apply the TRAINING-mode capability guard to a backend string (R4).

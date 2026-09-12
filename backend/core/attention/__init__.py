@@ -30,11 +30,13 @@ from .contracts import AttentionFallbackPolicy, AttentionMode
 from .dispatch import dispatch_attention, dispatch_attention_varlen
 from .mechanisms import AttentionMechanism, known_mechanisms, validate_mechanism
 from .observed import begin_generation, observed_backends
+from .planned import dispatch_planned_attention
 from .registry import BACKENDS, AttentionBackend
 
 __all__ = [
     "dispatch_attention",
     "dispatch_attention_varlen",
+    "dispatch_planned_attention",
     "AttentionMode",
     "AttentionFallbackPolicy",
     "AttentionMechanism",

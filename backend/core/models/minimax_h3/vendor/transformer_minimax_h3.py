@@ -119,7 +119,7 @@ from diffusers.models.cache_utils import CacheMixin
 from diffusers.models.embeddings import TimestepEmbedding, Timesteps
 from diffusers.models.modeling_utils import ModelMixin
 
-from core.attention import AttentionMode, dispatch_attention
+from core.attention import AttentionMode, dispatch_attention, dispatch_planned_attention
 from core.models.minimax_h3.adaln_chunking import (
     chunked_ada_modulate,
     chunked_norm_out,
@@ -314,17 +314,29 @@ class MiniMaxH3AttnProcessor:
         # layout, and q/k/v share `attn.heads`, so no GQA term is needed. head_dim is 128 on the released
         # checkpoints, which is inside sage's {64, 96, 128} set and under flash's 256 cap, so both are reachable
         # here rather than silently downgraded.
-        hidden_states = dispatch_attention(
-            query,
-            key,
-            value,
-            attn_mask=attention_mask,
-            dropout_p=0.0,
-            is_causal=False,
-            backend=getattr(attn, "_attn_backend", "native"),
-            mode=getattr(attn, "_attn_mode", AttentionMode.INFERENCE),
-            layout="BSHD",
-        )
+        plan = getattr(attn, "_attention_plan", None)
+        if plan is not None:
+            if attention_mask is not None:
+                raise ValueError("MiniMax-H3 planned attention cannot be combined with an attention mask")
+            hidden_states = dispatch_planned_attention(
+                query,
+                key,
+                value,
+                plan,
+                mode=getattr(attn, "_attn_mode", AttentionMode.INFERENCE),
+            )
+        else:
+            hidden_states = dispatch_attention(
+                query,
+                key,
+                value,
+                attn_mask=attention_mask,
+                dropout_p=0.0,
+                is_causal=False,
+                backend=getattr(attn, "_attn_backend", "native"),
+                mode=getattr(attn, "_attn_mode", AttentionMode.INFERENCE),
+                layout="BSHD",
+            )
         hidden_states = hidden_states.flatten(2, 3).type_as(query)
         hidden_states = attn.to_out[0](hidden_states)
         hidden_states = attn.to_out[1](hidden_states)
@@ -740,6 +752,10 @@ class MiniMaxH3Transformer3DModel(ModelMixin, ConfigMixin, AttentionMixin, PeftA
             if isinstance(m, MiniMaxH3Attention):
                 m._attn_backend = backend
                 m._attn_mode = mode
+                m._attention_plan = None
+        plan = getattr(self, "_attention_plan", None)
+        for block in self.transformer_blocks:
+            block.attn._attention_plan = plan
 
     @apply_lora_scale("attention_kwargs")
     def forward(

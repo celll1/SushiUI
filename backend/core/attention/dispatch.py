@@ -22,7 +22,6 @@ FlashAttention / SageAttention want natively. Architectures holding
 ``[B, H, S, D]`` pass ``layout="BHSD"`` and the conduit transposes for them.
 """
 
-from enum import Enum
 from typing import Optional
 
 import torch
@@ -32,6 +31,12 @@ from .config import (
     normalize_backend,
     resolve_backend,
     to_diffusers_backend,  # noqa: F401 - re-exported for callers via __init__
+)
+from .contracts import (
+    AttentionFallbackPolicy,
+    AttentionMode,
+    resolve_fallback_policy,
+    validate_dense_qkv,
 )
 from .observed import note_backend
 from .registry import BACKENDS
@@ -54,17 +59,6 @@ def _repeat_kv_bshd(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     b, s, h_kv, d = x.shape
     x = x[:, :, :, None, :].expand(b, s, h_kv, n_rep, d)
     return x.reshape(b, s, h_kv * n_rep, d)
-
-
-class AttentionMode(str, Enum):
-    """Attention execution mode.
-
-    A ``str`` enum so ``mode == "training"`` works across module boundaries
-    without importing this enum (used by ``config.resolve_backend``).
-    """
-
-    INFERENCE = "inference"
-    TRAINING = "training"
 
 
 def _log_backend_used(backend: str, fell_back_from: Optional[str] = None) -> None:
@@ -90,6 +84,8 @@ def _dispatch_passthrough(
     scale: Optional[float],
     layout: str,
     enable_gqa: bool,
+    mode: AttentionMode,
+    fallback_policy: AttentionFallbackPolicy,
 ) -> torch.Tensor:
     """Handle a non-fungible passthrough backend (currently only ``sla``).
 
@@ -117,9 +113,10 @@ def _dispatch_passthrough(
         is_causal=is_causal,
         scale=scale,
         backend="native",
-        mode=AttentionMode.INFERENCE,
+        mode=mode,
         layout=layout,
         enable_gqa=enable_gqa,
+        fallback_policy=fallback_policy,
     )
 
 
@@ -135,6 +132,7 @@ def dispatch_attention(
     mode: AttentionMode = AttentionMode.INFERENCE,
     layout: str = "BSHD",
     enable_gqa: bool = False,
+    fallback_policy: Optional[AttentionFallbackPolicy | str] = None,
 ) -> torch.Tensor:
     """Backend-agnostic attention dispatch.
 
@@ -152,17 +150,24 @@ def dispatch_attention(
             inference-only backends).
         layout: "BSHD" (canonical) or "BHSD" (transposed at the boundary).
         enable_gqa: Force GQA on the native path (auto-enabled when H_kv != H).
+        fallback_policy: Runtime kernel-failure policy. Defaults to ``error``
+            in training and ``warn`` in inference.
 
     Returns:
         Attention output in the SAME layout as the inputs.
     """
+    validate_dense_qkv(
+        query, key, value, layout=layout, attn_mask=attn_mask, is_causal=is_causal
+    )
+    fallback_policy = resolve_fallback_policy(fallback_policy, mode)
     backend = normalize_backend(backend)
 
     # R2: short-circuit non-fungible passthrough backends BEFORE registry
     # resolution so a required backend (sla) is never rewritten to native.
     if backend in _PASSTHROUGH:
         return _dispatch_passthrough(
-            backend, query, key, value, attn_mask, dropout_p, is_causal, scale, layout, enable_gqa
+            backend, query, key, value, attn_mask, dropout_p, is_causal, scale,
+            layout, enable_gqa, mode, fallback_policy
         )
 
     resolved = resolve_backend(backend, mode, query, key, attn_mask, layout)
@@ -177,8 +182,7 @@ def dispatch_attention(
 
     # R3: auto-enable GQA on the native path when q/kv head counts differ.
     # Computed on the canonical BSHD view (heads at dim 2). FlashAttention
-    # broadcasts GQA natively and ignores this flag; sage is already downgraded
-    # when heads are unequal.
+    # broadcasts GQA natively and ignores this flag.
     gqa = enable_gqa or (k.shape[2] != q.shape[2])
 
     # SDPA's own enable_gqa broadcast is far slower than pre-expanding K/V
@@ -204,8 +208,12 @@ def dispatch_attention(
         enable_gqa=gqa,
     )
 
+    if out is None and resolved != "native" and fallback_policy == AttentionFallbackPolicy.ERROR:
+        raise RuntimeError(
+            f"[Attention] {resolved} kernel failed and fallback_policy='error'; see prior error log"
+        )
     if out is None and resolved != "native":
-        # Kernel failed at runtime -> fall back to native (never raise).
+        # Interactive inference remains available when an optional kernel fails.
         _log_backend_used("native", fell_back_from=resolved)
         note_backend("native")
         out = BACKENDS["native"].fn(

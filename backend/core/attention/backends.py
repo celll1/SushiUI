@@ -83,29 +83,12 @@ def _warn_kernel_fallback(message: str) -> None:
 
 
 def _process_mask(attn_mask: Optional[torch.Tensor], dtype: torch.dtype) -> Optional[torch.Tensor]:
-    """
-    Convert an attention mask into an additive float mask suitable for
-    ``F.scaled_dot_product_attention``.
-
-    * ``None``            -> ``None``
-    * 2D bool/other       -> broadcast to ``[B, 1, 1, S]``
-    * bool mask           -> ``0.0`` where True, ``-inf`` where False
-    * float/additive mask -> returned unchanged
-
-    Mirrors the extracted Z-Image behaviour (``zimage_utils._process_mask``);
-    duplicated locally to keep ``backends.py`` free of a circular import with
-    the ``zimage_utils`` shim (which imports the conduit).
-    """
+    """Normalize mask rank without materializing an equivalent float mask."""
     if attn_mask is None:
         return None
 
     if attn_mask.ndim == 2:
         attn_mask = attn_mask[:, None, None, :]
-
-    if attn_mask.dtype == torch.bool:
-        new_mask = torch.zeros_like(attn_mask, dtype=dtype)
-        new_mask.masked_fill_(~attn_mask, float("-inf"))
-        return new_mask
 
     return attn_mask
 
@@ -233,8 +216,8 @@ def _sage_attn(
           always ``None`` here and is intentionally not forwarded.
         * Sage requires fp16/bf16 inputs; non-half tensors are cast to bf16 and
           the output is cast back.
-        * Sage does not support GQA (gated ``supports_gqa=False`` upstream), so
-          ``enable_gqa`` is never True here.
+        * The installed Sage API broadcasts GQA when query heads are divisible
+          by key/value heads; ``enable_gqa`` is therefore informational here.
     Returns ``None`` on any failure.
     """
     try:

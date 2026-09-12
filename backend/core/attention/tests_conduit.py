@@ -10,9 +10,8 @@ Covers (per design R1 / R3):
     * flash-vs-native equivalence (bonus; same two layouts) when flash_attn is
       available.
     * GQA (n_kv < n_q) on the native path, incl. R3 auto-enable_gqa.
-    * Guard downgrades: sage in TRAINING -> native, mask present -> native,
-      head_dim > max -> native, GQA -> native; plus normalize_backend aliases
-      and the 'sla' passthrough.
+    * Guard behavior: sage in TRAINING -> native, unsupported mask/head_dim ->
+      native, divisible GQA remains Sage; plus aliases and SLA passthrough.
 
 Kernel-equivalence subtests require CUDA + the respective library; when
 unavailable they are reported SKIPPED (not FAILED). Guard / normalization
@@ -34,12 +33,14 @@ import torch  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
 
 from core.attention import (  # noqa: E402
+    AttentionFallbackPolicy,
     AttentionMode,
     dispatch_attention,
     normalize_backend,
     resolve_backend,
 )
 from core.attention.registry import BACKENDS  # noqa: E402
+from core.attention.backends import _process_mask  # noqa: E402
 
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 _results = []
@@ -57,7 +58,7 @@ def _rel_err(a, b):
 
 
 def _has_cuda():
-    return torch.cuda.is_available()
+    return os.environ.get("SUSHI_ATTENTION_TEST_CPU_ONLY") != "1" and torch.cuda.is_available()
 
 
 def _lib_available(mod):
@@ -211,7 +212,7 @@ def test_gqa_flash_does_not_preexpand():
 
     BACKENDS["flash"] = dataclasses.replace(original, fn=spy_fn)
     try:
-        q, k, v = _make_qkv("BSHD", 1, 16, 8, 32, "cpu", torch.float32, h_kv=2)
+        q, k, v = _make_qkv("BSHD", 1, 16, 8, 32, "cpu", torch.float16, h_kv=2)
         dispatch_attention(q, k, v, backend="flash", layout="BSHD", mode=AttentionMode.INFERENCE)
     finally:
         BACKENDS["flash"] = original
@@ -268,45 +269,100 @@ def test_guards():
     r = resolve_backend("sage", AttentionMode.INFERENCE, q40, k40, None, "BSHD")
     record("guard: head_dim=40 not allowed -> native (sage, SD1.5)", PASS if r == "native" else FAIL, f"got {r}")
 
-    # GQA -> sage downgraded (unequal heads), BSHD (heads dim 2)
+    # Installed Sage supports GQA when q heads are divisible by kv heads.
     q_g = torch.randn(1, 16, 8, 64, device=dev)
     k_g = torch.randn(1, 16, 2, 64, device=dev)
-    r = resolve_backend("sage", AttentionMode.INFERENCE, q_g, k_g, None, "BSHD")
-    record("guard: GQA -> native (sage)", PASS if r == "native" else FAIL, f"got {r}")
+    r = resolve_backend("sage", AttentionMode.INFERENCE, q_g.half(), k_g.half(), None, "BSHD")
+    record("guard: Sage accepts GQA", PASS if r == "sage" else FAIL, f"got {r}")
 
     # GQA guard is layout-aware: BHSD (heads dim 1)
     q_gb = torch.randn(1, 8, 16, 64, device=dev)
     k_gb = torch.randn(1, 2, 16, 64, device=dev)
-    r = resolve_backend("sage", AttentionMode.INFERENCE, q_gb, k_gb, None, "BHSD")
-    record("guard: GQA -> native (sage, BHSD layout)", PASS if r == "native" else FAIL, f"got {r}")
+    r = resolve_backend("sage", AttentionMode.INFERENCE, q_gb.half(), k_gb.half(), None, "BHSD")
+    record("guard: Sage accepts GQA (BHSD)", PASS if r == "sage" else FAIL, f"got {r}")
 
     # flash: head_dim 64 inference, equal heads, no mask -> stays flash
-    r = resolve_backend("flash", AttentionMode.INFERENCE, q, k, None, "BSHD")
+    q16 = q.to(torch.float16)
+    k16 = k.to(torch.float16)
+    r = resolve_backend("flash", AttentionMode.INFERENCE, q16, k16, None, "BSHD")
     record("guard: flash inference D=64 -> flash", PASS if r == "flash" else FAIL, f"got {r}")
 
     # flash TRAINING allowed (has backward)
-    r = resolve_backend("flash", AttentionMode.TRAINING, q, k, None, "BSHD")
+    r = resolve_backend("flash", AttentionMode.TRAINING, q16, k16, None, "BSHD")
     record("guard: flash in TRAINING -> flash", PASS if r == "flash" else FAIL, f"got {r}")
 
     # flash head_dim 256 (Ideogram4) within max -> flash (mask guard handles masked case)
-    r = resolve_backend("flash", AttentionMode.INFERENCE, q256, k256, None, "BSHD")
+    r = resolve_backend("flash", AttentionMode.INFERENCE, q256.half(), k256.half(), None, "BSHD")
     record("guard: flash D=256 -> flash", PASS if r == "flash" else FAIL, f"got {r}")
 
     # tq: trainable -> stays tq in TRAINING (its differentiator)
-    r = resolve_backend("tq", AttentionMode.TRAINING, q, k, None, "BSHD")
+    r = resolve_backend("tq", AttentionMode.TRAINING, q16, k16, None, "BSHD")
     record("guard: tq in TRAINING -> tq", PASS if r == "tq" else FAIL, f"got {r}")
 
     # tq head_dim 256 not in allowed {64,128} -> native
-    r = resolve_backend("tq", AttentionMode.INFERENCE, q256, k256, None, "BSHD")
+    r = resolve_backend("tq", AttentionMode.INFERENCE, q256.half(), k256.half(), None, "BSHD")
     record("guard: tq D=256 -> native", PASS if r == "native" else FAIL, f"got {r}")
 
     # tq head_dim 40 (SD1.5) not in allowed {64,128} -> native
-    r = resolve_backend("tq", AttentionMode.INFERENCE, q40, k40, None, "BSHD")
+    r = resolve_backend("tq", AttentionMode.INFERENCE, q40.half(), k40.half(), None, "BSHD")
     record("guard: tq D=40 -> native", PASS if r == "native" else FAIL, f"got {r}")
 
     # tq mask present -> native (no mask support)
-    r = resolve_backend("tq", AttentionMode.INFERENCE, q, k, mask, "BSHD")
+    r = resolve_backend("tq", AttentionMode.INFERENCE, q16, k16, mask, "BSHD")
     record("guard: tq mask present -> native", PASS if r == "native" else FAIL, f"got {r}")
+
+    # Lossy implicit dtype conversion is not an equivalent backend selection.
+    r = resolve_backend("flash", AttentionMode.INFERENCE, q, k, None, "BSHD")
+    record("guard: flash fp32 -> native", PASS if r == "native" else FAIL, f"got {r}")
+
+
+def test_contracts():
+    q, k, v = _make_qkv("BSHD", 1, 8, 4, 16, "cpu", torch.float32)
+
+    try:
+        dispatch_attention(q, k, v, layout="BSDH")
+    except ValueError:
+        record("contract: invalid layout refused", PASS)
+    else:
+        record("contract: invalid layout refused", FAIL)
+
+    bad_k = torch.randn(1, 8, 3, 16)
+    bad_v = torch.randn_like(bad_k)
+    try:
+        dispatch_attention(q, bad_k, bad_v)
+    except ValueError:
+        record("contract: non-divisible GQA refused", PASS)
+    else:
+        record("contract: non-divisible GQA refused", FAIL)
+
+    mask = torch.tensor([[True, False, True, True, False, True, True, True]])
+    processed = _process_mask(mask, torch.float32)
+    record(
+        "contract: bool mask remains bool/no allocation",
+        PASS if processed.dtype == torch.bool and processed.untyped_storage().data_ptr() == mask.untyped_storage().data_ptr() else FAIL,
+    )
+
+
+def test_training_runtime_fallback_is_strict():
+    name = "contract: training kernel failure is strict by default"
+    original = BACKENDS["flash"]
+    BACKENDS["flash"] = dataclasses.replace(original, fn=lambda *args, **kwargs: None)
+    q, k, v = _make_qkv("BSHD", 1, 8, 4, 16, "cpu", torch.float16)
+    try:
+        try:
+            dispatch_attention(q, k, v, backend="flash", mode=AttentionMode.TRAINING)
+        except RuntimeError:
+            record(name, PASS)
+        else:
+            record(name, FAIL)
+
+        out = dispatch_attention(
+            q, k, v, backend="flash", mode=AttentionMode.TRAINING,
+            fallback_policy=AttentionFallbackPolicy.WARN,
+        )
+        record("contract: explicit training fallback remains available", PASS if out.shape == q.shape else FAIL)
+    finally:
+        BACKENDS["flash"] = original
 
 
 def test_normalize():
@@ -381,6 +437,8 @@ def main():
 
     # Guards + normalization + SLA passthrough (CPU-safe where possible).
     test_guards()
+    test_contracts()
+    test_training_runtime_fallback_is_strict()
     test_normalize()
     test_sla_short_circuit()
 

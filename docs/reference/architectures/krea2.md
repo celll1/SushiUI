@@ -288,5 +288,5 @@ Refusals / gates:
 | Unexpected or missing transformer keys are fatal | `vendor/single_file.build_krea2_transformer` |
 | Quantized checkpoint with zero swapped Linears is fatal | `quantized_checkpoint_guard.verify_quantized_swap`, called from `build_krea2_transformer` |
 | Distilled checkpoint disables CFG and pins `mu = 1.15` | `Krea2Mixin._krea2_common_params`, `krea2_pipeline_ops.compute_mu` |
-| Sage attention downgrades on unequal Q/KV head counts | the conduit (`core.attention`), invoked with `enable_gqa=self.num_heads != self.num_kv_heads` |
+| Sage attention accepts unequal Q/KV head counts when divisible | the conduit (`core.attention`), invoked with `enable_gqa=self.num_heads != self.num_kv_heads` |
 | Multi-reference style path only engages at 2+ references | `Krea2Mixin._krea2_style_configs`, `krea2_pipeline_ops._run_loop` (`len(style_refs) > 1`) |

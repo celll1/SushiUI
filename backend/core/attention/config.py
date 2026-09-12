@@ -20,6 +20,7 @@ from typing import Optional
 
 import torch
 
+from .contracts import is_training_mode, validate_layout
 from .registry import BACKENDS
 
 # UI / diffusers alias spellings -> canonical registry key. ``None`` (no
@@ -161,6 +162,7 @@ def _heads(tensor: torch.Tensor, layout: str) -> int:
         * BSHD == [B, S, H, D]  -> heads at dim 2
         * BHSD == [B, H, S, D]  -> heads at dim 1
     """
+    validate_layout(layout)
     return tensor.shape[1] if layout == "BHSD" else tensor.shape[2]
 
 
@@ -200,9 +202,13 @@ def resolve_backend(
     # MODE guard: no backward kernel for training.
     # AttentionMode is a str Enum, so ``mode == "training"`` matches without an
     # import (avoids a config<->dispatch circular import).
-    is_training = (mode == "training") or (getattr(mode, "value", None) == "training")
+    is_training = is_training_mode(mode)
     if is_training and not b.trainable:
         _log_downgrade(b.name, f"{b.name} has no backward; using native for training")
+        return "native"
+
+    if b.needs_half_dtype and query.dtype not in (torch.float16, torch.bfloat16):
+        _log_downgrade(b.name, f"{b.name} requires fp16/bf16 (got {query.dtype}); using native")
         return "native"
 
     # Mask guard.

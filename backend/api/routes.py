@@ -11983,7 +11983,7 @@ class SigLIP2PredictRequest(BaseModel):
     use_calibration: bool = False
     # New: filter by per-tag best_thr (raw sigmoid), display probs are still raw.
     use_per_tag_threshold: bool = False
-    # New: display calibrated probs in output while filtering uses raw sigmoid + best_thr.
+    # Deprecated compatibility field; calibrated probabilities are always returned.
     display_calibration: bool = False
     # Quality filters for per-tag threshold mode.
     # min_best_thr: clamp best_thr to this floor (suppresses noise-level FPs from untrained tags).
@@ -12119,7 +12119,6 @@ async def siglip2_predict(request: SigLIP2PredictRequest):
                 use_per_tag_threshold=request.use_per_tag_threshold,
                 min_best_thr=request.min_best_thr,
                 min_best_f1=request.min_best_f1,
-                display_calibration=request.display_calibration,
                 use_ood_detection=request.use_ood_detection,
             )
         return result

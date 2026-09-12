@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 import torch
 import torch.nn as nn
 
+from .optimizer_state_migrate import is_8bit_optimizer_state
+
 if TYPE_CHECKING:
     from .tag_vocabulary import TagVocabulary
 
@@ -63,12 +65,6 @@ class VocabExpander:
             self._pending.clear()
             return tags
 
-
-
-def _is_8bit_state(state: Dict[str, Any]) -> bool:
-    return any(k in state for k in ("state1", "state2", "absmax1", "absmax2"))
-
-
 def _expand_param_state(
     state: Dict[str, Any],
     n_new: int,
@@ -89,7 +85,7 @@ def _expand_param_state(
     if not state:
         return
 
-    if _is_8bit_state(state):
+    if is_8bit_optimizer_state(state):
         state.clear()
         return
 

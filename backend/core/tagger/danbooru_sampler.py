@@ -41,12 +41,8 @@ from torch.utils.data import DataLoader
 from transformers import AutoProcessor
 
 from .danbooru_client import DanbooruClient
-from .tag_vocabulary import (
-    QUALITY_TAG_GROUPS,
-    RATING_TAGS,
-    TagVocabulary,
-    normalize_tag,
-)
+from .tag_labels import build_label_and_mask as _build_label_and_mask_standalone
+from .tag_vocabulary import TagVocabulary, normalize_tag
 from .tagger_dataset import tagger_collate_fn
 
 # Danbooru post field → category code, for co-occurrence vocab discovery.
@@ -58,55 +54,6 @@ _COOC_CATEGORY_FIELDS = (
     (4, "tag_string_character"),
     (5, "tag_string_meta"),
 )
-
-
-
-def _build_label_and_mask_standalone(
-    tags: List[str],
-    vocabulary: TagVocabulary,
-    quality_masking_mode: str = "intra_group",
-    alias_resolver: Any = None,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Build (label, loss_mask) tensors from a tag list without a Dataset instance."""
-    if alias_resolver is not None:
-        tags = [alias_resolver.resolve(t) for t in tags]
-    else:
-        tags = [normalize_tag(t) for t in tags]
-
-    voc = vocabulary
-    num_tags = voc.num_tags
-    label     = torch.zeros(num_tags, dtype=torch.float32)
-    loss_mask = torch.ones(num_tags,  dtype=torch.float32)
-
-    tag_set = set(tags)
-    for tag in tag_set:
-        if tag in voc.tag_to_idx:
-            label[voc.tag_to_idx[tag]] = 1.0
-
-    has_rating = any(normalize_tag(r) in tag_set for r in RATING_TAGS)
-    if not has_rating:
-        for idx in voc.rating_indices:
-            loss_mask[idx] = 0.0
-
-    present_groups: set = set()
-    for group_name, gtags in QUALITY_TAG_GROUPS.items():
-        if any(normalize_tag(t) in tag_set for t in gtags):
-            present_groups.add(group_name)
-
-    if not present_groups:
-        for group_indices in voc.quality_indices.values():
-            for idx in group_indices:
-                loss_mask[idx] = 0.0
-    elif quality_masking_mode == "intra_group":
-        for group_name in present_groups:
-            for idx in voc.quality_indices[group_name]:
-                if label[idx] == 0.0:
-                    loss_mask[idx] = 0.0
-    # "cross_group": leave all loss_mask[*] = 1
-
-    return label, loss_mask
-
-
 
 class DanbooruSampleBuffer:
     """Background daemon thread that pre-fetches Danbooru images as tensors.

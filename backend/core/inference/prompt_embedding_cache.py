@@ -57,6 +57,18 @@ class PromptEmbeddingCache:
             self._entries.move_to_end(entry_key)
             return _copy_tree(stored, device), True
 
+    def contains(self, encoder: object, key: Hashable) -> bool:
+        entry_key = (id(encoder), key)
+        with self._lock:
+            entry = self._entries.get(entry_key)
+            if entry is None:
+                return False
+            encoder_ref, _stored = entry
+            if encoder_ref() is not encoder:
+                del self._entries[entry_key]
+                return False
+            return True
+
     def put(self, encoder: object, key: Hashable, value: Any) -> None:
         entry_key = (id(encoder), key)
         stored = _copy_tree(value, "cpu")

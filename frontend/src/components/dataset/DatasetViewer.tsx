@@ -42,6 +42,7 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
   // Tag statistics with categories (tag -> {category, count})
   const [tagStatistics, setTagStatistics] = useState<Record<string, { category: string; count: number }> | undefined>(undefined);
   const [statisticsLoading, setStatisticsLoading] = useState(false);
+  const [editorDirty, setEditorDirty] = useState(false);
   const itemRequestRef = useRef(0);
   const statisticsRequestRef = useRef(0);
 
@@ -56,6 +57,7 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
     setExcludedItems(new Set());
     setTagStatistics(undefined);
     setTagCategoryCache({});
+    setEditorDirty(false);
     statisticsRequestRef.current += 1;
     const controller = new AbortController();
     const loadDataset = async () => {
@@ -97,9 +99,9 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
       setItems(response.items);
       setTotal(response.total);
       setCurrentItem(current => (
-        response.items.find(candidate => candidate.id === current?.id)
-        || response.items[0]
-        || null
+        current && response.items.some(candidate => candidate.id === current.id)
+          ? current
+          : response.items[0] || null
       ));
     } catch (err) {
       if ((err as any)?.code !== "ERR_CANCELED") {
@@ -134,6 +136,8 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
   }, [datasetId]);
 
   const handleSelectItem = (item: DatasetGridItem) => {
+    if (editorDirty && !window.confirm("Discard unsaved tag changes?")) return;
+    setEditorDirty(false);
     setCurrentItem(item);
   };
 
@@ -167,12 +171,16 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
   };
 
   const handleSearchChange = (value: string) => {
+    if (editorDirty && !window.confirm("Discard unsaved tag changes?")) return;
+    setEditorDirty(false);
     setSearch(value);
     setPage(1);
     handleDeselectAll();
   };
 
   const handleTagFilterChange = (value: string) => {
+    if (editorDirty && !window.confirm("Discard unsaved tag changes?")) return;
+    setEditorDirty(false);
     setTagFilter(value);
     setPage(1);
     handleDeselectAll();
@@ -210,7 +218,11 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
           onToggleSelection={handleToggleSelection}
           onSearchChange={handleSearchChange}
           onTagFilterChange={handleTagFilterChange}
-          onPageChange={setPage}
+          onPageChange={(nextPage) => {
+            if (editorDirty && !window.confirm("Discard unsaved tag changes?")) return;
+            setEditorDirty(false);
+            setPage(nextPage);
+          }}
           onSelectAll={handleSelectAll}
           onDeselectAll={handleDeselectAll}
         />
@@ -234,6 +246,7 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
           datasetId={datasetId}
           tagCategoryCache={tagCategoryCache}
           onTaggerSettingsChange={setTaggerSettings}
+          onDirtyChange={setEditorDirty}
         />
       </div>
 

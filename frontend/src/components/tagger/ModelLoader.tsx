@@ -12,14 +12,23 @@ import VocabularyBrowser from "./VocabularyBrowser";
 
 const HISTORY_KEY = "tagger_model_loader_history";
 const MAX_HISTORY = 5;
+type DetectedModelType = "" | "full" | "lora" | "onnx";
 
 interface LoaderHistory {
   checkpointPath: string;
   visionEncoderPath: string;
   vocabPath: string;
-  modelType: "full" | "lora" | "onnx";
+  modelType?: DetectedModelType;
   loraRank: number;
   loraAlpha: number;
+}
+
+function derivedVocabularyPath(checkpointPath: string): string {
+  if (checkpointPath.toLowerCase().endsWith(".onnx")) {
+    return checkpointPath.replace(/\.onnx$/i, "_vocabulary.json");
+  }
+  const directory = checkpointPath.replace(/[/\\][^/\\]*$/, "");
+  return directory ? `${directory}/vocabulary.json` : "";
 }
 
 function loadHistory(): LoaderHistory[] {
@@ -41,7 +50,7 @@ interface ModelLoaderProps {
 }
 
 export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
-  const [modelType,          setModelType]          = useState<"full" | "lora" | "onnx">("lora");
+  const [detectedModelType,  setDetectedModelType]  = useState<DetectedModelType>("");
   const [checkpointPath,     setCheckpointPath]     = useState("");
   const [visionEncoderPath,  setVisionEncoderPath]  = useState("");
   const [vocabPath,          setVocabPath]          = useState("");
@@ -56,12 +65,14 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
   const [showHistory,        setShowHistory]        = useState(false);
 
   const debounceRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const metadataRequestRef = useRef(0);
+  const vocabIsAutomaticRef = useRef(true);
   const historyRef   = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     getSigLIP2Status()
       .then((s) => { setStatus(s); onStatusChange(s); })
-      .catch(() => {});
+      .catch((e: any) => setError(e?.message ?? "モデル状態を取得できませんでした"));
 
     const hist = loadHistory();
     setHistory(hist);
@@ -70,11 +81,16 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
       setCheckpointPath(last.checkpointPath);
       setVisionEncoderPath(last.visionEncoderPath);
       setVocabPath(last.vocabPath);
-      setModelType(last.modelType);
+      setDetectedModelType(last.modelType ?? (last.checkpointPath.toLowerCase().endsWith(".onnx") ? "onnx" : ""));
       setLoraRank(last.loraRank);
       setLoraAlpha(last.loraAlpha);
+      vocabIsAutomaticRef.current = last.vocabPath === derivedVocabularyPath(last.checkpointPath);
     }
-  }, []);
+    return () => {
+      metadataRequestRef.current += 1;
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [onStatusChange]);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -90,7 +106,8 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
     setCheckpointPath(entry.checkpointPath);
     setVisionEncoderPath(entry.visionEncoderPath);
     setVocabPath(entry.vocabPath);
-    setModelType(entry.modelType);
+    vocabIsAutomaticRef.current = entry.vocabPath === derivedVocabularyPath(entry.checkpointPath);
+    setDetectedModelType(entry.modelType ?? (entry.checkpointPath.toLowerCase().endsWith(".onnx") ? "onnx" : ""));
     setLoraRank(entry.loraRank);
     setLoraAlpha(entry.loraAlpha);
     setShowHistory(false);
@@ -99,45 +116,36 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
 
   // Auto-complete vocab path when checkpoint path changes, and fetch metadata
   const handleCheckpointChange = (val: string) => {
+    metadataRequestRef.current += 1;
     setCheckpointPath(val);
     setMetaStatus(null);
+    setDetectedModelType(val.toLowerCase().endsWith(".onnx") ? "onnx" : "");
 
-    // Auto-complete vocab path
-    if (!vocabPath) {
-      if (val.endsWith(".onnx")) {
-        // ONNX vocabulary is saved alongside as {name}_vocabulary.json
-        const stem = val.replace(/\.onnx$/, "");
-        setVocabPath(stem + "_vocabulary.json");
-      } else {
-        const dir = val.replace(/[/\\][^/\\]*$/, "");
-        if (dir) setVocabPath(dir + "/vocabulary.json");
-      }
+    if (vocabIsAutomaticRef.current) {
+      setVocabPath(derivedVocabularyPath(val));
     }
 
-    // ONNX auto-detect
-    if (val.endsWith(".onnx")) {
-      setModelType("onnx");
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (val.toLowerCase().endsWith(".onnx")) {
       return;
     }
 
-    // Debounce metadata fetch (500ms) — safetensors only
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (val.endsWith(".safetensors")) {
+    if (val.toLowerCase().endsWith(".safetensors")) {
+      const requestId = metadataRequestRef.current;
       debounceRef.current = setTimeout(async () => {
         try {
           const meta = await getSigLIP2CheckpointMeta(val);
+          if (requestId !== metadataRequestRef.current) return;
           if (meta.lora_rank !== undefined) {
             setLoraRank(meta.lora_rank);
-            setModelType("lora");
           }
           if (meta.lora_alpha !== undefined) {
             setLoraAlpha(meta.lora_alpha);
           }
-          if (meta.training_method === "full") {
-            setModelType("full");
-          }
+          setDetectedModelType(meta.training_method === "full" ? "full" : "lora");
           setMetaStatus("found");
         } catch {
+          if (requestId !== metadataRequestRef.current) return;
           setMetaStatus("not_found");
         }
       }, 500);
@@ -158,11 +166,15 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
       const s = await getSigLIP2Status();
       setStatus(s);
       onStatusChange(s);
-      const entry: LoaderHistory = { checkpointPath, visionEncoderPath, vocabPath, modelType, loraRank, loraAlpha };
+      setDetectedModelType(s.model_type as DetectedModelType);
+      const entry: LoaderHistory = {
+        checkpointPath, visionEncoderPath, vocabPath,
+        modelType: s.model_type as DetectedModelType, loraRank, loraAlpha,
+      };
       saveHistory(entry);
       setHistory(loadHistory());
     } catch (e: any) {
-      setError(e?.response?.data?.detail ?? e?.message ?? "Load failed");
+      setError(e?.response?.data?.detail ?? e?.message ?? "モデルを読み込めませんでした");
     } finally {
       setLoading(false);
     }
@@ -170,11 +182,14 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
 
   const handleUnload = async () => {
     setLoading(true);
+    setError(null);
     try {
       await unloadSigLIP2Model();
       const s = await getSigLIP2Status();
       setStatus(s);
       onStatusChange(s);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? e?.message ?? "モデルを解放できませんでした");
     } finally {
       setLoading(false);
     }
@@ -185,40 +200,27 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
 
   return (
     <div className="space-y-3 p-3">
-      <h3 className="text-sm font-semibold text-gray-200">Model</h3>
+      <h3 className="text-sm font-semibold text-gray-200">モデル</h3>
 
-      {/* Status badge */}
       {status && (
         <div className={`text-sm px-2 py-1 rounded ${status.loaded ? "bg-green-900 text-green-300" : "bg-gray-800 text-gray-400"}`}>
           {status.loaded
-            ? `Loaded · ${status.model_type} · ${status.num_tags.toLocaleString()} tags`
-            : "Not loaded"}
+            ? `読込済み · ${status.model_type} · ${status.num_tags.toLocaleString()}タグ`
+            : "未読込"}
         </div>
       )}
 
-      {/* Vocabulary browser (only when model is loaded) */}
       {status?.loaded && (
         <VocabularyBrowser useLoadedModel />
       )}
 
-      {/* Model type */}
-      <div>
-        <label className={labelCls}>Model Type</label>
-        <select
-          value={modelType}
-          onChange={(e) => setModelType(e.target.value as "full" | "lora" | "onnx")}
-          className={inputCls}
-        >
-          <option value="lora">LoRA (compact)</option>
-          <option value="full">Full model</option>
-          <option value="onnx">ONNX (.onnx)</option>
-        </select>
+      <div className="text-xs text-gray-500">
+        形式: {detectedModelType === "full" ? "Full" : detectedModelType === "lora" ? "LoRA" : detectedModelType === "onnx" ? "ONNX" : "読込時に自動判定"}
       </div>
 
-      {/* Checkpoint */}
       <div>
         <div className="flex items-center justify-between mb-1">
-          <label className={labelCls.replace(" mb-1", "")}>Checkpoint Path (.safetensors)</label>
+          <label className={labelCls.replace(" mb-1", "")}>チェックポイント</label>
           {history.length > 0 && (
             <div className="relative" ref={historyRef}>
               <button
@@ -226,7 +228,7 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
                 onClick={() => setShowHistory((v) => !v)}
                 className="text-xs text-blue-400 hover:text-blue-300 px-1.5 py-0.5 rounded border border-gray-600 hover:border-gray-500 transition-colors"
               >
-                History ▾
+                履歴 ▾
               </button>
               {showHistory && (
                 <div className="absolute right-0 top-full mt-1 z-50 w-max max-w-xs bg-gray-800 border border-gray-600 rounded shadow-lg overflow-hidden">
@@ -250,73 +252,81 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
           type="text"
           value={checkpointPath}
           onChange={(e) => handleCheckpointChange(e.target.value)}
-          placeholder="D:\tagger_models\...\latest.safetensors"
+          placeholder="<MODEL_ROOT>/latest.safetensors"
           className={inputCls}
         />
-        {/* Metadata indicator */}
         {metaStatus === "found" && (
-          <p className="text-xs text-green-400 mt-0.5">✓ Metadata loaded — rank/alpha auto-filled</p>
+          <p className="text-xs text-green-400 mt-0.5">✓ メタデータから形式と設定を取得しました</p>
         )}
         {metaStatus === "not_found" && (
-          <p className="text-xs text-gray-500 mt-0.5">No metadata file found alongside checkpoint</p>
+          <p className="text-xs text-gray-500 mt-0.5">メタデータなし — 読込時に重みから判定します</p>
         )}
       </div>
 
-      {/* Vision encoder (LoRA only — full/merged models include encoder weights) */}
-      {modelType === "lora" && (
+      {detectedModelType !== "full" && detectedModelType !== "onnx" && (
         <div>
-          <label className={labelCls}>Vision Encoder Path (.safetensors) <span className="text-gray-600">— optional</span></label>
+          <label className={labelCls}>Vision Encoder <span className="text-gray-600">— LoRAのみ・省略可</span></label>
           <input
             type="text"
             value={visionEncoderPath}
             onChange={(e) => setVisionEncoderPath(e.target.value)}
-            placeholder="Auto-detected from checkpoint metadata (HF repo)"
+            placeholder="メタデータから自動取得"
             className={inputCls}
           />
         </div>
       )}
 
-      {/* Vocabulary */}
       <div>
-        <label className={labelCls}>Vocabulary Path (vocabulary.json)</label>
+        <div className="mb-1 flex items-center justify-between">
+          <label className={labelCls.replace(" mb-1", "")}>語彙 (vocabulary.json)</label>
+          <button
+            type="button"
+            onClick={() => {
+              vocabIsAutomaticRef.current = true;
+              setVocabPath(derivedVocabularyPath(checkpointPath));
+            }}
+            className="text-xs text-blue-400 hover:text-blue-300"
+          >
+            自動設定に戻す
+          </button>
+        </div>
         <input
           type="text"
           value={vocabPath}
-          onChange={(e) => setVocabPath(e.target.value)}
-          placeholder="Auto-filled from checkpoint directory"
+          onChange={(e) => {
+            vocabIsAutomaticRef.current = false;
+            setVocabPath(e.target.value);
+          }}
+          placeholder="チェックポイントと同じ場所から自動設定"
           className={inputCls}
         />
       </div>
 
-      {/* LoRA params — auto-detected from the checkpoint, not user-entered */}
-      {modelType === "lora" && (
+      {detectedModelType === "lora" && (
         <div className="text-xs text-gray-500 bg-gray-800/50 rounded px-2 py-1.5">
           {metaStatus === "found" ? (
             <>LoRA rank <span className="text-gray-300 font-mono">{loraRank}</span> · alpha{" "}
               <span className="text-gray-300 font-mono">{loraAlpha}</span>{" "}
-              <span className="text-gray-600">(from metadata)</span></>
+              <span className="text-gray-600">(メタデータ)</span></>
           ) : (
-            <>Rank / alpha are auto-detected from the checkpoint on load (metadata, or
-              the weight shapes; alpha falls back to rank/2).</>
+            <>rank / alpha は読込時に重みから自動判定します。</>
           )}
         </div>
       )}
 
-      {/* Error */}
       {error && (
         <div className="text-sm text-red-400 bg-red-900/30 rounded px-2 py-1 break-all">
           {error}
         </div>
       )}
 
-      {/* Buttons */}
       <div className="flex gap-2">
         <button
           onClick={handleLoad}
           disabled={loading || !checkpointPath}
           className="flex-1 rounded-md border border-violet-400/30 bg-violet-600 py-1.5 text-xs font-medium text-white transition-colors hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {loading ? "Loading…" : "Load"}
+          {loading ? "処理中…" : "読み込む"}
         </button>
         {status?.loaded && (
           <button
@@ -324,7 +334,7 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
             disabled={loading}
             className="px-3 py-1.5 rounded text-sm font-medium bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
           >
-            Unload
+            解放
           </button>
         )}
       </div>

@@ -65,55 +65,51 @@ class AsymmetricLossOptimized(nn.Module):
         self.disable_torch_grad_focal_loss = disable_torch_grad_focal_loss
         self.reduction = reduction
 
-        self.targets = self.anti_targets = None
-        self.xs_pos = self.xs_neg = None
-        self.asymmetric_w = self.loss = None
-
     def forward(
         self,
         x: torch.Tensor,
         y: torch.Tensor,
         loss_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        self.targets = y
-        self.anti_targets = 1.0 - y
+        targets = y
+        anti_targets = 1.0 - y
 
-        self.xs_pos = torch.sigmoid(x)
-        self.xs_neg = 1.0 - self.xs_pos
+        xs_pos = torch.sigmoid(x)
+        xs_neg = 1.0 - xs_pos
 
         if self.clip is not None and self.clip > 0:
-            self.xs_neg.add_(self.clip).clamp_(max=1.0)
+            xs_neg.add_(self.clip).clamp_(max=1.0)
 
-        self.loss = self.targets * torch.log(self.xs_pos.clamp(min=self.eps))
-        self.loss.add_(self.anti_targets * torch.log(self.xs_neg.clamp(min=self.eps)))
+        loss = targets * torch.log(xs_pos.clamp(min=self.eps))
+        loss.add_(anti_targets * torch.log(xs_neg.clamp(min=self.eps)))
 
         if self.gamma_neg > 0 or self.gamma_pos > 0:
             if self.disable_torch_grad_focal_loss:
                 with torch.no_grad():
-                    xs_pos_f = self.xs_pos * self.targets
-                    xs_neg_f = self.xs_neg * self.anti_targets
-                    self.asymmetric_w = torch.pow(
+                    xs_pos_f = xs_pos * targets
+                    xs_neg_f = xs_neg * anti_targets
+                    asymmetric_w = torch.pow(
                         1.0 - xs_pos_f - xs_neg_f,
-                        self.gamma_pos * self.targets + self.gamma_neg * self.anti_targets,
+                        self.gamma_pos * targets + self.gamma_neg * anti_targets,
                     )
             else:
-                xs_pos_f = self.xs_pos * self.targets
-                xs_neg_f = self.xs_neg * self.anti_targets
-                self.asymmetric_w = torch.pow(
+                xs_pos_f = xs_pos * targets
+                xs_neg_f = xs_neg * anti_targets
+                asymmetric_w = torch.pow(
                     1.0 - xs_pos_f - xs_neg_f,
-                    self.gamma_pos * self.targets + self.gamma_neg * self.anti_targets,
+                    self.gamma_pos * targets + self.gamma_neg * anti_targets,
                 )
-            self.loss *= self.asymmetric_w
+            loss *= asymmetric_w
 
         if loss_mask is not None:
-            self.loss = self.loss * loss_mask
+            loss = loss * loss_mask
 
         if self.reduction == "mean":
-            return -self.loss.mean()
+            return -loss.mean()
         elif self.reduction == "sum":
-            return -self.loss.sum()
+            return -loss.sum()
         else:
-            return -self.loss
+            return -loss
 
 
 

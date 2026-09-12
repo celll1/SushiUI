@@ -7,6 +7,8 @@ from core.inference.prompt_embedding_cache import (
     conditioning_cache_key,
     generation_prompt_cache,
 )
+from core.keep_hot import mark_resident
+from core.pipeline_backends.flux2 import Flux2Mixin
 from core.pipeline_backends.krea2 import Krea2Mixin
 from core.pipeline_backends.minit2i import MiniT2IMixin
 
@@ -160,3 +162,53 @@ def test_minit2i_cache_covers_positive_negative_and_nag(monkeypatch):
         ("text_encoder", "cpu"),
     ]
     assert all(torch.equal(a, b) for a, b in zip(first, second))
+
+
+def test_flux2_cache_owns_all_text_variants_and_truthful_residency(monkeypatch):
+    import core.vram_optimization as vram
+
+    generation_prompt_cache.clear()
+    manager = Flux2Mixin()
+    manager.device = torch.device("cpu")
+    encoder = torch.nn.Linear(1, 1)
+    manager.flux2_components = {"text_encoder": encoder}
+    stages = []
+    forwards = []
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(
+        vram,
+        "move_flux2_text_encoder_to_gpu",
+        lambda module, *_args, **_kwargs: stages.append(module) or module,
+    )
+
+    def encode(_encoder, _tokenizer, prompt, _max_length):
+        forwards.append(prompt)
+        value = torch.full((1, 2, 2), len(prompt), dtype=torch.float32)
+        return value, torch.arange(8).reshape(1, 2, 4)
+
+    manager._flux2_encode_prompt = encode
+    tokenizer = _Encoder()
+    params = {"nag_enable": True, "nag_scale": 2.0, "nag_negative_prompt": "nag"}
+    args = (
+        encoder, tokenizer, "positive", "negative", 32, True, params,
+        "model", False, None,
+    )
+
+    first, kept_first, nag_active, nag_prompt = manager._flux2_encode_conditioning(*args)
+    second, kept_second, _, _ = manager._flux2_encode_conditioning(*args)
+
+    assert forwards == ["positive", "negative", "nag"]
+    assert stages == [encoder]
+    assert not kept_first and not kept_second
+    assert nag_active and nag_prompt == "nag"
+    for first_value, second_value in zip(first, second):
+        assert torch.equal(first_value, second_value)
+        assert first_value.data_ptr() != second_value.data_ptr()
+
+    keep_args = args[:-2] + (True, None)
+    _, kept_without_residency, _, _ = manager._flux2_encode_conditioning(*keep_args)
+    assert not kept_without_residency
+
+    mark_resident(manager, "text_encoder", "model")
+    _, kept_with_residency, _, _ = manager._flux2_encode_conditioning(*keep_args)
+    assert kept_with_residency

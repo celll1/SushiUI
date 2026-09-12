@@ -926,7 +926,6 @@ class Flux2Mixin:
 
             # Import VRAM optimization functions
             from core.vram_optimization import (
-                move_flux2_text_encoder_to_gpu,
                 move_flux2_transformer_to_gpu
             )
 
@@ -935,36 +934,18 @@ class Flux2Mixin:
             text_encoder_quantization = self._flux2_te_quantization_with_lora(text_encoder_quantization)
 
             print("[FLUX.2] Stage 1: Text encoding...")
-            if text_encoder_quantization not in (None, "", "none") or not is_resident(self, "text_encoder", _kh_model_key):
-                text_encoder = move_flux2_text_encoder_to_gpu(
-                    text_encoder, text_encoder_quantization,
-                    cache_owner=self.flux2_components, cache_identity=_kh_model_key,
+            conditioning, _kh_keep_te, nag_active, nag_neg_prompt = \
+                self._flux2_encode_conditioning(
+                    text_encoder, tokenizer, prompt, negative_prompt,
+                    max_sequence_length, do_classifier_free_guidance, params,
+                    _kh_model_key, _kh_keep_te, text_encoder_quantization,
                 )
-
-            prompt_embeds, text_ids = self._flux2_encode_prompt(
-                text_encoder, tokenizer, prompt, max_sequence_length
-            )
-
-            if do_classifier_free_guidance:
-                negative_prompt_embeds, negative_text_ids = self._flux2_encode_prompt(
-                    text_encoder, tokenizer, negative_prompt, max_sequence_length
-                )
-            else:
-                negative_prompt_embeds = None
-                negative_text_ids = None
-
-            # NAG (Normalized Attention Guidance): encode the nag-negative prompt so image
-            # tokens can be guided away from it in attention space. Works with CFG (text
-            # batch [cfg_neg, cfg_pos, nag_neg]) and distilled (text [pos, nag_neg]).
-            nag_active = params.get("nag_enable", False) and params.get("nag_scale", 5.0) > 1.0
-            nag_negative_prompt_embeds = None
-            nag_negative_text_ids = None
+            (
+                prompt_embeds, text_ids,
+                negative_prompt_embeds, negative_text_ids,
+                nag_negative_prompt_embeds, nag_negative_text_ids,
+            ) = conditioning
             nag_wrapper = None
-            nag_neg_prompt = params.get("nag_negative_prompt", "") or negative_prompt or ""
-            if nag_active:
-                nag_negative_prompt_embeds, nag_negative_text_ids = self._flux2_encode_prompt(
-                    text_encoder, tokenizer, nag_neg_prompt, max_sequence_length
-                )
 
             # NegPip: auto-activate on a negative emphasis weight (e.g. (worst:-1)) in
             # either prompt. Signed per-token V weighting; positive-only prompts skip
@@ -982,13 +963,6 @@ class Flux2Mixin:
                 )
                 print(f"[FLUX.2] NegPip auto-activated (negative emphasis weight detected); "
                       f"weights {tuple(negpip_weights.shape)}")
-
-            # Offload text encoder to CPU (unless kept hot -- TE is not touched
-            # again in this generation, so this is also TE's keep-hot exit point;
-            # see core/keep_hot.py).
-            if not _kh_keep_te:
-                text_encoder.to("cpu")
-                torch.cuda.empty_cache()
 
             # ============================================================
             # Stage 1.5: Encode Reference Images (Image Edit)
@@ -1657,6 +1631,93 @@ class Flux2Mixin:
             do_cfg=do_cfg, nag_active=nag_active,
             max_length=max_sequence_length,
         )
+
+    def _flux2_encode_conditioning(
+        self,
+        text_encoder,
+        tokenizer,
+        prompt: str,
+        negative_prompt: str,
+        max_sequence_length: int,
+        do_classifier_free_guidance: bool,
+        params: Dict[str, Any],
+        model_key: str,
+        keep_text_encoder: bool,
+        text_encoder_quantization,
+    ):
+        """Own every text encode and its staging for one Flux2 request."""
+        from core.inference.prompt_embedding_cache import (
+            conditioning_cache_key, generation_prompt_cache,
+        )
+        from core.keep_hot import discard_resident, is_resident
+        from core.vram_optimization import move_flux2_text_encoder_to_gpu
+
+        nag_active = bool(params.get("nag_enable", False)) \
+            and float(params.get("nag_scale", 5.0)) > 1.0
+        nag_neg_prompt = params.get("nag_negative_prompt", "") or negative_prompt or ""
+        encoder_dtype = getattr(text_encoder, "dtype", None)
+        if encoder_dtype is None:
+            encoder_dtype = next(text_encoder.parameters()).dtype
+        cache_key = conditioning_cache_key(
+            "flux2", model_key, tokenizer, self.device, encoder_dtype,
+            prompt,
+            negative_prompt if do_classifier_free_guidance else None,
+            nag_neg_prompt if nag_active else None,
+            do_classifier_free_guidance,
+            nag_active,
+            int(max_sequence_length),
+            (9, 18, 27),
+            str(text_encoder_quantization),
+        )
+        cached, cache_hit = generation_prompt_cache.get(
+            text_encoder, cache_key, self.device,
+        )
+        was_resident = is_resident(self, "text_encoder", model_key)
+        if cache_hit:
+            if not keep_text_encoder:
+                text_encoder.to("cpu")
+                discard_resident(self, "text_encoder")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            return cached, (keep_text_encoder and was_resident), nag_active, nag_neg_prompt
+
+        if text_encoder_quantization not in (None, "", "none") or not was_resident:
+            text_encoder = move_flux2_text_encoder_to_gpu(
+                text_encoder,
+                text_encoder_quantization,
+                cache_owner=self.flux2_components,
+                cache_identity=model_key,
+            )
+
+        prompt_embeds, text_ids = self._flux2_encode_prompt(
+            text_encoder, tokenizer, prompt, max_sequence_length,
+        )
+        negative_prompt_embeds = negative_text_ids = None
+        if do_classifier_free_guidance:
+            negative_prompt_embeds, negative_text_ids = self._flux2_encode_prompt(
+                text_encoder, tokenizer, negative_prompt, max_sequence_length,
+            )
+        nag_negative_prompt_embeds = nag_negative_text_ids = None
+        if nag_active:
+            nag_negative_prompt_embeds, nag_negative_text_ids = self._flux2_encode_prompt(
+                text_encoder, tokenizer, nag_neg_prompt, max_sequence_length,
+            )
+        result = (
+            prompt_embeds,
+            text_ids,
+            negative_prompt_embeds,
+            negative_text_ids,
+            nag_negative_prompt_embeds,
+            nag_negative_text_ids,
+        )
+        generation_prompt_cache.put(text_encoder, cache_key, result)
+
+        if not keep_text_encoder:
+            text_encoder.to("cpu")
+            discard_resident(self, "text_encoder")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        return result, keep_text_encoder, nag_active, nag_neg_prompt
 
     def _flux2_encode_prompt(
         self,
@@ -2477,7 +2538,6 @@ class Flux2Mixin:
 
             # Import VRAM optimization functions
             from core.vram_optimization import (
-                move_flux2_text_encoder_to_gpu,
                 move_flux2_transformer_to_gpu
             )
 
@@ -2486,36 +2546,18 @@ class Flux2Mixin:
                 params.get("text_encoder_quantization"))
 
             print("[FLUX.2] Stage 1: Text encoding...")
-            if text_encoder_quantization not in (None, "", "none") or not is_resident(self, "text_encoder", _kh_model_key):
-                text_encoder = move_flux2_text_encoder_to_gpu(
-                    text_encoder, text_encoder_quantization,
-                    cache_owner=self.flux2_components, cache_identity=_kh_model_key,
+            conditioning, _kh_keep_te, nag_active, nag_neg_prompt = \
+                self._flux2_encode_conditioning(
+                    text_encoder, tokenizer, prompt, negative_prompt,
+                    max_sequence_length, do_classifier_free_guidance, params,
+                    _kh_model_key, _kh_keep_te, text_encoder_quantization,
                 )
-
-            prompt_embeds, text_ids = self._flux2_encode_prompt(
-                text_encoder, tokenizer, prompt, max_sequence_length
-            )
-
-            if do_classifier_free_guidance:
-                negative_prompt_embeds, negative_text_ids = self._flux2_encode_prompt(
-                    text_encoder, tokenizer, negative_prompt, max_sequence_length
-                )
-            else:
-                negative_prompt_embeds = None
-                negative_text_ids = None
-
-            # NAG (Normalized Attention Guidance): encode the nag-negative prompt so image
-            # tokens can be guided away from it in attention space. Works with CFG (text
-            # batch [cfg_neg, cfg_pos, nag_neg]) and distilled (text [pos, nag_neg]).
-            nag_active = params.get("nag_enable", False) and params.get("nag_scale", 5.0) > 1.0
-            nag_negative_prompt_embeds = None
-            nag_negative_text_ids = None
+            (
+                prompt_embeds, text_ids,
+                negative_prompt_embeds, negative_text_ids,
+                nag_negative_prompt_embeds, nag_negative_text_ids,
+            ) = conditioning
             nag_wrapper = None
-            nag_neg_prompt = params.get("nag_negative_prompt", "") or negative_prompt or ""
-            if nag_active:
-                nag_negative_prompt_embeds, nag_negative_text_ids = self._flux2_encode_prompt(
-                    text_encoder, tokenizer, nag_neg_prompt, max_sequence_length
-                )
 
             # NegPip: auto-activate on a negative emphasis weight in either prompt.
             negpip_active = self._flux2_negpip_eligible(prompt, negative_prompt)
@@ -2529,13 +2571,6 @@ class Flux2Mixin:
                 )
                 print(f"[FLUX.2] NegPip auto-activated (negative emphasis weight detected); "
                       f"weights {tuple(negpip_weights.shape)}")
-
-            # Offload text encoder to CPU (unless kept hot -- TE is not touched
-            # again in this generation, so this is also TE's keep-hot exit point;
-            # see core/keep_hot.py).
-            if not _kh_keep_te:
-                text_encoder.to("cpu")
-                torch.cuda.empty_cache()
 
             # ============================================================
             # Stage 1.5: Encode Reference Images (Image Edit)
@@ -3309,7 +3344,6 @@ class Flux2Mixin:
 
             # Import VRAM optimization functions
             from core.vram_optimization import (
-                move_flux2_text_encoder_to_gpu,
                 move_flux2_transformer_to_gpu
             )
 
@@ -3318,36 +3352,18 @@ class Flux2Mixin:
                 params.get("text_encoder_quantization"))
 
             print("[FLUX.2] Stage 1: Text encoding...")
-            if text_encoder_quantization not in (None, "", "none") or not is_resident(self, "text_encoder", _kh_model_key):
-                text_encoder = move_flux2_text_encoder_to_gpu(
-                    text_encoder, text_encoder_quantization,
-                    cache_owner=self.flux2_components, cache_identity=_kh_model_key,
+            conditioning, _kh_keep_te, nag_active, nag_neg_prompt = \
+                self._flux2_encode_conditioning(
+                    text_encoder, tokenizer, prompt, negative_prompt,
+                    max_sequence_length, do_classifier_free_guidance, params,
+                    _kh_model_key, _kh_keep_te, text_encoder_quantization,
                 )
-
-            prompt_embeds, text_ids = self._flux2_encode_prompt(
-                text_encoder, tokenizer, prompt, max_sequence_length
-            )
-
-            if do_classifier_free_guidance:
-                negative_prompt_embeds, negative_text_ids = self._flux2_encode_prompt(
-                    text_encoder, tokenizer, negative_prompt, max_sequence_length
-                )
-            else:
-                negative_prompt_embeds = None
-                negative_text_ids = None
-
-            # NAG (Normalized Attention Guidance): encode the nag-negative prompt so image
-            # tokens can be guided away from it in attention space. Works with CFG (text
-            # batch [cfg_neg, cfg_pos, nag_neg]) and distilled (text [pos, nag_neg]).
-            nag_active = params.get("nag_enable", False) and params.get("nag_scale", 5.0) > 1.0
-            nag_negative_prompt_embeds = None
-            nag_negative_text_ids = None
+            (
+                prompt_embeds, text_ids,
+                negative_prompt_embeds, negative_text_ids,
+                nag_negative_prompt_embeds, nag_negative_text_ids,
+            ) = conditioning
             nag_wrapper = None
-            nag_neg_prompt = params.get("nag_negative_prompt", "") or negative_prompt or ""
-            if nag_active:
-                nag_negative_prompt_embeds, nag_negative_text_ids = self._flux2_encode_prompt(
-                    text_encoder, tokenizer, nag_neg_prompt, max_sequence_length
-                )
 
             # NegPip: auto-activate on a negative emphasis weight in either prompt.
             negpip_active = self._flux2_negpip_eligible(prompt, negative_prompt)
@@ -3361,13 +3377,6 @@ class Flux2Mixin:
                 )
                 print(f"[FLUX.2] NegPip auto-activated (negative emphasis weight detected); "
                       f"weights {tuple(negpip_weights.shape)}")
-
-            # Offload text encoder to CPU (unless kept hot -- TE is not touched
-            # again in this generation, so this is also TE's keep-hot exit point;
-            # see core/keep_hot.py).
-            if not _kh_keep_te:
-                text_encoder.to("cpu")
-                torch.cuda.empty_cache()
 
             # ============================================================
             # Stage 1.5: Encode Reference Images (Image Edit)

@@ -64,9 +64,9 @@ class Krea2GQADispatchTest(unittest.TestCase):
         self.assertFalse(capture["enable_gqa"])
 
     def test_flash_backend_leaves_kv_unexpanded(self):
-        attn = _attn()
+        attn = _attn().half()
         attn._attn_backend = "flash"
-        hidden = torch.randn(1, 5, attn.hidden_size)
+        hidden = torch.randn(1, 5, attn.hidden_size, dtype=torch.float16)
 
         capture = {}
         original = BACKENDS["flash"]

@@ -14649,6 +14649,79 @@ async def serve_image(path: str):
 
     return FileResponse(path)
 
+
+def _dataset_item_or_404(db: Session, dataset_id: int, item_id: int) -> DatasetItem:
+    item = db.query(DatasetItem).filter(
+        DatasetItem.dataset_id == dataset_id,
+        DatasetItem.id == item_id,
+    ).first()
+    if item is None:
+        raise HTTPException(status_code=404, detail="Dataset item not found")
+    return item
+
+
+@router.get("/datasets/{dataset_id}/items/{item_id}/preview")
+def get_dataset_item_preview(
+    dataset_id: int,
+    item_id: int,
+    request: Request,
+    size: Literal[128, 256, 512] = DATASET_DEFAULTS["preview_size"],
+    db: Session = Depends(get_datasets_db),
+):
+    from core.datasets.previews import PreviewUnavailableError, get_or_create_preview
+
+    item = _dataset_item_or_404(db, dataset_id, item_id)
+    try:
+        path, fingerprint = get_or_create_preview(
+            item,
+            size,
+            thumbnails_dir=settings.thumbnails_dir,
+            cache_root=settings.cache_dir,
+        )
+    except PreviewUnavailableError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"Cannot create preview: {exc}") from exc
+
+    etag = f'"{fingerprint}"'
+    headers = {"Cache-Control": "private, max-age=31536000, immutable", "ETag": etag}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return FileResponse(path, media_type="image/webp", headers=headers)
+
+
+@router.get("/datasets/{dataset_id}/items/{item_id}/media")
+async def get_dataset_item_media(
+    dataset_id: int,
+    item_id: int,
+    request: Request,
+    db: Session = Depends(get_datasets_db),
+):
+    item = _dataset_item_or_404(db, dataset_id, item_id)
+    if not os.path.isfile(item.image_path):
+        raise HTTPException(status_code=404, detail="Dataset media is missing")
+    return await range_file_response(
+        request, item.image_path, cache_control="private, no-cache"
+    )
+
+
+@router.get("/datasets/{dataset_id}/items/{item_id}/references/{reference_index}")
+async def get_dataset_reference_media(
+    dataset_id: int,
+    item_id: int,
+    reference_index: int,
+    request: Request,
+    db: Session = Depends(get_datasets_db),
+):
+    item = _dataset_item_or_404(db, dataset_id, item_id)
+    references = (item.related_images or {}).get("reference", [])
+    if reference_index < 0 or reference_index >= len(references):
+        raise HTTPException(status_code=404, detail="Reference image not found")
+    path = references[reference_index]
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Reference image is missing")
+    return await range_file_response(request, path, cache_control="private, no-cache")
+
 @router.get("/datasets/{dataset_id}/caption-types")
 async def get_dataset_caption_types(
     dataset_id: int,

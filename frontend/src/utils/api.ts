@@ -6499,6 +6499,21 @@ export const getDatasetItem = async (datasetId: number, itemId: number): Promise
   return response.data;
 };
 
+export const datasetItemPreviewUrl = (
+  datasetId: number,
+  itemId: number,
+  size: 128 | 256 | 512 = 256
+): string => `/api/datasets/${datasetId}/items/${itemId}/preview?size=${size}`;
+
+export const datasetItemMediaUrl = (datasetId: number, itemId: number): string =>
+  `/api/datasets/${datasetId}/items/${itemId}/media`;
+
+export const datasetReferenceMediaUrl = (
+  datasetId: number,
+  itemId: number,
+  referenceIndex: number
+): string => `/api/datasets/${datasetId}/items/${itemId}/references/${referenceIndex}`;
+
 export const getAllDatasetItemIds = async (
   datasetId: number,
   search?: string,

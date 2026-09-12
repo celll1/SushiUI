@@ -2206,6 +2206,7 @@ VIDEO_CHAIN_PROVENANCE_DEFAULTS: Dict[str, Any] = {
 DATASET_DEFAULTS: Dict[str, Any] = {
     "caption_type": "tags",
     "persist_sidecar": False,
+    "preview_size": 256,
 }
 
 

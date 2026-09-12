@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Search, ChevronLeft, ChevronRight, X, CheckSquare, Square } from "lucide-react";
-import { DatasetItem } from "@/utils/api";
+import { DatasetItem, datasetItemMediaUrl, datasetItemPreviewUrl } from "@/utils/api";
 import TagSuggestions from "@/components/common/TagSuggestions";
 import { TagFilterMode, normalizeTagForMatching } from "@/utils/tagSuggestions";
 import { useTagSuggestions } from "@/contexts/TagSuggestionsContext";
@@ -351,7 +351,7 @@ export default function ItemGridColumn({
                   {item.item_type === "video" ? (
                     item.thumbnail_url ? (
                       <img
-                        src={item.thumbnail_url}
+                        src={datasetItemPreviewUrl(item.dataset_id, item.id, 256)}
                         alt={item.base_name}
                         className="w-full h-full object-cover rounded-t"
                         loading="lazy"
@@ -361,7 +361,7 @@ export default function ItemGridColumn({
                       // avoid a broken <img> for the raw mp4 by using a
                       // muted, non-controlled <video> to show its first frame.
                       <video
-                        src={`/api/serve-image?path=${encodeURIComponent(item.image_path)}`}
+                        src={datasetItemMediaUrl(item.dataset_id, item.id)}
                         className="w-full h-full object-cover rounded-t"
                         muted
                         preload="metadata"
@@ -372,7 +372,7 @@ export default function ItemGridColumn({
                       // Waveform PNG generated at scan time (see
                       // backend/utils/audio_utils.py _write_waveform_png).
                       <img
-                        src={item.thumbnail_url}
+                        src={datasetItemPreviewUrl(item.dataset_id, item.id, 256)}
                         alt={item.base_name}
                         className="w-full h-full object-contain bg-black rounded-t"
                         loading="lazy"
@@ -384,7 +384,7 @@ export default function ItemGridColumn({
                     )
                   ) : (
                     <img
-                      src={`/api/serve-image?path=${encodeURIComponent(item.image_path)}`}
+                      src={datasetItemPreviewUrl(item.dataset_id, item.id, 256)}
                       alt={item.base_name}
                       className="w-full h-full object-cover rounded-t"
                       loading="lazy"

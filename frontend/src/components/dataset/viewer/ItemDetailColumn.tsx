@@ -7,6 +7,9 @@ import {
   DatasetItem,
   updateItemCaption,
   categorizeDatasetTags,
+  datasetItemMediaUrl,
+  datasetItemPreviewUrl,
+  datasetReferenceMediaUrl,
   predictTags,
   TaggerPredictionsResponse,
   removeItemReferenceImage,
@@ -366,7 +369,7 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
     setIsTagging(true);
 
     try {
-      const imageResponse = await fetch(`/api/serve-image?path=${encodeURIComponent(item.image_path)}`);
+      const imageResponse = await fetch(datasetItemMediaUrl(datasetId, item.id));
       const imageBlob = await imageResponse.blob();
       const base64 = await new Promise<string>((resolve) => {
         const reader = new FileReader();
@@ -532,8 +535,8 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
           <div className="w-24 h-24 sm:w-32 sm:h-32 bg-gray-800 rounded overflow-hidden flex-shrink-0">
             {item.item_type === "video" ? (
               <video
-                src={`/api/serve-image?path=${encodeURIComponent(item.image_path)}`}
-                poster={item.thumbnail_url || undefined}
+                src={datasetItemMediaUrl(datasetId, item.id)}
+                poster={item.thumbnail_url ? datasetItemPreviewUrl(datasetId, item.id, 256) : undefined}
                 className="w-full h-full object-contain bg-gray-900 cursor-pointer hover:opacity-80 transition-opacity"
                 controls
                 preload="metadata"
@@ -544,13 +547,13 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
               <div className="w-full h-full flex flex-col bg-gray-900">
                 {item.thumbnail_url && (
                   <img
-                    src={item.thumbnail_url}
+                    src={datasetItemPreviewUrl(datasetId, item.id, 256)}
                     alt={item.base_name}
                     className="w-full flex-1 object-contain min-h-0"
                   />
                 )}
                 <audio
-                  src={`/api/serve-image?path=${encodeURIComponent(item.image_path)}`}
+                  src={datasetItemMediaUrl(datasetId, item.id)}
                   controls
                   preload="metadata"
                   className="w-full flex-shrink-0"
@@ -558,7 +561,7 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
               </div>
             ) : (
               <img
-                src={`/api/serve-image?path=${encodeURIComponent(item.image_path)}`}
+                src={datasetItemMediaUrl(datasetId, item.id)}
                 alt={item.base_name}
                 className="w-full h-full object-contain bg-gray-900 cursor-pointer hover:opacity-80 transition-opacity"
                 onDoubleClick={() => setIsImageExpanded(true)}
@@ -600,12 +603,12 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
                   className="relative w-20 h-20 bg-gray-900 rounded overflow-hidden group"
                 >
                   <img
-                    src={`/api/serve-image?path=${encodeURIComponent(refPath)}`}
+                    src={datasetReferenceMediaUrl(datasetId, detailedItem.id, idx)}
                     alt={`Reference ${idx + 1}`}
                     className="w-full h-full object-cover cursor-pointer hover:opacity-80 transition-opacity"
                     onClick={() => {
                       const img = new Image();
-                      img.src = `/api/serve-image?path=${encodeURIComponent(refPath)}`;
+                      img.src = datasetReferenceMediaUrl(datasetId, detailedItem.id, idx);
                       const win = window.open('', '_blank', 'width=800,height=600');
                       if (win) {
                         win.document.write(`
@@ -887,8 +890,8 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
           <div className="flex-1 flex items-center justify-center p-4">
             {item.item_type === "video" ? (
               <video
-                src={`/api/serve-image?path=${encodeURIComponent(item.image_path)}`}
-                poster={item.thumbnail_url || undefined}
+                src={datasetItemMediaUrl(datasetId, item.id)}
+                poster={item.thumbnail_url ? datasetItemPreviewUrl(datasetId, item.id, 512) : undefined}
                 className="max-w-full max-h-full object-contain"
                 controls
                 preload="metadata"
@@ -897,13 +900,13 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
               <div className="flex flex-col items-center gap-4 w-full max-w-2xl">
                 {item.thumbnail_url && (
                   <img
-                    src={item.thumbnail_url}
+                    src={datasetItemPreviewUrl(datasetId, item.id, 512)}
                     alt={item.base_name}
                     className="max-w-full max-h-[60vh] object-contain"
                   />
                 )}
                 <audio
-                  src={`/api/serve-image?path=${encodeURIComponent(item.image_path)}`}
+                  src={datasetItemMediaUrl(datasetId, item.id)}
                   controls
                   preload="metadata"
                   className="w-full"
@@ -911,7 +914,7 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
               </div>
             ) : (
               <img
-                src={`/api/serve-image?path=${encodeURIComponent(item.image_path)}`}
+                src={datasetItemMediaUrl(datasetId, item.id)}
                 alt={item.base_name}
                 className="max-w-full max-h-full object-contain"
               />

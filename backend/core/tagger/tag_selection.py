@@ -30,11 +30,7 @@ MetricsResolver = Callable[[str], Optional[Tuple[Optional[float], Optional[float
 
 
 def mahalanobis(emb: np.ndarray, mu: np.ndarray, cov_inv: np.ndarray) -> float:
-    """Mahalanobis distance between *emb* and the in-distribution reference.
-
-    Mirrors ``SigLIP2InferenceManager._compute_mahalanobis`` exactly so the
-    training-model OOD distance is comparable to the inference-model one.
-    """
+    """Use float64 so loaded and live-training OOD distances stay comparable."""
     diff = emb.astype(np.float64) - mu.astype(np.float64)
     return float(np.sqrt(max(0.0, diff @ cov_inv.astype(np.float64) @ diff)))
 
@@ -95,68 +91,85 @@ def apply_calibration_by_name(
     return cal
 
 
-def select_tags(
-    all_items: List[Dict],
+def select_tag_response(
+    raw_probs: np.ndarray,
+    idx_to_tag: Dict[int, str],
+    tag_to_category: Dict[str, str],
     *,
     threshold: float,
-    use_per_tag_threshold: bool,
-    get_metrics: Optional[MetricsResolver],
-    min_best_thr: float,
-    min_best_f1: float,
-    min_samples_for_per_tag: int,
+    cal_probs: Optional[np.ndarray] = None,
+    use_per_tag_threshold: bool = False,
+    get_metrics: Optional[MetricsResolver] = None,
+    min_best_thr: float = 0.30,
+    min_best_f1: float = 0.05,
+    min_samples_for_per_tag: int = 5,
     ood_t: float = 0.0,
-) -> Tuple[List[Dict], bool]:
-    """Filter *all_items* into the final tag list.
+    missing_tag_prefix: Optional[str] = None,
+    default_category: str = "General",
+) -> Tuple[List[Dict], Optional[Dict], Optional[Dict], bool]:
+    """Build the filtered response without materializing every vocabulary row."""
+    selected: List[Tuple[int, str, str]] = []
+    quality: Optional[Tuple[int, str, str]] = None
+    rating: Optional[Tuple[int, str, str]] = None
+    use_metrics = bool(use_per_tag_threshold and get_metrics is not None)
 
-    Each item is a dict with at least ``tag``, ``category``, ``raw_prob`` and
-    ``prob`` keys. Quality / Rating categories are always excluded here (the
-    caller selects their per-image top-1 separately).
-
-    When *use_per_tag_threshold* is True and *get_metrics* is provided, each
-    tag is filtered by its own ``best_thr`` (clamped to *min_best_thr*) and
-    dropped entirely when ``best_f1 < min_best_f1``. Tags without metrics fall
-    back to the global *threshold*. For OOD images (*ood_t* > 0) the
-    Character/Copyright thresholds are raised toward 0.85.
-
-    Returns ``(filtered_sorted_by_prob_desc, used_best_thr)``.
-    """
-    filtered: List[Dict] = []
-    used_best_thr = False
-
-    if use_per_tag_threshold and get_metrics is not None:
-        used_best_thr = True
-        for it in all_items:
-            cat = it["category"]
-            if cat in ("Quality", "Rating"):
+    for idx in range(len(raw_probs)):
+        tag = idx_to_tag.get(idx)
+        if tag is None:
+            if missing_tag_prefix is None:
                 continue
-            thr_t = threshold  # fallback for tags without reliable metrics
-            m = get_metrics(it["tag"])
-            if m is not None:
-                best_thr, best_f1, n_pos = m
+            tag = f"{missing_tag_prefix}{idx}__"
+        category = tag_to_category.get(tag, default_category)
+
+        if category == "Quality":
+            if quality is None or raw_probs[idx] > raw_probs[quality[0]]:
+                quality = (idx, tag, category)
+            continue
+        if category == "Rating":
+            if rating is None or raw_probs[idx] > raw_probs[rating[0]]:
+                rating = (idx, tag, category)
+            continue
+
+        tag_threshold = threshold
+        if use_metrics:
+            metrics = get_metrics(tag)
+            if metrics is not None:
+                best_thr, best_f1, n_pos = metrics
                 if (
                     n_pos is not None
                     and int(n_pos) >= min_samples_for_per_tag
                     and best_thr is not None
                     and not math.isnan(float(best_thr))
                 ):
-                    # Skip unreliable detectors (best_f1 below floor)
-                    if best_f1 is not None and not math.isnan(float(best_f1)) \
-                            and float(best_f1) < min_best_f1:
+                    if (
+                        best_f1 is not None
+                        and not math.isnan(float(best_f1))
+                        and float(best_f1) < min_best_f1
+                    ):
                         continue
-                    # Clamp best_thr to the minimum to suppress noise-level FPs
-                    thr_t = max(float(best_thr), min_best_thr)
-            # OOD dynamic threshold: raise Character/Copyright thresholds toward
-            # 0.85 proportionally to how far the image is from the train dist.
-            if ood_t > 0.0 and cat in ("Character", "Copyright"):
-                thr_t = thr_t + ood_t * (0.85 - thr_t)
-            if it["raw_prob"] >= thr_t:
-                filtered.append(it)
-    else:
-        filtered = [
-            it for it in all_items
-            if it["raw_prob"] >= threshold
-            and it["category"] not in ("Quality", "Rating")
-        ]
+                    tag_threshold = max(float(best_thr), min_best_thr)
+        if use_metrics and ood_t > 0.0 and category in ("Character", "Copyright"):
+            tag_threshold += ood_t * (0.85 - tag_threshold)
+        if raw_probs[idx] >= tag_threshold:
+            selected.append((idx, tag, category))
 
-    filtered.sort(key=lambda x: x["prob"], reverse=True)
-    return filtered, used_best_thr
+    def make_item(row: Tuple[int, str, str]) -> Dict:
+        idx, tag, category = row
+        probability = float(raw_probs[idx])
+        item = {
+            "tag": tag,
+            "prob": probability,
+            "raw_prob": probability,
+            "category": category,
+        }
+        if cal_probs is not None:
+            item["cal_prob"] = float(cal_probs[idx])
+        return item
+
+    selected.sort(key=lambda row: raw_probs[row[0]], reverse=True)
+    return (
+        [make_item(row) for row in selected],
+        make_item(quality) if quality is not None else None,
+        make_item(rating) if rating is not None else None,
+        use_metrics,
+    )

@@ -21,9 +21,10 @@ import torch.nn.functional as F
 from PIL import Image
 
 from core.tagger.tag_selection import (
-    select_tags,
+    select_tag_response,
     ood_threshold_scale,
     calibration_table_to_name_map,
+    mahalanobis,
 )
 
 
@@ -652,7 +653,7 @@ class SigLIP2InferenceManager:
                 )
                 logits_np = ood_out[0][0]  # [num_tags]
                 emb_np    = ood_out[1][0]  # [cls_dim]
-                ood_distance = float(self._compute_mahalanobis(emb_np))
+                ood_distance = mahalanobis(emb_np, self.ood_ref["mu"], self.ood_ref["cov_inv"])
             elif self.is_naflex:
                 pam_np = inputs["pixel_attention_mask"].float().numpy()
                 ss_np  = inputs["spatial_shapes"].numpy().astype(np.int64)
@@ -698,7 +699,9 @@ class SigLIP2InferenceManager:
                 and self.ood_ref is not None
                 and self._last_cls_emb is not None
             ):
-                ood_distance = float(self._compute_mahalanobis(self._last_cls_emb))
+                ood_distance = mahalanobis(
+                    self._last_cls_emb, self.ood_ref["mu"], self.ood_ref["cov_inv"]
+                )
             _logits = logits[0]
             if self.logit_bias is not None:
                 _logits = _logits - torch.from_numpy(self.logit_bias).to(_logits.device)
@@ -746,41 +749,6 @@ class SigLIP2InferenceManager:
                     if cal_probs is not None:
                         cal_probs[_idx] = 1.0
 
-        # Build full list.
-        # prob     = raw sigmoid (always; used for filtering and default display)
-        # cal_prob = Jeffreys-calibrated probability (present when calibration table
-        #            is available; client toggles between the two views)
-        all_items: List[Dict] = []
-        for i in range(len(raw_probs)):
-            tag      = idx_to_tag.get(i, f"__unk_{i}__")
-            category = tag_to_category.get(tag, "Unknown")
-            item: Dict = {
-                "tag":      tag,
-                "prob":     float(raw_probs[i]),
-                "raw_prob": float(raw_probs[i]),
-                "category": category,
-            }
-            if cal_probs is not None:
-                item["cal_prob"] = float(cal_probs[i])
-            all_items.append(item)
-
-        # Quality / Rating: pick the max regardless of threshold
-        quality_top: Optional[Dict] = None
-        rating_top:  Optional[Dict] = None
-
-        quality_items = [it for it in all_items if it["category"] == "Quality"]
-        rating_items  = [it for it in all_items if it["category"] == "Rating"]
-
-        if quality_items:
-            quality_top = max(quality_items, key=lambda x: x["prob"])
-        if rating_items:
-            rating_top  = max(rating_items,  key=lambda x: x["prob"])
-
-        # Threshold-filtered tags (exclude Quality / Rating from the main list).
-        # Shared with the training-model path (tag_selection.select_tags) so both
-        # produce identical results. OOD dynamic threshold scale factor
-        # (0 = in-dist, 1 = fully OOD) is only non-zero when OOD detection is
-        # active and a distance is available.
         _ood_t = (
             ood_threshold_scale(ood_distance,
                                 float(self.ood_ref["p50"]),
@@ -805,15 +773,20 @@ class SigLIP2InferenceManager:
                     float(_npos[_idx]) if _npos is not None else None,
                 )
 
-        filtered, _used_best_thr = select_tags(
-            all_items,
+        filtered, quality_top, rating_top, _used_best_thr = select_tag_response(
+            raw_probs,
+            idx_to_tag,
+            tag_to_category,
             threshold=threshold,
+            cal_probs=cal_probs,
             use_per_tag_threshold=_use_ptt,
             get_metrics=_get_metrics,
             min_best_thr=min_best_thr,
             min_best_f1=min_best_f1,
             min_samples_for_per_tag=min_samples_for_per_tag,
             ood_t=_ood_t,
+            missing_tag_prefix="__unk_",
+            default_category="Unknown",
         )
 
         return {
@@ -1366,12 +1339,6 @@ class SigLIP2InferenceManager:
             "p50":     float(data["p50"]),
             "p95":     float(data["p95"]) if "p95" in data else 0.0,
         }
-
-    def _compute_mahalanobis(self, emb: "np.ndarray") -> float:
-        """Compute Mahalanobis distance between emb and the in-dist reference."""
-        import numpy as np
-        diff = emb.astype(np.float64) - self.ood_ref["mu"]
-        return float(np.sqrt(max(0.0, diff @ self.ood_ref["cov_inv"] @ diff)))
 
     def build_training_assist(
         self,

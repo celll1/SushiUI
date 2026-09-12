@@ -379,11 +379,16 @@ async def rescan_dataset_inline(
     if progress_callback:
         try: progress_callback(f"Rescanning dataset {dataset_id}...")
         except Exception: pass
-    # Deferred import breaks the module-load cycle with the API training routes.
-    from api.routes import _scan_dataset_impl
-    result = await _scan_dataset_impl(
+    from core.datasets.scanning import scan_dataset_index
+
+    def report(_step: int, _total: int, message: str) -> None:
+        if progress_callback is not None:
+            progress_callback(message)
+
+    result = await scan_dataset_index(
         dataset_id=dataset_id, db=datasets_db, incremental=True,
         should_cancel=should_cancel,
+        progress=report,
     )
     return result
 

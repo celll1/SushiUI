@@ -43,9 +43,8 @@ class AttentionBackend:
         max_head_dim: If not None, downgrade to native when ``head_dim > max``.
         allowed_head_dims: If not None, downgrade to native when
             ``head_dim not in`` this set.
-        needs_half_dtype: If True, the kernel requires fp16/bf16; the backend fn
-            casts q/k/v to bf16 and casts the output back (informational; the
-            actual cast lives in the backend fn).
+        needs_half_dtype: If True, capability resolution refuses other dtypes
+            rather than hiding a lossy conversion in the kernel adapter.
         supports_gqa: If False, downgrade to native when ``H_kv != H``.
         supports_dropout: If False, non-zero attention dropout resolves to native.
         varlen_fn: Packed ``[total, heads, dim]`` kernel, or None when unsupported.

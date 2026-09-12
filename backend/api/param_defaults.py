@@ -1268,8 +1268,8 @@ VIDEO_GEN_DEFAULTS: Dict[str, Any] = {
     # Connectivity is separate from the dense kernel above. The H3 window is
     # approximate and opt-in; LTX-2.3 reports it as unsupported.
     "attention_method": "dense",
-    # H3 rotary-coordinate radii. Video time uses the model's pixel-frame
-    # clock; height/width occupy the normalized [0, 32] spatial grid.
+    # H3 rotary-coordinate radii. Time uses the model's rescaled frame clock;
+    # height/width occupy the normalized [0, 32] spatial grid.
     "h3_attention_temporal_radius": 16.0,
     "h3_attention_spatial_radius": 8.0,
     # Generation-time LoRA (same shape as every other arch's params["loras"]:

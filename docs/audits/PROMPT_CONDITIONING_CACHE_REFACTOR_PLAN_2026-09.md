@@ -28,13 +28,13 @@ request.
 |---|---|---|---|
 | Krea2 | Existing `_krea2_encode` | Complete today | Already implemented |
 | MiniT2I | Existing `_minit2i_encode` | Complete today, including cleaned NegPip text | Already implemented |
-| Flux2 | New wrapper around positive, CFG-negative and NAG encodes | Model key, three prompts, CFG/NAG gates, max length, hidden-state layers, tokenizer | Implement |
-| Anima | New wrapper around positive, CFG-unconditional and NAG encodes | Model key, three prompts, CFG/NAG gates, both tokenizers, dtype | Implement |
-| Lens | New wrapper around main and NAG encodes | Model key, prompts, NAG gate, tokenizer, max length, dtype | Implement |
-| Ideogram 4 | Merge main and NAG encoding into one owner | Model key, cleaned prompts, grid, max length, tokenizer, dtype | Implement |
-| Z-Image | New wrapper around CFG and NAG encodes | Model key, prompt lists, CFG/NAG gates, max length, tokenizer, FP8 mode | Implement |
-| SD1.5 / SDXL | Cache the complete weighted/chunked base-conditioning result before vision tokens | Live pipeline/encoders, tokenizer pair, parser mode, chunking, clip-skip, textual-inversion vocabulary, LoRA/model key, prompts, dtype/device | Implement only after an explicit eligibility/key helper is tested |
-| SenseNova | Text prefix may include reference-image conditioning and shape-dependent caches | Task mode, prompt pair, reference content, image/grid shape and model key | Keep uncached unless a text-only prefix can be separated without changing prefix-cache construction |
+| Flux2 | New wrapper around positive, CFG-negative and NAG encodes | Model key, three prompts, CFG/NAG gates, max length, hidden-state layers, tokenizer | Implemented |
+| Anima | New wrapper around positive, CFG-unconditional and NAG encodes | Model key, three prompts, CFG/NAG gates, both tokenizers, dtype | Implemented |
+| Lens | New wrapper around main and NAG encodes | Model key, prompts, NAG gate, tokenizer, max length, dtype | Implemented |
+| Ideogram 4 | Merge main and NAG encoding into one owner | Model key, cleaned prompts, grid, max length, tokenizer, dtype | Implemented |
+| Z-Image | New wrapper around CFG and NAG encodes | Model key, prompt lists, CFG/NAG gates, max length, tokenizer, FP8 mode | Implemented |
+| SD1.5 / SDXL | Cache weighted/chunked text conditioning before vision tokens | Live encoders, tokenizer pair, parser/chunk policy, custom-TE bridge, prompts, dtype/device | Implemented; mutable PEFT state bypasses the cache |
+| SenseNova | Prefix construction returns live per-layer KV state, not text embeddings | Resolution, branch topology, references, transformer state and KV-streaming mode | Rejected; the returned state is mutated and cleared by denoising |
 | LTX-2.3 | Diffusers pipeline owns prompt encoding and callback state | Pipeline-private prompt/encoder state | Do not duplicate upstream internals |
 | ACE-Step / MiniMax Music 3 | Conditioning is interleaved with architecture-specific language/audio state | Long-form timeline and pipeline state | Reject as a generic image prompt-cache target |
 | MiniMax-H3 | Specialized projected prompt cache | Encoder/projection paths, prompt and DiT width | Retain existing implementation |
@@ -65,3 +65,19 @@ request.
 Real-model timing and broad architecture operation are accepted through user
 feedback; automated tests retain the static, ownership and equivalence
 contracts above.
+
+## SenseNova re-audit
+
+`sensenova_pipeline_ops.encode_prompt()` does not expose a separable text
+embedding. It runs the transformer prefix forward and returns up to three
+per-layer KV caches. Their token indexes include output resolution; their
+branch topology depends on both CFG scales; reference images contribute pixel
+embeddings; and the forward observes the request's applied LoRA state.
+
+The caches are then expanded or adopted by the selected KV ring streamer.
+Denoising writes their flash-cache tails and cleanup frees those buffers.
+Treating that object as immutable CPU prompt data would require copying a large
+multi-layer cache, rebuilding streamer ownership, and proving that no denoise
+mutation survives. That moves substantially more memory than ordinary prompt
+embeddings and does not preserve the current lifecycle. Tokenization alone is
+separable but too small to justify another cache and invalidation contract.

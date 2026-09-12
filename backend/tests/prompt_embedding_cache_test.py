@@ -11,6 +11,7 @@ from core.keep_hot import mark_resident
 from core.pipeline_backends.anima import AnimaMixin
 from core.pipeline_backends.flux2 import Flux2Mixin
 from core.pipeline_backends.krea2 import Krea2Mixin
+from core.pipeline_backends.lens import LensMixin
 from core.pipeline_backends.minit2i import MiniT2IMixin
 
 
@@ -253,3 +254,45 @@ def test_anima_cache_owns_cfg_and_nag_encodes(monkeypatch):
     for first_value, second_value in zip(first, second):
         assert torch.equal(first_value["prompt_embeds"], second_value["prompt_embeds"])
         assert first_value["prompt_embeds"].data_ptr() != second_value["prompt_embeds"].data_ptr()
+
+
+def test_lens_hit_skips_disposable_encoder_reload(monkeypatch):
+    from core.models.lens import lens_pipeline_ops
+
+    generation_prompt_cache.clear()
+    manager = LensMixin()
+    manager.model_revision = 3
+    manager.lens_components = {"text_encoder": None, "tokenizer": _Encoder()}
+    reloads = []
+    forwards = []
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+    def reload_encoder():
+        reloads.append(True)
+        manager.lens_components["text_encoder"] = torch.nn.Linear(1, 1)
+
+    manager._reload_lens_text_encoder = reload_encoder
+    manager._lens_move = lambda name, _device, *_args: manager.lens_components[name]
+
+    def encode_prompt(*_args, **_kwargs):
+        forwards.append(True)
+        return [torch.ones(1, 2, 2)], torch.ones(1, 2, dtype=torch.bool)
+
+    monkeypatch.setattr(lens_pipeline_ops, "encode_prompt", encode_prompt)
+    args = (
+        {}, "positive", "negative", torch.device("cpu"), torch.device("cpu"),
+        torch.float32, 32, "model", False, None,
+    )
+    first = manager._lens_encode_conditioning(*args)
+    second = manager._lens_encode_conditioning(*args)
+
+    assert len(reloads) == 1
+    assert len(forwards) == 1
+    assert manager.lens_components["text_encoder"] is None
+    assert torch.equal(first[0][0], second[0][0])
+    assert first[0][0].data_ptr() != second[0][0].data_ptr()
+
+    manager.model_revision += 1
+    manager._lens_encode_conditioning(*args)
+    assert len(reloads) == 2
+    assert len(forwards) == 2

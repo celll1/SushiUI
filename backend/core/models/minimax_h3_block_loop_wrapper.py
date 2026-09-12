@@ -294,6 +294,9 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
         # omitting it would leave every attention module on whatever backend the
         # previous generation stamped (or on native forever, if the first
         # generation of a session used block swap).
+        plan = getattr(t, "_attention_plan", None)
+        if plan is not None and hasattr(plan, "begin_forward"):
+            plan.begin_forward()
         t._stamp_attention_backend()
 
         if position_ids.ndim != 2 or position_ids.shape[-1] != 3:

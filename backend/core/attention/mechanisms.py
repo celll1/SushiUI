@@ -7,6 +7,7 @@ from typing import Optional
 class AttentionMechanism(str, Enum):
     DENSE = "dense"
     H3_VIDEO_WINDOW = "h3_video_window"
+    H3_SOL_ATTN = "h3_sol_attn"
 
 
 def known_mechanisms() -> tuple[str, ...]:

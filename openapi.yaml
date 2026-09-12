@@ -13407,7 +13407,7 @@ components:
           example: sage
         attention_method:
           type: string
-          enum: [dense, h3_video_window]
+          enum: [dense, h3_video_window, h3_sol_attn]
           default: dense
           description: |
             Semantic attention connectivity, independent of `attention_type`.
@@ -14039,7 +14039,7 @@ components:
           example: normal
         attention_method:
           type: string
-          enum: [dense, h3_video_window]
+          enum: [dense, h3_video_window, h3_sol_attn]
           default: dense
           description: "Attention connectivity with the same semantics as `Txt2VidRequest.attention_method`."
           example: dense
@@ -14558,7 +14558,7 @@ components:
           example: normal
         attention_method:
           type: string
-          enum: [dense, h3_video_window]
+          enum: [dense, h3_video_window, h3_sol_attn]
           default: dense
           description: "Attention connectivity with the same semantics as `Txt2VidRequest.attention_method`."
           example: dense

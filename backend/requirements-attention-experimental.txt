@@ -1,0 +1,3 @@
+# Optional forward-only sparse-attention kernels. Kept out of the base install
+# until their GPU quality/performance gates pass.
+sol-attn @ git+https://github.com/NVlabs/Sana.git@8e0db4fa562d727ea28b8d63015c196db7d97cae#subdirectory=techniques/sparse_backends

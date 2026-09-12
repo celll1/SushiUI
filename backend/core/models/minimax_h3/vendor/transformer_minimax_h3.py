@@ -324,6 +324,8 @@ class MiniMaxH3AttnProcessor:
                 value,
                 plan,
                 mode=getattr(attn, "_attn_mode", AttentionMode.INFERENCE),
+                dense_backend=getattr(attn, "_attn_backend", "native"),
+                layer_index=getattr(attn, "_attention_layer_index", None),
             )
         else:
             hidden_states = dispatch_attention(
@@ -754,8 +756,9 @@ class MiniMaxH3Transformer3DModel(ModelMixin, ConfigMixin, AttentionMixin, PeftA
                 m._attn_mode = mode
                 m._attention_plan = None
         plan = getattr(self, "_attention_plan", None)
-        for block in self.transformer_blocks:
+        for layer_index, block in enumerate(self.transformer_blocks):
             block.attn._attention_plan = plan
+            block.attn._attention_layer_index = layer_index
 
     @apply_lora_scale("attention_kwargs")
     def forward(
@@ -809,6 +812,9 @@ class MiniMaxH3Transformer3DModel(ModelMixin, ConfigMixin, AttentionMixin, PeftA
                 `video_indices` and `audio_indices`.
         """
         # `attention_kwargs` is consumed by the `@apply_lora_scale` decorator on this method.
+        plan = getattr(self, "_attention_plan", None)
+        if plan is not None and hasattr(plan, "begin_forward"):
+            plan.begin_forward()
         self._stamp_attention_backend()  # SushiUI: unified attention conduit
         if position_ids.ndim != 2 or position_ids.shape[-1] != 3:
             raise ValueError(f"`position_ids` must be a `(seq_len, 3)` tensor, got {list(position_ids.shape)}.")

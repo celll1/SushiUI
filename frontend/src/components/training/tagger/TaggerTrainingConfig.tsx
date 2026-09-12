@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   createTaggerTrainingRun,
   updateTaggerTrainingRun,
@@ -22,126 +22,20 @@ interface TaggerTrainingConfigProps {
   editRun?: TaggerTrainingRun;
 }
 
-const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = {
-  run_name: "",
-  training_method: "lora",
-  vision_encoder_path: "",
-  gpu_index: null,
-  init_head_from: "",
-  lora_rank: 32,
-  lora_alpha: 16,
-  learning_rate: 3e-4,
-  head_lr_multiplier: 10.0,
-  optimizer: "adamw8bit",
-  warmup_steps: 100,
-  epochs: 10,
-  batch_size: 32,
-  vocab_min_count: 10,
-  vocab_use_gelbooru_categories: true,
-  num_workers: 4,
-  num_workers_override: null as number | null,
-  tag_refresh_enable: false,
-  tag_refresh_interval_seconds: 60,
-  save_every_n_steps: 500,
-  save_every_n_epochs: 0,
-  keep_last_n_checkpoints: 3,
-  checkpoint_save_mode: "lora",
-  mixed_precision: "bf16",
-  use_flash_attention: false,
-  gradient_checkpointing: true,
-  loss_function: "asl" as string,
-  loss_clip: 0.05,
-  loss_gamma_neg: 4,
-  loss_gamma_pos: 1,
-  loss_gamma0: 4.0,
-  loss_m0: 0.2,
-  loss_rho: 0.5,
-  loss_beta: 2.0,
-  loss_label_weight: "fisher" as string,
-  val_split_mode: "percent" as string,
-  val_split: 0.05,
-  val_fixed_size: undefined as number | undefined,
-  validate_every: 1,
-  save_best_only: false,
-  excluded_categories: [] as string[],
-  ban_tags: "",
-  use_tag_aliases: false,
-  save_base_model: false,
-  quality_masking_mode: "intra_group" as const,
-  cls_dim: undefined as number | undefined,
-  hidden_proj_dim: undefined as number | undefined,
-  // LR matrix (conditional inference) — built once at training start when enabled.
-  build_lr_matrix_on_start: false,
-  lr_top_anchors: 10000,
-  lr_top_targets: 1000,
-  lr_threshold: 1.0,
-  lr_min_anchor_count: 10,
-  // Pre-flight: detect dataset drift + auto-rescan.  Adds the time of
-  // one directory walk per dataset (~5 min for 3M items on NVMe).
-  rescan_before_training: "off",
-  // Training-time F1 metrics
-  train_f1_eval_every_n_steps: 100,
-  train_f1_threshold_search_every_n_steps: 500,
-  train_f1_initial_threshold: 0.35,
-  train_f1_buffer_batches: 16,
-  // Online Danbooru augmentation
-  enable_danbooru_augmentation: false,
-  danbooru_query_enable: true,
-  danbooru_query_expand_enable: false,
-  danbooru_query_new_tag_min_count: 200,
-  danbooru_query_resolve_top_k: 50,
-  danbooru_query_max_expanded_tags: 0,
-  danbooru_query_expand_categories: [0, 3, 4],
-  danbooru_query_resolve_interval: 3600,
-  danbooru_query_collect_per_epoch: 0,
-  danbooru_new_tag_collect_per_epoch: 0,
-  danbooru_low_f1_collect_per_epoch: 0,
-  danbooru_tags: "",
-  danbooru_injection_interval: 4,
-  danbooru_injection_batch_size_ratio: 1.0,
-  danbooru_min_score: 0,
-  danbooru_max_posts_per_query: 200,
-  danbooru_api_interval: 1.4,
-  danbooru_dl_speed_kbps: 500,
-  danbooru_speed_check_enable: true,
-  danbooru_speed_degraded_kbps: 250,
-  danbooru_speed_min_slow_streak: 8,
-  danbooru_speed_min_slow_seconds: 90,
-  danbooru_speed_cooldown_seconds: 3600,
-  danbooru_buffer_size: null,
-  danbooru_vocab_expand: false,
-  danbooru_new_tag_min_count: 200,
-  danbooru_new_tag_lookback_days: 90,
-  danbooru_new_tag_categories: [0, 3, 4],
-  danbooru_new_tag_min_count_by_cat: {} as Record<string, number>,
-  danbooru_new_tag_survey_interval: 3600,
-  danbooru_max_dynamic_tags: 0,
-  danbooru_query_weight_static: 1.0,
-  danbooru_query_weight_new_tag: 1.0,
-  danbooru_query_weight_low_f1: 1.0,
-  danbooru_query_weight_train_count: 1.0,
-  danbooru_low_f1_enable: false,
-  danbooru_low_f1_threshold: 0.5,
-  danbooru_low_f1_top_k: 500,
-  danbooru_low_f1_min_posts: 50,
-  danbooru_train_count_enable: false,
-  danbooru_train_count_top_k: 500,
-  danbooru_train_count_min_deficit_ratio: 0.3,
-  danbooru_train_count_min_per_epoch: 10,
-  danbooru_train_count_min_posts: 50,
-  danbooru_train_count_collect_per_epoch: 0,
-  danbooru_quality_tag_enable: false,
-  danbooru_quality_tag_thresholds: "",
-  danbooru_quality_tag_attach_negative: false,
-  danbooru_cooc_expand_enable: false,
-  danbooru_cooc_min_count: 50,
-  danbooru_cooc_categories: [0, 3, 4],
-  danbooru_query_weight_cooc: 0.1,
-  danbooru_cooc_collect_per_epoch: 50,
-  danbooru_cooc_order_random: true,
-};
-
 type ConfigState = Omit<TaggerTrainingRunCreateRequest, "dataset_configs">;
+
+function configFromDefaults(
+  defaults: Record<string, unknown>,
+  editRun?: TaggerTrainingRun,
+): ConfigState {
+  const merged = {
+    ...defaults,
+    ...(editRun?.config ?? {}),
+    run_name: editRun?.run_name ?? "",
+    vision_encoder_path: editRun?.vision_encoder_path ?? defaults.vision_encoder_path ?? "",
+  } as ConfigState;
+  return merged;
+}
 
 export default function TaggerTrainingConfig({
   onClose,
@@ -150,135 +44,21 @@ export default function TaggerTrainingConfig({
 }: TaggerTrainingConfigProps) {
   const isEditMode = !!editRun;
 
-  // Derive initial config from editRun when in edit mode
-  const initialConfig: ConfigState = isEditMode
-    ? {
-        run_name: editRun.run_name,
-        training_method: (editRun.config?.training_method as ConfigState["training_method"]) ?? DEFAULT_CONFIG.training_method,
-        vision_encoder_path: editRun.vision_encoder_path,
-        gpu_index: (editRun.config?.gpu_index as number | null) ?? DEFAULT_CONFIG.gpu_index,
-        init_head_from: (editRun.config?.init_head_from as string) ?? DEFAULT_CONFIG.init_head_from,
-        lora_rank: (editRun.config?.lora_rank as number) ?? DEFAULT_CONFIG.lora_rank,
-        lora_alpha: (editRun.config?.lora_alpha as number) ?? DEFAULT_CONFIG.lora_alpha,
-        learning_rate: (editRun.config?.learning_rate as number) ?? DEFAULT_CONFIG.learning_rate,
-        head_lr_multiplier: (editRun.config?.head_lr_multiplier as number) ?? DEFAULT_CONFIG.head_lr_multiplier,
-        optimizer: (editRun.config?.optimizer as string) ?? DEFAULT_CONFIG.optimizer,
-        warmup_steps: (editRun.config?.warmup_steps as number) ?? DEFAULT_CONFIG.warmup_steps,
-        epochs: (editRun.config?.epochs as number) ?? DEFAULT_CONFIG.epochs,
-        batch_size: (editRun.config?.batch_size as number) ?? DEFAULT_CONFIG.batch_size,
-        vocab_min_count: (editRun.config?.vocab_min_count as number) ?? DEFAULT_CONFIG.vocab_min_count,
-        vocab_use_gelbooru_categories: (editRun.config?.vocab_use_gelbooru_categories as boolean) ?? DEFAULT_CONFIG.vocab_use_gelbooru_categories,
-        num_workers: (editRun.config?.num_workers as number) ?? DEFAULT_CONFIG.num_workers,
-        num_workers_override: (editRun.config?.num_workers_override as number | null) ?? DEFAULT_CONFIG.num_workers_override,
-        tag_refresh_enable: (editRun.config?.tag_refresh_enable as boolean) ?? DEFAULT_CONFIG.tag_refresh_enable,
-        tag_refresh_interval_seconds: (editRun.config?.tag_refresh_interval_seconds as number) ?? DEFAULT_CONFIG.tag_refresh_interval_seconds,
-        save_every_n_steps: (editRun.config?.save_every_n_steps as number) ?? DEFAULT_CONFIG.save_every_n_steps,
-        save_every_n_epochs: (editRun.config?.save_every_n_epochs as number) ?? DEFAULT_CONFIG.save_every_n_epochs,
-        keep_last_n_checkpoints: (editRun.config?.keep_last_n_checkpoints as number) ?? DEFAULT_CONFIG.keep_last_n_checkpoints,
-        checkpoint_save_mode: (editRun.config?.checkpoint_save_mode as string) ?? DEFAULT_CONFIG.checkpoint_save_mode,
-        mixed_precision: (editRun.config?.mixed_precision as string) ?? DEFAULT_CONFIG.mixed_precision,
-        use_flash_attention: (editRun.config?.use_flash_attention as boolean) ?? DEFAULT_CONFIG.use_flash_attention,
-        gradient_checkpointing: (editRun.config?.gradient_checkpointing as boolean) ?? DEFAULT_CONFIG.gradient_checkpointing,
-        loss_function: (editRun.config?.loss_function as string) ?? DEFAULT_CONFIG.loss_function,
-        loss_gamma_neg: (editRun.config?.loss_gamma_neg as number) ?? DEFAULT_CONFIG.loss_gamma_neg,
-        loss_gamma_pos: (editRun.config?.loss_gamma_pos as number) ?? DEFAULT_CONFIG.loss_gamma_pos,
-        loss_gamma0: (editRun.config?.loss_gamma0 as number) ?? DEFAULT_CONFIG.loss_gamma0,
-        loss_m0: (editRun.config?.loss_m0 as number) ?? DEFAULT_CONFIG.loss_m0,
-        loss_rho: (editRun.config?.loss_rho as number) ?? DEFAULT_CONFIG.loss_rho,
-        loss_beta: (editRun.config?.loss_beta as number) ?? DEFAULT_CONFIG.loss_beta,
-        loss_label_weight: (editRun.config?.loss_label_weight as string) ?? DEFAULT_CONFIG.loss_label_weight,
-        val_split_mode: (editRun.config?.val_split_mode as string) ?? DEFAULT_CONFIG.val_split_mode,
-        val_split: (editRun.config?.val_split as number) ?? DEFAULT_CONFIG.val_split,
-        val_fixed_size: (editRun.config?.val_fixed_size as number) ?? DEFAULT_CONFIG.val_fixed_size,
-        validate_every: (editRun.config?.validate_every as number) ?? DEFAULT_CONFIG.validate_every,
-        save_best_only: (editRun.config?.save_best_only as boolean) ?? DEFAULT_CONFIG.save_best_only,
-        excluded_categories: (editRun.config?.excluded_categories as string[]) ?? DEFAULT_CONFIG.excluded_categories,
-        ban_tags: (editRun.config?.ban_tags as string) ?? DEFAULT_CONFIG.ban_tags,
-        use_tag_aliases: (editRun.config?.use_tag_aliases as boolean) ?? DEFAULT_CONFIG.use_tag_aliases,
-        save_base_model: (editRun.config?.save_base_model as boolean) ?? DEFAULT_CONFIG.save_base_model,
-        quality_masking_mode: (editRun.config?.quality_masking_mode as ("intra_group" | "cross_group" | undefined)) ?? DEFAULT_CONFIG.quality_masking_mode,
-        cls_dim: (editRun.config?.cls_dim as number | undefined) ?? DEFAULT_CONFIG.cls_dim,
-        hidden_proj_dim: (editRun.config?.hidden_proj_dim as number | undefined) ?? DEFAULT_CONFIG.hidden_proj_dim,
-        build_lr_matrix_on_start: (editRun.config?.build_lr_matrix_on_start as boolean) ?? DEFAULT_CONFIG.build_lr_matrix_on_start,
-        lr_top_anchors: (editRun.config?.lr_top_anchors as number) ?? DEFAULT_CONFIG.lr_top_anchors,
-        lr_top_targets: (editRun.config?.lr_top_targets as number) ?? DEFAULT_CONFIG.lr_top_targets,
-        lr_threshold: (editRun.config?.lr_threshold as number) ?? DEFAULT_CONFIG.lr_threshold,
-        lr_min_anchor_count: (editRun.config?.lr_min_anchor_count as number) ?? DEFAULT_CONFIG.lr_min_anchor_count,
-        rescan_before_training: (editRun.config?.rescan_before_training as ("off" | "path" | "smart" | "force" | boolean | undefined)) ?? DEFAULT_CONFIG.rescan_before_training,
-        train_f1_eval_every_n_steps: (editRun.config?.train_f1_eval_every_n_steps as number) ?? DEFAULT_CONFIG.train_f1_eval_every_n_steps,
-        train_f1_threshold_search_every_n_steps: (editRun.config?.train_f1_threshold_search_every_n_steps as number) ?? DEFAULT_CONFIG.train_f1_threshold_search_every_n_steps,
-        train_f1_initial_threshold: (editRun.config?.train_f1_initial_threshold as number) ?? DEFAULT_CONFIG.train_f1_initial_threshold,
-        train_f1_buffer_batches: (editRun.config?.train_f1_buffer_batches as number) ?? DEFAULT_CONFIG.train_f1_buffer_batches,
-        // Online Danbooru augmentation
-        enable_danbooru_augmentation: (editRun.config?.enable_danbooru_augmentation as boolean) ?? DEFAULT_CONFIG.enable_danbooru_augmentation,
-        danbooru_query_enable: (editRun.config?.danbooru_query_enable as boolean) ?? DEFAULT_CONFIG.danbooru_query_enable,
-        danbooru_query_expand_enable: (editRun.config?.danbooru_query_expand_enable as boolean) ?? DEFAULT_CONFIG.danbooru_query_expand_enable,
-        danbooru_query_new_tag_min_count: (editRun.config?.danbooru_query_new_tag_min_count as number) ?? DEFAULT_CONFIG.danbooru_query_new_tag_min_count,
-        danbooru_query_resolve_top_k: (editRun.config?.danbooru_query_resolve_top_k as number) ?? DEFAULT_CONFIG.danbooru_query_resolve_top_k,
-        danbooru_query_max_expanded_tags: (editRun.config?.danbooru_query_max_expanded_tags as number) ?? DEFAULT_CONFIG.danbooru_query_max_expanded_tags,
-        danbooru_query_expand_categories: (editRun.config?.danbooru_query_expand_categories as number[]) ?? DEFAULT_CONFIG.danbooru_query_expand_categories,
-        danbooru_query_resolve_interval: (editRun.config?.danbooru_query_resolve_interval as number) ?? DEFAULT_CONFIG.danbooru_query_resolve_interval,
-        danbooru_query_collect_per_epoch: (editRun.config?.danbooru_query_collect_per_epoch as number) ?? DEFAULT_CONFIG.danbooru_query_collect_per_epoch,
-        danbooru_new_tag_collect_per_epoch: (editRun.config?.danbooru_new_tag_collect_per_epoch as number) ?? DEFAULT_CONFIG.danbooru_new_tag_collect_per_epoch,
-        danbooru_low_f1_collect_per_epoch: (editRun.config?.danbooru_low_f1_collect_per_epoch as number) ?? DEFAULT_CONFIG.danbooru_low_f1_collect_per_epoch,
-        danbooru_tags: (editRun.config?.danbooru_tags as string) ?? DEFAULT_CONFIG.danbooru_tags,
-        danbooru_injection_interval: (editRun.config?.danbooru_injection_interval as number) ?? DEFAULT_CONFIG.danbooru_injection_interval,
-        danbooru_injection_batch_size_ratio: (editRun.config?.danbooru_injection_batch_size_ratio as number) ?? DEFAULT_CONFIG.danbooru_injection_batch_size_ratio,
-        danbooru_min_score: (editRun.config?.danbooru_min_score as number) ?? DEFAULT_CONFIG.danbooru_min_score,
-        danbooru_max_posts_per_query: (editRun.config?.danbooru_max_posts_per_query as number) ?? DEFAULT_CONFIG.danbooru_max_posts_per_query,
-        danbooru_api_interval: (editRun.config?.danbooru_api_interval as number) ?? DEFAULT_CONFIG.danbooru_api_interval,
-        danbooru_dl_speed_kbps: (editRun.config?.danbooru_dl_speed_kbps as number) ?? DEFAULT_CONFIG.danbooru_dl_speed_kbps,
-        danbooru_speed_check_enable: (editRun.config?.danbooru_speed_check_enable as boolean) ?? DEFAULT_CONFIG.danbooru_speed_check_enable,
-        danbooru_speed_degraded_kbps: (editRun.config?.danbooru_speed_degraded_kbps as number) ?? DEFAULT_CONFIG.danbooru_speed_degraded_kbps,
-        danbooru_speed_min_slow_streak: (editRun.config?.danbooru_speed_min_slow_streak as number) ?? DEFAULT_CONFIG.danbooru_speed_min_slow_streak,
-        danbooru_speed_min_slow_seconds: (editRun.config?.danbooru_speed_min_slow_seconds as number) ?? DEFAULT_CONFIG.danbooru_speed_min_slow_seconds,
-        danbooru_speed_cooldown_seconds: (editRun.config?.danbooru_speed_cooldown_seconds as number) ?? DEFAULT_CONFIG.danbooru_speed_cooldown_seconds,
-        danbooru_buffer_size: (editRun.config?.danbooru_buffer_size as number | null) ?? DEFAULT_CONFIG.danbooru_buffer_size,
-        danbooru_vocab_expand: (editRun.config?.danbooru_vocab_expand as boolean) ?? DEFAULT_CONFIG.danbooru_vocab_expand,
-        danbooru_new_tag_min_count: (editRun.config?.danbooru_new_tag_min_count as number) ?? DEFAULT_CONFIG.danbooru_new_tag_min_count,
-        danbooru_new_tag_lookback_days: (editRun.config?.danbooru_new_tag_lookback_days as number) ?? DEFAULT_CONFIG.danbooru_new_tag_lookback_days,
-        danbooru_new_tag_categories: (editRun.config?.danbooru_new_tag_categories as number[]) ?? DEFAULT_CONFIG.danbooru_new_tag_categories,
-        danbooru_new_tag_min_count_by_cat: (editRun.config?.danbooru_new_tag_min_count_by_cat as Record<string, number>) ?? DEFAULT_CONFIG.danbooru_new_tag_min_count_by_cat,
-        danbooru_new_tag_survey_interval: (editRun.config?.danbooru_new_tag_survey_interval as number) ?? DEFAULT_CONFIG.danbooru_new_tag_survey_interval,
-        danbooru_max_dynamic_tags: (editRun.config?.danbooru_max_dynamic_tags as number) ?? DEFAULT_CONFIG.danbooru_max_dynamic_tags,
-        danbooru_query_weight_static: (editRun.config?.danbooru_query_weight_static as number) ?? DEFAULT_CONFIG.danbooru_query_weight_static,
-        danbooru_query_weight_new_tag: (editRun.config?.danbooru_query_weight_new_tag as number) ?? DEFAULT_CONFIG.danbooru_query_weight_new_tag,
-        danbooru_query_weight_low_f1: (editRun.config?.danbooru_query_weight_low_f1 as number) ?? DEFAULT_CONFIG.danbooru_query_weight_low_f1,
-        danbooru_query_weight_train_count: (editRun.config?.danbooru_query_weight_train_count as number) ?? DEFAULT_CONFIG.danbooru_query_weight_train_count,
-        danbooru_low_f1_enable: (editRun.config?.danbooru_low_f1_enable as boolean) ?? DEFAULT_CONFIG.danbooru_low_f1_enable,
-        danbooru_low_f1_threshold: (editRun.config?.danbooru_low_f1_threshold as number) ?? DEFAULT_CONFIG.danbooru_low_f1_threshold,
-        danbooru_low_f1_top_k: (editRun.config?.danbooru_low_f1_top_k as number) ?? DEFAULT_CONFIG.danbooru_low_f1_top_k,
-        danbooru_low_f1_min_posts: (editRun.config?.danbooru_low_f1_min_posts as number) ?? DEFAULT_CONFIG.danbooru_low_f1_min_posts,
-        danbooru_train_count_enable: (editRun.config?.danbooru_train_count_enable as boolean) ?? DEFAULT_CONFIG.danbooru_train_count_enable,
-        danbooru_train_count_top_k: (editRun.config?.danbooru_train_count_top_k as number) ?? DEFAULT_CONFIG.danbooru_train_count_top_k,
-        danbooru_train_count_min_deficit_ratio: (editRun.config?.danbooru_train_count_min_deficit_ratio as number) ?? DEFAULT_CONFIG.danbooru_train_count_min_deficit_ratio,
-        danbooru_train_count_min_per_epoch: (editRun.config?.danbooru_train_count_min_per_epoch as number) ?? DEFAULT_CONFIG.danbooru_train_count_min_per_epoch,
-        danbooru_train_count_min_posts: (editRun.config?.danbooru_train_count_min_posts as number) ?? DEFAULT_CONFIG.danbooru_train_count_min_posts,
-        danbooru_train_count_collect_per_epoch: (editRun.config?.danbooru_train_count_collect_per_epoch as number) ?? DEFAULT_CONFIG.danbooru_train_count_collect_per_epoch,
-        danbooru_quality_tag_enable: (editRun.config?.danbooru_quality_tag_enable as boolean) ?? DEFAULT_CONFIG.danbooru_quality_tag_enable,
-        danbooru_quality_tag_thresholds: (editRun.config?.danbooru_quality_tag_thresholds as string) ?? DEFAULT_CONFIG.danbooru_quality_tag_thresholds,
-        danbooru_quality_tag_attach_negative: (editRun.config?.danbooru_quality_tag_attach_negative as boolean) ?? DEFAULT_CONFIG.danbooru_quality_tag_attach_negative,
-        danbooru_cooc_expand_enable: (editRun.config?.danbooru_cooc_expand_enable as boolean) ?? DEFAULT_CONFIG.danbooru_cooc_expand_enable,
-        danbooru_cooc_min_count: (editRun.config?.danbooru_cooc_min_count as number) ?? DEFAULT_CONFIG.danbooru_cooc_min_count,
-        danbooru_cooc_categories: (editRun.config?.danbooru_cooc_categories as number[]) ?? DEFAULT_CONFIG.danbooru_cooc_categories,
-        danbooru_query_weight_cooc: (editRun.config?.danbooru_query_weight_cooc as number) ?? DEFAULT_CONFIG.danbooru_query_weight_cooc,
-        danbooru_cooc_collect_per_epoch: (editRun.config?.danbooru_cooc_collect_per_epoch as number) ?? DEFAULT_CONFIG.danbooru_cooc_collect_per_epoch,
-        danbooru_cooc_order_random: (editRun.config?.danbooru_cooc_order_random as boolean) ?? DEFAULT_CONFIG.danbooru_cooc_order_random,
-      }
-    : DEFAULT_CONFIG;
-
   const initialDatasetIds: number[] = isEditMode
     ? ((editRun.dataset_configs as unknown as TaggerDatasetConfig[]) ?? []).map((dc) => dc.dataset_id)
     : [];
 
-  const [config, setConfig] = useState<ConfigState>(initialConfig);
-  const { taggerTrainingDefaults } = useStartup();
+  const [config, setConfig] = useState<ConfigState | null>(null);
+  const { isBackendReady, taggerTrainingDefaults } = useStartup();
+  const initializedForRef = useRef<string | null>(null);
 
-  // Apply backend-fetched defaults when they arrive (only for new runs, not edit mode)
   useEffect(() => {
-    if (!taggerTrainingDefaults || isEditMode) return;
-    setConfig(prev => ({ ...prev, ...(taggerTrainingDefaults as Partial<ConfigState>) }));
-  }, [taggerTrainingDefaults, isEditMode]);
+    if (!taggerTrainingDefaults) return;
+    const identity = editRun?.run_id ?? "new";
+    if (initializedForRef.current === identity) return;
+    initializedForRef.current = identity;
+    setConfig(configFromDefaults(taggerTrainingDefaults, editRun));
+  }, [taggerTrainingDefaults, editRun]);
 
   // selectedDatasetIds tracks numeric dataset.id values
   const [selectedDatasetIds, setSelectedDatasetIds] = useState<number[]>(initialDatasetIds);
@@ -294,8 +74,19 @@ export default function TaggerTrainingConfig({
   useEffect(() => {
     listDatasets()
       .then((res) => setDatasets(res.datasets || []))
-      .catch(console.error);
+      .catch((loadError: unknown) => {
+        setError(loadError instanceof Error ? loadError.message : "データセットを取得できませんでした");
+      });
   }, []);
+
+  if (!config) {
+    return (
+      <div className="flex h-full items-center justify-center text-sm text-gray-400">
+        <span>{isBackendReady ? "学習設定を取得できませんでした" : "学習設定を読み込み中…"}</span>
+        <button onClick={onClose} className="ml-3 text-blue-400 hover:text-blue-300">閉じる</button>
+      </div>
+    );
+  }
 
   const handleDatasetToggle = (datasetId: number) => {
     setSelectedDatasetIds((prev) =>
@@ -333,7 +124,7 @@ export default function TaggerTrainingConfig({
         danbooru_query_weight_cooc: config.danbooru_cooc_expand_enable ? config.danbooru_query_weight_cooc : 0,
       };
       const run = isEditMode
-        ? await updateTaggerTrainingRun(editRun.run_id, payload)
+        ? await updateTaggerTrainingRun(editRun!.run_id, payload)
         : await createTaggerTrainingRun(payload);
       onRunCreated(run);
     } catch (err: unknown) {
@@ -347,7 +138,7 @@ export default function TaggerTrainingConfig({
   const setField = <K extends keyof ConfigState>(
     key: K,
     value: ConfigState[K]
-  ) => setConfig((prev) => ({ ...prev, [key]: value }));
+  ) => setConfig((prev) => prev ? ({ ...prev, [key]: value }) : prev);
 
   return (
     <div className="flex flex-col h-full">

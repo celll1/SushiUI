@@ -214,10 +214,11 @@ def test_causal_fastpath_expands_kv_when_resolved_backend_is_native():
 
 
 def test_causal_fastpath_leaves_kv_unexpanded_when_resolved_backend_is_flash():
-    attn = _single_attn()
+    attn = _single_attn().half()
     attn._attn_backend = "flash"
     attn._attn_mode = AttentionMode.INFERENCE
     hidden, indexes = _und_inputs()
+    hidden = hidden.half()
 
     calls = []
     real = mq.dispatch_attention

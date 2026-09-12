@@ -2,41 +2,18 @@
 
 import React, { useState, useEffect } from "react";
 import { SigLIP2TagResult } from "@/utils/api";
-
-// ─── Category colour mapping ─────────────────────────────────────────────────
-
-const CATEGORY_ORDER = [
-  "Quality", "Rating", "Character", "Copyright", "General", "Artist", "Meta", "Unknown",
-];
-
-const CATEGORY_BAR_COLOR: Record<string, string> = {
-  Quality:   "bg-yellow-500",
-  Rating:    "bg-orange-500",
-  Character: "bg-blue-500",
-  Copyright: "bg-purple-500",
-  General:   "bg-green-600",
-  Artist:    "bg-pink-500",
-  Meta:      "bg-gray-400",
-  Unknown:   "bg-gray-600",
-};
-
-const CATEGORY_TEXT_COLOR: Record<string, string> = {
-  Quality:   "text-yellow-400",
-  Rating:    "text-orange-400",
-  Character: "text-blue-400",
-  Copyright: "text-purple-400",
-  General:   "text-green-400",
-  Artist:    "text-pink-400",
-  Meta:      "text-gray-400",
-  Unknown:   "text-gray-500",
-};
+import {
+  TAG_CATEGORY_BAR_CLASS,
+  TAG_CATEGORY_TEXT_CLASS,
+  TAG_RESULT_CATEGORY_ORDER,
+} from "./taggerCategories";
 
 function barColor(category: string): string {
-  return CATEGORY_BAR_COLOR[category] ?? "bg-gray-500";
+  return TAG_CATEGORY_BAR_CLASS[category] ?? "bg-gray-500";
 }
 
 function textColor(category: string): string {
-  return CATEGORY_TEXT_COLOR[category] ?? "text-gray-400";
+  return TAG_CATEGORY_TEXT_CLASS[category] ?? "text-gray-400";
 }
 
 // ─── Single bar row ──────────────────────────────────────────────────────────
@@ -203,8 +180,8 @@ export default function TagResultsChart({
   }
 
   const orderedCategories = [
-    ...CATEGORY_ORDER.filter(c => c !== "Quality" && c !== "Rating" && grouped[c]?.length > 0),
-    ...Object.keys(grouped).filter(c => !CATEGORY_ORDER.includes(c)),
+    ...TAG_RESULT_CATEGORY_ORDER.filter(c => c !== "Quality" && c !== "Rating" && grouped[c]?.length > 0),
+    ...Object.keys(grouped).filter(c => !TAG_RESULT_CATEGORY_ORDER.includes(c as typeof TAG_RESULT_CATEGORY_ORDER[number])),
   ];
 
   return (

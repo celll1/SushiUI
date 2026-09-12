@@ -13,6 +13,7 @@ import {
 import { useStartup } from "@/contexts/StartupContext";
 import NumberInput from "../../common/NumberInput";
 import GpuSelect from "../GpuSelect";
+import { TAG_CATEGORY_ORDER } from "../../tagger/taggerCategories";
 
 interface TaggerTrainingConfigProps {
   onClose: () => void;
@@ -285,8 +286,7 @@ export default function TaggerTrainingConfig({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Fixed category list — same order as backend CATEGORY_ORDER
-  const ALL_CATEGORIES = ["General", "Character", "Copyright", "Artist", "Meta", "Rating", "Quality", "Model"];
+  const ALL_CATEGORIES = TAG_CATEGORY_ORDER.filter((category) => category !== "Unknown");
 
   // Only show datasets that have tags-format captions
   const tagDatasets = datasets.filter((d) => d.has_tags_captions);

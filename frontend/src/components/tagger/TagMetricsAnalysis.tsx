@@ -2,20 +2,9 @@
 
 import { useState, useMemo, useRef, useCallback, useEffect } from "react";
 import { TagMetricsData } from "@/utils/api";
+import { TAG_ANALYSIS_CATEGORY_ORDER, TAG_CATEGORY_CHART_HEX } from "./taggerCategories";
 
-// ── Category colors (matches TaggerTrainingMonitor + TagResultsChart) ─────────
-const CATEGORY_COLORS: Record<string, string> = {
-  General:   "#16a34a",
-  Character: "#3b82f6",
-  Copyright: "#a855f7",
-  Meta:      "#9ca3af",
-  Quality:   "#eab308",
-  Rating:    "#f97316",
-  Artist:    "#ec4899",
-  Unknown:   "#4b5563",
-};
-
-const ALL_CATEGORIES = ["General", "Character", "Copyright", "Meta", "Quality", "Rating", "Artist", "Unknown"];
+const ALL_CATEGORIES = TAG_ANALYSIS_CATEGORY_ORDER;
 
 // ── Glob-style tag query → RegExp ─────────────────────────────────────────────
 function buildTagRegex(query: string): RegExp | null {
@@ -200,7 +189,7 @@ function AnalysisContent({ data }: { data: TagMetricsData }) {
                   ? "border-transparent text-white"
                   : "border-gray-600 text-gray-500 hover:text-gray-300"
               }`}
-              style={selCategories.has(cat) ? { backgroundColor: CATEGORY_COLORS[cat] + "40", borderColor: CATEGORY_COLORS[cat] } : {}}
+              style={selCategories.has(cat) ? { backgroundColor: TAG_CATEGORY_CHART_HEX[cat] + "40", borderColor: TAG_CATEGORY_CHART_HEX[cat] } : {}}
             >
               {cat}
             </button>
@@ -347,7 +336,7 @@ function MetricsTable({ data, indices, sortKey, sortAsc, onSort }: MetricsTableP
 
 function TableRow({ data, dataIdx }: { data: TagMetricsData; dataIdx: number }) {
   const cat   = data.categories[dataIdx] ?? "Unknown";
-  const color = CATEGORY_COLORS[cat] ?? "#6b7280";
+  const color = TAG_CATEGORY_CHART_HEX[cat] ?? "#6b7280";
   const hr    = data.hard_rate[dataIdx];
   const f1    = data.best_f1[dataIdx];
 
@@ -496,7 +485,7 @@ function FpFnScatterCanvas({
       const cx = ML + fp * PW;
       const cy = MT + fn * PH;
       const cat = data.categories[i] ?? "Unknown";
-      const color = CATEGORY_COLORS[cat] ?? "#6b7280";
+      const color = TAG_CATEGORY_CHART_HEX[cat] ?? "#6b7280";
       ctx.beginPath();
       ctx.arc(cx, cy, 2.5, 0, 2 * Math.PI);
       ctx.fillStyle = color + "cc";
@@ -617,7 +606,7 @@ function FreqF1ScatterCanvas({
       const cx = ML + tx * PW;
       const cy = MT + (1 - f1) * PH;
       const cat = data.categories[i] ?? "Unknown";
-      const color = CATEGORY_COLORS[cat] ?? "#6b7280";
+      const color = TAG_CATEGORY_CHART_HEX[cat] ?? "#6b7280";
       ctx.beginPath();
       ctx.arc(cx, cy, 2.5, 0, 2 * Math.PI);
       ctx.fillStyle = color + "cc";
@@ -807,7 +796,7 @@ function CategoryF1BarChart({ data, indices }: { data: TagMetricsData; indices: 
           const bh = avg * PH;
           const x  = ML + idx * bw + 2;
           const y  = MT + PH - bh;
-          const color = CATEGORY_COLORS[cat] ?? "#6b7280";
+          const color = TAG_CATEGORY_CHART_HEX[cat] ?? "#6b7280";
           return (
             <g key={cat}>
               <rect x={x} y={y} width={bw - 4} height={bh} fill={color} opacity={0.7} />

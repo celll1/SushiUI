@@ -24,6 +24,54 @@ interface TaggerTrainingMonitorProps {
   onEditConfig?: () => void;
 }
 
+const MAX_METRIC_POINTS = 2000;
+
+function metricKey(metric: TaggerTrainingMetric): string {
+  return `${metric.resume_seq ?? 0}:${metric.step}`;
+}
+
+function mergeMetrics(
+  target: Map<string, TaggerTrainingMetric>,
+  incoming: TaggerTrainingMetric[],
+): void {
+  for (const metric of incoming) {
+    const key = metricKey(metric);
+    const existing = target.get(key);
+    target.set(key, existing ? {
+      ...existing,
+      ...Object.fromEntries(
+        Object.entries(metric).filter(([, value]) => value !== null && value !== undefined),
+      ),
+    } : metric);
+  }
+}
+
+function metricsForDisplay(rawMetrics: Iterable<TaggerTrainingMetric>): TaggerTrainingMetric[] {
+  const sorted = Array.from(rawMetrics).sort(
+    (a, b) => (a.resume_seq ?? 0) - (b.resume_seq ?? 0) || a.step - b.step,
+  );
+  if (sorted.length <= MAX_METRIC_POINTS) return sorted;
+
+  const groups = new Map<number, TaggerTrainingMetric[]>();
+  for (const metric of sorted) {
+    const sequence = metric.resume_seq ?? 0;
+    const group = groups.get(sequence);
+    if (group) group.push(metric);
+    else groups.set(sequence, [metric]);
+  }
+
+  // A shared stride prevents resume groups from changing density at different times.
+  const stride = Math.ceil(sorted.length / MAX_METRIC_POINTS);
+  const display: TaggerTrainingMetric[] = [];
+  for (const group of groups.values()) {
+    const sampled = group.filter((_, index) => index % stride === 0);
+    const last = group[group.length - 1];
+    if (sampled[sampled.length - 1] !== last) sampled.push(last);
+    display.push(...sampled);
+  }
+  return display;
+}
+
 /** Format a duration in seconds as a compact human-readable string.
  *  Examples: 23 → "23s", 90 → "1m 30s", 5400 → "1h 30m", 100000 → "1d 3h" */
 function formatDuration(sec: number | null): string {
@@ -265,35 +313,12 @@ export default function TaggerTrainingMonitor({
     try {
       const data = await getTaggerTrainingMetrics(run.run_id);
       if (data.length > 0) {
-        // Seed the raw accumulator with the full history from the API.
-        const keyOf = (r: TaggerTrainingMetric) => `${r.resume_seq ?? 0}:${r.step}`;
         const rawMap = new Map<string, TaggerTrainingMetric>();
-        for (const r of data) rawMap.set(keyOf(r), r);
+        mergeMetrics(rawMap, data);
         rawMetricsRef.current = rawMap;
 
         setEpochBoundaries(extractEpochBoundaries(rawMap));
-
-        // Apply the same global-stride decimation as the WS flush path so the
-        // initial render is consistent with live updates.
-        const MAX_POINTS = 2000;
-        let display = data;
-        if (data.length > MAX_POINTS) {
-          const groups = new Map<number, TaggerTrainingMetric[]>();
-          for (const r of data) {
-            const seq = r.resume_seq ?? 0;
-            if (!groups.has(seq)) groups.set(seq, []);
-            groups.get(seq)!.push(r);
-          }
-          const globalStride = Math.ceil(data.length / MAX_POINTS);
-          const out: TaggerTrainingMetric[] = [];
-          for (const [, g] of [...groups.entries()].sort(([a], [b]) => a - b)) {
-            const dec = g.filter((_, i) => i % globalStride === 0);
-            if (dec.length === 0 || dec[dec.length - 1] !== g[g.length - 1]) dec.push(g[g.length - 1]);
-            out.push(...dec);
-          }
-          display = out;
-        }
-        setMetrics(display);
+        setMetrics(metricsForDisplay(rawMap.values()));
       }
     } catch (err) {
       console.error("[TaggerMonitor] Failed to fetch metrics:", err);
@@ -412,51 +437,9 @@ export default function TaggerTrainingMonitor({
           const incoming = wsBufferRef.current.splice(0);
           if (incoming.length === 0) return;
 
-          const keyOf = (r: TaggerTrainingMetric) => `${r.resume_seq ?? 0}:${r.step}`;
           const rawMap = rawMetricsRef.current;
-          for (const r of incoming) {
-            const k = keyOf(r);
-            const existing = rawMap.get(k);
-            rawMap.set(k, existing ? { ...existing, ...Object.fromEntries(
-              Object.entries(r).filter(([, v]) => v !== null && v !== undefined)
-            ) } : r);
-          }
-
-          // 2. Recompute the decimated display array from the *full* raw map
-          //    every flush.  Because we start from rawMap each time, historical
-          //    points are never progressively lost across flushes.
-          //
-          //    Use a single global stride across ALL groups so that all resumes
-          //    appear at the same visual density.  Per-group strides caused sudden
-          //    density jumps when one group's length crossed its individual quota.
-          const MAX_POINTS = 2000;
-          let sorted = Array.from(rawMap.values()).sort(
-            (a, b) => (a.resume_seq ?? 0) - (b.resume_seq ?? 0) || a.step - b.step
-          );
-          if (sorted.length > MAX_POINTS) {
-            const groups = new Map<number, TaggerTrainingMetric[]>();
-            for (const r of sorted) {
-              const seq = r.resume_seq ?? 0;
-              if (!groups.has(seq)) groups.set(seq, []);
-              groups.get(seq)!.push(r);
-            }
-            const seqs = [...groups.keys()].sort((a, b) => a - b);
-            const totalRaw = sorted.length;
-            // Single stride applied uniformly to every group.
-            const globalStride = Math.ceil(totalRaw / MAX_POINTS);
-            const out: TaggerTrainingMetric[] = [];
-            for (const seq of seqs) {
-              const g = groups.get(seq)!;
-              const decimated = g.filter((_, i) => i % globalStride === 0);
-              // Always keep the last point of each group so lines reach the edge.
-              if (decimated.length === 0 || decimated[decimated.length - 1] !== g[g.length - 1]) {
-                decimated.push(g[g.length - 1]);
-              }
-              out.push(...decimated);
-            }
-            sorted = out;
-          }
-          setMetrics(sorted);
+          mergeMetrics(rawMap, incoming);
+          setMetrics(metricsForDisplay(rawMap.values()));
           setEpochBoundaries(extractEpochBoundaries(rawMap));
         }, 1000);
       }

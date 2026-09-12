@@ -19,6 +19,11 @@ import InputWithTagSuggestions from "@/components/common/InputWithTagSuggestions
 import { useTagSuggestions } from "@/contexts/TagSuggestionsContext";
 import { usePanelResize } from "@/hooks/usePanelResize";
 import { getSemanticGroup, SEMANTIC_GROUP_NAMES } from "@/utils/semanticGroups";
+import {
+  TAG_CATEGORY_HEX,
+  TAG_EDITOR_CATEGORY_ORDER,
+  type TagEditorCategory,
+} from "./taggerCategories";
 
 interface TagEditorPanelProps {
   image: BrowserImageEntry;
@@ -36,32 +41,6 @@ interface ActionEntry {
   category?: string;
 }
 
-// Category display order and colors (matching image-tag-helper)
-const CATEGORY_ORDER = [
-  "Copyright",
-  "Character",
-  "Artist",
-  "General",
-  "Meta",
-  "Quality",
-  "Rating",
-  "Unknown",
-] as const;
-
-type CategoryName = typeof CATEGORY_ORDER[number];
-
-const CATEGORY_COLORS: Record<string, string> = {
-  Copyright: "#c084fc",
-  Character: "#60a5fa",
-  Artist: "#f472b6",
-  General: "#4ade80",
-  Meta: "#9ca3af",
-  Quality: "#facc15",
-  Rating: "#fb923c",
-  Unknown: "#6b7280",
-};
-
-// Semantic sub-group header color (same hue as General, darker)
 const SEMANTIC_SUB_COLOR = "#2d6b47";
 
 interface TagGroupEntry {
@@ -351,13 +330,13 @@ export default function TagEditorPanel({
       : tags;
 
     // Collect per-category arrays
-    const catMap = new Map<CategoryName, string[]>(
-      CATEGORY_ORDER.map((c) => [c, []])
+    const catMap = new Map<TagEditorCategory, string[]>(
+      TAG_EDITOR_CATEGORY_ORDER.map((c) => [c, []])
     );
     for (const tag of filtered) {
       const raw = tagCategories.get(tag) ?? "Unknown";
-      const cat: CategoryName = CATEGORY_ORDER.includes(raw as CategoryName)
-        ? (raw as CategoryName)
+      const cat: TagEditorCategory = TAG_EDITOR_CATEGORY_ORDER.includes(raw as TagEditorCategory)
+        ? (raw as TagEditorCategory)
         : "Unknown";
       catMap.get(cat)!.push(tag);
     }
@@ -365,10 +344,10 @@ export default function TagEditorPanel({
 
     const result: TagGroupEntry[] = [];
 
-    for (const cat of CATEGORY_ORDER) {
+    for (const cat of TAG_EDITOR_CATEGORY_ORDER) {
       const catTags = catMap.get(cat)!;
       if (catTags.length === 0) continue;
-      const color = CATEGORY_COLORS[cat];
+      const color = TAG_CATEGORY_HEX[cat];
 
       // Semantic sub-grouping applies only to General / Unknown
       if (semanticMode && (cat === "General" || cat === "Unknown")) {
@@ -620,9 +599,9 @@ export default function TagEditorPanel({
                 {/* Tag chips */}
                 <div className="flex flex-wrap gap-1.5 pl-4">
                   {group.tags.map((tag) => {
-                    const chipColor = CATEGORY_COLORS[
-                      tagCategories.get(tag) as CategoryName
-                    ] ?? CATEGORY_COLORS.Unknown;
+                    const chipColor = TAG_CATEGORY_HEX[
+                      tagCategories.get(tag) as TagEditorCategory
+                    ] ?? TAG_CATEGORY_HEX.Unknown;
                     return (
                       <span
                         key={tag}

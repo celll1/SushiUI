@@ -18,14 +18,15 @@ import InputWithTagSuggestions from "@/components/common/InputWithTagSuggestions
 import NumberInput from "@/components/common/NumberInput";
 import TagResultsChart from "./TagResultsChart";
 import TagMetricsAnalysis from "./TagMetricsAnalysis";
+import { TAG_CATEGORY_ORDER, TAG_CATEGORY_TEXT_CLASS } from "./taggerCategories";
 
 interface InferencePanelProps {
   modelStatus: SigLIP2StatusResponse;
 }
 
-const THRESHOLD_CATEGORIES = [
-  "General", "Character", "Copyright", "Artist", "Meta",
-];
+const THRESHOLD_CATEGORIES = TAG_CATEGORY_ORDER.filter((category) =>
+  !["Rating", "Quality", "Model", "Unknown"].includes(category)
+);
 
 interface CategoryThresholds {
   [category: string]: number;
@@ -426,10 +427,7 @@ export default function InferencePanel({ modelStatus }: InferencePanelProps) {
                     <div className="space-y-1">
                       {THRESHOLD_CATEGORIES.map(cat => (
                         <div key={cat} className="flex items-center gap-1.5">
-                          <span className={`text-[10px] w-14 shrink-0 ${
-                            { General: "text-green-400", Character: "text-blue-400", Copyright: "text-purple-400",
-                              Artist: "text-pink-400", Meta: "text-gray-400" }[cat] ?? "text-gray-400"
-                          }`}>{cat}</span>
+                          <span className={`text-[10px] w-14 shrink-0 ${TAG_CATEGORY_TEXT_CLASS[cat] ?? "text-gray-400"}`}>{cat}</span>
                           <input type="range" min={0.01} max={0.99} step={0.01}
                             value={categoryThresholds[cat] ?? 0.5}
                             onChange={(e) => setCategoryThresholds(prev => ({ ...prev, [cat]: parseFloat(e.target.value) }))}

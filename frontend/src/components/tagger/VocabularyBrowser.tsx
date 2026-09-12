@@ -2,22 +2,7 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { getTaggerRunVocabulary, getSigLIP2LoadedVocabulary, VocabularyData } from "@/utils/api";
-
-const CATEGORY_TEXT_COLOR: Record<string, string> = {
-  Quality:   "text-yellow-400",
-  Rating:    "text-orange-400",
-  Character: "text-blue-400",
-  Copyright: "text-purple-400",
-  General:   "text-green-400",
-  Artist:    "text-pink-400",
-  Meta:      "text-gray-400",
-  Model:     "text-cyan-400",
-  Unknown:   "text-gray-500",
-};
-
-const CATEGORY_ORDER = [
-  "General", "Character", "Copyright", "Artist", "Meta", "Rating", "Quality", "Model",
-];
+import { TAG_CATEGORY_ORDER, TAG_CATEGORY_TEXT_CLASS } from "./taggerCategories";
 
 type FilterMode = "partial" | "wildcard" | "regex";
 
@@ -92,13 +77,14 @@ export default function VocabularyBrowser({ runId, useLoadedModel, defaultOpen =
     return Object.keys(tagToCategory).map((tag) => ({ tag, category: tagToCategory[tag] ?? "Unknown" }));
   }, [vocab]);
 
-  // Category list from vocabulary
   const categories = useMemo(() => {
     if (!vocab) return [];
     const cats = new Set(Object.values(vocab.tag_to_category ?? {}));
-    return CATEGORY_ORDER.filter(c => cats.has(c)).concat(
-      [...cats].filter(c => !CATEGORY_ORDER.includes(c)).sort()
-    );
+    const knownOrder = TAG_CATEGORY_ORDER.filter((category) => category !== "Unknown");
+    return [
+      ...knownOrder.filter(c => cats.has(c)),
+      ...[...cats].filter(c => !knownOrder.includes(c as typeof knownOrder[number])).sort(),
+    ];
   }, [vocab]);
 
   // Category counts
@@ -172,7 +158,7 @@ export default function VocabularyBrowser({ runId, useLoadedModel, defaultOpen =
               {/* Category stats */}
               <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-gray-500">
                 {categories.map(cat => (
-                  <span key={cat} className={CATEGORY_TEXT_COLOR[cat] ?? "text-gray-500"}>
+                  <span key={cat} className={TAG_CATEGORY_TEXT_CLASS[cat] ?? "text-gray-500"}>
                     {cat} {(categoryCounts[cat] ?? 0).toLocaleString()}
                   </span>
                 ))}
@@ -219,7 +205,7 @@ export default function VocabularyBrowser({ runId, useLoadedModel, defaultOpen =
                   <button
                     key={cat}
                     onClick={() => setSelectedCategory(cat)}
-                    className={`px-2 py-0.5 rounded text-xs ${selectedCategory === cat ? "bg-gray-600 text-white" : `${CATEGORY_TEXT_COLOR[cat] ?? "text-gray-400"} hover:bg-gray-700`}`}
+                    className={`px-2 py-0.5 rounded text-xs ${selectedCategory === cat ? "bg-gray-600 text-white" : `${TAG_CATEGORY_TEXT_CLASS[cat] ?? "text-gray-400"} hover:bg-gray-700`}`}
                   >
                     {cat}
                   </button>
@@ -234,7 +220,7 @@ export default function VocabularyBrowser({ runId, useLoadedModel, defaultOpen =
                   displayed.map(({ tag, category }) => (
                     <div key={tag} className="flex items-center gap-2 px-2 py-0.5 rounded hover:bg-gray-800">
                       <span className="text-sm text-gray-200 flex-1 truncate" title={tag}>{tag}</span>
-                      <span className={`text-xs shrink-0 ${CATEGORY_TEXT_COLOR[category] ?? "text-gray-500"}`}>
+                      <span className={`text-xs shrink-0 ${TAG_CATEGORY_TEXT_CLASS[category] ?? "text-gray-500"}`}>
                         {category}
                       </span>
                     </div>

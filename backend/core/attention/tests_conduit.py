@@ -347,7 +347,7 @@ def test_contracts():
         record("contract: non-divisible GQA refused", FAIL)
 
     mask = torch.tensor([[True, False, True, True, False, True, True, True]])
-    processed = _process_mask(mask, torch.float32)
+    processed = _process_mask(mask)
     record(
         "contract: bool mask remains bool/no allocation",
         PASS if processed.dtype == torch.bool and processed.untyped_storage().data_ptr() == mask.untyped_storage().data_ptr() else FAIL,

@@ -33,8 +33,6 @@ from typing import Optional
 import torch
 import torch.nn.functional as F
 
-_HALF_DTYPES = (torch.float16, torch.bfloat16)
-
 # Kernel-fallback warnings are emitted from per-call hot paths, so they are
 # deduped -- but the dedup is keyed by (generation id, message), NOT by message
 # alone. A process-lifetime dedup (what this was) meant only the FIRST
@@ -82,7 +80,7 @@ def _warn_kernel_fallback(message: str) -> None:
         pass
 
 
-def _process_mask(attn_mask: Optional[torch.Tensor], dtype: torch.dtype) -> Optional[torch.Tensor]:
+def _process_mask(attn_mask: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
     """Normalize mask rank without materializing an equivalent float mask."""
     if attn_mask is None:
         return None
@@ -117,7 +115,7 @@ def _native_sdpa(
         k = key.transpose(1, 2)
         v = value.transpose(1, 2)
 
-        processed_mask = _process_mask(attn_mask, q.dtype)
+        processed_mask = _process_mask(attn_mask)
 
         out = F.scaled_dot_product_attention(
             q,
@@ -150,37 +148,21 @@ def _flash_attn(
     """
     FlashAttention-2 (``flash_attn_func``), BSHD in/out.
 
-    FlashAttention only accepts fp16/bf16; non-half inputs are cast to bf16 and
-    the output is cast back to the original dtype (mirrors the reference dtype
-    handling). Custom masks are not supported by the kernel; the mask guard in
-    ``resolve_backend`` guarantees ``attn_mask is None`` here, so ``attn_mask``
-    is intentionally ignored. FlashAttention broadcasts unequal q/kv heads
-    natively, so ``enable_gqa`` is a no-op. Returns ``None`` on any failure.
+    Capability resolution guarantees fp16/bf16 and no custom mask before this
+    function runs. FlashAttention broadcasts unequal q/kv heads natively, so
+    ``enable_gqa`` is a no-op. Returns ``None`` on any failure.
     """
     try:
         from flash_attn import flash_attn_func
 
-        original_dtype = query.dtype
-        needs_conversion = original_dtype not in _HALF_DTYPES
-
-        if needs_conversion:
-            q = query.to(torch.bfloat16)
-            k = key.to(torch.bfloat16)
-            v = value.to(torch.bfloat16)
-        else:
-            q, k, v = query, key, value
-
         out = flash_attn_func(
-            q,
-            k,
-            v,
+            query,
+            key,
+            value,
             dropout_p=dropout_p,
             softmax_scale=scale,
             causal=is_causal,
         )
-
-        if needs_conversion:
-            out = out.to(original_dtype)
 
         return out.contiguous()
     except ImportError:
@@ -250,8 +232,7 @@ def _sage_attn(
           NOT accept ``attn_mask`` (masks are only on the low-level kernels).
           Sage is gated ``supports_mask=False`` upstream, so ``attn_mask`` is
           always ``None`` here and is intentionally not forwarded.
-        * Sage requires fp16/bf16 inputs; non-half tensors are cast to bf16 and
-          the output is cast back.
+        * Capability resolution refuses non-fp16/bf16 inputs before this call.
         * The installed Sage API broadcasts GQA when query heads are divisible
           by key/value heads; ``enable_gqa`` is therefore informational here.
     Returns ``None`` on any failure.
@@ -259,20 +240,10 @@ def _sage_attn(
     try:
         from sageattention import sageattn
 
-        original_dtype = query.dtype
-        needs_conversion = original_dtype not in _HALF_DTYPES
-
-        if needs_conversion:
-            q = query.to(torch.bfloat16)
-            k = key.to(torch.bfloat16)
-            v = value.to(torch.bfloat16)
-        else:
-            q, k, v = query, key, value
-
         # Sage kernels prefer contiguous tensors.
-        q = q.contiguous()
-        k = k.contiguous()
-        v = v.contiguous()
+        q = query.contiguous()
+        k = key.contiguous()
+        v = value.contiguous()
 
         out = sageattn(
             q,
@@ -282,9 +253,6 @@ def _sage_attn(
             is_causal=is_causal,
             sm_scale=scale,
         )
-
-        if needs_conversion:
-            out = out.to(original_dtype)
 
         return out.contiguous()
     except ImportError:
@@ -401,26 +369,15 @@ def _tq_attn(
         * Broadcasts unequal q/kv heads (GQA verified) -> ``enable_gqa`` unused.
         * head_dim must be a supported power of 2 (64/128); other dims are gated
           out upstream (``allowed_head_dims={64, 128}``) and never reach here.
-        * Quantized kernel: non-half inputs are cast to bf16 and the output cast
-          back (matches the sage/flash quant path).
+        * Capability resolution refuses non-fp16/bf16 inputs before this call.
     Returns ``None`` on any failure (conduit falls back to native).
     """
     try:
         from tq_attention import tq_attention as _tq
 
-        original_dtype = query.dtype
-        needs_conversion = original_dtype not in _HALF_DTYPES
-
-        if needs_conversion:
-            q = query.to(torch.bfloat16)
-            k = key.to(torch.bfloat16)
-            v = value.to(torch.bfloat16)
-        else:
-            q, k, v = query, key, value
-
-        q = q.contiguous()
-        k = k.contiguous()
-        v = v.contiguous()
+        q = query.contiguous()
+        k = key.contiguous()
+        v = value.contiguous()
 
         out = _tq(
             q,
@@ -440,9 +397,6 @@ def _tq_attn(
             # (no grad) never touches the backward, so this is a no-op there.
             backward_mode="triton",
         )
-
-        if needs_conversion:
-            out = out.to(original_dtype)
 
         return out.contiguous()
     except ImportError:

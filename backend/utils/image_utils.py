@@ -458,7 +458,18 @@ def save_image_with_metadata(
 
     return filename
 
-def create_thumbnail(image_path: str, size: tuple = (256, 256)) -> str:
+def dataset_thumbnail_key(media_path: str) -> str:
+    """Return a path-private, collision-resistant key for dataset previews."""
+    normalized = os.path.normcase(os.path.abspath(media_path))
+    return "dataset_" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
+
+
+def create_thumbnail(
+    image_path: str,
+    size: tuple = (256, 256),
+    *,
+    output_key: str | None = None,
+) -> str:
     """Create thumbnail from image (PNG + WebP versions)
 
     Creates both PNG (for compatibility) and WebP (for transfer reduction) thumbnails.
@@ -478,7 +489,7 @@ def create_thumbnail(image_path: str, size: tuple = (256, 256)) -> str:
     image.thumbnail(size, Image.Resampling.LANCZOS)
 
     filename = os.path.basename(image_path)
-    base_name = os.path.splitext(filename)[0]
+    base_name = output_key or os.path.splitext(filename)[0]
 
     # Save PNG version (for compatibility)
     thumb_path_png = os.path.join(settings.thumbnails_dir, f"{base_name}.png")

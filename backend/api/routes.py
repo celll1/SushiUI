@@ -39,7 +39,7 @@ from core.inference.schedulers import (
     get_available_schedule_types,
     get_schedule_type_display_names
 )
-from utils import save_image_with_metadata, create_thumbnail, calculate_image_hash, encode_mask_to_base64, extract_lora_names, calculate_file_hash, calculate_bytes_hash
+from utils import save_image_with_metadata, create_thumbnail, dataset_thumbnail_key, calculate_image_hash, encode_mask_to_base64, extract_lora_names, calculate_file_hash, calculate_bytes_hash
 from utils.upload_names import recover_upload_filename
 from config.settings import settings
 from api.websocket import manager
@@ -14037,7 +14037,10 @@ async def scan_dataset(
                                 try:
                                     if poster_tmp != poster_named:
                                         os.replace(poster_tmp, poster_named)
-                                    create_thumbnail(poster_named)
+                                    create_thumbnail(
+                                        poster_named,
+                                        output_key=dataset_thumbnail_key(image_path),
+                                    )
                                 finally:
                                     for _p in (poster_tmp, poster_named):
                                         try:
@@ -14064,7 +14067,10 @@ async def scan_dataset(
                                 # writer expects [channels, samples].
                                 arr = data.T
                                 _write_waveform_png(arr, wave_named)
-                                create_thumbnail(wave_named)
+                                create_thumbnail(
+                                    wave_named,
+                                    output_key=dataset_thumbnail_key(image_path),
+                                )
                             finally:
                                 try:
                                     os.remove(wave_named)

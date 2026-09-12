@@ -8,6 +8,7 @@ from core.inference.prompt_embedding_cache import (
     generation_prompt_cache,
 )
 from core.keep_hot import mark_resident
+from core.pipeline_backends.anima import AnimaMixin
 from core.pipeline_backends.flux2 import Flux2Mixin
 from core.pipeline_backends.krea2 import Krea2Mixin
 from core.pipeline_backends.minit2i import MiniT2IMixin
@@ -212,3 +213,43 @@ def test_flux2_cache_owns_all_text_variants_and_truthful_residency(monkeypatch):
     mark_resident(manager, "text_encoder", "model")
     _, kept_with_residency, _, _ = manager._flux2_encode_conditioning(*keep_args)
     assert kept_with_residency
+
+
+def test_anima_cache_owns_cfg_and_nag_encodes(monkeypatch):
+    from core.models.anima import anima_pipeline_ops
+
+    generation_prompt_cache.clear()
+    manager = AnimaMixin()
+    encoder = torch.nn.Linear(1, 1)
+    manager.anima_components = {"text_encoder": encoder}
+    moves = []
+    forwards = []
+    manager._anima_move = lambda name, device, *_args: moves.append((name, device)) or encoder
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr("core.inference.nag_dit.nag_active", lambda *_args: True)
+
+    def encode_prompt(_encoder, _qwen, _t5, prompt, **_kwargs):
+        forwards.append(prompt)
+        return {"prompt_embeds": torch.full((1, 2, 2), len(prompt), dtype=torch.float32)}
+
+    monkeypatch.setattr(anima_pipeline_ops, "encode_prompt", encode_prompt)
+    params = {"nag_enable": True, "nag_scale": 2.0, "nag_negative_prompt": "nag"}
+    args = (
+        encoder, _Encoder(), _Encoder(), "positive", "negative", 4.0, params,
+        torch.device("cpu"), torch.device("cpu"), torch.float32,
+        "model", False, False, None,
+    )
+
+    first, kept_first = manager._anima_encode_conditioning(*args)
+    second, kept_second = manager._anima_encode_conditioning(*args)
+
+    assert forwards == ["positive", "negative", "nag"]
+    assert moves == [
+        ("text_encoder", torch.device("cpu")),
+        ("text_encoder", "cpu"),
+        ("text_encoder", "cpu"),
+    ]
+    assert not kept_first and not kept_second
+    for first_value, second_value in zip(first, second):
+        assert torch.equal(first_value["prompt_embeds"], second_value["prompt_embeds"])
+        assert first_value["prompt_embeds"].data_ptr() != second_value["prompt_embeds"].data_ptr()

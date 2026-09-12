@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { Search, ChevronLeft, ChevronRight, Image as ImageIcon } from "lucide-react";
-import { listDatasetItems, DatasetItem } from "@/utils/api";
+import { listDatasetItems, DatasetItem, datasetItemPreviewUrl } from "@/utils/api";
 
 interface ItemBrowserProps {
   datasetId: number;
@@ -94,7 +94,7 @@ export default function ItemBrowser({ datasetId, onSelectItem }: ItemBrowserProp
             {/* Image Thumbnail */}
             <div className="aspect-square bg-gray-800 relative">
               <img
-                src={`/api/serve-image?path=${encodeURIComponent(item.image_path)}`}
+                src={datasetItemPreviewUrl(datasetId, item.id, 256)}
                 alt={item.base_name}
                 className="w-full h-full object-cover"
                 loading="lazy"

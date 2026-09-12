@@ -8389,6 +8389,92 @@ paths:
                     items:
                       type: string
 
+  /datasets/{dataset_id}/items/{item_id}/preview:
+    get:
+      tags: [datasets]
+      summary: Get a bounded cached preview for a dataset item
+      operationId: getDatasetItemPreview
+      parameters:
+        - {name: dataset_id, in: path, required: true, schema: {type: integer}}
+        - {name: item_id, in: path, required: true, schema: {type: integer}}
+        - name: size
+          in: query
+          required: false
+          schema: {type: integer, enum: [128, 256, 512], default: 256}
+      responses:
+        '200':
+          description: WebP preview keyed by media modification state
+          headers:
+            ETag: {schema: {type: string}}
+            Cache-Control: {schema: {type: string}}
+          content:
+            image/webp:
+              schema: {type: string, format: binary}
+        '304': {description: Cached preview is current}
+        '404':
+          description: Dataset item, media, or extracted media preview not found
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        '422':
+          description: Preview cannot be decoded
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+
+  /datasets/{dataset_id}/items/{item_id}/media:
+    get:
+      tags: [datasets]
+      summary: Stream the source media for a dataset item
+      operationId: getDatasetItemMedia
+      parameters:
+        - {name: dataset_id, in: path, required: true, schema: {type: integer}}
+        - {name: item_id, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200':
+          description: Source media
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        '206':
+          description: Requested byte range
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        '404':
+          description: Dataset item or source media not found
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        '416': {description: Requested byte range is invalid or unsatisfiable}
+
+  /datasets/{dataset_id}/items/{item_id}/references/{reference_index}:
+    get:
+      tags: [datasets]
+      summary: Stream one registered reference image for a dataset item
+      operationId: getDatasetReferenceMedia
+      parameters:
+        - {name: dataset_id, in: path, required: true, schema: {type: integer}}
+        - {name: item_id, in: path, required: true, schema: {type: integer}}
+        - {name: reference_index, in: path, required: true, schema: {type: integer, minimum: 0}}
+      responses:
+        '200':
+          description: Reference image
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        '206':
+          description: Requested byte range
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        '404':
+          description: Dataset item, reference index, or reference file not found
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        '416': {description: Requested byte range is invalid or unsatisfiable}
+
   /datasets/{dataset_id}/caption-types:
     get:
       tags: [datasets]

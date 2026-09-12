@@ -40,6 +40,9 @@ def test_dataset_item_prefers_hashed_webp_and_falls_back_to_legacy_png(tmp_path,
         image_path=str(media),
     )
 
+    assert item.to_dict()["thumbnail_url"] is None
+
+    Path(thumbnails / "clip.png").write_bytes(b"png")
     assert item.to_dict()["thumbnail_url"] == "/thumbnails/clip.png"
 
     key = dataset_thumbnail_key(str(media))

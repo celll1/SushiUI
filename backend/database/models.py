@@ -605,12 +605,16 @@ class DatasetItem(DatasetBase):
             from utils.image_utils import dataset_thumbnail_key
 
             key = dataset_thumbnail_key(self.image_path)
-            hashed_path = os.path.join(settings.thumbnails_dir, f"{key}.webp")
-            thumbnail_url = (
-                f"/thumbnails/{key}.webp"
-                if os.path.isfile(hashed_path)
-                else f"/thumbnails/{self.base_name}.png"
+            candidates = (
+                (key, "webp"),
+                (key, "png"),
+                (self.base_name, "webp"),
+                (self.base_name, "png"),
             )
+            for name, extension in candidates:
+                if os.path.isfile(os.path.join(settings.thumbnails_dir, f"{name}.{extension}")):
+                    thumbnail_url = f"/thumbnails/{name}.{extension}"
+                    break
         return {
             "id": self.id,
             "dataset_id": self.dataset_id,

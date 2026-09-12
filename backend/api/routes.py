@@ -14506,23 +14506,28 @@ async def list_dataset_items(
     if search:
         query = query.filter(DatasetItem.base_name.like(f"%{search}%"))
 
-    # Tag filter: Find items that have captions containing ALL specified tags
+    exact_ids = None
     if tags:
         tag_list = [t.strip().lower() for t in tags.split(',') if t.strip()]
         if tag_list:
-            # Join with DatasetCaption table (caption_type = "tags")
-            query = query.join(DatasetCaption, DatasetItem.id == DatasetCaption.item_id)
-            query = query.filter(DatasetCaption.caption_type == "tags")
+            from core.datasets.queries import exact_tag_item_ids
+            exact_ids = exact_tag_item_ids(
+                db, dataset_id, tag_list, search=search
+            )
 
-            for tag in tag_list:
-                # Match tag as whole word in comma-separated list
-                query = query.filter(
-                    func.lower(DatasetCaption.content).like(f"%{tag}%")
-                )
-
-    total = query.count()
+    total = len(exact_ids) if exact_ids is not None else query.count()
     offset = (page - 1) * page_size
-    items = query.order_by(DatasetItem.id).offset(offset).limit(page_size).all()
+    if exact_ids is not None:
+        page_ids = exact_ids[offset:offset + page_size]
+        items = (
+            db.query(DatasetItem)
+            .filter(DatasetItem.id.in_(page_ids))
+            .order_by(DatasetItem.id)
+            .all()
+            if page_ids else []
+        )
+    else:
+        items = query.order_by(DatasetItem.id).offset(offset).limit(page_size).all()
 
     return {
         "items": [item.to_dict() for item in items],
@@ -14554,18 +14559,17 @@ async def get_all_dataset_item_ids(
     if search:
         query = query.filter(DatasetItem.base_name.like(f"%{search}%"))
 
-    # Tag filter
     if tags:
         tag_list = [t.strip().lower() for t in tags.split(',') if t.strip()]
         if tag_list:
-            query = query.join(DatasetCaption, DatasetItem.id == DatasetCaption.item_id)
-            query = query.filter(DatasetCaption.caption_type == "tags")
-            for tag in tag_list:
-                query = query.filter(
-                    func.lower(DatasetCaption.content).like(f"%{tag}%")
-                )
-
-    item_ids = [row[0] for row in query.order_by(DatasetItem.id).all()]
+            from core.datasets.queries import exact_tag_item_ids
+            item_ids = exact_tag_item_ids(
+                db, dataset_id, tag_list, search=search
+            )
+        else:
+            item_ids = [row[0] for row in query.order_by(DatasetItem.id).all()]
+    else:
+        item_ids = [row[0] for row in query.order_by(DatasetItem.id).all()]
 
     return {
         "item_ids": item_ids,
@@ -14677,13 +14681,19 @@ async def get_dataset_caption_types(
                 "field_category": field_category or "training",
                 "is_tags_format": is_tags_format or False,
                 "avg_match_rate": 0.0,
+                "_weighted_match_sum": 0.0,
                 "source_field": source_field,
                 "subtypes": []
             }
 
         caption_types_dict[caption_type]["total_count"] += count
-        # Average of averages (weighted by count would be better, but this is simpler)
-        caption_types_dict[caption_type]["avg_match_rate"] = avg_match_rate or 0.0
+        caption_types_dict[caption_type]["_weighted_match_sum"] += (avg_match_rate or 0.0) * count
+
+    for info in caption_types_dict.values():
+        total_count = info["total_count"]
+        info["avg_match_rate"] = (
+            info.pop("_weighted_match_sum") / total_count if total_count else 0.0
+        )
 
     caption_types_list = sorted(
         caption_types_dict.values(),
@@ -14715,6 +14725,7 @@ async def get_random_caption(
     from sqlalchemy import func
     from core.training.caption_processor import (
         process_caption, process_caption_with_tag_data, get_default_caption_processing_config,
+        apply_caption_dropout,
     )
 
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
@@ -14806,8 +14817,9 @@ async def get_random_caption(
                 tag_dropout_exclude_person_count=caption_config.get("tag_dropout_exclude_person_count", False),
             )
     else:
-        # Natural language: used as-is by training (no tag processing).
-        processed_caption = raw_caption
+        processed_caption = apply_caption_dropout(
+            raw_caption, caption_config.get("caption_dropout_rate", 0.0)
+        )
 
     reference_images = []
     if item and item.related_images:

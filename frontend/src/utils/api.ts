@@ -6252,10 +6252,10 @@ export interface SaveToTxtResponse {
 }
 
 export interface BulkSaveToTxtResponse {
-  total: number;
-  saved: number;
-  skipped: number;
-  errors: number;
+  status: string;
+  saved_count: number;
+  failed_count: number;
+  failed_items: Array<{ item_id: number; path: string; error: string }>;
 }
 
 export const saveItemCaptionToTxt = async (itemId: number): Promise<SaveToTxtResponse> => {

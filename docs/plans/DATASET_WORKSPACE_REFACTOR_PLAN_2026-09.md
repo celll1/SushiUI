@@ -1,5 +1,9 @@
 # Dataset workspace refactor plan
 
+Status: implemented and regression-tested in September 2026. The compatibility
+Viewer remains available for multi-field metadata, while Tag Workspace is the
+shared buffered tag-editing surface.
+
 ## Outcome
 
 Dataset files and their sidecars remain the durable source of truth. The
@@ -159,4 +163,3 @@ and import checks with CUDA initialization stubbed. The final audit must cover:
 - old database/API compatibility.
 
 Frontend build and type checking remain owner-run per repository policy.
-

@@ -75,6 +75,38 @@ sidecars, invalid or stale sidecars, duplicate stems, reference failures,
 caption coverage, and missing image metadata without making the registry list
 pay that cost on every open.
 
+## Inspection and editing surfaces
+
+The Dataset editor has two intentionally different views:
+
+- **Viewer** is the compatibility and metadata surface. It uses lightweight
+  cursor pages and loads item details and tag statistics only when requested.
+- **Tag Workspace** reuses the virtualized Tagger Browser grid and buffered
+  tag editor. Its opaque workspace token is bound to the registered dataset;
+  listing, image reads, and writes reject files that are present under the
+  folder but absent from the index.
+
+Tag Workspace saves use the same caption transaction as Dataset batch edits.
+TXT datasets remain TXT, JSON fields retain unrelated data, and a successful
+save updates the index, aggregate tag state, and dataset revision together.
+The standalone Tagger Browser keeps its folder-only TXT workflow for backward
+compatibility and is not treated as a registered dataset until opened through
+the Dataset editor.
+
+## Scanner ownership
+
+`backend/core/datasets/scanning.py` owns index reconciliation for both the HTTP
+Scan/Reconcile actions and training pre-flight rescans. The API layer maps
+service errors to HTTP responses and supplies UI progress; training supplies
+its cancellation callback directly without importing an API route.
+
+The scanner groups equal basenames by dataset-relative directory, probes new
+video/audio records without decoding complete media, removes vanished items,
+and removes file-sourced captions that disappear during a sidecar refresh.
+Caption changes rebuild tag statistics; a no-change incremental reconcile
+retains the cached aggregate. Every material result advances
+`Dataset.revision`, invalidating the derived training snapshot.
+
 ## Change checklist
 
 When adding a dataset-level parameter, update all of the following:

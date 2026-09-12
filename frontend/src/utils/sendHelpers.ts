@@ -73,17 +73,11 @@ export function sendToPanel(
     dispatchEvent
   } = options;
 
-  console.log("[sendToPanel] targetStorageKey:", targetStorageKey);
-  console.log("[sendToPanel] sendPrompt:", sendPrompt, "sendParameters:", sendParameters);
-  console.log("[sendToPanel] sourceParams.prompt:", sourceParams.prompt);
-
   const targetParams = JSON.parse(localStorage.getItem(targetStorageKey) || "{}");
-  console.log("[sendToPanel] Existing targetParams:", targetParams);
 
   if (sendPrompt) {
     targetParams.prompt = sourceParams.prompt;
     targetParams.negative_prompt = sourceParams.negative_prompt;
-    console.log("[sendToPanel] Set prompt to:", targetParams.prompt);
   }
 
   if (sendParameters) {
@@ -150,45 +144,42 @@ export function sendToPanel(
   }
 
   if (sendPrompt || sendParameters) {
-    console.log("[sendToPanel] Saving merged params:", targetParams);
     localStorage.setItem(targetStorageKey, JSON.stringify(targetParams));
 
-    // Dispatch custom event if specified
     if (dispatchEvent) {
-      console.log("[sendToPanel] Dispatching event:", dispatchEvent);
       window.dispatchEvent(new Event(dispatchEvent));
     }
   }
 }
 
-/**
- * @deprecated Use sendToPanel instead
- * Sends prompt to target panel's localStorage
- */
-export function sendPromptToPanel(
-  sourceParams: BaseSendParams,
-  targetStorageKey: string
-): void {
-  sendToPanel(sourceParams, targetStorageKey, {
-    sendPrompt: true,
-    sendParameters: false
+function readBlobAsDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
   });
 }
 
-/**
- * @deprecated Use sendToPanel instead
- * Sends parameters to target panel's localStorage
- */
-export function sendParametersToPanel(
-  sourceParams: ExtendedSendParams,
-  targetStorageKey: string,
-  includeDenoising: boolean = false
-): void {
-  sendToPanel(sourceParams, targetStorageKey, {
-    sendPrompt: false,
-    sendParameters: true,
-    includeDenoising
-  });
+async function fetchImageAsDataUrl(imageUrl: string): Promise<string> {
+  const response = await fetch(imageUrl);
+  return readBlobAsDataUrl(await response.blob());
+}
+
+async function storePanelImage(
+  base64Image: string,
+  storageKey: string,
+  eventName: string,
+  options: { deletePrevious?: boolean; removeKeys?: string[] } = {},
+): Promise<void> {
+  if (options.deletePrevious) {
+    const oldRef = localStorage.getItem(storageKey);
+    if (oldRef) await deleteTempImageRef(oldRef);
+  }
+  const ref = await saveTempImage(base64Image);
+  localStorage.setItem(storageKey, ref);
+  for (const key of options.removeKeys ?? []) localStorage.removeItem(key);
+  window.dispatchEvent(new Event(eventName));
 }
 
 /**
@@ -198,28 +189,9 @@ export async function sendImageToImg2Img(
   imageUrl: string,
   storageKey: string = "img2img_input_image"
 ): Promise<void> {
-  const response = await fetch(imageUrl);
-  const blob = await response.blob();
-
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = async () => {
-      try {
-        const base64data = reader.result as string;
-        const oldRef = localStorage.getItem(storageKey);
-        if (oldRef) {
-          await deleteTempImageRef(oldRef);
-        }
-        const ref = await saveTempImage(base64data);
-        localStorage.setItem(storageKey, ref);
-        window.dispatchEvent(new Event("img2img_input_updated"));
-        resolve();
-      } catch (error) {
-        reject(error);
-      }
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
+  const base64Image = await fetchImageAsDataUrl(imageUrl);
+  await storePanelImage(base64Image, storageKey, "img2img_input_updated", {
+    deletePrevious: true,
   });
 }
 
@@ -231,25 +203,9 @@ export async function sendImageToInpaint(
   inputStorageKey: string = "inpaint_input_image",
   maskStorageKey: string = "inpaint_mask_image"
 ): Promise<void> {
-  const response = await fetch(imageUrl);
-  const blob = await response.blob();
-
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = async () => {
-      try {
-        const base64data = reader.result as string;
-        const ref = await saveTempImage(base64data);
-        localStorage.setItem(inputStorageKey, ref);
-        localStorage.removeItem(maskStorageKey);
-        window.dispatchEvent(new Event("inpaint_input_updated"));
-        resolve();
-      } catch (error) {
-        reject(error);
-      }
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
+  const base64Image = await fetchImageAsDataUrl(imageUrl);
+  await storePanelImage(base64Image, inputStorageKey, "inpaint_input_updated", {
+    removeKeys: [maskStorageKey],
   });
 }
 
@@ -261,28 +217,9 @@ export async function sendImageToOutpaint(
   imageUrl: string,
   storageKey: string = "outpaint_input_image"
 ): Promise<void> {
-  const response = await fetch(imageUrl);
-  const blob = await response.blob();
-
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = async () => {
-      try {
-        const base64data = reader.result as string;
-        const oldRef = localStorage.getItem(storageKey);
-        if (oldRef) {
-          await deleteTempImageRef(oldRef);
-        }
-        const ref = await saveTempImage(base64data);
-        localStorage.setItem(storageKey, ref);
-        window.dispatchEvent(new Event("outpaint_input_updated"));
-        resolve();
-      } catch (error) {
-        reject(error);
-      }
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
+  const base64Image = await fetchImageAsDataUrl(imageUrl);
+  await storePanelImage(base64Image, storageKey, "outpaint_input_updated", {
+    deletePrevious: true,
   });
 }
 
@@ -293,9 +230,7 @@ export async function sendBase64ImageToOutpaint(
   base64Image: string,
   storageKey: string = "outpaint_input_image"
 ): Promise<void> {
-  const tempRef = await saveTempImage(base64Image);
-  localStorage.setItem(storageKey, tempRef);
-  window.dispatchEvent(new Event("outpaint_input_updated"));
+  await storePanelImage(base64Image, storageKey, "outpaint_input_updated");
 }
 
 /**
@@ -305,9 +240,7 @@ export async function sendBase64ImageToImg2Img(
   base64Image: string,
   storageKey: string = "img2img_input_image"
 ): Promise<void> {
-  const tempRef = await saveTempImage(base64Image);
-  localStorage.setItem(storageKey, tempRef);
-  window.dispatchEvent(new Event("img2img_input_updated"));
+  await storePanelImage(base64Image, storageKey, "img2img_input_updated");
 }
 
 /**
@@ -318,10 +251,9 @@ export async function sendBase64ImageToInpaint(
   inputStorageKey: string = "inpaint_input_image",
   maskStorageKey: string = "inpaint_mask_image"
 ): Promise<void> {
-  const tempRef = await saveTempImage(base64Image);
-  localStorage.setItem(inputStorageKey, tempRef);
-  localStorage.removeItem(maskStorageKey);
-  window.dispatchEvent(new Event("inpaint_input_updated"));
+  await storePanelImage(base64Image, inputStorageKey, "inpaint_input_updated", {
+    removeKeys: [maskStorageKey],
+  });
 }
 
 /**
@@ -331,28 +263,9 @@ export async function sendImageToUpscale(
   imageUrl: string,
   storageKey: string = "upscale_input_image"
 ): Promise<void> {
-  const response = await fetch(imageUrl);
-  const blob = await response.blob();
-
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = async () => {
-      try {
-        const base64data = reader.result as string;
-        const oldRef = localStorage.getItem(storageKey);
-        if (oldRef) {
-          await deleteTempImageRef(oldRef);
-        }
-        const ref = await saveTempImage(base64data);
-        localStorage.setItem(storageKey, ref);
-        window.dispatchEvent(new Event("upscale_input_updated"));
-        resolve();
-      } catch (error) {
-        reject(error);
-      }
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
+  const base64Image = await fetchImageAsDataUrl(imageUrl);
+  await storePanelImage(base64Image, storageKey, "upscale_input_updated", {
+    deletePrevious: true,
   });
 }
 
@@ -363,9 +276,7 @@ export async function sendBase64ImageToUpscale(
   base64Image: string,
   storageKey: string = "upscale_input_image"
 ): Promise<void> {
-  const tempRef = await saveTempImage(base64Image);
-  localStorage.setItem(storageKey, tempRef);
-  window.dispatchEvent(new Event("upscale_input_updated"));
+  await storePanelImage(base64Image, storageKey, "upscale_input_updated");
 }
 
 /**
@@ -375,28 +286,9 @@ export async function sendImageToImg2Vid(
   imageUrl: string,
   storageKey: string = "img2vid_input_image"
 ): Promise<void> {
-  const response = await fetch(imageUrl);
-  const blob = await response.blob();
-
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = async () => {
-      try {
-        const base64data = reader.result as string;
-        const oldRef = localStorage.getItem(storageKey);
-        if (oldRef) {
-          await deleteTempImageRef(oldRef);
-        }
-        const ref = await saveTempImage(base64data);
-        localStorage.setItem(storageKey, ref);
-        window.dispatchEvent(new Event("img2vid_input_updated"));
-        resolve();
-      } catch (error) {
-        reject(error);
-      }
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
+  const base64Image = await fetchImageAsDataUrl(imageUrl);
+  await storePanelImage(base64Image, storageKey, "img2vid_input_updated", {
+    deletePrevious: true,
   });
 }
 
@@ -407,9 +299,7 @@ export async function sendBase64ImageToImg2Vid(
   base64Image: string,
   storageKey: string = "img2vid_input_image"
 ): Promise<void> {
-  const tempRef = await saveTempImage(base64Image);
-  localStorage.setItem(storageKey, tempRef);
-  window.dispatchEvent(new Event("img2vid_input_updated"));
+  await storePanelImage(base64Image, storageKey, "img2vid_input_updated");
 }
 
 /**

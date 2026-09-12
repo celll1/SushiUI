@@ -9,6 +9,7 @@ import {
   browserBatchInfer,
   browserImageUrl,
   BrowserBatchEvent,
+  BrowserWorkspaceResponse,
 } from "@/utils/api";
 import ThumbnailGrid from "./ThumbnailGrid";
 import TagEditorPanel from "./TagEditorPanel";
@@ -26,12 +27,18 @@ import {
 
 interface DatasetBrowserPanelProps {
   modelLoaded: boolean;
+  initialWorkspace?: BrowserWorkspaceResponse | null;
+  initialRecursive?: boolean;
+  lockedWorkspace?: boolean;
 }
 
 type FilterMode = "all" | "tagged" | "untagged";
 
 export default function DatasetBrowserPanel({
   modelLoaded,
+  initialWorkspace,
+  initialRecursive = false,
+  lockedWorkspace = false,
 }: DatasetBrowserPanelProps) {
   const [dirPath, setDirPath] = useState("");
   const [displayName, setDisplayName] = useState<string | null>(null);
@@ -93,7 +100,11 @@ export default function DatasetBrowserPanel({
   }, [editorDirty]);
 
   const loadImages = useCallback(
-    async (includeTags = false, targetWorkspaceId = workspaceId) => {
+    async (
+      includeTags = false,
+      targetWorkspaceId = workspaceId,
+      targetRecursive = recursive,
+    ) => {
       if (!targetWorkspaceId) return;
       setLoading(true);
       setLoadError(null);
@@ -101,7 +112,7 @@ export default function DatasetBrowserPanel({
       try {
         const { images: imgs } = await browserListImages(
           targetWorkspaceId,
-          recursive,
+          targetRecursive,
           includeTags
         );
         setImages(imgs);
@@ -133,6 +144,18 @@ export default function DatasetBrowserPanel({
     },
     [workspaceId, recursive, clearSelection, tagSuggestionsCtx]
   );
+
+  useEffect(() => {
+    if (!initialWorkspace?.ok || !initialWorkspace.workspace_id) return;
+    setWorkspaceId(initialWorkspace.workspace_id);
+    setDisplayName(initialWorkspace.display_name);
+    setRecursive(initialRecursive);
+    void loadImages(
+      needsTagsLoaded(filterQuery),
+      initialWorkspace.workspace_id,
+      initialRecursive,
+    );
+  }, [initialWorkspace?.workspace_id, initialRecursive]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleLoad = useCallback(async () => {
     if (!dirPath.trim()) return;
@@ -411,7 +434,7 @@ export default function DatasetBrowserPanel({
         {/* Toolbar */}
         <div className="p-2 border-b border-gray-700 flex flex-col gap-2 flex-shrink-0">
           {/* Directory input row */}
-          <div className="flex gap-1">
+          {!lockedWorkspace ? <div className="flex gap-1">
             <input
               type="text"
               value={dirPath}
@@ -442,7 +465,11 @@ export default function DatasetBrowserPanel({
             >
               {loading ? "読込中..." : "読込"}
             </button>
-          </div>
+          </div> : (
+            <div className="px-2 py-1 text-sm text-gray-300">
+              {displayName || "Registered dataset"}
+            </div>
+          )}
 
           {/* Options row */}
           <div className="flex items-center gap-3 flex-wrap">
@@ -450,7 +477,7 @@ export default function DatasetBrowserPanel({
               <input
                 type="checkbox"
                 checked={recursive}
-                disabled={editorDirty}
+                disabled={editorDirty || lockedWorkspace}
                 onChange={(e) => setRecursive(e.target.checked)}
                 className="accent-blue-500"
               />

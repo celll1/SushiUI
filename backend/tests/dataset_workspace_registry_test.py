@@ -14,11 +14,13 @@ def test_workspaces_isolate_roots_and_keep_legacy_compatibility(tmp_path):
 
     first_id, _ = registry.create(str(first))
     registry.set_legacy(first_id)
-    second_id, _ = registry.create(str(second))
+    second_id, _ = registry.create(str(second), dataset_id=42)
 
     assert registry.resolve(first_id, "image.png") == os.path.join(str(first), "image.png")
     assert registry.resolve(second_id, "image.png") == os.path.join(str(second), "image.png")
     assert registry.resolve(None, "image.png") == os.path.join(str(first), "image.png")
+    assert registry.dataset_id(first_id) is None
+    assert registry.dataset_id(second_id) == 42
 
 
 @pytest.mark.parametrize("rel_path", ["../secret", "..\\secret", "/../secret"])

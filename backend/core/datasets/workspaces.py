@@ -14,6 +14,7 @@ from dataclasses import dataclass
 class _Workspace:
     root: str
     touched_at: float
+    dataset_id: int | None = None
 
 
 class DatasetWorkspaceRegistry:
@@ -28,7 +29,7 @@ class DatasetWorkspaceRegistry:
         self._legacy_id: str | None = None
         self._lock = threading.Lock()
 
-    def create(self, root: str) -> tuple[str, str]:
+    def create(self, root: str, *, dataset_id: int | None = None) -> tuple[str, str]:
         normalized = os.path.abspath(root)
         if not os.path.isdir(normalized):
             raise ValueError("Invalid directory")
@@ -36,7 +37,7 @@ class DatasetWorkspaceRegistry:
         workspace_id = secrets.token_urlsafe(24)
         with self._lock:
             self._prune(now)
-            self._entries[workspace_id] = _Workspace(normalized, now)
+            self._entries[workspace_id] = _Workspace(normalized, now, dataset_id)
             self._entries.move_to_end(workspace_id)
             while len(self._entries) > self._max_entries:
                 evicted_id, _ = self._entries.popitem(last=False)
@@ -80,6 +81,15 @@ class DatasetWorkspaceRegistry:
         if not contained:
             raise PermissionError("Path outside allowed directory")
         return candidate
+
+    def dataset_id(self, workspace_id: str | None) -> int | None:
+        resolved_id = workspace_id or self._legacy_id or ""
+        self.root(resolved_id)
+        with self._lock:
+            entry = self._entries.get(resolved_id)
+            if entry is None:
+                raise KeyError("Unknown or expired workspace")
+            return entry.dataset_id
 
     def _prune(self, now: float) -> None:
         expired = [

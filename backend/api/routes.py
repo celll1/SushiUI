@@ -12242,16 +12242,41 @@ def _resolve_browser_path(rel_path: str, workspace_id: Optional[str] = None) -> 
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
-def _create_browser_workspace(path: str) -> tuple[str, str]:
+def _create_browser_workspace(path: str, *, dataset_id: int | None = None) -> tuple[str, str]:
     from core.datasets.workspaces import dataset_workspaces
 
     try:
-        workspace_id, root = dataset_workspaces.create(path)
+        workspace_id, root = dataset_workspaces.create(path, dataset_id=dataset_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     # Old clients omit workspace_id and therefore use the last opened workspace.
     dataset_workspaces.set_legacy(workspace_id)
     return workspace_id, root
+
+
+def _browser_workspace_dataset_id(workspace_id: Optional[str]) -> int | None:
+    from core.datasets.workspaces import dataset_workspaces
+
+    try:
+        return dataset_workspaces.dataset_id(workspace_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=400, detail="Unknown or expired browser workspace") from exc
+
+
+def _indexed_browser_item(db: Session, workspace_id: Optional[str], abs_path: str):
+    dataset_id = _browser_workspace_dataset_id(workspace_id)
+    if dataset_id is None:
+        return None
+    item = db.query(DatasetItem).filter(
+        DatasetItem.dataset_id == dataset_id,
+        DatasetItem.image_path == abs_path,
+    ).first()
+    if item is None:
+        raise HTTPException(
+            status_code=409,
+            detail="File is not indexed in this dataset; reconcile before editing",
+        )
+    return item
 
 
 class BrowserSetDirectoryRequest(BaseModel):
@@ -12266,6 +12291,25 @@ async def browser_set_directory(req: BrowserSetDirectoryRequest):
     """
     import os as _os
     workspace_id, root = _create_browser_workspace(req.dir)
+    return {
+        "ok": True,
+        "workspace_id": workspace_id,
+        "display_name": _os.path.basename(root),
+    }
+
+
+@router.post("/datasets/{dataset_id}/workspace")
+async def open_registered_dataset_workspace(
+    dataset_id: int,
+    db: Session = Depends(get_datasets_db),
+):
+    """Create an opaque Tagger workspace backed by a registered dataset."""
+    import os as _os
+
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    workspace_id, root = _create_browser_workspace(dataset.path, dataset_id=dataset.id)
     return {
         "ok": True,
         "workspace_id": workspace_id,
@@ -12318,13 +12362,9 @@ async def browser_list(
     recursive: bool = False,
     include_tags: bool = False,
     workspace_id: Optional[str] = None,
+    db: Session = Depends(get_datasets_db),
 ):
-    """List image files under the active browser root.
-
-    Response contains only rel_path (relative to root), has_tags, and mtime.
-    Absolute paths are never sent to the client.
-    When include_tags=True, each entry also includes a 'tags' list read from the sidecar .txt.
-    """
+    """List relative image paths and indexed tag state for a workspace."""
     import os as _os
     from core.datasets.workspaces import dataset_workspaces
 
@@ -12332,7 +12372,9 @@ async def browser_list(
         browser_root = dataset_workspaces.root(workspace_id)
     except KeyError as exc:
         raise HTTPException(status_code=400, detail="Unknown or expired browser workspace") from exc
+    dataset_id = _browser_workspace_dataset_id(workspace_id)
     results = []
+    absolute_paths: Dict[str, str] = {}
     if recursive:
         walker = _os.walk(browser_root)
     else:
@@ -12347,10 +12389,12 @@ async def browser_list(
             if ext not in _BROWSER_IMAGE_EXTS:
                 continue
             abs_path = _os.path.join(dirpath, f)
+            rel_path = _os.path.relpath(abs_path, browser_root)
+            absolute_paths[rel_path] = abs_path
             txt_path = _os.path.splitext(abs_path)[0] + ".txt"
-            has_tags = _os.path.isfile(txt_path)
+            has_tags = dataset_id is None and _os.path.isfile(txt_path)
             entry = {
-                "rel_path": _os.path.relpath(abs_path, browser_root),
+                "rel_path": rel_path,
                 "has_tags": has_tags,
                 "mtime": _os.path.getmtime(abs_path),
             }
@@ -12365,6 +12409,39 @@ async def browser_list(
                 else:
                     entry["tags"] = []
             results.append(entry)
+    if dataset_id is not None:
+        from sqlalchemy import and_
+
+        rows = db.query(
+            DatasetItem.image_path,
+            DatasetCaption.content,
+        ).outerjoin(
+            DatasetCaption,
+            and_(
+                DatasetCaption.item_id == DatasetItem.id,
+                DatasetCaption.caption_type == "tags",
+            ),
+        ).filter(
+            DatasetItem.dataset_id == dataset_id,
+            DatasetItem.image_path.in_(list(absolute_paths.values())),
+        ).order_by(DatasetItem.id, DatasetCaption.id).all()
+        content_by_path: Dict[str, str] = {}
+        indexed_paths = set()
+        for image_path, content in rows:
+            indexed_paths.add(image_path)
+            if image_path not in content_by_path and content is not None:
+                content_by_path[image_path] = content
+        indexed_results = []
+        for entry in results:
+            abs_path = absolute_paths[entry["rel_path"]]
+            if abs_path not in indexed_paths:
+                continue
+            raw = content_by_path.get(abs_path, "")
+            entry["has_tags"] = bool(raw.strip())
+            if include_tags:
+                entry["tags"] = [tag.strip() for tag in raw.split(",") if tag.strip()]
+            indexed_results.append(entry)
+        results = indexed_results
     return {"images": results}
 
 
@@ -12400,6 +12477,7 @@ async def browser_image(
     rel_path: str,
     size: int = 0,
     workspace_id: Optional[str] = None,
+    db: Session = Depends(get_datasets_db),
 ):
     """Serve an image by rel_path (relative to active browser root).
 
@@ -12410,6 +12488,7 @@ async def browser_image(
     """
     import os as _os
     abs_path = _resolve_browser_path(rel_path, workspace_id)
+    _indexed_browser_item(db, workspace_id, abs_path)
     if not _os.path.isfile(abs_path):
         raise HTTPException(status_code=404, detail="File not found")
     if size > 0:
@@ -12439,11 +12518,23 @@ async def browser_image(
 
 
 @router.get("/tagger/browser/tags")
-async def browser_get_tags(rel_path: str, workspace_id: Optional[str] = None):
-    """Read .txt sidecar file for rel_path. Returns tags list and raw text."""
+async def browser_get_tags(
+    rel_path: str,
+    workspace_id: Optional[str] = None,
+    db: Session = Depends(get_datasets_db),
+):
+    """Read tags from the registered index or a folder TXT sidecar."""
     from core.tagger.browser_sidecars import read_image_sidecar
 
     abs_path = _resolve_browser_path(rel_path, workspace_id)
+    item = _indexed_browser_item(db, workspace_id, abs_path)
+    if item is not None:
+        caption = db.query(DatasetCaption).filter(
+            DatasetCaption.item_id == item.id,
+            DatasetCaption.caption_type == "tags",
+        ).order_by(DatasetCaption.id).first()
+        raw = caption.content if caption else ""
+        return {"tags": [tag.strip() for tag in raw.split(",") if tag.strip()], "raw": raw}
     tags, raw = read_image_sidecar(abs_path)
     return {"tags": tags, "raw": raw}
 
@@ -12454,7 +12545,10 @@ class BrowserGetTagsBatchRequest(BaseModel):
 
 
 @router.post("/tagger/browser/tags/batch")
-async def browser_get_tags_batch(req: BrowserGetTagsBatchRequest):
+async def browser_get_tags_batch(
+    req: BrowserGetTagsBatchRequest,
+    db: Session = Depends(get_datasets_db),
+):
     """Read sidecars in one request while preserving per-file failures."""
     import asyncio as _asyncio
     from core.tagger.browser_sidecars import read_image_sidecar
@@ -12463,6 +12557,43 @@ async def browser_get_tags_batch(req: BrowserGetTagsBatchRequest):
         (_resolve_browser_path(rel_path, req.workspace_id), rel_path)
         for rel_path in req.rel_paths
     ]
+    dataset_id = _browser_workspace_dataset_id(req.workspace_id)
+    if dataset_id is not None:
+        from sqlalchemy import and_
+
+        paths = [abs_path for abs_path, _ in resolved]
+        rows = db.query(
+            DatasetItem.image_path,
+            DatasetCaption.content,
+        ).outerjoin(
+            DatasetCaption,
+            and_(
+                DatasetCaption.item_id == DatasetItem.id,
+                DatasetCaption.caption_type == "tags",
+            ),
+        ).filter(
+            DatasetItem.dataset_id == dataset_id,
+            DatasetItem.image_path.in_(paths),
+        ).order_by(DatasetItem.id, DatasetCaption.id).all()
+        content_by_path: Dict[str, str] = {}
+        indexed_paths = set()
+        for image_path, content in rows:
+            indexed_paths.add(image_path)
+            if image_path not in content_by_path and content is not None:
+                content_by_path[image_path] = content
+        return {
+            "items": [
+                {
+                    "rel_path": rel_path,
+                    **(
+                        {"tags": [tag.strip() for tag in content_by_path.get(abs_path, "").split(",") if tag.strip()]}
+                        if abs_path in indexed_paths
+                        else {"error": "File is not indexed in this dataset"}
+                    ),
+                }
+                for abs_path, rel_path in resolved
+            ]
+        }
 
     def read_all():
         items = []
@@ -12485,12 +12616,42 @@ class BrowserSaveTagsRequest(BaseModel):
 
 
 @router.post("/tagger/browser/tags")
-async def browser_save_tags(req: BrowserSaveTagsRequest):
-    """Write tags to .txt sidecar file (comma-separated)."""
+async def browser_save_tags(
+    req: BrowserSaveTagsRequest,
+    db: Session = Depends(get_datasets_db),
+):
+    """Persist folder tags or a registered dataset caption."""
     import asyncio as _asyncio
     from core.tagger.browser_sidecars import write_image_sidecar
 
     abs_path = _resolve_browser_path(req.rel_path, req.workspace_id)
+    item = _indexed_browser_item(db, req.workspace_id, abs_path)
+    if item is not None:
+        from core.datasets.captions import update_caption
+        from core.datasets.tags import build_tag_data
+
+        caption = db.query(DatasetCaption).filter(
+            DatasetCaption.item_id == item.id,
+            DatasetCaption.caption_type == "tags",
+        ).order_by(DatasetCaption.id).first()
+        taglist_cache.initialize(settings.root_dir, enable_gelbooru=True)
+        update_caption(
+            db,
+            item_id=item.id,
+            dataset_id=item.dataset_id,
+            caption_type="tags",
+            content=", ".join(req.tags),
+            tag_data=build_tag_data(
+                req.tags,
+                existing_json=caption.tag_data if caption else None,
+                resolve_categories=taglist_cache.get_categories_batch,
+            ),
+            caption_id=caption.id if caption else None,
+            source_field=caption.source_field if caption else None,
+            persist_sidecar=True,
+            source="tagger_browser" if caption is None else None,
+        )
+        return {"saved": True}
     await _asyncio.to_thread(write_image_sidecar, abs_path, req.tags)
     return {"saved": True}
 
@@ -12503,12 +12664,16 @@ class BrowserBatchInferRequest(BaseModel):
 
 
 @router.post("/tagger/browser/batch-infer")
-async def browser_batch_infer(req: BrowserBatchInferRequest):
-    """Batch inference with SSE progress streaming. Writes .txt sidecar files."""
+async def browser_batch_infer(
+    req: BrowserBatchInferRequest,
+    db: Session = Depends(get_datasets_db),
+):
+    """Batch inference with SSE progress streaming."""
     import asyncio as _asyncio
     import json as _json
     import os as _os
     from pathlib import Path as _Path
+    from sqlalchemy import and_
     from core.gpu_coordinator import gpu_coordinator
     from core.tagger.browser_sidecars import prediction_tag_names, write_image_sidecar
 
@@ -12521,11 +12686,77 @@ async def browser_batch_infer(req: BrowserBatchInferRequest):
     for rp in req.rel_paths:
         resolved.append((_resolve_browser_path(rp, req.workspace_id), rp))
 
+    dataset_id = _browser_workspace_dataset_id(req.workspace_id)
+    registered_items: Dict[str, tuple[int, bool]] = {}
+    if dataset_id is not None:
+        paths = [abs_path for abs_path, _ in resolved]
+        rows = db.query(
+            DatasetItem.id,
+            DatasetItem.image_path,
+            DatasetCaption.id.label("caption_id"),
+        ).outerjoin(
+            DatasetCaption,
+            and_(
+                DatasetCaption.item_id == DatasetItem.id,
+                DatasetCaption.caption_type == "tags",
+            ),
+        ).filter(
+            DatasetItem.dataset_id == dataset_id,
+            DatasetItem.image_path.in_(paths),
+        ).all()
+        for item_id, image_path, caption_id in rows:
+            previous = registered_items.get(image_path)
+            registered_items[image_path] = (
+                item_id,
+                bool(caption_id) or bool(previous and previous[1]),
+            )
+        missing = [rel for abs_path, rel in resolved if abs_path not in registered_items]
+        if missing:
+            raise HTTPException(
+                status_code=409,
+                detail="Files are not indexed in this dataset; reconcile before inference",
+            )
+
+    def persist_registered(item_id: int, tags: List[str]) -> None:
+        from core.datasets.captions import update_caption
+        from core.datasets.tags import build_tag_data
+        from database import DatasetsSessionLocal
+
+        session = DatasetsSessionLocal()
+        try:
+            item = session.get(DatasetItem, item_id)
+            if item is None:
+                raise LookupError("Dataset item disappeared during inference")
+            caption = session.query(DatasetCaption).filter(
+                DatasetCaption.item_id == item.id,
+                DatasetCaption.caption_type == "tags",
+            ).order_by(DatasetCaption.id).first()
+            taglist_cache.initialize(settings.root_dir, enable_gelbooru=True)
+            update_caption(
+                session,
+                item_id=item.id,
+                dataset_id=item.dataset_id,
+                caption_type="tags",
+                content=", ".join(tags),
+                tag_data=build_tag_data(
+                    tags,
+                    existing_json=caption.tag_data if caption else None,
+                    resolve_categories=taglist_cache.get_categories_batch,
+                ),
+                caption_id=caption.id if caption else None,
+                source_field=caption.source_field if caption else None,
+                persist_sidecar=True,
+                source="tagger_browser" if caption is None else None,
+            )
+        finally:
+            session.close()
+
     async def generate():
         total = len(resolved)
         for i, (abs_path, rel) in enumerate(resolved):
             txt = _os.path.splitext(abs_path)[0] + ".txt"
-            if not req.overwrite and _os.path.isfile(txt):
+            has_registered_tags = registered_items.get(abs_path, (0, False))[1]
+            if not req.overwrite and (has_registered_tags or (dataset_id is None and _os.path.isfile(txt))):
                 yield f"data: {_json.dumps({'type': 'skip', 'i': i, 'total': total, 'rel_path': rel})}\n\n"
                 continue
             try:
@@ -12540,7 +12771,14 @@ async def browser_batch_infer(req: BrowserBatchInferRequest):
                         use_ood_detection=req.use_ood_detection,
                     )
                 tags = prediction_tag_names(result)
-                await _asyncio.to_thread(write_image_sidecar, abs_path, tags)
+                if dataset_id is None:
+                    await _asyncio.to_thread(write_image_sidecar, abs_path, tags)
+                else:
+                    await _asyncio.to_thread(
+                        persist_registered,
+                        registered_items[abs_path][0],
+                        tags,
+                    )
                 yield f"data: {_json.dumps({'type': 'done', 'i': i, 'total': total, 'rel_path': rel, 'n_tags': len(tags)})}\n\n"
             except Exception as e:
                 yield f"data: {_json.dumps({'type': 'error', 'i': i, 'total': total, 'rel_path': rel, 'error': str(e)})}\n\n"

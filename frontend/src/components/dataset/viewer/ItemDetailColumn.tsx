@@ -24,6 +24,7 @@ interface ItemDetailColumnProps {
   datasetId: number;
   tagCategoryCache: Record<string, string>; // Pre-loaded category map from parent
   onTaggerSettingsChange?: (settings: any) => void; // Notify parent of tagger settings changes
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 interface EditHistory {
@@ -52,7 +53,7 @@ const getCategoryColor = (category: string): string => {
   return colors[normalized] || "bg-orange-600 dark:bg-orange-700 hover:bg-orange-500";
 };
 
-export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, onTaggerSettingsChange }: ItemDetailColumnProps) {
+export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, onTaggerSettingsChange, onDirtyChange }: ItemDetailColumnProps) {
   const [detailedItem, setDetailedItem] = useState<DatasetItem | null>(null);
   const [tags, setTags] = useState<string[]>([]);
   const [tagCategories, setTagCategories] = useState<Record<string, string>>({});
@@ -72,7 +73,8 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
   const [isResizing, setIsResizing] = useState(false);
   const [lyricsDraft, setLyricsDraft] = useState<string>("");
   const [isSavingLyrics, setIsSavingLyrics] = useState(false);
-  const tagSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const [tagsDirty, setTagsDirty] = useState(false);
+  const [isSavingTags, setIsSavingTags] = useState(false);
   const detailRequestRef = useRef(0);
 
   // Notify parent when tagger settings change
@@ -103,6 +105,7 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
       const details = await getDatasetItem(datasetId, item.id, signal);
       if (requestId !== detailRequestRef.current) return;
       setDetailedItem(details);
+      setTagsDirty(false);
 
       const tagCaption = details.captions?.find(c => c.caption_type === "tags");
       if (tagCaption) {
@@ -135,6 +138,17 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
       }
     }
   }, [item, datasetId]);
+
+  useEffect(() => {
+    onDirtyChange?.(tagsDirty);
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!tagsDirty) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [tagsDirty, onDirtyChange]);
 
   useEffect(() => {
     if (item) {
@@ -231,43 +245,53 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
     }));
   };
 
-  const persistTags = (newTags: string[]): Promise<void> => {
-    if (!item) return Promise.resolve();
-    const selectedItem = item;
+  const handleSaveTags = async () => {
+    if (!item || !tagsDirty) return;
     const caption = detailedItem?.captions?.find(c => c.caption_type === "tags");
-    const operation = tagSaveQueueRef.current.then(async () => {
-      await updateItemCaption(datasetId, selectedItem.id, {
+    setIsSavingTags(true);
+    try {
+      await updateItemCaption(datasetId, item.id, {
         caption_type: "tags",
         caption_id: caption?.id,
         source_field: caption?.source_field,
-        content: newTags.join(", "),
-        tag_data: await buildTagData(newTags),
+        content: tags.join(", "),
+        tag_data: await buildTagData(tags),
         persist_sidecar: true,
       });
-    });
-    tagSaveQueueRef.current = operation.catch(() => undefined);
-    return operation;
+      setTagsDirty(false);
+      await loadItemDetails();
+    } catch (err) {
+      console.error("[ItemDetailColumn] Failed to save tags:", err);
+      alert("Failed to save tags");
+    } finally {
+      setIsSavingTags(false);
+    }
   };
 
-  const pushHistory = async (newTags: string[]) => {
+  const handleDiscardTags = () => {
+    const caption = detailedItem?.captions?.find(c => c.caption_type === "tags");
+    const restored = caption?.content.split(",").map(tag => tag.trim()).filter(Boolean) || [];
+    setTags(restored);
+    setHistory({ past: [], present: restored, future: [] });
+    setTagsDirty(false);
+  };
+
+  const pushHistory = (newTags: string[]) => {
     setHistory({
       past: [...history.past, history.present],
       present: newTags,
       future: [],
     });
     setTags(newTags);
-
-    if (item) {
-      try {
-        await persistTags(newTags);
-      } catch (err) {
-        console.error("[ItemDetailColumn] Failed to save tags:", err);
-      }
-    }
+    setTagsDirty(true);
   };
 
   const handleSaveLyrics = async () => {
     if (!item) return;
+    if (tagsDirty) {
+      alert("Save or discard tag changes before saving lyrics.");
+      return;
+    }
 
     setIsSavingLyrics(true);
     try {
@@ -291,7 +315,7 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
     }
   };
 
-  const handleUndo = async () => {
+  const handleUndo = () => {
     if (history.past.length === 0) return;
 
     const previous = history.past[history.past.length - 1];
@@ -303,17 +327,10 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
       future: [history.present, ...history.future],
     });
     setTags(previous);
-
-    if (item) {
-      try {
-        await persistTags(previous);
-      } catch (err) {
-        console.error("[ItemDetailColumn] Failed to save undo:", err);
-      }
-    }
+    setTagsDirty(true);
   };
 
-  const handleRedo = async () => {
+  const handleRedo = () => {
     if (history.future.length === 0) return;
 
     const next = history.future[0];
@@ -325,14 +342,7 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
       future: newFuture,
     });
     setTags(next);
-
-    if (item) {
-      try {
-        await persistTags(next);
-      } catch (err) {
-        console.error("[ItemDetailColumn] Failed to save redo:", err);
-      }
-    }
+    setTagsDirty(true);
   };
 
 
@@ -637,6 +647,10 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
                     className="absolute top-0.5 right-0.5 w-4 h-4 bg-red-600 hover:bg-red-500 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
                     onClick={async (e) => {
                       e.stopPropagation();
+                      if (tagsDirty) {
+                        alert("Save or discard tag changes before editing references.");
+                        return;
+                      }
                       if (confirm(`Remove reference image?\n${refPath.split(/[\\/]/).pop()}`)) {
                         try {
                           await removeItemReferenceImage(detailedItem.id, refPath);
@@ -756,6 +770,21 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
             </h4>
             {activeFieldType === "tags" && (
               <div className="flex items-center space-x-0.5">
+                {tagsDirty && <span className="mr-1 text-[10px] text-amber-400">Unsaved</span>}
+                <button
+                  onClick={handleSaveTags}
+                  disabled={!tagsDirty || isSavingTags}
+                  className="rounded bg-blue-600 px-1.5 py-0.5 text-[10px] disabled:opacity-40"
+                >
+                  {isSavingTags ? "Saving…" : "Save"}
+                </button>
+                <button
+                  onClick={handleDiscardTags}
+                  disabled={!tagsDirty || isSavingTags}
+                  className="rounded bg-gray-700 px-1.5 py-0.5 text-[10px] disabled:opacity-40"
+                >
+                  Discard
+                </button>
                 <button
                   onClick={handleTaggerInference}
                   disabled={isTagging}

@@ -13751,6 +13751,22 @@ async def scan_dataset(
     *,
     incremental: bool = False,
 ):
+    """Scan a dataset from the API without an internal cancellation hook."""
+    return await _scan_dataset_impl(
+        dataset_id,
+        db,
+        incremental=incremental,
+        should_cancel=None,
+    )
+
+
+async def _scan_dataset_impl(
+    dataset_id: int,
+    db: Session,
+    *,
+    incremental: bool = False,
+    should_cancel: Optional[Callable[[], bool]] = None,
+):
     """Scan dataset directory and register images/captions.
 
     When *incremental* is True (training pre-flight rescan):
@@ -13760,21 +13776,11 @@ async def scan_dataset(
         the counts for new/purged items (Case 2).
     Both modes avoid the O(total_captions) full recomputation.
 
-    Note: this HTTP route has no way to receive a cancellation callback
-    from the client, so cooperative cancellation is always disabled here
-    (``should_cancel=None``). The underlying scan helpers still accept a
-    real callable when invoked internally (see
-    ``core.training.dataset_drift.rescan_dataset_inline``), which is used
-    for the training pre-flight rescan path instead of this route.
+    Internal callers may stop the filesystem walk through ``should_cancel``.
     """
     import os
     from PIL import Image
     import warnings
-
-    # HTTP callers can never supply a cancellation callback; kept as a
-    # local so the body below (which threads it into scan helpers) is
-    # unchanged.
-    should_cancel: Optional[Callable[[], bool]] = None
 
     # Suppress PIL warnings for corrupt EXIF data
     warnings.filterwarnings('ignore', category=UserWarning, module='PIL')

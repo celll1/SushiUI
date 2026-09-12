@@ -258,8 +258,10 @@ def test_the_openapi_description_no_longer_calls_eviction_lora_only():
 
 def test_the_flag_has_a_frontend_type_and_a_default():
     assert "sensenova_four_phase_eviction?: boolean;" in API_TS.read_text(encoding="utf-8")
-    tsx = TRAINING_CONFIG_TSX.read_text(encoding="utf-8")
-    assert "sensenova_four_phase_eviction: false," in tsx
+    definitions = (TRAINING_CONFIG_TSX.parent / "trainingConfigDefinitions.tsx").read_text(
+        encoding="utf-8"
+    )
+    assert "sensenova_four_phase_eviction: false," in definitions
     assert TRAINING_DEFAULTS["sensenova_four_phase_eviction"] is False
 
 

@@ -12,7 +12,7 @@ import {
   queueLrScheduleRetarget,
 } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
-import { LR_SCHEDULER_OPTIONS } from "./TrainingConfig";
+import { LR_SCHEDULER_OPTIONS } from "./trainingConfigDefinitions";
 
 // §19.6/D27: four forms of one event. `scale`, `hold` and `undo` describe no
 // curve of their own -- the server derives theirs from the one in force -- so

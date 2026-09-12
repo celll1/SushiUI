@@ -491,7 +491,7 @@ def test_a_hand_authored_yaml_with_only_the_legacy_key_still_trains(monkeypatch)
 
 
 def test_the_route_serves_the_capability_keys():
-    source = (BACKEND / "api" / "routes.py").read_text(encoding="utf-8")
+    source = (BACKEND / "api" / "schema_routes.py").read_text(encoding="utf-8")
     for key in ("cfg_null_stage", "cfg_uncond_drop_defaults"):
         assert f'"{key}"' in source
 

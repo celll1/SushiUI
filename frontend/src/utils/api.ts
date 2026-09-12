@@ -6190,6 +6190,14 @@ export const getDatasetHealth = async (
   return response.data as DatasetHealth;
 };
 
+export const openDatasetFolder = async (id: number): Promise<void> => {
+  await api.post(`/datasets/${id}/open-folder`);
+};
+
+export const launchDatasetEditor = async (id: number): Promise<void> => {
+  await api.post(`/datasets/${id}/launch-editor`);
+};
+
 export const deleteDataset = async (id: number): Promise<void> => {
   await api.delete(`/datasets/${id}`);
 };

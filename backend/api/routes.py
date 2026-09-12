@@ -10386,7 +10386,9 @@ async def get_directory_settings(db: Session = Depends(get_gallery_db)):
                 lora_dirs=[],
                 controlnet_dirs=[],
                 cache_dir=None,
-                training_dir=None
+                training_dir=None,
+                dataset_editor_command=None,
+                dataset_editor_args=[],
             )
             db.add(settings_record)
             db.commit()
@@ -10408,6 +10410,15 @@ async def save_directory_settings(
     controlnet_dirs = settings_data.get("controlnet_dirs", [])
     cache_dir = settings_data.get("cache_dir")
     training_dir = settings_data.get("training_dir")
+    dataset_editor_command = settings_data.get("dataset_editor_command")
+    dataset_editor_args = settings_data.get("dataset_editor_args", [])
+    if not isinstance(dataset_editor_args, list) or any(
+        not isinstance(value, str) for value in dataset_editor_args
+    ) or len(dataset_editor_args) > 32:
+        raise HTTPException(
+            status_code=400,
+            detail="dataset_editor_args must contain at most 32 strings",
+        )
     try:
         settings_record = db.query(UserSettings).first()
         if not settings_record:
@@ -10419,6 +10430,12 @@ async def save_directory_settings(
         settings_record.controlnet_dirs = [d.strip() for d in controlnet_dirs if d.strip()]
         settings_record.cache_dir = cache_dir.strip() if cache_dir and cache_dir.strip() else None
         settings_record.training_dir = training_dir.strip() if training_dir and training_dir.strip() else None
+        settings_record.dataset_editor_command = (
+            dataset_editor_command.strip()
+            if isinstance(dataset_editor_command, str) and dataset_editor_command.strip()
+            else None
+        )
+        settings_record.dataset_editor_args = dataset_editor_args
         settings_record.updated_at = datetime.utcnow()
 
         db.commit()
@@ -12959,6 +12976,56 @@ def get_dataset_health(
         dataset.last_scanned_at.isoformat() if dataset.last_scanned_at else None
     )
     return result
+
+
+@router.post("/datasets/{dataset_id}/open-folder")
+def open_dataset_folder(
+    dataset_id: int,
+    db: Session = Depends(get_datasets_db),
+):
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    if not os.path.isdir(dataset.path):
+        raise HTTPException(status_code=400, detail="Dataset directory does not exist")
+    try:
+        if sys.platform == "win32":
+            os.startfile(dataset.path)  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", dataset.path], close_fds=True)
+        else:
+            subprocess.Popen(["xdg-open", dataset.path], close_fds=True)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Could not open dataset directory") from exc
+    return {"opened": True}
+
+
+@router.post("/datasets/{dataset_id}/launch-editor")
+def launch_dataset_editor(
+    dataset_id: int,
+    db: Session = Depends(get_datasets_db),
+    gallery_db: Session = Depends(get_gallery_db),
+):
+    from core.datasets.external_editor import launch_editor
+
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    user_settings = gallery_db.query(UserSettings).first()
+    command = user_settings.dataset_editor_command if user_settings else None
+    arguments = user_settings.dataset_editor_args if user_settings else []
+    if not command:
+        raise HTTPException(
+            status_code=409,
+            detail="Configure a dataset editor in Settings first",
+        )
+    try:
+        launch_editor(command, arguments or [], dataset.path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Could not launch dataset editor") from exc
+    return {"launched": True}
 
 class CaptionProcessingUpdateRequest(BaseModel):
     caption_processing: Dict[str, Any]

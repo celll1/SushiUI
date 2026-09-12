@@ -9,6 +9,8 @@ interface DirectorySettingsData {
   controlnet_dirs: string[];
   cache_dir: string | null;
   training_dir: string | null;
+  dataset_editor_command: string | null;
+  dataset_editor_args: string[];
 }
 
 export default function DirectorySettings() {
@@ -17,6 +19,8 @@ export default function DirectorySettings() {
   const [controlnetDirs, setControlnetDirs] = useState("");
   const [cacheDir, setCacheDir] = useState("");
   const [trainingDir, setTrainingDir] = useState("");
+  const [datasetEditorCommand, setDatasetEditorCommand] = useState("");
+  const [datasetEditorArgs, setDatasetEditorArgs] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
@@ -38,6 +42,8 @@ export default function DirectorySettings() {
       setControlnetDirs((data.controlnet_dirs || []).join("\n"));
       setCacheDir(data.cache_dir || "");
       setTrainingDir(data.training_dir || "");
+      setDatasetEditorCommand(data.dataset_editor_command || "");
+      setDatasetEditorArgs((data.dataset_editor_args || []).join("\n"));
     } catch (error) {
       console.error("Error loading directory settings:", error);
       setMessage({ type: "error", text: "Failed to load directory settings" });
@@ -65,6 +71,11 @@ export default function DirectorySettings() {
           controlnet_dirs: controlnetDirsArray,
           cache_dir: cacheDir.trim() || null,
           training_dir: trainingDir.trim() || null,
+          dataset_editor_command: datasetEditorCommand.trim() || null,
+          dataset_editor_args: datasetEditorArgs
+            .split("\n")
+            .map((value) => value.trim())
+            .filter(Boolean),
         }),
       });
 
@@ -186,6 +197,32 @@ export default function DirectorySettings() {
           />
           <p className="text-xs text-gray-500 mt-1">
             Custom directory for training outputs (checkpoints, samples, logs). Leave empty to use default (training).
+          </p>
+        </div>
+
+        <div className="border-t border-gray-700 pt-4">
+          <label className="block text-sm font-medium text-gray-300 mb-2">
+            Dataset Editor Executable
+          </label>
+          <input
+            type="text"
+            value={datasetEditorCommand}
+            onChange={(e) => setDatasetEditorCommand(e.target.value)}
+            placeholder="Absolute path to a local editor executable"
+            className="w-full bg-gray-700 text-white px-3 py-2 rounded text-sm font-mono"
+          />
+          <label className="block text-sm font-medium text-gray-300 mb-2 mt-3">
+            Dataset Editor Arguments
+          </label>
+          <textarea
+            value={datasetEditorArgs}
+            onChange={(e) => setDatasetEditorArgs(e.target.value)}
+            placeholder={"One argument per line\nUse {dataset} where the dataset path belongs"}
+            rows={3}
+            className="w-full bg-gray-700 text-white px-3 py-2 rounded text-sm font-mono"
+          />
+          <p className="text-xs text-gray-500 mt-1">
+            Stored only in the local settings database. If no {"{dataset}"} token is present, the path is appended.
           </p>
         </div>
       </div>

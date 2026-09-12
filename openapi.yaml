@@ -4938,14 +4938,13 @@ paths:
               schema:
                 type: object
                 properties:
-                  outputs_dir:
-                    type: string
-                  models_dir:
-                    type: string
-                  lora_dir:
-                    type: string
-                  controlnet_dir:
-                    type: string
+                  model_dirs: {type: array, items: {type: string}}
+                  lora_dirs: {type: array, items: {type: string}}
+                  controlnet_dirs: {type: array, items: {type: string}}
+                  cache_dir: {type: string, nullable: true}
+                  training_dir: {type: string, nullable: true}
+                  dataset_editor_command: {type: string, nullable: true}
+                  dataset_editor_args: {type: array, items: {type: string}}
 
     post:
       tags: [settings]
@@ -4958,14 +4957,16 @@ paths:
             schema:
               type: object
               properties:
-                outputs_dir:
-                  type: string
-                models_dir:
-                  type: string
-                lora_dir:
-                  type: string
-                controlnet_dir:
-                  type: string
+                model_dirs: {type: array, items: {type: string}}
+                lora_dirs: {type: array, items: {type: string}}
+                controlnet_dirs: {type: array, items: {type: string}}
+                cache_dir: {type: string, nullable: true}
+                training_dir: {type: string, nullable: true}
+                dataset_editor_command: {type: string, nullable: true}
+                dataset_editor_args:
+                  type: array
+                  maxItems: 32
+                  items: {type: string}
       responses:
         '200':
           description: Settings updated
@@ -8014,6 +8015,36 @@ paths:
                 $ref: '#/components/schemas/DatasetHealth'
         '404':
           description: Dataset not found
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+
+  /datasets/{dataset_id}/open-folder:
+    post:
+      tags: [datasets]
+      summary: Open the dataset directory on the backend host
+      operationId: openDatasetFolder
+      parameters:
+        - {name: dataset_id, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200': {description: Directory opened}
+        '400':
+          description: Dataset directory is unavailable
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+
+  /datasets/{dataset_id}/launch-editor:
+    post:
+      tags: [datasets]
+      summary: Launch the locally configured dataset editor
+      operationId: launchDatasetEditor
+      parameters:
+        - {name: dataset_id, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200': {description: Editor launched}
+        '409':
+          description: No dataset editor is configured
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorResponse'}

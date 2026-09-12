@@ -63,3 +63,14 @@ def test_scan_service_indexes_media_caption_and_revision(tmp_path, monkeypatch):
     assert caption.is_tags_format is True
     assert db.get(Dataset, dataset.id).revision == 1
     assert progress[-1][0] == progress[-1][1]
+
+    (tmp_path / "sample.txt").unlink()
+    second = asyncio.run(scanning.scan_dataset_index(dataset.id, db, incremental=True))
+
+    db.expire_all()
+    refreshed = db.get(Dataset, dataset.id)
+    assert second["captions_updated"] == 1
+    assert db.query(DatasetCaption).count() == 0
+    assert refreshed.total_tags == 0
+    assert refreshed.tag_statistics == {}
+    assert refreshed.revision == 2

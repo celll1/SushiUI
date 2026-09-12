@@ -4,7 +4,11 @@ import torch
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
 
-from core.datasets.queries import dataset_item_page, exact_tag_item_ids
+from core.datasets.queries import (
+    dataset_item_cursor_page,
+    dataset_item_page,
+    exact_tag_item_ids,
+)
 from database.models import Dataset, DatasetBase, DatasetCaption, DatasetItem
 
 torch.cuda.get_device_capability = lambda *args, **kwargs: (8, 9)
@@ -89,6 +93,55 @@ def test_grid_page_keeps_heavy_item_columns_deferred(tmp_path):
     assert total == 2
     assert len(items) == 1
     assert {"exif_data", "related_images", "image_hash"} <= inspect(items[0]).unloaded
+
+
+def test_grid_cursor_counts_only_when_requested_and_has_stable_boundaries(tmp_path):
+    db = _session(tmp_path)
+    dataset = Dataset(name="cursor", path="cursor")
+    db.add(dataset)
+    db.flush()
+    expected = [_item(db, dataset.id, f"item_{index}", "tag").id for index in range(5)]
+    db.commit()
+
+    first, total, cursor, has_more = dataset_item_cursor_page(
+        db,
+        dataset.id,
+        after_id=None,
+        page_size=2,
+        search=None,
+        tags=None,
+        include_total=True,
+    )
+    second, no_total, next_cursor, second_has_more = dataset_item_cursor_page(
+        db,
+        dataset.id,
+        after_id=cursor,
+        page_size=2,
+        search=None,
+        tags=None,
+        include_total=False,
+    )
+    last, _, last_cursor, last_has_more = dataset_item_cursor_page(
+        db,
+        dataset.id,
+        after_id=next_cursor,
+        page_size=2,
+        search=None,
+        tags=None,
+        include_total=False,
+    )
+
+    assert [item.id for item in first] == expected[:2]
+    assert total == 5
+    assert cursor == expected[1]
+    assert has_more
+    assert [item.id for item in second] == expected[2:4]
+    assert no_total is None
+    assert next_cursor == expected[3]
+    assert second_has_more
+    assert [item.id for item in last] == expected[4:]
+    assert last_cursor is None
+    assert not last_has_more
 
 
 def test_lightweight_dataset_detail_omits_tag_statistics(tmp_path):

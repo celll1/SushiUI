@@ -8428,6 +8428,43 @@ paths:
                   page: {type: integer}
                   page_size: {type: integer}
 
+  /datasets/{dataset_id}/items/grid/cursor:
+    get:
+      tags: [datasets]
+      summary: List lightweight dataset items using a stable keyset cursor
+      operationId: listDatasetGridItemsCursor
+      parameters:
+        - {name: dataset_id, in: path, required: true, schema: {type: integer}}
+        - {name: after_id, in: query, required: false, schema: {type: integer}}
+        - {name: page_size, in: query, required: false, schema: {type: integer, default: 50}}
+        - {name: search, in: query, required: false, schema: {type: string}}
+        - name: tags
+          in: query
+          required: false
+          schema: {type: string}
+          description: Comma-separated exact tags; every tag must be present
+        - name: include_total
+          in: query
+          required: false
+          schema: {type: boolean, default: false}
+          description: Compute the matching count; intended for the first page only.
+      responses:
+        '200':
+          description: Keyset-paginated lightweight item list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total, next_cursor, has_more, page_size]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/DatasetGridItem'}
+                  total: {type: integer, nullable: true}
+                  next_cursor: {type: integer, nullable: true}
+                  has_more: {type: boolean}
+                  page_size: {type: integer}
+
   /datasets/{dataset_id}/items/ids:
     get:
       tags: [datasets]

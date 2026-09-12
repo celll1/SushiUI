@@ -2209,6 +2209,8 @@ DATASET_DEFAULTS: Dict[str, Any] = {
     "preview_size": 256,
     "page": 1,
     "page_size": 50,
+    "after_id": None,
+    "include_total": False,
     "include_tag_statistics": True,
     "batch_selection": None,
 }

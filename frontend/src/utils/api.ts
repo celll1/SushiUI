@@ -6549,6 +6549,14 @@ export interface DatasetGridItemListResponse {
   page_size: number;
 }
 
+export interface DatasetGridCursorResponse {
+  items: DatasetGridItem[];
+  total: number | null;
+  next_cursor: number | null;
+  has_more: boolean;
+  page_size: number;
+}
+
 export const listDatasetItems = async (
   datasetId: number,
   page: number = 1,
@@ -6575,6 +6583,29 @@ export const listDatasetGridItems = async (
   if (search) params.search = search;
   if (tags) params.tags = tags;
   const response = await api.get(`/datasets/${datasetId}/items/grid`, { params, signal });
+  return response.data;
+};
+
+export const listDatasetGridItemsCursor = async (
+  datasetId: number,
+  pageSize: number = 50,
+  afterId?: number,
+  search?: string,
+  tags?: string,
+  includeTotal = false,
+  signal?: AbortSignal
+): Promise<DatasetGridCursorResponse> => {
+  const params: Record<string, string | number | boolean> = {
+    page_size: pageSize,
+    include_total: includeTotal,
+  };
+  if (afterId !== undefined) params.after_id = afterId;
+  if (search) params.search = search;
+  if (tags) params.tags = tags;
+  const response = await api.get(`/datasets/${datasetId}/items/grid/cursor`, {
+    params,
+    signal,
+  });
   return response.data;
 };
 

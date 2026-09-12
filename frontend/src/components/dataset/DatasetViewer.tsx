@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { listDatasetGridItems, DatasetGridItem, Dataset, getDataset, getDatasetTagStatistics } from "@/utils/api";
+import { listDatasetGridItemsCursor, DatasetGridItem, Dataset, getDataset, getDatasetTagStatistics } from "@/utils/api";
 import ItemGridColumn from "./viewer/ItemGridColumn";
 import ItemDetailColumn from "./viewer/ItemDetailColumn";
 import ActionsColumn from "./viewer/ActionsColumn";
@@ -34,6 +34,7 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [debouncedTagFilter, setDebouncedTagFilter] = useState("");
   const [page, setPage] = useState(1);
+  const pageCursorsRef = useRef<Record<number, number | undefined>>({ 1: undefined });
   const [total, setTotal] = useState(0);
   const pageSize = 50;
 
@@ -58,6 +59,9 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
     setTagStatistics(undefined);
     setTagCategoryCache({});
     setEditorDirty(false);
+    setTotal(0);
+    setPage(1);
+    pageCursorsRef.current = { 1: undefined };
     statisticsRequestRef.current += 1;
     const controller = new AbortController();
     const loadDataset = async () => {
@@ -87,17 +91,28 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
     const requestId = ++itemRequestRef.current;
     setLoading(true);
     try {
-      const response = await listDatasetGridItems(
+      const response = await listDatasetGridItemsCursor(
         datasetId,
-        page,
         pageSize,
+        pageCursorsRef.current[page],
         debouncedSearch || undefined,
         debouncedTagFilter || undefined,
+        page === 1,
         signal,
       );
       if (requestId !== itemRequestRef.current) return;
       setItems(response.items);
-      setTotal(response.total);
+      if (response.total !== null) setTotal(response.total);
+      if (response.has_more && response.next_cursor !== null) {
+        pageCursorsRef.current = {
+          ...pageCursorsRef.current,
+          [page + 1]: response.next_cursor,
+        };
+      } else {
+        const next = { ...pageCursorsRef.current };
+        delete next[page + 1];
+        pageCursorsRef.current = next;
+      }
       setCurrentItem(current => (
         current && response.items.some(candidate => candidate.id === current.id)
           ? current
@@ -175,6 +190,7 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
     setEditorDirty(false);
     setSearch(value);
     setPage(1);
+    pageCursorsRef.current = { 1: undefined };
     handleDeselectAll();
   };
 
@@ -183,6 +199,7 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
     setEditorDirty(false);
     setTagFilter(value);
     setPage(1);
+    pageCursorsRef.current = { 1: undefined };
     handleDeselectAll();
   };
 

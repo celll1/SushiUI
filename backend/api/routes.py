@@ -20020,6 +20020,36 @@ async def list_dataset_grid_items(
     }
 
 
+@router.get("/datasets/{dataset_id}/items/grid/cursor")
+async def list_dataset_grid_items_cursor(
+    dataset_id: int,
+    after_id: Optional[int] = DATASET_DEFAULTS["after_id"],
+    page_size: int = DATASET_DEFAULTS["page_size"],
+    search: Optional[str] = None,
+    tags: Optional[str] = None,
+    include_total: bool = DATASET_DEFAULTS["include_total"],
+    db: Session = Depends(get_datasets_db),
+):
+    from core.datasets.queries import dataset_item_cursor_page
+
+    items, total, next_cursor, has_more = dataset_item_cursor_page(
+        db,
+        dataset_id,
+        after_id=after_id,
+        page_size=page_size,
+        search=search,
+        tags=tags,
+        include_total=include_total,
+    )
+    return {
+        "items": [item.to_grid_dict() for item in items],
+        "total": total,
+        "next_cursor": next_cursor,
+        "has_more": has_more,
+        "page_size": page_size,
+    }
+
+
 
 @router.get("/debug/vram")
 async def debug_vram_inspection():

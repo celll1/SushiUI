@@ -58,6 +58,7 @@ import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils
 import { Txt2VidParams, Ref2VidParams, OutpaintVideoParams, MiniMaxH3References, MiniMaxH3Keyframe, Txt2AudParams, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, videoCanvasRule, videoCanvasAxisBounds, videoMinInferenceSteps, videoCanvasExceedsEnvelope, planVideoChain, snapUpValidVideoFrameCount, effectiveSegmentFrames, VideoChainManifest, VIDEO_BLOCK_SWAP_MAX, audioDefaultsForArch } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
+import { useGenerationPanelProgress, useRestoreImageOnCancel } from "@/hooks/useGenerationPanelProgress";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import VramInspector from "../common/VramInspector";
@@ -65,7 +66,7 @@ import { saveTempImage, loadTempImage } from "@/utils/tempImageStorage";
 import { previewStorageKeys, loadVideoPreview, saveVideoPreview, loadAudioPreview, saveAudioPreview, saveImagePreview, clearVideoPreview, clearAudioPreview, clearImagePreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
 import { sendToPanel, sendImageToImg2Img, sendBase64ImageToInpaint, sendBase64ImageToUpscale, sendBase64ImageToOutpaint, sendVideoToOutpaint, sendVideoToInpaint, sendVideoToReference, sendAudioToOutpaint, sendAudioToImg2Img, fetchUrlToFile } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
-import { useGenerationQueue, QueueItem, typeToPanel } from "@/contexts/GenerationQueueContext";
+import { useGenerationQueue, queueItemBelongsToPanel } from "@/contexts/GenerationQueueContext";
 import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
 import { readGlobalAttentionType } from "@/utils/attentionSettings";
 
@@ -361,17 +362,6 @@ const REF_IMAGES_STORAGE_KEY = "txt2img_ref_images";
 // restore/persist effects only need to distinguish "key absent" (never
 // persisted, also defaults to null) from "key present".
 const CHAIN_SEGMENT_FRAMES_STORAGE_KEY = "txt2img_chain_segment_frames";
-
-// Progress-bar denominator to show until the first WebSocket tick arrives.
-function dispatchTotalSteps(item: QueueItem): number {
-  const p = item.params as any;
-  if (item.type === "txt2aud") return p.num_inference_steps || p.inference_steps || 8;
-  if (item.type === "txt2vid" || item.type === "ref2vid" || item.type === "chain_vid") {
-    return p.num_inference_steps || 8;
-  }
-  if (item.type === "img2img") return Math.ceil((p.steps || 20) * (p.denoising_strength || 0.75));
-  return p.steps || 20;
-}
 
 interface Txt2ImgPanelProps {
   onTabChange?: (tab: "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale") => void;
@@ -1694,76 +1684,47 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
     };
   }, [handleProgress]); // handleProgress is now stable
 
-  // Once per new item this panel owns, reset the display for the run that
-  // just started -- reproducing what the deleted dispatch loop did at
-  // dispatch time (GenerationQueueProcessor now owns dispatch itself, and has
-  // no view of this panel's state).
-  const clearedForItemRef = useRef<string | null>(null);
-  // What was on screen when the current run started, for restore-on-cancel.
+  // The previous image is panel-local, so the global dispatcher cannot restore it.
   const previousImageRef = useRef<string | null>(null);
-  const lastFailureRevisionRef = useRef(0);
 
-  useEffect(() => {
-    const owner = currentItem ? (currentItem.panel ?? typeToPanel(currentItem.type)) : null;
-    if (!currentItem || owner !== "txt2img") {
-      isOwnRunRef.current = false;
-      setIsGenerating(false);
-      return;
-    }
-    isOwnRunRef.current = true;
-    setIsGenerating(true);
-    if (clearedForItemRef.current !== currentItem.id) {
-      clearedForItemRef.current = currentItem.id;
+  useGenerationPanelProgress({
+    panel: "txt2img",
+    currentItem,
+    progressSnapshot,
+    reportSubProgress,
+    isOwnRunRef,
+    setIsGenerating,
+    setProgress,
+    setTotalSteps,
+    setProgressMessage,
+    setPreviewImage,
+    onItemStart: (item) => {
       previousImageRef.current = generatedImage;
-      setProgress(0);
-      setProgressMessage("");
-      setPreviewImage(null);
       setCfgMetrics([]);
-      setTotalSteps(dispatchTotalSteps(currentItem));
-      // An image/video/audio run supersedes whatever the previous run left on
-      // screen -- but only that run's own modality-specific fields; the
-      // others are cleared unconditionally the same way the deleted dispatch
-      // branches did per type.
       setGeneratedImage(null);
       setGeneratedVideo(null);
       setGeneratedVideoInfo(null);
       setGeneratedAudio(null);
       setGeneratedAudioInfo(null);
       setGeneratedAudioWarnings([]);
-      if (currentItem.type === "txt2vid" || currentItem.type === "ref2vid" || currentItem.type === "chain_vid") {
+      if (item.type === "txt2vid" || item.type === "ref2vid" || item.type === "chain_vid") {
         setGeneratedVideoSeed(null);
         setGeneratedVideoWarnings([]);
       }
-    }
-    if (progressSnapshot?.itemId !== currentItem.id) return;
-    setProgress(progressSnapshot.step);
-    setTotalSteps(progressSnapshot.totalSteps);
-    setProgressMessage(progressSnapshot.message);
-    reportSubProgress(progressSnapshot.step, progressSnapshot.subProgress);
-    if (progressSnapshot.previewImage) setPreviewImage(progressSnapshot.previewImage);
-    // generatedImage is read only to snapshot it, and re-running on every
-    // change of it would re-snapshot mid-run.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentItem, progressSnapshot, reportSubProgress]);
+    },
+  });
 
-  // Restore-on-cancel: only this panel holds the image the cancelled run
-  // replaced, and only the dispatcher can tell a cancel from a failure.
-  useEffect(() => {
-    if (!lastFailure || lastFailure.panel !== "txt2img") return;
-    if (lastFailure.revision === lastFailureRevisionRef.current) return;
-    lastFailureRevisionRef.current = lastFailure.revision;
-    if (!lastFailure.cancelled) return;
-    if (localStorage.getItem("restore_image_on_cancel") !== "true") return;
-    if (previousImageRef.current) {
-      setGeneratedImage(previousImageRef.current);
-      setPreviewImage(null);
-    }
-  }, [lastFailure]);
+  useRestoreImageOnCancel({
+    panel: "txt2img",
+    lastFailure,
+    previousImageRef,
+    setGeneratedImage,
+    setPreviewImage,
+  });
 
   useEffect(() => {
     const result = completedResults.txt2img;
-    const owner = currentItem ? (currentItem.panel ?? typeToPanel(currentItem.type)) : null;
-    if (!result || owner === "txt2img") return;
+    if (!result || queueItemBelongsToPanel(currentItem, "txt2img")) return;
     setPreviewImage(null);
     if (result.kind === "image") {
       setGeneratedImage(result.url);
@@ -2627,7 +2588,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
     const hasPendingItems = queue.some(item =>
       item.status === "pending" &&
       !(pausedGroupId !== undefined && item.loopGroupId === pausedGroupId) &&
-      ["txt2img", "img2img", "txt2vid", "ref2vid", "txt2aud", "chain_vid"].includes(item.type));
+      queueItemBelongsToPanel(item, "txt2img"));
     const isCurrentItemNull = currentItem === null;
 
     if (generateForever && !chainPause && !hasPendingItems && isCurrentItemNull && !isGenerating && params.prompt) {

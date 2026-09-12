@@ -36,6 +36,7 @@ import VideoAccelerationControls from "../common/VideoAccelerationControls";
 import { PostEditState, NEUTRAL_POST_EDIT, buildFilterString } from "@/utils/postEdit";
 import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
+import { useGenerationPanelProgress } from "@/hooks/useGenerationPanelProgress";
 import { useVideoPlayhead } from "@/hooks/useVideoPlayhead";
 import { releaseVideoFrameGrabber } from "@/utils/videoFrameGrabber";
 import {
@@ -78,7 +79,7 @@ import { previewStorageKeys, loadVideoPreview, saveVideoPreview, playbackUrlOf, 
 import { sendToPanel, sendImageToImg2Img, sendImageToInpaint, sendImageToUpscale, fetchUrlToFile, sendVideoToOutpaint, sendVideoToInpaint, sendVideoToReference, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
 import { useStartup } from "@/contexts/StartupContext";
-import { QueueItem, useGenerationQueue } from "@/contexts/GenerationQueueContext";
+import { queueItemBelongsToPanel, useGenerationQueue } from "@/contexts/GenerationQueueContext";
 import SendToStudioButton from "../studio/SendToStudioButton";
 
 // Extends the image OutpaintParams with the video (outpaint_vid, LTX-2.3)
@@ -495,16 +496,6 @@ const PREVIEW_STORAGE_KEY = "outpaint_preview";
 // the only one that can be restored.
 const PREVIEW_KEYS = previewStorageKeys(PREVIEW_STORAGE_KEY);
 const INPUT_IMAGE_STORAGE_KEY = "outpaint_input_image";
-
-// Progress-bar denominator to show until the first WebSocket tick arrives.
-// MiniMax Music 3 carries per-chunk `num_inference_steps` where ACE-Step
-// carries per-song `inference_steps`; only one is ever set on an item.
-function dispatchTotalSteps(item: QueueItem): number {
-  const p = item.params as any;
-  if (item.type === "outpaint_vid") return p.num_inference_steps || 8;
-  if (item.type === "outpaint_aud") return p.num_inference_steps || p.inference_steps || 8;
-  return Math.ceil((p.steps || 20) * (p.denoising_strength ?? 1.0));
-}
 
 interface OutpaintPanelProps {
   onTabChange?: (tab: "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale") => void;
@@ -1898,22 +1889,17 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
 
   const { addToQueue, currentItem, progressSnapshot, completedResults } = useGenerationQueue();
 
-  const clearedForItemRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    if (!currentItem || !["outpaint", "outpaint_vid", "outpaint_aud"].includes(currentItem.type)) {
-      setIsGenerating(false);
-      return;
-    }
-    setIsGenerating(true);
-    // A run supersedes whatever is on screen; do it once per item rather than
-    // on every progress tick.
-    if (clearedForItemRef.current !== currentItem.id) {
-      clearedForItemRef.current = currentItem.id;
-      setProgress(0);
-      setProgressMessage("");
-      setPreviewImage(null);
-      setTotalSteps(dispatchTotalSteps(currentItem));
+  useGenerationPanelProgress({
+    panel: "outpaint",
+    currentItem,
+    progressSnapshot,
+    reportSubProgress,
+    setIsGenerating,
+    setProgress,
+    setTotalSteps,
+    setProgressMessage,
+    setPreviewImage,
+    onItemStart: () => {
       setGeneratedImage(null);
       setGeneratedImageWarnings([]);
       setGeneratedVideo(null);
@@ -1925,18 +1911,12 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
       setGeneratedAudioInfo(null);
       setGeneratedAudioSeed(null);
       setGeneratedAudioWarnings([]);
-    }
-    if (progressSnapshot?.itemId !== currentItem.id) return;
-    setProgress(progressSnapshot.step);
-    setTotalSteps(progressSnapshot.totalSteps);
-    setProgressMessage(progressSnapshot.message);
-    reportSubProgress(progressSnapshot.step, progressSnapshot.subProgress);
-    if (progressSnapshot.previewImage) setPreviewImage(progressSnapshot.previewImage);
-  }, [currentItem, progressSnapshot, reportSubProgress]);
+    },
+  });
 
   useEffect(() => {
     const result = completedResults.outpaint;
-    if (!result || (currentItem && ["outpaint", "outpaint_vid", "outpaint_aud"].includes(currentItem.type))) return;
+    if (!result || queueItemBelongsToPanel(currentItem, "outpaint")) return;
     setPreviewImage(null);
     if (result.kind === "image") {
       setGeneratedImage(result.url);

@@ -38,6 +38,13 @@ export function typeToPanel(type: QueueItem["type"]): GenerationPanelId {
   }
 }
 
+export function queueItemBelongsToPanel(
+  item: QueueItem | null,
+  panel: GenerationPanelId,
+): item is QueueItem {
+  return item !== null && (item.panel ?? typeToPanel(item.type)) === panel;
+}
+
 /** A run that ended badly. Only the owning panel can honour
  *  `restore_image_on_cancel` (it holds the image that was on screen), and the
  *  dispatcher is the only place that can tell a user cancel from a failure. */

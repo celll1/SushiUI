@@ -533,14 +533,14 @@ class Krea2Mixin:
         te = self.krea2_components["text_encoder"]
         tok = self.krea2_components["tokenizer"]
         neg_prompt = negative_prompt if (negative_prompt and negative_prompt.strip()) else ""
-        cache_key = (
-            "krea2", model_key, prompt, neg_prompt, cfg["guidance"] > 0.0,
-            tuple(select_layers), max_len, str(dtype),
-        )
         from core.inference.prompt_embedding_cache import (
-            generation_prompt_cache, tokenizer_cache_key,
+            conditioning_cache_key, generation_prompt_cache,
         )
-        cache_key = cache_key + (tokenizer_cache_key(tok), str(device))
+        cache_key = conditioning_cache_key(
+            "krea2", model_key, tok, device, dtype,
+            prompt, neg_prompt, cfg["guidance"] > 0.0,
+            tuple(select_layers), max_len,
+        )
         cached, cache_hit = generation_prompt_cache.get(te, cache_key, device)
         if cache_hit:
             if not keep_te:

@@ -60,8 +60,14 @@ class PromptEmbeddingCache:
     def put(self, encoder: object, key: Hashable, value: Any) -> None:
         entry_key = (id(encoder), key)
         stored = _copy_tree(value, "cpu")
+        cache_ref = weakref.ref(self)
+        def remove_dead_owner(dead_ref, owner_id=id(encoder)):
+            cache = cache_ref()
+            if cache is not None:
+                cache._remove_owner(owner_id, dead_ref)
+
         with self._lock:
-            self._entries[entry_key] = (weakref.ref(encoder), stored)
+            self._entries[entry_key] = (weakref.ref(encoder, remove_dead_owner), stored)
             self._entries.move_to_end(entry_key)
             dead = [item_key for item_key, (ref, _value) in self._entries.items()
                     if ref() is None]
@@ -69,6 +75,15 @@ class PromptEmbeddingCache:
                 self._entries.pop(item_key, None)
             while len(self._entries) > self.max_entries:
                 self._entries.popitem(last=False)
+
+    def _remove_owner(self, owner_id: int, dead_ref: weakref.ReferenceType) -> None:
+        with self._lock:
+            stale = [
+                key for key, (encoder_ref, _value) in self._entries.items()
+                if key[0] == owner_id and encoder_ref is dead_ref
+            ]
+            for key in stale:
+                self._entries.pop(key, None)
 
     def clear(self) -> None:
         with self._lock:
@@ -96,4 +111,23 @@ def tokenizer_cache_key(tokenizer: object) -> tuple:
         tokenizer_length,
         getattr(tokenizer, "model_max_length", None),
         str(getattr(tokenizer, "chat_template", "")),
+    )
+
+
+def conditioning_cache_key(
+    namespace: str,
+    model_key: str | None,
+    tokenizer: object,
+    device: str | torch.device,
+    dtype: torch.dtype,
+    *conditioning_parts: Hashable,
+) -> tuple:
+    """Common identity envelope around architecture-specific conditioning inputs."""
+    return (
+        namespace,
+        model_key,
+        tokenizer_cache_key(tokenizer),
+        str(device),
+        str(dtype),
+        conditioning_parts,
     )

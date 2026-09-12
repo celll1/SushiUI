@@ -1,7 +1,10 @@
+import gc
+
 import torch
 
 from core.inference.prompt_embedding_cache import (
     PromptEmbeddingCache,
+    conditioning_cache_key,
     generation_prompt_cache,
 )
 from core.pipeline_backends.krea2 import Krea2Mixin
@@ -49,6 +52,36 @@ def test_lru_bound_evicts_oldest_entry():
     assert not cache.get(encoder, "a", "cpu")[1]
     assert cache.get(encoder, "b", "cpu")[1]
     assert cache.get(encoder, "c", "cpu")[1]
+
+
+def test_encoder_collection_releases_its_cpu_entries():
+    cache = PromptEmbeddingCache()
+    encoder = _Encoder()
+    cache.put(encoder, "prompt", torch.tensor([1]))
+    assert len(cache) == 1
+
+    del encoder
+    gc.collect()
+
+    assert len(cache) == 0
+
+
+def test_common_key_covers_tokenizer_and_execution_settings():
+    tokenizer = _Encoder()
+    tokenizer.name_or_path = "tokenizer-a"
+    tokenizer.vocab_size = 10
+    tokenizer.model_max_length = 32
+
+    base = conditioning_cache_key(
+        "arch", "model", tokenizer, "cpu", torch.float32, "prompt", 32,
+    )
+    assert base != conditioning_cache_key(
+        "arch", "model", tokenizer, "cpu", torch.float32, "changed", 32,
+    )
+    tokenizer.vocab_size = 11
+    assert base != conditioning_cache_key(
+        "arch", "model", tokenizer, "cpu", torch.float32, "prompt", 32,
+    )
 
 
 def test_krea2_hit_skips_encoder_stage_and_forward(monkeypatch):

@@ -20843,6 +20843,10 @@ components:
           type: string
           format: date-time
           nullable: true
+        revision:
+          type: integer
+          minimum: 0
+          description: Monotonic identity of indexed training data.
 
     DatasetHealth:
       type: object

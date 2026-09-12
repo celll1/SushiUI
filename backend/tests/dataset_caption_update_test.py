@@ -51,6 +51,7 @@ def test_update_persists_sidecar_db_and_empty_cached_statistics(db, tmp_path):
     assert result.caption.is_tags_format is True
     assert result.caption.field_category == "training"
     assert dataset.total_tags == 1
+    assert dataset.revision == 1
     assert dataset.tag_statistics == {
         "one": {"count": 1, "category": "General"},
         "two": {"count": 1, "category": "Unknown"},

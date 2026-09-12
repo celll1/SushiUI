@@ -13866,6 +13866,16 @@ async def scan_dataset(
     captions_found = 0
     captions_updated = 0
     files_processed = 0
+    revision_bumped = False
+
+    def bump_scan_revision() -> None:
+        nonlocal revision_bumped
+        if revision_bumped:
+            return
+        from core.datasets.revisions import bump_dataset_revision
+
+        bump_dataset_revision(dataset)
+        revision_bumped = True
 
     # Progress tracking: Phase 1 (File scan): 0-90%, Phase 2 (Tag stats): 90-100%
     # We'll use a unified total_steps = total_images * 1.1 (rounded)
@@ -14408,6 +14418,8 @@ async def scan_dataset(
             # which also matches the cancel/skip-commits-partial behaviour.
             if files_processed > 0 and files_processed % 300 == 0:
                 try:
+                    if items_found or captions_found or captions_updated:
+                        bump_scan_revision()
                     db.commit()
                 except Exception as _ce:
                     print(f"[Dataset Scan] Periodic commit failed: {_ce}")
@@ -14430,6 +14442,8 @@ async def scan_dataset(
         # we simply hadn't reached. Commit the new items/captions added so far
         # and leave last_scanned_at unchanged so the next pre-flight re-detects
         # drift (already-applied changes stay, per the skip contract).
+        if items_found or captions_found or captions_updated:
+            bump_scan_revision()
         db.commit()
         db.refresh(dataset)
         manager.send_progress_sync(
@@ -14563,6 +14577,7 @@ async def scan_dataset(
             db.query(DatasetItem.id).filter(DatasetItem.dataset_id == dataset_id)
         )
     ).distinct().all()
+    normalized_captions = 0
     for (ct,) in caption_types_in_dataset:
         captions_of_type = db.query(DatasetCaption).filter(
             DatasetCaption.item_id.in_(
@@ -14577,6 +14592,7 @@ async def scan_dataset(
         majority_is_tags = tags_count > nl_count
         minority_count = nl_count if majority_is_tags else tags_count
         if minority_count > 0:
+            normalized_captions += minority_count
             majority_type_name = "tags" if majority_is_tags else "natural_language"
             print(f"[Dataset Scan] caption_type='{ct}': {tags_count} tags, {nl_count} NL -> "
                   f"normalizing {minority_count} to {majority_type_name}")
@@ -14594,6 +14610,9 @@ async def scan_dataset(
     dataset.total_tags, dataset.total_captions = _dataset_caption_item_counts(db, dataset_id)
     dataset.tag_statistics = tag_statistics
     dataset.last_scanned_at = datetime.utcnow()
+
+    if items_found or captions_found or captions_updated or items_purged or normalized_captions:
+        bump_scan_revision()
 
     db.commit()
     db.refresh(dataset)
@@ -15105,6 +15124,14 @@ def update_item_caption(
 class ReferenceImagesUpdateRequest(BaseModel):
     reference_images: List[str]  # List of file paths to reference images
 
+
+def _bump_item_dataset_revision(db: Session, item: DatasetItem) -> None:
+    from core.datasets.revisions import bump_dataset_revision
+
+    dataset = db.query(Dataset).filter(Dataset.id == item.dataset_id).first()
+    if dataset is not None:
+        bump_dataset_revision(dataset)
+
 @router.patch("/datasets/items/{item_id}/reference-images")
 async def update_item_reference_images(
     item_id: int,
@@ -15130,11 +15157,12 @@ async def update_item_reference_images(
             detail=f"Invalid reference image paths: {', '.join(invalid_paths)}"
         )
 
-    related_images = item.related_images or {}
+    related_images = dict(item.related_images or {})
     related_images["reference"] = request.reference_images
 
     item.related_images = related_images
     item.updated_at = datetime.utcnow()
+    _bump_item_dataset_revision(db, item)
 
     db.commit()
     db.refresh(item)
@@ -15164,8 +15192,8 @@ async def add_item_reference_image(
     if not os.path.exists(image_path):
         raise HTTPException(status_code=400, detail=f"Image file not found: {image_path}")
 
-    related_images = item.related_images or {}
-    reference_list = related_images.get("reference", [])
+    related_images = dict(item.related_images or {})
+    reference_list = list(related_images.get("reference", []))
 
     if image_path in reference_list:
         return {"status": "already_exists", "item_id": item_id, "reference_images": reference_list}
@@ -15175,6 +15203,7 @@ async def add_item_reference_image(
 
     item.related_images = related_images
     item.updated_at = datetime.utcnow()
+    _bump_item_dataset_revision(db, item)
 
     db.commit()
     db.refresh(item)
@@ -15198,8 +15227,8 @@ async def remove_item_reference_image(
     if not item:
         raise HTTPException(status_code=404, detail="Dataset item not found")
 
-    related_images = item.related_images or {}
-    reference_list = related_images.get("reference", [])
+    related_images = dict(item.related_images or {})
+    reference_list = list(related_images.get("reference", []))
 
     if image_path not in reference_list:
         raise HTTPException(status_code=404, detail=f"Reference image not found: {image_path}")
@@ -15209,6 +15238,7 @@ async def remove_item_reference_image(
 
     item.related_images = related_images
     item.updated_at = datetime.utcnow()
+    _bump_item_dataset_revision(db, item)
 
     db.commit()
     db.refresh(item)
@@ -19935,6 +19965,17 @@ def _start_dataset_batch(dataset_id: int, request, db: Session) -> str:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+
+def _commit_batch_revision(dataset_id: int, result, db: Session) -> None:
+    if not result.updated_count:
+        return
+    from core.datasets.revisions import bump_dataset_revision
+
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if dataset is not None:
+        bump_dataset_revision(dataset)
+        db.commit()
+
 @router.post("/datasets/{dataset_id}/batch-tagger", response_model=BatchOperationResponse)
 async def batch_tagger_endpoint(
     dataset_id: int,
@@ -19959,6 +20000,7 @@ async def batch_tagger_endpoint(
             should_cancel=lambda: batch_jobs.is_cancelled(operation_id),
         )
         result.operation_id = operation_id
+        _commit_batch_revision(dataset_id, result, db)
     finally:
         batch_jobs.finish(operation_id)
 
@@ -19991,6 +20033,7 @@ async def batch_reorder_tags_endpoint(
             should_cancel=lambda: batch_jobs.is_cancelled(operation_id),
         )
         result.operation_id = operation_id
+        _commit_batch_revision(dataset_id, result, db)
     finally:
         batch_jobs.finish(operation_id)
 
@@ -20023,6 +20066,7 @@ async def batch_replace_tag_endpoint(
             should_cancel=lambda: batch_jobs.is_cancelled(operation_id),
         )
         result.operation_id = operation_id
+        _commit_batch_revision(dataset_id, result, db)
     finally:
         batch_jobs.finish(operation_id)
 
@@ -20063,6 +20107,7 @@ async def backfill_tag_data_endpoint(
             should_cancel=lambda: batch_jobs.is_cancelled(active_operation_id),
         )
         result.operation_id = active_operation_id
+        _commit_batch_revision(dataset_id, result, db)
     finally:
         batch_jobs.finish(active_operation_id)
 

@@ -517,6 +517,7 @@ class Dataset(DatasetBase):
     created_at = Column(DateTime, default=get_local_now, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     last_scanned_at = Column(DateTime, nullable=True)
+    revision = Column(Integer, nullable=False, default=0)
 
     # Relationships (within datasets.db only)
     items = relationship("DatasetItem", back_populates="dataset", cascade="all, delete-orphan")
@@ -558,6 +559,7 @@ class Dataset(DatasetBase):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "last_scanned_at": self.last_scanned_at.isoformat() if self.last_scanned_at else None,
+            "revision": self.revision or 0,
         }
         if include_tag_statistics:
             out["tag_statistics"] = self.tag_statistics or {}

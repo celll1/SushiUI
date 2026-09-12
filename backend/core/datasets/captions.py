@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from database.models import Dataset, DatasetCaption, DatasetItem
+from .revisions import bump_dataset_revision
 from .sidecars import (
     SidecarWriteResult,
     capture_sidecars,
@@ -168,6 +169,8 @@ def update_caption(
         elif tag_data is not None:
             caption.tag_data = json.dumps(tag_data, ensure_ascii=False)
 
+        if dataset is not None:
+            bump_dataset_revision(dataset)
         db.commit()
         db.refresh(caption)
         return CaptionUpdateResult(caption=caption, sidecar=sidecar)

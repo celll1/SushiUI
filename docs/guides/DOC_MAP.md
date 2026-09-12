@@ -44,6 +44,7 @@ machine-local working material.
 | Document | Purpose |
 |---|---|
 | [docs/reference/DATASETS.md](../reference/DATASETS.md) | Dataset formats and validation requirements. |
+| [docs/plans/DATASET_WORKSPACE_REFACTOR_PLAN_2026-09.md](../plans/DATASET_WORKSPACE_REFACTOR_PLAN_2026-09.md) | Dataset persistence, workspace, preview, and training-snapshot migration plan. |
 | [docs/guides/DYNAMIC_CROP_BUCKETING.md](DYNAMIC_CROP_BUCKETING.md) | Epoch-dynamic crop and bucket behavior. |
 | [docs/guides/SDXL_REGULARIZATION.md](SDXL_REGULARIZATION.md) | SD/SDXL regularization behavior. |
 | [docs/guides/SENSENOVA_TRAINING_DESIGN.md](SENSENOVA_TRAINING_DESIGN.md) | SenseNova training contract and measured validation boundary. |

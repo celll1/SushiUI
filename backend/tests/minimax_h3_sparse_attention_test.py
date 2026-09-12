@@ -49,6 +49,7 @@ def test_layout_conditioning_prefix_remains_dense():
     assert not plan.target_video_rows[1]
     assert not plan.target_video_rows[2]
     assert plan.target_video_rows[4:].all()
+    assert plan.position_ids.dtype == torch.float32
 
 
 def test_dense_method_builds_no_plan():

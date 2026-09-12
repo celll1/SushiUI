@@ -49,7 +49,9 @@ class H3VideoWindowPlan:
         spatial_radius: float,
         block_size: int = 128,
     ) -> "H3VideoWindowPlan":
-        position_ids = layout["position_ids"]
+        # RoPE consumes these coordinates as float32 in the transformer; use
+        # the same effective grid and avoid float64 predicates in Flex kernels.
+        position_ids = layout["position_ids"].to(dtype=torch.float32)
         video_indices = layout["video_indices"]
         condition_rows = int(layout.get("num_condition_video_rows", 0) or 0)
         target_video_rows = torch.zeros(

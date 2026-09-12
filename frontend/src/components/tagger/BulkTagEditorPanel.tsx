@@ -9,36 +9,17 @@ import {
 } from "@/utils/api";
 import InputWithTagSuggestions from "@/components/common/InputWithTagSuggestions";
 import { useTagSuggestions } from "@/contexts/TagSuggestionsContext";
+import {
+  TAG_CATEGORY_HEX,
+  TAG_EDITOR_CATEGORY_ORDER,
+  type TagEditorCategory,
+} from "./taggerCategories";
 
 interface BulkTagEditorPanelProps {
   selectedImages: BrowserImageEntry[];
   onTagsSaved: (updates: Array<{ relPath: string; hasTags: boolean }>) => void;
   onDeselectAll: () => void;
 }
-
-const CATEGORY_ORDER = [
-  "Copyright",
-  "Character",
-  "Artist",
-  "General",
-  "Meta",
-  "Quality",
-  "Rating",
-  "Unknown",
-] as const;
-
-type CategoryName = typeof CATEGORY_ORDER[number];
-
-const CATEGORY_COLORS: Record<string, string> = {
-  Copyright: "#c084fc",
-  Character: "#60a5fa",
-  Artist: "#f472b6",
-  General: "#4ade80",
-  Meta: "#9ca3af",
-  Quality: "#facc15",
-  Rating: "#fb923c",
-  Unknown: "#6b7280",
-};
 
 export default function BulkTagEditorPanel({
   selectedImages,
@@ -132,11 +113,11 @@ export default function BulkTagEditorPanel({
   }, [categoryLookupKey, tagSuggestionsCtx]);
 
   const groupedTags = useMemo(() => {
-    const groups = new Map<CategoryName, string[]>(CATEGORY_ORDER.map((c) => [c, []]));
+    const groups = new Map<TagEditorCategory, string[]>(TAG_EDITOR_CATEGORY_ORDER.map((c) => [c, []]));
     for (const tag of tagCoverage.counts.keys()) {
       const raw = tagCategories.get(tag) ?? "Unknown";
-      const cat: CategoryName = CATEGORY_ORDER.includes(raw as CategoryName)
-        ? (raw as CategoryName)
+      const cat: TagEditorCategory = TAG_EDITOR_CATEGORY_ORDER.includes(raw as TagEditorCategory)
+        ? (raw as TagEditorCategory)
         : "Unknown";
       groups.get(cat)!.push(tag);
     }
@@ -304,10 +285,10 @@ export default function BulkTagEditorPanel({
         ) : tagCoverage.counts.size === 0 ? (
           <span className="text-gray-600 text-sm">タグなし</span>
         ) : (
-          CATEGORY_ORDER.map((cat) => {
+          TAG_EDITOR_CATEGORY_ORDER.map((cat) => {
             const catTags = groupedTags.get(cat) ?? [];
             if (catTags.length === 0) return null;
-            const color = CATEGORY_COLORS[cat];
+            const color = TAG_CATEGORY_HEX[cat];
             return (
               <div key={cat} className="mb-3">
                 <div className="flex items-center gap-1.5 mb-1.5">

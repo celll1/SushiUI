@@ -4802,7 +4802,7 @@ class BaseTrainer(ABC):
         GQA / mask guards still apply at actual dispatch time inside the model
         forward. Returns the sage-stripped canonical backend key.
         """
-        probe = torch.empty(1, 1, 1, 64)
+        probe = torch.empty(1, 1, 1, 64, dtype=torch.float16)
         return resolve_backend(backend, AttentionMode.TRAINING, probe, probe)
 
     def _setup_attention_backend_zimage(self, backend: str):

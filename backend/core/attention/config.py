@@ -173,6 +173,8 @@ def resolve_backend(
     key: torch.Tensor,
     attn_mask: Optional[torch.Tensor] = None,
     layout: str = "BSHD",
+    dropout_p: float = 0.0,
+    varlen: bool = False,
 ) -> str:
     """Apply MODE + capability guards, downgrading to native when needed.
 
@@ -211,6 +213,14 @@ def resolve_backend(
         _log_downgrade(b.name, f"{b.name} requires fp16/bf16 (got {query.dtype}); using native")
         return "native"
 
+    if dropout_p and not b.supports_dropout:
+        _log_downgrade(b.name, f"{b.name} ignores dropout; using native")
+        return "native"
+
+    if varlen and b.varlen_fn is None:
+        _log_downgrade(b.name, f"{b.name} has no variable-length kernel; using native")
+        return "native"
+
     # Mask guard.
     if attn_mask is not None and not b.supports_mask:
         _log_downgrade(b.name, f"{b.name} ignores masks; using native (mask present)")
@@ -228,8 +238,8 @@ def resolve_backend(
 
     # GQA guard.
     if not b.supports_gqa:
-        h_q = _heads(query, layout)
-        h_kv = _heads(key, layout)
+        h_q = query.shape[1] if varlen else _heads(query, layout)
+        h_kv = key.shape[1] if varlen else _heads(key, layout)
         if h_kv != h_q:
             _log_downgrade(b.name, f"{b.name} requires equal q/kv heads (got {h_q} vs {h_kv})")
             return "native"

@@ -15,7 +15,15 @@ edits are required.
 from dataclasses import dataclass
 from typing import Callable, Optional, Set
 
-from .backends import _flash_attn, _native_sdpa, _sage_attn, _tq_attn
+from .backends import (
+    _flash_attn,
+    _flash_attn_varlen,
+    _native_sdpa,
+    _native_varlen,
+    _sage_attn,
+    _sage_attn_varlen,
+    _tq_attn,
+)
 
 
 @dataclass(frozen=True)
@@ -39,6 +47,8 @@ class AttentionBackend:
             casts q/k/v to bf16 and casts the output back (informational; the
             actual cast lives in the backend fn).
         supports_gqa: If False, downgrade to native when ``H_kv != H``.
+        supports_dropout: If False, non-zero attention dropout resolves to native.
+        varlen_fn: Packed ``[total, heads, dim]`` kernel, or None when unsupported.
     """
 
     name: str
@@ -49,6 +59,8 @@ class AttentionBackend:
     allowed_head_dims: Optional[Set[int]]
     needs_half_dtype: bool
     supports_gqa: bool
+    supports_dropout: bool
+    varlen_fn: Optional[Callable]
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +98,8 @@ BACKENDS = {
         allowed_head_dims=None,
         needs_half_dtype=False,
         supports_gqa=True,
+        supports_dropout=True,
+        varlen_fn=_native_varlen,
     ),
     "flash": AttentionBackend(
         name="flash",
@@ -96,6 +110,8 @@ BACKENDS = {
         allowed_head_dims=None,
         needs_half_dtype=True,
         supports_gqa=True,
+        supports_dropout=True,
+        varlen_fn=_flash_attn_varlen,
     ),
     "sage": AttentionBackend(
         name="sage",
@@ -106,6 +122,8 @@ BACKENDS = {
         allowed_head_dims={64, 96, 128},
         needs_half_dtype=True,
         supports_gqa=True,
+        supports_dropout=False,
+        varlen_fn=_sage_attn_varlen,
     ),
     # tq:
     #   * Triton-Quantized attention with a full (Triton) backward -> trainable=True.
@@ -149,5 +167,7 @@ BACKENDS = {
         allowed_head_dims={64, 128},
         needs_half_dtype=True,
         supports_gqa=True,
+        supports_dropout=False,
+        varlen_fn=None,
     ),
 }

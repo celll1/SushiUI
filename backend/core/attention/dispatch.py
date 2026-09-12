@@ -37,6 +37,7 @@ from .contracts import (
     AttentionMode,
     resolve_fallback_policy,
     validate_dense_qkv,
+    validate_varlen_qkv,
 )
 from .observed import note_backend
 from .registry import BACKENDS
@@ -170,7 +171,9 @@ def dispatch_attention(
             layout, enable_gqa, mode, fallback_policy
         )
 
-    resolved = resolve_backend(backend, mode, query, key, attn_mask, layout)
+    resolved = resolve_backend(
+        backend, mode, query, key, attn_mask, layout, dropout_p=dropout_p
+    )
 
     # Boundary transpose: BHSD -> canonical BSHD for the kernels.
     if layout == "BHSD":
@@ -258,6 +261,7 @@ def dispatch_attention_varlen(
     scale: Optional[float] = None,
     backend: Optional[str] = None,
     mode: AttentionMode = AttentionMode.INFERENCE,
+    fallback_policy: Optional[AttentionFallbackPolicy | str] = None,
 ) -> torch.Tensor:
     """Variable-length (packed) attention over ``[total, H, D]`` tensors.
 
@@ -268,63 +272,62 @@ def dispatch_attention_varlen(
     bottom-right convention), which reduces to plain causal when the two lengths
     are equal.
 
-    ``flash`` resolves to ``flash_attn_varlen_func``. Every other backend (and
-    any kernel failure) runs one SDPA call per segment on the same tensors,
-    which is exact and needs no mask. Both accept unequal q/kv head counts.
+    Each backend advertises its packed kernel in the registry. Unsupported
+    backends resolve to the exact native per-segment reference implementation.
     """
+    validate_varlen_qkv(
+        query, key, value, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k
+    )
+    fallback_policy = resolve_fallback_policy(fallback_policy, mode)
     backend = normalize_backend(backend)
     if backend in _PASSTHROUGH:
         raise ValueError(f"varlen attention is not implemented for the {backend!r} backend")
-    resolved = resolve_backend(backend, mode, query, key, None, "BSHD")
-    if query.dim() != 3 or key.dim() != 3 or value.dim() != 3:
-        raise ValueError("varlen attention takes packed [total, H, D] tensors")
-    if cu_seqlens_q.numel() != cu_seqlens_k.numel() or cu_seqlens_q.numel() < 2:
-        raise ValueError("cu_seqlens_q and cu_seqlens_k must both hold n_segments + 1 offsets")
-
-    if resolved == "flash":
-        try:
-            from flash_attn import flash_attn_varlen_func
-
-            original_dtype = query.dtype
-            if original_dtype in (torch.float16, torch.bfloat16):
-                q, k, v = query, key, value
-            else:
-                q, k, v = (t.to(torch.bfloat16) for t in (query, key, value))
-            out = flash_attn_varlen_func(
-                q, k, v,
-                cu_seqlens_q.to(torch.int32), cu_seqlens_k.to(torch.int32),
-                int(max_seqlen_q), int(max_seqlen_k),
-                dropout_p=dropout_p, softmax_scale=scale, causal=is_causal,
-            )
-            _log_backend_used("flash")
-            note_backend("flash")
-            return out.to(original_dtype) if out.dtype != original_dtype else out
-        except ImportError:
-            _log_backend_used("native", fell_back_from="flash")
-        except Exception as exc:  # noqa: BLE001 - fall back, never raise into the model
-            print(f"[Attention] flash varlen error ({exc}); falling back to per-segment SDPA")
-            _log_backend_used("native", fell_back_from="flash")
-
-    starts_q = cu_seqlens_q.tolist()
-    starts_k = cu_seqlens_k.tolist()
-    n_rep = query.shape[1] // key.shape[1]
-    outputs = []
-    for i in range(len(starts_q) - 1):
-        q = query[starts_q[i]:starts_q[i + 1]].transpose(0, 1).unsqueeze(0)  # [1, H, Sq, D]
-        k = key[starts_k[i]:starts_k[i + 1]].transpose(0, 1).unsqueeze(0)
-        v = value[starts_k[i]:starts_k[i + 1]].transpose(0, 1).unsqueeze(0)
-        if n_rep > 1:
-            k = k.repeat_interleave(n_rep, dim=1)
-            v = v.repeat_interleave(n_rep, dim=1)
-        seq_q, seq_k = q.shape[2], k.shape[2]
-        if is_causal and seq_q != seq_k:
-            rows = torch.arange(seq_q, device=q.device).unsqueeze(1) + (seq_k - seq_q)
-            cols = torch.arange(seq_k, device=q.device).unsqueeze(0)
-            out = torch.nn.functional.scaled_dot_product_attention(
-                q, k, v, attn_mask=cols <= rows, dropout_p=dropout_p, scale=scale)
-        else:
-            out = torch.nn.functional.scaled_dot_product_attention(
-                q, k, v, dropout_p=dropout_p, is_causal=is_causal, scale=scale)
-        outputs.append(out.squeeze(0).transpose(0, 1))
-    note_backend("native")
-    return torch.cat(outputs, dim=0)
+    resolved = resolve_backend(
+        backend,
+        mode,
+        query,
+        key,
+        None,
+        "BSHD",
+        dropout_p=dropout_p,
+        varlen=True,
+    )
+    varlen_fn = BACKENDS[resolved].varlen_fn
+    if varlen_fn is None:  # registry invariant; native must always be available
+        raise RuntimeError(f"[Attention] resolved backend {resolved!r} has no varlen kernel")
+    out = varlen_fn(
+        query,
+        key,
+        value,
+        cu_seqlens_q,
+        cu_seqlens_k,
+        max_seqlen_q,
+        max_seqlen_k,
+        dropout_p=dropout_p,
+        is_causal=is_causal,
+        scale=scale,
+    )
+    if out is None and resolved != "native" and fallback_policy == AttentionFallbackPolicy.ERROR:
+        raise RuntimeError(
+            f"[Attention] {resolved} varlen kernel failed and fallback_policy='error'"
+        )
+    if out is None and resolved != "native":
+        _log_backend_used("native", fell_back_from=resolved)
+        resolved = "native"
+        out = BACKENDS["native"].varlen_fn(
+            query,
+            key,
+            value,
+            cu_seqlens_q,
+            cu_seqlens_k,
+            max_seqlen_q,
+            max_seqlen_k,
+            dropout_p=dropout_p,
+            is_causal=is_causal,
+            scale=scale,
+        )
+    if out is None:
+        raise RuntimeError("[Attention] native varlen SDPA failed; see prior error log")
+    _log_backend_used(resolved)
+    note_backend(resolved)
+    return out

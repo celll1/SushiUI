@@ -36,6 +36,7 @@ from core.attention import (  # noqa: E402
     AttentionFallbackPolicy,
     AttentionMode,
     dispatch_attention,
+    dispatch_attention_varlen,
     normalize_backend,
     resolve_backend,
 )
@@ -291,6 +292,11 @@ def test_guards():
     r = resolve_backend("flash", AttentionMode.TRAINING, q16, k16, None, "BSHD")
     record("guard: flash in TRAINING -> flash", PASS if r == "flash" else FAIL, f"got {r}")
 
+    r = resolve_backend(
+        "flash", AttentionMode.TRAINING, q16, k16, None, "BSHD", dropout_p=0.1
+    )
+    record("guard: flash supports dropout", PASS if r == "flash" else FAIL, f"got {r}")
+
     # flash head_dim 256 (Ideogram4) within max -> flash (mask guard handles masked case)
     r = resolve_backend("flash", AttentionMode.INFERENCE, q256.half(), k256.half(), None, "BSHD")
     record("guard: flash D=256 -> flash", PASS if r == "flash" else FAIL, f"got {r}")
@@ -298,6 +304,11 @@ def test_guards():
     # tq: trainable -> stays tq in TRAINING (its differentiator)
     r = resolve_backend("tq", AttentionMode.TRAINING, q16, k16, None, "BSHD")
     record("guard: tq in TRAINING -> tq", PASS if r == "tq" else FAIL, f"got {r}")
+
+    r = resolve_backend(
+        "tq", AttentionMode.TRAINING, q16, k16, None, "BSHD", dropout_p=0.1
+    )
+    record("guard: tq dropout -> native", PASS if r == "native" else FAIL, f"got {r}")
 
     # tq head_dim 256 not in allowed {64,128} -> native
     r = resolve_backend("tq", AttentionMode.INFERENCE, q256.half(), k256.half(), None, "BSHD")
@@ -363,6 +374,102 @@ def test_training_runtime_fallback_is_strict():
         record("contract: explicit training fallback remains available", PASS if out.shape == q.shape else FAIL)
     finally:
         BACKENDS["flash"] = original
+
+
+def _packed_qkv(dtype=torch.float32):
+    q = torch.randn(7, 4, 64, dtype=dtype)
+    k = torch.randn(9, 2, 64, dtype=dtype)
+    v = torch.randn_like(k)
+    cu_q = torch.tensor([0, 3, 7], dtype=torch.int32)
+    cu_k = torch.tensor([0, 4, 9], dtype=torch.int32)
+    return q, k, v, cu_q, cu_k
+
+
+def test_varlen_registry_dispatch():
+    q, k, v, cu_q, cu_k = _packed_qkv(torch.float16)
+
+    sage = BACKENDS["sage"]
+    captured = {}
+
+    def sage_spy(*args, **kwargs):
+        captured["called"] = True
+        return args[0].clone()
+
+    BACKENDS["sage"] = dataclasses.replace(sage, varlen_fn=sage_spy)
+    try:
+        out = dispatch_attention_varlen(q, k, v, cu_q, cu_k, 4, 5, backend="sage")
+    finally:
+        BACKENDS["sage"] = sage
+    record(
+        "varlen: Sage kernel is registry-dispatched",
+        PASS if captured.get("called") and out.shape == q.shape else FAIL,
+    )
+
+    native = BACKENDS["native"]
+    captured.clear()
+
+    def native_spy(*args, **kwargs):
+        captured["called"] = True
+        return args[0].clone()
+
+    BACKENDS["native"] = dataclasses.replace(native, varlen_fn=native_spy)
+    try:
+        dispatch_attention_varlen(q, k, v, cu_q, cu_k, 4, 5, backend="tq")
+    finally:
+        BACKENDS["native"] = native
+    record(
+        "varlen: backend without packed kernel resolves to native",
+        PASS if captured.get("called") else FAIL,
+    )
+
+
+def test_varlen_native_reference():
+    q, k, v, cu_q, cu_k = _packed_qkv()
+    out = dispatch_attention_varlen(q, k, v, cu_q, cu_k, 4, 5, backend="native")
+    refs = []
+    for qs, qe, ks, ke in ((0, 3, 0, 4), (3, 7, 4, 9)):
+        qb = q[qs:qe].transpose(0, 1).unsqueeze(0)
+        kb = k[ks:ke].transpose(0, 1).unsqueeze(0).repeat_interleave(2, dim=1)
+        vb = v[ks:ke].transpose(0, 1).unsqueeze(0).repeat_interleave(2, dim=1)
+        refs.append(F.scaled_dot_product_attention(qb, kb, vb).squeeze(0).transpose(0, 1))
+    ref = torch.cat(refs)
+    record(
+        "varlen: native reference remains exact",
+        PASS if torch.equal(out, ref) else FAIL,
+        f"max_diff={(out - ref).abs().max().item():.3e}",
+    )
+
+
+def test_varlen_contract_and_strict_fallback():
+    q, k, v, cu_q, cu_k = _packed_qkv(torch.float16)
+    try:
+        dispatch_attention_varlen(q, k, v, torch.tensor([1, 3, 7]), cu_k, 4, 5)
+    except ValueError:
+        record("varlen: invalid cumulative offsets refused", PASS)
+    else:
+        record("varlen: invalid cumulative offsets refused", FAIL)
+
+    try:
+        dispatch_attention_varlen(q, k, v, cu_q, cu_k, 3, 5)
+    except ValueError:
+        record("varlen: undersized maximum sequence length refused", PASS)
+    else:
+        record("varlen: undersized maximum sequence length refused", FAIL)
+
+    flash = BACKENDS["flash"]
+    BACKENDS["flash"] = dataclasses.replace(flash, varlen_fn=lambda *args, **kwargs: None)
+    try:
+        try:
+            dispatch_attention_varlen(
+                q, k, v, cu_q, cu_k, 4, 5,
+                backend="flash", mode=AttentionMode.TRAINING,
+            )
+        except RuntimeError:
+            record("varlen: training kernel failure is strict", PASS)
+        else:
+            record("varlen: training kernel failure is strict", FAIL)
+    finally:
+        BACKENDS["flash"] = flash
 
 
 def test_normalize():
@@ -439,6 +546,9 @@ def main():
     test_guards()
     test_contracts()
     test_training_runtime_fallback_is_strict()
+    test_varlen_registry_dispatch()
+    test_varlen_native_reference()
+    test_varlen_contract_and_strict_fallback()
     test_normalize()
     test_sla_short_circuit()
 

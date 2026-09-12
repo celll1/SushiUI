@@ -35,6 +35,7 @@ export default function DatasetBrowserPanel({
 }: DatasetBrowserPanelProps) {
   const [dirPath, setDirPath] = useState("");
   const [displayName, setDisplayName] = useState<string | null>(null);
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [recursive, setRecursive] = useState(false);
   const [images, setImages] = useState<BrowserImageEntry[]>([]);
   const [taggedSet, setTaggedSet] = useState<Set<string>>(new Set());
@@ -84,12 +85,17 @@ export default function DatasetBrowserPanel({
   }, []);
 
   const loadImages = useCallback(
-    async (includeTags = false) => {
+    async (includeTags = false, targetWorkspaceId = workspaceId) => {
+      if (!targetWorkspaceId) return;
       setLoading(true);
       setLoadError(null);
       clearSelection();
       try {
-        const { images: imgs } = await browserListImages(recursive, includeTags);
+        const { images: imgs } = await browserListImages(
+          targetWorkspaceId,
+          recursive,
+          includeTags
+        );
         setImages(imgs);
         const tagged = new Set<string>();
         imgs.forEach((img) => {
@@ -117,37 +123,41 @@ export default function DatasetBrowserPanel({
         setLoading(false);
       }
     },
-    [recursive, clearSelection, tagSuggestionsCtx]
+    [workspaceId, recursive, clearSelection, tagSuggestionsCtx]
   );
 
   const handleLoad = useCallback(async () => {
     if (!dirPath.trim()) return;
     setLoading(true);
     setLoadError(null);
+    let openedWorkspaceId: string;
     try {
       const res = await browserSetDirectory(dirPath.trim());
-      if (!res.ok) {
+      if (!res.ok || !res.workspace_id) {
         setLoadError("ディレクトリの設定に失敗しました");
         setLoading(false);
         return;
       }
+      openedWorkspaceId = res.workspace_id;
+      setWorkspaceId(res.workspace_id);
       setDisplayName(res.display_name);
     } catch (e) {
       setLoadError(String(e));
       setLoading(false);
       return;
     }
-    await loadImages(needsTagsLoaded(filterQuery));
+    await loadImages(needsTagsLoaded(filterQuery), openedWorkspaceId);
   }, [dirPath, loadImages, filterQuery]);
 
   const handlePickDirectory = useCallback(async () => {
     setPicking(true);
     try {
       const res = await browserPickDirectory();
-      if (!res.ok || !res.display_name) return;
+      if (!res.ok || !res.display_name || !res.workspace_id) return;
+      setWorkspaceId(res.workspace_id);
       setDisplayName(res.display_name);
       setDirPath("");
-      await loadImages(needsTagsLoaded(filterQuery));
+      await loadImages(needsTagsLoaded(filterQuery), res.workspace_id);
     } catch (e) {
       setLoadError(String(e));
     } finally {
@@ -277,6 +287,7 @@ export default function DatasetBrowserPanel({
     setBatchProgress({ done: 0, total: rel_paths.length, errors: 0 });
 
     const ctrl = browserBatchInfer(
+      workspaceId!,
       rel_paths,
       { overwrite: overwriteMode },
       (ev: BrowserBatchEvent) => {
@@ -302,7 +313,7 @@ export default function DatasetBrowserPanel({
       }
     );
     batchCtrlRef.current = ctrl;
-  }, [modelLoaded, batchRunning, filteredImages, overwriteMode]);
+  }, [workspaceId, modelLoaded, batchRunning, filteredImages, overwriteMode]);
 
   const handleBatchAbort = useCallback(() => {
     batchCtrlRef.current?.abort();
@@ -317,9 +328,9 @@ export default function DatasetBrowserPanel({
     if (primaryIdx < filteredImages.length - 1) rps.push(filteredImages[primaryIdx + 1].rel_path);
     for (const rp of rps) {
       const img = new window.Image();
-      img.src = browserImageUrl(rp, 1200);
+      if (workspaceId) img.src = browserImageUrl(workspaceId, rp, 1200);
     }
-  }, [primaryIdx, filteredImages]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [workspaceId, primaryIdx, filteredImages]);
 
   // Keyboard fallback: fires only when no image is selected
   useEffect(() => {
@@ -609,6 +620,7 @@ export default function DatasetBrowserPanel({
 
         {/* Thumbnail grid */}
         <ThumbnailGrid
+          workspaceId={workspaceId ?? ""}
           images={filteredImages}
           selectedIds={selectedIds}
           primaryId={primaryId}
@@ -637,6 +649,7 @@ export default function DatasetBrowserPanel({
         ) : selectedIds.size === 1 && primaryImage ? (
           <TagEditorPanel
             key={primaryImage.rel_path}
+            workspaceId={workspaceId ?? ""}
             image={primaryImage}
             modelLoaded={modelLoaded}
             onPrev={handlePrev}
@@ -647,6 +660,7 @@ export default function DatasetBrowserPanel({
           />
         ) : (
           <BulkTagEditorPanel
+            workspaceId={workspaceId ?? ""}
             selectedImages={selectedImageObjects}
             onTagsSaved={handleBulkTagsSaved}
             onDeselectAll={clearSelection}

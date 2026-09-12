@@ -50,7 +50,7 @@ def test_browser_batch_infer_uses_bytes_gpu_slot_and_writes_names(
 
     image_path = tmp_path / "sample.png"
     Image.new("RGB", (4, 4), "red").save(image_path)
-    routes._browser_root = str(tmp_path)
+    workspace_id, _ = routes._create_browser_workspace(str(tmp_path))
 
     calls = {"slots": 0, "predict": 0}
 
@@ -82,6 +82,7 @@ def test_browser_batch_infer_uses_bytes_gpu_slot_and_writes_names(
         response = await routes.browser_batch_infer(
             routes.BrowserBatchInferRequest(
                 rel_paths=["sample.png"], overwrite=True, use_ood_detection=True,
+                workspace_id=workspace_id,
             )
         )
         chunks = []

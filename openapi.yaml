@@ -7704,8 +7704,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/BrowserWorkspaceResponse'
   /tagger/browser/pick-directory:
     post:
       tags: [tagger]
@@ -7716,13 +7715,18 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/BrowserWorkspaceResponse'
   /tagger/browser/list:
     get:
       tags: [tagger]
       summary: List images in the browser directory
       parameters:
+        - name: workspace_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque workspace ID. Optional only for pre-workspace clients.
         - name: recursive
           in: query
           required: false
@@ -7748,6 +7752,12 @@ paths:
       tags: [tagger]
       summary: Get an image file from the browser directory
       parameters:
+        - name: workspace_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque workspace ID. Optional only for pre-workspace clients.
         - name: rel_path
           in: query
           required: true
@@ -7779,6 +7789,12 @@ paths:
       tags: [tagger]
       summary: Read tags from an image's .txt sidecar file
       parameters:
+        - name: workspace_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque workspace ID. Optional only for pre-workspace clients.
         - name: rel_path
           in: query
           required: true
@@ -26632,10 +26648,25 @@ components:
       properties:
         dir:
           type: string
+    BrowserWorkspaceResponse:
+      type: object
+      required: [ok, workspace_id, display_name]
+      properties:
+        ok:
+          type: boolean
+        workspace_id:
+          type: string
+          nullable: true
+          description: Opaque process-local workspace identifier.
+        display_name:
+          type: string
+          nullable: true
     BrowserSaveTagsRequest:
       type: object
       required: [rel_path, tags]
       properties:
+        workspace_id:
+          type: string
         rel_path:
           type: string
         tags:
@@ -26646,6 +26677,8 @@ components:
       type: object
       required: [rel_paths]
       properties:
+        workspace_id:
+          type: string
         rel_paths:
           type: array
           items:
@@ -26654,6 +26687,8 @@ components:
       type: object
       required: [rel_paths]
       properties:
+        workspace_id:
+          type: string
         rel_paths:
           type: array
           items:

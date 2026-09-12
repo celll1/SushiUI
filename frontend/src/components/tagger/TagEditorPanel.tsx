@@ -26,6 +26,7 @@ import {
 } from "./taggerCategories";
 
 interface TagEditorPanelProps {
+  workspaceId: string;
   image: BrowserImageEntry;
   modelLoaded: boolean;
   onPrev: () => void;
@@ -55,6 +56,7 @@ interface TagGroupEntry {
 const MAX_ACTION_HISTORY = 5;
 
 export default function TagEditorPanel({
+  workspaceId,
   image,
   modelLoaded,
   onPrev,
@@ -100,11 +102,11 @@ export default function TagEditorPanel({
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       const rp = relPathRef.current;
       const t = tagsRef.current;
-      browserSaveTags(rp, t)
+      browserSaveTags(workspaceId, rp, t)
         .then(() => onTagsSavedRef.current?.(rp, t.length > 0))
         .catch(() => {});
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [workspaceId]);
 
   // Resizable split between image and tag editor
   const splitContainerRef = useRef<HTMLDivElement>(null);
@@ -153,7 +155,7 @@ export default function TagEditorPanel({
     setTagsReady(false);
     setImgLoaded(false);
 
-    browserGetTags(image.rel_path)
+    browserGetTags(workspaceId, image.rel_path)
       .then(({ tags: loaded }) => {
         setTags(loaded);
         setHistory([loaded]);
@@ -165,7 +167,7 @@ export default function TagEditorPanel({
         setLoadError(String(e));
         setTagsReady(true); // still unblock image on error
       });
-  }, [image.rel_path]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [workspaceId, image.rel_path]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-save with debounce
   useEffect(() => {
@@ -174,7 +176,7 @@ export default function TagEditorPanel({
     saveTimerRef.current = setTimeout(async () => {
       setSaving(true);
       try {
-        await browserSaveTags(image.rel_path, tags);
+        await browserSaveTags(workspaceId, image.rel_path, tags);
         setDirty(false);
         onTagsSaved?.(image.rel_path, tags.length > 0);
       } finally {
@@ -184,7 +186,7 @@ export default function TagEditorPanel({
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-  }, [tags, dirty, image.rel_path, onTagsSaved]);
+  }, [workspaceId, tags, dirty, image.rel_path, onTagsSaved]);
 
   const pushHistory = useCallback(
     (newTags: string[]) => {
@@ -301,7 +303,7 @@ export default function TagEditorPanel({
     setInferring(true);
     setInferError(null);
     try {
-      const imgRes = await fetch(browserImageUrl(image.rel_path, 0));
+      const imgRes = await fetch(browserImageUrl(workspaceId, image.rel_path, 0));
       const blob = await imgRes.blob();
       const base64 = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
@@ -422,7 +424,7 @@ export default function TagEditorPanel({
           {/* Blur placeholder — always rendered, fades out when full image is ready */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src={browserImageUrl(image.rel_path, 160)}
+            src={browserImageUrl(workspaceId, image.rel_path, 160)}
             alt=""
             aria-hidden
             className={`absolute inset-0 object-contain w-full h-full transition-opacity duration-200 ${
@@ -433,7 +435,7 @@ export default function TagEditorPanel({
           {/* Full image — src set only after tags are ready (tags get network priority) */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src={tagsReady ? browserImageUrl(image.rel_path, 1200) : undefined}
+            src={tagsReady ? browserImageUrl(workspaceId, image.rel_path, 1200) : undefined}
             alt={image.rel_path}
             className={`absolute inset-0 object-contain w-full h-full transition-opacity duration-200 ${
               imgLoaded ? "opacity-100" : "opacity-0"

@@ -12212,50 +12212,29 @@ async def siglip2_extract_encoder(request: SigLIP2ExtractEncoderRequest):
 # ---------------------------------------------------------------------------
 # Tagger Browser Endpoints
 # ---------------------------------------------------------------------------
-# Security design:
-#   - _browser_root is stored in server RAM only (never written to disk / git).
-#   - All client-facing responses use rel_path only; absolute paths are never
-#     sent to the frontend.
-#   - _resolve_browser_path() rejects path-traversal attempts before any I/O.
-# ---------------------------------------------------------------------------
-
 _BROWSER_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 
-# Active root directory for the browser session.
-# Lives in server RAM; cleared on process restart. Never persisted.
-_browser_root: Optional[str] = None
+def _resolve_browser_path(rel_path: str, workspace_id: Optional[str] = None) -> str:
+    from core.datasets.workspaces import dataset_workspaces
+
+    try:
+        return dataset_workspaces.resolve(workspace_id, rel_path)
+    except KeyError as exc:
+        raise HTTPException(status_code=400, detail="Unknown or expired browser workspace") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
-def _resolve_browser_path(rel_path: str) -> str:
-    """Resolve rel_path under _browser_root and validate it stays within root.
+def _create_browser_workspace(path: str) -> tuple[str, str]:
+    from core.datasets.workspaces import dataset_workspaces
 
-    Raises 400 if no root is set, 403 on path-traversal attempt.
-    """
-    import os as _os
-    if _browser_root is None:
-        raise HTTPException(status_code=400, detail="No browser directory set. Call set-directory first.")
-    # Normalise: collapse '..' sequences, strip leading separators
-    norm = _os.path.normpath(rel_path).lstrip(_os.sep).lstrip("/")
-    if norm.startswith(".."):
-        raise HTTPException(status_code=403, detail="Path traversal not allowed")
-    abs_path = _os.path.join(_browser_root, norm)
-    # Final containment check (handles edge cases like symlinks expanding outside)
-    real_root = _os.path.realpath(_browser_root)
-    real_abs  = _os.path.realpath(abs_path)
-    if real_abs != real_root and not real_abs.startswith(real_root + _os.sep):
-        raise HTTPException(status_code=403, detail="Path outside allowed directory")
-    return abs_path
-
-
-def _set_browser_root(path: str) -> str:
-    """Validate and set _browser_root. Returns the normalised absolute path."""
-    import os as _os
-    global _browser_root
-    abs_dir = _os.path.abspath(path)
-    if not _os.path.isdir(abs_dir):
-        raise HTTPException(status_code=400, detail="Invalid directory")
-    _browser_root = abs_dir
-    return abs_dir
+    try:
+        workspace_id, root = dataset_workspaces.create(path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # Old clients omit workspace_id and therefore use the last opened workspace.
+    dataset_workspaces.set_legacy(workspace_id)
+    return workspace_id, root
 
 
 class BrowserSetDirectoryRequest(BaseModel):
@@ -12269,8 +12248,12 @@ async def browser_set_directory(req: BrowserSetDirectoryRequest):
     Returns only the folder display name, not the full path.
     """
     import os as _os
-    root = _set_browser_root(req.dir)
-    return {"ok": True, "display_name": _os.path.basename(root)}
+    workspace_id, root = _create_browser_workspace(req.dir)
+    return {
+        "ok": True,
+        "workspace_id": workspace_id,
+        "display_name": _os.path.basename(root),
+    }
 
 
 @router.post("/tagger/browser/pick-directory")
@@ -12303,14 +12286,22 @@ async def browser_pick_directory():
         selected = await loop.run_in_executor(pool, _pick)
 
     if selected is None:
-        return {"ok": False, "display_name": None}
+        return {"ok": False, "workspace_id": None, "display_name": None}
 
-    root = _set_browser_root(selected)
-    return {"ok": True, "display_name": _os.path.basename(root)}
+    workspace_id, root = _create_browser_workspace(selected)
+    return {
+        "ok": True,
+        "workspace_id": workspace_id,
+        "display_name": _os.path.basename(root),
+    }
 
 
 @router.get("/tagger/browser/list")
-async def browser_list(recursive: bool = False, include_tags: bool = False):
+async def browser_list(
+    recursive: bool = False,
+    include_tags: bool = False,
+    workspace_id: Optional[str] = None,
+):
     """List image files under the active browser root.
 
     Response contains only rel_path (relative to root), has_tags, and mtime.
@@ -12318,17 +12309,21 @@ async def browser_list(recursive: bool = False, include_tags: bool = False):
     When include_tags=True, each entry also includes a 'tags' list read from the sidecar .txt.
     """
     import os as _os
-    if _browser_root is None:
-        raise HTTPException(status_code=400, detail="No browser directory set")
+    from core.datasets.workspaces import dataset_workspaces
+
+    try:
+        browser_root = dataset_workspaces.root(workspace_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=400, detail="Unknown or expired browser workspace") from exc
     results = []
     if recursive:
-        walker = _os.walk(_browser_root)
+        walker = _os.walk(browser_root)
     else:
         try:
-            entries = sorted(_os.listdir(_browser_root))
+            entries = sorted(_os.listdir(browser_root))
         except PermissionError as e:
             raise HTTPException(status_code=403, detail=str(e))
-        walker = [(_browser_root, [], entries)]
+        walker = [(browser_root, [], entries)]
     for dirpath, _, files in walker:
         for f in sorted(files):
             ext = _os.path.splitext(f)[1].lower()
@@ -12338,7 +12333,7 @@ async def browser_list(recursive: bool = False, include_tags: bool = False):
             txt_path = _os.path.splitext(abs_path)[0] + ".txt"
             has_tags = _os.path.isfile(txt_path)
             entry = {
-                "rel_path": _os.path.relpath(abs_path, _browser_root),
+                "rel_path": _os.path.relpath(abs_path, browser_root),
                 "has_tags": has_tags,
                 "mtime": _os.path.getmtime(abs_path),
             }
@@ -12384,7 +12379,11 @@ def _img_cache_put(key: tuple, data: bytes) -> None:
 
 
 @router.get("/tagger/browser/image")
-async def browser_image(rel_path: str, size: int = 0):
+async def browser_image(
+    rel_path: str,
+    size: int = 0,
+    workspace_id: Optional[str] = None,
+):
     """Serve an image by rel_path (relative to active browser root).
 
     size=0: original file; size=N: JPEG at NxN max (keep aspect).
@@ -12393,7 +12392,7 @@ async def browser_image(rel_path: str, size: int = 0):
     Cache-Control: private, max-age=3600 for browser-side HTTP caching.
     """
     import os as _os
-    abs_path = _resolve_browser_path(rel_path)
+    abs_path = _resolve_browser_path(rel_path, workspace_id)
     if not _os.path.isfile(abs_path):
         raise HTTPException(status_code=404, detail="File not found")
     if size > 0:
@@ -12423,17 +12422,18 @@ async def browser_image(rel_path: str, size: int = 0):
 
 
 @router.get("/tagger/browser/tags")
-async def browser_get_tags(rel_path: str):
+async def browser_get_tags(rel_path: str, workspace_id: Optional[str] = None):
     """Read .txt sidecar file for rel_path. Returns tags list and raw text."""
     from core.tagger.browser_sidecars import read_image_sidecar
 
-    abs_path = _resolve_browser_path(rel_path)
+    abs_path = _resolve_browser_path(rel_path, workspace_id)
     tags, raw = read_image_sidecar(abs_path)
     return {"tags": tags, "raw": raw}
 
 
 class BrowserGetTagsBatchRequest(BaseModel):
     rel_paths: List[str]
+    workspace_id: Optional[str] = None
 
 
 @router.post("/tagger/browser/tags/batch")
@@ -12442,7 +12442,10 @@ async def browser_get_tags_batch(req: BrowserGetTagsBatchRequest):
     import asyncio as _asyncio
     from core.tagger.browser_sidecars import read_image_sidecar
 
-    resolved = [(_resolve_browser_path(rel_path), rel_path) for rel_path in req.rel_paths]
+    resolved = [
+        (_resolve_browser_path(rel_path, req.workspace_id), rel_path)
+        for rel_path in req.rel_paths
+    ]
 
     def read_all():
         items = []
@@ -12461,6 +12464,7 @@ async def browser_get_tags_batch(req: BrowserGetTagsBatchRequest):
 class BrowserSaveTagsRequest(BaseModel):
     rel_path: str
     tags: List[str]
+    workspace_id: Optional[str] = None
 
 
 @router.post("/tagger/browser/tags")
@@ -12469,7 +12473,7 @@ async def browser_save_tags(req: BrowserSaveTagsRequest):
     import asyncio as _asyncio
     from core.tagger.browser_sidecars import write_image_sidecar
 
-    abs_path = _resolve_browser_path(req.rel_path)
+    abs_path = _resolve_browser_path(req.rel_path, req.workspace_id)
     await _asyncio.to_thread(write_image_sidecar, abs_path, req.tags)
     return {"saved": True}
 
@@ -12478,6 +12482,7 @@ class BrowserBatchInferRequest(BaseModel):
     rel_paths: List[str]
     overwrite: bool = False
     use_ood_detection: bool = False
+    workspace_id: Optional[str] = None
 
 
 @router.post("/tagger/browser/batch-infer")
@@ -12497,7 +12502,7 @@ async def browser_batch_infer(req: BrowserBatchInferRequest):
     # Resolve all paths up-front; abort immediately on traversal attempt
     resolved = []
     for rp in req.rel_paths:
-        resolved.append((_resolve_browser_path(rp), rp))
+        resolved.append((_resolve_browser_path(rp, req.workspace_id), rp))
 
     async def generate():
         total = len(resolved)

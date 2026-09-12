@@ -51,6 +51,7 @@ from api.param_defaults import (
     TXT2AUD_DEFAULTS, AUD2AUD_DEFAULTS,
     OUTPAINT_AUDIO_DEFAULTS,
     TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS, VAE_TRAINING_DEFAULTS,
+    DATASET_DEFAULTS,
     LR_RETARGET_DEFAULTS,
     LR_PREVIEW_DEFAULTS,
     LR_TRIGGER_DEFAULTS,
@@ -14841,95 +14842,71 @@ async def get_random_caption(
 
 
 class CaptionUpdateRequest(BaseModel):
-    caption_type: str = "tags"
+    caption_type: str = DATASET_DEFAULTS["caption_type"]
     content: str
-    tag_data: Optional[List[Dict[str, str]]] = None  # [{"tag": "1girl", "category": "General"}, ...]
+    tag_data: Optional[List[Dict[str, str]]] = None
+    caption_id: Optional[int] = None
+    source_field: Optional[str] = None
+    persist_sidecar: bool = DATASET_DEFAULTS["persist_sidecar"]
+
+
+def _update_item_caption_response(
+    item_id: int,
+    request: CaptionUpdateRequest,
+    db: Session,
+    *,
+    dataset_id: Optional[int],
+):
+    from core.datasets.captions import CaptionSelectionError, update_caption
+    from core.datasets.sidecars import SidecarFormatError
+
+    try:
+        result = update_caption(
+            db,
+            item_id=item_id,
+            dataset_id=dataset_id,
+            caption_type=request.caption_type,
+            content=request.content,
+            tag_data=request.tag_data,
+            caption_id=request.caption_id,
+            source_field=request.source_field,
+            persist_sidecar=request.persist_sidecar,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (CaptionSelectionError, SidecarFormatError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to write sidecar: {exc}") from exc
+
+    response = {"status": "success", "caption": result.caption.to_dict()}
+    if result.sidecar:
+        response["sidecar"] = {
+            "path": result.sidecar.path,
+            "format": result.sidecar.format,
+            "field": result.sidecar.field,
+        }
+    return response
+
+
+@router.patch("/datasets/{dataset_id}/items/{item_id}/captions")
+def update_dataset_item_caption(
+    dataset_id: int,
+    item_id: int,
+    request: CaptionUpdateRequest,
+    db: Session = Depends(get_datasets_db),
+):
+    return _update_item_caption_response(
+        item_id, request, db, dataset_id=dataset_id
+    )
 
 @router.patch("/datasets/items/{item_id}/captions")
-async def update_item_caption(
+def update_item_caption(
     item_id: int,
     request: CaptionUpdateRequest,
     db: Session = Depends(get_datasets_db)
 ):
-    """Update caption for a dataset item"""
-    item = db.query(DatasetItem).filter(DatasetItem.id == item_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Dataset item not found")
-
-    old_content = None
-    caption = db.query(DatasetCaption).filter(
-        DatasetCaption.item_id == item_id,
-        DatasetCaption.caption_type == request.caption_type
-    ).first()
-
-    if caption:
-        old_content = caption.content
-        caption.content = request.content
-        if request.tag_data is not None:
-            import json
-            caption.tag_data = json.dumps(request.tag_data)
-        caption.updated_at = datetime.utcnow()
-    else:
-        tag_data_json = None
-        if request.tag_data is not None:
-            import json
-            tag_data_json = json.dumps(request.tag_data)
-
-        caption = DatasetCaption(
-            item_id=item_id,
-            caption_type=request.caption_type,
-            content=request.content,
-            tag_data=tag_data_json,
-            source="manual"
-        )
-        db.add(caption)
-
-    db.commit()
-    db.refresh(caption)
-
-    if request.caption_type == "tags":
-        dataset = db.query(Dataset).filter(Dataset.id == item.dataset_id).first()
-        if dataset and dataset.tag_statistics:
-            tag_statistics = dataset.tag_statistics.copy()
-
-            old_tags = set()
-            if old_content:
-                old_tags = {tag.strip() for tag in old_content.split(",") if tag.strip()}
-
-            new_tags = set()
-            if request.content:
-                new_tags = {tag.strip() for tag in request.content.split(",") if tag.strip()}
-
-            # Tags removed
-            removed_tags = old_tags - new_tags
-            for tag in removed_tags:
-                if tag in tag_statistics:
-                    tag_statistics[tag]["count"] -= 1
-                    if tag_statistics[tag]["count"] <= 0:
-                        del tag_statistics[tag]
-
-            # Tags added
-            added_tags = new_tags - old_tags
-            for tag in added_tags:
-                if tag in tag_statistics:
-                    tag_statistics[tag]["count"] += 1
-                else:
-                    # New tag - get category from tag_data if available
-                    category = "Unknown"
-                    if request.tag_data:
-                        for item in request.tag_data:
-                            if item.get("tag") == tag:
-                                category = item.get("category", "Unknown")
-                                break
-                    tag_statistics[tag] = {
-                        "count": 1,
-                        "category": category
-                    }
-
-            dataset.tag_statistics = tag_statistics
-            db.commit()
-
-    return {"status": "success", "caption": caption.to_dict()}
+    return _update_item_caption_response(item_id, request, db, dataset_id=None)
 
 
 
@@ -15060,16 +15037,23 @@ async def save_item_caption_to_txt(
 ):
     """Persist the indexed tags caption through the canonical sidecar writer."""
     import asyncio
+    from core.datasets.captions import CaptionSelectionError, select_caption
     from core.datasets.sidecars import SidecarFormatError, write_indexed_caption
 
     item = db.query(DatasetItem).filter(DatasetItem.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Dataset item not found")
 
-    caption = db.query(DatasetCaption).filter(
-        DatasetCaption.item_id == item_id,
-        DatasetCaption.caption_type == "tags"
-    ).first()
+    try:
+        caption = select_caption(
+            db,
+            item_id,
+            "tags",
+            caption_id=None,
+            source_field=None,
+        )
+    except CaptionSelectionError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
 
     if not caption:
         # No caption to save, return success (nothing to do)
@@ -15101,42 +15085,57 @@ async def save_all_captions_to_txt(
     dataset_id: int,
     db: Session = Depends(get_datasets_db)
 ):
-    """Save all captions from DB to TXT files"""
-    import os
+    """Persist all unambiguous tags captions through the canonical writer."""
+    import asyncio
+    from collections import defaultdict
+    from core.datasets.sidecars import write_indexed_caption
 
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
-    items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).all()
+    rows = db.query(DatasetItem, DatasetCaption).join(
+        DatasetCaption, DatasetCaption.item_id == DatasetItem.id
+    ).filter(
+        DatasetItem.dataset_id == dataset_id,
+        DatasetCaption.caption_type == "tags",
+    ).all()
+    by_item = defaultdict(list)
+    for item, caption in rows:
+        by_item[item.id].append((item, caption))
 
     saved_count = 0
     failed_count = 0
     failed_items = []
 
-    for item in items:
-        caption = db.query(DatasetCaption).filter(
-            DatasetCaption.item_id == item.id,
-            DatasetCaption.caption_type == "tags"
-        ).first()
-
-        if not caption:
+    for entries in by_item.values():
+        item = entries[0][0]
+        if len(entries) != 1:
+            failed_count += 1
+            failed_items.append({
+                "item_id": item.id,
+                "path": item.image_path,
+                "error": "Multiple tags captions match",
+            })
             continue
-
-        # Determine TXT file path
-        image_path = item.image_path
-        txt_path = os.path.splitext(image_path)[0] + ".txt"
-
+        caption = entries[0][1]
         try:
-            with open(txt_path, 'w', encoding='utf-8') as f:
-                f.write(caption.content)
+            result = await asyncio.to_thread(
+                write_indexed_caption,
+                item.image_path,
+                caption.content,
+                caption_type=caption.caption_type,
+                source_field=caption.source_field,
+            )
             saved_count += 1
         except Exception as e:
-            print(f"[Dataset] Failed to save caption to TXT {txt_path}: {e}")
             failed_count += 1
-            failed_items.append({"item_id": item.id, "path": txt_path, "error": str(e)})
+            failed_items.append({
+                "item_id": item.id,
+                "path": item.image_path,
+                "error": str(e),
+            })
 
-    print(f"[Dataset] Saved {saved_count} captions to TXT files, {failed_count} failed")
     return {
         "status": "success",
         "saved_count": saved_count,
@@ -15145,12 +15144,13 @@ async def save_all_captions_to_txt(
     }
 
 @router.post("/datasets/items/{item_id}/restore-from-txt")
-async def restore_item_caption_from_txt(
+def restore_item_caption_from_txt(
     item_id: int,
     db: Session = Depends(get_datasets_db)
 ):
-    """Restore caption from TXT file to DB"""
+    """Restore the conventional TXT caption through the consistent mutation path."""
     import os
+    from core.datasets.captions import CaptionSelectionError, update_caption
 
     item = db.query(DatasetItem).filter(DatasetItem.id == item_id).first()
     if not item:
@@ -15166,30 +15166,19 @@ async def restore_item_caption_from_txt(
     try:
         with open(txt_path, 'r', encoding='utf-8') as f:
             content = f.read().strip()
-
-        caption = db.query(DatasetCaption).filter(
-            DatasetCaption.item_id == item_id,
-            DatasetCaption.caption_type == "tags"
-        ).first()
-
-        if caption:
-            caption.content = content
-            caption.source = "file"
-            caption.updated_at = datetime.utcnow()
-        else:
-            caption = DatasetCaption(
-                item_id=item_id,
-                caption_type="tags",
-                content=content,
-                source="file"
-            )
-            db.add(caption)
-
-        db.commit()
-        db.refresh(caption)
-
-        print(f"[Dataset] Restored caption from TXT: {txt_path}")
-        return {"status": "success", "caption": caption.to_dict()}
+        result = update_caption(
+            db,
+            item_id=item_id,
+            dataset_id=item.dataset_id,
+            caption_type="tags",
+            content=content,
+            source="file",
+        )
+        return {"status": "success", "caption": result.caption.to_dict()}
+    except CaptionSelectionError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"[Dataset] Failed to restore caption from TXT: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to read TXT file: {str(e)}")

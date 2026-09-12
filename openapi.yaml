@@ -8457,12 +8457,56 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /datasets/items/{item_id}/captions:
+  /datasets/{dataset_id}/items/{item_id}/captions:
     patch:
       tags: [datasets]
       summary: Update caption for a dataset item
-      description: Creates the caption if it doesn't exist for the given caption_type; keeps the dataset's cached tag_statistics in sync for "tags" captions.
+      description: Updates one identified caption and optionally persists its sidecar in the same compensated operation. Ambiguous caption types are rejected unless caption_id or source_field identifies the row.
       operationId: updateDatasetItemCaption
+      parameters:
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaptionUpdateRequest'
+      responses:
+        '200':
+          description: Caption updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Dataset item not found in the dataset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Caption identity is ambiguous or the sidecar shape cannot be updated safely
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /datasets/items/{item_id}/captions:
+    patch:
+      tags: [datasets]
+      summary: Update caption for a dataset item (legacy unscoped route)
+      deprecated: true
+      operationId: updateDatasetItemCaptionLegacy
       parameters:
         - name: item_id
           in: path
@@ -8485,6 +8529,12 @@ paths:
                 additionalProperties: true
         '404':
           description: Dataset item not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Caption identity is ambiguous or the sidecar shape cannot be updated safely
           content:
             application/json:
               schema:
@@ -8626,6 +8676,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Multiple tags captions match or the sidecar shape cannot be updated safely
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Failed to write file
           content:
@@ -8636,7 +8692,7 @@ paths:
   /datasets/{dataset_id}/save-all-to-txt:
     post:
       tags: [datasets]
-      summary: Save all items' "tags" captions from the DB to TXT sidecar files
+      summary: Save all unambiguous "tags" captions to their established TXT/JSON sidecars
       operationId: saveAllDatasetCaptionsToTxt
       parameters:
         - name: dataset_id
@@ -8691,6 +8747,12 @@ paths:
                 additionalProperties: true
         '404':
           description: Dataset item not found, or no TXT file exists next to the image
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Multiple tags captions match and no exact caption was specified
           content:
             application/json:
               schema:
@@ -20327,6 +20389,18 @@ components:
             type: object
             additionalProperties: true
           description: 'Per-tag category info, e.g. [{"tag": "1girl", "category": "General"}]'
+        caption_id:
+          type: integer
+          nullable: true
+          description: Exact caption row to update; required when caption_type is ambiguous
+        source_field:
+          type: string
+          nullable: true
+          description: Source field used to identify or create the caption
+        persist_sidecar:
+          type: boolean
+          default: false
+          description: Persist the caption to its existing TXT/JSON sidecar before committing the DB update
 
     BatchTaggerRequest:
       type: object

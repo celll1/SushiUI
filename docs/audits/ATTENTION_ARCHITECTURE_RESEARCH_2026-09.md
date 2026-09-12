@@ -22,9 +22,10 @@ whether SushiUI needs its own Ada-optimized CUDA/CUTLASS kernel.
 Implementation status (2026-09-12): the dense contract guards, strict training
 fallback, boolean-mask preservation, Sage GQA capability, FA2/Sage packed-varlen
 registry, LTX-2.3/ACE-Step training selection, and model-local Anima dispatch are
-implemented. MiniMax-H3 now has an opt-in `h3_video_window` FlexAttention reference
-path on every video endpoint. Its connectivity and lifecycle have CPU coverage;
-performance and quality acceptance remain GPU work.
+implemented. MiniMax-H3 now has the opt-in `h3_video_window` FlexAttention reference
+and pinned official `h3_sol_attn` paths on every video endpoint. The Sol-Attn kernel,
+exact-prefix adapter, real H3 class, and block-loop path pass GPU tests on RTX 6000
+Ada; full-checkpoint endpoint and visual/audio quality acceptance remain open.
 
 For MiniMax-H3, sparse attention is technically well matched to the released model.
 MiniMax states that H3 used native sparse attention in its final training stage,
@@ -64,7 +65,7 @@ The model-facing coverage is uneven:
 | Ideogram4 | separate diffusers/FA2-varlen dispatcher | head dimension 256 excludes current Sage path |
 | MiniT2I | conduit with head-dimension padding | padded dimensions constrain backend choice |
 | SenseNova | conduit for generation path, GQA 32/8 | Sage GQA is accepted by the common registry |
-| MiniMax-H3 | conduit dense path plus opt-in FlexAttention video window | sparse quality/performance is not yet accepted |
+| MiniMax-H3 | conduit dense, FlexAttention video window, official Sol-Attn | Sol kernel accepted on SM89/Triton; full-model quality remains experimental |
 | MiniMax Music 3 | conduit | generation only |
 | LTX-2.3 | diffusers dispatcher | training applies native/FA2 and refuses unsupported kernels |
 | ACE-Step 1.5 | transformers dispatcher | training applies SDPA/FA2 and refuses unsupported kernels |
@@ -261,9 +262,10 @@ Recommended H3 sequence:
 3. **Reference sparse path (implemented, not performance-accepted):** target-video
    block masks use FlexAttention. Condition/reference, audio, non-video, and mixed
    boundary blocks stay dense; only pure target-video block pairs are windowed.
-4. **Existing-kernel evaluation:** test licensed H3 block-sparse or FastVideo VSA
-   code behind the same plan. FastVideo is Apache-2.0; one new H3-specific kernel is
-   MIT. Record provenance and avoid importing code whose license is unclear.
+4. **Existing-kernel evaluation (implemented, kernel-accepted):** the pinned official
+   Apache-2.0 Sol-Attn package runs behind the same semantic plan. The H3 prefix is an
+   exact K/V sink and its query rows are restored densely. SM89 uses the official
+   Triton fallback on Windows because the optional CuTe runtime is unavailable.
 5. **Custom kernel decision:** only build if Ada measurements show routing/packing or
    Flex overhead consumes the expected gain.
 
@@ -313,8 +315,9 @@ inputs.
 
 ## Remaining GPU validation
 
-No speed, VRAM, or quality claim is made for `h3_video_window` yet. Before changing
-its experimental status, run this matrix on the actual target GPU:
+Kernel-level Sol-Attn validation and synthetic timing are recorded in
+`SOL_ATTN_GPU_VALIDATION_2026-09.md`. No end-to-end speed, VRAM, or quality claim is
+made for either H3 sparse mechanism yet. Before changing experimental status, run:
 
 - H3 fl2va txt2vid and img2vid, ref2va ref2vid, video outpaint, and video inpaint;
 - short/default/long frame counts and at least three aspect ratios;

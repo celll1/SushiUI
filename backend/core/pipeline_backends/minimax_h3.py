@@ -425,6 +425,17 @@ class MiniMaxH3Mixin:
         )
         print(f"[MiniMax-H3] Attention backend: {backend} (from attention_type={requested!r})")
         if inner._attention_plan is not None:
+            from api.generation_status import add_warning
+
+            add_warning(
+                "h3_video_window changes MiniMax-H3 attention connectivity and may change output quality.",
+                code="approximate_attention",
+            )
+            if backend != "native":
+                add_warning(
+                    f"attention_type={backend} is bypassed because h3_video_window uses FlexAttention.",
+                    code="attention_backend_bypassed",
+                )
             print(
                 "[MiniMax-H3] Attention mechanism: h3_video_window "
                 f"(temporal_radius={inner._attention_plan.temporal_radius:g}, "

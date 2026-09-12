@@ -209,6 +209,23 @@ def _validated_attention_type(value, default: Optional[str] = None) -> Optional[
         raise CustomValidationError("Invalid attention_type value", detail=str(exc))
 
 
+def _validated_attention_method(value, default: str = "dense") -> str:
+    from core.attention import validate_mechanism
+    try:
+        return validate_mechanism(value, default=default)
+    except ValueError as exc:
+        raise CustomValidationError("Invalid attention_method value", detail=str(exc))
+
+
+def _validated_h3_attention_radius(value: float, param: str) -> float:
+    value = float(value)
+    if not math.isfinite(value) or value < 0:
+        raise CustomValidationError(
+            f"Invalid {param} value", detail=f"{param} must be finite and >= 0; got {value!r}"
+        )
+    return value
+
+
 # Pydantic models for requests
 class LoginRequest(BaseModel):
     username: str
@@ -335,6 +352,9 @@ class Txt2VidRequest(BaseModel):
     # LTX-2.3 uses diffusers' own dispatch and ignores it. Omitted -> the process
     # setting.
     attention_type: str = TXT2VID_DEFAULTS["attention_type"]
+    attention_method: str = TXT2VID_DEFAULTS["attention_method"]
+    h3_attention_temporal_radius: float = TXT2VID_DEFAULTS["h3_attention_temporal_radius"]
+    h3_attention_spatial_radius: float = TXT2VID_DEFAULTS["h3_attention_spatial_radius"]
     # Training-free reference-style transfer (video self-attention KV
     # injection; see core.inference.style_ltx2). An entry with
     # is_style_transfer=true carries the style reference; extracted by
@@ -2917,6 +2937,10 @@ async def generate_txt2vid(
     # (same 400-before-start_generation contract as the image routes).
     params["attention_type"] = _validated_attention_type(
         params.get("attention_type"), TXT2VID_DEFAULTS["attention_type"])
+    params["attention_method"] = _validated_attention_method(
+        params.get("attention_method"), TXT2VID_DEFAULTS["attention_method"])
+    for key in ("h3_attention_temporal_radius", "h3_attention_spatial_radius"):
+        params[key] = _validated_h3_attention_radius(params[key], key)
     # Chain provenance (design sec.13): validated here, before the run opens, so
     # a malformed stamp is a 400 rather than an unusable gallery row.
     params.update(resolve_chain_provenance(params))
@@ -4281,6 +4305,9 @@ async def generate_img2vid(
     quantized_gemm_mode: Optional[str] = Form(IMG2VID_DEFAULTS["quantized_gemm_mode"]),
     # See Txt2VidRequest.attention_type: honored by MiniMax-H3, ignored by LTX-2.3.
     attention_type: str = Form(IMG2VID_DEFAULTS["attention_type"]),
+    attention_method: str = Form(IMG2VID_DEFAULTS["attention_method"]),
+    h3_attention_temporal_radius: float = Form(IMG2VID_DEFAULTS["h3_attention_temporal_radius"]),
+    h3_attention_spatial_radius: float = Form(IMG2VID_DEFAULTS["h3_attention_spatial_radius"]),
     controlnets: str = Form("[]"),  # JSON string; only is_style_transfer entries are meaningful for LTX-2.3
     # Generation-time LoRA. See Txt2VidRequest.loras.
     loras: str = Form("[]"),
@@ -4425,6 +4452,12 @@ async def generate_img2vid(
         # into native, which is what recorded a backend that never ran.
         "attention_type": _validated_attention_type(
             attention_type, IMG2VID_DEFAULTS["attention_type"]),
+        "attention_method": _validated_attention_method(
+            attention_method, IMG2VID_DEFAULTS["attention_method"]),
+        "h3_attention_temporal_radius": _validated_h3_attention_radius(
+            h3_attention_temporal_radius, "h3_attention_temporal_radius"),
+        "h3_attention_spatial_radius": _validated_h3_attention_radius(
+            h3_attention_spatial_radius, "h3_attention_spatial_radius"),
         # The uploaded FILENAME, not the bytes: it is what the gallery row and
         # the capability warning can carry, and `None` is what "no last frame"
         # means for both. The image itself is read below.
@@ -4911,6 +4944,9 @@ async def generate_ref2vid(
     unet_quantization: Optional[str] = Form(REF2VID_DEFAULTS["unet_quantization"]),
     quantized_gemm_mode: Optional[str] = Form(REF2VID_DEFAULTS["quantized_gemm_mode"]),
     attention_type: str = Form(REF2VID_DEFAULTS["attention_type"]),
+    attention_method: str = Form(REF2VID_DEFAULTS["attention_method"]),
+    h3_attention_temporal_radius: float = Form(REF2VID_DEFAULTS["h3_attention_temporal_radius"]),
+    h3_attention_spatial_radius: float = Form(REF2VID_DEFAULTS["h3_attention_spatial_radius"]),
     reference_image_size: str = Form(REF2VID_DEFAULTS["reference_image_size"]),
     # The references. Every list is read in UPLOAD ORDER, and that order is
     # semantic -- it labels the references in the prompt presentation and lays
@@ -5104,6 +5140,12 @@ async def generate_ref2vid(
         "quantized_gemm_mode": _normalize_media_qgm(quantized_gemm_mode),
         "attention_type": _validated_attention_type(
             attention_type, REF2VID_DEFAULTS["attention_type"]),
+        "attention_method": _validated_attention_method(
+            attention_method, REF2VID_DEFAULTS["attention_method"]),
+        "h3_attention_temporal_radius": _validated_h3_attention_radius(
+            h3_attention_temporal_radius, "h3_attention_temporal_radius"),
+        "h3_attention_spatial_radius": _validated_h3_attention_radius(
+            h3_attention_spatial_radius, "h3_attention_spatial_radius"),
         "reference_image_size": reference_image_size,
         # The uploaded FILENAMES, in packed order -- what the gallery row can
         # carry. The bytes never reach the database. Passed through
@@ -5401,6 +5443,9 @@ async def generate_outpaint_video(
     # this endpoint served LTX-2.3 alone -- which meant the ONE architecture
     # that honors it could not be given it here.
     attention_type: str = Form(OUTPAINT_VIDEO_DEFAULTS["attention_type"]),
+    attention_method: str = Form(OUTPAINT_VIDEO_DEFAULTS["attention_method"]),
+    h3_attention_temporal_radius: float = Form(OUTPAINT_VIDEO_DEFAULTS["h3_attention_temporal_radius"]),
+    h3_attention_spatial_radius: float = Form(OUTPAINT_VIDEO_DEFAULTS["h3_attention_spatial_radius"]),
     blocks_to_swap: int = Form(OUTPAINT_VIDEO_DEFAULTS["blocks_to_swap"]),
     fuse_output_proj: bool = Form(OUTPAINT_VIDEO_DEFAULTS["fuse_output_proj"]),
     fbcache_enable: bool = Form(OUTPAINT_VIDEO_DEFAULTS["fbcache_enable"]),
@@ -5815,6 +5860,12 @@ async def generate_outpaint_video(
         # it (`attention_type_validation_test` is the forcing function).
         "attention_type": _validated_attention_type(
             attention_type, OUTPAINT_VIDEO_DEFAULTS["attention_type"]),
+        "attention_method": _validated_attention_method(
+            attention_method, OUTPAINT_VIDEO_DEFAULTS["attention_method"]),
+        "h3_attention_temporal_radius": _validated_h3_attention_radius(
+            h3_attention_temporal_radius, "h3_attention_temporal_radius"),
+        "h3_attention_spatial_radius": _validated_h3_attention_radius(
+            h3_attention_spatial_radius, "h3_attention_spatial_radius"),
         "blocks_to_swap": blocks_to_swap,
         "fuse_output_proj": fuse_output_proj,
         "fbcache_enable": fbcache_enable,
@@ -6132,6 +6183,9 @@ async def generate_inpaint_video(
     spatial_mask_files: List[UploadFile] = File([]),
     spatial_mask_ids: List[str] = Form([]),
     attention_type: str = Form(INPAINT_VIDEO_DEFAULTS["attention_type"]),
+    attention_method: str = Form(INPAINT_VIDEO_DEFAULTS["attention_method"]),
+    h3_attention_temporal_radius: float = Form(INPAINT_VIDEO_DEFAULTS["h3_attention_temporal_radius"]),
+    h3_attention_spatial_radius: float = Form(INPAINT_VIDEO_DEFAULTS["h3_attention_spatial_radius"]),
     blocks_to_swap: int = Form(INPAINT_VIDEO_DEFAULTS["blocks_to_swap"]),
     fuse_output_proj: bool = Form(INPAINT_VIDEO_DEFAULTS["fuse_output_proj"]),
     fbcache_enable: bool = Form(INPAINT_VIDEO_DEFAULTS["fbcache_enable"]),
@@ -6705,6 +6759,12 @@ async def generate_inpaint_video(
         "inpaint_video_audio_mode": inpaint_video_audio_mode,
         "attention_type": _validated_attention_type(
             attention_type, INPAINT_VIDEO_DEFAULTS["attention_type"]),
+        "attention_method": _validated_attention_method(
+            attention_method, INPAINT_VIDEO_DEFAULTS["attention_method"]),
+        "h3_attention_temporal_radius": _validated_h3_attention_radius(
+            h3_attention_temporal_radius, "h3_attention_temporal_radius"),
+        "h3_attention_spatial_radius": _validated_h3_attention_radius(
+            h3_attention_spatial_radius, "h3_attention_spatial_radius"),
         "blocks_to_swap": blocks_to_swap,
         "fuse_output_proj": fuse_output_proj,
         "fbcache_enable": fbcache_enable,

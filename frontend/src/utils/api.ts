@@ -1,6 +1,6 @@
 import axios from "axios";
 import { wsClient } from "./websocket";
-import { resolveGlobalAttentionImpl, resolveGlobalAttentionType } from "./attentionSettings";
+import { resolveGlobalAttentionImpl, resolveGlobalAttentionMethod, resolveGlobalAttentionType } from "./attentionSettings";
 import { trainingFeatureUnsupportedReason } from "./trainingCapabilities";
 
 const api = axios.create({
@@ -983,6 +983,9 @@ export interface OutpaintVideoParams extends VideoChainProvenance {
   // Attention backend (see Txt2VidParams.attention_type). Filled from the
   // global localStorage setting by the sender, like every other route.
   attention_type?: string;
+  attention_method?: string;
+  h3_attention_temporal_radius?: number;
+  h3_attention_spatial_radius?: number;
   // MiniMax-H3 ref2va only (extend_forward). Sizing of each reference image
   // file appended separately by generateOutpaintVideo (not a field here --
   // mirrors how `video`/`bridge_video` are function arguments, not params).
@@ -1059,6 +1062,9 @@ export interface InpaintVideoParams {
   unet_quantization?: string | null;
   quantized_gemm_mode?: QuantizedGemmMode;
   attention_type?: string;
+  attention_method?: string;
+  h3_attention_temporal_radius?: number;
+  h3_attention_spatial_radius?: number;
   // Generation-time LoRA (see Txt2VidParams.loras).
   loras?: LoRAConfig[];
   // MiniMax-H3 ref2va only: how a reference IMAGE is sized before it is
@@ -1255,6 +1261,9 @@ export interface Txt2VidParams extends VideoChainProvenance {
   // "int8" produces the same classes at runtime.
   quantized_gemm_mode?: QuantizedGemmMode;
   attention_type?: string;
+  attention_method?: string;
+  h3_attention_temporal_radius?: number;
+  h3_attention_spatial_radius?: number;
   // Generation-time LoRA. Applied by MiniMax-H3 (core.models.minimax_h3.minimax_h3_lora);
   // LTX-2.3 has no LoRA loader on its video path at all -- accepted and
   // ignored, with an unsupported_param warning when non-empty.
@@ -3387,6 +3396,9 @@ export const generateTxt2Vid = async (params: Txt2VidParams) => {
         : null,
     quantized_gemm_mode: params.quantized_gemm_mode ?? null,
     attention_type: resolveGlobalAttentionType(params.attention_type),
+    attention_method: resolveGlobalAttentionMethod(params.attention_method),
+    h3_attention_temporal_radius: params.h3_attention_temporal_radius ?? 16.0,
+    h3_attention_spatial_radius: params.h3_attention_spatial_radius ?? 8.0,
     loras: params.loras || [],
     // Acceleration (block swap / FBCache / Spectrum) -- same fields/defaults
     // as /generate/outpaint/video and /generate/inpaint/video.
@@ -3461,6 +3473,9 @@ export const generateImg2Vid = async (
     formData.append("quantized_gemm_mode", params.quantized_gemm_mode);
   }
   formData.append("attention_type", resolveGlobalAttentionType(params.attention_type));
+  formData.append("attention_method", resolveGlobalAttentionMethod(params.attention_method));
+  formData.append("h3_attention_temporal_radius", String(params.h3_attention_temporal_radius ?? 16.0));
+  formData.append("h3_attention_spatial_radius", String(params.h3_attention_spatial_radius ?? 8.0));
   // Optional LAST-frame keyframe (MiniMax-H3 fl2va). Same File-or-data-URL
   // handling as `image` above; omitted entirely when null/undefined, which is
   // what makes the backend's `File(None)` sentinel mean "no end anchor".
@@ -3569,6 +3584,9 @@ export const generateRef2Vid = async (
     formData.append("quantized_gemm_mode", params.quantized_gemm_mode);
   }
   formData.append("attention_type", resolveGlobalAttentionType(params.attention_type));
+  formData.append("attention_method", resolveGlobalAttentionMethod(params.attention_method));
+  formData.append("h3_attention_temporal_radius", String(params.h3_attention_temporal_radius ?? 16.0));
+  formData.append("h3_attention_spatial_radius", String(params.h3_attention_spatial_radius ?? 8.0));
 
   // The reference files. Each list keeps its order; a video's soundtrack is
   // positional, so a video with no sound sends an EMPTY part to hold its slot
@@ -4248,6 +4266,9 @@ export const generateOutpaintVideo = async (
   // it. Honored by MiniMax-H3 (its transformer runs on SushiUI's conduit),
   // accepted-and-warned by LTX-2.3.
   formData.append("attention_type", resolveGlobalAttentionType(params.attention_type));
+  formData.append("attention_method", resolveGlobalAttentionMethod(params.attention_method));
+  formData.append("h3_attention_temporal_radius", String(params.h3_attention_temporal_radius ?? 16.0));
+  formData.append("h3_attention_spatial_radius", String(params.h3_attention_spatial_radius ?? 8.0));
 
   // Acceleration (block swap / FBCache / Spectrum)
   formData.append("blocks_to_swap", String(params.blocks_to_swap ?? 0));
@@ -4422,6 +4443,9 @@ export const generateInpaintVideo = async (
   }
 
   formData.append("attention_type", resolveGlobalAttentionType(params.attention_type));
+  formData.append("attention_method", resolveGlobalAttentionMethod(params.attention_method));
+  formData.append("h3_attention_temporal_radius", String(params.h3_attention_temporal_radius ?? 16.0));
+  formData.append("h3_attention_spatial_radius", String(params.h3_attention_spatial_radius ?? 8.0));
 
   formData.append("blocks_to_swap", String(params.blocks_to_swap ?? 0));
   formData.append("fuse_output_proj", String(params.fuse_output_proj ?? false));

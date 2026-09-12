@@ -65,6 +65,9 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     # transformer routes attention through the unified conduit); an architecture
     # that drives diffusers' own attention dispatch instead declares it below.
     "attention_type": ["attention_type"],
+    "attention_method": [
+        "attention_method", "h3_attention_temporal_radius", "h3_attention_spatial_radius"
+    ],
     "vae_drift_correction": ["vae_drift_correction"],
     "flatten_in_loop": ["flatten_in_loop"],
     "te_override": ["text_encoder_path"],
@@ -161,6 +164,7 @@ FEATURE_LABELS: Dict[str, str] = {
     "cpu_text_encoding": "cpu_text_encoding",
     "attention_impl": "attention_impl",
     "attention_type": "attention_type (attention backend)",
+    "attention_method": "attention_method (semantic connectivity)",
     "vae_drift_correction": "vae_drift_correction (VAE DC-drift correction)",
     "flatten_in_loop": "flatten_in_loop (in-loop hard background flatten)",
     "te_override": "text_encoder_path (text-encoder override)",
@@ -594,6 +598,8 @@ _add("ltx2", "audio_conditioning",
 # runs the diffusers transformer's own attention dispatch and never consults it.
 _add("ltx2", "attention_type",
      "LTX-2.3 runs diffusers' own attention dispatch rather than SushiUI's attention conduit, so the attention backend is not selectable per generation for this architecture")
+_add("ltx2", "attention_method",
+     "h3_video_window uses MiniMax-H3 packed modality and position metadata that LTX-2.3 does not expose")
 _add("ltx2", "fuse_output_proj",
      "output-tail head fusion is a MiniMax-H3-specific chunking optimization (core.models.minimax_h3.adaln_chunking); LTX-2.3 has no equivalent output-head structure")
 

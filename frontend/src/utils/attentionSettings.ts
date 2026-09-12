@@ -4,11 +4,17 @@ export type InferenceAttentionType = (typeof INFERENCE_ATTENTION_TYPES)[number];
 export const ATTENTION_IMPLEMENTATIONS = ["conduit", "diffusers"] as const;
 export type AttentionImplementation = (typeof ATTENTION_IMPLEMENTATIONS)[number];
 
+export const ATTENTION_METHODS = ["dense", "h3_video_window"] as const;
+export type AttentionMethod = (typeof ATTENTION_METHODS)[number];
+
 export const isInferenceAttentionType = (value: unknown): value is InferenceAttentionType =>
   typeof value === "string" && INFERENCE_ATTENTION_TYPES.includes(value as InferenceAttentionType);
 
 export const isAttentionImplementation = (value: unknown): value is AttentionImplementation =>
   typeof value === "string" && ATTENTION_IMPLEMENTATIONS.includes(value as AttentionImplementation);
+
+export const isAttentionMethod = (value: unknown): value is AttentionMethod =>
+  typeof value === "string" && ATTENTION_METHODS.includes(value as AttentionMethod);
 
 const readStorage = (key: string): string | null => {
   if (typeof window === "undefined") return null;
@@ -29,8 +35,16 @@ export const readGlobalAttentionImpl = (): AttentionImplementation | null => {
   return isAttentionImplementation(value) ? value : null;
 };
 
+export const readGlobalAttentionMethod = (): AttentionMethod | null => {
+  const value = readStorage("attention_method");
+  return isAttentionMethod(value) ? value : null;
+};
+
 export const resolveGlobalAttentionType = (fallback?: string | null): string =>
   readGlobalAttentionType() ?? fallback ?? "normal";
 
 export const resolveGlobalAttentionImpl = (fallback?: string | null): string =>
   readGlobalAttentionImpl() ?? fallback ?? "conduit";
+
+export const resolveGlobalAttentionMethod = (fallback?: string | null): string =>
+  readGlobalAttentionMethod() ?? fallback ?? "dense";

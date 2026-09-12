@@ -14,8 +14,10 @@ import { useStartup } from "@/contexts/StartupContext";
 import { isAboveBuiltin } from "@/utils/paramBounds";
 import {
   readGlobalAttentionImpl,
+  readGlobalAttentionMethod,
   readGlobalAttentionType,
   type AttentionImplementation,
+  type AttentionMethod,
   type InferenceAttentionType,
 } from "@/utils/attentionSettings";
 
@@ -100,6 +102,7 @@ export default function SettingsPage() {
   // Attention type
   const [attentionType, setAttentionType] = useState<InferenceAttentionType>("normal");
   const [attentionImpl, setAttentionImpl] = useState<AttentionImplementation>("conduit");
+  const [attentionMethod, setAttentionMethod] = useState<AttentionMethod>("dense");
 
   // Video frame-count slider track max (server-persisted UserSettings row,
   // GET/POST /settings/generation) -- unlike the other controls in this card
@@ -470,6 +473,11 @@ export default function SettingsPage() {
       const savedAttentionImpl = readGlobalAttentionImpl();
       if (savedAttentionImpl) {
         setAttentionImpl(savedAttentionImpl);
+      }
+
+      const savedAttentionMethod = readGlobalAttentionMethod();
+      if (savedAttentionMethod) {
+        setAttentionMethod(savedAttentionMethod);
       }
 
       const savedResolutionStep = localStorage.getItem('resolution_step');
@@ -855,6 +863,28 @@ export default function SettingsPage() {
                       When enabled, cancelling a generation will restore the previously completed image instead of showing the intermediate TAESD preview. Disable this if you want to see the generation progress at the point of cancellation.
                     </p>
                   </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label htmlFor="attention_method" className="block text-sm font-medium text-gray-300">
+                    Attention Connectivity
+                  </label>
+                  <select
+                    id="attention_method"
+                    value={attentionMethod}
+                    onChange={(e) => {
+                      const newValue = e.target.value as AttentionMethod;
+                      setAttentionMethod(newValue);
+                      localStorage.setItem('attention_method', newValue);
+                    }}
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="dense">Dense (exact default)</option>
+                    <option value="h3_video_window">H3 Video Window (experimental)</option>
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Changes which token pairs may interact, independently of Attention Type below. H3 Video Window is an approximate MiniMax-H3 inference mode; other architectures ignore it with a warning.
+                  </p>
                 </div>
 
                 <div className="space-y-2">

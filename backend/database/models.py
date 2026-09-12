@@ -3,6 +3,7 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
 from typing import Any, Dict
+import os
 import uuid
 
 # Read-time redaction of filesystem paths in identity labels (see
@@ -598,6 +599,18 @@ class DatasetItem(DatasetBase):
     captions = relationship("DatasetCaption", back_populates="item", cascade="all, delete-orphan")
 
     def to_dict(self):
+        thumbnail_url = None
+        if self.item_type in ("video", "audio"):
+            from config.settings import settings
+            from utils.image_utils import dataset_thumbnail_key
+
+            key = dataset_thumbnail_key(self.image_path)
+            hashed_path = os.path.join(settings.thumbnails_dir, f"{key}.webp")
+            thumbnail_url = (
+                f"/thumbnails/{key}.webp"
+                if os.path.isfile(hashed_path)
+                else f"/thumbnails/{self.base_name}.png"
+            )
         return {
             "id": self.id,
             "dataset_id": self.dataset_id,
@@ -620,12 +633,7 @@ class DatasetItem(DatasetBase):
             # channels) is stored in the reused exif_data JSON column and
             # surfaced here as audio_meta (mirrors video_meta above).
             "audio_meta": self.exif_data if self.item_type == "audio" else None,
-            # For item_type="video"/"audio", the scanner extracts a poster
-            # frame / waveform PNG and writes it via create_thumbnail() keyed
-            # by base_name (see routes.py dataset scan +
-            # utils/image_utils.py create_thumbnail), published at the
-            # /thumbnails static mount (backend/main.py).
-            "thumbnail_url": f"/thumbnails/{self.base_name}.png" if self.item_type in ("video", "audio") else None,
+            "thumbnail_url": thumbnail_url,
             "total_captions": self.total_captions,
             "total_tags": self.total_tags,
             "created_at": self.created_at.isoformat() if self.created_at else None,

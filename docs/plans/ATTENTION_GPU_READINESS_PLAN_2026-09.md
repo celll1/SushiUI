@@ -7,6 +7,13 @@ initializing CUDA, so the next free-GPU session consists only of running a
 documented acceptance matrix. GPU results remain the release gate: unexecuted
 kernel code is not described as performance- or quality-accepted.
 
+## Status (2026-09-12)
+
+Implementation, API/UI wiring, CPU oracle tests, and the reusable GPU suite are
+complete. The RTX 6000 Ada kernel and tiny real-H3-model gates pass. The remaining
+release gate is full-checkpoint endpoint timing and fixed-seed visual/audio review;
+the mechanism stays experimental until that evidence is recorded.
+
 ## Updated implementation decision
 
 The original audit proposed a Sol-Attn-compatible implementation and a possible
@@ -39,8 +46,9 @@ head-dimension 128, forward-only, and CUDA compute capability 8.0 or newer.
    - Put every default in `backend/api/param_defaults.py`.
    - Thread the mechanism and Sol parameters through all five H3 video request
      surfaces and `openapi.yaml`.
-   - Expose the method and parameters through the existing global attention
-     settings. Keep dense as the default and label Sol-Attn experimental.
+   - Expose the method through the global attention setting and all parameters
+     through the REST schema and typed frontend senders. Keep dense as the default
+     and label Sol-Attn experimental.
 
 3. **CPU oracle and contract tests**
    - Implement a small materialized PyTorch reference for threshold routing,
@@ -67,8 +75,7 @@ head-dimension 128, forward-only, and CUDA compute capability 8.0 or newer.
 - A new SushiUI Triton or CUDA/CUTLASS/CuTe kernel is not built unless the
   official Sol-Attn/Flex comparison demonstrates a measured missing capability
   or dominant integration overhead on the target Ada GPU.
-- No GPU workload, backend/frontend restart, or frontend build is part of this
-  CPU/static preparation pass.
+- No backend/frontend restart or frontend build is part of this work.
 
 ## Verification before GPU availability
 
@@ -79,7 +86,8 @@ head-dimension 128, forward-only, and CUDA compute capability 8.0 or newer.
 
 ## GPU acceptance gate
 
-Run only after the owner confirms the GPU is free. Acceptance requires:
+The owner confirmed the GPU was free on 2026-09-12. Kernel-level acceptance passed;
+full-checkpoint acceptance still requires:
 
 - official-kernel output against the materialized oracle and full-sink dense
   attention within declared BF16 tolerances;

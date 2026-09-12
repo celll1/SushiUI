@@ -30,11 +30,13 @@ them. No subjective performance claims.
 > registered Sage path has no backward contract.
 
 > **MiniMax-H3 attention update (2026-09-12):** dense remains the exact default.
-> All video endpoints also expose the inference-only, approximate
-> `h3_video_window` method. Its FlexAttention plan preserves dense connectivity
-> for condition/reference, audio, non-video, and mixed boundary blocks and
-> windows only pairs of pure target-video blocks. GPU performance and quality
-> validation are still open, so no speed or VRAM claim is attached to it.
+> All video endpoints expose two inference-only approximate mechanisms:
+> `h3_video_window` is the FlexAttention connectivity reference, while
+> `h3_sol_attn` uses the pinned official forward-only Sol-Attn package. Sol-Attn
+> preserves the packed conditioning prefix as exact K/V and recomputes its query
+> rows densely. Kernel and tiny real-model GPU gates pass on RTX 6000 Ada through
+> the portable Triton backend; full-checkpoint visual/audio quality acceptance is
+> still open, so the method remains explicitly experimental.
 
 ### CFG fine-tuning audit boundaries
 

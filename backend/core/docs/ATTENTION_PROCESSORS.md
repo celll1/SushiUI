@@ -7,12 +7,18 @@ SushiUI separates two choices that are easy to conflate:
 
 `attention_method=dense` preserves the model's released connectivity. The
 `attention_backend` / generation `attention_type` selector then chooses a dense
-kernel. `h3_video_window` is a MiniMax-H3-specific, approximate mechanism; it is
-not another spelling of FlashAttention or SageAttention.
+kernel. `h3_video_window` and `h3_sol_attn` are MiniMax-H3-specific approximate
+mechanisms; neither is another spelling of FlashAttention or SageAttention.
 
-All five video endpoints expose `attention_method`,
-`h3_attention_temporal_radius`, and `h3_attention_spatial_radius`. The settings UI
-stores only the method globally; radius tuning remains available through the API.
+All five video endpoints expose `attention_method` and the method-specific tuning
+fields. The settings UI stores the method globally; tuning remains available through
+the REST API and typed frontend senders. Dense remains the default.
+
+`h3_sol_attn` uses the pinned official `sol-attn` package. It accepts contiguous
+BF16 `[B, T, H, 128]` forward-only self-attention, keeps the packed H3 conditioning
+prefix as an exact K/V sink, and recomputes the prefix query rows densely. Explicit
+selection is strict: an absent or ineligible kernel fails instead of silently running
+dense. Install `requirements-attention-experimental.txt` before selecting it.
 Non-H3 video architectures accept the default and warn on a non-default method.
 
 ## Dense conduit
@@ -71,6 +77,8 @@ training iteration.
 - Treat `sage` as an inference-quality tradeoff, not a tolerance-equivalent
   training backend.
 - Use `tq` only on conduit-routed paths. Masked calls resolve to native.
+- Use `h3_sol_attn` only for MiniMax-H3 inference. It is independent of the dense
+  backend used during configured warm-up steps/layers and prefix-query restoration.
 
 Do not quote generic speedups in UI or documentation. Record model, shape,
 dtype, GPU, warm-up, attention share, end-to-end time, and peak allocated and

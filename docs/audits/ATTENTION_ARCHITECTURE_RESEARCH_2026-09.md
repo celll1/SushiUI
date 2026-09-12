@@ -21,8 +21,10 @@ whether SushiUI needs its own Ada-optimized CUDA/CUTLASS kernel.
 
 Implementation status (2026-09-12): the dense contract guards, strict training
 fallback, boolean-mask preservation, Sage GQA capability, FA2/Sage packed-varlen
-registry, and LTX-2.3/ACE-Step training selection described below are now
-implemented. The sparse-method sections remain design and validation work.
+registry, LTX-2.3/ACE-Step training selection, and model-local Anima dispatch are
+implemented. MiniMax-H3 now has an opt-in `h3_video_window` FlexAttention reference
+path on every video endpoint. Its connectivity and lifecycle have CPU coverage;
+performance and quality acceptance remain GPU work.
 
 For MiniMax-H3, sparse attention is technically well matched to the released model.
 MiniMax states that H3 used native sparse attention in its final training stage,
@@ -56,89 +58,71 @@ The model-facing coverage is uneven:
 | SD1.5 / SDXL | conduit by default; legacy diffusers option | custom processor owns regional/style behavior |
 | Z-Image | conduit | SLA is only a reserved passthrough string here |
 | Flux2 | conduit processors or diffusers | two registries can still diverge |
-| Anima | conduit in generation; `torch/flash` vendor switch in training | training cannot select TQ despite the global vocabulary |
+| Anima | conduit in generation and training, including the LLM adapter | masked adapter calls correctly resolve to native |
 | Lens | conduit | fixed inference mode is stamped in one vendor call |
 | Krea2 | conduit, GQA | native path materializes repeated K/V heads |
 | Ideogram4 | separate diffusers/FA2-varlen dispatcher | head dimension 256 excludes current Sage path |
 | MiniT2I | conduit with head-dimension padding | padded dimensions constrain backend choice |
 | SenseNova | conduit for generation path, GQA 32/8 | Sage GQA is accepted by the common registry |
-| MiniMax-H3 | conduit, dense full self-attention | no token-role-aware sparse contract |
+| MiniMax-H3 | conduit dense path plus opt-in FlexAttention video window | sparse quality/performance is not yet accepted |
 | MiniMax Music 3 | conduit | generation only |
 | LTX-2.3 | diffusers dispatcher | training applies native/FA2 and refuses unsupported kernels |
 | ACE-Step 1.5 | transformers dispatcher | training applies SDPA/FA2 and refuses unsupported kernels |
 
 ## Findings
 
-### P0 — correctness and truthful configuration
+### P0 — correctness and truthful configuration (implemented)
 
-#### 1. Sage capability data is stale
+#### 1. Sage GQA and packed varlen (implemented)
 
-`registry.py:100-109` declares `supports_gqa=False`, while the installed
-`sageattention.core.sageattn` explicitly accepts `num_qo_heads` divisible by
-`num_kv_heads`. The installed package also exports `sageattn_varlen`, but
-`dispatch_attention_varlen` only has a FlashAttention fast path. Consequences:
+The registry now declares installed SageAttention's divisible GQA support and its
+packed-varlen entry point. Capability resolution still gates package availability,
+dtype, head dimension, mode, mask, dropout, and layout. Sage remains inference-only;
+its varlen BF16 behavior still requires a GPU tolerance measurement.
 
-- SenseNova Sage requests are unnecessarily downgraded to native;
-- packed workloads use a Python loop rather than the installed Sage varlen kernel;
-- comments in `backends.py` and `registry.py` document a false restriction.
+#### 2. LTX-2.3 and ACE-Step training selection (implemented)
 
-Do not merely flip a constant. Capability should depend on package version, GPU
-architecture, dtype, head dimension, mode, mask kind, and fixed versus varlen layout.
-The installed Sage varlen path is forward-only in SushiUI's present policy and casts
-BF16 V internally to FP16, so it requires tolerance and quality checks.
+LTX-2.3 now applies native/FA2 through diffusers' dispatcher; ACE-Step applies them
+through Transformers' dynamic attention interface. Unsupported kernels are refused
+before iteration rather than recorded and ignored.
 
-#### 2. LTX-2.3 and ACE-Step expose a backend setting they ignore
+#### 3. Strict runtime fallback for training (implemented)
 
-`training/ops/ltx2_ops.py:318-323` and
-`training/ops/acestep_ops.py:270-275` are no-op implementations. The API accepts a
-global `attention_backend`, so a run can record a request which never controls these
-models. Either wire their native diffusers/transformers dispatcher into the same
-resolver or reject non-native choices before model load. Silent non-application is
-not an acceptable compatibility policy.
+The conduit now defaults to these policies:
 
-#### 3. Runtime fallback is too permissive for training
-
-Every backend catches broad exceptions and silently switches to native. This is
-helpful for interactive inference, but a training run can continue with a different
-precision, memory footprint, and iteration time than requested. Add policies:
-
-- `strict` for training: capability/kernel failure stops before or at the first
+- `error` for training: capability/kernel failure stops before or at the first
   representative call;
-- `warn_and_fallback` for interactive generation;
+- `warn` for interactive generation, which reports and falls back;
 - record requested, resolved, and actually observed kernel independently.
 
-Preflight should occur once per distinct signature, not as an exception-driven
-decision in every attention layer.
+Capability preflight is declarative; a selected training kernel that still fails at
+runtime raises instead of silently continuing with different math.
 
-#### 4. Input invariants are incomplete
+#### 4. Input invariants (implemented)
 
-`layout` treats every string other than `BHSD` as BSHD. GQA expansion computes
-`q_heads // kv_heads` without first asserting divisibility. Validate layout, tensor
-rank, Q/K dimensions, K/V equality, mask/causal compatibility, and GQA divisibility
-at the boundary. These checks may be cached by signature after the first call.
+The common boundary now validates layout, rank, batch/sequence/head dimensions,
+device/dtype equality, mask/causal compatibility, and GQA divisibility before
+dispatch. Signature caching remains a possible CPU micro-optimization.
 
 ### P1 — exact or tolerance-equivalent acceleration
 
-#### 5. Packed-varlen fallback is a major hot-path problem
+#### 5. Packed-varlen fallback (partially implemented)
 
-`dispatch.py:300-322` calls `.tolist()` on cumulative lengths, loops in Python,
-launches one SDPA per segment, optionally repeats K/V, and concatenates the results.
-If offsets are on CUDA, `.tolist()` also synchronizes the device. Recommended order:
+FA2 and Sage now use their installed packed kernels. Native/TQ fallback still calls
+`.tolist()` on cumulative lengths, loops in Python, launches one SDPA per segment,
+optionally repeats K/V, and concatenates results. If offsets are on CUDA, `.tolist()`
+also synchronizes the device. Remaining order:
 
-1. FA2 varlen for supported training and inference signatures;
-2. Sage varlen for supported inference signatures;
-3. diffusers' installed `flash_varlen` / `sage_varlen` adapters where this removes
+1. diffusers' installed `flash_varlen` / `sage_varlen` adapters where this removes
    duplicate compatibility code;
-4. a batched FlexAttention `BlockMask` fallback instead of per-segment SDPA;
-5. retain the loop only as a diagnostic reference path.
+2. a batched FlexAttention `BlockMask` fallback instead of per-segment SDPA;
+3. retain the loop only as a diagnostic reference path.
 
-#### 6. Boolean masks are expanded to additive float tensors unnecessarily
+#### 6. Boolean mask preservation (implemented)
 
-`backends.py:85-110` allocates an additive mask for every boolean mask. PyTorch SDPA
-accepts boolean masks directly. Preserve boolean masks, normalize only dimensions,
-and cache static masks by shape/device. This matters especially for regional prompts
-and packed/block-diagonal attention. Verify semantics because SDPA uses `True` for an
-allowed connection.
+The common conduit now preserves boolean masks and normalizes rank without an
+equivalent float allocation. SDPA's `True`-means-allowed convention is covered by
+the conduit test.
 
 The regional prompt processor still constructs a dense `[1, 1, Q, K]` bias per
 attention call after caching only the regional part. Its spatial rule is an excellent
@@ -163,8 +147,8 @@ training run.
   transpose and materialize again. Define output-stride requirements and materialize
   only at the consumer that needs it.
 - Sage and TQ call `.contiguous()` on all Q/K/V even when already suitable.
-- FP32 input is silently copied to BF16 for FA2/Sage/TQ on every call. Prefer a
-  capability refusal unless lossy conversion was explicitly selected.
+- FP32 input is now refused by capability resolution for FA2/Sage/TQ; the dead
+  copy-to-BF16-and-back branches have been removed from all three adapters.
 - backend imports, resolution, warning attachment, and `note_backend` run in every
   layer. Resolve a callable once per model/signature and use a one-write-per-forward
   observation fast path.
@@ -184,11 +168,12 @@ compile compatibility.
 
 #### 10. Direct attention islands remain
 
-Direct SDPA calls remain in Anima's model body, PixelDiT/MiniT2I code, and SenseNova
-reference/eager branches; Ideogram4 has a separate dispatcher. Some are legitimate
-semantic special cases, but all should either implement the shared call contract or
-be declared as owned exceptions. Otherwise backend observation and feature support
-remain incomplete.
+The Anima LLM adapter now uses the common conduit and model-local selection. The two
+remaining PiD calls are owned exceptions: they combine context-parallel layouts with
+an explicit Flash/Efficient-only SDPA guard that prevents an O(N²) math fallback.
+SenseNova's remaining direct helper belongs to its Qwen understanding/prefix path,
+not denoising attention. Ideogram4 remains an owned diffusers-varlen dispatcher
+because head dimension 256 and segment metadata differ.
 
 ### P2 — documentation and API design
 
@@ -273,9 +258,9 @@ Recommended H3 sequence:
 2. **Semantic interface:** add an `AttentionPlan` carrying token roles, coordinates,
    block index, denoise step, connectivity policy, and dense fallback. Keep it
    orthogonal to block swap and activation offload.
-3. **Reference sparse path:** implement target-video block masks with FlexAttention.
-   It is easier to audit than a fused approximate kernel and establishes ordering,
-   fallback, and quality tests.
+3. **Reference sparse path (implemented, not performance-accepted):** target-video
+   block masks use FlexAttention. Condition/reference, audio, non-video, and mixed
+   boundary blocks stay dense; only pure target-video block pairs are windowed.
 4. **Existing-kernel evaluation:** test licensed H3 block-sparse or FastVideo VSA
    code behind the same plan. FastVideo is Apache-2.0; one new H3-specific kernel is
    MIT. Record provenance and avoid importing code whose license is unclear.
@@ -326,6 +311,26 @@ inputs.
   shapes and precompile outside the measured iteration; dynamic sparse plans can
   otherwise cause recompilation.
 
+## Remaining GPU validation
+
+No speed, VRAM, or quality claim is made for `h3_video_window` yet. Before changing
+its experimental status, run this matrix on the actual target GPU:
+
+- H3 fl2va txt2vid and img2vid, ref2va ref2vid, video outpaint, and video inpaint;
+- short/default/long frame counts and at least three aspect ratios;
+- dense native/FA2/Sage/TQ baselines versus window radii `(8,4)`, `(16,8)`, and
+  `(32,16)`, excluding first-call compilation from steady-state timing;
+- peak allocated/reserved VRAM, compile workspace, per-step latency, and complete
+  generation latency after warm-up;
+- prompt adherence, reference identity, motion, temporal consistency, audio
+  intelligibility/synchronization, and failure rate over a fixed prompt/seed suite;
+- block swap on/off and output-head fusion on/off.
+
+Training, checkpointing, and activation offload are intentionally refused by the
+sparse path until output and Q/K/V-gradient tests exist. Build a custom Triton kernel
+only if profiling shows Flex routing or mixed dense/sparse tile handling erases the
+expected attention saving. Keep Flex as the connectivity oracle for any such kernel.
+
 ## Validation gates
 
 ### Exact/tolerance-equivalent paths
@@ -356,7 +361,7 @@ quality-recovery overhead erases the measured end-to-end gain.
    training mode, truthful LTX/ACE configuration.
 2. **P1 dense/varlen performance:** Sage GQA/varlen, bool masks, native GQA policy,
    diffusers adapter, stride/copy cleanup.
-3. **P1 H3 sparse contract and Flex reference:** no external kernel dependency.
+3. **P1 H3 sparse contract and Flex reference:** implemented; GPU/quality gate open.
 4. **P2 H3 kernel bake-off:** Flex, Sol-Attn-compatible implementation, VSA, and an
    H3-specific block-sparse kernel on the actual Ada target.
 5. **P2 sparse training:** only after a checkpoint/adapter format and quality suite

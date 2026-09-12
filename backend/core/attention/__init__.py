@@ -1,11 +1,9 @@
 """
 Unified attention conduit for SushiUI.
 
-ONE backend-agnostic entry point (:func:`dispatch_attention`) routes attention
-across all model architectures to a selectable kernel (native SDPA /
-FlashAttention / SageAttention), with capability guards, layout adaptation, and
-native fallback. Adding a future backend (e.g. TQ) is a one-branch change in
-``registry.py`` + ``backends.py`` -- no conduit edits.
+The dense conduit routes Q/K/V to selectable kernels. Semantic mechanisms such
+as an H3 video window are a separate contract and may choose a structured
+kernel without changing what ``attention_backend`` means.
 
 Public API:
     * ``dispatch_attention``   -- the conduit.
@@ -30,6 +28,7 @@ from .config import (
 )
 from .contracts import AttentionFallbackPolicy, AttentionMode
 from .dispatch import dispatch_attention, dispatch_attention_varlen
+from .mechanisms import AttentionMechanism, known_mechanisms, validate_mechanism
 from .observed import begin_generation, observed_backends
 from .registry import BACKENDS, AttentionBackend
 
@@ -38,12 +37,15 @@ __all__ = [
     "dispatch_attention_varlen",
     "AttentionMode",
     "AttentionFallbackPolicy",
+    "AttentionMechanism",
     "normalize_backend",
     "resolve_backend",
     "to_diffusers_backend",
     "known_backends",
     "is_known_backend",
     "validate_backend",
+    "known_mechanisms",
+    "validate_mechanism",
     "begin_generation",
     "observed_backends",
     "AttentionBackend",

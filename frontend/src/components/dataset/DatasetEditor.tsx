@@ -72,20 +72,22 @@ export default function DatasetEditor({ datasetId, onClose }: DatasetEditorProps
     }
   };
 
-  const handleScan = async () => {
+  const handleScan = async (incremental: boolean) => {
     setScanning(true);
     setScanProgress(0);
-    setScanMessage("Starting scan...");
+    setScanMessage(incremental ? "Reconciling external changes..." : "Starting scan...");
 
     // Ensure WebSocket is connected
     wsClient.connect();
 
     try {
-      const result = await scanDataset(datasetId);
+      const result = await scanDataset(datasetId, incremental);
       setDataset(result.dataset);
       setScanProgress(100);
       setScanSummary(result.field_summary || null);
-      setScanMessage(`Scan complete: ${result.items_found} new image(s)`);
+      setScanMessage(
+        `${incremental ? "Reconcile" : "Scan"} complete: ${result.items_found} new image(s), ${result.captions_updated ?? 0} updated caption(s)`
+      );
       setTimeout(() => {
         setScanMessage(null);
         setScanProgress(0);
@@ -226,7 +228,17 @@ export default function DatasetEditor({ datasetId, onClose }: DatasetEditorProps
             )}
             {activeTab === "viewer" && (
               <button
-                onClick={handleScan}
+                onClick={() => void handleScan(true)}
+                disabled={scanning}
+                className="px-2.5 py-1.5 bg-cyan-700 hover:bg-cyan-600 rounded text-xs transition-colors disabled:opacity-50"
+                title="Import sidecar changes made by an external editor"
+              >
+                Reconcile
+              </button>
+            )}
+            {activeTab === "viewer" && (
+              <button
+                onClick={() => void handleScan(false)}
                 disabled={scanning}
                 className="px-2.5 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs flex items-center space-x-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >

@@ -1636,40 +1636,21 @@ import json
 import pickle
 
 def _compute_dataset_cache_key(db: Session, dataset_ids: list, caption_types: list = None) -> str:
-    """
-    Compute cache key based on dataset state.
+    """Compute a revision-keyed identity for the raw training snapshot."""
+    from core.datasets.revisions import DATASET_SNAPSHOT_SCHEMA_VERSION
 
-    The key includes:
-    - Dataset IDs
-    - Item counts per dataset
-    - Latest updated_at timestamp per dataset
-    - Caption types configuration
-
-    If any of these change, the cache is invalidated.
-    """
-    key_parts = []
+    key_parts = [f"schema:{DATASET_SNAPSHOT_SCHEMA_VERSION}"]
 
     for dataset_id in sorted(dataset_ids):
         dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
         if not dataset:
             continue
 
-        item_count = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).count()
-
-        from sqlalchemy import func
-        latest_update = db.query(func.max(DatasetItem.updated_at)).filter(
-            DatasetItem.dataset_id == dataset_id
-        ).scalar()
-
-        latest_caption_update = db.query(func.max(DatasetCaption.updated_at)).join(
-            DatasetItem, DatasetCaption.item_id == DatasetItem.id
-        ).filter(DatasetItem.dataset_id == dataset_id).scalar()
-
-        key_parts.append(f"{dataset_id}:{item_count}:{latest_update}:{latest_caption_update}")
+        key_parts.append(f"{dataset_id}:{dataset.revision or 0}")
 
     # Include caption types in key
     if caption_types:
-        key_parts.append(f"caption_types:{','.join(sorted(caption_types))}")
+        key_parts.append(f"caption_types:{','.join(caption_types)}")
 
     key_string = "|".join(key_parts)
     return hashlib.sha256(key_string.encode()).hexdigest()[:16]

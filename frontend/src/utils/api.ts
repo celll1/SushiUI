@@ -6129,6 +6129,7 @@ export interface Dataset {
   created_at: string;
   updated_at: string;
   last_scanned_at?: string;
+  revision?: number;
 }
 
 export interface DatasetListResponse {
@@ -6418,8 +6419,13 @@ export interface DatasetScanResponse {
   structure_detection?: StructureDetectionResult;
 }
 
-export const scanDataset = async (id: number): Promise<DatasetScanResponse> => {
-  const response = await api.post(`/datasets/${id}/scan`);
+export const scanDataset = async (
+  id: number,
+  incremental = false
+): Promise<DatasetScanResponse> => {
+  const response = await api.post(`/datasets/${id}/scan`, undefined, {
+    params: { incremental },
+  });
   return response.data;
 };
 

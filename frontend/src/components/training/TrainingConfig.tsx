@@ -552,10 +552,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     return model?.architecture === "ltx2";
   };
 
-  const isSenseNovaModel = (modelPath: string): boolean => {
+  function isSenseNovaModel(modelPath: string): boolean {
     const model = availableModels.find(m => m.path === modelPath);
     return model?.architecture === "sensenova";
-  };
+  }
 
   const getModelArchitecture = (modelPath: string): string | undefined => {
     if (modelPath.startsWith("scratch:minit2i:")) return "minit2i";

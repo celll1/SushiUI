@@ -75,6 +75,7 @@ def test_frontend_exposes_task_views_and_scopes():
     assert "sensenova_train_scopes?: SenseNovaTrainScope[]" in api
     assert "sensenova_train_generation_norms?: boolean" in api
     assert "SenseNova task views" in panel
+    assert "function isSenseNovaModel(" in panel
     assert '"sensenova_train_scopes"' in params
     assert '"sensenova_train_generation_norms"' in params
 

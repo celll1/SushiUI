@@ -72,6 +72,7 @@ machine-local working material.
 | [backend/core/memory_management/README.md](../../backend/core/memory_management/README.md) | Block swap and memory-management overview. |
 | [backend/core/memory_management/RING_BUFFER_OPTIMIZER.md](../../backend/core/memory_management/RING_BUFFER_OPTIMIZER.md) | Optimizer-state residency mechanism. |
 | [backend/core/training/optimizers/RINGBUFFER_OPTIMIZERS.md](../../backend/core/training/optimizers/RINGBUFFER_OPTIMIZERS.md) | Ring-buffer optimizer contracts. |
+| [docs/audits/ATTENTION_ARCHITECTURE_RESEARCH_2026-09.md](../audits/ATTENTION_ARCHITECTURE_RESEARCH_2026-09.md) | Attention control-plane audit and dense/sparse acceleration roadmap through 2026-09. |
 | [docs/audits/ACTIVATION_DISPATCH_ARCH_COVERAGE_REPORT_2026-09.md](../audits/ACTIVATION_DISPATCH_ARCH_COVERAGE_REPORT_2026-09.md) | Static coverage and architecture boundaries. |
 | [docs/audits/ACTIVATION_DISPATCH_GPU_VALIDATION_SUMMARY_2026-09.md](../audits/ACTIVATION_DISPATCH_GPU_VALIDATION_SUMMARY_2026-09.md) | Scope of completed GPU validation. |
 | [docs/audits/MINIMAX_H3_ACTIVATION_DISPATCH_GPU_RESULT_2026-09.md](../audits/MINIMAX_H3_ACTIVATION_DISPATCH_GPU_RESULT_2026-09.md) | Measurements and limitations. |

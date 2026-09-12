@@ -422,26 +422,41 @@ class MiniMaxH3Mixin:
             temporal_radius=float(params.get("h3_attention_temporal_radius", 16.0)),
             spatial_radius=float(params.get("h3_attention_spatial_radius", 8.0)),
             block_size=int(params.get("h3_attention_block_size", 128)),
+            sol_tau=float(params.get("h3_sol_attention_tau", 1.0)),
+            sol_threshold_type=str(params.get("h3_sol_attention_threshold_type", "diag")),
+            sol_dense_steps=int(params.get("h3_sol_attention_dense_steps", 1)),
+            sol_dense_layers=int(params.get("h3_sol_attention_dense_layers", 2)),
+            sol_kv_splits=int(params.get("h3_sol_attention_kv_splits", 1)),
         )
         print(f"[MiniMax-H3] Attention backend: {backend} (from attention_type={requested!r})")
         if inner._attention_plan is not None:
             from api.generation_status import add_warning
 
             add_warning(
-                "h3_video_window changes MiniMax-H3 attention connectivity and may change output quality.",
+                f"{method} approximates MiniMax-H3 attention and may change output quality.",
                 code="approximate_attention",
             )
-            if backend != "native":
+            if method == "h3_video_window" and backend != "native":
                 add_warning(
                     f"attention_type={backend} is bypassed because h3_video_window uses FlexAttention.",
                     code="attention_backend_bypassed",
                 )
-            print(
-                "[MiniMax-H3] Attention mechanism: h3_video_window "
-                f"(temporal_radius={inner._attention_plan.temporal_radius:g}, "
-                f"spatial_radius={inner._attention_plan.spatial_radius:g}, "
-                f"block_size={inner._attention_plan.block_size}; FlexAttention)"
-            )
+            if method == "h3_video_window":
+                print(
+                    "[MiniMax-H3] Attention mechanism: h3_video_window "
+                    f"(temporal_radius={inner._attention_plan.temporal_radius:g}, "
+                    f"spatial_radius={inner._attention_plan.spatial_radius:g}, "
+                    f"block_size={inner._attention_plan.block_size}; FlexAttention)"
+                )
+            else:
+                print(
+                    "[MiniMax-H3] Attention mechanism: h3_sol_attn "
+                    f"(tau={inner._attention_plan.tau:g}, "
+                    f"threshold={inner._attention_plan.threshold_type}, "
+                    f"dense_steps={inner._attention_plan.dense_steps}, "
+                    f"dense_layers={inner._attention_plan.dense_layers}; "
+                    "official Sol-Attn)"
+                )
         return backend
 
 

@@ -32,6 +32,7 @@ from .mechanisms import AttentionMechanism, known_mechanisms, validate_mechanism
 from .observed import begin_generation, observed_backends
 from .planned import dispatch_planned_attention
 from .registry import BACKENDS, AttentionBackend
+from .sol import sol_attention_available
 
 __all__ = [
     "dispatch_attention",
@@ -52,4 +53,5 @@ __all__ = [
     "observed_backends",
     "AttentionBackend",
     "BACKENDS",
+    "sol_attention_available",
 ]

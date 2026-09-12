@@ -1,7 +1,7 @@
 import asyncio
 
 import torch
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
 
 torch.cuda.get_device_capability = lambda *args, **kwargs: (8, 9)
@@ -10,6 +10,7 @@ torch._C._cuda_init = lambda *args, **kwargs: None
 
 from core.datasets.revisions import bump_dataset_revision
 from core.training.train_runner import _compute_dataset_cache_key
+from database.auto_migrate import auto_migrate
 from database.models import Dataset, DatasetBase, DatasetItem
 
 
@@ -67,3 +68,26 @@ def test_reference_mutation_persists_json_and_bumps_revision(tmp_path):
 
     assert db.get(DatasetItem, item.id).related_images == {"reference": [str(reference)]}
     assert db.get(Dataset, dataset.id).revision == 1
+
+
+def test_old_dataset_table_gains_zero_revision_without_losing_rows(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'old.db'}")
+    DatasetBase.metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE datasets DROP COLUMN revision"))
+        connection.execute(text(
+            "INSERT INTO datasets (unique_id, name, path) "
+            "VALUES ('old-id', 'old', 'old-path')"
+        ))
+
+    applied = auto_migrate(
+        engine,
+        DatasetBase,
+        db_name="test",
+        model_classes=[Dataset],
+    )
+
+    assert "datasets.revision" in applied
+    assert "revision" in {column["name"] for column in inspect(engine).get_columns("datasets")}
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT name, revision FROM datasets")).one() == ("old", 0)

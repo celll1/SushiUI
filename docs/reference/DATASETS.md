@@ -9,6 +9,10 @@ Dataset records and indexed items live in the dataset database. Training runs
 refer to registered datasets by `dataset_id`; a legacy folder-path lookup exists
 for backward compatibility but is not the preferred identity.
 
+Files and sidecars are durable; `datasets.db` is their searchable index. Each
+successful indexed mutation advances `Dataset.revision`, which identifies the
+derived training snapshot without recounting or timestamp-scanning every row.
+
 Each training dataset entry may carry:
 
 - `dataset_id`;
@@ -49,6 +53,27 @@ synthetic examples such as `<DATASET_ROOT>/subject/image001.png`.
 Do not commit dataset contents, captions containing private material, database
 files, or machine-local absolute paths. Raw inventories and dataset-specific
 analysis belong under `local/`.
+
+## External editing and reconciliation
+
+The Dataset page is primarily a registry and readiness surface. Configure an
+editor command under Settings to launch a local dataset editor, or use Open
+Folder / Copy Path. Commands and arguments remain in the local settings
+database and are never tracked configuration. Launching uses an argument vector
+without a shell; put `{dataset}` on its own argument line where the dataset path
+belongs, or it is appended as the last argument.
+
+After changing sidecars externally, use **Reconcile** in the Dataset editor or
+call `POST /api/v1/datasets/{dataset_id}/scan?incremental=true`. This imports
+changed captions, removes stale index rows, advances the dataset revision, and
+invalidates old training snapshots. External tools should call this endpoint
+after a completed batch rather than writing `datasets.db` directly. The normal
+Scan action remains available for a full statistics rebuild.
+
+The Health action is intentionally on demand. It reports missing media and
+sidecars, invalid or stale sidecars, duplicate stems, reference failures,
+caption coverage, and missing image metadata without making the registry list
+pay that cost on every open.
 
 ## Change checklist
 

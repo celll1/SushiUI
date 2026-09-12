@@ -196,6 +196,30 @@ def test_trailing_norm_group_is_the_only_group_marked_for_rewarmup():
     }
 
 
+def test_trailing_understanding_norms_alone_rewarm_on_both_branch_resume():
+    generation = _params(6, numel=4, seed=21)
+    understanding = _params(5, numel=4, seed=22)
+    generation_norms = _params(3, numel=4, seed=23)
+    understanding_norms = _params(3, numel=4, seed=24)
+    _, saved = _stepped([generation, understanding, generation_norms])
+    live = _adamw([
+        generation, understanding, generation_norms, understanding_norms,
+    ])
+    trainer = _Trainer()
+
+    ok, _ = _load(trainer, live, saved)
+
+    assert ok is True
+    assert trainer._optimizer_fresh_param_group_indices[id(live)] == {3}
+    assert trainer._optimizer_fresh_param_ids[id(live)] == {
+        id(parameter) for parameter in understanding_norms
+    }
+    assert all(parameter in live.state for parameter in (
+        generation + understanding + generation_norms
+    ))
+    assert all(parameter not in live.state for parameter in understanding_norms)
+
+
 def test_run127_lion_layout_restores_old_group_and_marks_only_norms_fresh(monkeypatch):
     from core.training.optimizers import lion8bit_ringbuffer as lion_module
 

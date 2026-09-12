@@ -62,6 +62,7 @@ def test_openapi_has_typed_dataset_task_contract():
     assert schemas["DatasetConfigItem"]["properties"]["task_views"]["items"]["$ref"].endswith("/SenseNovaTaskView")
     assert request["sensenova_train_scopes"]["default"] == []
     assert "generation_norms" in request["sensenova_train_scopes"]["items"]["enum"]
+    assert "understanding_norms" in request["sensenova_train_scopes"]["items"]["enum"]
     assert request["sensenova_train_fm_modules"]["default"] is True
     assert request["sensenova_train_generation_norms"]["default"] is True
 

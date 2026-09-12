@@ -116,6 +116,23 @@ def _attach_generation_norms(transformer: nn.Module) -> set[int]:
     return {id(parameter) for module in modules for parameter in module.parameters()}
 
 
+def _attach_understanding_norms(transformer: nn.Module) -> set[int]:
+    core = transformer.language_model.model
+    modules = []
+    for layer in core.layers:
+        for name in ("input_layernorm", "post_attention_layernorm"):
+            module = _Norm()
+            setattr(layer, name, module)
+            modules.append(module)
+        for name in ("q_norm", "q_norm_hw", "k_norm", "k_norm_hw"):
+            module = _Norm()
+            setattr(layer.self_attn, name, module)
+            modules.append(module)
+    core.norm = _Norm()
+    modules.append(core.norm)
+    return {id(parameter) for module in modules for parameter in module.parameters()}
+
+
 def _attach_small_fm_modules(transformer: nn.Module) -> set[int]:
     transformer.fm_modules = nn.ModuleDict({
         "vision_model_mot_gen": nn.Linear(4, 4),
@@ -206,6 +223,74 @@ def test_explicit_generation_decoder_retains_the_linear_only_scope():
     assert len(collected) == 294
     assert not collected & norm_ids
     assert not collected & fm_ids
+
+
+def test_default_understanding_full_ft_includes_all_decoder_norms():
+    transformer = _materialized("und")
+    norm_ids = _attach_understanding_norms(transformer)
+    trainer = _full_ft_trainer("und", transformer)
+    adapter = SenseNovaFullParameterAdapter(trainer)
+    adapter.prepare_models_for_training()
+    groups = adapter.setup_trainable_parameters()
+
+    decoder_ids = {
+        id(parameter)
+        for _, _, _, module in iter_sensenova_lora_targets(
+            transformer, branch="und"
+        )
+        for parameter in module.parameters()
+    }
+    assert len(norm_ids) == 42 * 6 + 1
+    assert [group["name"] for group in groups] == [
+        "understanding_decoder", "understanding_norms",
+    ]
+    assert {id(parameter) for parameter in groups[0]["params"]} == decoder_ids
+    assert {id(parameter) for parameter in groups[1]["params"]} == norm_ids
+    assert groups[1]["lr"] == groups[0]["lr"]
+
+
+def test_both_branch_appends_understanding_norms_after_existing_groups():
+    transformer = _materialized("both")
+    generation_norm_ids = _attach_generation_norms(transformer)
+    understanding_norm_ids = _attach_understanding_norms(transformer)
+    trainer = _full_ft_trainer(
+        "both", transformer, sensenova_train_fm_modules=False,
+    )
+    adapter = SenseNovaFullParameterAdapter(trainer)
+    adapter.prepare_models_for_training()
+    groups = adapter.setup_trainable_parameters()
+
+    assert [group["name"] for group in groups] == [
+        "generation_decoder", "understanding_decoder", "generation_norms",
+        "understanding_norms",
+    ]
+    assert {id(parameter) for parameter in groups[2]["params"]} == generation_norm_ids
+    assert {id(parameter) for parameter in groups[3]["params"]} == understanding_norm_ids
+
+
+def test_explicit_understanding_norms_do_not_materialize_decoder_linears():
+    transformer = _Decoder()
+    norm_ids = _attach_understanding_norms(transformer)
+    trainer = _full_ft_trainer(
+        "und", transformer, learning_rate=1e-5, image_encoder_lr=None,
+    )
+    trainer.config = {
+        "optimizer": "adafactor",
+        "_sensenova_explicit_tasks": ["i2t_caption"],
+        "sensenova_train_scopes": ["understanding_norms"],
+    }
+    adapter = SenseNovaFullParameterAdapter(trainer)
+    adapter.prepare_models_for_training()
+    groups = adapter.setup_trainable_parameters()
+
+    assert [group["name"] for group in groups] == ["understanding_norms"]
+    assert {id(parameter) for parameter in groups[0]["params"]} == norm_ids
+    assert all(
+        type(module) is Int8Linear
+        for _, _, _, module in iter_sensenova_lora_targets(
+            transformer, branch="both"
+        )
+    )
 
 
 

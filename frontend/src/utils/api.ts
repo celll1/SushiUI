@@ -6601,7 +6601,7 @@ export interface TrainingRun {
 }
 
 export type SenseNovaTrainingTask = "t2i" | "ti2i" | "i2t_caption" | "i2t_tags" | "i2t_caption_tags";
-export type SenseNovaTrainScope = "understanding_vision" | "understanding_decoder" | "shared" | "generation_decoder" | "generation_norms" | "generation_flow";
+export type SenseNovaTrainScope = "understanding_vision" | "understanding_decoder" | "understanding_norms" | "shared" | "generation_decoder" | "generation_norms" | "generation_flow";
 
 export interface SenseNovaTaskView {
   task: SenseNovaTrainingTask;

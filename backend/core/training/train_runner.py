@@ -484,7 +484,7 @@ def _apply_sensenova_task_contract(
         raise ValueError(f"Unsupported SenseNova prompt template version(s): {sorted(versions)}")
 
     allowed_scopes = {
-        "understanding_vision", "understanding_decoder", "shared",
+        "understanding_vision", "understanding_decoder", "understanding_norms", "shared",
         "generation_decoder", "generation_norms", "generation_flow",
     }
     scopes = list(train_config.get("sensenova_train_scopes") or [])
@@ -493,11 +493,11 @@ def _apply_sensenova_task_contract(
     if len(scopes) != len(set(scopes)) or set(scopes) - allowed_scopes:
         raise ValueError(f"Invalid or duplicate SenseNova training scopes: {scopes}")
     if tasks & TEXT_TASKS and not set(scopes) & {
-        "understanding_vision", "understanding_decoder", "shared",
+        "understanding_vision", "understanding_decoder", "understanding_norms", "shared",
     }:
         raise ValueError("Text-output tasks freeze every parameter on their path")
     if tasks & IMAGE_TASKS and not set(scopes) & {
-        "understanding_decoder", "shared", "generation_decoder",
+        "understanding_decoder", "understanding_norms", "shared", "generation_decoder",
         "generation_norms", "generation_flow",
     }:
         raise ValueError("Image-output tasks freeze every parameter on their path")
@@ -506,7 +506,8 @@ def _apply_sensenova_task_contract(
     }:
         raise ValueError(
             "SenseNova LoRA scopes are understanding_decoder and generation_decoder; "
-            "vision/projector, shared embeddings, LM head, and flow modules require full_finetune"
+            "decoder norms, vision/projector, shared embeddings, LM head, and "
+            "flow modules require full_finetune"
         )
     if network_type == "full_finetune" and not set(scopes) & {
         "understanding_decoder", "generation_decoder",
@@ -529,7 +530,9 @@ def _apply_sensenova_task_contract(
     # Bridge the explicit scopes into the legacy branch selectors used by the
     # existing loader and adapters. Extra full-FT scopes are collected separately.
     train_config["train_unet"] = "generation_decoder" in scopes
-    train_config["train_text_encoder"] = "understanding_decoder" in scopes
+    train_config["train_text_encoder"] = bool(
+        {"understanding_decoder", "understanding_norms"} & set(scopes)
+    )
     train_config["sensenova_train_fm_modules"] = "generation_flow" in scopes
     train_config["_sensenova_explicit_tasks"] = sorted(tasks)
     train_config["_sensenova_prompt_template_versions"] = sorted(versions)

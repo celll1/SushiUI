@@ -24557,14 +24557,17 @@ components:
           type: array
           items:
             type: string
-            enum: [understanding_vision, understanding_decoder, shared, generation_decoder, generation_norms, generation_flow]
+            enum: [understanding_vision, understanding_decoder, understanding_norms, shared, generation_decoder, generation_norms, generation_flow]
           default: []
           uniqueItems: true
           description: >-
             Explicit SenseNova optimizer scopes. Required when any dataset has
             task_views. Empty selects gen-all for the legacy image-generation
             objective: generation decoder Linears, generation decoder RMSNorms,
-            and flow-matching modules.
+            and flow-matching modules. Legacy train_text_encoder additionally
+            selects the understanding decoder Linears and all understanding-side
+            decoder RMSNorms; shared embeddings and the LM head remain a separate
+            explicit scope.
         sensenova_full_finetune_save_format:
           type: 'string'
           enum: ['mixed', 'bf16', 'int8']

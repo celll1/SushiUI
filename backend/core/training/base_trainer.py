@@ -18220,6 +18220,7 @@ class BaseTrainer(ABC):
                                     _active_scopes = (
                                         "understanding_vision",
                                         "understanding_decoder",
+                                        "understanding_norms",
                                         "shared",
                                     )
                                     _active_census_ids = set().union(*(
@@ -18230,6 +18231,7 @@ class BaseTrainer(ABC):
                                     _active_census_ids = set().union(*(
                                         _scope_ids.get(scope, set()) for scope in (
                                             "understanding_decoder",
+                                            "understanding_norms",
                                             "generation_decoder",
                                             "generation_norms",
                                             "generation_flow",
@@ -18237,6 +18239,14 @@ class BaseTrainer(ABC):
                                     ))
                                     _active_census_ids.update(getattr(
                                         self, "_sensenova_shared_input_parameter_ids", set()
+                                    ))
+                                    # The prefix-KV path stops after the decoder
+                                    # layers. Final understanding norm is used
+                                    # only by text-output batches.
+                                    _active_census_ids.difference_update(getattr(
+                                        self,
+                                        "_sensenova_understanding_final_norm_parameter_ids",
+                                        set(),
                                     ))
                             self._update_census.begin_step(
                                 True,

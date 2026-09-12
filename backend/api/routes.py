@@ -15766,7 +15766,7 @@ class TrainingRunCreateRequest(BaseModel):
         "sensenova_train_generation_norms"
     ]
     sensenova_train_scopes: List[Literal[
-        "understanding_vision", "understanding_decoder", "shared",
+        "understanding_vision", "understanding_decoder", "understanding_norms", "shared",
         "generation_decoder", "generation_norms", "generation_flow",
     ]] = Field(default_factory=lambda: list(TRAINING_DEFAULTS["sensenova_train_scopes"]))
 

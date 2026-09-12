@@ -135,6 +135,18 @@ def test_explicit_non_decoder_scope_resolves_without_materializing_a_half():
     assert resolve_full_finetune_branch(trainer) == "none"
 
 
+def test_understanding_norm_scope_keeps_prefix_trainable_without_materializing_linears():
+    trainer = SimpleNamespace(
+        train_unet=False,
+        train_text_encoder=True,
+        config={
+            "_sensenova_explicit_tasks": ["i2t_caption"],
+            "sensenova_train_scopes": ["understanding_norms"],
+        },
+    )
+    assert resolve_full_finetune_branch(trainer) == "none"
+
+
 def test_full_ft_native_scope_groups_are_separate():
     class _Language(nn.Module):
         def __init__(self):
@@ -237,6 +249,22 @@ def test_task_contract_bridges_explicit_lora_scopes(monkeypatch):
     assert train["train_unet"] is False
     assert train["train_text_encoder"] is True
     assert train["_sensenova_explicit_tasks"] == ["i2t_caption"]
+
+
+def test_task_contract_bridges_understanding_norm_scope_for_full_ft(monkeypatch):
+    from core.model_loader import ModelLoader
+
+    monkeypatch.setattr(ModelLoader, "detect_model_type", lambda _path: "sensenova")
+    train = {
+        "sensenova_train_scopes": ["understanding_norms"],
+        "sensenova_full_finetune_save_format": "mixed",
+        "multi_noise_timesteps": 1,
+    }
+    assert _apply_sensenova_task_contract(
+        "model", "full_finetune", train, _task_process()
+    )
+    assert train["train_unet"] is False
+    assert train["train_text_encoder"] is True
 
 
 def test_task_contract_refuses_a_task_with_every_path_scope_frozen(monkeypatch):

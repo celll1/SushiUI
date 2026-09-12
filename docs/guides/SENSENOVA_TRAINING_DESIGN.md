@@ -15,7 +15,8 @@ that do not declare text-task views.
 - LoRA training of the understanding branch is opt-in through
   `train_text_encoder`.
 - Full-parameter training supports the generation half, understanding half, or
-  both MoT halves. `train_unet` and `train_text_encoder` select the halves.
+  both MoT halves. `train_unet` and `train_text_encoder` select the halves;
+  each selected half includes its branch-specific decoder RMSNorms.
 - Plain and reference-conditioned datasets may be mixed. The reference path is
   part of the dataset contract, not an inference-time ControlNet path.
 
@@ -129,6 +130,16 @@ per layer across 42 layers (two residual-path norms and four q/k axis norms),
 plus the final generation norm. They add negligible optimizer storage beside
 the 8.10B decoder Linears but remain separate from the exact INT8
 materialization census.
+
+`train_text_encoder` likewise trains the 253 understanding-side RMSNorm tensors
+under the trailing `understanding_norms` optimizer group at the understanding
+LR. The group is appended after every previously shipped legacy group so a
+resume preserves their optimizer state and the fresh-parameter mechanism
+rewarms only these newly introduced tensors. Explicit task runs can select the
+same scope directly. Shared token embeddings / LM head and the understanding
+vision tower remain independent scopes. The final understanding norm is in the
+official whole-LLM scope and is therefore included; the image-conditioning
+prefix stops before it, so it receives updates only on text-output objectives.
 
 `sensenova_train_fm_modules` (default on) controls those 16 tensors / 63,117,504
 parameters (120.4 MiB bf16, counted from the checkpoint index) in the generation

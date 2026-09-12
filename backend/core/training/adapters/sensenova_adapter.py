@@ -43,27 +43,31 @@ def _unique_parameters(parameters: Iterable[nn.Parameter]) -> List[nn.Parameter]
     return result
 
 
-def _generation_norm_parameters(transformer: nn.Module) -> List[nn.Parameter]:
-    """Generation-only RMSNorm parameters from the MoT decoder."""
+def _decoder_norm_parameters(
+    transformer: nn.Module, *, branch: str,
+) -> List[nn.Parameter]:
+    """Branch-specific RMSNorm parameters from the MoT decoder."""
+    if branch not in ("gen", "und"):
+        raise ValueError(f"Unknown SenseNova norm branch: {branch!r}")
+    suffix = "_mot_gen" if branch == "gen" else ""
     core = transformer.language_model.model
     layers = list(core.layers)
-    layer_names = (
-        "input_layernorm_mot_gen",
-        "post_attention_layernorm_mot_gen",
+    layer_names = tuple(
+        f"{name}{suffix}"
+        for name in ("input_layernorm", "post_attention_layernorm")
     )
-    attention_names = (
-        "q_norm_mot_gen",
-        "q_norm_hw_mot_gen",
-        "k_norm_mot_gen",
-        "k_norm_hw_mot_gen",
+    attention_names = tuple(
+        f"{name}{suffix}"
+        for name in ("q_norm", "q_norm_hw", "k_norm", "k_norm_hw")
     )
+    final_name = f"norm{suffix}"
     has_any = any(
         hasattr(layer, name) or hasattr(layer.self_attn, name)
         for layer in layers
         for name in (*layer_names, *attention_names)
-    ) or hasattr(core, "norm_mot_gen")
+    ) or hasattr(core, final_name)
     # Small structural test doubles predate the norms. The real tree is strict:
-    # once any generation norm is present, a partial layout is refused.
+    # once any branch norm is present, a partial layout is refused.
     if not has_any:
         return []
 
@@ -82,14 +86,14 @@ def _generation_norm_parameters(transformer: nn.Module) -> List[nn.Parameter]:
                 missing.append(f"layers.{index}.self_attn.{name}")
             else:
                 modules.append(module)
-    final_norm = getattr(core, "norm_mot_gen", None)
+    final_norm = getattr(core, final_name, None)
     if final_norm is None:
-        missing.append("norm_mot_gen")
+        missing.append(final_name)
     else:
         modules.append(final_norm)
     if missing:
         raise RuntimeError(
-            "SenseNova generation norm scope found a partial MoT norm layout "
+            f"SenseNova {branch} norm scope found a partial MoT norm layout "
             f"(first missing: {missing[0]})"
         )
     parameters = _unique_parameters(
@@ -99,10 +103,18 @@ def _generation_norm_parameters(transformer: nn.Module) -> List[nn.Parameter]:
            if not parameter.dtype.is_floating_point]
     if bad:
         raise RuntimeError(
-            "SenseNova generation norm scope contains a non-floating-point "
+            f"SenseNova {branch} norm scope contains a non-floating-point "
             f"parameter ({bad[0]})"
         )
     return parameters
+
+
+def _generation_norm_parameters(transformer: nn.Module) -> List[nn.Parameter]:
+    return _decoder_norm_parameters(transformer, branch="gen")
+
+
+def _understanding_norm_parameters(transformer: nn.Module) -> List[nn.Parameter]:
+    return _decoder_norm_parameters(transformer, branch="und")
 
 
 class SenseNovaLoRAAdapter(BaseLoRAAdapter):
@@ -320,7 +332,9 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
     two are collected outside ``_resolve_scope`` so its exact Linear count stays
     the guard against a silently unmaterialized INT8 module. Explicit task
     scopes retain separate ``generation_decoder``, ``generation_norms`` and
-    ``generation_flow`` controls.
+    ``generation_flow`` controls. Training the understanding half likewise
+    includes all of its decoder RMSNorms, separate from shared embeddings and
+    the LM head.
     """
 
     def _fm_parameters(self, branch: str) -> List[nn.Parameter]:
@@ -407,6 +421,10 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
             if branch in ("gen", "both") and bool(getattr(
                     trainer, "sensenova_train_generation_norms", True)):
                 by_scope["generation_norms"] = _generation_norm_parameters(transformer)
+            if branch in ("und", "both"):
+                by_scope["understanding_norms"] = _understanding_norm_parameters(
+                    transformer
+                )
             return by_scope
 
         if "understanding_vision" in scopes:
@@ -420,6 +438,10 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
                     transformer, branch="und"
                 )
                 for parameter in module.parameters()
+            )
+        if "understanding_norms" in scopes:
+            by_scope["understanding_norms"] = _understanding_norm_parameters(
+                transformer
             )
         if "shared" in scopes:
             by_scope["shared"] = _unique_parameters([
@@ -524,7 +546,9 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
         # is built by the understanding half on every step regardless of what is
         # trained.
         assert_full_finetune_dropout_free(trainer.transformer)
-        if branch in ("und", "both"):
+        if branch in ("und", "both") or "understanding_norms" in _explicit_scopes(
+            trainer
+        ):
             assert_understanding_training_supported(trainer.transformer)
 
         trainer.transformer.requires_grad_(False)
@@ -536,6 +560,19 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
         trainer._sensenova_scope_parameter_ids = {
             scope: {id(parameter) for parameter in parameters}
             for scope, parameters in scope_parameters.items()
+        }
+        final_understanding_norm = getattr(
+            trainer.transformer.language_model.model, "norm", None
+        )
+        trainer._sensenova_understanding_final_norm_parameter_ids = {
+            id(parameter)
+            for parameter in (
+                final_understanding_norm.parameters()
+                if final_understanding_norm is not None else ()
+            )
+            if id(parameter) in trainer._sensenova_scope_parameter_ids.get(
+                "understanding_norms", set()
+            )
         }
         get_input_embeddings = getattr(
             trainer.transformer.language_model, "get_input_embeddings", None
@@ -598,12 +635,16 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
                 ("generation_decoder", unet_lr, "unet"),
                 ("generation_norms", unet_lr, "generation_norms"),
                 ("generation_flow", unet_lr, "generation_flow"),
+                ("understanding_norms", und_lr, "understanding_norms"),
             ) if _explicit_scopes(trainer) else (
                 ("generation_decoder", unet_lr, "unet"),
                 ("understanding_decoder", und_lr, "text_encoder_1"),
                 # Trailing preserves every legacy group's positional optimizer
                 # state; this newly added group alone is fresh on resume.
                 ("generation_norms", unet_lr, "generation_norms"),
+                # Keep every previously shipped group at the same index. A
+                # resume therefore restores them and rewarms only this group.
+                ("understanding_norms", und_lr, "understanding_norms"),
             )
         )
         groups: List[Dict[str, Any]] = []
@@ -643,6 +684,7 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
             component_by_scope = {
                 "understanding_vision": LORA_COMPONENT_VISION_ENCODER,
                 "understanding_decoder": LORA_COMPONENT_TEXT_ENCODER_1,
+                "understanding_norms": LORA_COMPONENT_TEXT_ENCODER_1,
                 "shared": LORA_COMPONENT_TEXT_ENCODER_1,
                 "generation_decoder": LORA_COMPONENT_UNET,
                 "generation_norms": LORA_COMPONENT_UNET,
@@ -668,6 +710,11 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
         # `both` run every override is explicit or the bucket is arbitrary.
         for parameter in self._fm_parameters(branch):
             components[id(parameter)] = LORA_COMPONENT_UNET
+        if branch in ("und", "both"):
+            for parameter in _understanding_norm_parameters(
+                self.trainer.transformer
+            ):
+                components[id(parameter)] = LORA_COMPONENT_TEXT_ENCODER_1
         return components
 
     def _resolve_save_format(self) -> str:

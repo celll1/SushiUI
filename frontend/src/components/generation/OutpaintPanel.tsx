@@ -67,6 +67,7 @@ import {
 import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
 import { resolveBound } from "@/utils/paramBounds";
 import { readGlobalAttentionType } from "@/utils/attentionSettings";
+import { readStoredGenerationDisplaySettings } from "@/utils/generationDisplaySettings";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import {
   deleteMediaInput,
@@ -738,15 +739,9 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
         }
       }
 
-      const savedDeveloperMode = localStorage.getItem('developer_mode');
-      if (savedDeveloperMode === 'true') {
-        setDeveloperMode(true);
-      }
-
-      const savedShowAdvancedCFG = localStorage.getItem('show_advanced_cfg');
-      if (savedShowAdvancedCFG === 'true') {
-        setShowAdvancedCFG(true);
-      }
+      const displaySettings = readStoredGenerationDisplaySettings();
+      if (displaySettings.developerMode) setDeveloperMode(true);
+      if (displaySettings.showAdvancedCFG) setShowAdvancedCFG(true);
 
       const savedAttentionType = readGlobalAttentionType();
       if (savedAttentionType) {

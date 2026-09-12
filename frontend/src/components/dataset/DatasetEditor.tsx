@@ -2,8 +2,9 @@
 
 import { useState, useEffect } from "react";
 import { Copy, ExternalLink, FolderOpen, Scan, Save } from "lucide-react";
-import { getDataset, getDatasetHealth, launchDatasetEditor, openDatasetFolder, scanDataset, updateCaptionProcessing, updateDatasetExifConfig, CaptionProcessingConfig, DatasetHealth, ScanFieldSummary } from "@/utils/api";
+import { getDataset, getDatasetHealth, launchDatasetEditor, openDatasetFolder, openDatasetWorkspace, scanDataset, updateCaptionProcessing, updateDatasetExifConfig, BrowserWorkspaceResponse, CaptionProcessingConfig, DatasetHealth, ScanFieldSummary } from "@/utils/api";
 import DatasetViewer from "./DatasetViewer";
+import DatasetBrowserPanel from "../tagger/DatasetBrowserPanel";
 import LatentCacheRow from "./LatentCacheRow";
 import CaptionProcessingSettings from "../datasets/CaptionProcessingSettings";
 import { wsClient } from "@/utils/websocket";
@@ -20,15 +21,26 @@ export default function DatasetEditor({ datasetId, onClose }: DatasetEditorProps
   const [dataset, setDataset] = useState<any>(null);
   const [scanMessage, setScanMessage] = useState<string | null>(null);
   const [scanSummary, setScanSummary] = useState<ScanFieldSummary | null>(null);
-  const [activeTab, setActiveTab] = useState<"viewer" | "caption-processing">("viewer");
+  const [activeTab, setActiveTab] = useState<"viewer" | "workspace" | "caption-processing">("viewer");
   const [captionConfig, setCaptionConfig] = useState<CaptionProcessingConfig>({});
   const [savingConfig, setSavingConfig] = useState(false);
   const [health, setHealth] = useState<DatasetHealth | null>(null);
   const [checkingHealth, setCheckingHealth] = useState(false);
+  const [workspace, setWorkspace] = useState<BrowserWorkspaceResponse | null>(null);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
 
   useEffect(() => {
     loadDataset();
+    setWorkspace(null);
+    setWorkspaceError(null);
   }, [datasetId]);
+
+  useEffect(() => {
+    if (activeTab !== "workspace" || workspace) return;
+    openDatasetWorkspace(datasetId)
+      .then(setWorkspace)
+      .catch((error) => setWorkspaceError(String(error)));
+  }, [activeTab, datasetId, workspace]);
 
   // WebSocket progress handler for scanning
   useEffect(() => {
@@ -272,6 +284,16 @@ export default function DatasetEditor({ datasetId, onClose }: DatasetEditorProps
             Viewer
           </button>
           <button
+            onClick={() => setActiveTab("workspace")}
+            className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+              activeTab === "workspace"
+                ? "text-blue-400 border-b-2 border-blue-400"
+                : "text-gray-400 hover:text-gray-300"
+            }`}
+          >
+            Tag Workspace
+          </button>
+          <button
             onClick={() => setActiveTab("caption-processing")}
             className={`px-3 py-1.5 text-xs font-medium transition-colors ${
               activeTab === "caption-processing"
@@ -362,6 +384,20 @@ export default function DatasetEditor({ datasetId, onClose }: DatasetEditorProps
       <div className="flex-1 px-2 py-2 lg:px-4 lg:py-3 overflow-auto lg:overflow-hidden">
         {activeTab === "viewer" && (
           <DatasetViewer datasetId={datasetId} />
+        )}
+        {activeTab === "workspace" && (
+          workspace ? (
+            <DatasetBrowserPanel
+              modelLoaded={false}
+              initialWorkspace={workspace}
+              initialRecursive={!!dataset?.recursive}
+              lockedWorkspace
+            />
+          ) : (
+            <div className="p-4 text-sm text-gray-400">
+              {workspaceError || "Opening dataset workspace..."}
+            </div>
+          )
         )}
         {activeTab === "caption-processing" && (
           <div className="h-full overflow-y-auto">

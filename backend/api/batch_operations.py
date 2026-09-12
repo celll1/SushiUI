@@ -8,6 +8,7 @@ import json
 
 from core.datasets.captions import update_caption
 from core.datasets.revisions import bump_dataset_revision
+from core.datasets.tags import build_tag_data
 from utils.taglist_cache import taglist_cache
 from config.settings import settings
 from api.param_defaults import DATASET_DEFAULTS
@@ -59,22 +60,11 @@ class BatchOperationResponse(BaseModel):
 
 def _tag_data(tags: List[str], existing_json: Optional[str] = None) -> List[Dict[str, str]]:
     taglist_cache.initialize(settings.root_dir)
-    existing: Dict[str, str] = {}
-    if existing_json:
-        try:
-            existing = {
-                item["tag"]: item.get("category", "Unknown")
-                for item in json.loads(existing_json)
-                if isinstance(item, dict) and item.get("tag")
-            }
-        except (TypeError, ValueError):
-            existing = {}
-    missing = [tag for tag in tags if tag not in existing]
-    resolved = taglist_cache.get_categories_batch(missing) if missing else {}
-    return [
-        {"tag": tag, "category": existing.get(tag, resolved.get(tag, "Unknown"))}
-        for tag in tags
-    ]
+    return build_tag_data(
+        tags,
+        existing_json=existing_json,
+        resolve_categories=taglist_cache.get_categories_batch,
+    )
 
 
 def _persist_tags(item, caption, tags: List[str], db, *, source: Optional[str] = None) -> None:

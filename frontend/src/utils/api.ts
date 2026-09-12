@@ -5930,6 +5930,13 @@ export const browserPickDirectory = async (): Promise<BrowserWorkspaceResponse> 
   return response.data as BrowserWorkspaceResponse;
 };
 
+export const openDatasetWorkspace = async (
+  datasetId: number
+): Promise<BrowserWorkspaceResponse> => {
+  const response = await api.post(`/datasets/${datasetId}/workspace`);
+  return response.data as BrowserWorkspaceResponse;
+};
+
 /** List images under the active browser root. */
 export const browserListImages = async (
   workspace_id: string,

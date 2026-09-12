@@ -6,6 +6,8 @@ import json
 
 import torch
 from PIL import Image
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 torch.cuda.get_device_capability = lambda *args, **kwargs: (8, 9)
 torch.cuda._lazy_init = lambda *args, **kwargs: None
@@ -102,3 +104,89 @@ def test_browser_batch_infer_uses_bytes_gpu_slot_and_writes_names(
     assert (tmp_path / "sample.txt").read_text(encoding="utf-8") == (
         "red_background, high_quality, general"
     )
+
+
+def test_registered_workspace_saves_through_dataset_index(tmp_path, monkeypatch):
+    from api import routes
+    from database.models import Dataset, DatasetBase, DatasetCaption, DatasetItem
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'datasets.db'}")
+    DatasetBase.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    dataset = Dataset(name="registered", path=str(tmp_path))
+    db.add(dataset)
+    db.flush()
+    image_path = tmp_path / "sample.png"
+    Image.new("RGB", (4, 4), "red").save(image_path)
+    Image.new("RGB", (4, 4), "blue").save(tmp_path / "not_indexed.png")
+    sidecar_path = tmp_path / "sample.json"
+    sidecar_path.write_text(
+        json.dumps({"tags": "old", "private_metadata": {"keep": True}}),
+        encoding="utf-8",
+    )
+    item = DatasetItem(
+        dataset_id=dataset.id,
+        base_name="sample",
+        image_path=str(image_path),
+    )
+    db.add(item)
+    db.flush()
+    db.add(DatasetCaption(
+        item_id=item.id,
+        caption_type="tags",
+        content="old",
+        source_field="tags",
+        is_tags_format=True,
+    ))
+    db.commit()
+    workspace_id, _ = routes._create_browser_workspace(
+        str(tmp_path), dataset_id=dataset.id
+    )
+    monkeypatch.setattr(routes.taglist_cache, "initialize", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        routes.taglist_cache,
+        "get_categories_batch",
+        lambda tags: {tag: "General" for tag in tags},
+    )
+
+    asyncio.run(routes.browser_save_tags(
+        routes.BrowserSaveTagsRequest(
+            workspace_id=workspace_id,
+            rel_path="sample.png",
+            tags=["new", "second"],
+        ),
+        db,
+    ))
+    result = asyncio.run(routes.browser_get_tags("sample.png", workspace_id, db))
+    listing = asyncio.run(routes.browser_list(
+        recursive=False,
+        include_tags=True,
+        workspace_id=workspace_id,
+        db=db,
+    ))
+    try:
+        asyncio.run(routes.browser_image(
+            "not_indexed.png",
+            workspace_id=workspace_id,
+            db=db,
+        ))
+    except routes.HTTPException as exc:
+        assert exc.status_code == 409
+    else:
+        raise AssertionError("Unindexed images must not be served by a dataset workspace")
+
+    db.expire_all()
+    assert result == {"tags": ["new", "second"], "raw": "new, second"}
+    assert listing["images"] == [{
+        "rel_path": "sample.png",
+        "has_tags": True,
+        "mtime": image_path.stat().st_mtime,
+        "tags": ["new", "second"],
+    }]
+    assert db.query(DatasetCaption).filter_by(item_id=item.id).one().content == "new, second"
+    assert db.get(Dataset, dataset.id).revision == 1
+    assert json.loads(sidecar_path.read_text(encoding="utf-8")) == {
+        "tags": "new, second",
+        "private_metadata": {"keep": True},
+    }
+    assert not (tmp_path / "sample.txt").exists()

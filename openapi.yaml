@@ -7717,6 +7717,26 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BrowserWorkspaceResponse'
+  /datasets/{dataset_id}/workspace:
+    post:
+      tags: [datasets]
+      summary: Open a registered dataset in the shared tag workspace
+      operationId: openRegisteredDatasetWorkspace
+      parameters:
+        - {name: dataset_id, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200':
+          description: Opaque workspace identity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrowserWorkspaceResponse'
+        '404':
+          description: Dataset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /tagger/browser/list:
     get:
       tags: [tagger]

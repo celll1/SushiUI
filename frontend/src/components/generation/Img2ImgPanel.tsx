@@ -67,6 +67,7 @@ import { useStartup } from "@/contexts/StartupContext";
 import { queueItemBelongsToPanel, useGenerationQueue } from "@/contexts/GenerationQueueContext";
 import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
 import { readGlobalAttentionType } from "@/utils/attentionSettings";
+import { DEFAULT_ASPECT_RATIO_PRESETS, DEFAULT_FIXED_RESOLUTION_PRESETS, readStoredGenerationDisplaySettings } from "@/utils/generationDisplaySettings";
 
 interface Img2ImgParams {
   prompt: string;
@@ -1042,43 +1043,18 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
         // }
       }
 
-      const savedResolutionStep = localStorage.getItem('resolution_step');
-      if (savedResolutionStep) {
-        setResolutionStep(parseInt(savedResolutionStep));
-      }
-
-      const savedDeveloperMode = localStorage.getItem('developer_mode');
-      if (savedDeveloperMode === 'true') {
-        setDeveloperMode(true);
-      }
-
-      const savedShowAdvancedCFG = localStorage.getItem('show_advanced_cfg');
-      if (savedShowAdvancedCFG === 'true') {
-        setShowAdvancedCFG(true);
-      }
+      const displaySettings = readStoredGenerationDisplaySettings();
+      if (displaySettings.resolutionStep !== undefined) setResolutionStep(displaySettings.resolutionStep);
+      if (displaySettings.developerMode) setDeveloperMode(true);
+      if (displaySettings.showAdvancedCFG) setShowAdvancedCFG(true);
 
       const savedAttentionType = readGlobalAttentionType();
       if (savedAttentionType) {
         setParams(prev => ({ ...prev, attention_type: savedAttentionType }));
       }
 
-      const savedAspectRatioPresets = localStorage.getItem('aspect_ratio_presets');
-      if (savedAspectRatioPresets) {
-        try {
-          setAspectRatioPresets(JSON.parse(savedAspectRatioPresets));
-        } catch (e) {
-          console.error('Failed to parse aspect ratio presets:', e);
-        }
-      }
-
-      const savedFixedResolutionPresets = localStorage.getItem('fixed_resolution_presets');
-      if (savedFixedResolutionPresets) {
-        try {
-          setFixedResolutionPresets(JSON.parse(savedFixedResolutionPresets));
-        } catch (e) {
-          console.error('Failed to parse fixed resolution presets:', e);
-        }
-      }
+      if (displaySettings.aspectRatioPresets) setAspectRatioPresets(displaySettings.aspectRatioPresets);
+      if (displaySettings.fixedResolutionPresets) setFixedResolutionPresets(displaySettings.fixedResolutionPresets);
 
       const savedVisibility = localStorage.getItem('img2img_visibility');
       if (savedVisibility) {
@@ -2318,36 +2294,8 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
   const isLongPressTriggeredRef = useRef(false);
   const longPressPositionRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const [resolutionStep, setResolutionStep] = useState(64);
-  const [aspectRatioPresets, setAspectRatioPresets] = useState<Array<{ label: string; ratio: number }>>([
-    { label: "1:1", ratio: 1 / 1 },
-    { label: "4:3", ratio: 4 / 3 },
-    { label: "3:4", ratio: 3 / 4 },
-    { label: "16:9", ratio: 16 / 9 },
-    { label: "9:16", ratio: 9 / 16 },
-    { label: "21:9", ratio: 21 / 9 },
-    { label: "9:21", ratio: 9 / 21 },
-    { label: "3:2", ratio: 3 / 2 },
-    { label: "2:3", ratio: 2 / 3 },
-    { label: "5:4", ratio: 5 / 4 },
-  ]);
-  const [fixedResolutionPresets, setFixedResolutionPresets] = useState<Array<{ width: number; height: number }>>([
-    { width: 768, height: 1152 },
-    { width: 1152, height: 768 },
-    { width: 1248, height: 720 },
-    { width: 720, height: 1248 },
-    { width: 960, height: 1344 },
-    { width: 1344, height: 960 },
-    { width: 1024, height: 1152 },
-    { width: 1152, height: 1024 },
-    { width: 1024, height: 1024 },
-    { width: 896, height: 1152 },
-    { width: 1152, height: 896 },
-    { width: 832, height: 1216 },
-    { width: 1216, height: 832 },
-    { width: 640, height: 1536 },
-    { width: 1536, height: 640 },
-    { width: 512, height: 512 },
-  ]);
+  const [aspectRatioPresets, setAspectRatioPresets] = useState(() => [...DEFAULT_ASPECT_RATIO_PRESETS]);
+  const [fixedResolutionPresets, setFixedResolutionPresets] = useState(() => [...DEFAULT_FIXED_RESOLUTION_PRESETS]);
 
   // Panel visibility settings
   const [visibility, setVisibility] = useState({

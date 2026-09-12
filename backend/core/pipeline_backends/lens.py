@@ -328,6 +328,82 @@ class LensMixin:
             "max_length": max_sequence_length,
         }
 
+    def _lens_encode_conditioning(
+        self,
+        params,
+        prompt,
+        negative_prompt,
+        enc_device,
+        output_device,
+        dtype,
+        max_sequence_length,
+        model_key,
+        cpu_text_encoding,
+        text_encoder_quantization,
+    ):
+        """Own Lens text-encoder reload, all encodes and release."""
+        from core.inference.prompt_embedding_cache import (
+            conditioning_cache_key, generation_prompt_cache,
+        )
+        from core.models.lens.lens_pipeline_ops import encode_prompt
+
+        tokenizer = self.lens_components["tokenizer"]
+        nag_prompt = params.get("nag_negative_prompt", "") or negative_prompt or ""
+        negpip_params = self._lens_negpip_params(
+            prompt, negative_prompt, nag_prompt, max_sequence_length,
+        )
+        nag_enabled = bool(params.get("nag_enable", False)) \
+            and float(params.get("nag_scale", 5.0)) > 1.0
+        cache_key = conditioning_cache_key(
+            "lens", model_key, tokenizer, enc_device, dtype,
+            int(getattr(self, "model_revision", 0)),
+            prompt,
+            negative_prompt,
+            nag_prompt if nag_enabled else None,
+            nag_enabled,
+            float(params.get("nag_scale", 5.0)) if nag_enabled else None,
+            float(params.get("nag_tau", 2.5)) if nag_enabled else None,
+            float(params.get("nag_alpha", 0.25)) if nag_enabled else None,
+            negpip_params is not None,
+            int(max_sequence_length),
+            str(text_encoder_quantization),
+        )
+        cached, cache_hit = generation_prompt_cache.get(self, cache_key, output_device)
+        if cache_hit:
+            return cached
+
+        if self.lens_components.get("text_encoder") is None:
+            self._reload_lens_text_encoder()
+        text_encoder = self.lens_components["text_encoder"]
+        if not cpu_text_encoding:
+            text_encoder = self._lens_move(
+                "text_encoder", output_device, text_encoder_quantization,
+            )
+        encoder_features, encoder_mask = encode_prompt(
+            text_encoder, tokenizer, prompt, negative_prompt,
+            device=enc_device, dtype=dtype, max_length=max_sequence_length,
+            skip_emphasis=negpip_params is not None,
+        )
+        nag_params = self._lens_encode_nag(
+            params, text_encoder, tokenizer, negative_prompt,
+            enc_device, dtype, max_sequence_length,
+            skip_emphasis=negpip_params is not None,
+        )
+        result = (encoder_features, encoder_mask, nag_params, negpip_params)
+        generation_prompt_cache.put(self, cache_key, result)
+        if cpu_text_encoding:
+            result = generation_prompt_cache.get(self, cache_key, output_device)[0]
+        else:
+            self._lens_move("text_encoder", "cpu")
+
+        import gc
+        self.lens_components["text_encoder"] = None
+        del text_encoder
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return result
+
     def _reload_lens_text_encoder(self) -> None:
         """Reload the Lens text encoder from disk (~4 s).
 
@@ -717,7 +793,7 @@ class LensMixin:
             raise RuntimeError("Lens components not loaded. Please load a Lens model first.")
 
         from core.models.lens.lens_pipeline_ops import (
-            encode_prompt, prepare_latents, denoise_loop, vae_decode,
+            prepare_latents, denoise_loop, vae_decode,
         )
         from core.models.lens.lens_resolution import align_to_grid
 
@@ -726,13 +802,7 @@ class LensMixin:
         device = self.device
         dtype = torch.bfloat16
 
-        # Lazy reload: text encoder is freed after each generation to reclaim
-        # the ~9.7 GB of mxfp4 CUDA memory.  Reload it here before encoding.
-        if self.lens_components.get("text_encoder") is None:
-            self._reload_lens_text_encoder()
-
         transformer = self.lens_components["transformer"]
-        text_encoder = self.lens_components["text_encoder"]
         tokenizer = self.lens_components["tokenizer"]
         vae = self.lens_components["vae"]
         scheduler = self.lens_components["scheduler"]
@@ -768,38 +838,12 @@ class LensMixin:
         try:
             # Stage 1: Text encoding
             print("[Lens] Stage 1: Text encoding...")
-            if not cpu_text_encoding:
-                text_encoder = self._lens_move("text_encoder", device, text_encoder_quantization)
-            negpip_params = self._lens_negpip_params(
-                prompt, negative_prompt,
-                params.get("nag_negative_prompt", "") or "", max_sequence_length,
-            )
-            encoder_features, encoder_mask = encode_prompt(
-                text_encoder, tokenizer, prompt, negative_prompt,
-                device=enc_device, dtype=dtype, max_length=max_sequence_length,
-                skip_emphasis=negpip_params is not None,
-            )
-            nag_params = self._lens_encode_nag(
-                params, text_encoder, tokenizer, negative_prompt,
-                enc_device, dtype, max_sequence_length,
-                skip_emphasis=negpip_params is not None,
-            )
-            if not cpu_text_encoding:
-                self._lens_move("text_encoder", "cpu")
-            if cpu_text_encoding:
-                encoder_features = [f.to(device) for f in encoder_features]
-                encoder_mask = encoder_mask.to(device)
-                if nag_params is not None:
-                    nag_params["nag_features"] = [f.to(device) for f in nag_params["nag_features"]]
-                    nag_params["nag_mask"] = nag_params["nag_mask"].to(device)
-
-            # Free mxfp4 CUDA buffers (~9.7 GB) — not needed during denoising.
-            # Will be reloaded lazily at the start of the next generation.
-            import gc as _gc
-            self.lens_components["text_encoder"] = None
-            text_encoder = None
-            _gc.collect()
-            torch.cuda.empty_cache()
+            encoder_features, encoder_mask, nag_params, negpip_params = \
+                self._lens_encode_conditioning(
+                    params, prompt, negative_prompt, enc_device, device, dtype,
+                    max_sequence_length, _kh_model_key, cpu_text_encoding,
+                    text_encoder_quantization,
+                )
 
             # Stage 2: Prepare latents
             latents = prepare_latents(
@@ -911,7 +955,7 @@ class LensMixin:
             raise RuntimeError("Lens components not loaded.")
 
         from core.models.lens.lens_pipeline_ops import (
-            encode_prompt, vae_encode, denoise_loop_img2img, vae_decode,
+            vae_encode, denoise_loop_img2img, vae_decode,
         )
         from core.models.lens.lens_resolution import align_to_grid
 
@@ -920,11 +964,7 @@ class LensMixin:
         device = self.device
         dtype = torch.bfloat16
 
-        if self.lens_components.get("text_encoder") is None:
-            self._reload_lens_text_encoder()
-
         transformer = self.lens_components["transformer"]
-        text_encoder = self.lens_components["text_encoder"]
         tokenizer = self.lens_components["tokenizer"]
         vae = self.lens_components["vae"]
         scheduler = self.lens_components["scheduler"]
@@ -960,37 +1000,12 @@ class LensMixin:
         try:
             # Stage 1: Text encoding
             print("[Lens] Stage 1: Text encoding...")
-            if not cpu_text_encoding:
-                text_encoder = self._lens_move("text_encoder", device, text_encoder_quantization)
-            negpip_params = self._lens_negpip_params(
-                prompt, negative_prompt,
-                params.get("nag_negative_prompt", "") or "", max_sequence_length,
-            )
-            encoder_features, encoder_mask = encode_prompt(
-                text_encoder, tokenizer, prompt, negative_prompt,
-                device=enc_device, dtype=dtype, max_length=max_sequence_length,
-                skip_emphasis=negpip_params is not None,
-            )
-            nag_params = self._lens_encode_nag(
-                params, text_encoder, tokenizer, negative_prompt,
-                enc_device, dtype, max_sequence_length,
-                skip_emphasis=negpip_params is not None,
-            )
-            if not cpu_text_encoding:
-                self._lens_move("text_encoder", "cpu")
-            if cpu_text_encoding:
-                encoder_features = [f.to(device) for f in encoder_features]
-                encoder_mask = encoder_mask.to(device)
-                if nag_params is not None:
-                    nag_params["nag_features"] = [f.to(device) for f in nag_params["nag_features"]]
-                    nag_params["nag_mask"] = nag_params["nag_mask"].to(device)
-
-            # Free mxfp4 CUDA buffers (~9.7 GB) — not needed during denoising.
-            import gc as _gc
-            self.lens_components["text_encoder"] = None
-            text_encoder = None
-            _gc.collect()
-            torch.cuda.empty_cache()
+            encoder_features, encoder_mask, nag_params, negpip_params = \
+                self._lens_encode_conditioning(
+                    params, prompt, negative_prompt, enc_device, device, dtype,
+                    max_sequence_length, _kh_model_key, cpu_text_encoding,
+                    text_encoder_quantization,
+                )
 
             # Stage 2: Encode init image
             print("[Lens] Stage 2: Encoding init image...")
@@ -1100,7 +1115,7 @@ class LensMixin:
             raise RuntimeError("Lens components not loaded.")
 
         from core.models.lens.lens_pipeline_ops import (
-            encode_prompt, vae_encode, denoise_loop_inpaint, vae_decode, prepare_mask_latent,
+            vae_encode, denoise_loop_inpaint, vae_decode, prepare_mask_latent,
         )
         from core.models.lens.lens_resolution import align_to_grid
 
@@ -1109,11 +1124,7 @@ class LensMixin:
         device = self.device
         dtype = torch.bfloat16
 
-        if self.lens_components.get("text_encoder") is None:
-            self._reload_lens_text_encoder()
-
         transformer = self.lens_components["transformer"]
-        text_encoder = self.lens_components["text_encoder"]
         tokenizer = self.lens_components["tokenizer"]
         vae = self.lens_components["vae"]
         scheduler = self.lens_components["scheduler"]
@@ -1159,37 +1170,12 @@ class LensMixin:
         try:
             # Stage 1: Text encoding
             print("[Lens] Stage 1: Text encoding...")
-            if not cpu_text_encoding:
-                text_encoder = self._lens_move("text_encoder", device, text_encoder_quantization)
-            negpip_params = self._lens_negpip_params(
-                prompt, negative_prompt,
-                params.get("nag_negative_prompt", "") or "", max_sequence_length,
-            )
-            encoder_features, encoder_mask = encode_prompt(
-                text_encoder, tokenizer, prompt, negative_prompt,
-                device=enc_device, dtype=dtype, max_length=max_sequence_length,
-                skip_emphasis=negpip_params is not None,
-            )
-            nag_params = self._lens_encode_nag(
-                params, text_encoder, tokenizer, negative_prompt,
-                enc_device, dtype, max_sequence_length,
-                skip_emphasis=negpip_params is not None,
-            )
-            if not cpu_text_encoding:
-                self._lens_move("text_encoder", "cpu")
-            if cpu_text_encoding:
-                encoder_features = [f.to(device) for f in encoder_features]
-                encoder_mask = encoder_mask.to(device)
-                if nag_params is not None:
-                    nag_params["nag_features"] = [f.to(device) for f in nag_params["nag_features"]]
-                    nag_params["nag_mask"] = nag_params["nag_mask"].to(device)
-
-            # Free mxfp4 CUDA buffers (~9.7 GB) — not needed during denoising.
-            import gc as _gc
-            self.lens_components["text_encoder"] = None
-            text_encoder = None
-            _gc.collect()
-            torch.cuda.empty_cache()
+            encoder_features, encoder_mask, nag_params, negpip_params = \
+                self._lens_encode_conditioning(
+                    params, prompt, negative_prompt, enc_device, device, dtype,
+                    max_sequence_length, _kh_model_key, cpu_text_encoding,
+                    text_encoder_quantization,
+                )
 
             # Stage 2: Encode init image + prepare mask
             print("[Lens] Stage 2: Encoding init image...")

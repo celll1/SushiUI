@@ -278,7 +278,7 @@ class TaggerTrainerHandle:
         import io
         from PIL import Image as PILImage
         from core.tagger.tag_selection import (
-            select_tags, ood_threshold_scale, mahalanobis,
+            select_tag_response, ood_threshold_scale, mahalanobis,
             apply_calibration_by_name,
         )
 
@@ -327,27 +327,6 @@ class TaggerTrainerHandle:
             raw_probs = cal_probs
             _calibrated = True
 
-        all_items = []
-        for i in range(len(raw_probs)):
-            tag = idx_to_tag.get(i)
-            if tag is None:
-                continue
-            category = tag_to_cat.get(tag, "General")
-            item = {
-                "tag":      tag,
-                "prob":     float(raw_probs[i]),
-                "raw_prob": float(raw_probs[i]),
-                "category": category,
-            }
-            if cal_probs is not None:
-                item["cal_prob"] = float(cal_probs[i])
-            all_items.append(item)
-
-        quality_items = [it for it in all_items if it["category"] == "Quality"]
-        rating_items  = [it for it in all_items if it["category"] == "Rating"]
-        quality_top = max(quality_items, key=lambda x: x["prob"]) if quality_items else None
-        rating_top  = max(rating_items,  key=lambda x: x["prob"]) if rating_items  else None
-
         # OOD distance + dynamic threshold scale.
         ood_distance = None
         if _ood_ref is not None and "emb" in _cap:
@@ -361,9 +340,12 @@ class TaggerTrainerHandle:
         _use_ptt = bool(use_per_tag_threshold and _name_metrics)
         _get_metrics = (lambda tag: _name_metrics.get(tag)) if _use_ptt else None
 
-        filtered, used_best_thr = select_tags(
-            all_items,
+        filtered, quality_top, rating_top, used_best_thr = select_tag_response(
+            raw_probs,
+            idx_to_tag,
+            tag_to_cat,
             threshold=threshold,
+            cal_probs=cal_probs,
             use_per_tag_threshold=_use_ptt,
             get_metrics=_get_metrics,
             min_best_thr=min_best_thr,

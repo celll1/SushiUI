@@ -8,6 +8,7 @@ from core.inference.prompt_embedding_cache import (
     generation_prompt_cache,
 )
 from core.keep_hot import mark_resident
+from core.pipeline import DiffusionPipelineManager
 from core.pipeline_backends.anima import AnimaMixin
 from core.pipeline_backends.flux2 import Flux2Mixin
 from core.pipeline_backends.ideogram4 import Ideogram4Mixin
@@ -412,3 +413,58 @@ def test_zimage_cache_owns_cfg_and_nag_encodes(monkeypatch):
     assert not manager._zimage_encode_conditioning(*keep_args)[-1]
     mark_resident(manager, "text_encoder", "model")
     assert manager._zimage_encode_conditioning(*keep_args)[-1]
+
+
+def test_sd_prompt_cache_covers_encoding_policy_and_skips_staging(monkeypatch):
+    import core.vram_optimization as vram
+
+    generation_prompt_cache.clear()
+    manager = DiffusionPipelineManager.__new__(DiffusionPipelineManager)
+    manager.device = torch.device("cpu")
+    manager.model_revision = 1
+    manager.prompt_chunking_mode = "a1111"
+    manager.max_prompt_chunks = 0
+    pipeline = _Encoder()
+    pipeline.text_encoder = torch.nn.Linear(1, 1)
+    pipeline.text_encoder_2 = torch.nn.Linear(1, 1)
+    pipeline.tokenizer = _Encoder()
+    pipeline.tokenizer_2 = _Encoder()
+    pipeline.dtype = torch.float32
+    manager.txt2img_pipeline = pipeline
+    forwards = []
+
+    def encode_uncached(prompt, negative_prompt, _pipeline, skip_emphasis):
+        forwards.append((prompt, negative_prompt, skip_emphasis))
+        value = torch.full((1, 2, 3), len(prompt), dtype=torch.float32)
+        return value, -value, torch.ones(1, 3), torch.zeros(1, 3)
+
+    manager._encode_prompt_with_weights_uncached = encode_uncached
+    first = manager._encode_prompt_with_weights("positive", "negative", pipeline, True)
+    second = manager._encode_prompt_with_weights("positive", "negative", pipeline, True)
+
+    assert forwards == [("positive", "negative", True)]
+    for first_value, second_value in zip(first, second):
+        assert torch.equal(first_value, second_value)
+        assert first_value.data_ptr() != second_value.data_ptr()
+
+    stages = []
+    monkeypatch.setattr(vram, "move_text_encoders_to_gpu", stages.append)
+    kept = manager._stage_sd_text_encoders_for_conditioning(
+        pipeline, "positive", "negative", True, "model",
+        False, True, True,
+    )
+    assert not stages
+    assert not kept
+
+    manager.max_prompt_chunks = 1
+    kept = manager._stage_sd_text_encoders_for_conditioning(
+        pipeline, "positive", "negative", True, "model",
+        False, True, True,
+    )
+    assert stages == [pipeline]
+    assert kept
+
+    pipeline.text_encoder.peft_config = {"adapter": object()}
+    manager._encode_prompt_with_weights("positive", "negative", pipeline, True)
+    manager._encode_prompt_with_weights("positive", "negative", pipeline, True)
+    assert len(forwards) == 3

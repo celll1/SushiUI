@@ -3092,7 +3092,112 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             ne, npp = ad(nh.to(ad_dtype), np_.to(ad_dtype))
         return pe, ne, pp, npp
 
-    def _encode_prompt_with_weights(self, prompt: str, negative_prompt: str = "", pipeline=None, skip_emphasis: bool = False):
+    def _sd_prompt_cache_identity(
+        self, prompt: str, negative_prompt: str, pipeline, skip_emphasis: bool,
+    ):
+        from core.inference.prompt_embedding_cache import (
+            conditioning_cache_key, tokenizer_cache_key,
+        )
+
+        custom_encoder = getattr(pipeline, "_sushi_te", None)
+        # PEFT scales can change without replacing the encoder object; object
+        # identity alone therefore cannot make those embeddings reusable.
+        if custom_encoder is None:
+            try:
+                if getattr(pipeline, "get_active_adapters", lambda: [])():
+                    return None, None
+            except Exception:
+                return None, None
+            for encoder_name in ("text_encoder", "text_encoder_2"):
+                encoder = getattr(pipeline, encoder_name, None)
+                if getattr(encoder, "peft_config", None):
+                    return None, None
+        text_encoder = custom_encoder or getattr(pipeline, "text_encoder", None)
+        owner = text_encoder or pipeline
+        tokenizer = (
+            getattr(pipeline, "_sushi_te_tokenizer", None)
+            if custom_encoder is not None
+            else getattr(pipeline, "tokenizer", None)
+        )
+        text_encoder_2 = getattr(pipeline, "text_encoder_2", None)
+        tokenizer_2 = getattr(pipeline, "tokenizer_2", None)
+        dtype = getattr(pipeline, "dtype", torch.float16)
+        key = conditioning_cache_key(
+            "sdxl" if text_encoder_2 is not None else "sd15",
+            str(getattr(self, "model_revision", 0)), tokenizer,
+            self.device, dtype,
+            prompt, negative_prompt, skip_emphasis,
+            getattr(self, "prompt_chunking_mode", "a1111"),
+            int(getattr(self, "max_prompt_chunks", 0)),
+            id(text_encoder_2) if text_encoder_2 is not None else None,
+            tokenizer_cache_key(tokenizer_2) if tokenizer_2 is not None else None,
+            id(getattr(pipeline, "_sushi_te_adapters", None)),
+            getattr(pipeline, "_sushi_te_max_len", None),
+            getattr(pipeline, "_sushi_te_hidden_layer", None),
+            type(pipeline).__module__, type(pipeline).__qualname__,
+        )
+        return owner, key
+
+    def _sd_prompt_encoding_cached(
+        self, prompt: str, negative_prompt: str = "", pipeline=None,
+        skip_emphasis: bool = False,
+    ) -> bool:
+        from core.inference.prompt_embedding_cache import generation_prompt_cache
+
+        pipeline = pipeline or self.txt2img_pipeline
+        if pipeline is None:
+            return False
+        owner, key = self._sd_prompt_cache_identity(
+            prompt, negative_prompt, pipeline, skip_emphasis,
+        )
+        if owner is None:
+            return False
+        return generation_prompt_cache.contains(owner, key)
+
+    def _stage_sd_text_encoders_for_conditioning(
+        self, pipeline, prompt, negative_prompt, skip_emphasis,
+        model_key, cpu_text_encoding, keep_text_encoder,
+        allow_cache_bypass,
+    ):
+        from core.keep_hot import is_resident
+        from core.vram_optimization import move_text_encoders_to_gpu
+
+        was_resident = is_resident(self, "text_encoder", model_key)
+        cache_hit = allow_cache_bypass and self._sd_prompt_encoding_cached(
+            prompt, negative_prompt, pipeline, skip_emphasis,
+        )
+        if not cpu_text_encoding and not was_resident and not cache_hit:
+            move_text_encoders_to_gpu(pipeline)
+        if cache_hit and not was_resident:
+            keep_text_encoder = False
+        return keep_text_encoder
+
+    def _encode_prompt_with_weights(
+        self, prompt: str, negative_prompt: str = "", pipeline=None,
+        skip_emphasis: bool = False,
+    ):
+        from core.inference.prompt_embedding_cache import generation_prompt_cache
+
+        pipeline = pipeline or self.txt2img_pipeline
+        if pipeline is None:
+            return None, None, None, None
+        owner, key = self._sd_prompt_cache_identity(
+            prompt, negative_prompt, pipeline, skip_emphasis,
+        )
+        if owner is None:
+            return self._encode_prompt_with_weights_uncached(
+                prompt, negative_prompt, pipeline, skip_emphasis,
+            )
+        cached, cache_hit = generation_prompt_cache.get(owner, key, self.device)
+        if cache_hit:
+            return cached
+        result = self._encode_prompt_with_weights_uncached(
+            prompt, negative_prompt, pipeline, skip_emphasis,
+        )
+        generation_prompt_cache.put(owner, key, result)
+        return result
+
+    def _encode_prompt_with_weights_uncached(self, prompt: str, negative_prompt: str = "", pipeline=None, skip_emphasis: bool = False):
         """
         Encode prompts with A1111-style emphasis weights and/or chunking.
 
@@ -4204,21 +4309,19 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         else:
             initial_prompt = params["prompt"]
 
-        from core.vram_optimization import log_device_status, move_text_encoders_to_gpu, move_text_encoders_to_cpu
+        from core.vram_optimization import log_device_status, move_text_encoders_to_cpu
 
-        cpu_text_encoding = params.get("cpu_text_encoding", False)
-        if not cpu_text_encoding and not is_resident(self, "text_encoder", _kh_model_key):
-            move_text_encoders_to_gpu(self.txt2img_pipeline)
-        log_device_status("Ready for text encoding", self.txt2img_pipeline, vision_encoder=getattr(self, 'vision_encoder', None))
-
-        # NegPip auto-activation: when the prompt(s) carry negative emphasis weights,
-        # encode CLEAN embeddings (skip embedding scaling) and apply the signed weights
-        # to V inside attention instead. Disabled when prompt editing is active (the
-        # per-step edit embeds path is not yet NegPip-aware -- v1 scope).
         _negpip_neg_prompt = params.get("negative_prompt", "")
         use_negpip = (prompt_processor is None) and self._negpip_eligible(
             initial_prompt, _negpip_neg_prompt, self.txt2img_pipeline
         )
+        cpu_text_encoding = params.get("cpu_text_encoding", False)
+        _kh_keep_te = self._stage_sd_text_encoders_for_conditioning(
+            self.txt2img_pipeline, initial_prompt, _negpip_neg_prompt, use_negpip,
+            _kh_model_key, cpu_text_encoding, _kh_keep_te,
+            allow_cache_bypass=(prompt_processor is None and not params.get("nag_enable", False)),
+        )
+        log_device_status("Ready for text encoding", self.txt2img_pipeline, vision_encoder=getattr(self, 'vision_encoder', None))
 
         # Encode prompts with weights if emphasis syntax is present
         with generation_timer.phase("text_encode"):
@@ -4998,13 +5101,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         else:
             initial_prompt = params["prompt"]
 
-        from core.vram_optimization import log_device_status, move_text_encoders_to_gpu, move_text_encoders_to_cpu, move_vae_to_gpu, move_vae_to_cpu
+        from core.vram_optimization import log_device_status, move_text_encoders_to_cpu, move_vae_to_gpu, move_vae_to_cpu
 
         cpu_text_encoding = params.get("cpu_text_encoding", False)
-        if not cpu_text_encoding and not is_resident(self, "text_encoder", _kh_model_key):
-            move_text_encoders_to_gpu(self.img2img_pipeline)
-        log_device_status("Ready for text encoding (img2img)", self.img2img_pipeline, vision_encoder=getattr(self, 'vision_encoder', None))
-
         all_controlnet_images = params.get("controlnet_images", [])
         ref_guide_configs = [c for c in all_controlnet_images if c.get("is_reference_guide")]
         controlnet_images = [c for c in all_controlnet_images if not c.get("is_reference_guide")]
@@ -5029,6 +5128,12 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         use_negpip = (prompt_processor is None) and self._negpip_eligible(
             initial_prompt, _negpip_neg_prompt, pipeline_to_use
         )
+        _kh_keep_te = self._stage_sd_text_encoders_for_conditioning(
+            pipeline_to_use, initial_prompt, _negpip_neg_prompt, use_negpip,
+            _kh_model_key, cpu_text_encoding, _kh_keep_te,
+            allow_cache_bypass=(prompt_processor is None and not params.get("nag_enable", False)),
+        )
+        log_device_status("Ready for text encoding (img2img)", pipeline_to_use, vision_encoder=getattr(self, 'vision_encoder', None))
 
         # Encode prompts with weights if emphasis syntax is present
         with generation_timer.phase("text_encode"):
@@ -5712,13 +5817,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         else:
             initial_prompt = params["prompt"]
 
-        from core.vram_optimization import log_device_status, move_text_encoders_to_gpu, move_text_encoders_to_cpu, move_vae_to_gpu, move_vae_to_cpu
+        from core.vram_optimization import log_device_status, move_text_encoders_to_cpu, move_vae_to_gpu, move_vae_to_cpu
 
         cpu_text_encoding = params.get("cpu_text_encoding", False)
-        if not cpu_text_encoding and not is_resident(self, "text_encoder", _kh_model_key):
-            move_text_encoders_to_gpu(self.inpaint_pipeline)
-        log_device_status("Ready for text encoding (inpaint)", self.inpaint_pipeline, vision_encoder=getattr(self, 'vision_encoder', None))
-
         # Determine if SDXL
         is_sdxl = isinstance(self.inpaint_pipeline, StableDiffusionXLInpaintPipeline)
 
@@ -5746,6 +5847,21 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         use_negpip = (prompt_processor is None) and self._negpip_eligible(
             initial_prompt, _negpip_neg_prompt, pipeline_to_use
         )
+        _region_requested = (
+            params.get("region_prompt_strength", 1.0) > 0
+            and bool((params.get("region_prompt", "") or "").strip()
+                     or (params.get("region_negative_prompt", "") or "").strip())
+        )
+        _kh_keep_te = self._stage_sd_text_encoders_for_conditioning(
+            pipeline_to_use, initial_prompt, _negpip_neg_prompt, use_negpip,
+            _kh_model_key, cpu_text_encoding, _kh_keep_te,
+            allow_cache_bypass=(
+                prompt_processor is None
+                and not params.get("nag_enable", False)
+                and not _region_requested
+            ),
+        )
+        log_device_status("Ready for text encoding (inpaint)", pipeline_to_use, vision_encoder=getattr(self, 'vision_encoder', None))
 
         # Encode initial prompt
         with generation_timer.phase("text_encode"):

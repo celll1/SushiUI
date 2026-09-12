@@ -7811,6 +7811,38 @@ paths:
                 properties:
                   saved:
                     type: boolean
+  /tagger/browser/tags/batch:
+    post:
+      tags: [tagger]
+      summary: Read multiple browser-image sidecars
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BrowserGetTagsBatchRequest'
+      responses:
+        '200':
+          description: Per-image tags or a redacted read error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [rel_path]
+                      properties:
+                        rel_path:
+                          type: string
+                        tags:
+                          type: array
+                          items:
+                            type: string
+                        error:
+                          type: string
   /tagger/browser/batch-infer:
     post:
       tags: [tagger]
@@ -26165,6 +26197,14 @@ components:
         rel_path:
           type: string
         tags:
+          type: array
+          items:
+            type: string
+    BrowserGetTagsBatchRequest:
+      type: object
+      required: [rel_paths]
+      properties:
+        rel_paths:
           type: array
           items:
             type: string

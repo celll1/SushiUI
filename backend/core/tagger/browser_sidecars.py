@@ -28,6 +28,16 @@ def prediction_tag_names(result: Mapping[str, Any]) -> List[str]:
     return names
 
 
+def read_image_sidecar(image_path: str) -> tuple[List[str], str]:
+    """Read an image sidecar; a missing sidecar is a valid empty value."""
+    sidecar_path = os.path.splitext(image_path)[0] + ".txt"
+    if not os.path.isfile(sidecar_path):
+        return [], ""
+    with open(sidecar_path, "r", encoding="utf-8") as handle:
+        content = handle.read().strip()
+    return [tag.strip() for tag in content.split(",") if tag.strip()], content
+
+
 def write_image_sidecar(image_path: str, tags: Iterable[str]) -> str:
     """Atomically replace the image's comma-separated UTF-8 sidecar."""
     sidecar_path = os.path.splitext(image_path)[0] + ".txt"

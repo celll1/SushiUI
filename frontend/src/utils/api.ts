@@ -6273,6 +6273,13 @@ export const restoreItemCaptionFromTxt = async (itemId: number): Promise<SaveToT
   return response.data;
 };
 
+export const categorizeDatasetTags = async (
+  tags: string[]
+): Promise<Record<string, string>> => {
+  const response = await api.post("/tags/categorize", { tags });
+  return response.data.categories;
+};
+
 
 export interface CaptionProcessingPreset {
   id: number;
@@ -6459,7 +6466,7 @@ export interface DatasetCaptionData {
   field_category?: 'training' | 'metadata'; // Field category: training or metadata
   is_tags_format?: boolean; // True if tags format (Danbooru), false if natural language
   tag_match_rate?: number; // Tag match rate (0.0-1.0) for tags format detection
-  source_field?: string; // JSON field path (e.g., "metrics.likes", "author")
+  source_field?: string | null; // JSON field path (e.g., "metrics.likes", "author")
   source: string;
   created_at: string;
   updated_at: string;
@@ -6520,7 +6527,7 @@ export interface CaptionTypeInfo {
   field_category: 'training' | 'metadata';
   is_tags_format: boolean;
   avg_match_rate: number;
-  source_field?: string;
+  source_field?: string | null;
   subtypes: CaptionSubtype[];
 }
 
@@ -8077,13 +8084,17 @@ export interface CaptionUpdateRequest {
   caption_type: string;
   content: string;
   tag_data?: Array<{ tag: string; category: string }>;
+  caption_id?: number;
+  source_field?: string | null;
+  persist_sidecar?: boolean;
 }
 
 export const updateItemCaption = async (
+  datasetId: number,
   itemId: number,
   data: CaptionUpdateRequest
 ): Promise<{ status: string; caption: DatasetCaptionData }> => {
-  const response = await api.patch(`/datasets/items/${itemId}/captions`, data);
+  const response = await api.patch(`/datasets/${datasetId}/items/${itemId}/captions`, data);
   return response.data;
 };
 

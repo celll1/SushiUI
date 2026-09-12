@@ -2201,6 +2201,15 @@ VIDEO_CHAIN_PROVENANCE_DEFAULTS: Dict[str, Any] = {
 }
 
 # ---------------------------------------------------------------------------
+# Dataset caption mutation
+# ---------------------------------------------------------------------------
+DATASET_DEFAULTS: Dict[str, Any] = {
+    "caption_type": "tags",
+    "persist_sidecar": False,
+}
+
+
+# ---------------------------------------------------------------------------
 # LoRA / Full-FT Training (TrainingRunCreateRequest)
 # ---------------------------------------------------------------------------
 # Authoritative source: backend Pydantic model.

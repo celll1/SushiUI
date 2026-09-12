@@ -22,6 +22,11 @@ class SidecarWriteResult:
     field: str | None = None
 
 
+@dataclass(frozen=True)
+class SidecarSnapshot:
+    files: tuple[tuple[Path, bytes | None], ...]
+
+
 def _atomic_write(path: Path, payload: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_path = tempfile.mkstemp(
@@ -42,6 +47,45 @@ def _atomic_write(path: Path, payload: str) -> None:
         except OSError:
             pass
         raise
+
+
+def _atomic_write_bytes(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_path = tempfile.mkstemp(
+        dir=str(path.parent), prefix=path.name + ".", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+    except BaseException:
+        try:
+            os.unlink(temporary_path)
+        except OSError:
+            pass
+        raise
+
+
+def capture_sidecars(image_path: str) -> SidecarSnapshot:
+    media_path = Path(image_path)
+    files = tuple(
+        (path, path.read_bytes() if path.exists() else None)
+        for path in (media_path.with_suffix(".txt"), media_path.with_suffix(".json"))
+    )
+    return SidecarSnapshot(files)
+
+
+def restore_sidecars(snapshot: SidecarSnapshot) -> None:
+    for path, payload in snapshot.files:
+        if payload is None:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        else:
+            _atomic_write_bytes(path, payload)
 
 
 def _load_json_object(path: Path) -> MutableMapping[str, Any]:

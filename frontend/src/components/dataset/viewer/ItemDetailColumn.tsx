@@ -6,14 +6,13 @@ import {
   getDatasetItem,
   DatasetItem,
   updateItemCaption,
-  saveItemCaptionToTxt,
+  categorizeDatasetTags,
   predictTags,
   TaggerPredictionsResponse,
   removeItemReferenceImage,
 } from "@/utils/api";
 import InputWithTagSuggestions from "@/components/common/InputWithTagSuggestions";
 import { normalizeTagForMatching } from "@/utils/tagSuggestions";
-import { useTagSuggestions } from "@/contexts/TagSuggestionsContext";
 import TaggerSettingsDialog, { TaggerSettings } from "./TaggerSettingsDialog";
 
 interface ItemDetailColumnProps {
@@ -50,7 +49,6 @@ const getCategoryColor = (category: string): string => {
 };
 
 export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, onTaggerSettingsChange }: ItemDetailColumnProps) {
-  const tagSuggestionsContext = useTagSuggestions();
   const [detailedItem, setDetailedItem] = useState<DatasetItem | null>(null);
   const [tags, setTags] = useState<string[]>([]);
   const [tagCategories, setTagCategories] = useState<Record<string, string>>({});
@@ -70,6 +68,7 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
   const [isResizing, setIsResizing] = useState(false);
   const [lyricsDraft, setLyricsDraft] = useState<string>("");
   const [isSavingLyrics, setIsSavingLyrics] = useState(false);
+  const tagSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   // Notify parent when tagger settings change
   useEffect(() => {
@@ -205,50 +204,37 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
   }, [isResizing]);
 
   const buildTagData = async (tags: string[]): Promise<Array<{ tag: string; category: string }>> => {
-    const tagData: Array<{ tag: string; category: string }> = [];
-
-    for (const tag of tags) {
-      // Try to get category from cache first
-      const normalizedTag = normalizeTagForMatching(tag);
-      let category = tagCategoryCache[normalizedTag];
-
-      // If not in cache, search via tagSuggestions
-      if (!category) {
-        try {
-          const results = await tagSuggestionsContext.searchTags(tag, 1, 'all');
-          if (results.length > 0) {
-            const normalizedUserTag = normalizeTagForMatching(tag);
-            const normalizedResultTag = normalizeTagForMatching(results[0].tag);
-            if (normalizedUserTag === normalizedResultTag) {
-              category = results[0].category;
-            }
-          }
-        } catch (err) {
-          console.error(`[ItemDetailColumn] Failed to get category for tag "${tag}":`, err);
-        }
-      }
-
-      // Default to "General" if category not found
-      tagData.push({
-        tag,
-        category: category || "General",
-      });
-    }
-
-    return tagData;
+    const unresolved = tags.filter(
+      tag => !tagCategoryCache[normalizeTagForMatching(tag)]
+    );
+    const resolved = unresolved.length
+      ? await categorizeDatasetTags(unresolved)
+      : {};
+    return tags.map(tag => ({
+      tag,
+      category:
+        tagCategoryCache[normalizeTagForMatching(tag)]
+        || resolved[tag]
+        || "Unknown",
+    }));
   };
 
-  const saveToFileSystem = async (itemId: number) => {
-    try {
-      const result = await saveItemCaptionToTxt(itemId);
-      if (result.success) {
-        console.log("[ItemDetailColumn] Auto-saved to file:", result.message);
-      } else {
-        console.warn("[ItemDetailColumn] File save failed:", result.message);
-      }
-    } catch (err) {
-      console.error("[ItemDetailColumn] Error auto-saving to file:", err);
-    }
+  const persistTags = (newTags: string[]): Promise<void> => {
+    if (!item) return Promise.resolve();
+    const selectedItem = item;
+    const caption = detailedItem?.captions?.find(c => c.caption_type === "tags");
+    const operation = tagSaveQueueRef.current.then(async () => {
+      await updateItemCaption(datasetId, selectedItem.id, {
+        caption_type: "tags",
+        caption_id: caption?.id,
+        source_field: caption?.source_field,
+        content: newTags.join(", "),
+        tag_data: await buildTagData(newTags),
+        persist_sidecar: true,
+      });
+    });
+    tagSaveQueueRef.current = operation.catch(() => undefined);
+    return operation;
   };
 
   const pushHistory = async (newTags: string[]) => {
@@ -259,20 +245,9 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
     });
     setTags(newTags);
 
-    // Immediately save to DB and file
     if (item) {
       try {
-        const content = newTags.join(", ");
-        const tag_data = await buildTagData(newTags);
-        await updateItemCaption(item.id, {
-          caption_type: "tags",
-          content,
-          tag_data,
-        });
-        console.log("[ItemDetailColumn] Tags saved to DB");
-
-        // Auto-save to txt/json file
-        await saveToFileSystem(item.id);
+        await persistTags(newTags);
       } catch (err) {
         console.error("[ItemDetailColumn] Failed to save tags:", err);
       }
@@ -284,8 +259,11 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
 
     setIsSavingLyrics(true);
     try {
-      await updateItemCaption(item.id, {
+      const caption = detailedItem?.captions?.find(c => c.caption_type === "lyrics");
+      await updateItemCaption(datasetId, item.id, {
         caption_type: "lyrics",
+        caption_id: caption?.id,
+        source_field: caption?.source_field,
         content: lyricsDraft,
       });
       console.log("[ItemDetailColumn] Lyrics saved to DB");
@@ -314,20 +292,9 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
     });
     setTags(previous);
 
-    // Immediately save to DB and file
     if (item) {
       try {
-        const content = previous.join(", ");
-        const tag_data = await buildTagData(previous);
-        await updateItemCaption(item.id, {
-          caption_type: "tags",
-          content,
-          tag_data,
-        });
-        console.log("[ItemDetailColumn] Undo saved to DB");
-
-        // Auto-save to txt/json file
-        await saveToFileSystem(item.id);
+        await persistTags(previous);
       } catch (err) {
         console.error("[ItemDetailColumn] Failed to save undo:", err);
       }
@@ -347,20 +314,9 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
     });
     setTags(next);
 
-    // Immediately save to DB and file
     if (item) {
       try {
-        const content = next.join(", ");
-        const tag_data = await buildTagData(next);
-        await updateItemCaption(item.id, {
-          caption_type: "tags",
-          content,
-          tag_data,
-        });
-        console.log("[ItemDetailColumn] Redo saved to DB");
-
-        // Auto-save to txt/json file
-        await saveToFileSystem(item.id);
+        await persistTags(next);
       } catch (err) {
         console.error("[ItemDetailColumn] Failed to save redo:", err);
       }

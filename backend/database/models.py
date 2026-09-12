@@ -598,7 +598,7 @@ class DatasetItem(DatasetBase):
     dataset = relationship("Dataset", back_populates="items")
     captions = relationship("DatasetCaption", back_populates="item", cascade="all, delete-orphan")
 
-    def to_dict(self):
+    def _thumbnail_url(self):
         thumbnail_url = None
         if self.item_type in ("video", "audio"):
             from config.settings import settings
@@ -615,6 +615,21 @@ class DatasetItem(DatasetBase):
                 if os.path.isfile(os.path.join(settings.thumbnails_dir, f"{name}.{extension}")):
                     thumbnail_url = f"/thumbnails/{name}.{extension}"
                     break
+        return thumbnail_url
+
+    def to_grid_dict(self):
+        return {
+            "id": self.id,
+            "dataset_id": self.dataset_id,
+            "item_type": self.item_type,
+            "base_name": self.base_name,
+            "width": self.width,
+            "height": self.height,
+            "file_size": self.file_size,
+            "thumbnail_url": self._thumbnail_url(),
+        }
+
+    def to_dict(self):
         return {
             "id": self.id,
             "dataset_id": self.dataset_id,
@@ -637,7 +652,7 @@ class DatasetItem(DatasetBase):
             # channels) is stored in the reused exif_data JSON column and
             # surfaced here as audio_meta (mirrors video_meta above).
             "audio_meta": self.exif_data if self.item_type == "audio" else None,
-            "thumbnail_url": thumbnail_url,
+            "thumbnail_url": self._thumbnail_url(),
             "total_captions": self.total_captions,
             "total_tags": self.total_tags,
             "created_at": self.created_at.isoformat() if self.created_at else None,

@@ -1,10 +1,10 @@
 import asyncio
 
 import torch
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
 
-from core.datasets.queries import exact_tag_item_ids
+from core.datasets.queries import dataset_item_page, exact_tag_item_ids
 from database.models import Dataset, DatasetBase, DatasetCaption, DatasetItem
 
 torch.cuda.get_device_capability = lambda *args, **kwargs: (8, 9)
@@ -63,6 +63,51 @@ def test_tag_filter_honors_filename_search_and_dataset_scope(tmp_path):
     db.commit()
 
     assert exact_tag_item_ids(db, first.id, ["tag"], search="wanted") == [wanted.id]
+
+
+def test_grid_page_keeps_heavy_item_columns_deferred(tmp_path):
+    db = _session(tmp_path)
+    dataset = Dataset(name="test", path="test")
+    db.add(dataset)
+    db.flush()
+    dataset_id = dataset.id
+    _item(db, dataset_id, "first", "tag")
+    _item(db, dataset_id, "second", "tag")
+    db.commit()
+    db.expunge_all()
+
+    items, total = dataset_item_page(
+        db,
+        dataset_id,
+        page=1,
+        page_size=1,
+        search=None,
+        tags=None,
+        grid_projection=True,
+    )
+
+    assert total == 2
+    assert len(items) == 1
+    assert {"exif_data", "related_images", "image_hash"} <= inspect(items[0]).unloaded
+
+
+def test_lightweight_dataset_detail_omits_tag_statistics(tmp_path):
+    from api.routes import get_dataset
+
+    db = _session(tmp_path)
+    dataset = Dataset(
+        name="test",
+        path="test",
+        tag_statistics={"tag": {"count": 1, "category": "General"}},
+    )
+    db.add(dataset)
+    db.commit()
+    dataset_id = dataset.id
+    db.expunge_all()
+
+    result = asyncio.run(get_dataset(dataset_id, False, db))
+
+    assert "tag_statistics" not in result
 
 
 def test_caption_type_match_rate_is_weighted_by_row_count(tmp_path):

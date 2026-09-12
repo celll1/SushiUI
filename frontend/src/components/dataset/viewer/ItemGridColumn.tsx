@@ -2,22 +2,22 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Search, ChevronLeft, ChevronRight, X, CheckSquare, Square } from "lucide-react";
-import { DatasetItem, datasetItemMediaUrl, datasetItemPreviewUrl } from "@/utils/api";
+import { DatasetGridItem, datasetItemMediaUrl, datasetItemPreviewUrl } from "@/utils/api";
 import TagSuggestions from "@/components/common/TagSuggestions";
 import { TagFilterMode, normalizeTagForMatching } from "@/utils/tagSuggestions";
 import { useTagSuggestions } from "@/contexts/TagSuggestionsContext";
 
 interface ItemGridColumnProps {
-  items: DatasetItem[];
+  items: DatasetGridItem[];
   selectedItems: Set<number>;
-  currentItem: DatasetItem | null;
+  currentItem: DatasetGridItem | null;
   search: string;
   tagFilter: string;
   page: number;
   total: number;
   pageSize: number;
   loading: boolean;
-  onSelectItem: (item: DatasetItem) => void;
+  onSelectItem: (item: DatasetGridItem) => void;
   onToggleSelection: (itemId: number) => void;
   onSearchChange: (search: string) => void;
   onTagFilterChange: (tagFilter: string) => void;

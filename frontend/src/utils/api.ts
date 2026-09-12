@@ -6142,9 +6142,24 @@ export const createDataset = async (data: DatasetCreateRequest): Promise<Dataset
   return response.data;
 };
 
-export const getDataset = async (id: number): Promise<Dataset> => {
-  const response = await api.get(`/datasets/${id}`);
+export const getDataset = async (
+  id: number,
+  includeTagStatistics: boolean = true,
+  signal?: AbortSignal
+): Promise<Dataset> => {
+  const response = await api.get(`/datasets/${id}`, {
+    params: { include_tag_statistics: includeTagStatistics },
+    signal,
+  });
   return response.data;
+};
+
+export const getDatasetTagStatistics = async (
+  id: number,
+  signal?: AbortSignal
+): Promise<Record<string, { category: string; count: number }>> => {
+  const response = await api.get(`/datasets/${id}/tag-statistics`, { signal });
+  return response.data.tag_statistics;
 };
 
 export const deleteDataset = async (id: number): Promise<void> => {
@@ -6480,6 +6495,18 @@ export interface DatasetItemListResponse {
   page_size: number;
 }
 
+export type DatasetGridItem = Pick<
+  DatasetItem,
+  "id" | "dataset_id" | "item_type" | "base_name" | "width" | "height" | "file_size" | "thumbnail_url"
+>;
+
+export interface DatasetGridItemListResponse {
+  items: DatasetGridItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
 export const listDatasetItems = async (
   datasetId: number,
   page: number = 1,
@@ -6494,8 +6521,27 @@ export const listDatasetItems = async (
   return response.data;
 };
 
-export const getDatasetItem = async (datasetId: number, itemId: number): Promise<DatasetItem> => {
-  const response = await api.get(`/datasets/${datasetId}/items/${itemId}`);
+export const listDatasetGridItems = async (
+  datasetId: number,
+  page: number = 1,
+  pageSize: number = 50,
+  search?: string,
+  tags?: string,
+  signal?: AbortSignal
+): Promise<DatasetGridItemListResponse> => {
+  const params: Record<string, string | number> = { page, page_size: pageSize };
+  if (search) params.search = search;
+  if (tags) params.tags = tags;
+  const response = await api.get(`/datasets/${datasetId}/items/grid`, { params, signal });
+  return response.data;
+};
+
+export const getDatasetItem = async (
+  datasetId: number,
+  itemId: number,
+  signal?: AbortSignal
+): Promise<DatasetItem> => {
+  const response = await api.get(`/datasets/${datasetId}/items/${itemId}`, { signal });
   return response.data;
 };
 

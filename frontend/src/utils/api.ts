@@ -5842,6 +5842,7 @@ export type BrowserBatchEvent =
   | { type: "done"; i: number; total: number; rel_path: string; n_tags: number }
   | { type: "skip"; i: number; total: number; rel_path: string }
   | { type: "error"; i: number; total: number; rel_path: string; error: string }
+  | { type: "fatal"; error: string }
   | { type: "complete"; total: number };
 
 /** Set browser root by typed path. Returns display_name (folder basename only). */
@@ -5901,6 +5902,7 @@ export const browserBatchInfer = (
 ): AbortController => {
   const ctrl = new AbortController();
   (async () => {
+    let terminalEventReceived = false;
     try {
       const res = await fetch("/api/v1/tagger/browser/batch-infer", {
         method: "POST",
@@ -5908,7 +5910,15 @@ export const browserBatchInfer = (
         body: JSON.stringify({ rel_paths, ...options }),
         signal: ctrl.signal,
       });
-      if (!res.ok || !res.body) return;
+      if (!res.ok) {
+        const message = await res.text();
+        onProgress({ type: "fatal", error: message || `HTTP ${res.status}` });
+        return;
+      }
+      if (!res.body) {
+        onProgress({ type: "fatal", error: "The server returned no progress stream." });
+        return;
+      }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = "";
@@ -5921,15 +5931,25 @@ export const browserBatchInfer = (
         for (const part of parts) {
           if (part.startsWith("data: ")) {
             try {
-              onProgress(JSON.parse(part.slice(6)) as BrowserBatchEvent);
+              const event = JSON.parse(part.slice(6)) as BrowserBatchEvent;
+              if (event.type === "complete") terminalEventReceived = true;
+              onProgress(event);
             } catch {
               // ignore malformed SSE
             }
           }
         }
       }
-    } catch {
-      // aborted or network error
+      if (!terminalEventReceived && !ctrl.signal.aborted) {
+        onProgress({ type: "fatal", error: "The progress stream ended before completion." });
+      }
+    } catch (error) {
+      if (!ctrl.signal.aborted) {
+        onProgress({
+          type: "fatal",
+          error: error instanceof Error ? error.message : "Batch inference failed.",
+        });
+      }
     }
   })();
   return ctrl;

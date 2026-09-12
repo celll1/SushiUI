@@ -572,6 +572,46 @@ class TestNormalization(unittest.TestCase):
         self.assertEqual(vocab.num_tags, 1)
 
 
+class TestTrainCountCollectionCap(unittest.TestCase):
+
+    def test_worker_exhausts_train_count_tag_at_configured_cap(self):
+        vocab = _make_vocab(["target_tag"])
+        provider = MagicMock()
+        provider.get_targets.return_value = {"target tag"}
+        buffer = DanbooruSampleBuffer(
+            tag_queries=[],
+            vocabulary=vocab,
+            processor=_make_mock_processor(),
+            is_naflex=False,
+            weight_static=0.0,
+            weight_new_tag=0.0,
+            weight_low_f1=0.0,
+            weight_cooc=0.0,
+            train_count_provider=provider,
+            weight_train_count=1.0,
+            train_count_min_posts=0,
+            train_count_collect_per_epoch=1,
+        )
+        buffer._client.fetch_posts = MagicMock(return_value=[{"id": 1}, {"id": 2}])
+        sample = (torch.zeros(3, 8, 8), torch.zeros(0), torch.zeros(0), ["target_tag"])
+        buffer._process_post = MagicMock(return_value=sample)
+
+        def stop_on_idle(_seconds):
+            buffer._stop.set()
+
+        speed_monitor = MagicMock()
+        speed_monitor.is_in_cooldown.return_value = False
+        with patch(
+            "backend.core.tagger.download_speed_monitor.get_speed_monitor",
+            return_value=speed_monitor,
+        ), patch("backend.core.tagger.danbooru_sampler.time.sleep", side_effect=stop_on_idle):
+            buffer._worker()
+
+        self.assertEqual(buffer._process_post.call_count, 1)
+        self.assertEqual(buffer._collect_count, {"target_tag": 1})
+        self.assertIn("target_tag", buffer._exhausted_tags)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 7.  MixedDataLoader interrupt-batch injection and vocab expansion
 #

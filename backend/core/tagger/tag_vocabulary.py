@@ -127,7 +127,7 @@ class TagVocabulary:
         # Stream with yield_per instead of .all() so we can report progress and
         # avoid materialising millions of caption rows in memory at once.
         _base_q = (
-            datasets_db.query(DatasetCaption)
+            datasets_db.query(DatasetCaption.tag_data, DatasetCaption.content)
             .join(DatasetItem, DatasetCaption.item_id == DatasetItem.id)
             .filter(
                 DatasetItem.dataset_id.in_(dataset_ids),

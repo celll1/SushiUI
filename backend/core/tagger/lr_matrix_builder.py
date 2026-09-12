@@ -78,14 +78,18 @@ def _collect_samples(
     # Local imports - these resolve via _BACKEND_DIR added to sys.path.
     from database import DatasetsSessionLocal
     from database.models import DatasetItem, DatasetCaption
-    from core.tagger.tag_vocabulary import normalize_tag
+    from core.tagger.tag_parsing import resolve_caption_tags
 
     samples: List[List[str]] = []
     db = DatasetsSessionLocal()
     try:
         for did in dataset_ids:
             print(f"[LRBuild] Loading dataset_id={did}...", flush=True)
-            items = db.query(DatasetItem).filter(DatasetItem.dataset_id == did).all()
+            items = (
+                db.query(DatasetItem.id, DatasetItem.image_path)
+                .filter(DatasetItem.dataset_id == did)
+                .all()
+            )
             print(f"[LRBuild]   {len(items)} items", flush=True)
             if not items:
                 continue
@@ -97,7 +101,11 @@ def _collect_samples(
             for i in range(0, len(valid_ids), CHUNK):
                 chunk = valid_ids[i:i + CHUNK]
                 q = (
-                    db.query(DatasetCaption)
+                    db.query(
+                        DatasetCaption.item_id,
+                        DatasetCaption.tag_data,
+                        DatasetCaption.content,
+                    )
                     .filter(
                         DatasetCaption.item_id.in_(chunk),
                         DatasetCaption.is_tags_format == True,  # noqa: E712
@@ -115,18 +123,7 @@ def _collect_samples(
                     continue
                 tag_set = set()
                 for cap in caps:
-                    raw_tags: List[str] = []
-                    if cap.tag_data:
-                        try:
-                            data = json.loads(cap.tag_data) if isinstance(cap.tag_data, str) else cap.tag_data
-                            if isinstance(data, list):
-                                raw_tags = [r["tag"] for r in data if isinstance(r, dict) and "tag" in r]
-                        except (json.JSONDecodeError, TypeError):
-                            pass
-                    if not raw_tags and cap.content:
-                        raw_tags = [t.strip() for t in cap.content.split(",") if t.strip()]
-                    for t in raw_tags:
-                        tag_set.add(normalize_tag(t))
+                    tag_set.update(resolve_caption_tags(cap.tag_data, cap.content))
                 if tag_set:
                     samples.append(sorted(tag_set))
             print(f"[LRBuild]   {len(samples)} cumulative samples", flush=True)

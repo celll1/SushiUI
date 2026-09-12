@@ -7,7 +7,6 @@ produces (pixel_values, pixel_attention_mask, spatial_shapes, label, loss_mask).
 
 from __future__ import annotations
 
-import json
 import os
 import time
 from typing import Callable, Dict, List, Optional, Tuple
@@ -20,41 +19,8 @@ from tqdm import tqdm
 from transformers import AutoProcessor
 
 from .tag_labels import build_label_and_mask
-from .tag_vocabulary import TagVocabulary, normalize_tag
-
-
-def resolve_caption_tags(
-    tag_data, content, comma_resolver, alias_resolver
-) -> List[str]:
-    """Turn a caption's raw ``tag_data`` / ``content`` into canonical tags.
-
-    Shared by ``TaggerDataset._extract_tags`` (dataset build) and the live
-    tag-refresh detector so a tag edited mid-training canonicalises exactly the
-    same way it did at build time. ``tag_data`` (JSON list of ``{"tag": ...}``)
-    takes precedence over the comma-separated ``content`` string.
-    """
-    raw_tags: List[str] = []
-    if tag_data:
-        try:
-            raw = json.loads(tag_data) if isinstance(tag_data, str) else tag_data
-            if isinstance(raw, list):
-                raw_tags = [r["tag"] for r in raw if isinstance(r, dict) and "tag" in r]
-        except (json.JSONDecodeError, TypeError):
-            pass
-    if not raw_tags and content:
-        raw_tags = [t.strip() for t in content.split(",") if t.strip()]
-    # Normalize first (order preserved) so the comma resolver matches the same
-    # forms the vocabulary builder used.
-    norm_tokens = [t for t in (normalize_tag(t) for t in raw_tags) if t]
-    if comma_resolver is not None:
-        norm_tokens = comma_resolver.resolve(norm_tokens)
-    if alias_resolver:
-        return [
-            t if (comma_resolver is not None and comma_resolver.category_of(t) is not None)
-            else alias_resolver.resolve(t)
-            for t in norm_tokens
-        ]
-    return norm_tokens
+from .tag_parsing import resolve_caption_tags
+from .tag_vocabulary import TagVocabulary
 
 
 class TaggerDataset(Dataset):
@@ -193,9 +159,9 @@ class TaggerDataset(Dataset):
             _ds_tag = f"dataset {dataset_id}" + (f" ({_di + 1}/{n_datasets})" if n_datasets > 1 else "")
             print(f"[TaggerDataset] Loading dataset_id={dataset_id}...")
 
-            # Bulk-load all items for this dataset in one query
+            # Project only the fields retained by the worker dataset.
             items = (
-                datasets_db.query(DatasetItem)
+                datasets_db.query(DatasetItem.id, DatasetItem.image_path)
                 .filter(DatasetItem.dataset_id == dataset_id)
                 .all()
             )
@@ -244,7 +210,11 @@ class TaggerDataset(Dataset):
                 _emit(_ci, n_chunks, f"Loading {_ds_tag}: captions {_ci:,}/{n_chunks:,} ({_pct}%)")
                 chunk_ids = valid_item_ids[i:i + CHUNK]
                 q = (
-                    datasets_db.query(DatasetCaption)
+                    datasets_db.query(
+                        DatasetCaption.item_id,
+                        DatasetCaption.tag_data,
+                        DatasetCaption.content,
+                    )
                     .filter(
                         DatasetCaption.item_id.in_(chunk_ids),
                         DatasetCaption.is_tags_format == True,  # noqa: E712

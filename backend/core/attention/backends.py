@@ -191,6 +191,42 @@ def _flash_attn(
         return None
 
 
+def _flash_attn_varlen(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    cu_seqlens_q: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    max_seqlen_q: int,
+    max_seqlen_k: int,
+    *,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: Optional[float] = None,
+) -> Optional[torch.Tensor]:
+    try:
+        from flash_attn import flash_attn_varlen_func
+
+        return flash_attn_varlen_func(
+            query,
+            key,
+            value,
+            cu_seqlens_q.to(torch.int32),
+            cu_seqlens_k.to(torch.int32),
+            int(max_seqlen_q),
+            int(max_seqlen_k),
+            dropout_p=dropout_p,
+            softmax_scale=scale,
+            causal=is_causal,
+        )
+    except ImportError:
+        _warn_kernel_fallback("flash_attn varlen unavailable; falling back to native attention")
+        return None
+    except Exception as exc:  # noqa: BLE001
+        _warn_kernel_fallback(f"flash_attn varlen error ({exc}); falling back to native attention")
+        return None
+
+
 def _sage_attn(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -256,6 +292,88 @@ def _sage_attn(
         return None
     except Exception as e:  # noqa: BLE001 - never raise into the model
         _warn_kernel_fallback(f"sageattention error ({e}); falling back to native attention")
+        return None
+
+
+def _sage_attn_varlen(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    cu_seqlens_q: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    max_seqlen_q: int,
+    max_seqlen_k: int,
+    *,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: Optional[float] = None,
+) -> Optional[torch.Tensor]:
+    try:
+        from sageattention import sageattn_varlen
+
+        return sageattn_varlen(
+            query.contiguous(),
+            key.contiguous(),
+            value.contiguous(),
+            cu_seqlens_q,
+            cu_seqlens_k,
+            int(max_seqlen_q),
+            int(max_seqlen_k),
+            is_causal=is_causal,
+            sm_scale=scale,
+            # The installed default computes one mean across every packed
+            # segment, allowing unrelated documents to affect each other.
+            smooth_k=False,
+        )
+    except ImportError:
+        _warn_kernel_fallback("sageattention varlen unavailable; falling back to native attention")
+        return None
+    except Exception as exc:  # noqa: BLE001
+        _warn_kernel_fallback(f"sageattention varlen error ({exc}); falling back to native attention")
+        return None
+
+
+def _native_varlen(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    cu_seqlens_q: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    max_seqlen_q: int,
+    max_seqlen_k: int,
+    *,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: Optional[float] = None,
+) -> Optional[torch.Tensor]:
+    """Exact reference fallback; fused backends avoid this per-segment loop."""
+    try:
+        starts_q = cu_seqlens_q.tolist()
+        starts_k = cu_seqlens_k.tolist()
+        n_rep = query.shape[1] // key.shape[1]
+        outputs = []
+        for i in range(len(starts_q) - 1):
+            q = query[starts_q[i]:starts_q[i + 1]].transpose(0, 1).unsqueeze(0)
+            k = key[starts_k[i]:starts_k[i + 1]].transpose(0, 1).unsqueeze(0)
+            v = value[starts_k[i]:starts_k[i + 1]].transpose(0, 1).unsqueeze(0)
+            if n_rep > 1:
+                k = k.repeat_interleave(n_rep, dim=1)
+                v = v.repeat_interleave(n_rep, dim=1)
+            seq_q, seq_k = q.shape[2], k.shape[2]
+            if is_causal and seq_q != seq_k:
+                rows = torch.arange(seq_q, device=q.device).unsqueeze(1) + (seq_k - seq_q)
+                cols = torch.arange(seq_k, device=q.device).unsqueeze(0)
+                out = F.scaled_dot_product_attention(
+                    q, k, v, attn_mask=cols <= rows, dropout_p=dropout_p, scale=scale
+                )
+            else:
+                out = F.scaled_dot_product_attention(
+                    q, k, v, dropout_p=dropout_p, is_causal=is_causal, scale=scale
+                )
+            outputs.append(out.squeeze(0).transpose(0, 1))
+        return torch.cat(outputs, dim=0)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[Attention] native varlen SDPA error: {exc}")
         return None
 
 

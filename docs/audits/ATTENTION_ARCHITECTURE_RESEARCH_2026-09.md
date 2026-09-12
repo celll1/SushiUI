@@ -17,7 +17,12 @@ a new dense kernel. It is:
    audio, and mixed boundary tiles dense and sparsifies only target-video to
    target-video edges;
 3. prototype that interface with an existing licensed kernel before deciding
-   whether SushiUI needs its own Ada-optimized CUDA/CUTLASS kernel.
+whether SushiUI needs its own Ada-optimized CUDA/CUTLASS kernel.
+
+Implementation status (2026-09-12): the dense contract guards, strict training
+fallback, boolean-mask preservation, Sage GQA capability, FA2/Sage packed-varlen
+registry, and LTX-2.3/ACE-Step training selection described below are now
+implemented. The sparse-method sections remain design and validation work.
 
 For MiniMax-H3, sparse attention is technically well matched to the released model.
 MiniMax states that H3 used native sparse attention in its final training stage,
@@ -56,11 +61,11 @@ The model-facing coverage is uneven:
 | Krea2 | conduit, GQA | native path materializes repeated K/V heads |
 | Ideogram4 | separate diffusers/FA2-varlen dispatcher | head dimension 256 excludes current Sage path |
 | MiniT2I | conduit with head-dimension padding | padded dimensions constrain backend choice |
-| SenseNova | conduit for generation path, GQA 32/8 | current registry wrongly rejects Sage GQA |
+| SenseNova | conduit for generation path, GQA 32/8 | Sage GQA is accepted by the common registry |
 | MiniMax-H3 | conduit, dense full self-attention | no token-role-aware sparse contract |
 | MiniMax Music 3 | conduit | generation only |
-| LTX-2.3 | diffusers default | SushiUI training backend selection is a no-op |
-| ACE-Step 1.5 | transformers dispatcher | SushiUI training backend selection is a no-op |
+| LTX-2.3 | diffusers dispatcher | training applies native/FA2 and refuses unsupported kernels |
+| ACE-Step 1.5 | transformers dispatcher | training applies SDPA/FA2 and refuses unsupported kernels |
 
 ## Findings
 

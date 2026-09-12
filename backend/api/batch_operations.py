@@ -4,9 +4,10 @@ Batch operations for dataset items (tagger inference, tag reordering, tag replac
 from typing import Callable, List, Dict, Any, Optional, Literal
 from pydantic import BaseModel, Field
 import asyncio
-from datetime import datetime
+import json
 
-from core.datasets.sidecars import write_indexed_caption
+from core.datasets.captions import update_caption
+from core.datasets.revisions import bump_dataset_revision
 from utils.taglist_cache import taglist_cache
 from config.settings import settings
 from api.param_defaults import DATASET_DEFAULTS
@@ -56,68 +57,39 @@ class BatchOperationResponse(BaseModel):
     message: str
     operation_id: Optional[str] = None
 
-
-
-async def save_item_to_txt_json(item, db):
-    """Persist the indexed tags caption through the canonical sidecar writer."""
-    from database.models import DatasetCaption
-
-    tags_caption = db.query(DatasetCaption).filter(
-        DatasetCaption.item_id == item.id,
-        DatasetCaption.caption_type == "tags"
-    ).first()
-
-    if not tags_caption:
-        return None
-
-    return await asyncio.to_thread(
-        write_indexed_caption,
-        item.image_path,
-        tags_caption.content,
-        caption_type=tags_caption.caption_type,
-        source_field=tags_caption.source_field,
-    )
-
-
-async def update_tag_statistics(dataset_id: int, db):
-    """
-    Update tag statistics for a dataset with category information
-    (MIGRATED TO USE TaglistCache singleton - Phase 3)
-    """
-    from database.models import Dataset, DatasetCaption
-    from sqlalchemy import func
-
+def _tag_data(tags: List[str], existing_json: Optional[str] = None) -> List[Dict[str, str]]:
     taglist_cache.initialize(settings.root_dir)
-
-    captions = db.query(DatasetCaption).join(
-        DatasetCaption.item
-    ).filter(
-        DatasetCaption.item.has(dataset_id=dataset_id),
-        DatasetCaption.caption_type == "tags"
-    ).all()
-
-    # Count tags
-    tag_counts = {}
-    for caption in captions:
-        tags = [t.strip() for t in caption.content.split(',') if t.strip()]
-        for tag in tags:
-            tag_counts[tag] = tag_counts.get(tag, 0) + 1
-
-    all_tag_names = list(tag_counts.keys())
-    tag_categories = taglist_cache.get_categories_batch(all_tag_names)
-
-    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
-    if dataset:
-        tag_statistics = {}
-        for tag, count in tag_counts.items():
-            category = tag_categories.get(tag, "General")
-            tag_statistics[tag] = {
-                "count": count,
-                "category": category
+    existing: Dict[str, str] = {}
+    if existing_json:
+        try:
+            existing = {
+                item["tag"]: item.get("category", "Unknown")
+                for item in json.loads(existing_json)
+                if isinstance(item, dict) and item.get("tag")
             }
-        dataset.tag_statistics = tag_statistics
-        db.commit()
-        print(f"[BatchOps] Updated tag statistics: {len(tag_statistics)} unique tags (via TaglistCache)")
+        except (TypeError, ValueError):
+            existing = {}
+    missing = [tag for tag in tags if tag not in existing]
+    resolved = taglist_cache.get_categories_batch(missing) if missing else {}
+    return [
+        {"tag": tag, "category": existing.get(tag, resolved.get(tag, "Unknown"))}
+        for tag in tags
+    ]
+
+
+def _persist_tags(item, caption, tags: List[str], db, *, source: Optional[str] = None) -> None:
+    update_caption(
+        db,
+        item_id=item.id,
+        caption_type="tags",
+        content=", ".join(tags),
+        tag_data=_tag_data(tags, caption.tag_data if caption else None),
+        caption_id=caption.id if caption else None,
+        source_field=caption.source_field if caption else None,
+        persist_sidecar=True,
+        dataset_id=item.dataset_id,
+        source=source,
+    )
 
 
 def normalize_tag_for_matching(tag: str) -> str:
@@ -125,20 +97,6 @@ def normalize_tag_for_matching(tag: str) -> str:
     Normalize tag for matching: lowercase, replace underscores with spaces
     """
     return tag.lower().replace('_', ' ').strip()
-
-
-def get_tag_category(tag: str, tag_suggestions_context) -> str:
-    """
-    Get tag category using taglist
-    Returns "General" if not found
-    """
-    try:
-        # This is a placeholder - actual implementation should use tagSuggestions
-        # For now, return "General" as default
-        return "General"
-    except:
-        return "General"
-
 
 
 async def batch_tagger_inference(
@@ -263,26 +221,13 @@ async def batch_tagger_inference(
                 # Replace mode or no existing tags: Use only predictions
                 final_tags = list(predicted_tags.keys())
 
-            content = ', '.join(final_tags)
-
-            if tags_caption:
-                tags_caption.content = content
-                tags_caption.updated_at = datetime.utcnow()
-            else:
-                tags_caption = DatasetCaption(
-                    item_id=item.id,
-                    caption_type="tags",
-                    content=content,
-                    field_category="training",
-                    is_tags_format=True,
-                    source="tagger_batch"
-                )
-                db.add(tags_caption)
-
-            db.commit()
-
-            await save_item_to_txt_json(item, db)
-
+            _persist_tags(
+                item,
+                tags_caption,
+                final_tags,
+                db,
+                source="tagger_batch" if tags_caption is None else None,
+            )
             updated += 1
 
         except Exception as e:
@@ -293,10 +238,6 @@ async def batch_tagger_inference(
 
         processed += 1
         send_progress_callback(processed, total, f"Processed {processed}/{total} items")
-
-    if updated > 0:
-        send_progress_callback(total, total, "Updating tag statistics...")
-        await update_tag_statistics(dataset_id, db)
 
     # Unload tagger model to free VRAM/memory
     if tagger_manager.loaded:
@@ -334,7 +275,6 @@ async def batch_reorder_tags(
     Reorder tags by category for multiple items
     """
     from database.models import DatasetItem, DatasetCaption
-    from datetime import datetime
 
     total = len(request.item_ids)
 
@@ -410,12 +350,7 @@ async def batch_reorder_tags(
 
             new_content = ', '.join(reordered_tags)
             if new_content != tags_caption.content:
-                tags_caption.content = new_content
-                tags_caption.updated_at = datetime.utcnow()
-                db.commit()
-
-                await save_item_to_txt_json(item, db)
-
+                _persist_tags(item, tags_caption, reordered_tags, db)
                 updated += 1
             else:
                 skipped += 1
@@ -458,7 +393,6 @@ async def batch_replace_tag(
     Replace a specific tag with another tag for multiple items
     """
     from database.models import DatasetItem, DatasetCaption
-    from datetime import datetime
 
     total = len(request.item_ids)
 
@@ -533,12 +467,7 @@ async def batch_replace_tag(
                     f"Replacing in {item.base_name} ({processed + 1}/{total})"
                 )
 
-                tags_caption.content = ', '.join(new_tags)
-                tags_caption.updated_at = datetime.utcnow()
-                db.commit()
-
-                await save_item_to_txt_json(item, db)
-
+                _persist_tags(item, tags_caption, new_tags, db)
                 updated += 1
             else:
                 skipped += 1
@@ -550,10 +479,6 @@ async def batch_replace_tag(
         processed += 1
         if processed % 10 == 0 or processed == total:
             send_progress_callback(processed, total, f"Processed {processed}/{total} items")
-
-    if updated > 0:
-        send_progress_callback(total, total, "Updating tag statistics...")
-        await update_tag_statistics(dataset_id, db)
 
     cancelled = should_cancel()
     status = "cancelled" if cancelled else "completed"
@@ -588,8 +513,7 @@ async def batch_backfill_tag_data(
     Uses taglist_cache.get_categories_batch() for batch category lookup.
     Processes in batches to avoid excessive memory usage.
     """
-    import json
-    from database.models import DatasetCaption, DatasetItem
+    from database.models import Dataset, DatasetCaption, DatasetItem
 
     def send_progress(current, total, message):
         if send_progress_callback:
@@ -601,7 +525,6 @@ async def batch_backfill_tag_data(
     item_ids_subq = (
         db.query(DatasetItem.id)
         .filter(DatasetItem.dataset_id == request.dataset_id)
-        .subquery()
     )
 
     total = (
@@ -632,6 +555,7 @@ async def batch_backfill_tag_data(
     updated = 0
     failed = 0
     batch_size = request.batch_size
+    dataset = db.query(Dataset).filter(Dataset.id == request.dataset_id).first()
 
     while True:
         if should_cancel():
@@ -682,6 +606,8 @@ async def batch_backfill_tag_data(
 
             processed += 1
 
+        if dataset is not None:
+            bump_dataset_revision(dataset)
         db.commit()
         send_progress(processed, total, f"Backfilled {processed}/{total} captions...")
         await asyncio.sleep(0)

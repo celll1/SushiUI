@@ -4,7 +4,17 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from api.batch_operations import BatchReplaceTagRequest, BatchSelection, batch_replace_tag
+import api.batch_operations as batch_module
+from api.batch_operations import (
+    BatchBackfillTagDataRequest,
+    BatchReorderTagsRequest,
+    BatchReplaceTagRequest,
+    BatchSelection,
+    batch_backfill_tag_data,
+    batch_reorder_tags,
+    batch_replace_tag,
+)
+import core.datasets.captions as caption_service
 from core.datasets.batch_jobs import BatchJobRegistry, resolve_dataset_item_ids, resolve_dataset_selection
 from database.models import Dataset, DatasetBase, DatasetCaption, DatasetItem
 
@@ -28,7 +38,12 @@ def _item(db, dataset, tmp_path, name, tags):
     item = DatasetItem(dataset_id=dataset.id, base_name=name, image_path=str(image))
     db.add(item)
     db.flush()
-    db.add(DatasetCaption(item_id=item.id, caption_type="tags", content=tags))
+    db.add(DatasetCaption(
+        item_id=item.id,
+        caption_type="tags",
+        content=tags,
+        is_tags_format=True,
+    ))
     db.commit()
     return item
 
@@ -70,6 +85,94 @@ def test_batch_query_cannot_mutate_an_item_in_another_dataset(tmp_path):
     assert result.updated_count == 0
     assert result.skipped_count == 1
     assert caption.content == "old"
+
+
+def test_batch_sidecar_failure_rolls_back_index_and_revision(tmp_path, monkeypatch):
+    db = _session(tmp_path)
+    dataset = _dataset(db, "first")
+    item = _item(db, dataset, tmp_path, "one", "old")
+    monkeypatch.setattr(batch_module.taglist_cache, "get_categories_batch", lambda tags: {})
+    monkeypatch.setattr(
+        caption_service,
+        "write_indexed_caption",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    result = asyncio.run(batch_replace_tag(
+        BatchReplaceTagRequest(item_ids=[item.id], from_tag="old", to_tag="new"),
+        db,
+        lambda *_: None,
+        dataset_id=dataset.id,
+        should_cancel=lambda: False,
+    ))
+
+    db.expire_all()
+    assert result.failed_count == 1
+    assert db.query(DatasetCaption).filter_by(item_id=item.id).one().content == "old"
+    assert db.get(Dataset, dataset.id).revision == 0
+
+
+def test_batch_reorder_updates_sidecar_tag_data_and_revision(tmp_path, monkeypatch):
+    db = _session(tmp_path)
+    dataset = _dataset(db, "first")
+    item = _item(db, dataset, tmp_path, "one", "general, character")
+    monkeypatch.setattr(batch_module.taglist_cache, "initialize", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        batch_module.taglist_cache,
+        "get_category",
+        lambda tag: {"general": "General", "character": "Character"}[tag],
+    )
+    monkeypatch.setattr(
+        batch_module.taglist_cache,
+        "get_categories_batch",
+        lambda tags: {tag: {"general": "General", "character": "Character"}[tag] for tag in tags},
+    )
+
+    result = asyncio.run(batch_reorder_tags(
+        BatchReorderTagsRequest(
+            item_ids=[item.id], category_order=["Character", "General"]
+        ),
+        db,
+        lambda *_: None,
+        dataset_id=dataset.id,
+        should_cancel=lambda: False,
+    ))
+
+    db.expire_all()
+    caption = db.query(DatasetCaption).filter_by(item_id=item.id).one()
+    assert result.updated_count == 1
+    assert caption.content == "character, general"
+    assert caption.tag_data == (
+        '[{"tag": "character", "category": "Character"}, '
+        '{"tag": "general", "category": "General"}]'
+    )
+    assert (tmp_path / "one.txt").read_text(encoding="utf-8") == "character, general"
+    assert db.get(Dataset, dataset.id).revision == 1
+
+
+def test_backfill_advances_revision_at_each_committed_batch(tmp_path, monkeypatch):
+    db = _session(tmp_path)
+    dataset = _dataset(db, "first")
+    first = _item(db, dataset, tmp_path, "one", "a")
+    second = _item(db, dataset, tmp_path, "two", "b")
+    monkeypatch.setattr(batch_module.taglist_cache, "initialize", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        batch_module.taglist_cache,
+        "get_categories_batch",
+        lambda tags: {tag: "General" for tag in tags},
+    )
+
+    result = asyncio.run(batch_backfill_tag_data(
+        BatchBackfillTagDataRequest(dataset_id=dataset.id, batch_size=1),
+        db,
+        lambda *_: None,
+    ))
+
+    db.expire_all()
+    assert result.updated_count == 2
+    assert db.get(Dataset, dataset.id).revision == 2
+    assert db.get(DatasetCaption, first.captions[0].id).tag_data is not None
+    assert db.get(DatasetCaption, second.captions[0].id).tag_data is not None
 
 
 def test_query_selection_applies_filters_and_exclusions_on_the_server(tmp_path):

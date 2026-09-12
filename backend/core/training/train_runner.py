@@ -1788,150 +1788,128 @@ def get_dataset_items_fast(db: Session, dataset_id: int, caption_types: list = N
                            auxiliary_caption_types: list = None,
                            run_id: int = None, output_dir=None,
                            skip_captions: bool = False) -> list:
-    """
-    Get all items from dataset using optimized JOIN query.
+    """Build the raw training snapshot from projected, streamed database rows."""
 
-    This replaces N+1 queries with a single JOIN query.
-    Returns raw data without caption processing (for caching).
-
-    Args:
-        db: Database session
-        dataset_id: Dataset ID
-        caption_types: List of caption types to use
-        auxiliary_caption_types: Caption sources retained by explicit task views
-        run_id: Optional training run id — when given, reports phase progress to
-            the DB (phase_detail/phase_progress) so the frontend bar updates
-            during the (slow, first-epoch) bulk read of large datasets.
-        output_dir: Optional training output dir — when given, checked for a
-            ``.stop_training`` flag so a user stop during this (potentially
-            many-minutes-long) DB read/scan aborts promptly instead of
-            blocking until it finishes.
-        skip_captions: Read PIXELS ONLY — do not join the caption table and do
-            not select a primary caption per item. Set only by the VAE
-            fine-tune path (``network.type == "vae_decoder"``), whose dataset
-            consumes ``image_path`` and nothing else (see
-            ``vae/vae_dataset.py``: ``VaeRawImageDataset`` /
-            ``make_validation_batch``). Every OTHER training method (the four
-            diffusion methods and the tagger) is text-conditioned and must keep
-            the default False. ``item.captions`` is not touched at ANY of its
-            three access sites in this mode, so dropping the eager join cannot
-            degrade into an N+1 lazy load. Consequences for the returned dicts:
-            ``raw_caption`` is "" and ``tag_data`` is None (same keys, empty
-            values), and an ``item_type == "audio"`` item has NO ``lyrics`` key
-            at all — reading it would mean touching ``item.captions``. Every
-            non-caption field (image_path, width/height, related_images,
-            item_type and the video/audio metadata from
-            ``_apply_video_metadata``) is produced exactly as in the default
-            mode.
-
-    Returns:
-        List of dicts with item data and caption info
-    """
-    from sqlalchemy.orm import joinedload
-
-    # The JOIN materialization itself can't be subdivided; flag it so the UI
-    # doesn't look stalled while a multi-million-row dataset is read.
+    # Surface the streaming phase so large first-epoch reads do not look stalled.
     _update_phase_progress(run_id, "initializing", 0.0,
                            f"Reading dataset {dataset_id} from DB...")
 
-    # Last chance to abort before the blocking .all() materialization below,
-    # which cannot be interrupted mid-flight once started.
     _check_init_stop(output_dir)
 
-    # Single query with JOIN to get all items with their captions.
-    # ORDER BY id gives a deterministic base order across DB backends/versions
-    # so the per-epoch shuffle (base_trainer.py) has a stable, reproducible
-    # starting point instead of whatever order the DB happens to return.
-    _query = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).order_by(DatasetItem.id)
-    if not skip_captions:
-        _query = _query.options(joinedload(DatasetItem.captions))
-    items = _query.all()
+    item_columns = (
+        DatasetItem.id.label("item_id"),
+        DatasetItem.image_path,
+        DatasetItem.width,
+        DatasetItem.height,
+        DatasetItem.related_images,
+        DatasetItem.item_type,
+        DatasetItem.exif_data,
+    )
+    query = db.query(*item_columns).filter(DatasetItem.dataset_id == dataset_id)
+    if skip_captions:
+        query = query.order_by(DatasetItem.id)
+    else:
+        query = query.add_columns(
+            DatasetCaption.id.label("caption_id"),
+            DatasetCaption.caption_type,
+            DatasetCaption.content,
+            DatasetCaption.tag_data,
+            DatasetCaption.is_tags_format,
+        ).outerjoin(DatasetCaption, DatasetCaption.item_id == DatasetItem.id).order_by(
+            DatasetItem.id, DatasetCaption.id
+        )
 
-    dataset_items = []
+    # yield_per prevents SQLAlchemy from retaining both every ORM entity and
+    # the equivalent snapshot dictionaries while the cache is constructed.
+    rows = query.yield_per(512)
+    item_count = db.query(DatasetItem.id).filter(
+        DatasetItem.dataset_id == dataset_id
+    ).count()
+    dataset_items: list[dict] = []
     skipped_missing = 0
-    _n_items = len(items)
     _last_emit = 0.0
-    for _idx, item in enumerate(items):
-        # Throttled progress (~2x/sec) over the post-fetch processing loop.
+
+    def emit_progress(processed: int) -> None:
+        nonlocal _last_emit
         if run_id is not None:
             _now = time.time()
             if _now - _last_emit >= 0.5:
                 _last_emit = _now
-                _pct = (_idx / _n_items * 100.0) if _n_items else 0.0
+                _pct = (processed / item_count * 100.0) if item_count else 0.0
                 _update_phase_progress(
                     run_id, "initializing", _pct,
-                    f"Reading dataset {dataset_id}: {_idx:,}/{_n_items:,} items",
+                    f"Reading dataset {dataset_id}: {processed:,}/{item_count:,} items",
                 )
                 _check_init_stop(output_dir)
-        # Skip items whose image file no longer exists on disk
-        if not os.path.exists(item.image_path):
+
+    def append_item(item_row, captions: list[tuple]) -> None:
+        nonlocal skipped_missing
+        if not os.path.exists(item_row.image_path):
             skipped_missing += 1
-            continue
+            return
 
         primary_caption = None
-        if skip_captions:
-            pass  # pixels-only (VAE fine-tune): item.captions is never accessed
-        elif caption_types:
-            for caption_type in caption_types:
-                for caption in item.captions:
-                    if caption.caption_type == caption_type:
+        if not skip_captions:
+            preferred_types = caption_types or ["tags", "natural_language"]
+            for caption_type in preferred_types:
+                for caption in captions:
+                    if caption[0] == caption_type:
                         primary_caption = caption
                         break
                 if primary_caption:
                     break
-        else:
-            # Auto-select: priority order
-            for caption_type in ["tags", "natural_language"]:
-                for caption in item.captions:
-                    if caption.caption_type == caption_type:
-                        primary_caption = caption
-                        break
-                if primary_caption:
-                    break
-            # Fallback to any caption
-            if not primary_caption and item.captions:
-                primary_caption = item.captions[0]
+            if not primary_caption and captions:
+                primary_caption = captions[0]
 
         item_dict = {
-            "image_path": item.image_path,
-            "raw_caption": primary_caption.content if primary_caption else "",
-            "tag_data": primary_caption.tag_data if primary_caption else None,
-            "is_tags_format": getattr(primary_caption, 'is_tags_format', True) if primary_caption else True,
-            "width": item.width,
-            "height": item.height,
-            "related_images": item.related_images,
+            "image_path": item_row.image_path,
+            "raw_caption": primary_caption[1] if primary_caption else "",
+            "tag_data": primary_caption[2] if primary_caption else None,
+            "is_tags_format": primary_caption[3] if primary_caption else True,
+            "width": item_row.width,
+            "height": item_row.height,
+            "related_images": item_row.related_images,
         }
         if auxiliary_caption_types:
             wanted = set(auxiliary_caption_types)
             item_dict["_captions_by_type"] = {
-                caption.caption_type: {
-                    "content": caption.content,
-                    "tag_data": caption.tag_data,
-                    "is_tags_format": getattr(caption, "is_tags_format", True),
+                caption[0]: {
+                    "content": caption[1],
+                    "tag_data": caption[2],
+                    "is_tags_format": caption[3],
                 }
-                for caption in item.captions
-                if caption.caption_type in wanted
+                for caption in captions
+                if caption[0] in wanted
             }
-        # ACE-Step audio items: source LYRICS from a SEPARATE, dedicated
-        # caption_type=="lyrics" DatasetCaption row -- independent of whichever
-        # caption_type was selected above as the primary "caption" (tags /
-        # natural_language). Lyrics is a second, parallel conditioning signal
-        # (not a substitute for the caption), so it is looked up on its own
-        # rather than folded into the caption_types priority search. Missing
-        # ("" default) preserves the pre-existing instrumental-only behavior
-        # for every item/dataset that has never had a lyrics caption added.
-        if item.item_type == "audio" and not skip_captions:
-            lyrics_caption = None
-            for caption in item.captions:
-                if caption.caption_type == "lyrics":
-                    lyrics_caption = caption
-                    break
-            item_dict["lyrics"] = lyrics_caption.content if lyrics_caption else ""
-        # LTX-2.3 video items: carry item_type + probed video metadata so the
-        # trainer's video-clip encode path (item_type=="video") and
-        # VideoBucketManager see it. Image items are unchanged (item_type="single").
-        _apply_video_metadata(item_dict, item.item_type, item.exif_data, item.image_path)
+        if item_row.item_type == "audio" and not skip_captions:
+            lyrics_caption = next((caption for caption in captions if caption[0] == "lyrics"), None)
+            item_dict["lyrics"] = lyrics_caption[1] if lyrics_caption else ""
+        _apply_video_metadata(
+            item_dict, item_row.item_type, item_row.exif_data, item_row.image_path
+        )
         dataset_items.append(item_dict)
+
+    current_row = None
+    current_captions: list[tuple] = []
+    processed = 0
+    for row in rows:
+        if current_row is not None and row.item_id != current_row.item_id:
+            append_item(current_row, current_captions)
+            processed += 1
+            emit_progress(processed)
+            current_captions = []
+        current_row = row
+        if not skip_captions and row.caption_id is not None:
+            current_captions.append((
+                row.caption_type,
+                row.content,
+                row.tag_data,
+                row.is_tags_format,
+            ))
+    if current_row is not None:
+        append_item(current_row, current_captions)
+        processed += 1
+        emit_progress(processed)
 
     if skipped_missing > 0:
         print(f"[get_dataset_items_fast] WARNING: Skipped {skipped_missing} items whose image files no longer exist on disk. "

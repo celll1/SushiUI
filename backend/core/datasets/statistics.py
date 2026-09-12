@@ -5,10 +5,28 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database.models import DatasetCaption, DatasetItem
 from utils.taglist_cache import taglist_cache
+
+
+def caption_item_counts(db: Session, dataset_id: int) -> tuple[int, int]:
+    """Count distinct items with tag and training-caption content."""
+    item_ids = db.query(DatasetItem.id).filter(DatasetItem.dataset_id == dataset_id)
+    with_tags = db.query(DatasetCaption.item_id).filter(
+        DatasetCaption.item_id.in_(item_ids),
+        DatasetCaption.is_tags_format == True,
+    ).distinct().count()
+    with_captions = db.query(DatasetCaption.item_id).filter(
+        DatasetCaption.item_id.in_(item_ids),
+        DatasetCaption.is_tags_format == False,
+        DatasetCaption.field_category == "training",
+        DatasetCaption.content.isnot(None),
+        func.trim(DatasetCaption.content) != "",
+    ).distinct().count()
+    return with_tags, with_captions
 
 
 def compute_tag_statistics(

@@ -306,7 +306,7 @@ class TagRefreshDetector:
                 return
 
             target_ids = list(id_to_idx.keys())
-            from core.tagger.tagger_dataset import resolve_caption_tags
+            from core.tagger.tag_parsing import resolve_caption_tags
             n_applied = 0
             CH = 400
             per_item: Dict[int, List[str]] = {i: [] for i in target_ids}

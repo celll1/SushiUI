@@ -122,7 +122,7 @@ export default function TaggerSection() {
         <div className="flex-1 overflow-hidden min-h-0">
           {taggerTab === "inference" ? (
             <div className="h-full overflow-y-auto">
-              <InferencePanel modelLoaded={modelStatus.loaded} />
+              <InferencePanel modelStatus={modelStatus} />
             </div>
           ) : (
             <DatasetBrowserPanel modelLoaded={modelStatus.loaded} />

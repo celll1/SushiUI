@@ -4,16 +4,14 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import {
   predictSigLIP2Tags,
-  getSigLIP2Status,
   fetchTagMetrics,
-  getCalibrationSettings,
   setCalibrationSettings,
   buildSigLIP2OodReference,
   SigLIP2PredictResponse,
   SigLIP2TagResult,
   SigLIP2ContextMethod,
-  SigLIP2CalibrationSettings,
   TagMetricsData,
+  SigLIP2StatusResponse,
 } from "@/utils/api";
 import { sendBase64ImageToImg2Img, sendBase64ImageToInpaint } from "@/utils/sendHelpers";
 import InputWithTagSuggestions from "@/components/common/InputWithTagSuggestions";
@@ -22,7 +20,7 @@ import TagResultsChart from "./TagResultsChart";
 import TagMetricsAnalysis from "./TagMetricsAnalysis";
 
 interface InferencePanelProps {
-  modelLoaded: boolean;
+  modelStatus: SigLIP2StatusResponse;
 }
 
 const THRESHOLD_CATEGORIES = [
@@ -66,8 +64,9 @@ function OodBadge({ distance, p50, p95 }: { distance: number; p50: number | null
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
+export default function InferencePanel({ modelStatus }: InferencePanelProps) {
   const router = useRouter();
+  const modelLoaded = modelStatus.loaded;
 
   const [imageBase64, setImageBase64] = useState<string | null>(null);
   const [imageSrc,    setImageSrc]    = useState<string | null>(null);
@@ -86,6 +85,7 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
   const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
 
   const [useTrainingModel, setUseTrainingModel] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const [activeTab,     setActiveTab]     = useState<"inference" | "analysis">("inference");
   const [hasTagMetrics, setHasTagMetrics] = useState(false);
@@ -102,30 +102,30 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
   const [oodBuildResult,  setOodBuildResult]  = useState<{ p50: number; p95: number; n_images: number } | null>(null);
 
   useEffect(() => {
-    getSigLIP2Status()
-      .then((s) => {
-        const hasMet = s.has_tag_metrics ?? false;
-        setHasTagMetrics(hasMet);
-        if (hasMet) setInferMode("best_thr");
-        if (s.calib_method) setCalibMethod(s.calib_method as "jeffreys" | "beta_bb");
-        if (typeof s.calib_eps === "number") setCalibEps(s.calib_eps);
-        if (typeof s.calib_prior_strength === "number") setCalibPriorStrength(s.calib_prior_strength);
-        setHasOodReference(s.has_ood_reference ?? false);
-        setOodP50(typeof s.ood_p50 === "number" ? s.ood_p50 : null);
-        setOodP95(typeof s.ood_p95 === "number" ? s.ood_p95 : null);
-      })
-      .catch(() => {});
-    if (!modelLoaded) {
+    const hasMet = modelStatus.has_tag_metrics ?? false;
+    setHasTagMetrics(hasMet);
+    setInferMode(hasMet ? "best_thr" : "fixed");
+    if (modelStatus.calib_method) setCalibMethod(modelStatus.calib_method as "jeffreys" | "beta_bb");
+    if (typeof modelStatus.calib_eps === "number") setCalibEps(modelStatus.calib_eps);
+    if (typeof modelStatus.calib_prior_strength === "number") setCalibPriorStrength(modelStatus.calib_prior_strength);
+    setHasOodReference(modelStatus.has_ood_reference ?? false);
+    setOodP50(typeof modelStatus.ood_p50 === "number" ? modelStatus.ood_p50 : null);
+    setOodP95(typeof modelStatus.ood_p95 === "number" ? modelStatus.ood_p95 : null);
+    if (!modelLoaded || !hasMet) {
       setActiveTab("inference");
       setTagMetrics(null);
     }
-  }, [modelLoaded]);
+  }, [modelLoaded, modelStatus]);
 
   const handleApplyCalibration = async () => {
     setCalibApplying(true);
+    setCalibMessage(null);
     try {
       await setCalibrationSettings({ method: calibMethod, eps: calibEps, prior_strength: calibPriorStrength });
-    } catch { /* silently ignore */ }
+      setCalibMessage("校正設定を反映しました");
+    } catch (e: any) {
+      setCalibMessage(e?.response?.data?.detail ?? e?.message ?? "校正設定を反映できませんでした");
+    }
     finally { setCalibApplying(false); }
   };
 
@@ -153,6 +153,7 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
   const [calibEps,          setCalibEps]          = useState(0.5);
   const [calibPriorStrength,setCalibPriorStrength]= useState(10.0);
   const [calibApplying,     setCalibApplying]     = useState(false);
+  const [calibMessage,      setCalibMessage]      = useState<string | null>(null);
   const [useCalibration,    setUseCalibration]    = useState(false);
 
   const [contextMethod, setContextMethod] = useState<SigLIP2ContextMethod>("none");
@@ -174,6 +175,7 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
       setResult(null);
       setSelectedTags(new Set());
     };
+    reader.onerror = () => setError("画像を読み込めませんでした");
     reader.readAsDataURL(file);
   };
 
@@ -219,7 +221,6 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
         use_per_tag_threshold: inferMode === "best_thr" && hasTagMetrics,
         min_best_thr: minBestThr,
         min_best_f1: minBestF1,
-        display_calibration: false,   // cal_prob now always included in response
         use_calibration: inferMode === "fixed" && useCalibration && hasTagMetrics,
         use_ood_detection: useOodDetection && hasOodReference && inferMode === "best_thr",
       });
@@ -281,15 +282,20 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
 
   // ── Send to panels ──────────────────────────────────────────────────────────
 
-  const tagString = () => Array.from(selectedTags).join(", ");
-
   const sendTagsTo = (storageKey: string) => {
-    const tags = tagString();
-    if (!tags) return;
-    const saved = JSON.parse(localStorage.getItem(storageKey) || "{}");
-    saved.prompt = saved.prompt ? saved.prompt + ", " + tags : tags;
-    localStorage.setItem(storageKey, JSON.stringify(saved));
-    router.push("/generate");
+    if (selectedTags.size === 0) return;
+    try {
+      const parsed = JSON.parse(localStorage.getItem(storageKey) || "{}");
+      const saved: Record<string, unknown> = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+      const existing = typeof saved.prompt === "string"
+        ? saved.prompt.split(",").map((tag) => tag.trim()).filter(Boolean)
+        : [];
+      saved.prompt = Array.from(new Set([...existing, ...selectedTags])).join(", ");
+      localStorage.setItem(storageKey, JSON.stringify(saved));
+      router.push("/generate");
+    } catch {
+      setError("生成設定を保存できませんでした");
+    }
   };
 
   const sendImageTo = async (target: "img2img" | "inpaint") => {
@@ -298,8 +304,8 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
       if (target === "img2img") await sendBase64ImageToImg2Img(imageBase64);
       else await sendBase64ImageToInpaint(imageBase64);
       router.push(`/generate?tab=${target}`);
-    } catch (e) {
-      console.error("[TaggerInference] Failed to send image:", e);
+    } catch (e: any) {
+      setError(e?.message ?? "画像を生成画面へ送れませんでした");
     }
   };
 
@@ -317,7 +323,7 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
               activeTab === "inference" ? "text-violet-300 border-b-2 border-violet-400 -mb-px" : "text-gray-400 hover:text-gray-200"
             }`}
           >
-            推論
+            結果
           </button>
           {hasTagMetrics && (
             <button
@@ -326,7 +332,7 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
                 activeTab === "analysis" ? "text-violet-300 border-b-2 border-violet-400 -mb-px" : "text-gray-400 hover:text-gray-200"
               }`}
             >
-              分析
+              モデル分析
             </button>
           )}
         </div>
@@ -353,15 +359,22 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
             onDrop={handleDrop}
             onPaste={handlePaste}
             onClick={() => fileInputRef.current?.click()}
+            role="button"
+            aria-label="推論する画像を選択"
             tabIndex={0}
-            onKeyDown={(e) => e.key === "Enter" && fileInputRef.current?.click()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                fileInputRef.current?.click();
+              }
+            }}
           >
             {imageSrc ? (
               <img src={imageSrc} alt="input" className="max-w-full max-h-full object-contain rounded" />
             ) : (
               <div className="text-center text-gray-500 text-sm px-4">
                 <div className="text-4xl mb-2">📷</div>
-                Drop image here<br />or click to browse<br />or paste (Ctrl+V)
+                画像をドロップ<br />クリックして選択<br />または貼り付け (Ctrl+V)
               </div>
             )}
             <input ref={fileInputRef} type="file" accept="image/*" className="hidden"
@@ -370,7 +383,14 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
 
           {/* Options: 2-column grid */}
           <div className="flex-1 flex flex-col gap-2 min-w-0">
-            <div className="grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => setShowAdvanced((value) => !value)}
+              className="self-end text-xs text-gray-400 hover:text-gray-200"
+            >
+              {showAdvanced ? "詳細設定を閉じる" : "詳細設定を表示"}
+            </button>
+            <div className={`grid gap-3 ${showAdvanced ? "grid-cols-2" : "grid-cols-1"}`}>
 
               {/* ── Column 1: Threshold + Inference mode ── */}
               <div className="flex flex-col gap-2">
@@ -498,15 +518,16 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
                         )}
                         <button onClick={handleApplyCalibration} disabled={calibApplying}
                           className="w-full py-0.5 text-xs rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-gray-200 transition-colors">
-                          {calibApplying ? "Applying…" : "Apply"}
+                          {calibApplying ? "反映中…" : "設定を反映"}
                         </button>
+                        {calibMessage && <p className="text-[10px] text-gray-400 break-all">{calibMessage}</p>}
                       </>
                     )}
                   </div>
                 )}
               </div>
 
-              {/* ── Column 2: Conditional + OOD + toggles ── */}
+              {showAdvanced && (
               <div className="flex flex-col gap-2">
 
                 {/* Conditional inference */}
@@ -534,7 +555,6 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
                           {contextLambda.toFixed(2)}
                         </span>
                       </div>
-                      {/* Known + tags */}
                       <div>
                         <div className="flex items-center gap-1.5 mb-1">
                           <span className="text-[10px] text-green-400">Known +</span>
@@ -544,7 +564,7 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
                             {knownTagsPos.map((t) => (
                               <span key={t} className="inline-flex items-center gap-1 px-1 py-0.5 rounded bg-green-900/40 border border-green-700 text-[10px] text-green-200">
                                 {t}
-                                <button onClick={() => removeKnownTag("pos", t)} className="text-green-400 hover:text-red-400 leading-none">×</button>
+                                <button onClick={() => removeKnownTag("pos", t)} aria-label={`${t}を既知タグから削除`} className="text-green-400 hover:text-red-400 leading-none">×</button>
                               </span>
                             ))}
                           </div>
@@ -557,7 +577,6 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
                           showSuggestionsAbove={true}
                         />
                       </div>
-                      {/* Known − tags (collapsible) */}
                       <div>
                         <button onClick={() => setShowNegInput((v) => !v)}
                           className="text-[10px] text-gray-500 hover:text-gray-300 transition-colors">
@@ -570,7 +589,7 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
                                 {knownTagsNeg.map((t) => (
                                   <span key={t} className="inline-flex items-center gap-1 px-1 py-0.5 rounded bg-red-900/40 border border-red-700 text-[10px] text-red-200">
                                     {t}
-                                    <button onClick={() => removeKnownTag("neg", t)} className="text-red-400 hover:text-red-200 leading-none">×</button>
+                                    <button onClick={() => removeKnownTag("neg", t)} aria-label={`${t}を除外タグから削除`} className="text-red-400 hover:text-red-200 leading-none">×</button>
                                   </span>
                                 ))}
                               </div>
@@ -589,7 +608,6 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
                   )}
                 </div>
 
-                {/* OOD detection (best_thr only) */}
                 {hasTagMetrics && inferMode === "best_thr" && (
                   <div className="border border-gray-700 rounded p-2 space-y-1.5">
                     <label className="flex items-center gap-1.5 cursor-pointer select-none">
@@ -622,17 +640,17 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
                   </div>
                 )}
 
-                {/* Misc toggles */}
                 <div className="flex flex-col gap-1.5">
                   <label className="flex items-center gap-1.5 cursor-pointer select-none"
-                    title="Use the currently-training model for inference.">
+                    title="学習中モデルが利用できない場合は読込済みモデルを使います">
                     <input type="checkbox" checked={useTrainingModel}
                       onChange={(e) => setUseTrainingModel(e.target.checked)}
                       className="w-3 h-3 rounded accent-blue-500" />
-                    <span className="text-xs text-gray-400">Use training model</span>
+                    <span className="text-xs text-gray-400">学習中モデルを優先</span>
                   </label>
                 </div>
               </div>
+              )}
             </div>
 
             {/* ── Predict button + status ── */}
@@ -641,11 +659,11 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
               disabled={!imageBase64 || (!modelLoaded && !useTrainingModel) || running}
               className="py-2 rounded text-sm font-medium bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors"
             >
-              {running ? "Running…" : "Predict Tags"}
+              {running ? "推論中…" : "タグを推論"}
             </button>
 
             {!modelLoaded && !useTrainingModel && (
-              <p className="text-xs text-yellow-500">Load a model first (left panel)</p>
+              <p className="text-xs text-yellow-500">左パネルでモデルを読み込んでください</p>
             )}
             {error && <p className="text-xs text-red-400 break-all">{error}</p>}
 
@@ -653,7 +671,7 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-xs text-gray-500">
                   {result.used_best_thr
-                    ? (result.display_calibrated ? `校正後 / Best-thr` : "Raw / Best-thr")
+                    ? "Raw / Best-thr"
                     : (result.calibrated
                         ? `後験確率 (${calibMethod === "jeffreys" ? `Jeffreys ε=${calibEps.toFixed(1)}` : `Beta-BB S=${calibPriorStrength.toFixed(1)}`})`
                         : "Raw / 固定閾値")}

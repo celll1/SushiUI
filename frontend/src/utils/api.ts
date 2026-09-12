@@ -5626,6 +5626,8 @@ export interface SigLIP2StatusResponse {
   lr_matrix_loaded?: boolean;
   has_tag_metrics?: boolean;
   has_ood_reference?: boolean;
+  ood_p50?: number | null;
+  ood_p95?: number | null;
   calib_method?: string;
   calib_eps?: number;
   calib_prior_strength?: number;
@@ -5682,7 +5684,6 @@ export interface SigLIP2PredictOptions {
   use_training_model?: boolean;
   use_calibration?: boolean;       // legacy
   use_per_tag_threshold?: boolean; // new: filter by per-tag best_thr
-  display_calibration?: boolean;   // new: show calibrated probs in display
   min_best_thr?: number;           // clamp floor for best_thr (default 0.30)
   min_best_f1?: number;            // skip tags with best_f1 below this (default 0.05)
   use_ood_detection?: boolean;     // raise threshold for OOD images (requires OOD reference)
@@ -5719,9 +5720,6 @@ export const predictSigLIP2Tags = async (
   }
   if (options?.use_per_tag_threshold) {
     body.use_per_tag_threshold = true;
-  }
-  if (options?.display_calibration) {
-    body.display_calibration = true;
   }
   if (typeof options?.min_best_thr === "number") {
     body.min_best_thr = options.min_best_thr;

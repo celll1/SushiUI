@@ -191,14 +191,13 @@ class MiniT2IMixin:
             enc_prompt, enc_negative, enc_nag = prompt, negative_prompt, nag_negative_prompt
         te = self.minit2i_components["text_encoder"]
         tok = self.minit2i_components["tokenizer"]
-        cache_key = (
-            "minit2i", model_key, enc_prompt, enc_negative, enc_nag,
-            int(prompt_length), str(dtype),
-        )
         from core.inference.prompt_embedding_cache import (
-            generation_prompt_cache, tokenizer_cache_key,
+            conditioning_cache_key, generation_prompt_cache,
         )
-        cache_key = cache_key + (tokenizer_cache_key(tok), str(device))
+        cache_key = conditioning_cache_key(
+            "minit2i", model_key, tok, device, dtype,
+            enc_prompt, enc_negative, enc_nag, int(prompt_length),
+        )
         cached, cache_hit = generation_prompt_cache.get(te, cache_key, device)
         if cache_hit:
             if not keep_te:

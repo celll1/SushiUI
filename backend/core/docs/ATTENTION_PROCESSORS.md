@@ -10,6 +10,11 @@ SushiUI separates two choices that are easy to conflate:
 kernel. `h3_video_window` is a MiniMax-H3-specific, approximate mechanism; it is
 not another spelling of FlashAttention or SageAttention.
 
+All five video endpoints expose `attention_method`,
+`h3_attention_temporal_radius`, and `h3_attention_spatial_radius`. The settings UI
+stores only the method globally; radius tuning remains available through the API.
+Non-H3 video architectures accept the default and warn on a non-default method.
+
 ## Dense conduit
 
 The implementation is split by responsibility:

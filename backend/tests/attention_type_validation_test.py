@@ -47,8 +47,10 @@ from api.generation_utils import record_attention_backend  # noqa: E402
 from core.attention import (  # noqa: E402
     is_known_backend,
     known_backends,
+    known_mechanisms,
     normalize_backend,
     validate_backend,
+    validate_mechanism,
 )
 from core.attention import observed as observed_mod  # noqa: E402
 from core.attention.registry import BACKENDS  # noqa: E402
@@ -191,6 +193,48 @@ class OpenApiEnumTest(unittest.TestCase):
                 self.assertEqual(set(field["enum"]), set(known_backends()))
         self.assertGreaterEqual(found, 2, "image + video request schemas")
 
+    def test_video_mechanism_enums_match_the_derived_vocabulary(self):
+        spec = yaml.safe_load(open(os.path.join(_REPO, "openapi.yaml"), encoding="utf-8"))
+        schemas = spec["components"]["schemas"]
+        for name in ("Txt2VidRequest", "OutpaintVideoRequest", "InpaintVideoRequest"):
+            with self.subTest(schema=name):
+                field = schemas[name]["properties"]["attention_method"]
+                self.assertEqual(set(field["enum"]), set(known_mechanisms()))
+                self.assertEqual(field["default"], "dense")
+
+
+class MechanismApiTest(unittest.TestCase):
+    def test_mechanism_is_explicit_and_dense_by_default(self):
+        self.assertEqual(validate_mechanism(None), "dense")
+        self.assertEqual(validate_mechanism(" H3_VIDEO_WINDOW "), "h3_video_window")
+        with self.assertRaises(ValueError):
+            validate_mechanism("banana")
+
+    def test_video_routes_expose_the_complete_mechanism_contract(self):
+        import inspect
+
+        from api.routes import Txt2VidRequest, router
+
+        self.assertEqual(Txt2VidRequest.model_fields["attention_method"].default, "dense")
+        paths = {
+            "/generate/img2vid",
+            "/generate/ref2vid",
+            "/generate/outpaint/video",
+            "/generate/inpaint/video",
+        }
+        found = set()
+        for route in router.routes:
+            if getattr(route, "path", None) not in paths:
+                continue
+            found.add(route.path)
+            params = inspect.signature(route.endpoint).parameters
+            self.assertTrue(
+                {"attention_method", "h3_attention_temporal_radius", "h3_attention_spatial_radius"}
+                <= set(params),
+                route.path,
+            )
+        self.assertEqual(found, paths)
+
 
 class FrontendAttentionSenderTest(unittest.TestCase):
     @staticmethod
@@ -256,6 +300,24 @@ class FrontendAttentionSenderTest(unittest.TestCase):
 
         self.assertIn('["normal", "sage", "flash", "tq"]', source)
         self.assertIn("readGlobalAttentionType() ?? fallback ?? \"normal\"", source)
+
+    def test_every_video_sender_resolves_the_global_mechanism(self):
+        api_path = os.path.join(_REPO, "frontend", "src", "utils", "api.ts")
+        with open(api_path, encoding="utf-8") as handle:
+            source = handle.read()
+
+        for name in (
+            "generateTxt2Vid",
+            "generateImg2Vid",
+            "generateRef2Vid",
+            "generateOutpaintVideo",
+            "generateInpaintVideo",
+        ):
+            with self.subTest(sender=name):
+                self.assertIn(
+                    "resolveGlobalAttentionMethod(params.attention_method)",
+                    self._function_source(source, name),
+                )
 
     def test_every_generation_panel_uses_the_shared_setting_reader(self):
         for name in (

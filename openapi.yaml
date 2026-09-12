@@ -13405,6 +13405,31 @@ components:
             `attention_backend` (observed per attention call by the conduit);
             it is absent for `ltx2`, which never reaches the conduit.
           example: sage
+        attention_method:
+          type: string
+          enum: [dense, h3_video_window]
+          default: dense
+          description: |
+            Semantic attention connectivity, independent of `attention_type`.
+            `dense` preserves the released model path exactly. `h3_video_window`
+            is an experimental MiniMax-H3 inference mode: condition/reference,
+            audio and mixed boundary blocks remain dense, while pairs of pure
+            generated-video blocks use a local 3D window through FlexAttention.
+            It is approximate and reports a warning; LTX-2.3 ignores it with an
+            unsupported-parameter warning.
+          example: dense
+        h3_attention_temporal_radius:
+          type: number
+          minimum: 0
+          default: 16.0
+          description: "MiniMax-H3 rotary-time coordinate radius used only by h3_video_window."
+          example: 16.0
+        h3_attention_spatial_radius:
+          type: number
+          minimum: 0
+          default: 8.0
+          description: "MiniMax-H3 normalized rotary-space coordinate radius used only by h3_video_window."
+          example: 8.0
         loras:
           type: array
           default: []
@@ -14012,6 +14037,22 @@ components:
             the field falls back to the process-wide setting, honored by
             `minimax_h3` and accepted-with-a-warning by `ltx2`.
           example: normal
+        attention_method:
+          type: string
+          enum: [dense, h3_video_window]
+          default: dense
+          description: "Attention connectivity with the same semantics as `Txt2VidRequest.attention_method`."
+          example: dense
+        h3_attention_temporal_radius:
+          type: number
+          minimum: 0
+          default: 16.0
+          description: "MiniMax-H3 temporal window radius; used only by h3_video_window."
+        h3_attention_spatial_radius:
+          type: number
+          minimum: 0
+          default: 8.0
+          description: "MiniMax-H3 spatial window radius; used only by h3_video_window."
         blocks_to_swap:
           type: integer
           default: 0
@@ -14515,6 +14556,22 @@ components:
           default: normal
           description: "Attention backend for this generation, with exactly the semantics of `Img2VidRequest.attention_type`."
           example: normal
+        attention_method:
+          type: string
+          enum: [dense, h3_video_window]
+          default: dense
+          description: "Attention connectivity with the same semantics as `Txt2VidRequest.attention_method`."
+          example: dense
+        h3_attention_temporal_radius:
+          type: number
+          minimum: 0
+          default: 16.0
+          description: "MiniMax-H3 temporal window radius; used only by h3_video_window."
+        h3_attention_spatial_radius:
+          type: number
+          minimum: 0
+          default: 8.0
+          description: "MiniMax-H3 spatial window radius; used only by h3_video_window."
         blocks_to_swap:
           type: integer
           default: 0

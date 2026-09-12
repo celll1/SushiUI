@@ -40,6 +40,9 @@ interface BaseSendParams {
   // Attention processor type
   attention_type?: string;
   attention_impl?: string;
+  attention_method?: string;
+  h3_attention_temporal_radius?: number;
+  h3_attention_spatial_radius?: number;
 }
 
 /**
@@ -136,6 +139,15 @@ export function sendToPanel(
     }
     if (sourceParams.attention_impl !== undefined) {
       targetParams.attention_impl = sourceParams.attention_impl;
+    }
+    if (sourceParams.attention_method !== undefined) {
+      targetParams.attention_method = sourceParams.attention_method;
+    }
+    if (sourceParams.h3_attention_temporal_radius !== undefined) {
+      targetParams.h3_attention_temporal_radius = sourceParams.h3_attention_temporal_radius;
+    }
+    if (sourceParams.h3_attention_spatial_radius !== undefined) {
+      targetParams.h3_attention_spatial_radius = sourceParams.h3_attention_spatial_radius;
     }
 
     if (includeDenoising && sourceParams.denoising_strength !== undefined) {

@@ -511,79 +511,76 @@ class Ideogram4Mixin:
         return "".join(t for t, _ in parsed)
 
     @torch.no_grad()
-    def _ideogram4_encode(self, prompt, grid_h, grid_w, max_sequence_length, device, dtype,
-                          skip_gpu_stage: bool = False, skip_cpu_offload: bool = False):
-        """Stage the text encoder to GPU, encode the prompt, then free it back to CPU.
-
-        ``skip_gpu_stage``/``skip_cpu_offload`` let a keep-models-hot caller skip the
-        ->GPU stage (already resident from a previous generation) and/or the ->CPU
-        offload (kept hot for the next queued generation) around this single encode
-        call. Both default False, so the default behaviour is byte-identical.
-        """
-        from core.models.ideogram4.ideogram4_pipeline_ops import encode_prompt
-
-        if not skip_gpu_stage:
-            self._ideogram4_move("text_encoder", device)
-        text_encoder = self.ideogram4_components["text_encoder"]
-        tokenizer = self.ideogram4_components["tokenizer"]
-        cond = encode_prompt(
-            text_encoder, tokenizer, prompt,
-            grid_h=grid_h, grid_w=grid_w,
-            max_sequence_length=max_sequence_length, device=device,
+    def _ideogram4_encode_conditioning(
+        self, params, cfg, device, dtype, model_key, keep_text_encoder,
+        include_guidance=True,
+    ):
+        """Own Ideogram 4 main/NAG encoding and text-encoder residency."""
+        from core.inference.prompt_embedding_cache import (
+            conditioning_cache_key, generation_prompt_cache,
         )
-        if not skip_cpu_offload:
-            self._ideogram4_move("text_encoder", "cpu")
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        # Cast conditioning to the transformer compute dtype (halves memory; matches RMSNorm dtype).
-        cond["llm_features"] = cond["llm_features"].to(dtype)
-        cond["neg_llm_features"] = cond["neg_llm_features"].to(dtype)
-        return cond
-
-    @torch.no_grad()
-    def _ideogram4_encode_nag_negative(self, params, cfg, cond, device, dtype,
-                                       skip_gpu_stage: bool = False, skip_cpu_offload: bool = False):
-        """Encode the NAG-negative prompt into a packed ``nag_llm_features`` tensor and store
-        it on ``cond`` — only when NAG is active. Byte-identical (returns early) otherwise.
-
-        NAG is gated on ``nag_enable`` AND ``nag_scale > 1`` (nag-negative defaults to the
-        empty prompt like FLUX.2). The negative features share the positive prompt's packed
-        layout (same ``encode_prompt`` path), so the conditional transformer can run a
-        doubled ``[positive; nag_negative]`` text batch.
-
-        ``skip_gpu_stage``/``skip_cpu_offload``: see ``_ideogram4_encode`` docstring —
-        same keep-models-hot semantics, applied to this (second, optional) text-encoder use.
-        """
+        from core.keep_hot import discard_resident, is_resident
         from core.models.ideogram4.ideogram4_pipeline_ops import encode_prompt
 
         nag_enable = bool(params.get("nag_enable", False))
         nag_scale = float(params.get("nag_scale", 5.0))
-        if not (nag_enable and nag_scale > 1.0):
-            return None
-        nag_neg_prompt = params.get("nag_negative_prompt", "") or params.get("negative_prompt", "") or ""
-        # When NegPip is active, strip emphasis syntax so the nag-negative text tokenizes
-        # cleanly; the signed nag_neg weights are carried by NegPip's V scaling instead.
-        nag_neg_prompt = self._ideogram4_negpip_clean_prompt(nag_neg_prompt, params)
+        nag_active = include_guidance and nag_enable and nag_scale > 1.0
+        nag_neg_prompt = None
+        if nag_active:
+            raw_nag_prompt = params.get("nag_negative_prompt", "") \
+                or params.get("negative_prompt", "") or ""
+            nag_neg_prompt = self._ideogram4_negpip_clean_prompt(raw_nag_prompt, params)
 
-        if not skip_gpu_stage:
-            self._ideogram4_move("text_encoder", device)
         text_encoder = self.ideogram4_components["text_encoder"]
         tokenizer = self.ideogram4_components["tokenizer"]
-        nag_cond = encode_prompt(
-            text_encoder, tokenizer, nag_neg_prompt,
+        cache_key = conditioning_cache_key(
+            "ideogram4", model_key, tokenizer, device, dtype,
+            cfg["prompt"], cfg["grid_h"], cfg["grid_w"],
+            cfg["max_sequence_length"], nag_neg_prompt,
+            nag_scale if nag_active else None,
+            float(params.get("nag_tau", 2.5)) if nag_active else None,
+            float(params.get("nag_alpha", 0.25)) if nag_active else None,
+        )
+        cached, cache_hit = generation_prompt_cache.get(text_encoder, cache_key, device)
+        was_resident = is_resident(self, "text_encoder", model_key)
+        if cache_hit:
+            if not keep_text_encoder:
+                self._ideogram4_move("text_encoder", "cpu")
+                discard_resident(self, "text_encoder")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            cond, nag_cfg = cached
+            return cond, nag_cfg, (keep_text_encoder and was_resident)
+
+        if not was_resident:
+            self._ideogram4_move("text_encoder", device)
+        cond = encode_prompt(
+            text_encoder, tokenizer, cfg["prompt"],
             grid_h=cfg["grid_h"], grid_w=cfg["grid_w"],
             max_sequence_length=cfg["max_sequence_length"], device=device,
         )
-        if not skip_cpu_offload:
+        cond["llm_features"] = cond["llm_features"].to(dtype)
+        cond["neg_llm_features"] = cond["neg_llm_features"].to(dtype)
+        nag_cfg = None
+        if nag_active:
+            nag_cond = encode_prompt(
+                text_encoder, tokenizer, nag_neg_prompt,
+                grid_h=cfg["grid_h"], grid_w=cfg["grid_w"],
+                max_sequence_length=cfg["max_sequence_length"], device=device,
+            )
+            cond["nag_llm_features"] = nag_cond["llm_features"].to(dtype)
+            nag_cfg = {
+                "nag_scale": nag_scale,
+                "nag_tau": float(params.get("nag_tau", 2.5)),
+                "nag_alpha": float(params.get("nag_alpha", 0.25)),
+            }
+        generation_prompt_cache.put(text_encoder, cache_key, (cond, nag_cfg))
+        if not keep_text_encoder:
             self._ideogram4_move("text_encoder", "cpu")
+            discard_resident(self, "text_encoder")
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        # Packed features with the nag-negative TEXT region (image region stays zero-padded),
-        # same shape/layout as cond["llm_features"] so it feeds the doubled cond forward.
-        cond["nag_llm_features"] = nag_cond["llm_features"].to(dtype)
-        return {"nag_scale": nag_scale,
-                "nag_tau": float(params.get("nag_tau", 2.5)),
-                "nag_alpha": float(params.get("nag_alpha", 0.25))}
+        return cond, nag_cfg, keep_text_encoder
 
     def _ideogram4_wrap_nag(self, transformer, nag_cfg):
         """Wrap the conditional transformer with the NAG wrapper (in place of the raw
@@ -1014,32 +1011,19 @@ class Ideogram4Mixin:
         _kh_gen_succeeded = False
 
         try:
+            style_active = bool(params.get("style_transfer") and params["style_transfer"].get("image"))
+            if style_active:
+                print("[Ideogram4] Style transfer active: disabling NAG/NegPip for this generation")
             print("[Ideogram4] Stage 1: Text encoding...")
-            cond = self._ideogram4_encode(
-                cfg["prompt"], cfg["grid_h"], cfg["grid_w"],
-                cfg["max_sequence_length"], device, dtype,
-                skip_gpu_stage=is_resident(self, "text_encoder", _kh_model_key),
-                skip_cpu_offload=_kh_keep_te,
+            cond, nag_cfg, _kh_keep_te = self._ideogram4_encode_conditioning(
+                params, cfg, device, dtype, _kh_model_key, _kh_keep_te,
+                include_guidance=not style_active,
             )
 
             print("[Ideogram4] Stage 2: Prepare latents...")
             latents = prepare_latents(
                 cfg["grid_h"], cfg["grid_w"], dtype=torch.float32, device=device, seed=cfg["seed"],
             )
-
-            # Training-free reference-style transfer: mutually exclusive with NAG/NegPip for
-            # the WHOLE generation (both rewrite the attention-time token/value layout, same
-            # conflict as FBCache below) -- decided BEFORE either is set up so neither text
-            # encode nor auto-activation ever runs when style is active.
-            style_active = bool(params.get("style_transfer") and params["style_transfer"].get("image"))
-            if style_active:
-                print("[Ideogram4] Style transfer active: disabling NAG/NegPip for this generation")
-                nag_cfg = None
-            else:
-                nag_cfg = self._ideogram4_encode_nag_negative(
-                    params, cfg, cond, device, dtype,
-                    skip_gpu_stage=_kh_keep_te, skip_cpu_offload=_kh_keep_te,
-                )
 
             print("[Ideogram4] Stage 3: Denoising (dual-branch)...")
             if is_resident(self, "transformer", _kh_model_key):
@@ -1201,12 +1185,13 @@ class Ideogram4Mixin:
         _kh_gen_succeeded = False
 
         try:
+            style_active = bool(params.get("style_transfer") and params["style_transfer"].get("image"))
+            if style_active:
+                print("[Ideogram4] Style transfer active: disabling NAG/NegPip for this generation")
             print("[Ideogram4] Stage 1: Text encoding...")
-            cond = self._ideogram4_encode(
-                cfg["prompt"], cfg["grid_h"], cfg["grid_w"],
-                cfg["max_sequence_length"], device, dtype,
-                skip_gpu_stage=is_resident(self, "text_encoder", _kh_model_key),
-                skip_cpu_offload=_kh_keep_te,
+            cond, nag_cfg, _kh_keep_te = self._ideogram4_encode_conditioning(
+                params, cfg, device, dtype, _kh_model_key, _kh_keep_te,
+                include_guidance=not style_active,
             )
 
             print("[Ideogram4] Stage 2: Encoding init image...")
@@ -1221,16 +1206,6 @@ class Ideogram4Mixin:
                 self._ideogram4_move("vae", "cpu")
             if torch.cuda.is_available() and not _kh_keep_vae:
                 torch.cuda.empty_cache()
-
-            style_active = bool(params.get("style_transfer") and params["style_transfer"].get("image"))
-            if style_active:
-                print("[Ideogram4] Style transfer active: disabling NAG/NegPip for this generation")
-                nag_cfg = None
-            else:
-                nag_cfg = self._ideogram4_encode_nag_negative(
-                    params, cfg, cond, device, dtype,
-                    skip_gpu_stage=_kh_keep_te, skip_cpu_offload=_kh_keep_te,
-                )
 
             print("[Ideogram4] Stage 3: Denoising (SDEdit)...")
             if is_resident(self, "transformer", _kh_model_key):
@@ -1397,12 +1372,13 @@ class Ideogram4Mixin:
         _kh_gen_succeeded = False
 
         try:
+            style_active = bool(params.get("style_transfer") and params["style_transfer"].get("image"))
+            if style_active:
+                print("[Ideogram4] Style transfer active: disabling NAG/NegPip for this generation")
             print("[Ideogram4] Stage 1: Text encoding...")
-            cond = self._ideogram4_encode(
-                cfg["prompt"], cfg["grid_h"], cfg["grid_w"],
-                cfg["max_sequence_length"], device, dtype,
-                skip_gpu_stage=is_resident(self, "text_encoder", _kh_model_key),
-                skip_cpu_offload=_kh_keep_te,
+            cond, nag_cfg, _kh_keep_te = self._ideogram4_encode_conditioning(
+                params, cfg, device, dtype, _kh_model_key, _kh_keep_te,
+                include_guidance=not style_active,
             )
 
             print("[Ideogram4] Stage 2: Encoding init image + mask...")
@@ -1420,16 +1396,6 @@ class Ideogram4Mixin:
             mask_latent = prepare_mask_latent(
                 mask_image, cfg["grid_h"], cfg["grid_w"], device=device, dtype=torch.float32,
             )
-
-            style_active = bool(params.get("style_transfer") and params["style_transfer"].get("image"))
-            if style_active:
-                print("[Ideogram4] Style transfer active: disabling NAG/NegPip for this generation")
-                nag_cfg = None
-            else:
-                nag_cfg = self._ideogram4_encode_nag_negative(
-                    params, cfg, cond, device, dtype,
-                    skip_gpu_stage=_kh_keep_te, skip_cpu_offload=_kh_keep_te,
-                )
 
             print("[Ideogram4] Stage 3: Denoising (repaint)...")
             if is_resident(self, "transformer", _kh_model_key):

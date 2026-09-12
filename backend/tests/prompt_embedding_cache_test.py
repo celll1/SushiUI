@@ -10,6 +10,7 @@ from core.inference.prompt_embedding_cache import (
 from core.keep_hot import mark_resident
 from core.pipeline_backends.anima import AnimaMixin
 from core.pipeline_backends.flux2 import Flux2Mixin
+from core.pipeline_backends.ideogram4 import Ideogram4Mixin
 from core.pipeline_backends.krea2 import Krea2Mixin
 from core.pipeline_backends.lens import LensMixin
 from core.pipeline_backends.minit2i import MiniT2IMixin
@@ -296,3 +297,60 @@ def test_lens_hit_skips_disposable_encoder_reload(monkeypatch):
     manager._lens_encode_conditioning(*args)
     assert len(reloads) == 2
     assert len(forwards) == 2
+
+
+def test_ideogram4_cache_owns_main_and_nag_encodes(monkeypatch):
+    from core.models.ideogram4 import ideogram4_pipeline_ops
+
+    generation_prompt_cache.clear()
+    manager = Ideogram4Mixin()
+    encoder = torch.nn.Linear(1, 1)
+    manager.ideogram4_components = {
+        "text_encoder": encoder,
+        "tokenizer": _Encoder(),
+    }
+    moves = []
+    forwards = []
+    manager._ideogram4_move = lambda name, device: moves.append((name, device))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+    def encode_prompt(_encoder, _tokenizer, prompt, **_kwargs):
+        forwards.append(prompt)
+        value = torch.full((1, 2, 2), len(prompt), dtype=torch.float32)
+        return {"llm_features": value, "neg_llm_features": -value}
+
+    monkeypatch.setattr(ideogram4_pipeline_ops, "encode_prompt", encode_prompt)
+    params = {
+        "prompt": "positive",
+        "negative_prompt": "negative",
+        "nag_enable": True,
+        "nag_scale": 2.0,
+        "nag_negative_prompt": "nag",
+    }
+    cfg = {
+        "prompt": "positive",
+        "grid_h": 8,
+        "grid_w": 8,
+        "max_sequence_length": 32,
+    }
+    args = (params, cfg, torch.device("cpu"), torch.float32, "model", False)
+
+    (first, first_nag, kept_first) = manager._ideogram4_encode_conditioning(*args)
+    (second, second_nag, kept_second) = manager._ideogram4_encode_conditioning(*args)
+
+    assert forwards == ["positive", "nag"]
+    assert moves == [
+        ("text_encoder", torch.device("cpu")),
+        ("text_encoder", "cpu"),
+        ("text_encoder", "cpu"),
+    ]
+    assert not kept_first and not kept_second
+    assert first_nag == second_nag == {"nag_scale": 2.0, "nag_tau": 2.5, "nag_alpha": 0.25}
+    for name in ("llm_features", "neg_llm_features", "nag_llm_features"):
+        assert torch.equal(first[name], second[name])
+        assert first[name].data_ptr() != second[name].data_ptr()
+
+    keep_args = args[:-1] + (True,)
+    assert not manager._ideogram4_encode_conditioning(*keep_args)[2]
+    mark_resident(manager, "text_encoder", "model")
+    assert manager._ideogram4_encode_conditioning(*keep_args)[2]

@@ -215,6 +215,20 @@ EXTRA_METRIC_DEFS = {
                        "scale_group": "lr_decay_state",
                        "range": {"kind": "fixed", "min": 0, "max": 3},
                        "sampling": "dense"},
+    # What timestep the run is actually training at, per iteration, and where a
+    # resume-time distribution morph stands
+    # (docs/guides/TIMESTEP_DISTRIBUTION_MORPH_DESIGN.md). All four live on the
+    # sampler's own [0,1] axis, whose ends mean clean/noisy per the
+    # architecture's timestep convention.
+    "timestep_batch_mean": {"label": "Timestep mean", "color": "#a3e635",
+                            "dashed": True, **_UNIT_DIAG},
+    "timestep_batch_p10": {"label": "Timestep p10", "color": "#65a30d",
+                           "dashed": True, **_UNIT_DIAG},
+    "timestep_batch_p90": {"label": "Timestep p90", "color": "#bef264",
+                           "dashed": True, **_UNIT_DIAG},
+    # 0 = still the pre-resume distribution, 1 = fully the configured one.
+    "timestep_morph_lambda": {"label": "Timestep morph lambda", "color": "#facc15",
+                              "dashed": True, **_UNIT_DIAG},
     # Run-cumulative batches abandoned before their backward pass (OOM, unusable
     # item, no valid latents, missing condition image). Monotone staircase: a
     # skip writes no metrics row of its own, so this rides the next completed

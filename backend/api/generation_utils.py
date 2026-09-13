@@ -1526,6 +1526,74 @@ _AUDIO_MIN_INFERENCE_STEPS: Dict[str, int] = {
 }
 
 
+def validate_yue2_request(params: Dict[str, Any], supplied: Dict[str, Any],
+                          defaults: Dict[str, Any]) -> None:
+    """Validate YuE2's protocol and refuse unsupported inputs before GPU work."""
+    import math
+    from api.error_handlers import ValidationError
+    from api.param_defaults import YUE2_GUIDANCE_DEFAULTS
+
+    supported = {
+        "prompt", "lyrics", "audio_duration", "seed", "guidance_scale",
+        "yue2_cot", "yue2_abc", "yue2_abc_max_tokens", "temperature",
+        "top_p", "top_k", "repetition_penalty", "vae_decode_mode", "vae_tile_frames",
+        "loras",
+    }
+    known_but_unsupported = {
+        "negative_prompt", "controlnets", "reference_audio", "reference_audio_path",
+        "reference_audio_enable", "is_cover", "nag_enable", "spectrum_enable", "fbcache_enable",
+        "tread_enable", "blockskip_enable", "blocks_to_swap", "enable_block_swap",
+        "use_pinned_memory", "block_swap_ring_size", "unet_quantization",
+        "quantized_gemm_mode", "use_torch_compile", "inference_steps", "shift",
+        "sampler_mode", "vocal_language", "num_inference_steps", "flow_guidance_scale",
+    }
+    unknown = set(supplied) - supported - known_but_unsupported
+    if unknown:
+        raise ValidationError(f"YuE2 does not support request field(s): {sorted(unknown)}")
+
+    for key in ("yue2_cot", "yue2_abc", "yue2_abc_max_tokens", "temperature",
+                "top_p", "top_k", "repetition_penalty", "vae_decode_mode", "vae_tile_frames"):
+        if params.get(key) is None:
+            raise ValidationError(f"{key} cannot be null for YuE2; omit it to use the default")
+    if not (params.get("prompt") or "").strip():
+        raise ValidationError("YuE2 requires a non-empty music style prompt")
+    if not (params.get("lyrics") or "").strip():
+        raise ValidationError("YuE2 requires non-empty structured lyrics")
+    if not params["yue2_abc"].strip():
+        params["yue2_abc"] = defaults["yue2_abc"]
+    if params["yue2_cot"] == "off" and params["yue2_abc"].strip():
+        raise ValidationError("YuE2 does not accept yue2_abc with yue2_cot=off")
+    if "guidance_scale" not in supplied:
+        params["guidance_scale"] = YUE2_GUIDANCE_DEFAULTS[params["yue2_cot"]]
+        defaults["guidance_scale"] = params["guidance_scale"]
+    for key in ("audio_duration", "guidance_scale"):
+        value = float(params[key])
+        if not math.isfinite(value) or value <= 0:
+            raise ValidationError(f"{key} must be finite and positive for YuE2")
+    if params["guidance_scale"] > 20:
+        raise ValidationError("guidance_scale must be at most 20 for YuE2")
+    if params["audio_duration"] > 24576 / 25:
+        raise ValidationError("YuE2 audio_duration exceeds its context even before conditioning")
+    if round(params["audio_duration"] * 25) < 1:
+        raise ValidationError("YuE2 audio_duration must allow at least one 25 Hz semantic token")
+    if params["seed"] != -1 and not 0 <= params["seed"] < 2**63:
+        raise ValidationError("YuE2 seed must be -1 or an integer from 0 through 2^63-1")
+    unsupported = (
+        "negative_prompt", "controlnets", "reference_audio", "reference_audio_path",
+        "reference_audio_enable", "is_cover", "nag_enable", "spectrum_enable", "fbcache_enable",
+        "tread_enable", "blockskip_enable", "blocks_to_swap", "enable_block_swap",
+        "use_pinned_memory", "block_swap_ring_size",
+        "unet_quantization", "quantized_gemm_mode", "use_torch_compile",
+    )
+    for key in unsupported:
+        if supplied.get(key) not in (None, False, 0, "", "none", [], {}):
+            raise ValidationError(f"YuE2 does not support {key}")
+    for key in ("inference_steps", "shift", "sampler_mode", "vocal_language",
+                "num_inference_steps", "flow_guidance_scale"):
+        if key in supplied and supplied[key] is not None and supplied[key] != defaults.get(key):
+            raise ValidationError(f"{key} is not a YuE2 generation control")
+
+
 def validate_audio_params(params: Dict[str, Any], arch: Optional[str]) -> List[str]:
     """Refuse/clamp an audio request's arch-specific bounds BEFORE any GPU
     work -- the audio counterpart of `validate_video_steps`/

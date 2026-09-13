@@ -610,6 +610,7 @@ export default function ImageGrid() {
     if (sendPrompt) {
       txt2imgParams.prompt = image.prompt;
       txt2imgParams.negative_prompt = image.negative_prompt;
+      if (image.parameters?.is_audio) txt2imgParams.lyrics = image.parameters.lyrics;
     }
 
     if (sendParameters) {
@@ -659,6 +660,15 @@ export default function ImageGrid() {
 
       // Restore acceleration / determinism-affecting settings
       applyAccelParams(txt2imgParams, image);
+      if (image.parameters?.yue2_cot) {
+        const p = image.parameters;
+        for (const key of ["audio_duration", "yue2_cot", "yue2_abc", "yue2_abc_max_tokens",
+          "temperature", "top_p", "top_k", "repetition_penalty", "vae_decode_mode", "vae_tile_frames"]) {
+          if (p[key] !== undefined) txt2imgParams[key] = p[key];
+        }
+        txt2imgParams.yue2_guidance_scale = p.guidance_scale;
+        txt2imgParams.audio_defaults_arch = "yue2";
+      }
     }
 
     // Save merged params once (only if sendPrompt or sendParameters is checked)
@@ -1349,6 +1359,18 @@ export default function ImageGrid() {
                           <span className="text-gray-400">Lyrics:</span>
                           <p className="text-gray-100 break-words whitespace-pre-wrap">{selectedImage.parameters.lyrics}</p>
                         </div>
+                      )}
+                      {selectedImage.parameters?.yue2_cot && (
+                        <details className="text-xs text-gray-300">
+                          <summary>YuE2 planning and effective settings</summary>
+                          <pre className="whitespace-pre-wrap break-words mt-2">{JSON.stringify({
+                            planning: selectedImage.parameters.yue2_cot,
+                            abc: selectedImage.parameters.yue2_abc_text,
+                            truncated: selectedImage.parameters.yue2_truncated,
+                            settings: selectedImage.parameters.yue2_effective_config,
+                            timings: selectedImage.parameters.yue2_timings,
+                          }, null, 2)}</pre>
+                        </details>
                       )}
                     </>
                   ) : (

@@ -568,6 +568,16 @@ def _build_train_section(
     train["krea2_lr_factor"] = p.get("krea2_lr_factor", 1.0)
     train["krea2_discrete_flow_shift"] = p.get("krea2_discrete_flow_shift", 2.5)
 
+    train["yue2_training_objective"] = p.get(
+        "yue2_training_objective", TRAINING_DEFAULTS["yue2_training_objective"])
+    train["yue2_lora_scope"] = p.get(
+        "yue2_lora_scope", TRAINING_DEFAULTS["yue2_lora_scope"])
+    train["yue2_abc_mode"] = p.get(
+        "yue2_abc_mode", TRAINING_DEFAULTS["yue2_abc_mode"])
+    train["yue2_allow_truncated_targets"] = bool(p.get(
+        "yue2_allow_truncated_targets",
+        TRAINING_DEFAULTS["yue2_allow_truncated_targets"]))
+
     train["acestep_lora_scope"] = p.get("acestep_lora_scope", "attention")
 
     train["repa_enable"] = p.get("repa_enable", TRAINING_DEFAULTS["repa_enable"])

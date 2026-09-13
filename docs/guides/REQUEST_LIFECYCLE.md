@@ -208,8 +208,8 @@ not silently break:
 
 ## Audio generation request (txt2aud)
 
-Two architectures serve `POST /generate/txt2aud` — ACE-Step 1.5 and MiniMax
-Music 3 — through the same route, with per-architecture defaults and
+Three architectures serve `POST /generate/txt2aud` — ACE-Step 1.5, MiniMax
+Music 3, and YuE2 — through the same route, with per-architecture defaults and
 capability declarations resolved rather than branched on. MiniMax-H3 also
 produces audio, but only jointly with video, and is not part of this route:
 `_reject_if_video_model_on_audio_route` gives it a specific rejection message
@@ -218,11 +218,15 @@ distinguishing it from "no audio model loaded". Per-architecture facts
 `docs/guides/MODEL_FACTS.md`; the MiniMax Music 3 implementation account is in
 `docs/guides/MINIMAX_MUSIC3_DESIGN.md`.
 
-1. **`backend/api/routes.py::generate_txt2aud`** — a `Txt2AudRequest` JSON
+1. **Frontend UI** — there is no separate audio page. `Txt2ImgPanel.tsx`
+   switches to audio mode and renders architecture-specific controls; YuE2's
+   controls are in `Yue2AudioControls.tsx` and require a style prompt plus
+   structured lyrics.
+2. **`backend/api/routes.py::generate_txt2aud`** — a `Txt2AudRequest` JSON
    body. `quantized_gemm_mode` is normalized first (a bad value is a 400, not a
    500 from inside the run); a video model loaded on this route is rejected
    with the MiniMax-H3-aware message above; a non-audio model is rejected with
-   the generic "no ACE-Step or MiniMax Music 3 model loaded" message. Fields
+   the generic "no ACE-Step, MiniMax Music 3, or YuE2 model loaded" message. Fields
    the client omits are filled from the **loaded architecture's** audio
    defaults (`param_defaults.audio_defaults_for_arch`, the audio twin of the
    video routes' `video_defaults_for_arch` — `AUDIO_GEN_ARCH_OVERLAYS[arch]`
@@ -231,23 +235,31 @@ distinguishing it from "no audio model loaded". Per-architecture facts
    ceiling, `num_inference_steps` floor) before a GPU slot is reserved, and
    `check_arch_capabilities` is passed those **resolved** defaults so an
    omitted field never reads as "the user set this".
-2. **`backend/core/pipeline.py::generate_txt2aud`** dispatches on
-   `is_acestep_model` / `is_minimax_music3_model` to
-   `backend/core/pipeline_backends/{acestep,minimax_music3}.py`. Progress is
+   YuE2 additionally validates its planning mode and refuses negative prompts,
+   adapters, reference audio, and unrelated ACE-Step/MiniMax controls before
+   GPU work.
+3. **`backend/core/pipeline.py::generate_txt2aud`** dispatches on
+   `is_acestep_model` / `is_minimax_music3_model` / `is_yue2_model` to
+   `backend/core/pipeline_backends/{acestep,minimax_music3,yue2}.py`. Progress is
    reported through the same `progress_callback(step, total)` contract and the
    same WebSocket `progress` message type the image/video paths use — MiniMax
    Music 3 reports a combined AR-frame + flow-chunk progress unit as `step`
    against a fixed `total` (`PROGRESS_TOTAL_UNITS`); no new WS message type or
-   field was introduced for either architecture (`backend/api/WS_PROTOCOL.md`
+   field was introduced for these architectures (`backend/api/WS_PROTOCOL.md`
    needed no change).
-3. **Save** — `backend/utils/audio_utils.py::save_audio_with_metadata` writes
+   YuE2 runs its AR symbolic/semantic stages, a fixed 32-step midpoint NAR
+   solve, and FP32 VAE decode sequentially, returning 48 kHz stereo audio.
+4. **Save** — `backend/utils/audio_utils.py::save_audio_with_metadata` writes
    a lossless FLAC file plus a sidecar JSON of generation parameters. MiniMax
    Music 3 additionally writes a **frame-code sidecar** (frame codes,
    sample/frame rates, prompt, lyrics, seed) that a later extend
    (`POST /generate/outpaint/audio`) or repaint (`POST /generate/aud2aud`,
    `mode="repaint"`) resumes the autoregressive stage from; ACE-Step has no
-   such per-generation state and no extend/repaint equivalent.
-4. **Database / response** — a `GeneratedImage` row as for video, with
+   such per-generation state and no extend/repaint equivalent. YuE2 writes a
+   separate `.yue2.json` manifest plus compressed token/latent arrays and an
+   `.abc` score when symbolic planning produced one; these are provenance and
+   reproducibility artifacts, not an extend/repaint API contract.
+5. **Database / response** — a `GeneratedImage` row as for video, with
    `parameters["is_audio"] = True`. Repaint's backend and API are complete for
    MiniMax Music 3, but there is no frontend UI path to reach
    `mode="repaint"` today (blocked on a shared-worktree conflict when this
@@ -275,6 +287,9 @@ all `Form(...)`) calls `PipelineManager.load_model`, which:
    signature heuristics such as `_keys_look_krea2` / `_keys_look_lens` /
    `_keys_look_ideogram4` / `_keys_look_anima`, checking tensor key shapes
    and embedded metadata).
+   YuE2 then runs its strict header-first completeness preflight, reading only
+   the small ConvRot markers and embedded tokenizer payload before the currently
+   loaded model is torn down; full model tensors are not materialized.
 3. Loads the detected architecture's transformer/UNet, text encoder(s), and
    VAE. For architectures using the sushiUI single-file format
    (`backend/core/models/common/single_file_format.py`), missing components

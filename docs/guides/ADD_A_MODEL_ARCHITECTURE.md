@@ -1,17 +1,16 @@
 # Add a Model Architecture
 
-SushiUI currently supports 14 architectures: 10 image (SD1.5, SDXL, Z-Image,
+SushiUI currently supports 15 architectures: 10 image (SD1.5, SDXL, Z-Image,
 Flux2, Anima, Lens, Krea2, Ideogram4, MiniT2I, SenseNova U1.5), 2 video that
-also generate audio jointly (LTX-2.3, MiniMax-H3) and 2 audio (ACE-Step 1.5,
-MiniMax Music 3). `ModelType` in `backend/core/model_loader.py` is the
+also generate audio jointly (LTX-2.3, MiniMax-H3) and 3 audio (ACE-Step 1.5,
+MiniMax Music 3, YuE2). `ModelType` in `backend/core/model_loader.py` is the
 authoritative *generation* list — check it rather than this sentence if the
 two ever disagree. `ARCH_REGISTRY` in `backend/core/training/arch/__init__.py`
-is the authoritative *training-capable* list; it has 13 entries — every
-generation architecture except MiniMax Music 3, whose training is out of scope
-(design forward-compatible, not implemented — see
-`docs/guides/MINIMAX_MUSIC3_DESIGN.md`'s "Training forward-compatibility"
-section). Do not assume the two lists
-are always the same size — they diverge further with each generation-only
+is the authoritative *training-capable* list; it has 14 entries. MiniMax Music
+3 is generation-only; YuE2 exposes Phase-A ABC-planner LoRA only. The former's
+boundary is in `docs/guides/MINIMAX_MUSIC3_DESIGN.md`; the latter is recorded
+in `docs/guides/MODEL_FACTS.md`. Do not assume the two lists
+are always the same size — they diverge with each generation-only or partially-trainable
 architecture added.
 
 This is the procedure for adding the next one. Sections 1-8 are the common
@@ -167,12 +166,15 @@ new default value.
 A video architecture reuses everything above and adds the following. The two
 existing video archs are the references, and they differ deliberately: LTX-2.3
 drives stock diffusers pipelines, MiniMax-H3 vendors its model classes and owns
-its denoise loop (upstream ships a Modular pipeline only). There are now two
-audio architectures, and they differ the same way: ACE-Step was built by
+its denoise loop (upstream ships a Modular pipeline only). There are now three
+audio architectures. ACE-Step was built by
 mirroring LTX-2.3 (stock-pipeline-shaped), while MiniMax Music 3 vendors its
 model classes and owns its own multi-stage loop for the same reason MiniMax-H3
 does — upstream ships no usable `DiffusionPipeline` (see
-`docs/guides/MINIMAX_MUSIC3_DESIGN.md` and the loader's explicit dependency refusals). Diffing
+`docs/guides/MINIMAX_MUSIC3_DESIGN.md` and the loader's explicit dependency
+refusals). YuE2 also owns a vendored, staged loop, but its currently shipped
+load surface is deliberately narrower: one complete safetensors file with the
+tokenizer, AR/NAR weights, and VAE bundled together. Diffing
 LTX-2.3 against MiniMax-H3, or ACE-Step against MiniMax Music 3, shows exactly
 what the per-arch surface is; do not assume every architecture in a modality
 looks like the first one you read.

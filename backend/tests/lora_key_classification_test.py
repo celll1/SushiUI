@@ -1,4 +1,4 @@
-"""``classify_lora_keys``: 13 architectures + "unknown" from one signature table.
+"""``classify_lora_keys``: 14 architectures + "unknown" from one signature table.
 
 Every key list here comes from the REAL training adapter: LoRA injection over a
 tiny CPU stub, then that adapter's own ``save_checkpoint`` into ``tmp_path``, then
@@ -46,6 +46,7 @@ from core.training.adapters.ltx2_adapter import Ltx2LoRAAdapter  # noqa: E402
 from core.training.adapters.acestep_adapter import AceStepLoRAAdapter  # noqa: E402
 from core.training.adapters.minimax_h3_adapter import MiniMaxH3LoRAAdapter  # noqa: E402
 from core.training.adapters.sensenova_adapter import SenseNovaLoRAAdapter  # noqa: E402
+from core.training.adapters.yue2_adapter import YuE2LoRAAdapter  # noqa: E402
 
 D = 8
 RANK, ALPHA = 2, 4
@@ -408,6 +409,27 @@ def keys_sensenova(tmp_path, both_branches=False):
     return save_keys(adapter, layers, tmp_path, "sensenova")
 
 
+def _yue2_stack():
+    def layer():
+        attention = named("YuE2Attention", q_proj=lin(), k_proj=lin(),
+                          v_proj=lin(), o_proj=lin())
+        mlp = named("YuE2MLP", gate_proj=lin(), up_proj=lin(), down_proj=lin())
+        return named("YuE2DecoderLayer", self_attn=attention, mlp=mlp)
+    return named("YuE2ForCausalLM",
+                 model=named("YuE2Backbone",
+                             layers=nn.ModuleList([layer() for _ in range(N_BLOCKS)])))
+
+
+def keys_yue2(tmp_path):
+    trainer = SimpleNamespace(transformer=_yue2_stack(), config={},
+                              learning_rate=1e-4, unet_lr=None)
+    adapter = YuE2LoRAAdapter(trainer, RANK, ALPHA, torch.float32,
+                              scope={"attention": True, "mlp": True})
+    layers = {}
+    assert adapter.apply_lora_to_unet(layers) > 0
+    return save_keys(adapter, layers, tmp_path, "yue2")
+
+
 BUILDERS = {
     "sd15": keys_sd15,
     "sdxl": keys_sdxl,
@@ -422,6 +444,7 @@ BUILDERS = {
     "acestep": keys_acestep,
     "minimax_h3": keys_minimax_h3,
     "sensenova": keys_sensenova,
+    "yue2": keys_yue2,
 }
 
 # The block prefix each architecture's own list must lead with, and the count of
@@ -440,6 +463,7 @@ EXPECTED_BLOCKS = {
     "acestep": ["L00", "L01"],
     "minimax_h3": ["MMB00", "MMB01"],
     "sensenova": [f"L{i:02d}" for i in range(SENSENOVA_LAYERS)],
+    "yue2": ["AR00", "AR01"],
 }
 
 

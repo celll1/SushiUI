@@ -3175,6 +3175,7 @@ class BaseTrainer(ABC):
         self.is_minimax_h3 = (model_type == "minimax_h3")
         self.is_acestep = (model_type == "acestep")
         self.is_sensenova = (model_type == "sensenova")
+        self.is_yue2 = (model_type == "yue2")
         self.is_sdxl = False
 
         # P3a: zimage + sd/sdxl loader BODIES moved to ops/ free functions. They
@@ -3188,9 +3189,11 @@ class BaseTrainer(ABC):
         from core.training.ops import (
             sd_sdxl_ops, zimage_ops, anima_ops, lens_ops, ideogram4_ops,
             minit2i_ops, krea2_ops, flux2_ops, ltx2_ops, acestep_ops,
-            minimax_h3_ops, sensenova_ops,
+            minimax_h3_ops, sensenova_ops, yue2_ops,
         )
-        if self.is_sensenova:
+        if self.is_yue2:
+            yue2_ops.load_components(self)
+        elif self.is_sensenova:
             sensenova_ops.load_components(self)
         elif self.is_ltx2:
             ltx2_ops.load_components(self)
@@ -4238,6 +4241,7 @@ class BaseTrainer(ABC):
         self.is_minimax_h3 = (model_type == "minimax_h3")
         self.is_acestep = (model_type == "acestep")
         self.is_sensenova = (model_type == "sensenova")
+        self.is_yue2 = (model_type == "yue2")
         self.is_sdxl = False
 
         if self.is_sensenova:
@@ -6841,7 +6845,7 @@ class BaseTrainer(ABC):
         param group order created by setup_trainable_parameters() + VE append.
 
         Re-derived from trainer attributes, so it only describes the U-Net-based
-        architectures plus the SenseNova / ControlNet / VE special cases: it is
+        architectures plus the SenseNova / YuE2 / ControlNet / VE special cases: it is
         EMPTY on every DiT architecture, and can be non-empty yet misaligned
         (train_text_encoder on Flux2/MiniT2I/Z-Image yields just ``TE1`` while
         group 0 is the transformer). The resume path prefers the snapshot
@@ -6882,6 +6886,12 @@ class BaseTrainer(ABC):
                     self, 'text_encoder_1_lr', 'text_encoder_lr', 'unet_lr',
                     label="SenseNova understanding branch"))
                 names.append("MoT-Understanding")
+
+        # YuE2 Phase A has one transformer-resident AR LoRA group and no U-Net
+        # object, so describe the same unet_lr-backed group its adapter creates.
+        if getattr(self, 'is_yue2', False) and getattr(self, 'train_unet', True):
+            lrs.append(resolve_component_lr(self, 'unet_lr', label="YuE2 AR planner"))
+            names.append("YuE2-AR")
 
         # ControlNetTrainer sets train_unet=False (it never trains the base UNet)
         # but still creates a single optimizer group over ITS OWN module at

@@ -22,6 +22,7 @@ from .ltx2_adapter import Ltx2LoRAAdapter, Ltx2FullParameterAdapter
 from .minimax_h3_adapter import MiniMaxH3LoRAAdapter
 from .acestep_adapter import AceStepLoRAAdapter, AceStepFullParameterAdapter
 from .sensenova_adapter import SenseNovaLoRAAdapter, SenseNovaFullParameterAdapter
+from .yue2_adapter import YuE2LoRAAdapter
 from .base_controlnet_adapter import BaseControlNetAdapter
 from .controlnet_sd15_adapter import ControlNetSD15Adapter
 from .controlnet_sdxl_adapter import ControlNetSDXLAdapter
@@ -52,6 +53,7 @@ __all__ = [
     "AceStepFullParameterAdapter",
     "SenseNovaLoRAAdapter",
     "SenseNovaFullParameterAdapter",
+    "YuE2LoRAAdapter",
     "BaseControlNetAdapter",
     "ControlNetSD15Adapter",
     "ControlNetSDXLAdapter",

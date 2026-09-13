@@ -141,6 +141,14 @@ class LoRATrainer(BaseTrainer):
 
     def train(self, *args, **kwargs):
         try:
+            if getattr(self, "is_yue2", False):
+                from core.training.ops.yue2_ops import train_abc_ar_loop
+                try:
+                    return train_abc_ar_loop(self, *args, **kwargs)
+                finally:
+                    writer = getattr(self, "writer", None)
+                    if writer is not None:
+                        writer.close()
             return super().train(*args, **kwargs)
         finally:
             evictor = getattr(self, "sensenova_phase_evictor", None)
@@ -232,6 +240,25 @@ class LoRATrainer(BaseTrainer):
             metadata = f.metadata() or {}
             if 'step' in metadata:
                 step = int(metadata['step'])
+
+        if getattr(self, "is_yue2", False):
+            from core.training.ops.yue2_ops import YUE2_TRAINING_PROTOCOL_VERSION
+            expected = {
+                "model_type": "yue2",
+                "yue2_objective": self.adapter.objective,
+                "yue2_apply_stages": ",".join(self.adapter.apply_stages),
+                "yue2_lora_half": self.adapter.half,
+                "yue2_training_protocol": YUE2_TRAINING_PROTOCOL_VERSION,
+            }
+            identity = getattr(self, "yue2_model_identity", {}) or {}
+            if identity.get("checkpoint"):
+                expected["yue2_base_checkpoint"] = str(identity["checkpoint"])
+            for field, value in expected.items():
+                if metadata.get(field) != value:
+                    raise ValueError(
+                        f"YuE2 checkpoint metadata {field}={metadata.get(field)!r} "
+                        f"does not match this run's {value!r}"
+                    )
 
         checkpoint = load_file(checkpoint_path)
 

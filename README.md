@@ -272,6 +272,7 @@ Signal-to-Noise Ratio に基づいてCFGを自動調整:
 - ✅ Stable Diffusion XL
 - ✅ v-prediction models（自動検出、guidance rescale適用）
 - ✅ Safetensors / Diffusersフォーマット
+- ✅ YuE2 テキスト音楽生成（完全な単一 safetensors、ABC計画・歌詞入力、ABC planner LoRA学習）
 - ✅ LoRA（マルチLoRA、ステップ範囲指定）
 - ✅ ControlNet (SD1.5/SDXL)
 

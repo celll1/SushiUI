@@ -238,7 +238,7 @@ export interface MiniMaxH3HybridProvenance {
 export interface ModelInfo {
   source_type: string;
   source: string;
-  type: "sd15" | "sdxl" | "zimage" | "flux2" | "anima" | "lens" | "ideogram4" | "minit2i" | "krea2" | "sensenova" | "ltx2" | "acestep" | "minimax_h3" | "minimax_music3";
+  type: "sd15" | "sdxl" | "zimage" | "flux2" | "anima" | "lens" | "ideogram4" | "minit2i" | "krea2" | "sensenova" | "ltx2" | "acestep" | "minimax_h3" | "minimax_music3" | "yue2";
   is_v_prediction: boolean;
   model_hash: string;
   // Model-list entry fields (from GET /models)
@@ -359,7 +359,7 @@ export interface LoRAConfig {
 // (NOT the currently loaded model). "unknown" is a first-class value.
 export type LoRAArch =
   | "sd15" | "sdxl" | "zimage" | "anima" | "lens" | "ideogram4" | "minit2i"
-  | "krea2" | "flux2" | "ltx2" | "minimax_h3" | "acestep" | "sensenova"
+  | "krea2" | "flux2" | "ltx2" | "minimax_h3" | "acestep" | "sensenova" | "yue2"
   | "unknown";
 
 // What GET /loras reports per file, detected from the file, never from the
@@ -638,6 +638,16 @@ export interface GenerationParams {
   // backend -- purely a UI bookkeeping field, same pattern as
   // OutpaintParams.outpaint_video_audio_mode_arch.
   audio_defaults_arch?: string;
+  yue2_cot?: "full" | "melody" | "off";
+  yue2_abc?: string;
+  yue2_abc_max_tokens?: number;
+  temperature?: number;
+  top_p?: number;
+  top_k?: number;
+  repetition_penalty?: number;
+  yue2_guidance_scale?: number;
+  vae_decode_mode?: "tiled" | "full";
+  vae_tile_frames?: number;
   // Tracks which loaded architecture `steps`/`cfg_scale` were last resolved
   // for via `image_arch_overlays` (currently only SenseNova's 50/4.0). Same
   // bookkeeping pattern as `audio_defaults_arch` just above -- not sent to
@@ -1396,6 +1406,15 @@ export interface MiniMaxH3References {
 // ---------------------------------------------------------------------------
 
 export interface Txt2AudParams {
+  yue2_cot?: "full" | "melody" | "off";
+  yue2_abc?: string;
+  yue2_abc_max_tokens?: number;
+  temperature?: number;
+  top_p?: number;
+  top_k?: number;
+  repetition_penalty?: number;
+  vae_decode_mode?: "tiled" | "full";
+  vae_tile_frames?: number;
   prompt: string;             // caption text (also the MUSIC DESCRIPTION for MiniMax Music 3 -- distinct from lyrics)
   lyrics?: string;             // ACE-Step: optional. MiniMax Music 3: REQUIRED non-empty (checkpoint contract).
   audio_duration?: number;    // seconds. ACE-Step default 30.0; MiniMax Music 3 default 60.0 -- an UPPER BOUND
@@ -3684,28 +3703,25 @@ export const generateTxt2Aud = async (params: Txt2AudParams) => {
   const body = {
     prompt: params.prompt,
     lyrics: params.lyrics || "",
-    audio_duration: params.audio_duration ?? 30.0,
-    seed: params.seed ?? -1,
-    inference_steps: params.inference_steps ?? 8,
-    guidance_scale: params.guidance_scale ?? 1.0,
-    shift: params.shift ?? 3.0,
-    sampler_mode: params.sampler_mode ?? "euler",
-    vocal_language: params.vocal_language ?? "en",
-    // MiniMax Music 3 ONLY. `?? undefined`, NOT `?? null`: JSON.stringify
-    // drops an `undefined`-valued key entirely, so an omitted value here
-    // reaches the backend as an OMITTED field, letting `Txt2AudRequest`'s
-    // `model_fields_set` (and therefore `resolve_audio_defaults`) fill it
-    // from MiniMax Music 3's own overlay (30 / 1.7) exactly as designed.
-    // Sending an explicit `null` would do the opposite of "harmless": it
-    // would count as the client having PROVIDED the field (Pydantic still
-    // marks an explicit `null` as set), permanently defeating that
-    // resolution, AND -- because MiniMax Music 3's pipeline backend raises a
-    // ValidationError on either of these being `None` -- would turn a
-    // pre-update queued item with no value here (e.g. one persisted across
-    // this exact update, before these fields existed) into a hard 400
-    // instead of a working generation at the arch's own defaults.
+    audio_duration: params.audio_duration,
+    seed: params.seed,
+    inference_steps: params.inference_steps,
+    guidance_scale: params.guidance_scale,
+    shift: params.shift,
+    sampler_mode: params.sampler_mode,
+    vocal_language: params.vocal_language,
+    // Undefined omits the JSON field, preserving architecture-specific defaults.
     num_inference_steps: params.num_inference_steps ?? undefined,
     flow_guidance_scale: params.flow_guidance_scale ?? undefined,
+    yue2_cot: params.yue2_cot,
+    yue2_abc: params.yue2_abc,
+    yue2_abc_max_tokens: params.yue2_abc_max_tokens,
+    temperature: params.temperature,
+    top_p: params.top_p,
+    top_k: params.top_k,
+    repetition_penalty: params.repetition_penalty,
+    vae_decode_mode: params.vae_decode_mode,
+    vae_tile_frames: params.vae_tile_frames,
     loras: params.loras || [],
     // `=== "none" -> null` mirrors every other sender: "none" is the UI's
     // spelling of "no quantization", and sending it as a value would come back
@@ -3715,9 +3731,9 @@ export const generateTxt2Aud = async (params: Txt2AudParams) => {
         ? params.unet_quantization
         : null,
     quantized_gemm_mode: params.quantized_gemm_mode ?? null,
-    blocks_to_swap: params.blocks_to_swap ?? 0,
-    use_pinned_memory: params.use_pinned_memory ?? false,
-    block_swap_ring_size: params.block_swap_ring_size ?? 2,
+    blocks_to_swap: params.blocks_to_swap,
+    use_pinned_memory: params.use_pinned_memory,
+    block_swap_ring_size: params.block_swap_ring_size,
   };
 
   const response = await postGenerationRequest("/generate/txt2aud", body);
@@ -6979,6 +6995,11 @@ export interface TrainingRunCreateRequest {
   krea2_lora_scope?: string;  // "attn,mlp,text_fusion,proj" tokens; TE always frozen
   krea2_lr_factor?: number;
   krea2_discrete_flow_shift?: number;
+  // YuE2 Phase-A token-native ABC score-planner LoRA.
+  yue2_training_objective?: "abc_ar";
+  yue2_lora_scope?: "attention" | "attention,mlp";
+  yue2_abc_mode?: "full" | "melody";
+  yue2_allow_truncated_targets?: boolean;
   // VAE swap: train into another VAE's latent space. "registry:<key>" |
   // "file:<path>" | "model:<path>"; "" keeps the base model's own VAE.
   // Candidates come from GET /training/vae-sources; full_finetune only.

@@ -83,10 +83,10 @@ def classify_lora_keys(keys) -> Dict[str, Any]:
     (arch tag at scan time) and ``LoRAManager.get_lora_layers`` (block list for
     the UI) -- do not add a second signature table elsewhere; extend HERE.
 
-    Returns ``{"arch": str, "blocks": List[str]}``. ``arch`` is one of the 13
+    Returns ``{"arch": str, "blocks": List[str]}``. ``arch`` is one of the 14
     ``core.training.arch.ARCH_REGISTRY`` keys -- "sd15", "sdxl", "zimage",
     "anima", "lens", "ideogram4", "minit2i", "krea2", "flux2", "ltx2",
-    "minimax_h3", "acestep", "sensenova" -- or "unknown" ("unknown" is a
+    "minimax_h3", "acestep", "sensenova", "yue2" -- or "unknown" ("unknown" is a
     first-class value, not an error).
 
     ORDERING RULE: each architecture's signature is ANCHORED on the key prefix
@@ -233,6 +233,19 @@ def classify_lora_keys(keys) -> Dict[str, Any]:
             if match:
                 blocks.add(f"L{int(match.group(1)):02d}")
         return classified("acestep")
+
+    # --- YuE2 AR/NAR MoT halves ------------------------------------------
+    # Trainer keys flatten model.layers.N.{self_attn,mlp}; NAR adds nar_ to
+    # the leaf. This root is disjoint from every image U-Net catch-all below.
+    if any(re.match(r'lora_unet_model_layers_\d+_(?:nar_)?(?:self_attn|mlp)_', key)
+           for key in keys):
+        for key in keys:
+            match = re.match(r'lora_unet_model_layers_(\d+)_', key)
+            if match:
+                half = "NAR" if re.match(
+                    r'lora_unet_model_layers_\d+_nar_', key) else "AR"
+                blocks.add(f"{half}{int(match.group(1)):02d}")
+        return classified("yue2")
 
     if any(key.startswith('lora_unet_model__net__')
            or key.startswith('lora_te_encoder__block__') for key in keys):
@@ -540,7 +553,7 @@ def _sort_lora_blocks(blocks) -> List[str]:
     DUAL alone (Lens); DIT/LAD/LAPROJ (Anima DiT blocks, LLM-adapter blocks,
     LLM-adapter projections); TPRE/MMB/EMB (MiniT2I); MMB/TFL/TFR/TFP/PROJ
     (Krea 2); MMB (LTX-2.3); TREF/MMB/FINAL (MiniMax-H3); L00-.. (SenseNova
-    layers, ACE-Step decoder layers).
+    layers, ACE-Step decoder layers); AR00-../NAR00-.. (YuE2 MoT halves).
 
     Each architecture's own labels carry distinct group indices, so its list is
     totally ordered; indices are reused ACROSS architectures, which is harmless
@@ -592,6 +605,10 @@ def _sort_lora_blocks(blocks) -> List[str]:
         elif block == "LAPROJ":
             return (3, 0)
         elif block.startswith("LAD"):
+            return (2, int(block[3:]))
+        elif block.startswith("AR"):
+            return (1, int(block[2:]))
+        elif block.startswith("NAR"):
             return (2, int(block[3:]))
         elif block.startswith("L"):
             return (1, int(block[1:]))

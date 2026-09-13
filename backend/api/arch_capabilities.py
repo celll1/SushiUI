@@ -202,7 +202,7 @@ FEATURE_LABELS: Dict[str, str] = {
 # effect on that architecture.
 # ---------------------------------------------------------------------------
 _DIT_ARCHS = ["zimage", "flux2", "ideogram4", "lens", "minit2i", "anima", "krea2", "ltx2", "acestep",
-              "minimax_h3", "minimax_music3", "sensenova"]
+              "minimax_h3", "minimax_music3", "sensenova", "yue2"]
 # Both Spectrum and FBCache are wired for every image DiT arch through the
 # same shared pattern (spectrum_params=params -> build_output_forecaster() /
 # fbcache_active()+build_fbcache() inside each arch's *_pipeline_ops.py denoise
@@ -246,7 +246,7 @@ TRAINING_METHODS = ("lora", "relora", "full_finetune", "controlnet")
 # `_EXPECTED_ARCH_KEYS`.
 TRAINING_DECLARED_ARCHS = frozenset({
     "sd15", "sdxl", "zimage", "anima", "lens", "ideogram4", "minit2i",
-    "krea2", "flux2", "ltx2", "minimax_h3", "acestep", "sensenova",
+    "krea2", "flux2", "ltx2", "minimax_h3", "acestep", "sensenova", "yue2",
 })
 
 # ---------------------------------------------------------------------------
@@ -1025,6 +1025,13 @@ _add_training_unsupported(
     "ideogram4", "relora",
     "ReLoRA cannot merge dense updates back into Ideogram 4's quantized base")
 
+_add_training_unsupported(
+    "yue2", "relora",
+    "YuE2 Phase A supports ordinary LoRA only; merging into its ConvRot INT8 base is not implemented")
+_add_training_unsupported(
+    "yue2", "full_finetune",
+    "YuE2 full-parameter training and a resumable single-file full-model save are not implemented; Phase A supports ABC-planner LoRA only")
+
 # ControlNet training implements SD1.5 and SDXL adapters only
 # (adapters/controlnet_sd15_adapter.py, adapters/controlnet_sdxl_adapter.py; the
 # selection in controlnet_trainer._create_adapter is `if is_sdxl else sd15`).
@@ -1048,6 +1055,9 @@ _add_training_feature_unsupported(
 _add_training_feature_unsupported(
     "sdxl", "block_swap",
     "the SDXL U-Net training path has no block-swap consumer (arch/sdxl.py's setup_block_swap is a no-op and ops/sd_sdxl_ops.py defines none); its VRAM story is the sequential text-encoder/U-Net/VAE component offload")
+_add_training_feature_unsupported(
+    "yue2", "block_swap",
+    "YuE2 Phase A retains only the AR planner on the training device and has no training block-swap conductor")
 # --- Fused optimizer groups -------------------------------------------------
 # `num_optimizer_groups` is only read inside the `if self.blocks_to_swap > 0`
 # branch of base_trainer.setup_optimizer, so it governs nothing wherever block
@@ -1056,6 +1066,9 @@ for _a in ["sd15", "sdxl"]:
     _add_training_feature_unsupported(
         _a, "fused_optimizer_groups",
         "fused optimizer groups are only set up when blocks_to_swap > 0 (base_trainer.setup_optimizer), and this architecture has no training block-swap path")
+_add_training_feature_unsupported(
+    "yue2", "fused_optimizer_groups",
+    "fused optimizer groups are only set up with training block swap, which YuE2 Phase A does not implement")
 _add_training_feature_unsupported(
     "sensenova", "fused_optimizer_groups",
     "SenseNova full fine-tuning applies and releases each gradient through per-parameter optimizer hooks; batched fused optimizer groups would violate that memory contract",
@@ -1082,6 +1095,7 @@ for _a, _why in [
     ("ltx2", "Ltx2LoRAAdapter/Ltx2FullParameterAdapter keep the Gemma-3 text encoder and its connectors frozen"),
     ("acestep", "AceStepLoRAAdapter/AceStepFullParameterAdapter keep the Qwen3-Embedding-0.6B text encoder frozen"),
     ("minimax_h3", "the Qwen3-VL conditioner is read one decoder layer at a time off a memory-mapped 48 GiB file precisely so it never becomes resident; there is no configuration in which its weights and the DiT's are both on the GPU"),
+    ("yue2", "YuE2 Phase A trains the embedded AR score planner; it has no separate trainable text encoder"),
 ]:
     _add_training_feature_unsupported(_a, "text_encoder_training", _why)
 _add_training_feature_unsupported(
@@ -1170,6 +1184,9 @@ _add_training_feature_unsupported(
 _add_training_feature_unsupported(
     "acestep", "training_samples",
     "step-0 and periodic audio previews are not wired for ACE-Step; its training sample handler warns and returns None")
+_add_training_feature_unsupported(
+    "yue2", "training_samples",
+    "YuE2 Phase-A training-time audio previews are not wired; generation remains available through the normal txt2aud endpoint")
 
 # --- VAE --------------------------------------------------------------------
 # --- VAE swap ---------------------------------------------------------------
@@ -1244,6 +1261,12 @@ _add_training_required_value(
 _add_training_feature_unsupported(
     "sensenova", "vae",
     "SenseNova is pixel-space and has no VAE: there is nothing for the VAE dtype to apply to and nothing to bundle into a checkpoint")
+_add_training_feature_unsupported(
+    "yue2", "vae",
+    "YuE2 Phase A trains only the AR score planner and deliberately unloads the frozen audio VAE")
+_add_training_feature_unsupported(
+    "yue2", "vae_swap",
+    "YuE2 Phase A never enters the acoustic latent path, so replacing the audio VAE has no defined training effect")
 
 # --- Layer-wise LR decay ----------------------------------------------------
 # `lr_layer_decay` scales a param group by the depth of the block its
@@ -2058,6 +2081,20 @@ def _is_style_transfer_set(params: Dict[str, Any]) -> bool:
             return bool(entry.get("is_style_transfer"))
         return bool(getattr(entry, "is_style_transfer", False))
     return any(_is_style_entry(e) for e in val)
+
+
+# YuE2 has native semantic CFG; its VAE controls are a separate audio surface.
+for _feature in FEATURE_PARAMS:
+    if _feature != "cfg":
+        _add("yue2", _feature, "YuE2 does not implement this shared generation control")
+_add("yue2", "quantized_gemm",
+     "YuE2 ConvRot checkpoints use a fixed packed kernel; the per-request GEMM selector is not supported")
+_add("yue2", "negative_prompt",
+     "YuE2 semantic CFG uses protocol-defined conditioning, not a caller-provided negative prompt")
+_add("yue2", "block_swap",
+     "YuE2 uses stage-aware offload; block swapping is not implemented")
+_add("yue2", "vae_tiling",
+     "YuE2 uses vae_decode_mode and vae_tile_frames instead of image VAE tiling controls")
 
 
 def check_arch_capabilities(params: Dict[str, Any], arch: str,

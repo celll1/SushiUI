@@ -1795,6 +1795,19 @@ TXT2AUD_DEFAULTS: Dict[str, Any] = dict(AUDIO_GEN_DEFAULTS)
 # `model_fields_set`), mirroring exactly how the video routes apply
 # `video_defaults_for_arch`.
 AUDIO_GEN_ARCH_OVERLAYS: Dict[str, Dict[str, Any]] = {
+    "yue2": {
+        "audio_duration": 360.0,
+        "yue2_cot": "full",
+        "yue2_abc": "",
+        "yue2_abc_max_tokens": 4096,
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 100,
+        "repetition_penalty": 1.2,
+        "guidance_scale": 1.0,
+        "vae_decode_mode": "tiled",
+        "vae_tile_frames": 1024,
+    },
     "minimax_music3": {
         # An UPPER BOUND, not a target: the autoregressive stage's language
         # model may emit its end-of-audio token before this is reached
@@ -1809,6 +1822,11 @@ AUDIO_GEN_ARCH_OVERLAYS: Dict[str, Dict[str, Any]] = {
         "flow_guidance_scale": 1.7,
     },
 }
+
+
+YUE2_GUIDANCE_DEFAULTS = {"full": 1.0, "melody": 1.0, "off": 1.01}
+# An omitted YuE2-only field is resolved against the loaded architecture.
+YUE2_REQUEST_DEFAULT = None
 
 
 def audio_defaults_for_arch(arch: Optional[str],
@@ -2870,6 +2888,12 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # Discrete flow-matching timestep shift applied to the sampled sigma
     # (sigma' = s*sigma / (1 + (s-1)*sigma)); musubi default 2.5 @1024^2. Set <=1 to disable.
     "krea2_discrete_flow_shift": 2.5,
+
+    # ---- YuE2 Phase-A ABC score-planner training ----
+    "yue2_training_objective": "abc_ar",
+    "yue2_lora_scope": "attention",
+    "yue2_abc_mode": "full",
+    "yue2_allow_truncated_targets": False,
 
     # ---- REPA (Representation Alignment) ----
     # Aligns a DiT intermediate hidden state with frozen clean-image patch features

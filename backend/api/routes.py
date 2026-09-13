@@ -48,7 +48,7 @@ from api.param_defaults import (
     GENERATION_DEFAULTS, IMG2TXT_DEFAULTS, TXT2IMG_DEFAULTS, IMG2IMG_DEFAULTS, INPAINT_DEFAULTS,
     OUTPAINT_DEFAULTS, OUTPAINT_VIDEO_DEFAULTS, INPAINT_VIDEO_DEFAULTS,
     UPSCALE_DEFAULTS, TXT2VID_DEFAULTS, IMG2VID_DEFAULTS, REF2VID_DEFAULTS,
-    TXT2AUD_DEFAULTS, AUD2AUD_DEFAULTS,
+    TXT2AUD_DEFAULTS, AUD2AUD_DEFAULTS, YUE2_REQUEST_DEFAULT,
     OUTPAINT_AUDIO_DEFAULTS,
     TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS, VAE_TRAINING_DEFAULTS,
     DATASET_DEFAULTS,
@@ -430,19 +430,17 @@ class Txt2VidRequest(BaseModel):
 
 
 class Txt2AudRequest(BaseModel):
-    """Text-to-audio (music) generation request (ACE-Step 1.5 turbo or
-    MiniMax Music 3).
+    """Text-to-audio request for ACE-Step, MiniMax Music 3, or YuE2.
 
     Standalone request model (does not extend GenerationParams -- audio has
     no width/height/steps/cfg_scale/sampler concept). Field defaults below
-    are ACE-Step-shaped (`TXT2AUD_DEFAULTS`); a MiniMax Music 3 request that
-    omits a field is resolved against that architecture's OWN defaults
+    are ACE-Step-shaped (`TXT2AUD_DEFAULTS`); Music 3 and YuE2 requests that
+    omit fields are resolved against the loaded architecture's OWN defaults
     server-side, via `generation_utils.resolve_audio_defaults` /
     `param_defaults.audio_defaults_for_arch` -- see
     `core.pipeline_backends.acestep.AceStepMixin._generate_txt2aud_acestep`
-    and `core.pipeline_backends.minimax_music3.MiniMaxMusic3Mixin.
-    _generate_txt2aud_minimax_music3` for how each field is consumed per
-    architecture.
+    and the architecture-specific mixins under `core.pipeline_backends` for
+    how each field is consumed.
     """
     prompt: str = TXT2AUD_DEFAULTS["prompt"]
     # ACE-Step: optional. MiniMax Music 3: REQUIRED non-empty -- the
@@ -507,6 +505,15 @@ class Txt2AudRequest(BaseModel):
     # exposed as request parameters at all. `gt=0`: matches the design doc's
     # stated bound.
     flow_guidance_scale: Optional[float] = Field(None, gt=0)
+    yue2_cot: Optional[Literal["full", "melody", "off"]] = YUE2_REQUEST_DEFAULT
+    yue2_abc: Optional[str] = YUE2_REQUEST_DEFAULT
+    yue2_abc_max_tokens: Optional[int] = Field(YUE2_REQUEST_DEFAULT, ge=1, le=24576)
+    temperature: Optional[float] = Field(YUE2_REQUEST_DEFAULT, ge=0, le=5, allow_inf_nan=False)
+    top_p: Optional[float] = Field(YUE2_REQUEST_DEFAULT, gt=0, le=1)
+    top_k: Optional[int] = Field(YUE2_REQUEST_DEFAULT, ge=0, le=32768)
+    repetition_penalty: Optional[float] = Field(YUE2_REQUEST_DEFAULT, gt=0, allow_inf_nan=False)
+    vae_decode_mode: Optional[Literal["tiled", "full"]] = YUE2_REQUEST_DEFAULT
+    vae_tile_frames: Optional[int] = Field(YUE2_REQUEST_DEFAULT, ge=1)
 
 
 class GenerationParams(BaseModel):
@@ -735,6 +742,11 @@ def _reject_if_audio_model(endpoint: str = "/generate/txt2img"):
     Raised before the executor so it surfaces as a 4xx ValidationError instead of
     being re-wrapped as a 500 GenerationError by the route's broad except.
     """
+    if getattr(pipeline_manager, "is_yue2_model", False):
+        raise CustomValidationError(
+            "YuE2 supports text-to-audio generation only; use /generate/txt2aud",
+            detail=f"The loaded YuE2 model cannot serve {endpoint}.",
+        )
     if getattr(pipeline_manager, "is_acestep_model", False):
         replacement = _AUDIO_ROUTE_FOR_IMAGE_ROUTE.get(endpoint, "/generate/txt2aud")
         raise CustomValidationError(
@@ -938,6 +950,7 @@ _PEAK_VRAM_GB_BY_KIND = {
     "ltx2": 40.0,      # ~19B bf16 video MM-DiT + Gemma-3 TE + LTX2 VAEs, cpu-offload staged
     "acestep": 8.0,    # 2B DiT + Oobleck VAE + Qwen3-Embedding-0.6B TE, sequential CPU/GPU staging
     "minimax_music3": 24.0,  # model card: <24GB bf16 w/ auto CPU offload; LM+depth decoder co-resident for the AR stage
+    "yue2": 16.0,      # staged INT8 MoT; maximum-context two-branch KV alone is about 5.6 GiB
     "sensenova": 40.0,  # bf16 unified model plus VQA activations/KV cache
     "unknown": 14.0,   # safe default
 }
@@ -3265,21 +3278,13 @@ async def generate_txt2vid(
 @router.post("/generate/txt2aud")
 async def generate_txt2aud(
     request: Txt2AudRequest,
+    raw_request: Request,
     db: Session = Depends(get_gallery_db)
 ):
-    """Generate music/audio from a text caption + lyrics using the loaded
-    ACE-Step 1.5 or MiniMax Music 3 model.
+    """Generate audio using ACE-Step, MiniMax Music 3, or YuE2.
 
-    Produces a lossless FLAC file and a gallery row. Requires an ACE-Step or
-    MiniMax Music 3 model to be loaded. Any field the client omits is filled
-    from the LOADED ARCHITECTURE's audio defaults
-    (`param_defaults.audio_defaults_for_arch`) -- the same per-arch overlay
-    mechanism the video routes use, so `audio_duration`/`num_inference_steps`/
-    `flow_guidance_scale` resolve to MiniMax Music 3's own defaults on that
-    architecture without a route-level branch. MiniMax Music 3 additionally
-    writes a frame-code sidecar next to the saved audio file (design doc "Per-
-    generation state contract") so a later commit's extend/repaint can resume
-    the autoregressive stage from it.
+    Omitted fields use the loaded architecture's defaults. Music3 frame codes
+    and YuE2 planning/token/latent artifacts accompany the saved FLAC.
     """
     from api.generation_status import (start_generation, complete_generation, fail_generation,
                                        get_warnings, add_warning, error_context, attach_error_context)
@@ -3298,10 +3303,11 @@ async def generate_txt2aud(
     # the generic "no audio model" message below would misdescribe it.
     _reject_if_video_model_on_audio_route("/generate/txt2aud")
     _is_music3 = getattr(pipeline_manager, "is_minimax_music3_model", False)
-    if not (getattr(pipeline_manager, "is_acestep_model", False) or _is_music3):
+    _is_yue2 = getattr(pipeline_manager, "is_yue2_model", False)
+    if not (getattr(pipeline_manager, "is_acestep_model", False) or _is_music3 or _is_yue2):
         raise CustomValidationError(
-            "No ACE-Step or MiniMax Music 3 model loaded",
-            detail="Load an ACE-Step 1.5 or MiniMax Music 3 audio model before calling /generate/txt2aud.",
+            "No audio model loaded",
+            detail="Load an ACE-Step 1.5, MiniMax Music 3, or YuE2 model before calling /generate/txt2aud.",
         )
 
     _gen_id = start_generation("txt2aud")
@@ -3312,6 +3318,9 @@ async def generate_txt2aud(
         from api.generation_utils import resolve_audio_defaults, validate_audio_params
         _aud_arch = (pipeline_manager.current_model_info or {}).get("type")
         _aud_defaults = resolve_audio_defaults(params, request.model_fields_set, _aud_arch)
+        if _is_yue2:
+            from api.generation_utils import validate_yue2_request
+            validate_yue2_request(params, await raw_request.json(), _aud_defaults)
         # Arch-specific bounds (audio_duration ceiling, num_inference_steps
         # floor) -- BEFORE the GPU coordinator reserves a slot below, so an
         # out-of-range step count is a fast 400 rather than a 500 minutes
@@ -3365,7 +3374,19 @@ async def generate_txt2aud(
         # MiniMax Music 3 returns `MiniMaxMusic3Txt2AudResult`, which also
         # carries the frame codes the sidecar below needs (see that result
         # type's own docstring for why this is not unified into one shape).
-        if _is_music3:
+        if _is_yue2:
+            waveform = _gen_result.waveform
+            sample_rate = _gen_result.sample_rate
+            actual_seed = _gen_result.seed
+            params.update({
+                "yue2_abc_text": _gen_result.abc_text,
+                "yue2_abc_ids": _gen_result.abc_ids,
+                "yue2_truncated": _gen_result.truncated,
+                "yue2_effective_config": _gen_result.effective_config,
+                "yue2_timings": _gen_result.timings,
+                "yue2_model_identity": _gen_result.model_identity,
+            })
+        elif _is_music3:
             waveform = _gen_result.waveform
             sample_rate = _gen_result.sample_rate
             actual_seed = _gen_result.actual_seed
@@ -3391,6 +3412,21 @@ async def generate_txt2aud(
 
         # Hash the saved FLAC file's bytes (see calculate_bytes_hash's docstring).
         _media_hash = await _hash_saved_media(os.path.join(settings.outputs_dir, filename))
+
+        if _is_yue2:
+            from core.models.yue2.artifacts import write_yue2_sidecar
+            try:
+                await asyncio.to_thread(
+                    write_yue2_sidecar,
+                    os.path.join(settings.outputs_dir, filename),
+                    _gen_result,
+                    media_sha256=_media_hash,
+                )
+            except Exception as exc:
+                add_warning(
+                    f"YuE2 audio was saved, but its token/latent sidecar could not be written: {exc}",
+                    code="sidecar_write_failed",
+                )
 
         # Record audio-specific fields into parameters JSON for the gallery.
         num_samples = int(waveform.shape[-1])
@@ -9029,6 +9065,9 @@ def _generated_image_file_paths(image: "GeneratedImage") -> Dict[str, str]:
     from core.models.minimax_music3.frame_codes import sidecar_path_for_audio
     paths["frame_codes_sidecar"] = sidecar_path_for_audio(media_path)
 
+    paths["yue2_tokens_latents"] = os.path.join(settings.outputs_dir, f"{base_name}.yue2.npz")
+    paths["yue2_sidecar"] = os.path.join(settings.outputs_dir, f"{base_name}.yue2.json")
+    paths["yue2_score"] = os.path.join(settings.outputs_dir, f"{base_name}.abc")
     paths["media"] = media_path
     return paths
 
@@ -9043,8 +9082,8 @@ async def delete_image(
 
     `delete_files=true` (default): removes the DB row AND every artefact it
     owns (media, sidecar JSON, poster/waveform PNG, both thumbnail variants,
-    the lossless proxy when present, and MiniMax Music 3's frame-code sidecar
-    when present). Files are removed in an order that leaves `media` for
+    the lossless proxy, MiniMax Music 3's frame-code sidecar, and YuE2's
+    token/latent NPZ, JSON and ABC score when present). Files leave `media` for
     last, so if a later file fails the row (left intact, see the 500
     response) still points at a file that still exists on retry.
 
@@ -14851,6 +14890,12 @@ class TrainingRunCreateRequest(BaseModel):
     krea2_lora_scope: str = TRAINING_DEFAULTS["krea2_lora_scope"]
     krea2_lr_factor: float = Field(default=TRAINING_DEFAULTS["krea2_lr_factor"], ge=0)
     krea2_discrete_flow_shift: float = TRAINING_DEFAULTS["krea2_discrete_flow_shift"]
+    # YuE2 Phase-A score-planner LoRA. Closed literals keep the unreleased
+    # semantic/NAR objectives outside the public training contract.
+    yue2_training_objective: Literal["abc_ar"] = TRAINING_DEFAULTS["yue2_training_objective"]
+    yue2_lora_scope: Literal["attention", "attention,mlp"] = TRAINING_DEFAULTS["yue2_lora_scope"]
+    yue2_abc_mode: Literal["full", "melody"] = TRAINING_DEFAULTS["yue2_abc_mode"]
+    yue2_allow_truncated_targets: bool = TRAINING_DEFAULTS["yue2_allow_truncated_targets"]
     # REPA (Representation Alignment). Accepted for every architecture whose
     # handler answers repa_tap(); refused (never ignored) for the others.
     repa_enable: bool = TRAINING_DEFAULTS["repa_enable"]

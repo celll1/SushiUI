@@ -204,6 +204,9 @@ class SerialisationTest(unittest.TestCase):
         for bad in ({"distribution": "nope"},
                     {"distribution": "normal", "std": 0.0},
                     {"distribution": "beta", "alpha": 0.0},
+                    {"distribution": "custom", "custom_weights": [-1.0, 2.0]},
+                    {"distribution": "custom", "custom_weights": [float("nan"), 1.0]},
+                    {"distribution": "custom", "custom_weights": [float("inf"), 1.0]},
                     {"distribution": "uniform", "min_timestep": 0.9, "max_timestep": 0.1},
                     {"distribution": "logit_normal", "mean": float("nan")}):
             with self.assertRaises(ValueError, msg=str(bad)):
@@ -211,6 +214,8 @@ class SerialisationTest(unittest.TestCase):
 
     def test_invalid_morph_blocks_are_refused(self):
         for bad in ({"enabled": True, "steps": 0},
+                    {"enabled": True, "steps": 1.5},
+                    {"enabled": True, "steps": True},
                     {"enabled": True, "steps": 10, "curve": "spline"},
                     {"enabled": True, "steps": 10, "interpolation": "magic"},
                     {"enabled": True, "steps": 10, "from": {"distribution": "nope"}}):

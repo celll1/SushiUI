@@ -105,6 +105,16 @@ class DefaultsTest(unittest.TestCase):
         for name, config in TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH.items():
             self.assertNotIn("morph", config, name)
 
+    def test_openapi_has_one_complete_timestep_sampling_schema(self):
+        spec_path = BACKEND.parent / "openapi.yaml"
+        text = spec_path.read_text(encoding="utf-8")
+        self.assertEqual(text.count("\n    TimestepSamplingConfig:"), 1)
+        schema = yaml.safe_load(text)["components"]["schemas"]["TimestepSamplingConfig"]
+        properties = schema["properties"]
+        self.assertIn("morph", properties)
+        self.assertEqual(properties["custom_weights"]["items"]["minimum"], 0)
+        self.assertEqual(properties["std"]["exclusiveMinimum"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

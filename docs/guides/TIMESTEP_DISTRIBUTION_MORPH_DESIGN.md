@@ -18,7 +18,7 @@ Where the code lives:
 | Config UI, monitor readout, density evaluation | `frontend/src/components/training/{TrainingConfig,TrainingMonitor,TimestepDistributionGraph}.tsx`, `frontend/src/utils/timestepDistribution.ts` |
 | Tests | `backend/tests/timestep_morph{,_trainer,_config}_test.py` |
 
-Two deviations from what is described below, both deliberate:
+One transport deviation from what is described below is deliberate:
 
 1. **Runtime status is a dedicated endpoint, not a field on the training-status
    response.** The trainer runs in a subprocess, and the existing precedent for
@@ -26,13 +26,6 @@ Two deviations from what is described below, both deliberate:
    `GET /training/runs/{id}/lr-schedule`. The morph uses the same transport
    (`.timestep_distribution.json`) and its own GET, rather than threading a
    subprocess value onto a DB-backed response. The payload is as specified.
-2. **A partitioned MNT window uses a PREDICTED update position** for the parts
-   after the boundary (current position + boundaries crossed so far). The draws
-   for the whole window happen before any of them steps, so the exact future
-   count is not knowable; the prediction is only wrong if a step inside the
-   window is skipped, which shifts lambda by at most one update.
-
-
 ## Problem
 
 `timestep_sampling` is read once per run (`BaseTrainer.train`,
@@ -223,6 +216,11 @@ steps of pointless wrapper.
 `base_trainer.py:15359`) gains:
 
 ```json
+"timestep_sampler": {
+  "version": 1,
+  "kind": "config",
+  "config": { "distribution": "logit_normal", "mean": 0.5, "std": 1.0 }
+},
 "timestep_morph": {
   "version": 1,
   "start_update": 10300,
@@ -234,9 +232,12 @@ steps of pointless wrapper.
 }
 ```
 
-The top-level state also records `optimizer_update_step`. Both values describe
-completed successful updates. The state is saved from the same sampler instance
-used for training, rather than reconstructed from the current YAML.
+The top-level state also records `optimizer_update_step`. `timestep_sampler`
+always records the law in force at the checkpoint: a steady endpoint, or a
+frozen sampler expression at the current λ. This remains after a completed
+`timestep_morph` record is dropped, so an older checkpoint and a no-change
+resume do not infer their source from the latest YAML. State is saved from the
+same sampler instance used for training, rather than reconstructed from config.
 
 Behaviour on resume while a morph is in flight:
 
@@ -248,8 +249,9 @@ Behaviour on resume while a morph is in flight:
   semantics but has no `icdf`. Therefore a requested quantile morph whose
   source contains a mixture falls back to mixture with a warning, just like a
   Beta endpoint. It is not described as an exact quantile interpolation.
-- **morph finished** (`optimizer_update_step >= start_update + steps`) → the record is
-  dropped from `state.json` on the next save.
+- **morph finished** (`optimizer_update_step >= start_update + steps`) → the wrapper
+  is replaced by its target immediately, its metric/status becomes steady, and
+  the morph record is dropped from `state.json` on the next save.
 
 Sampler expressions are serialised recursively with `version` and `kind`
 fields. Nesting depth is capped at four. A fifth in-flight retarget flattens the
@@ -297,11 +299,13 @@ Wiring:
   expression after the selected checkpoint state is loaded.
 - `BaseTrainer.train` sets the sampler's optimizer-update position at the start
   of each accumulation window. The MNT stratified path is partitioned when it
-  crosses an optimizer boundary, as described above; ordinary `.sample(...)`
-  call sites remain unchanged.
-- `save_training_state` stores both `optimizer_update_step` and the active
-  sampler's `state()`. Every code path that actually changes weights increments
-  the counter exactly once; scheduler-only recovery paths do not.
+  crosses an optimizer boundary, and each partition is drawn lazily from the
+  actual successful-update count at execution time; skipped updates therefore
+  cannot drift λ. Ordinary `.sample(...)` call sites remain unchanged.
+- `save_training_state` stores `optimizer_update_step`, the effective sampler
+  expression, and any active morph record. Every code path that actually changes
+  weights increments the counter exactly once; scheduler-only recovery paths do
+  not.
 - The startup log block (`base_trainer.py:14878`) prints the morph: both
   endpoints, curve, update window, resolved `start_update`; and
   `log_timestep_distribution_median` runs for *both* endpoints so the

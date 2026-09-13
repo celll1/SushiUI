@@ -2404,6 +2404,47 @@ def apply_run_seed(configured: Any) -> Tuple[int, bool]:
 
 
 
+class _LazyMorphMntTimestepBlock:
+    """Generate each stratified MNT partition only when execution reaches it.
+
+    Future optimizer updates cannot be predicted across CUDA/GradScaler skips.
+    Delaying a partition until its first row makes the sampler read the actual
+    successful-update counter while retaining stratification within that
+    accumulation partition.
+    """
+
+    def __init__(self, trainer, morphing, offsets: Sequence[int], batch_size: int):
+        self.trainer = trainer
+        self.morphing = morphing
+        self.batch_size = int(batch_size)
+        self.shape = torch.Size((len(offsets), self.batch_size))
+        self._partitions = []
+        self._blocks = {}
+        start = 0
+        for i in range(1, len(offsets) + 1):
+            if i == len(offsets) or offsets[i] != offsets[start]:
+                self._partitions.append((start, i))
+                start = i
+
+    def __getitem__(self, index: int) -> torch.Tensor:
+        index = int(index)
+        if index < 0:
+            index += self.shape[0]
+        if not 0 <= index < self.shape[0]:
+            raise IndexError(index)
+        for start, end in self._partitions:
+            if start <= index < end:
+                block = self._blocks.get(start)
+                if block is None:
+                    current = int(getattr(self.trainer, "_optimizer_update_step", 0))
+                    self.morphing.set_optimizer_update_step(current)
+                    block = self.morphing.sample_stratified(
+                        end - start, self.batch_size, self.trainer.device)
+                    self._blocks[start] = block
+                return block[index - start]
+        raise IndexError(index)
+
+
 class BaseTrainer(ABC):
     """
     Abstract base trainer class with shared logic for all training methods.
@@ -5270,6 +5311,10 @@ class BaseTrainer(ABC):
             # scheduler_step is not -- skipped batches and non-finite-gradient
             # steps advance one and not the other.
             "optimizer_update_step": int(getattr(self, "_optimizer_update_step", 0) or 0),
+            # Always persist the effective law, including after a morph has
+            # completed. Without this, a later resume would mistake the stale
+            # morph.from in the run config for the selected checkpoint's law.
+            "timestep_sampler": self._timestep_sampler_state(),
             # Saved from the live sampler, not rebuilt from the YAML: the source
             # of an in-flight morph can be a frozen or flattened law that no
             # config expresses.
@@ -5355,6 +5400,7 @@ class BaseTrainer(ABC):
             self._resume_scheduler_step = None
             self._resume_optimizer_update_step = 0
             self._resume_timestep_morph = None
+            self._resume_timestep_sampler = None
             self._resume_scheduler_interval = None
             self._resume_lr_schedule_events = None
             self._resume_lr_triggers = None
@@ -5369,6 +5415,7 @@ class BaseTrainer(ABC):
         self._resume_scheduler_step = state.get("scheduler_step")
         self._resume_optimizer_update_step = state.get("optimizer_update_step", 0) or 0
         self._resume_timestep_morph = state.get("timestep_morph")
+        self._resume_timestep_sampler = state.get("timestep_sampler")
         self._resume_scheduler_interval = state.get("lr_scheduler_advance_interval")
         self._resume_lr_schedule_events = state.get("lr_schedule_events")
         self._resume_lr_triggers = state.get("lr_schedule_triggers")
@@ -7350,6 +7397,13 @@ class BaseTrainer(ABC):
         setter = getattr(sampler, "set_optimizer_update_step", None)
         if setter is not None:
             setter(self._optimizer_update_step)
+        if (sampler is getattr(self, "_timestep_morph", None)
+                and callable(getattr(sampler, "is_finished", None))
+                and sampler.is_finished()):
+            self._timestep_morph = None
+            self.timestep_sampler = sampler.target
+            if hasattr(self, "output_dir"):
+                refresh_timestep_status(self, force=True)
         return self._optimizer_update_step
 
     def _mnt_update_offsets(self, global_step: int, n_iterations: int,
@@ -7382,22 +7436,11 @@ class BaseTrainer(ABC):
         is then over the part rather than the whole window -- a variance
         difference, against a correctness one.
         """
+        if morphing.interpolation != "quantile":
+            raise NotImplementedError("mixture morph has no quantile function")
         offsets = self._mnt_update_offsets(
             global_step, multi_noise_timesteps, gradient_accumulation_steps)
-        base = int(getattr(self, "_optimizer_update_step", 0))
-        rows = [None] * multi_noise_timesteps
-        try:
-            start = 0
-            for i in range(1, multi_noise_timesteps + 1):
-                if i == multi_noise_timesteps or offsets[i] != offsets[start]:
-                    morphing.set_optimizer_update_step(base + offsets[start])
-                    block = morphing.sample_stratified(i - start, batch_size, self.device)
-                    for j in range(start, i):
-                        rows[j] = block[j - start]
-                    start = i
-        finally:
-            morphing.set_optimizer_update_step(base)
-        return torch.stack(rows, dim=0)
+        return _LazyMorphMntTimestepBlock(self, morphing, offsets, batch_size)
 
     def _arm_timestep_morph(self, timestep_sampler, timestep_sampling_config,
                             convention: str):
@@ -7423,6 +7466,7 @@ class BaseTrainer(ABC):
         state = {
             "optimizer_update_step": getattr(self, "_resume_optimizer_update_step", 0) or 0,
             "timestep_morph": getattr(self, "_resume_timestep_morph", None),
+            "timestep_sampler": getattr(self, "_resume_timestep_sampler", None),
         }
         self._optimizer_update_step = int(state["optimizer_update_step"])
         updates = self._optimizer_update_step
@@ -7440,9 +7484,18 @@ class BaseTrainer(ABC):
         target = timestep_sampler
         target_expr = sampler_expr(target)
         record = state.get("timestep_morph")
+        saved_effective_expr = state.get("timestep_sampler")
         source = None
         start_update = updates
         origin = None
+
+        if record and not morph_cfg.get("enabled"):
+            emit_training_warning(
+                "a timestep morph was in flight but morph is now disabled; the "
+                "distribution switches immediately, which is the transient this "
+                "feature exists to avoid.",
+                code="timestep_morph_disabled_mid_flight", prefix=self.log_prefix)
+            return target
 
         if record:
             try:
@@ -7480,29 +7533,42 @@ class BaseTrainer(ABC):
                           if record["to"] == target_expr
                           else "retargeted from the in-flight morph")
             except Exception as exc:
-                emit_training_warning(
-                    f"checkpoint timestep_morph record could not be restored "
-                    f"({exc}); falling back to the configured morph source.",
-                    code="timestep_morph_state_unreadable", prefix=self.log_prefix)
-                source = None
+                raise ValueError(
+                    "checkpoint timestep_morph record is unreadable; refusing to "
+                    f"guess the optimizer's source distribution ({exc})"
+                ) from exc
 
         if source is None:
             if not morph_cfg.get("enabled"):
                 return target
-            if morph_cfg.get("from") is None:
+            if saved_effective_expr is not None:
+                try:
+                    source = build_sampler_from_expr(saved_effective_expr)
+                except Exception as exc:
+                    raise ValueError(
+                        "checkpoint timestep_sampler record is unreadable; refusing "
+                        f"to guess the optimizer's source distribution ({exc})"
+                    ) from exc
+                if sampler_expr(source) == target_expr:
+                    print(f"{self.log_prefix} Checkpoint already trained at the "
+                          f"configured timestep distribution; no morph needed")
+                    return target
+                origin = "selected checkpoint's effective distribution"
+            elif morph_cfg.get("from") is None:
                 print(f"{self.log_prefix} timestep_sampling.morph is enabled but no "
                       f"previous distribution is known (fresh run, or no saved "
                       f"config); training at {describe_sampler(target)}")
                 return target
-            source_config = canonicalize_timestep_config(morph_cfg["from"])
-            if source_config == canonicalize_timestep_config(
-                    {k: v for k, v in (timestep_sampling_config or {}).items()
-                     if k != "morph"}):
-                print(f"{self.log_prefix} timestep_sampling is unchanged since the "
-                      f"previous run; no morph needed")
-                return target
-            source = TimestepSampler.from_config(dict(source_config))
-            origin = "configured source"
+            else:
+                source_config = canonicalize_timestep_config(morph_cfg["from"])
+                if source_config == canonicalize_timestep_config(
+                        {k: v for k, v in (timestep_sampling_config or {}).items()
+                         if k != "morph"}):
+                    print(f"{self.log_prefix} timestep_sampling is unchanged since the "
+                          f"previous run; no morph needed")
+                    return target
+                source = TimestepSampler.from_config(dict(source_config))
+                origin = "configured source"
 
         if not morph_cfg.get("enabled"):
             emit_training_warning(
@@ -7556,6 +7622,18 @@ class BaseTrainer(ABC):
         if morphing is None or morphing.is_finished():
             return None
         return morphing.state()
+
+    def _timestep_sampler_state(self):
+        """Versioned expression of the law in force at this checkpoint."""
+        from .timestep_sampler import sampler_expr
+
+        morphing = getattr(self, "_timestep_morph", None)
+        if morphing is not None:
+            if morphing.is_finished():
+                return sampler_expr(morphing.target)
+            return sampler_expr(morphing.freeze())
+        sampler = getattr(self, "timestep_sampler", None)
+        return sampler_expr(sampler) if sampler is not None else None
 
     def timestep_morph_status(self):
         """Runtime view of the active timestep distribution, for the API/monitor.
@@ -7613,7 +7691,7 @@ class BaseTrainer(ABC):
             self.defer_extra_metric("timestep_batch_p10", quantiles[0])
             self.defer_extra_metric("timestep_batch_p90", quantiles[1])
             morphing = getattr(self, "_timestep_morph", None)
-            if morphing is not None:
+            if morphing is not None and not morphing.is_finished():
                 # A CPU float already: no sync, and it is the one value that
                 # must be right even when the deferred flush is skipped.
                 self.log_extra_metric("timestep_morph_lambda", float(morphing.lam))

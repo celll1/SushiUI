@@ -159,6 +159,41 @@ export type Curve = { x: number; y: number }[];
 
 const GRID = 512;
 
+// Lanczos approximation; sufficient for drawing a distribution, not sampling it.
+function logGamma(value: number): number {
+  const coefficients = [
+    676.5203681218851, -1259.1392167224028, 771.3234287776531,
+    -176.6150291621406, 12.507343278686905, -0.13857109526572012,
+    9.984369578019572e-6, 1.5056327351493116e-7,
+  ];
+  if (value < 0.5) {
+    return Math.log(Math.PI) - Math.log(Math.sin(Math.PI * value)) - logGamma(1 - value);
+  }
+  const z = value - 1;
+  let sum = 0.9999999999998099;
+  for (let i = 0; i < coefficients.length; i++) sum += coefficients[i] / (z + i + 1);
+  const t = z + coefficients.length - 0.5;
+  return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(sum);
+}
+
+function betaDensity(config: SamplerConfig, bins: number): Curve | null {
+  const min = config.min_timestep ?? 0;
+  const max = config.max_timestep ?? 1;
+  const alpha = config.alpha ?? 2;
+  const beta = config.beta ?? 2;
+  const width = max - min;
+  if (!(alpha > 0) || !(beta > 0) || !(width > 0)) return null;
+  const logNorm = logGamma(alpha) + logGamma(beta) - logGamma(alpha + beta);
+  return Array.from({ length: bins }, (_, i) => {
+    const x = (i + 0.5) / bins;
+    if (x <= min || x >= max) return { x, y: 0 };
+    const unit = (x - min) / width;
+    const logPdf = (alpha - 1) * Math.log(unit)
+      + (beta - 1) * Math.log1p(-unit) - logNorm - Math.log(width);
+    return { x, y: Math.exp(logPdf) };
+  });
+}
+
 /**
  * Density of a sampler expression, as a normalised histogram of its midpoint
  * quantiles. Deterministic — no sampling — and works for any expression with a
@@ -182,6 +217,19 @@ export function densityFromIcdf(
 
 /** Density of one endpoint expression, for both interpolation modes. */
 export function densityOf(expr: SamplerExpr, bins = 64): Curve | null {
+  if (expr.kind === "config" && normalizeDistribution(expr.config.distribution) === "beta") {
+    return betaDensity(expr.config, bins);
+  }
+  if (expr.kind === "morph" && expr.interpolation === "mixture") {
+    const source = densityOf(expr.source, bins);
+    const target = densityOf(expr.target, bins);
+    if (!source || !target) return null;
+    const lam = Math.min(1, Math.max(0, expr.frozen_lam ?? 0));
+    return source.map((point, i) => ({
+      x: point.x,
+      y: (1 - lam) * point.y + lam * target[i].y,
+    }));
+  }
   return densityFromIcdf((u) => samplerIcdf(expr, u), bins);
 }
 

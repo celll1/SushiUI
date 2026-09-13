@@ -1165,7 +1165,7 @@ def _apply_reference_training_contract(
 def _apply_yue2_training_contract(
     base_model_path: str, network_type: str, train_config: Dict[str, Any]
 ) -> bool:
-    """Refuse settings the token-native Phase-A loop cannot honor."""
+    """Refuse settings the token-native ABC planner loop cannot honor."""
     if network_type == "vae_decoder":
         return False
     from core.model_loader import ModelLoader
@@ -1176,13 +1176,13 @@ def _apply_yue2_training_contract(
         is_yue2 = "yue2" in (base_model_path or "").lower()
     if not is_yue2:
         return False
-    if network_type != "lora":
-        raise ValueError("YuE2 Phase A supports network.type='lora' only")
+    if network_type not in {"lora", "full_finetune"}:
+        raise ValueError("YuE2 supports network.type='lora' or 'full_finetune'")
     objective = str(train_config.get("yue2_training_objective", "abc_ar")).strip().lower()
     if objective != "abc_ar":
         raise ValueError("YuE2 Phase A supports yue2_training_objective='abc_ar' only")
     scope = str(train_config.get("yue2_lora_scope", "attention")).strip().lower()
-    if scope not in {"attention", "attention,mlp"}:
+    if network_type == "lora" and scope not in {"attention", "attention,mlp"}:
         raise ValueError("YuE2 yue2_lora_scope must be 'attention' or 'attention,mlp'")
     abc_mode = str(train_config.get("yue2_abc_mode", "full")).strip().lower()
     if abc_mode not in {"full", "melody"}:
@@ -1191,27 +1191,52 @@ def _apply_yue2_training_contract(
     train_config["yue2_lora_scope"] = scope
     train_config["yue2_abc_mode"] = abc_mode
     if not _normalize_scope_flag(train_config, "train_unet", True):
-        raise ValueError("YuE2 abc_ar LoRA requires train_unet=true")
+        raise ValueError("YuE2 abc_ar training requires train_unet=true")
     if _normalize_scope_flag(train_config, "train_text_encoder", False):
         raise ValueError("YuE2 has no separate trainable text encoder; set train_text_encoder=false")
     if _normalize_scope_flag(train_config, "train_image_encoder", False):
-        raise ValueError("YuE2 Phase A has no trainable image encoder")
+        raise ValueError("YuE2 has no trainable image encoder")
     if int(train_config.get("blocks_to_swap", 0) or 0):
-        raise ValueError("YuE2 Phase A does not implement training block swap")
+        raise ValueError("YuE2 does not implement training block swap")
     if int(train_config.get("num_optimizer_groups", 0) or 0):
-        raise ValueError("YuE2 Phase A does not implement fused optimizer groups")
+        raise ValueError("YuE2 does not implement fused optimizer groups")
     if bool(train_config.get("use_ema", False)):
-        raise ValueError("YuE2 Phase A does not implement EMA checkpoints")
+        raise ValueError("YuE2 does not implement EMA checkpoints")
     if bool(train_config.get("repa_enable", False)):
         raise ValueError("YuE2 abc_ar has no image-token grid for REPA")
     if str(train_config.get("regularization_type") or "none").lower() != "none":
-        raise ValueError("YuE2 Phase A does not implement diffusion regularization losses")
+        raise ValueError("YuE2 does not implement diffusion regularization losses")
     if int(train_config.get("multi_noise_timesteps", 1) or 1) != 1:
         raise ValueError("YuE2 abc_ar is a causal-LM objective; multi_noise_timesteps must be 1")
     if str(train_config.get("torch_compile") or "off").lower() != "off":
-        raise ValueError("YuE2 Phase A has not validated torch_compile; set torch_compile='off'")
+        raise ValueError("YuE2 has not validated torch_compile; set torch_compile='off'")
     if train_config.get("fp8_base_dtype"):
-        raise ValueError("YuE2 already uses its single-file ConvRot INT8 base; fp8_base_dtype is inapplicable")
+        raise ValueError("YuE2 checkpoint storage determines its precision; fp8_base_dtype is inapplicable")
+    if network_type == "full_finetune":
+        from core.models.yue2.loader import preflight_yue2
+
+        checkpoint = preflight_yue2(base_model_path)
+        if checkpoint["quantized"]:
+            raise ValueError(
+                "YuE2 full_finetune requires the complete dense-BF16 single file; "
+                "the selected checkpoint is ConvRot INT8 and supports LoRA only"
+            )
+        if not _normalize_scope_flag(train_config, "gradient_checkpointing", True):
+            raise ValueError("YuE2 full_finetune requires gradient_checkpointing=true")
+        if int(train_config.get("batch_size", 1) or 1) != 1:
+            raise ValueError("YuE2 full_finetune requires physical batch_size=1")
+        optimizer = str(train_config.get("optimizer") or "adamw8bit").lower()
+        allowed = {"adamw8bit", "adamw8bit_ringbuffer", "lion8bit_ringbuffer", "adafactor"}
+        if optimizer not in allowed:
+            raise ValueError(
+                f"YuE2 full_finetune requires a memory-bounded optimizer; got {optimizer!r}"
+            )
+        rounding = train_config.get("optimizer_stochastic_rounding")
+        if rounding is False:
+            raise ValueError(
+                "YuE2 full_finetune requires optimizer_stochastic_rounding=true for BF16 updates"
+            )
+        train_config["optimizer_stochastic_rounding"] = True
     return True
 
 
@@ -3871,7 +3896,14 @@ def main():
             from core.model_loader import ModelLoader
 
             model_type = ModelLoader.detect_model_type(run.base_model_path)
-            model_pred_config = ModelLoader.detect_prediction_config(run.base_model_path, model_type)
+            if model_type == "yue2":
+                model_pred_config = {
+                    "noise_process": "token_causal",
+                    "prediction_target": "cross_entropy",
+                    "source": "YuE2 ABC planner contract",
+                }
+            else:
+                model_pred_config = ModelLoader.detect_prediction_config(run.base_model_path, model_type)
 
             print(f"[TrainRunner] Model prediction configuration detected:")
             print(f"  Noise Process: {model_pred_config['noise_process']}")
@@ -3926,7 +3958,8 @@ def main():
             trainer.noise_process = training_noise_process
             trainer.prediction_target = training_prediction_target
 
-            _validate_latent_io(trainer, train_config)
+            if model_type != "yue2":
+                _validate_latent_io(trainer, train_config)
 
             regularization_type = train_config.get('regularization_type', None)
             if regularization_type:

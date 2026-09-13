@@ -3096,10 +3096,17 @@ Paths below are relative to `backend/core/training/`.
     `RUNTIME_INT8_ARCHS`/`QUANTIZED_LINEAR_ARCHS`. Caller negative prompts,
     non-LoRA adapters, reference audio, generic block swap, shared attention
     selection, ControlNet, NAG, Spectrum, FBCache, TREAD, and BlockSkip are
-    refused. Ordinary SushiUI LoRA is supported only for the Phase-A ABC
-    planner and is activated only for the ABC generation stage; semantic AR,
-    acoustic NAR, full-parameter, ReLoRA, and audio-VAE training remain
-    refused. `keep_models_hot` is not wired.
+    refused. Ordinary SushiUI LoRA is supported for the ABC planner and is
+    activated only for the ABC generation stage. `full_finetune` accepts only
+    the complete dense-BF16 file and trains all 2,165,957,632 AR-planner
+    parameters under the same masked causal-LM objective. The earlier
+    2,173,992,284 header-element estimate incorrectly included NAR auxiliary
+    parameters and the non-parameter latent-position buffer; the executable
+    `ar_modules` census is pinned by test. The route refuses ConvRot
+    INT8 before loading, freezes NAR/VAE, requires checkpointing, physical batch
+    1, a memory-bounded optimizer, and stochastic BF16 rounding, and saves a
+    complete resumable dense single file. Semantic AR, acoustic NAR, ReLoRA,
+    and audio-VAE training remain refused. `keep_models_hot` is not wired.
   - **Artifacts**: the FLAC's ordinary generation metadata is accompanied by
     `.yue2.json` and `.yue2.npz`; generated ABC also produces `.abc`. These
     record exact ABC IDs, semantic codes, acoustic latents, effective settings,

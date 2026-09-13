@@ -1028,9 +1028,6 @@ _add_training_unsupported(
 _add_training_unsupported(
     "yue2", "relora",
     "YuE2 Phase A supports ordinary LoRA only; merging into its ConvRot INT8 base is not implemented")
-_add_training_unsupported(
-    "yue2", "full_finetune",
-    "YuE2 full-parameter training and a resumable single-file full-model save are not implemented; Phase A supports ABC-planner LoRA only")
 
 # ControlNet training implements SD1.5 and SDXL adapters only
 # (adapters/controlnet_sd15_adapter.py, adapters/controlnet_sdxl_adapter.py; the
@@ -1057,7 +1054,7 @@ _add_training_feature_unsupported(
     "the SDXL U-Net training path has no block-swap consumer (arch/sdxl.py's setup_block_swap is a no-op and ops/sd_sdxl_ops.py defines none); its VRAM story is the sequential text-encoder/U-Net/VAE component offload")
 _add_training_feature_unsupported(
     "yue2", "block_swap",
-    "YuE2 Phase A retains only the AR planner on the training device and has no training block-swap conductor")
+    "YuE2 retains only the AR planner on the training device and has no training block-swap conductor")
 # --- Fused optimizer groups -------------------------------------------------
 # `num_optimizer_groups` is only read inside the `if self.blocks_to_swap > 0`
 # branch of base_trainer.setup_optimizer, so it governs nothing wherever block
@@ -1068,7 +1065,7 @@ for _a in ["sd15", "sdxl"]:
         "fused optimizer groups are only set up when blocks_to_swap > 0 (base_trainer.setup_optimizer), and this architecture has no training block-swap path")
 _add_training_feature_unsupported(
     "yue2", "fused_optimizer_groups",
-    "fused optimizer groups are only set up with training block swap, which YuE2 Phase A does not implement")
+    "fused optimizer groups are only set up with training block swap, which YuE2 does not implement")
 _add_training_feature_unsupported(
     "sensenova", "fused_optimizer_groups",
     "SenseNova full fine-tuning applies and releases each gradient through per-parameter optimizer hooks; batched fused optimizer groups would violate that memory contract",
@@ -1095,7 +1092,7 @@ for _a, _why in [
     ("ltx2", "Ltx2LoRAAdapter/Ltx2FullParameterAdapter keep the Gemma-3 text encoder and its connectors frozen"),
     ("acestep", "AceStepLoRAAdapter/AceStepFullParameterAdapter keep the Qwen3-Embedding-0.6B text encoder frozen"),
     ("minimax_h3", "the Qwen3-VL conditioner is read one decoder layer at a time off a memory-mapped 48 GiB file precisely so it never becomes resident; there is no configuration in which its weights and the DiT's are both on the GPU"),
-    ("yue2", "YuE2 Phase A trains the embedded AR score planner; it has no separate trainable text encoder"),
+    ("yue2", "YuE2 trains the embedded AR score planner; it has no separate trainable text encoder"),
 ]:
     _add_training_feature_unsupported(_a, "text_encoder_training", _why)
 _add_training_feature_unsupported(
@@ -1186,7 +1183,7 @@ _add_training_feature_unsupported(
     "step-0 and periodic audio previews are not wired for ACE-Step; its training sample handler warns and returns None")
 _add_training_feature_unsupported(
     "yue2", "training_samples",
-    "YuE2 Phase-A training-time audio previews are not wired; generation remains available through the normal txt2aud endpoint")
+    "YuE2 training-time audio previews are not wired; generation remains available through the normal txt2aud endpoint")
 
 # --- VAE --------------------------------------------------------------------
 # --- VAE swap ---------------------------------------------------------------
@@ -1263,10 +1260,10 @@ _add_training_feature_unsupported(
     "SenseNova is pixel-space and has no VAE: there is nothing for the VAE dtype to apply to and nothing to bundle into a checkpoint")
 _add_training_feature_unsupported(
     "yue2", "vae",
-    "YuE2 Phase A trains only the AR score planner and deliberately unloads the frozen audio VAE")
+    "YuE2 trains only the AR score planner and keeps the frozen audio VAE off-device")
 _add_training_feature_unsupported(
     "yue2", "vae_swap",
-    "YuE2 Phase A never enters the acoustic latent path, so replacing the audio VAE has no defined training effect")
+    "YuE2 ABC-planner training never enters the acoustic latent path, so replacing the audio VAE has no defined training effect")
 
 # --- Layer-wise LR decay ----------------------------------------------------
 # `lr_layer_decay` scales a param group by the depth of the block its

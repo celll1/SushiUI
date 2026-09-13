@@ -11,7 +11,7 @@ from core.models.yue2.vendor.modeling_yue2 import YuE2Config, YuE2ForCausalLM
 from core.models.yue2.vendor.protocol import ABC_END, ABC_START
 from core.models.yue2.artifacts import load_yue2_training_artifacts, write_yue2_sidecar
 from core.models.yue2.yue2_lora import iter_yue2_lora_targets, normalize_yue2_stages, stage_is_active
-from core.training.adapters.yue2_adapter import YuE2LoRAAdapter
+from core.training.adapters.yue2_adapter import YuE2FullParameterAdapter, YuE2LoRAAdapter
 from core.training.ops.yue2_ops import (build_abc_ar_example, collate_abc_ar,
                                        prepare_abc_items, train_abc_ar_loop,
                                        train_abc_ar_step)
@@ -178,6 +178,121 @@ def test_phase_a_preflight_refuses_inapplicable_training_controls(monkeypatch):
         config = {"train_unet": True, "train_text_encoder": False, key: value}
         with pytest.raises(ValueError, match=message):
             _apply_yue2_training_contract("model.safetensors", "lora", config)
+
+
+def test_full_finetune_contract_requires_dense_bf16_and_safe_settings(monkeypatch):
+    from core.model_loader import ModelLoader
+    from core.models.yue2 import loader
+    from api.param_defaults import full_finetune_forces_stochastic_rounding
+
+    monkeypatch.setattr(ModelLoader, "detect_model_type", staticmethod(lambda _path: "yue2"))
+    monkeypatch.setattr(loader, "preflight_yue2", lambda _path: {"quantized": {}})
+    accepted = {
+        "train_unet": True,
+        "train_text_encoder": False,
+        "gradient_checkpointing": True,
+        "batch_size": 1,
+        "optimizer": "adamw8bit_ringbuffer",
+        "optimizer_stochastic_rounding": None,
+    }
+    assert _apply_yue2_training_contract("dense.safetensors", "full_finetune", accepted)
+    assert accepted["optimizer_stochastic_rounding"] is True
+    assert full_finetune_forces_stochastic_rounding("yue2") is True
+
+    monkeypatch.setattr(loader, "preflight_yue2", lambda _path: {"quantized": {"layer": {}}})
+    with pytest.raises(ValueError, match="ConvRot INT8"):
+        _apply_yue2_training_contract("int8.safetensors", "full_finetune", dict(accepted))
+
+
+def test_full_parameter_adapter_trains_only_ar_and_writes_complete_file(tmp_path):
+    from core.models.yue2.vendor.modeling_yue2 import RMSNorm
+
+    model = tiny_model(layers=2)
+    model.nar_norm = RMSNorm(model.config.hidden_size, model.config.rms_norm_eps)
+    trainer = SimpleNamespace(
+        transformer=model,
+        gradient_checkpointing=True,
+        optimizer_stochastic_rounding=True,
+        learning_rate=1e-5,
+        unet_lr=None,
+        yue2_frozen_vae=torch.nn.Linear(2, 2),
+        tokenizer=SimpleNamespace(payload='{"version":"1.0"}'),
+        yue2_model_identity={"checkpoint": "dense.safetensors"},
+    )
+    adapter = YuE2FullParameterAdapter(trainer)
+    adapter.prepare_models_for_training()
+    groups = adapter.arch_param_groups()
+    selected = {id(parameter) for parameter in groups[0]["params"]}
+    assert selected
+    assert id(model.model.layers[0].self_attn.q_proj.weight) in selected
+    assert id(model.model.layers[0].nar_self_attn.q_proj.weight) not in selected
+    assert not model.model.layers[0].nar_self_attn.q_proj.weight.requires_grad
+    example = build_abc_ar_example(
+        TinyTokenizer(), style="pop", lyrics="[Verse]\nhello", abc="X:1\nC"
+    )
+    train_abc_ar_step(model, collate_abc_ar([example])).backward()
+    assert model.model.layers[0].self_attn.q_proj.weight.grad is not None
+    assert model.model.layers[0].nar_self_attn.q_proj.weight.grad is None
+    path = adapter.write_checkpoint(3, 1, tmp_path / "planner")
+    with safe_open(path, framework="pt", device="cpu") as handle:
+        assert handle.metadata()["yue2_training_scope"] == "abc_ar_full"
+        assert handle.metadata()["step"] == "3"
+        assert handle.metadata()["yue2_weight_storage"] == "dense_bf16"
+        assert "vae.weight" in handle.keys()
+
+
+def test_production_full_scope_parameter_count_is_pinned():
+    from core.models.yue2.loader import build_empty_models
+    from core.models.yue2.pipeline import ar_modules
+
+    model, _ = build_empty_models()
+    seen = {}
+    for module in ar_modules(model):
+        for parameter in module.parameters():
+            seen[id(parameter)] = parameter
+    assert sum(parameter.numel() for parameter in seen.values()) == 2_165_957_632
+
+
+def test_full_resume_uses_weights_already_loaded_as_base(tmp_path):
+    from safetensors.torch import save_file
+
+    checkpoint = tmp_path / "run_step_000003.safetensors"
+    save_file({"probe": torch.zeros(1)}, checkpoint, metadata={
+        "yue2_training_scope": "abc_ar_full",
+        "yue2_training_protocol": "yue2-abc-ar-v1",
+    })
+    audio = tmp_path / "example.flac"
+    audio.write_bytes(b"unused")
+    audio.with_suffix(".abc").write_text("X:1\nK:C\nCDEF", encoding="utf-8")
+    datasets = [SimpleNamespace(items=[{
+        "image_path": str(audio), "audio_path": str(audio), "caption": "pop",
+        "lyrics": "[Verse]\nhello", "width": None, "height": None,
+    }])]
+    model = torch.nn.Linear(1, 1)
+    trainer = SimpleNamespace(
+        trains_base_weights=True, _loaded_checkpoint_path=str(checkpoint),
+        config={"yue2_training_objective": "abc_ar"}, tokenizer=TinyTokenizer(),
+        transformer=model, device=torch.device("cpu"), training_dtype=torch.float32,
+        mixed_precision=False, run_id=None, _metrics_buffer=[], output_dir=tmp_path,
+        run_name="run", scaler=None, log_prefix="[test]",
+    )
+    trainer.setup_optimizer = lambda *_args: (
+        setattr(trainer, "optimizer", torch.optim.SGD(model.parameters(), lr=0.1)),
+        setattr(trainer, "lr_scheduler", torch.optim.lr_scheduler.LambdaLR(
+            trainer.optimizer, lambda _step: 1.0)),
+    )
+    trainer._check_stop_requested = lambda: None
+    trainer.load_checkpoint = lambda _path: (_ for _ in ()).throw(
+        AssertionError("full resume must not call FullParameterTrainer.load_checkpoint")
+    )
+    trainer.load_training_state = lambda _step: None
+    trainer._fast_forward_lr_schedulers = lambda _step: None
+    trainer.load_optimizer_state = lambda _step: True
+    trainer._reassert_config_lr_on_resume = lambda: None
+    assert train_abc_ar_loop(
+        trainer, datasets=datasets, total_steps=3, optimizer_type="adamw8bit",
+        resume_from_checkpoint="latest",
+    ) is False
 
 
 def test_training_api_and_openapi_share_yue2_defaults():

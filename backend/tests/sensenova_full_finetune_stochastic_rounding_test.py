@@ -403,17 +403,17 @@ class TransportIsTriStateTest(unittest.TestCase):
 class OtherArchitecturesUnchangedTest(unittest.TestCase):
     """Proven by driving them, and by reading the table -- not asserted."""
 
-    def test_only_sensenova_is_in_the_table(self):
+    def test_only_measured_bf16_full_ft_routes_are_in_the_table(self):
         from core.training.arch import ARCH_REGISTRY
 
         forced = {
             arch for arch in ARCH_REGISTRY
             if full_finetune_forces_stochastic_rounding(arch)
         }
-        self.assertEqual(forced, {"sensenova"})
+        self.assertEqual(forced, {"sensenova", "yue2"})
         self.assertIs(FULL_FINETUNE_FORCED_STOCHASTIC_ROUNDING_BY_ARCH["_default"], False)
         self.assertEqual(set(FULL_FINETUNE_FORCED_STOCHASTIC_ROUNDING_BY_ARCH),
-                         {"_default", "sensenova"})
+                         {"_default", "sensenova", "yue2"})
 
     def test_a_non_sensenova_full_finetune_keeps_round_to_nearest(self):
         """The same optimizer, the same flag, a different architecture."""

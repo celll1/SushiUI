@@ -481,6 +481,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [timestepStd, setTimestepStd] = useState<number>(1.0);    // For logit_normal/normal
   const [timestepAlpha, setTimestepAlpha] = useState<number>(2.0); // For beta
   const [timestepBeta, setTimestepBeta] = useState<number>(2.0);   // For beta
+  // Resume-time distribution morph (docs/guides/TIMESTEP_DISTRIBUTION_MORPH_DESIGN.md)
+  const [morphEnabled, setMorphEnabled] = useState<boolean>(false);
+  const [morphSteps, setMorphSteps] = useState<number>(2000);
+  const [morphCurve, setMorphCurve] = useState<string>("cosine");
+  const [morphInterpolation, setMorphInterpolation] = useState<string>("quantile");
 
   // Regularization settings (prevent overbaking)
   // Regularization (Phase 3j: migrated to params)
@@ -965,6 +970,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           alpha: timestepAlpha,
           beta: timestepBeta,
         } : {}),
+        morph: {
+          enabled: morphEnabled,
+          steps: morphSteps,
+          curve: morphCurve,
+          interpolation: morphInterpolation,
+          // Resolved server-side from the config this update replaces; an
+          // in-flight morph in the resumed checkpoint outranks both.
+          from: null,
+        },
       },
       regularization_type: regularizationType !== "none" ? regularizationType : null,
       controlnet_type: trainingMethod === "controlnet" ? params.controlnet_type : undefined,
@@ -1005,6 +1019,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     // Derived-UI states that feed back into timestep_sampling / priority_training
     timestepDistribution, timestepMin, timestepMax, timestepMean,
     timestepStd, timestepAlpha, timestepBeta,
+    morphEnabled, morphSteps, morphCurve, morphInterpolation,
     priorityEnabled, priorityText, priorityMultiplier,
   ]);
 
@@ -1106,6 +1121,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       if (ts.std !== undefined) setTimestepStd(ts.std);
       if (ts.alpha !== undefined) setTimestepAlpha(ts.alpha);
       if (ts.beta !== undefined) setTimestepBeta(ts.beta);
+      const morph = ts.morph;
+      if (morph) {
+        if (morph.enabled !== undefined) setMorphEnabled(!!morph.enabled);
+        if (morph.steps !== undefined) setMorphSteps(morph.steps);
+        if (morph.curve !== undefined) setMorphCurve(morph.curve);
+        if (morph.interpolation !== undefined) setMorphInterpolation(morph.interpolation);
+      }
     }
 
     if (incoming.priority_training) {
@@ -3666,6 +3688,74 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     </p>
                   </div>
                 )}
+
+                {/* Morph on resume */}
+                <div className="mt-4 space-y-2 p-2 bg-gray-800/30 rounded border border-gray-700/30">
+                  <label className="flex items-center gap-2 text-xs text-gray-300">
+                    <input
+                      type="checkbox"
+                      checked={morphEnabled}
+                      onChange={(e) => setMorphEnabled(e.target.checked)}
+                      className="rounded"
+                    />
+                    <span className="font-semibold">Morph on resume</span>
+                  </label>
+                  <p className="text-xs text-gray-500">
+                    When this run is resumed with a different distribution, move
+                    from the previous one to this one gradually instead of
+                    switching on the first step. Set it BEFORE starting the
+                    resume. Has no effect on a fresh run, or when the
+                    distribution is unchanged.
+                  </p>
+                  {morphEnabled && (
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">
+                          Transition length (optimizer updates)
+                        </label>
+                        <input
+                          type="number"
+                          value={morphSteps}
+                          onChange={(e) => setMorphSteps(e.target.value === '' ? '' as any : parseInt(e.target.value, 10))}
+                          onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value, 10)) || parseInt(e.target.value, 10) < 1) setMorphSteps(2000); }}
+                          min="1"
+                          step="1"
+                          className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                        />
+                        <p className="text-[10px] text-gray-500 mt-1">
+                          Counted in weight updates, not steps: unaffected by MNT
+                          or gradient accumulation.
+                        </p>
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">Curve</label>
+                        <select
+                          value={morphCurve}
+                          onChange={(e) => setMorphCurve(e.target.value)}
+                          className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                        >
+                          <option value="cosine">Cosine (flat at both ends)</option>
+                          <option value="linear">Linear</option>
+                        </select>
+                      </div>
+                      <div className="col-span-2">
+                        <label className="block text-xs text-gray-400 mb-1">Interpolation</label>
+                        <select
+                          value={morphInterpolation}
+                          onChange={(e) => setMorphInterpolation(e.target.value)}
+                          className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                        >
+                          <option value="quantile">Quantile (mass moves between the two)</option>
+                          <option value="mixture">Mixture (draw from either, by probability)</option>
+                        </select>
+                        <p className="text-[10px] text-gray-500 mt-1">
+                          Quantile falls back to mixture when an endpoint has no
+                          quantile function (beta).
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
 
                 {/* Distribution Preview Graph */}
                 <div className="mt-4">

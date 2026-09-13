@@ -368,6 +368,15 @@ export const DEFAULT_PARAMS: TrainingRunCreateRequest = {
     distribution: "uniform",
     min_timestep: 0.0,
     max_timestep: 1.0,
+    // Off by default: a morph is never implied by picking a model or a
+    // distribution, only by asking for one before a resume.
+    morph: {
+      enabled: false,
+      steps: 2000,
+      curve: "cosine",
+      interpolation: "quantile",
+      from: null,
+    },
   },
   regularization_type: null,
   snr_regularization_weight: 0.1,

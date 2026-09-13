@@ -429,3 +429,489 @@ class CustomTimestepSampler(TimestepSampler):
         span = (cum[idx + 1] - cum[idx]).clamp_min(1e-12)
         frac = ((u - cum[idx]) / span).clamp(0.0, 1.0)
         return edges[idx] + frac * (edges[idx + 1] - edges[idx])
+
+
+# ============================================================
+# Canonicalisation, serialisation and resume-time morphing
+# See docs/guides/TIMESTEP_DISTRIBUTION_MORPH_DESIGN.md
+# ============================================================
+
+SAMPLER_EXPR_VERSION = 1
+
+#: distribution -> {param: default}. The canonical key set per distribution;
+#: anything else in a config is irrelevant to the law and is dropped before an
+#: equality check, so an omitted default and its explicit value compare equal.
+_DISTRIBUTION_PARAMS: Dict[str, Dict[str, Any]] = {
+    "uniform": {},
+    "normal": {"mean": 0.5, "std": 0.2},
+    "logit_normal": {"mean": 0.0, "std": 1.0},
+    "beta": {"alpha": 2.0, "beta": 2.0},
+    "custom": {"custom_weights": None},
+}
+
+_DISTRIBUTION_ALIASES = {
+    "lognormal": "logit_normal",
+    "logit-normal": "logit_normal",
+    "logitnormal": "logit_normal",
+}
+
+MORPH_CURVES = ("cosine", "linear")
+MORPH_INTERPOLATIONS = ("quantile", "mixture")
+
+#: A fifth in-flight retarget flattens instead of nesting deeper.
+MAX_MORPH_NESTING = 4
+_FLATTEN_TABLE_POINTS = 4097
+_FLATTEN_SAMPLES = 262144
+_FLATTEN_SEED = 20260913
+
+
+def normalize_distribution_name(name: Any) -> str:
+    key = str(name or "uniform").lower()
+    return _DISTRIBUTION_ALIASES.get(key, key)
+
+
+def _round(value: float) -> float:
+    # Canonical configs are compared for equality and round-tripped through
+    # JSON/YAML; 12 digits is far below any meaningful sampler difference and
+    # above the representation noise those two formats introduce.
+    return float(round(float(value), 12))
+
+
+def canonicalize_timestep_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """The law a config describes, with aliases resolved and defaults materialised.
+
+    Two configs describing the same distribution canonicalise to equal dicts, so
+    a resume that merely rewrote ``lognormal`` as ``logit_normal`` does not start
+    a morph. ``morph`` is dropped: it describes how to reach a law, not the law.
+    """
+    if not isinstance(config, dict):
+        raise ValueError(f"timestep_sampling config must be a dict, got {type(config).__name__}")
+    distribution = normalize_distribution_name(config.get("distribution", "uniform"))
+    if distribution not in _DISTRIBUTION_PARAMS:
+        raise ValueError(
+            f"Unknown timestep distribution: '{config.get('distribution')}'. "
+            f"Supported: {', '.join(sorted(_DISTRIBUTION_PARAMS))}"
+        )
+    canon: Dict[str, Any] = {
+        "distribution": distribution,
+        "min_timestep": _round(config.get("min_timestep", 0.0)),
+        "max_timestep": _round(config.get("max_timestep", 1.0)),
+    }
+    for key, default in _DISTRIBUTION_PARAMS[distribution].items():
+        value = config.get(key, default)
+        if key == "custom_weights":
+            if not value:
+                raise ValueError("custom timestep distribution requires non-empty custom_weights")
+            total = float(sum(float(w) for w in value))
+            if total <= 0:
+                raise ValueError("custom_weights must sum to a positive value")
+            canon[key] = [_round(float(w) / total) for w in value]
+        else:
+            canon[key] = _round(value)
+    validate_timestep_config(canon)
+    return canon
+
+
+def validate_timestep_config(canon: Dict[str, Any]) -> None:
+    """Refuse a config that would sample nothing, or nothing finite."""
+    import math
+
+    for key in ("min_timestep", "max_timestep"):
+        if not math.isfinite(canon[key]):
+            raise ValueError(f"{key} must be finite, got {canon[key]}")
+    if not (0.0 <= canon["min_timestep"] < canon["max_timestep"] <= 1.0):
+        raise ValueError(
+            f"timestep range must satisfy 0 <= min < max <= 1, got "
+            f"[{canon['min_timestep']}, {canon['max_timestep']}]"
+        )
+    if "std" in canon:
+        if not math.isfinite(canon["std"]) or canon["std"] <= 0:
+            raise ValueError(f"timestep std must be finite and > 0, got {canon['std']}")
+    if "mean" in canon and not math.isfinite(canon["mean"]):
+        raise ValueError(f"timestep mean must be finite, got {canon['mean']}")
+    for key in ("alpha", "beta"):
+        if key in canon and (not math.isfinite(canon[key]) or canon[key] <= 0):
+            raise ValueError(f"Beta {key} must be finite and > 0, got {canon[key]}")
+
+
+def validate_morph_config(morph: Dict[str, Any]) -> None:
+    """Refuse a morph block the trainer could not carry out."""
+    if not isinstance(morph, dict):
+        raise ValueError(f"timestep_sampling.morph must be a dict, got {type(morph).__name__}")
+    if not morph.get("enabled"):
+        return
+    steps = morph.get("steps", 0)
+    if not isinstance(steps, (int, float)) or isinstance(steps, bool) or int(steps) <= 0:
+        raise ValueError(f"timestep_sampling.morph.steps must be a positive integer, got {steps!r}")
+    curve = str(morph.get("curve", "cosine")).lower()
+    if curve not in MORPH_CURVES:
+        raise ValueError(f"timestep_sampling.morph.curve must be one of {MORPH_CURVES}, got {curve!r}")
+    interpolation = str(morph.get("interpolation", "quantile")).lower()
+    if interpolation not in MORPH_INTERPOLATIONS:
+        raise ValueError(
+            f"timestep_sampling.morph.interpolation must be one of "
+            f"{MORPH_INTERPOLATIONS}, got {interpolation!r}"
+        )
+    if morph.get("from") is not None:
+        canonicalize_timestep_config(morph["from"])
+
+
+def sampler_to_config(sampler: 'TimestepSampler') -> Dict[str, Any]:
+    """The canonical config of a plain (non-morph) sampler instance."""
+    config: Dict[str, Any] = {
+        "min_timestep": sampler.min_timestep,
+        "max_timestep": sampler.max_timestep,
+    }
+    if isinstance(sampler, UniformTimestepSampler):
+        config["distribution"] = "uniform"
+    elif isinstance(sampler, LogitNormalTimestepSampler):
+        config.update(distribution="logit_normal", mean=sampler.mean, std=sampler.std)
+    elif isinstance(sampler, NormalTimestepSampler):
+        config.update(distribution="normal", mean=sampler.mean, std=sampler.std)
+    elif isinstance(sampler, BetaTimestepSampler):
+        config.update(distribution="beta", alpha=sampler.alpha, beta=sampler.beta)
+    elif isinstance(sampler, CustomTimestepSampler):
+        config.update(distribution="custom",
+                      custom_weights=[float(w) for w in sampler.weights.tolist()])
+    else:
+        raise TypeError(f"{type(sampler).__name__} has no plain config form")
+    return canonicalize_timestep_config(config)
+
+
+def sampler_expr(sampler: 'TimestepSampler') -> Dict[str, Any]:
+    """Serialise a sampler (plain, morphing or flattened) for checkpoint state."""
+    if hasattr(sampler, "expr"):
+        return sampler.expr()
+    return {"version": SAMPLER_EXPR_VERSION, "kind": "config",
+            "config": sampler_to_config(sampler)}
+
+
+def build_sampler_from_expr(expr: Dict[str, Any]) -> 'TimestepSampler':
+    """Rebuild a sampler from ``sampler_expr``. Refuses a version it cannot read."""
+    if not isinstance(expr, dict):
+        raise ValueError(f"sampler expression must be a dict, got {type(expr).__name__}")
+    version = int(expr.get("version", 0))
+    if version != SAMPLER_EXPR_VERSION:
+        raise ValueError(
+            f"sampler expression version {version} is not readable by this build "
+            f"(expected {SAMPLER_EXPR_VERSION})"
+        )
+    kind = expr.get("kind")
+    if kind == "config":
+        return TimestepSampler.from_config(dict(expr["config"]))
+    if kind == "quantile_table":
+        return QuantileTableSampler(
+            table=list(expr["table"]),
+            min_timestep=float(expr["min_timestep"]),
+            max_timestep=float(expr["max_timestep"]),
+            seed=expr.get("seed"),
+        )
+    if kind == "morph":
+        sampler = MorphingTimestepSampler(
+            source=build_sampler_from_expr(expr["source"]),
+            target=build_sampler_from_expr(expr["target"]),
+            steps=int(expr["steps"]),
+            curve=str(expr["curve"]),
+            interpolation=str(expr["interpolation"]),
+            start_update=int(expr["start_update"]),
+        )
+        if expr.get("frozen_lam") is not None:
+            sampler = sampler.freeze(float(expr["frozen_lam"]))
+        return sampler
+    raise ValueError(f"unknown sampler expression kind: {kind!r}")
+
+
+def sampler_depth(sampler: 'TimestepSampler') -> int:
+    """Morph nesting depth; 0 for a plain sampler."""
+    if isinstance(sampler, MorphingTimestepSampler):
+        return 1 + max(sampler_depth(sampler.source), sampler_depth(sampler.target))
+    return 0
+
+
+def quantile_table(sampler: 'TimestepSampler', points: int = 1025,
+                   seed: int = _FLATTEN_SEED) -> torch.Tensor:
+    """``points`` quantiles of ``sampler`` on a uniform u-grid, exact where it has an icdf.
+
+    Falls back to a deterministically seeded sample quantile for a sampler with
+    no quantile function (Beta, mixture). The fallback runs inside an isolated
+    CPU RNG context: it never advances the training stream and never touches the
+    CUDA generator.
+    """
+    u = torch.linspace(0.0, 1.0, points, dtype=torch.float64)
+    u = u.clamp(0.5 / _FLATTEN_SAMPLES, 1.0 - 0.5 / _FLATTEN_SAMPLES)
+    try:
+        return sampler.icdf(u.to(torch.float32)).to(torch.float64)
+    except NotImplementedError:
+        pass
+    rng_state = torch.random.get_rng_state()
+    try:
+        torch.manual_seed(seed)
+        draws = sampler.sample(_FLATTEN_SAMPLES, torch.device("cpu")).to(torch.float64)
+    finally:
+        torch.random.set_rng_state(rng_state)
+    return torch.quantile(draws, u)
+
+
+class QuantileTableSampler(TimestepSampler):
+    """A law pinned as a piecewise-linear quantile table.
+
+    Used when a morph source would nest deeper than ``MAX_MORPH_NESTING``. The
+    TABLE is persisted, not the seed that produced it, so a later build
+    reproduces the same law even if the sampling path changes.
+    """
+
+    def __init__(self, table, min_timestep: float = 0.0, max_timestep: float = 1.0,
+                 seed: Any = None):
+        super().__init__(min_timestep, max_timestep)
+        values = torch.tensor([float(v) for v in table], dtype=torch.float32)
+        if values.numel() < 2:
+            raise ValueError("quantile table needs at least 2 points")
+        self.table = torch.cummax(values, dim=0).values
+        self.seed = seed
+
+    def icdf(self, u: torch.Tensor) -> torch.Tensor:
+        n = self.table.numel()
+        table = self.table.to(device=u.device, dtype=u.dtype)
+        pos = u.clamp(0.0, 1.0) * (n - 1)
+        lo = pos.floor().long().clamp(0, n - 1)
+        hi = (lo + 1).clamp(0, n - 1)
+        frac = pos - lo.to(pos.dtype)
+        return table[lo] + frac * (table[hi] - table[lo])
+
+    def sample(self, batch_size: int, device: torch.device) -> torch.Tensor:
+        return self.icdf(torch.rand(batch_size, device=device))
+
+    def expr(self) -> Dict[str, Any]:
+        return {
+            "version": SAMPLER_EXPR_VERSION,
+            "kind": "quantile_table",
+            "table": [float(v) for v in self.table.tolist()],
+            "min_timestep": self.min_timestep,
+            "max_timestep": self.max_timestep,
+            "seed": self.seed,
+        }
+
+
+def flatten_sampler(sampler: 'TimestepSampler',
+                    points: int = _FLATTEN_TABLE_POINTS,
+                    seed: int = _FLATTEN_SEED) -> QuantileTableSampler:
+    """Approximate ``sampler`` by a quantile table (see ``QuantileTableSampler``)."""
+    table = quantile_table(sampler, points=points, seed=seed)
+    return QuantileTableSampler(
+        table=table.tolist(),
+        min_timestep=sampler.min_timestep,
+        max_timestep=sampler.max_timestep,
+        seed=seed,
+    )
+
+
+def morph_lambda(update_step: int, start_update: int, steps: int,
+                 curve: str = "cosine") -> float:
+    """λ in [0,1] at a successful-optimizer-update position."""
+    import math
+
+    steps = int(steps)
+    if steps <= 0:
+        return 1.0
+    p = (int(update_step) - int(start_update)) / float(steps)
+    p = min(1.0, max(0.0, p))
+    if str(curve).lower() == "linear":
+        return p
+    return 0.5 * (1.0 - math.cos(math.pi * p))
+
+
+class MorphingTimestepSampler(TimestepSampler):
+    """Moves the sampled law from ``source`` to ``target`` over ``steps`` optimizer updates.
+
+    ``quantile`` interpolates the two quantile functions (the Wasserstein
+    geodesic: equally ranked mass is coupled and moves between the endpoints),
+    which stays monotone in ``u`` and therefore keeps ``icdf`` -- and with it
+    ``sample_stratified`` -- available. ``mixture`` draws from one endpoint or
+    the other with probability λ; its quantile has no closed form, so it
+    deliberately exposes none.
+
+    The position axis is SUCCESSFUL OPTIMIZER UPDATES, set from outside by
+    ``set_optimizer_update_step``; see the design doc for why ``global_step`` is
+    not usable here.
+    """
+
+    def __init__(self, source: 'TimestepSampler', target: 'TimestepSampler',
+                 steps: int, curve: str = "cosine", interpolation: str = "quantile",
+                 start_update: int = 0):
+        super().__init__(
+            min(source.min_timestep, target.min_timestep),
+            max(source.max_timestep, target.max_timestep),
+        )
+        if int(steps) <= 0:
+            raise ValueError(f"morph steps must be positive, got {steps}")
+        curve = str(curve).lower()
+        if curve not in MORPH_CURVES:
+            raise ValueError(f"morph curve must be one of {MORPH_CURVES}, got {curve!r}")
+        interpolation = str(interpolation).lower()
+        if interpolation not in MORPH_INTERPOLATIONS:
+            raise ValueError(
+                f"morph interpolation must be one of {MORPH_INTERPOLATIONS}, "
+                f"got {interpolation!r}")
+
+        self.source = source
+        self.target = target
+        self.steps = int(steps)
+        self.curve = curve
+        self.requested_interpolation = interpolation
+        self.start_update = int(start_update)
+        self._frozen_lam: Any = None
+        self._update_step = int(start_update)
+        self.fallback_reason: Any = None
+
+        self.interpolation = interpolation
+        if interpolation == "quantile" and not self._endpoints_have_icdf():
+            self.interpolation = "mixture"
+            self.fallback_reason = (
+                "quantile interpolation needs a quantile function on both endpoints; "
+                f"source={type(source).__name__}, target={type(target).__name__}"
+            )
+        self._mixture_cdf_tables: Any = None
+
+    def _endpoints_have_icdf(self) -> bool:
+        probe = torch.tensor([0.5])
+        for endpoint in (self.source, self.target):
+            try:
+                endpoint.icdf(probe)
+            except Exception:
+                return False
+        return True
+
+    # -- position -------------------------------------------------------
+
+    def set_optimizer_update_step(self, update_step: int) -> None:
+        self._update_step = int(update_step)
+
+    @property
+    def update_step(self) -> int:
+        return self._update_step
+
+    @property
+    def lam(self) -> float:
+        if self._frozen_lam is not None:
+            return float(self._frozen_lam)
+        return morph_lambda(self._update_step, self.start_update, self.steps, self.curve)
+
+    def lam_at(self, update_step: int) -> float:
+        if self._frozen_lam is not None:
+            return float(self._frozen_lam)
+        return morph_lambda(update_step, self.start_update, self.steps, self.curve)
+
+    def is_finished(self) -> bool:
+        if self._frozen_lam is not None:
+            return False
+        return self._update_step >= self.start_update + self.steps
+
+    def freeze(self, lam: Any = None) -> 'MorphingTimestepSampler':
+        """A copy pinned at λ -- the law currently in force, usable as a new source."""
+        frozen = MorphingTimestepSampler(
+            source=self.source, target=self.target, steps=self.steps,
+            curve=self.curve, interpolation=self.requested_interpolation,
+            start_update=self.start_update,
+        )
+        frozen._frozen_lam = float(self.lam if lam is None else lam)
+        frozen._update_step = self._update_step
+        return frozen
+
+    # -- sampling -------------------------------------------------------
+
+    def sample(self, batch_size: int, device: torch.device) -> torch.Tensor:
+        if self.interpolation == "quantile":
+            return self.icdf(torch.rand(batch_size, device=device))
+        lam = self.lam
+        pick = torch.rand(batch_size, device=device) < lam
+        drawn = self.source.sample(batch_size, device)
+        if bool(pick.any()):
+            drawn = torch.where(pick, self.target.sample(batch_size, device), drawn)
+        return drawn
+
+    def icdf(self, u: torch.Tensor) -> torch.Tensor:
+        if self.interpolation != "quantile":
+            raise NotImplementedError(
+                "mixture morph interpolation has no closed-form quantile function")
+        lam = self.lam
+        return (1.0 - lam) * self.source.icdf(u) + lam * self.target.icdf(u)
+
+    # -- diagnostics ----------------------------------------------------
+
+    def median(self) -> float:
+        """The active law's median, for the grad-t-cosine probe's split."""
+        if self.interpolation == "quantile":
+            return float(self.icdf(torch.tensor([0.5])).item())
+        if self._mixture_cdf_tables is None:
+            self._mixture_cdf_tables = (
+                quantile_table(self.source), quantile_table(self.target))
+        lam = self.lam
+        source_table, target_table = self._mixture_cdf_tables
+
+        def mixed_cdf(t: float) -> float:
+            def cdf(table: torch.Tensor) -> float:
+                return float(torch.searchsorted(
+                    table, torch.tensor([t], dtype=table.dtype)
+                ).item()) / float(table.numel())
+            return (1.0 - lam) * cdf(source_table) + lam * cdf(target_table)
+
+        lo, hi = self.min_timestep, self.max_timestep
+        for _ in range(60):
+            mid = 0.5 * (lo + hi)
+            if mixed_cdf(mid) < 0.5:
+                lo = mid
+            else:
+                hi = mid
+        return 0.5 * (lo + hi)
+
+    def describe(self) -> str:
+        return (f"{describe_sampler(self.source)} -> {describe_sampler(self.target)} "
+                f"over {self.steps} updates from {self.start_update} "
+                f"({self.curve}, {self.interpolation})")
+
+    # -- serialisation --------------------------------------------------
+
+    def expr(self) -> Dict[str, Any]:
+        return {
+            "version": SAMPLER_EXPR_VERSION,
+            "kind": "morph",
+            "source": sampler_expr(self.source),
+            "target": sampler_expr(self.target),
+            "steps": self.steps,
+            "curve": self.curve,
+            "interpolation": self.requested_interpolation,
+            "start_update": self.start_update,
+            "frozen_lam": (None if self._frozen_lam is None else float(self._frozen_lam)),
+        }
+
+    def state(self) -> Dict[str, Any]:
+        """The ``timestep_morph`` record saved beside a checkpoint."""
+        return {
+            "version": SAMPLER_EXPR_VERSION,
+            "start_update": self.start_update,
+            "steps": self.steps,
+            "curve": self.curve,
+            "interpolation": self.requested_interpolation,
+            "effective_interpolation": self.interpolation,
+            "from": sampler_expr(self.source),
+            "to": sampler_expr(self.target),
+        }
+
+
+def describe_sampler(sampler: 'TimestepSampler') -> str:
+    """Short human-readable form, e.g. ``logit_normal(mean=0.5, std=1.0)``."""
+    if isinstance(sampler, MorphingTimestepSampler):
+        lam = sampler.lam
+        return f"[morph {sampler.describe()} @ lam={lam:.3f}]"
+    if isinstance(sampler, QuantileTableSampler):
+        return f"quantile_table({sampler.table.numel()} points)"
+    try:
+        config = sampler_to_config(sampler)
+    except TypeError:
+        return type(sampler).__name__
+    params = ", ".join(f"{k}={v}" for k, v in config.items()
+                       if k not in ("distribution", "min_timestep", "max_timestep"))
+    body = f"{config['distribution']}({params})" if params else config["distribution"]
+    if (config["min_timestep"], config["max_timestep"]) != (0.0, 1.0):
+        body += f"[{config['min_timestep']}, {config['max_timestep']}]"
+    return body

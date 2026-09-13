@@ -7096,6 +7096,17 @@ export interface TrainingRunCreateRequest {
     std?: number;    // For logit_normal/normal
     alpha?: number;  // For beta
     beta?: number;   // For beta
+    // Carry the distribution from the law a resumed run was training at to this
+    // one, over `steps` SUCCESSFUL OPTIMIZER UPDATES. Inert on a fresh run and
+    // when the distribution did not change.
+    // docs/guides/TIMESTEP_DISTRIBUTION_MORPH_DESIGN.md
+    morph?: {
+      enabled: boolean;
+      steps: number;
+      curve: string;          // "cosine" | "linear"
+      interpolation: string;  // "quantile" | "mixture"
+      from?: TimestepSamplingConfig | null;  // null => resolved server-side
+    };
   };
   // FLUX.2/SenseNova explicit arm; SD/SDXL mirrors a selected SigLIP2 VE.
   use_reference_images?: boolean;
@@ -7774,6 +7785,51 @@ export const queueLrScheduleCommand = async (
   command: "start_decay" | "cancel_decay"
 ): Promise<LrScheduleCommandAccepted> => {
   const response = await api.post(`/training/runs/${runId}/lr-schedule`, { command });
+  return response.data;
+};
+
+// What the run is ACTUALLY sampling, published by the trainer. Authoritative in
+// a way the run config is not: an in-flight morph's source can be a frozen or
+// flattened law that no config expresses.
+export interface TimestepSamplingConfig {
+  distribution: string;
+  min_timestep?: number;
+  max_timestep?: number;
+  mean?: number;
+  std?: number;
+  alpha?: number;
+  beta?: number;
+  custom_weights?: number[];
+}
+
+export interface TimestepDistributionStatus {
+  active: boolean;
+  distribution: string;
+  optimizer_update_step: number;
+  source?: any;
+  target?: any;
+  source_label?: string;
+  target_label?: string;
+  steps?: number;
+  start_update?: number;
+  curve?: string;
+  interpolation?: string;
+  effective_interpolation?: string;
+  fallback_reason?: string | null;
+  lam?: number;
+  global_step?: number | null;
+}
+
+export interface TimestepDistributionStatusResponse {
+  run_id: number;
+  is_running: boolean;
+  status: TimestepDistributionStatus | null;
+}
+
+export const getTimestepDistributionStatus = async (
+  runId: number
+): Promise<TimestepDistributionStatusResponse> => {
+  const response = await api.get(`/training/runs/${runId}/timestep-distribution`);
   return response.data;
 };
 

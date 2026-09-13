@@ -2,6 +2,14 @@
 
 import { useMemo } from "react";
 
+/** One pre-computed density, for the morph overlay (see `curves` below). */
+export interface TimestepGraphCurve {
+  points: { x: number; y: number }[];
+  color: string;
+  dashed?: boolean;
+  label?: string;
+}
+
 interface TimestepDistributionGraphProps {
   distribution: string;
   minTimestep: number;
@@ -12,6 +20,13 @@ interface TimestepDistributionGraphProps {
   beta?: number;
   width?: number;
   height?: number;
+  /**
+   * Draw these densities instead of the one implied by the props above, all on
+   * ONE shared y-scale so a morph's source, target and current law are
+   * comparable. Used by the training monitor, where the law being sampled is an
+   * interpolation no single parameter set describes.
+   */
+  curves?: TimestepGraphCurve[];
 }
 
 /**
@@ -92,6 +107,7 @@ export default function TimestepDistributionGraph({
   beta = 2.0,
   width = 300,
   height = 80,
+  curves,
 }: TimestepDistributionGraphProps) {
   // Validate and sanitize numeric inputs
   const safeNum = (val: any, fallback: number): number => {
@@ -175,6 +191,27 @@ export default function TimestepDistributionGraph({
     return { path: pathStr, maxY: maxYVal, points: pts };
   }, [distribution, isValidForRender, safeMinTimestep, safeMaxTimestep, safeMean, safeStd, safeAlpha, safeBeta, width, height]);
 
+  const overlayPaths = useMemo(() => {
+    if (!curves || curves.length === 0) return null;
+    const pad = 4;
+    const w = width - pad * 2;
+    const h = height - pad * 2 - 15;
+    const peak = Math.max(
+      0.001,
+      ...curves.flatMap((curve) => curve.points.map((p) => p.y)),
+    );
+    return curves.map((curve) => ({
+      ...curve,
+      d: curve.points
+        .map((point, i) => {
+          const px = pad + point.x * w;
+          const py = pad + h - (point.y / peak) * h;
+          return `${i === 0 ? "M" : "L"} ${px} ${py}`;
+        })
+        .join(" "),
+    }));
+  }, [curves, width, height]);
+
   const expectedMean = useMemo(() => {
     if (!isValidForRender) return 0.5;
 
@@ -203,6 +240,52 @@ export default function TimestepDistributionGraph({
   const minX = padding + safeMinTimestep * graphWidth;
   const maxX = padding + safeMaxTimestep * graphWidth;
   const meanX = padding + expectedMean * graphWidth;
+
+  if (overlayPaths) {
+    return (
+      <div className="bg-gray-900 rounded p-2">
+        <svg width={width} height={height} className="w-full">
+          <defs>
+            <pattern id="grid-overlay" width="20" height="20" patternUnits="userSpaceOnUse">
+              <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#374151" strokeWidth="0.5" />
+            </pattern>
+          </defs>
+          <rect x={padding} y={padding} width={graphWidth} height={graphHeight} fill="url(#grid-overlay)" />
+          {overlayPaths.map((curve, i) => (
+            <path
+              key={i}
+              d={curve.d}
+              fill="none"
+              stroke={curve.color}
+              strokeWidth={curve.dashed ? 1 : 2}
+              strokeDasharray={curve.dashed ? "3,2" : undefined}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          ))}
+          <line
+            x1={padding} y1={padding + graphHeight}
+            x2={padding + graphWidth} y2={padding + graphHeight}
+            stroke="#6b7280" strokeWidth="1"
+          />
+          <text x={padding} y={height - 2} fontSize="9" fill="#9ca3af" textAnchor="start">0</text>
+          <text x={padding + graphWidth / 2} y={height - 2} fontSize="9" fill="#9ca3af" textAnchor="middle">0.5</text>
+          <text x={padding + graphWidth} y={height - 2} fontSize="9" fill="#9ca3af" textAnchor="end">1</text>
+        </svg>
+        <div className="flex justify-center gap-3 text-[10px] text-gray-400 mt-1">
+          {overlayPaths.filter((c) => c.label).map((curve, i) => (
+            <span key={i} className="flex items-center gap-1">
+              <span
+                className="w-3 h-0.5 inline-block"
+                style={{ backgroundColor: curve.color, opacity: curve.dashed ? 0.6 : 1 }}
+              />
+              {curve.label}
+            </span>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   // Show placeholder if invalid parameters
   if (!isValidForRender) {

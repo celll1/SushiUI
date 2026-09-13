@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { X, Play, Square, Trash2, AlertTriangle } from "lucide-react";
-import { TrainingRun, TrainingLogEvent, getTrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, reloadTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization, skipTrainingRescan, queueTrainingSample, getTrainingSampleQueue, TrainingSampleQueueResponse, trainingFeatureUnsupportedReason, getLrScheduleStatus, queueLrScheduleCommand, LrScheduleStatusResponse, lrScheduleResultExplanation } from "@/utils/api";
+import { TrainingRun, TrainingLogEvent, getTrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, reloadTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization, skipTrainingRescan, queueTrainingSample, getTrainingSampleQueue, TrainingSampleQueueResponse, trainingFeatureUnsupportedReason, getLrScheduleStatus, queueLrScheduleCommand, LrScheduleStatusResponse, lrScheduleResultExplanation, getTimestepDistributionStatus, TimestepDistributionStatusResponse } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
 import { wsClient, DatasetScanProgress, TrainingLogMessage } from "@/utils/websocket";
 import { TrainingMetricsProvider } from "./TrainingMetricsContext";
@@ -10,6 +10,8 @@ import TrainingMetricsChart from "./TrainingMetricsChart";
 import ResizableChartRow, { ChartPaneCount, useChartLayout } from "./ResizableChartRow";
 import DanbooruImageMetricsPanel from "./DanbooruImageMetricsPanel";
 import CheckpointList from "./CheckpointList";
+import TimestepDistributionGraph, { TimestepGraphCurve } from "./TimestepDistributionGraph";
+import { densityOf, morphDensity } from "@/utils/timestepDistribution";
 import LrScheduleRetargetPanel from "./LrScheduleRetargetPanel";
 import LrScheduleTriggerPanel from "./LrScheduleTriggerPanel";
 import ImageViewer from "../common/ImageViewer";
@@ -85,6 +87,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
   // Runtime LR schedule: the state the trainer publishes, plus the two commands
   // that change it without stopping the run.
   const [lrSchedule, setLrSchedule] = useState<LrScheduleStatusResponse | null>(null);
+  const [timestepStatus, setTimestepStatus] = useState<TimestepDistributionStatusResponse | null>(null);
   const [lrCommandPending, setLrCommandPending] = useState<string | null>(null);
   const [lrCommandError, setLrCommandError] = useState<string | null>(null);
   // Index into the flattened sample list (see sampleImages) rather than a URL,
@@ -343,6 +346,51 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
       cancelled = true;
     };
   }, [currentRun.id, currentRun.status]);
+
+  // Same reason as the LR schedule poll: lambda advances with the run, so the
+  // published state changes with no command behind it.
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const data = await getTimestepDistributionStatus(currentRun.id);
+        if (!cancelled) setTimestepStatus(data);
+      } catch {
+        if (!cancelled) setTimestepStatus(null);
+      }
+    };
+    load();
+    if (currentRun.status === "running" || currentRun.status === "starting") {
+      const interval = setInterval(load, 5000);
+      return () => {
+        cancelled = true;
+        clearInterval(interval);
+      };
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [currentRun.id, currentRun.status]);
+
+  // The overlay: source and target faint, the law actually being sampled solid.
+  const timestepCurves = useMemo<TimestepGraphCurve[] | null>(() => {
+    const status = timestepStatus?.status;
+    if (!status) return null;
+    if (!status.active || !status.source || !status.target) {
+      const single = status.target ? densityOf(status.target) : null;
+      return single ? [{ points: single, color: "#3b82f6", label: "sampled" }] : null;
+    }
+    const source = densityOf(status.source);
+    const target = densityOf(status.target);
+    const current = morphDensity(
+      status.source, status.target, status.lam ?? 0,
+      status.effective_interpolation || "quantile");
+    const curves: TimestepGraphCurve[] = [];
+    if (source) curves.push({ points: source, color: "#94a3b8", dashed: true, label: "from" });
+    if (target) curves.push({ points: target, color: "#facc15", dashed: true, label: "to" });
+    if (current) curves.push({ points: current, color: "#3b82f6", label: "now" });
+    return curves.length ? curves : null;
+  }, [timestepStatus]);
 
   const refreshLrSchedule = useCallback(async () => {
     try {
@@ -847,6 +895,60 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
             </div>
           )}
             </div>
+
+          {/* What the run is actually sampling. Read from the trainer's
+              published state, not the config: an in-flight morph's source can
+              be a law no config expresses. */}
+          {!!timestepStatus?.status && (
+            <div className="space-y-2 rounded-md border border-gray-700 bg-gray-800/80 p-3 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="font-semibold text-sm">Timestep Distribution</h3>
+                <span className="font-mono text-xxs text-gray-400">
+                  {timestepStatus.status.active ? "morphing" : "steady"}
+                </span>
+              </div>
+              <div className="font-mono text-xxs text-gray-300 break-all">
+                {timestepStatus.status.active
+                  ? `${timestepStatus.status.source_label} → ${timestepStatus.status.target_label}`
+                  : timestepStatus.status.distribution}
+              </div>
+              {timestepStatus.status.active && (
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xxs text-gray-300">
+                  <span>
+                    Progress{" "}
+                    <span className="font-mono text-gray-100">
+                      {Math.round((timestepStatus.status.lam ?? 0) * 100)}%
+                    </span>
+                  </span>
+                  <span>
+                    Update{" "}
+                    <span className="font-mono text-gray-100">
+                      {(timestepStatus.status.optimizer_update_step
+                        - (timestepStatus.status.start_update ?? 0)).toLocaleString()}
+                    </span>
+                    {" / "}
+                    {(timestepStatus.status.steps ?? 0).toLocaleString()}
+                  </span>
+                  <span>{timestepStatus.status.curve}</span>
+                  <span>{timestepStatus.status.effective_interpolation}</span>
+                </div>
+              )}
+              {timestepStatus.status.fallback_reason && (
+                <p className="text-xxs text-yellow-400">
+                  {timestepStatus.status.fallback_reason}
+                </p>
+              )}
+              {timestepCurves && (
+                <TimestepDistributionGraph
+                  distribution="uniform"
+                  minTimestep={0}
+                  maxTimestep={1}
+                  curves={timestepCurves}
+                  height={90}
+                />
+              )}
+            </div>
+          )}
 
           {/* Runtime LR schedule: state the trainer published, and the two
               commands that change it without stopping the run. */}

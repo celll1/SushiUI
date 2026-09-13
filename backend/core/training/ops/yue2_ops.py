@@ -8,6 +8,7 @@ import contextlib
 import hashlib
 import math
 import random
+import re
 
 import torch
 
@@ -97,7 +98,7 @@ def train_abc_ar_step(transformer, batch: dict[str, torch.Tensor]):
 
 
 def load_components(trainer) -> None:
-    """Load the complete single file, then retain only Phase-A AR components."""
+    """Load the complete single file and stage only the AR planner on device."""
     objective = str((trainer.config or {}).get("yue2_training_objective", "abc_ar"))
     if objective != "abc_ar":
         raise ValueError(
@@ -111,6 +112,8 @@ def load_components(trainer) -> None:
     trainer.transformer = components["transformer"]
     trainer.transformer_original = trainer.transformer
     trainer.tokenizer = components["tokenizer"]
+    full_finetune = bool(getattr(trainer, "trains_base_weights", False))
+    trainer.yue2_frozen_vae = components["vae"] if full_finetune else None
     trainer.vae = None
     trainer.text_encoder = None
     trainer.text_encoder_2 = None
@@ -123,8 +126,7 @@ def load_components(trainer) -> None:
     trainer.transformer.requires_grad_(False)
     if getattr(trainer, "gradient_checkpointing", False):
         trainer.transformer.gradient_checkpointing_enable()
-    # The single file must be complete for generation, but Phase A never calls
-    # NAR. Keep that half on CPU instead of doubling the resident training base.
+    # The complete file is resumable, but abc_ar never executes NAR or VAE.
     from core.models.yue2.pipeline import ar_modules, move
     move(ar_modules(trainer.transformer), trainer.device)
 
@@ -225,9 +227,17 @@ def train_abc_ar_loop(trainer, *, datasets, num_epochs=1, total_steps=None,
                       progress_callback=None, update_total_steps_callback=None,
                       resume_from_checkpoint=None, max_step_saves_to_keep=10,
                       max_optimizer_saves_to_keep=1, **_unused):
-    """Token-native Phase-A loop; it never enters image/latent cache code."""
+    """Token-native ABC planner loop; it never enters image/latent cache code."""
     if batch_size < 1 or gradient_accumulation_steps < 1:
         raise ValueError("YuE2 batch size and gradient accumulation must be positive")
+    if getattr(trainer, "trains_base_weights", False):
+        if batch_size != 1:
+            raise ValueError("YuE2 full_finetune requires physical batch_size=1")
+        allowed = {"adamw8bit", "adamw8bit_ringbuffer", "lion8bit_ringbuffer", "adafactor"}
+        if str(optimizer_type).lower() not in allowed:
+            raise ValueError(
+                f"YuE2 full_finetune requires a memory-bounded optimizer; got {optimizer_type!r}"
+            )
     examples = prepare_abc_items(trainer, datasets)
     batches_per_epoch = math.ceil(len(examples) / batch_size)
     updates_per_epoch = math.ceil(batches_per_epoch / gradient_accumulation_steps)
@@ -245,7 +255,12 @@ def train_abc_ar_loop(trainer, *, datasets, num_epochs=1, total_steps=None,
     resume_batch = 0
     if resume_from_checkpoint:
         checkpoint = None
-        if str(resume_from_checkpoint).lower() == "latest":
+        if getattr(trainer, "trains_base_weights", False):
+            loaded = Path(getattr(trainer, "_loaded_checkpoint_path", "") or "")
+            if not loaded.is_file():
+                raise ValueError("YuE2 full-finetune resume was not loaded as the base model")
+            checkpoint = loaded
+        elif str(resume_from_checkpoint).lower() == "latest":
             found = trainer.find_latest_checkpoint()
             if found is not None:
                 checkpoint = Path(found[0])
@@ -255,7 +270,24 @@ def train_abc_ar_loop(trainer, *, datasets, num_epochs=1, total_steps=None,
             if not checkpoint.is_file():
                 raise ValueError(f"YuE2 resume checkpoint does not exist: {resume_from_checkpoint}")
         if checkpoint is not None:
-            global_step = int(trainer.load_checkpoint(str(checkpoint)))
+            if getattr(trainer, "trains_base_weights", False):
+                loaded = Path(getattr(trainer, "_loaded_checkpoint_path", "") or "")
+                if not loaded.is_file() or loaded.resolve() != checkpoint.resolve():
+                    raise ValueError(
+                        "YuE2 full-finetune resume weights were not loaded as the base model"
+                    )
+                match = re.search(r"_step_(\d+)", loaded.name)
+                if match is None:
+                    raise ValueError(f"Cannot determine YuE2 resume step from {loaded.name}")
+                global_step = int(match.group(1))
+                from safetensors import safe_open
+                with safe_open(loaded, framework="pt", device="cpu") as handle:
+                    metadata = handle.metadata() or {}
+                if metadata.get("yue2_training_scope") != "abc_ar_full" \
+                        or metadata.get("yue2_training_protocol") != YUE2_TRAINING_PROTOCOL_VERSION:
+                    raise ValueError("YuE2 full-finetune resume checkpoint has an incompatible contract")
+            else:
+                global_step = int(trainer.load_checkpoint(str(checkpoint)))
             state = trainer.load_training_state(global_step)
             trainer._fast_forward_lr_schedulers(global_step)
             optimizer_restored = trainer.load_optimizer_state(global_step)

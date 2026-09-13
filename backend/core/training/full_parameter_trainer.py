@@ -36,6 +36,7 @@ from .adapters import (
     Ltx2FullParameterAdapter,
     AceStepFullParameterAdapter,
     SenseNovaFullParameterAdapter,
+    YuE2FullParameterAdapter,
 )
 
 
@@ -136,6 +137,14 @@ class FullParameterTrainer(BaseTrainer):
 
     def train(self, *args, **kwargs):
         try:
+            if getattr(self, "is_yue2", False):
+                from core.training.ops.yue2_ops import train_abc_ar_loop
+                try:
+                    return train_abc_ar_loop(self, *args, **kwargs)
+                finally:
+                    writer = getattr(self, "writer", None)
+                    if writer is not None:
+                        writer.close()
             return super().train(*args, **kwargs)
         finally:
             four_phase = getattr(self, "sensenova_four_phase", None)
@@ -235,6 +244,9 @@ class FullParameterTrainer(BaseTrainer):
             # all, after the loader had already dequantized a half for it.
             self.adapter = SenseNovaFullParameterAdapter(self)
             print(f"{self.log_prefix} Using SenseNovaFullParameterAdapter")
+        elif self.is_yue2:
+            self.adapter = YuE2FullParameterAdapter(self)
+            print(f"{self.log_prefix} Using YuE2FullParameterAdapter")
         elif self.is_sdxl:
             self.adapter = SDXLFullParameterAdapter(self)
             print(f"{self.log_prefix} Using SDXLFullParameterAdapter")

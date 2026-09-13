@@ -5869,13 +5869,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </>
             )}
 
-            {/* YuE2 Phase-A token-native score-planner LoRA */}
-            {baseModelArch === "yue2" && trainingMethod === "lora" && (
+            {/* YuE2 token-native score-planner training */}
+            {baseModelArch === "yue2" && (trainingMethod === "lora" || trainingMethod === "full_finetune") && (
               <div className="space-y-3 rounded border border-cyan-900/60 bg-cyan-950/20 p-3">
                 <div>
                   <div className="text-xs font-medium text-cyan-200">YuE2 ABC score planner</div>
                   <p className="mt-1 text-xs text-gray-400">
                     Trains the AR planner from style, structured lyrics, and a sibling .abc score.
+                    {trainingMethod === "full_finetune" && " Full fine-tuning requires the complete dense-BF16 single file and updates all AR planner parameters; ConvRot INT8 is LoRA-only."}
                     Semantic-token and acoustic NAR training are not released.
                   </p>
                 </div>
@@ -5893,7 +5894,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <option value="melody">Melody</option>
                   </select>
                 </div>
-                {(() => {
+                {trainingMethod === "lora" && (() => {
                   const scope = params.yue2_lora_scope ?? "attention";
                   const includeMlp = scope === "attention,mlp";
                   return (

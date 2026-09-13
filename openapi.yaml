@@ -23912,8 +23912,10 @@ components:
           enum: [abc_ar]
           default: abc_ar
           description: >-
-            YuE2 Phase-A training objective. Supervises only the ABC score and
-            its stop token; style, lyrics, and protocol-prefix tokens are masked.
+            YuE2 training objective for LoRA or dense-BF16 full fine-tuning.
+            Supervises only the ABC score and its stop token; style, lyrics,
+            and protocol-prefix tokens are masked. Full fine-tuning updates the
+            AR planner only and refuses ConvRot INT8 checkpoints.
         yue2_lora_scope:
           type: string
           enum: [attention, "attention,mlp"]

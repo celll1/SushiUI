@@ -80,7 +80,7 @@ def main():
     parser.add_argument("--total-steps", type=int, default=1000)
     parser.add_argument(
         "--yue2", action="store_true",
-        help="Use the supported YuE2 Phase-A ABC-planner LoRA contract",
+        help="Use the YuE2 ABC-planner contract (set training_method to full_finetune for a dense base)",
     )
     parser.add_argument("--no-dry-run", dest="dry_run", action="store_false",
                          help="Actually create/start/poll a real training run (heavy, stateful)")

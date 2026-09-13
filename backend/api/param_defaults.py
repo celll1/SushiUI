@@ -3212,20 +3212,13 @@ def resolve_full_finetune_train_text_encoder(value, arch: str) -> bool:
         arch, FULL_FINETUNE_TRAIN_TEXT_ENCODER_DEFAULTS_BY_ARCH["_default"]))
 
 
-# Architectures whose full fine-tune runs with stochastic rounding regardless of
-# an unspecified (None) optimizer_stochastic_rounding. The transport is
-# tri-state (routes.py declares it `Optional[bool]`, training_config emits the
-# YAML key for True or False and omits it only for None), so an explicit False
-# on a route listed here is refused upfront
-# (train_runner._apply_sensenova_full_finetune_contract) instead of being
-# silently overridden: honouring it would run the route with round-to-nearest,
-# where a measured 84.5% of a bf16 tensor's elements never move at any step
-# count (SENSENOVA_TRAINING_DESIGN.md 6.3). `enforce_full_finetune_stochastic_
-# rounding` still forces it on as a trainer-side backstop for any config that
-# reaches the trainer with it False regardless (e.g. a hand-authored YAML).
+# Architectures whose BF16 full fine-tune requires stochastic parameter updates.
+# The transport is tri-state, so each route rejects explicit False before load
+# and resolves None to True; its trainer adapter enforces the same contract.
 FULL_FINETUNE_FORCED_STOCHASTIC_ROUNDING_BY_ARCH: Dict[str, bool] = {
     "_default": False,
     "sensenova": True,
+    "yue2": True,
 }
 
 

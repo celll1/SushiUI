@@ -4244,6 +4244,13 @@ class BaseTrainer(ABC):
         self.is_yue2 = (model_type == "yue2")
         self.is_sdxl = False
 
+        if self.is_yue2:
+            self.model_path = checkpoint_path
+            from core.training.ops import yue2_ops
+            yue2_ops.load_components(self)
+            print(f"{self.log_prefix} YuE2 checkpoint loaded successfully as base model")
+            return
+
         if self.is_sensenova:
             self.model_path = checkpoint_path
             from core.training.ops import sensenova_ops

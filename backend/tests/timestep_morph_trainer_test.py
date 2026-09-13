@@ -185,6 +185,19 @@ class ArmMorphTest(unittest.TestCase):
             new_target, {"distribution": "normal", "morph": {"enabled": False}}, "t0")
         self.assertIs(armed, new_target)
 
+    def test_disabling_morph_with_an_unchanged_target_also_switches(self):
+        # Otherwise "disabled" would silently keep an in-flight transition
+        # running, which is the one thing the checkbox is for.
+        trainer = _StubTrainer()
+        target = _target()
+        in_flight = MorphingTimestepSampler(_target(UNIFORM), target, steps=100)
+        in_flight.set_optimizer_update_step(10)
+        trainer._resume_timestep_morph = in_flight.state()
+        trainer._resume_optimizer_update_step = 10
+        armed = trainer._arm_timestep_morph(
+            target, {**LOGIT, "morph": {"enabled": False}}, "t0")
+        self.assertIs(armed, target)
+
     def test_unreadable_record_falls_back_to_the_configured_source(self):
         trainer = _StubTrainer()
         trainer._resume_timestep_morph = {"version": 99, "from": {}, "to": {},

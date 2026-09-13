@@ -829,6 +829,68 @@ def preserve_unmodelled_train_keys(
     )
 
 
+def stamp_timestep_morph_source(
+    old_yaml: Optional[str], new_yaml: str, arch_default: Optional[Dict[str, Any]] = None
+) -> "tuple[str, Optional[Dict[str, Any]]]":
+    """Fill ``timestep_sampling.morph.from`` from the config being replaced.
+
+    ``PUT /training/runs/{id}`` is where the previous distribution is still
+    readable: the trainer only sees the config it is handed. A morph with an
+    explicit ``from`` is left alone, and so is one on a run with no previous
+    config (a fresh run has nothing to morph from). This is a FALLBACK source
+    only -- a morph record paired with the resumed checkpoint outranks it.
+
+    Returns the (possibly rewritten) YAML and the stamped source, if any.
+    """
+    try:
+        new_config = yaml.safe_load(new_yaml)
+    except yaml.YAMLError:
+        return new_yaml, None
+    new_train = _process_train_section(new_config)
+    if not new_train:
+        return new_yaml, None
+    sampling = new_train.get("timestep_sampling")
+    if not isinstance(sampling, dict):
+        return new_yaml, None
+    morph = sampling.get("morph")
+    if not isinstance(morph, dict) or not morph.get("enabled"):
+        return new_yaml, None
+    if morph.get("from") is not None:
+        return new_yaml, None
+
+    previous = None
+    if old_yaml:
+        try:
+            old_train = _process_train_section(yaml.safe_load(old_yaml)) or {}
+        except yaml.YAMLError:
+            old_train = {}
+        candidate = old_train.get("timestep_sampling")
+        if isinstance(candidate, dict):
+            previous = candidate
+    if previous is None:
+        previous = arch_default
+    if previous is None:
+        return new_yaml, None
+
+    from .timestep_sampler import canonicalize_timestep_config
+
+    try:
+        source = canonicalize_timestep_config(previous)
+        target = canonicalize_timestep_config(
+            {k: v for k, v in sampling.items() if k != "morph"})
+    except ValueError:
+        return new_yaml, None
+    if source == target:
+        return new_yaml, None
+
+    morph["from"] = source
+    return (
+        yaml.dump(new_config, default_flow_style=False, sort_keys=False,
+                  allow_unicode=True),
+        source,
+    )
+
+
 class TrainingConfigGenerator:
     """Generate ai-toolkit YAML config from training parameters."""
 

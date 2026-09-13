@@ -6289,6 +6289,60 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/timestep-distribution:
+    get:
+      tags: [training]
+      summary: The timestep distribution the run is sampling, and any morph in flight
+      description: |
+        Reads the state the trainer publishes in the run's output directory, the
+        same transport as `GET /training/runs/{run_id}/lr-schedule`. Works for a
+        stopped run: the file is on disk, not in the subprocess.
+
+        This — not the run config — is the authoritative view of what is being
+        sampled. The config carries user intent, while the source of an
+        in-flight morph can be a frozen or flattened law that no config
+        expresses (a run retargeted mid-transition morphs from the law that was
+        actually in force at that moment).
+
+        `lam` is 0 at the pre-resume distribution and 1 at the configured one,
+        and advances on SUCCESSFUL OPTIMIZER UPDATES (`optimizer_update_step`),
+        not on `global_step`. When no morph is active, only `distribution`,
+        `target` and `optimizer_update_step` are meaningful.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Timestep distribution state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimestepDistributionStatusResponse'
+              example:
+                run_id: 112
+                is_running: true
+                status:
+                  active: true
+                  distribution: "[morph uniform -> logit_normal(mean=0.5, std=1.0) over 2000 updates from 41200 (cosine, quantile) @ lam=0.431]"
+                  source_label: uniform
+                  target_label: logit_normal(mean=0.5, std=1.0)
+                  optimizer_update_step: 42060
+                  start_update: 41200
+                  steps: 2000
+                  curve: cosine
+                  interpolation: quantile
+                  effective_interpolation: quantile
+                  lam: 0.431
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /training/runs/{run_id}/lr-schedule:
     post:
       tags: [training]
@@ -22201,6 +22255,186 @@ components:
           format: double
           example: 1772500401.109
 
+    TimestepSamplingConfig:
+      type: object
+      description: |
+        How training timesteps are drawn. The sampler emits t in
+        `[min_timestep, max_timestep]`; which end is clean and which is noise is
+        the ARCHITECTURE's convention, not this block's — see
+        `backend/core/training/timestep_sampler.py`. Omitted entirely, the
+        per-architecture default from `GET /schema/timestep-defaults-by-arch`
+        applies.
+      additionalProperties: true
+      properties:
+        distribution:
+          type: string
+          enum: [uniform, normal, logit_normal, lognormal, beta, custom]
+          default: uniform
+          example: logit_normal
+        min_timestep:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 0.0
+          example: 0.0
+        max_timestep:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 1.0
+          example: 1.0
+        mean:
+          type: number
+          description: normal and logit_normal only.
+          example: 0.5
+        std:
+          type: number
+          exclusiveMinimum: 0
+          description: normal and logit_normal only.
+          example: 1.0
+        alpha:
+          type: number
+          exclusiveMinimum: 0
+          description: beta only.
+          example: 2.0
+        beta:
+          type: number
+          exclusiveMinimum: 0
+          description: beta only.
+          example: 2.0
+        custom_weights:
+          type: array
+          description: custom only. Per-bin weights, normalised server-side.
+          items:
+            type: number
+        morph:
+          $ref: '#/components/schemas/TimestepSamplingMorph'
+
+    TimestepSamplingMorph:
+      type: object
+      description: |
+        Carry the distribution from the law the run was previously training at
+        to the one above, over `steps` successful optimizer updates, instead of
+        switching on the first step after a resume. A one-step switch moves the
+        loss scale and the gradient distribution together, leaving the
+        optimizer's moment estimates (and the spike/plateau state keyed off loss
+        scale) describing a distribution that no longer exists.
+
+        Inert on a fresh run and when the distribution did not change — both are
+        logged and train at the configured distribution. See
+        `docs/guides/TIMESTEP_DISTRIBUTION_MORPH_DESIGN.md`.
+      properties:
+        enabled:
+          type: boolean
+          default: false
+          example: true
+        steps:
+          type: integer
+          minimum: 1
+          default: 2000
+          description: |
+            Length of the transition in SUCCESSFUL OPTIMIZER UPDATES — not
+            `global_step`, which counts forward/backward iterations and would
+            make the same value mean a different number of weight updates under
+            different MNT / gradient-accumulation / optimizer settings.
+          example: 2000
+        curve:
+          type: string
+          enum: [cosine, linear]
+          default: cosine
+          description: |
+            `cosine` leaves and arrives with zero slope, so neither end of the
+            transition is itself a discontinuity in the rate of change.
+          example: cosine
+        interpolation:
+          type: string
+          enum: [quantile, mixture]
+          default: quantile
+          description: |
+            `quantile` interpolates the two quantile functions (the
+            Wasserstein geodesic): equally ranked mass is coupled and MOVES
+            between the endpoints, and stratified MNT sampling keeps working.
+            `mixture` draws from one endpoint or the other with probability
+            lambda, making the probability law linear in lambda. `quantile`
+            falls back to `mixture`, with a warning, when an endpoint has no
+            quantile function (today: `beta`).
+          example: quantile
+        from:
+          allOf:
+            - $ref: '#/components/schemas/TimestepSamplingConfig'
+          nullable: true
+          default: null
+          description: |
+            Explicit source distribution. Normally null: the API stamps the
+            config being replaced when a run is updated, and a morph record
+            paired with the resumed checkpoint outranks both.
+
+    TimestepDistributionStatusResponse:
+      type: object
+      description: The distribution a run is actually sampling, published by the trainer.
+      required: [run_id]
+      properties:
+        run_id:
+          type: integer
+          example: 112
+        is_running:
+          type: boolean
+          example: true
+        status:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: |
+            Null before the trainer resolves its sampler, and for a run that
+            never published one.
+          properties:
+            active:
+              type: boolean
+              description: Whether a morph is in flight.
+            distribution:
+              type: string
+              description: Human-readable form of the law being sampled right now.
+            source:
+              type: object
+              additionalProperties: true
+              description: Versioned sampler expression of the morph source.
+            target:
+              type: object
+              additionalProperties: true
+              description: Versioned sampler expression of the morph target.
+            source_label:
+              type: string
+            target_label:
+              type: string
+            optimizer_update_step:
+              type: integer
+              description: Successful optimizer updates completed.
+            start_update:
+              type: integer
+            steps:
+              type: integer
+            curve:
+              type: string
+              enum: [cosine, linear]
+            interpolation:
+              type: string
+              enum: [quantile, mixture]
+              description: What was requested.
+            effective_interpolation:
+              type: string
+              enum: [quantile, mixture]
+              description: What is actually running, after any fallback.
+            fallback_reason:
+              type: string
+              nullable: true
+            lam:
+              type: number
+              minimum: 0
+              maximum: 1
+            global_step:
+              type: integer
+              nullable: true
+
     LrScheduleStatusResponse:
       type: object
       description: LR schedule state, pending commands and recent results for a run.
@@ -25249,8 +25483,8 @@ components:
             case falls back to independent draws and logs once.
           example: true
         timestep_sampling:
-          type: 'object'
-          additionalProperties: true
+          allOf:
+            - $ref: '#/components/schemas/TimestepSamplingConfig'
           nullable: true
         grad_timestep_cosine_probe:
           type: 'boolean'

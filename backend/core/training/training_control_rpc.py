@@ -64,6 +64,10 @@ from core.training.training_file_rpc import (
 REQUEST_PREFIX = ".control_request_"
 RESULT_PREFIX = ".control_result_"
 STATUS_FILENAME = ".lr_schedule.json"
+#: Display-only view of the live timestep distribution / morph, same transport
+#: and same one-way semantics as STATUS_FILENAME. Never an input to a resume --
+#: the authoritative record is `timestep_morph` in the checkpoint state.
+TIMESTEP_STATUS_FILENAME = ".timestep_distribution.json"
 
 # The two parameterless commands, which is the enum of
 # `POST /training/runs/{id}/lr-schedule`. `retarget` (§19) has its own endpoint
@@ -214,6 +218,21 @@ def write_status(output_dir: str | Path, status: Dict[str, Any]) -> None:
 
 def read_status(output_dir: str | Path) -> Optional[Dict[str, Any]]:
     return read_json(status_path(output_dir))
+
+
+def timestep_status_path(output_dir: str | Path) -> Path:
+    return Path(output_dir) / TIMESTEP_STATUS_FILENAME
+
+
+def write_timestep_status(output_dir: str | Path, status: Dict[str, Any]) -> None:
+    """Atomic-write the display-only timestep distribution state."""
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(timestep_status_path(out), dict(status))
+
+
+def read_timestep_status(output_dir: str | Path) -> Optional[Dict[str, Any]]:
+    return read_json(timestep_status_path(output_dir))
 
 
 def clear_all(output_dir: str | Path) -> int:

@@ -15275,6 +15275,47 @@ def _check_cfg_null_params(request: "TrainingRunCreateRequest",
         print(f"[Training] WARNING: {warning}")
 
 
+def _arch_timestep_default(base_model_path: str):
+    """Per-architecture default timestep_sampling, for a config that omitted it.
+
+    Only used to give a morph a source when the config being replaced predates
+    the UI writing the block. Detection is header-only; any failure just means
+    no fallback source, which makes the morph a no-op rather than wrong.
+    """
+    try:
+        from core.model_loader import ModelLoader
+        from api.param_defaults import TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH
+
+        arch = str(ModelLoader.detect_model_type(base_model_path))
+        return dict(TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH.get(
+            arch, TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH["_default"]))
+    except Exception:
+        return None
+
+
+def _check_timestep_sampling(request) -> None:
+    """Refuse a timestep_sampling block (morph included) the trainer could not run.
+
+    At the API boundary so a bad distribution fails the request rather than the
+    run's first batch, hours after the user pressed start.
+    """
+    sampling = getattr(request, "timestep_sampling", None)
+    if not sampling:
+        return
+    from core.training.timestep_sampler import (
+        canonicalize_timestep_config, validate_morph_config,
+    )
+
+    try:
+        canonicalize_timestep_config(
+            {k: v for k, v in dict(sampling).items() if k != "morph"})
+        morph = dict(sampling).get("morph")
+        if morph is not None:
+            validate_morph_config(morph)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"timestep_sampling: {exc}")
+
+
 def _check_vae_swap_params(request: "TrainingRunCreateRequest") -> None:
     """Refuse an impossible VAE swap before the run row is written (§7.4, §8.7).
 
@@ -15347,6 +15388,7 @@ async def create_training_run(
             for c in dataset_configs
         ])
         _check_vae_swap_params(request)
+        _check_timestep_sampling(request)
 
         # Build dataset_configs_for_yaml (with path, caption_types, and dataset_id)
         # NOTE: caption_processing is NOT saved to YAML - read from database at training time
@@ -16057,6 +16099,7 @@ async def update_training_run(
             for c in (request.dataset_configs or [])
         ])
         _check_vae_swap_params(request)
+        _check_timestep_sampling(request)
 
         # Resolve temp_img:// references in sample_prompts condition_image_path
         resolved_sample_prompts = []
@@ -16109,6 +16152,16 @@ async def update_training_run(
         if preserved_config_keys:
             print(f"[Training] Preserved config-channel keys on run {run_id}: "
                   f"{', '.join(preserved_config_keys)}")
+
+        # The previous distribution is readable here and nowhere later: this
+        # route is what replaces it. Fallback source only -- an in-flight morph
+        # record in the resumed checkpoint state outranks the stamped value.
+        from core.training.training_config import stamp_timestep_morph_source
+        config_yaml, _morph_source = stamp_timestep_morph_source(
+            run.config_yaml, config_yaml,
+            arch_default=_arch_timestep_default(request.base_model_path))
+        if _morph_source:
+            print(f"[Training] Timestep morph source for run {run_id}: {_morph_source}")
 
         run.config_yaml = config_yaml
         run.base_model_path = request.base_model_path
@@ -18262,6 +18315,35 @@ async def queue_lr_schedule_retarget(
         "pending_count": len(list_pending_requests(proc.output_dir, int(run_id))),
         "max_pending": MAX_PENDING_REQUESTS,
         "payload": payload,
+    }
+
+
+@router.get("/training/runs/{run_id}/timestep-distribution")
+async def get_timestep_distribution_status(
+    run_id: int,
+    db: Session = Depends(get_training_db),
+):
+    """The distribution the run is actually sampling, and any morph in flight.
+
+    Read from the state the trainer publishes rather than from the run config:
+    the config carries user intent, while an in-flight morph source can be a
+    frozen or flattened law that no config expresses. A stopped run answers with
+    what it last published.
+    """
+    from core.training.training_process import training_process_manager
+    from core.training.training_control_rpc import read_timestep_status
+
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    proc = training_process_manager.processes.get(int(run_id))
+    output_dir = proc.output_dir if proc is not None else run.output_dir
+
+    return {
+        "run_id": int(run_id),
+        "is_running": bool(proc is not None and proc.is_running),
+        "status": read_timestep_status(output_dir) if output_dir else None,
     }
 
 

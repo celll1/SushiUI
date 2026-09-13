@@ -486,6 +486,18 @@ paths:
                       type: object
                       additionalProperties: true
                     example:
+                      yue2:
+                        audio_duration: 360.0
+                        yue2_cot: full
+                        yue2_abc: ""
+                        yue2_abc_max_tokens: 4096
+                        temperature: 1.0
+                        top_p: 0.95
+                        top_k: 100
+                        repetition_penalty: 1.2
+                        guidance_scale: 1.0
+                        vae_decode_mode: tiled
+                        vae_tile_frames: 1024
                       minimax_music3:
                         audio_duration: 60.0
                         num_inference_steps: 30
@@ -1286,14 +1298,26 @@ paths:
   /generate/txt2aud:
     post:
       tags: [generation]
-      summary: Generate music/audio from a text caption (ACE-Step 1.5 or MiniMax Music 3)
+      summary: Generate music/audio from a text caption (ACE-Step 1.5, MiniMax Music 3, or YuE2)
       description: |
         Text-to-audio (music) generation using a loaded ACE-Step 1.5 (turbo)
-        model OR a loaded MiniMax Music 3 model. Produces a lossless FLAC
+        model, MiniMax Music 3, or YuE2 model. Produces a lossless FLAC
         file and a gallery row.
 
         **Requirements:**
-        - An ACE-Step or MiniMax Music 3 model must be loaded (otherwise 400).
+        - An ACE-Step, MiniMax Music 3, or YuE2 model must be loaded (otherwise 400).
+
+        **YuE2:** requires a non-empty style prompt and structured lyrics, and supports full/melody/off
+        symbolic planning, caller-supplied ABC, semantic sampling controls,
+        and explicit full/tiled VAE decode. Duration defaults to a 360-second
+        upper bound subject to available context. Supplied ABC with off is
+        rejected. Saves 48 kHz stereo FLAC plus ABC IDs, semantic tokens,
+        latents, effective settings, timings, identities and truncation state
+        in companion JSON/NPZ files. Companion write failures return a warning
+        while retaining the saved audio. No score-only mode is exposed yet.
+        YuE2 seed must be -1 (random) or 0 through 2^63-1. Duration must round
+        to at least one semantic token at 25 Hz and fit the remaining context;
+        even before conditioning, a budget above 24,576 tokens is rejected.
 
         **Key parameters (ACE-Step):**
         - `prompt`: caption text describing the desired music.
@@ -3103,8 +3127,9 @@ paths:
       description: |
         `delete_files=true` (default): deletes the DB row AND every artefact
         it owns -- media file, sidecar JSON, poster/waveform PNG, both
-        thumbnail variants, and the lossless-proxy `preview_filename` when
-        present. Files are removed with the media file last, so if a later
+        thumbnail variants, the lossless-proxy `preview_filename`, Music3
+        frame codes, and YuE2's `.yue2.npz`, `.yue2.json` and `.abc` artifacts
+        when present. Files are removed with the media file last, so if a later
         file fails to delete, the DB row (left intact, see 500 response)
         still points at a file that still exists on retry.
 
@@ -15303,7 +15328,75 @@ components:
 
     Txt2AudRequest:
       type: object
+      description: >-
+        Audio generation using the loaded ACE-Step, MiniMax Music 3, or YuE2
+        architecture. YuE2 requires non-empty structured lyrics; duration is
+        an upper bound (default 360 seconds), constrained by prompt/context
+        length. YuE2 rejects negative prompts, reference audio, block swapping,
+        runtime quantization, and unknown request fields. Stage-scoped ordinary
+        LoRA adapters may affect ABC planning and are unloaded before semantic
+        and NAR generation. Its acoustic sampler uses the fixed official 32
+        midpoint steps.
       properties:
+        yue2_cot:
+          type: string
+          nullable: true
+          enum: [full, melody, "off"]
+          description: "YuE2 symbolic planning mode; omitted resolves to full. Supplied ABC with off is rejected."
+          example: full
+        yue2_abc:
+          type: string
+          nullable: true
+          description: "Optional caller-supplied YuE2 ABC score. Omitted resolves to empty (generate a plan)."
+          example: "X:1\nT:Song\nM:4/4\nK:C\nC D E F|"
+        yue2_abc_max_tokens:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 24576
+          description: "YuE2 ABC planning token budget; omitted resolves to 4096."
+          example: 4096
+        temperature:
+          type: number
+          nullable: true
+          minimum: 0
+          maximum: 5
+          description: "YuE2 semantic sampling temperature; omitted resolves to 1.0."
+          example: 1.0
+        top_p:
+          type: number
+          nullable: true
+          minimum: 0
+          exclusiveMinimum: true
+          maximum: 1
+          description: "YuE2 semantic nucleus probability; omitted resolves to 0.95."
+          example: 0.95
+        top_k:
+          type: integer
+          nullable: true
+          minimum: 0
+          maximum: 32768
+          description: "YuE2 semantic top-k sampling; zero disables filtering, omitted resolves to 100."
+          example: 100
+        repetition_penalty:
+          type: number
+          nullable: true
+          minimum: 0
+          exclusiveMinimum: true
+          description: "YuE2 semantic repetition penalty; omitted resolves to 1.2."
+          example: 1.2
+        vae_decode_mode:
+          type: string
+          nullable: true
+          enum: [tiled, full]
+          description: "YuE2 FP32 VAE decode policy; omitted resolves to tiled. Effective policy and OOM fallback are saved."
+          example: tiled
+        vae_tile_frames:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: "YuE2 VAE core frames per tile, with fixed 16-frame halo; omitted resolves to 1024."
+          example: 1024
         prompt:
           type: string
           default: ""
@@ -15362,7 +15455,10 @@ components:
           type: number
           default: 1.0
           description: |
-            ACE-Step ONLY: classifier-free guidance scale. Turbo is
+            YuE2: semantic guidance, resolved to 1.0 for full/melody or
+            1.01 for off when omitted; an explicit value must be finite,
+            positive and at most 20 (YuE2-specific bound).
+            ACE-Step: classifier-free guidance scale. Turbo is
             CFG-distilled (no twin forward pass); a non-1.0 value is
             overridden back to 1.0. MiniMax Music 3 uses
             `flow_guidance_scale` below instead; this field has no effect on
@@ -23811,6 +23907,32 @@ components:
             Krea 2 discrete flow-matching timestep shift applied to the sampled sigma
             (sigma' = s*sigma / (1 + (s-1)*sigma)). Set <=1 to disable.
           example: 2.5
+        yue2_training_objective:
+          type: string
+          enum: [abc_ar]
+          default: abc_ar
+          description: >-
+            YuE2 Phase-A training objective. Supervises only the ABC score and
+            its stop token; style, lyrics, and protocol-prefix tokens are masked.
+        yue2_lora_scope:
+          type: string
+          enum: [attention, "attention,mlp"]
+          default: attention
+          description: >-
+            YuE2 AR score-planner LoRA targets. attention wraps Q/K/V/Out in
+            all 28 AR layers; attention,mlp also wraps gate/up/down projections.
+        yue2_abc_mode:
+          type: string
+          enum: [full, melody]
+          default: full
+          description: Native YuE2 score-planning instruction used to build the training prefix.
+        yue2_allow_truncated_targets:
+          type: boolean
+          default: false
+          description: >-
+            Permit ABC targets longer than the 24576-token context to be cut and
+            terminated with ABC_END. False also rejects generation sidecars that
+            record ABC truncation.
         run_name:
           type: 'string'
           nullable: true

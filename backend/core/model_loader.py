@@ -8,7 +8,7 @@ from safetensors.torch import load_file
 from pathlib import Path
 
 ModelSource = Literal["safetensors", "diffusers", "huggingface", "gguf"]
-ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens", "ideogram4", "minit2i", "krea2", "ltx2", "acestep", "minimax_h3", "minimax_music3", "sensenova"]
+ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens", "ideogram4", "minit2i", "krea2", "ltx2", "acestep", "minimax_h3", "minimax_music3", "sensenova", "yue2"]
 
 class ModelLoader:
     """Handles loading models from various sources"""
@@ -783,6 +783,10 @@ class ModelLoader:
             # variant dir within 2 levels so the loader can resolve it to a variant.
             if os.path.isdir(model_path) and ModelLoader._dir_contains_minit2i(model_path):
                 return "minit2i"
+
+        from core.models.yue2.loader import is_yue2_checkpoint
+        if is_yue2_checkpoint(model_path):
+            return "yue2"
 
         # MiniMax-H3 single-file detection (the Comfy DiT: token_refiner. plus a
         # MiniMax-only key -- see `keys_look_minimax_h3`, whose second clause
@@ -2276,6 +2280,10 @@ class ModelLoader:
             return ModelLoader.load_minimax_music3_from_path(
                 file_path, torch.bfloat16, text_encoder_file=text_encoder_file)
 
+        if model_type == "yue2":
+            from core.models.yue2.loader import load_yue2_from_path
+            return load_yue2_from_path(file_path, torch.bfloat16)
+
         is_v_prediction = ModelLoader.detect_v_prediction(file_path)
 
         # Reconstruct the SD1.5 / SDXL pipeline (custom-arch aware). Shared with the
@@ -2713,6 +2721,10 @@ class ModelLoader:
             print(f"[ModelLoader] Loading as MiniMax Music 3 (official/ config-and-weight tree)")
             return ModelLoader.load_minimax_music3_from_path(
                 model_path, torch.bfloat16, text_encoder_file=text_encoder_file)
+
+        if model_type == "yue2":
+            from core.models.yue2.loader import load_yue2_from_path
+            return load_yue2_from_path(model_path, torch.bfloat16)
 
         is_v_prediction = ModelLoader.detect_v_prediction(model_path)
 

@@ -60,6 +60,8 @@ export const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [
   "ideogram4_lora_scope", "ideogram4_train_uncond",
   "ideogram4_uncond_loss_weight", "ideogram4_lr_factor",
   "krea2_lora_scope", "krea2_lr_factor", "krea2_discrete_flow_shift",
+  "yue2_training_objective", "yue2_lora_scope", "yue2_abc_mode",
+  "yue2_allow_truncated_targets",
   "repa_enable", "repa_encoder_source", "repa_tagger_model_dir", "repa_siglip2_repo",
   "repa_align_depth", "repa_weight", "repa_proj_lr_factor", "repa_encoder_resolution",
   "repa_target_source", "repa_latent_stem_path", "repa_profile_steps",

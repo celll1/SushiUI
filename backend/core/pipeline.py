@@ -27,7 +27,7 @@ from core.prompts.processors import PromptEditingProcessor
 from core.inference.schedulers import get_scheduler
 from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
 from core.inference.generation_timing import generation_timer
-from core.pipeline_backends import ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin, AceStepMixin, MiniMaxH3Mixin, MiniMaxMusic3Mixin, SenseNovaMixin
+from core.pipeline_backends import ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin, AceStepMixin, MiniMaxH3Mixin, MiniMaxMusic3Mixin, SenseNovaMixin, YuE2Mixin
 
 LAST_MODEL_CONFIG_FILE = Path("last_model.json")
 
@@ -47,6 +47,7 @@ ARCH_COMPONENT_SETS = (
     ("minimax_h3_components", "MiniMax-H3", "is_minimax_h3_model"),
     ("minimax_music3_components", "MiniMax Music 3", "is_minimax_music3_model"),
     ("sensenova_components", "SenseNova", "is_sensenova_model"),
+    ("yue2_components", "YuE2", "is_yue2_model"),
 )
 
 # Pipeline attributes that hold an nn.Module worth offloading.
@@ -133,7 +134,7 @@ def offload_component_to_cpu(name: str, component, released: List[tuple]) -> int
     return nbytes
 
 
-class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin, AceStepMixin, MiniMaxH3Mixin, MiniMaxMusic3Mixin, SenseNovaMixin):
+class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin, AceStepMixin, MiniMaxH3Mixin, MiniMaxMusic3Mixin, SenseNovaMixin, YuE2Mixin):
     def __init__(self):
         self.txt2img_pipeline: Optional[StableDiffusionPipeline] = None
         self.img2img_pipeline: Optional[StableDiffusionImg2ImgPipeline] = None
@@ -207,6 +208,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # slot-switchable only — no sampler/generation entry point yet (Phase 2).
         self.acestep_components: Optional[Dict[str, Any]] = None
         self.is_acestep_model: bool = False
+        self.yue2_components: Optional[Dict[str, Any]] = None
+        self.is_yue2_model: bool = False
 
         # MiniMax-H3 components (pruned joint video+audio DiT + Qwen3-VL-32B text
         # encoder + a 24ch video VAE and a 32ch audio VAE). Video model; flow
@@ -298,6 +301,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             return "ltx2"
         if self.is_acestep_model:
             return "acestep"
+        if self.is_yue2_model:
+            return "yue2"
         if self.is_minimax_h3_model:
             return "minimax_h3"
         if self.is_minimax_music3_model:
@@ -416,6 +421,11 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
     ):
         """Load a Stable Diffusion model from various sources"""
         model_id = f"{source_type}:{source}"
+        from core.models.yue2.loader import is_yue2_checkpoint, preflight_yue2
+        if is_yue2_checkpoint(source):
+            if text_encoder_file or clip_projection_file or kwargs.get("vae_path") or kwargs.get("text_encoder_path"):
+                raise ValueError("YuE2 currently loads its bundled tokenizer and VAE only")
+            preflight_yue2(source, require_runtime=True)
         hybrid_preflight = None
         if hybrid is not None:
             # HEADER-ONLY, and before anything is torn down: a refused hybrid
@@ -612,6 +622,24 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 **({} if hybrid_preflight is None else {"hybrid": hybrid_preflight}),
                 **kwargs
             )
+
+            if isinstance(model_result, dict) and model_result.get("type") == "yue2":
+                from core.models.components.wiring import YUE2_WIRING
+                from utils.hash_cache import get_cached_file_hash
+                self.yue2_components = model_result
+                self.is_yue2_model = True
+                self.current_model = model_id
+                self.current_attention_type = "normal"
+                self._sushi_wiring = YUE2_WIRING
+                model_hash = get_cached_file_hash(source)
+                model_result["model_identity"]["sha256"] = model_hash
+                self.current_model_info = dict(source_type=source_type, source=source, type="yue2",
+                    is_audio=True, is_v_prediction=False, model_hash=model_hash,
+                    sample_rate=48000, frame_rate=25, latent_frame_rate=25, latent_channels=64,
+                    weight_license=model_result["model_identity"].get("license"),
+                    weight_source=model_result["model_identity"].get("source"))
+                self._save_last_model(source_type, source, pipeline_type)
+                return
 
             # Check if FLUX.2 (must check before Z-Image since both have "transformer" key)
             if isinstance(model_result, dict) and model_result.get("model_type") == "flux2":
@@ -3621,36 +3649,26 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         )
 
     def generate_txt2aud(self, params: Dict[str, Any], progress_callback=None, step_callback=None):
-        """Generate music/audio from text (ACE-Step 1.5 or MiniMax Music 3).
+        """Generate music with ACE-Step, MiniMax Music 3, or YuE2.
 
-        Args:
-            params: Generation parameters. ACE-Step: caption/prompt, lyrics,
-                audio_duration, seed, inference_steps, guidance_scale, shift,
-                sampler_mode, bpm, key_scale, time_signature, vocal_language.
-                MiniMax Music 3: prompt, lyrics, seed, audio_duration,
-                num_inference_steps, flow_guidance_scale (all three required,
-                no default -- see `MiniMaxMusic3Mixin._generate_txt2aud_minimax_music3`).
-            progress_callback: Called as (step, total_steps).
-            step_callback: Reserved (unused for txt2aud on either arch).
-
-        Returns:
-            ACE-Step: (waveform, sample_rate, actual_seed) tuple, waveform a
-            torch.FloatTensor [2, samples] on CPU, sample_rate 48000.
-            MiniMax Music 3: `MiniMaxMusic3Txt2AudResult` (NOT the same
-            3-tuple shape -- see its own docstring for why: the design doc's
-            per-generation frame-code state contract must survive this call
-            for a later commit's route to persist).
+        Parameters arrive resolved through the architecture's API defaults.
+        Progress reports (step, total); step_callback is reserved.
+        ACE-Step returns (waveform, sample_rate, seed). MiniMax Music 3 and
+        YuE2 return named results retaining their tokens and generation state
+        for the route's artifact sidecar. Waveforms are CPU [2, samples].
         """
         if self.is_acestep_model:
             return self._generate_txt2aud_acestep(params, progress_callback, step_callback)
         if self.is_minimax_music3_model:
             return self._generate_txt2aud_minimax_music3(params, progress_callback, step_callback)
+        if self.is_yue2_model:
+            return self._generate_txt2aud_yue2(params, progress_callback, step_callback)
 
         from api.error_handlers import ValidationError
         raise ValidationError(
-            "Text-to-audio generation requires an ACE-Step or MiniMax Music 3 model",
-            detail="The currently loaded model is not an audio model. Load an ACE-Step or MiniMax "
-                   "Music 3 model to use /generate/txt2aud.",
+            "Text-to-audio generation requires an ACE-Step, MiniMax Music 3, or YuE2 model",
+            detail="The currently loaded model is not an audio model. Load an ACE-Step, MiniMax "
+                   "Music 3, or YuE2 model to use /generate/txt2aud.",
         )
 
     def generate_aud2aud(self, params: Dict[str, Any], reference_audio, progress_callback=None, step_callback=None):

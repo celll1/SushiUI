@@ -144,14 +144,14 @@ def _is_bf16_native_base_model(base_model_path: str) -> bool:
     of defence; this keeps the config that reaches the trainer honest in the first
     place."""
     lowered = (base_model_path or "").lower()
-    if any(s in lowered for s in ("lens", "ltx", "ace-step", "acestep",
+    if any(s in lowered for s in ("lens", "ltx", "ace-step", "acestep", "yue2",
                                   "minimax", "minimax_h3", "minimax-h3",
                                   "sensenova", "sense-nova")):
         return True
     try:
         from core.model_loader import ModelLoader
         return ModelLoader.detect_model_type(base_model_path) in (
-            "lens", "ltx2", "acestep", "minimax_h3", "sensenova")
+            "lens", "ltx2", "acestep", "minimax_h3", "sensenova", "yue2")
     except Exception:
         return False
 
@@ -1162,6 +1162,59 @@ def _apply_reference_training_contract(
         )
 
 
+def _apply_yue2_training_contract(
+    base_model_path: str, network_type: str, train_config: Dict[str, Any]
+) -> bool:
+    """Refuse settings the token-native Phase-A loop cannot honor."""
+    if network_type == "vae_decoder":
+        return False
+    from core.model_loader import ModelLoader
+
+    try:
+        is_yue2 = ModelLoader.detect_model_type(base_model_path) == "yue2"
+    except Exception:
+        is_yue2 = "yue2" in (base_model_path or "").lower()
+    if not is_yue2:
+        return False
+    if network_type != "lora":
+        raise ValueError("YuE2 Phase A supports network.type='lora' only")
+    objective = str(train_config.get("yue2_training_objective", "abc_ar")).strip().lower()
+    if objective != "abc_ar":
+        raise ValueError("YuE2 Phase A supports yue2_training_objective='abc_ar' only")
+    scope = str(train_config.get("yue2_lora_scope", "attention")).strip().lower()
+    if scope not in {"attention", "attention,mlp"}:
+        raise ValueError("YuE2 yue2_lora_scope must be 'attention' or 'attention,mlp'")
+    abc_mode = str(train_config.get("yue2_abc_mode", "full")).strip().lower()
+    if abc_mode not in {"full", "melody"}:
+        raise ValueError("YuE2 yue2_abc_mode must be 'full' or 'melody'")
+    train_config["yue2_training_objective"] = objective
+    train_config["yue2_lora_scope"] = scope
+    train_config["yue2_abc_mode"] = abc_mode
+    if not _normalize_scope_flag(train_config, "train_unet", True):
+        raise ValueError("YuE2 abc_ar LoRA requires train_unet=true")
+    if _normalize_scope_flag(train_config, "train_text_encoder", False):
+        raise ValueError("YuE2 has no separate trainable text encoder; set train_text_encoder=false")
+    if _normalize_scope_flag(train_config, "train_image_encoder", False):
+        raise ValueError("YuE2 Phase A has no trainable image encoder")
+    if int(train_config.get("blocks_to_swap", 0) or 0):
+        raise ValueError("YuE2 Phase A does not implement training block swap")
+    if int(train_config.get("num_optimizer_groups", 0) or 0):
+        raise ValueError("YuE2 Phase A does not implement fused optimizer groups")
+    if bool(train_config.get("use_ema", False)):
+        raise ValueError("YuE2 Phase A does not implement EMA checkpoints")
+    if bool(train_config.get("repa_enable", False)):
+        raise ValueError("YuE2 abc_ar has no image-token grid for REPA")
+    if str(train_config.get("regularization_type") or "none").lower() != "none":
+        raise ValueError("YuE2 Phase A does not implement diffusion regularization losses")
+    if int(train_config.get("multi_noise_timesteps", 1) or 1) != 1:
+        raise ValueError("YuE2 abc_ar is a causal-LM objective; multi_noise_timesteps must be 1")
+    if str(train_config.get("torch_compile") or "off").lower() != "off":
+        raise ValueError("YuE2 Phase A has not validated torch_compile; set torch_compile='off'")
+    if train_config.get("fp8_base_dtype"):
+        raise ValueError("YuE2 already uses its single-file ConvRot INT8 base; fp8_base_dtype is inapplicable")
+    return True
+
+
 def _prepare_training_process_config(
     config: Dict[str, Any], base_model_path: str
 ):
@@ -1170,6 +1223,7 @@ def _prepare_training_process_config(
     train_config = process_config['train']
     network_config = process_config.get('network', {})
     network_type = network_config.get('type', 'lora')
+    _apply_yue2_training_contract(base_model_path, network_type, train_config)
     _preflight_sensenova_before_dataset_config(
         base_model_path, network_type, train_config
     )
@@ -2939,62 +2993,68 @@ def main():
             from core.model_loader import ModelLoader
 
             model_type = ModelLoader.detect_model_type(run.base_model_path)
-            model_pred_config = ModelLoader.detect_prediction_config(run.base_model_path, model_type)
-
-            print(f"[TrainRunner] Model prediction configuration detected:")
-            print(f"  Noise Process: {model_pred_config['noise_process']}")
-            print(f"  Prediction Target: {model_pred_config['prediction_target']}")
-            print(f"  Detection Source: {model_pred_config['source']}")
-
-            training_noise_process = train_config.get('noise_process', 'auto')
-            training_prediction_target = train_config.get('prediction_target', 'auto')
-            strict_validation = train_config.get('strict_validation', False)
-
-            # Auto-detect: use model's configuration
-            if training_noise_process == 'auto':
-                training_noise_process = model_pred_config['noise_process']
-                print(f"[TrainRunner] noise_process='auto' → using model's config: {training_noise_process}")
-
-            if training_prediction_target == 'auto':
-                training_prediction_target = model_pred_config['prediction_target']
-                print(f"[TrainRunner] prediction_target='auto' → using model's config: {training_prediction_target}")
-
-            # Validate compatibility
-            mismatch_warnings = []
-            if training_noise_process != model_pred_config['noise_process']:
-                mismatch_warnings.append(
-                    f"noise_process mismatch: model={model_pred_config['noise_process']}, training={training_noise_process}"
-                )
-            if training_prediction_target != model_pred_config['prediction_target']:
-                mismatch_warnings.append(
-                    f"prediction_target mismatch: model={model_pred_config['prediction_target']}, training={training_prediction_target}"
-                )
-
-            if mismatch_warnings:
-                print(f"\n{'='*60}")
-                print(f"[TrainRunner] WARNING: PREDICTION CONFIG MISMATCH DETECTED")
-                print(f"{'='*60}")
-                for warning in mismatch_warnings:
-                    print(f"  - {warning}")
-                print(f"\nThis may cause training instability or poor convergence.")
-                print(f"Model was trained with: {model_pred_config['noise_process']} + {model_pred_config['prediction_target']}")
-                print(f"You are training with: {training_noise_process} + {training_prediction_target}")
-
-                if strict_validation:
-                    print(f"\nERROR: strict_validation=True: Aborting training due to mismatch.")
-                    print(f"{'='*60}\n")
-                    sys.exit(1)
-                else:
-                    print(f"\nWARNING: strict_validation=False: Continuing with warning.")
-                    print(f"Set strict_validation=true in training config to abort on mismatch.")
-                    print(f"{'='*60}\n")
+            if model_type == "yue2":
+                trainer.noise_process = "token_causal"
+                trainer.prediction_target = "cross_entropy"
+                print("[TrainRunner] YuE2 objective: token_causal + cross_entropy")
             else:
-                print(f"[TrainRunner] OK Prediction configuration validated successfully")
+                model_pred_config = ModelLoader.detect_prediction_config(
+                    run.base_model_path, model_type
+                )
 
-            trainer.noise_process = training_noise_process
-            trainer.prediction_target = training_prediction_target
+                print(f"[TrainRunner] Model prediction configuration detected:")
+                print(f"  Noise Process: {model_pred_config['noise_process']}")
+                print(f"  Prediction Target: {model_pred_config['prediction_target']}")
+                print(f"  Detection Source: {model_pred_config['source']}")
 
-            _validate_latent_io(trainer, train_config)
+                training_noise_process = train_config.get('noise_process', 'auto')
+                training_prediction_target = train_config.get('prediction_target', 'auto')
+                strict_validation = train_config.get('strict_validation', False)
+
+                # Auto-detect: use model's configuration
+                if training_noise_process == 'auto':
+                    training_noise_process = model_pred_config['noise_process']
+                    print(f"[TrainRunner] noise_process='auto' → using model's config: {training_noise_process}")
+
+                if training_prediction_target == 'auto':
+                    training_prediction_target = model_pred_config['prediction_target']
+                    print(f"[TrainRunner] prediction_target='auto' → using model's config: {training_prediction_target}")
+
+                # Validate compatibility
+                mismatch_warnings = []
+                if training_noise_process != model_pred_config['noise_process']:
+                    mismatch_warnings.append(
+                        f"noise_process mismatch: model={model_pred_config['noise_process']}, training={training_noise_process}"
+                    )
+                if training_prediction_target != model_pred_config['prediction_target']:
+                    mismatch_warnings.append(
+                        f"prediction_target mismatch: model={model_pred_config['prediction_target']}, training={training_prediction_target}"
+                    )
+
+                if mismatch_warnings:
+                    print(f"\n{'='*60}")
+                    print(f"[TrainRunner] WARNING: PREDICTION CONFIG MISMATCH DETECTED")
+                    print(f"{'='*60}")
+                    for warning in mismatch_warnings:
+                        print(f"  - {warning}")
+                    print(f"\nThis may cause training instability or poor convergence.")
+                    print(f"Model was trained with: {model_pred_config['noise_process']} + {model_pred_config['prediction_target']}")
+                    print(f"You are training with: {training_noise_process} + {training_prediction_target}")
+
+                    if strict_validation:
+                        print(f"\nERROR: strict_validation=True: Aborting training due to mismatch.")
+                        print(f"{'='*60}\n")
+                        sys.exit(1)
+                    else:
+                        print(f"\nWARNING: strict_validation=False: Continuing with warning.")
+                        print(f"Set strict_validation=true in training config to abort on mismatch.")
+                        print(f"{'='*60}\n")
+                else:
+                    print(f"[TrainRunner] OK Prediction configuration validated successfully")
+
+                trainer.noise_process = training_noise_process
+                trainer.prediction_target = training_prediction_target
+                _validate_latent_io(trainer, train_config)
 
             regularization_type = train_config.get('regularization_type', None)
             if regularization_type:

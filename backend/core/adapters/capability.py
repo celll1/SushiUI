@@ -67,6 +67,7 @@ ENABLED_ADAPTER_PAIRS: Mapping[str, FrozenSet[AdapterPair]] = MappingProxyType({
     "minimax_h3": _ADDITIVE_LYCORIS,
     "acestep": _ADDITIVE_LYCORIS,
     "sensenova": _ADDITIVE_LYCORIS,
+    "yue2": _ORDINARY_ONLY,
 })
 
 #: THE TRAINING axis: which families a trainer may CONSTRUCT, save and resume
@@ -95,6 +96,7 @@ TRAINABLE_ADAPTER_PAIRS: Mapping[str, FrozenSet[AdapterPair]] = MappingProxyType
     "minimax_h3": _ORDINARY_ONLY,
     "acestep": _ADDITIVE_LYCORIS,
     "sensenova": _ORDINARY_ONLY,
+    "yue2": _ORDINARY_ONLY,
 })
 
 #: The two axes a caller may ask about. ``require()`` takes one explicitly:
@@ -168,6 +170,9 @@ TRAINING_REFUSAL_REASONS: Mapping[str, str] = MappingProxyType({
     "sensenova": (
         "LoHa/LoKr need a training gate of their own: the two MoT halves, "
         "phase eviction and the INT8/ConvRot policy"),
+    "yue2": (
+        "YuE2 initially supports ordinary LoRA only; its ConvRot base and "
+        "stage-scoped AR/NAR activation require separate LoHa/LoKr gates"),
 })
 
 
@@ -200,7 +205,9 @@ DECOMPOSE_REFUSAL_REASONS: Mapping[str, str] = MappingProxyType({
                    f"has no row axis to slice"),
     "sensenova": (f"DoRA is deferred here: {DORA_QUANTIZED_BASE_REFUSAL}, and "
                   f"this architecture has no dense configuration -- all 294 "
-                  f"targets per MoT half are Int8Linear"),
+                   f"targets per MoT half are Int8Linear"),
+    "yue2": (f"DoRA is deferred here: {DORA_QUANTIZED_BASE_REFUSAL}, and "
+              f"the released single-file base is ConvRot INT8"),
 })
 
 
@@ -245,6 +252,7 @@ BLOCK_SWAP_ADAPTER_ORDER: Mapping[str, str] = MappingProxyType({
     "krea2": PACKED_WITH_BLOCK,
     "acestep": PACKED_WITH_BLOCK,
     "sensenova": PACKED_WITH_BLOCK,
+    "yue2": NO_BLOCK_SWAP,
     # The offloader is already built when the adapters install, so a branch over
     # a swapped-out block is built on the HOST and nothing ever moves it:
     # _minit2i_stage_transformer / _ensure_ltx2_block_swap_wrapper, and

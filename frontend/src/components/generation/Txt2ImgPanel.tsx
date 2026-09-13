@@ -42,6 +42,7 @@ import ResizableColumns, {
 } from "../common/ResizableColumns";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
+import Yue2AudioControls from "./Yue2AudioControls";
 import VideoFrameCountSlider from "../common/VideoFrameCountSlider";
 import VideoChainConfirmDialog, { VideoChainPlanInput } from "../common/VideoChainConfirmDialog";
 import ChainDriftPauseDialog from "../common/ChainDriftPauseDialog";
@@ -519,6 +520,8 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
   // guidance) replace ACE-Step's (shift, per-song steps, vocal language) in
   // the Audio Settings card below, and it has no LoRA path at all.
   const isMusic3 = loadedArch === "minimax_music3";
+  const isYue2 = loadedArch === "yue2";
+  const yue2Defaults = generationDefaults?.audio_arch_overlays?.yue2 as Partial<Txt2AudParams> | undefined;
   // Applies a LoRA's own declared recommended settings (from its file
   // metadata) to params, like any ordinary user edit -- writes through the
   // normal params state so it flows through the same request/DB/metadata
@@ -612,6 +615,10 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       if ("audio_duration" in overlay) next.audio_duration = overlay.audio_duration as number;
       if ("num_inference_steps" in overlay) next.music3_num_inference_steps = overlay.num_inference_steps as number;
       if ("flow_guidance_scale" in overlay) next.flow_guidance_scale = overlay.flow_guidance_scale as number;
+      if (loadedArch === "yue2") {
+        Object.assign(next, overlay, { guidance_scale: prev.guidance_scale });
+        next.yue2_guidance_scale = undefined;
+      }
       return next;
     });
   }, [isAudio, loadedArch, generationDefaults, params.audio_defaults_arch]);
@@ -1902,6 +1909,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       // still carrying `params` resolved for the PREVIOUS architecture.
       const freshAudioArch = modality.modelInfo?.type as string | undefined;
       const freshIsMusic3 = freshAudioArch === "minimax_music3";
+      const freshIsYue2 = freshAudioArch === "yue2";
       // `params.audio_defaults_arch` is the marker the arch-overlay effect
       // (above, near `loadedArch`) writes once it has resolved `params` for
       // an architecture. If it does not match the FRESH arch, `params` may
@@ -1936,56 +1944,64 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
         alert("MiniMax Music 3 requires non-empty Lyrics. For an instrumental track, describe that in Caption instead.");
         return;
       }
+      if (freshIsYue2 && !(params.lyrics ?? "").trim()) {
+        alert("YuE2 requires non-empty structured lyrics.");
+        return;
+      }
+      const yue2Params = freshIsYue2
+        ? (audioParamsStale ? freshAudioOverlay : params) as Partial<Txt2AudParams> | undefined
+        : undefined;
+      if (freshIsYue2 && yue2Params?.yue2_cot === "off" && yue2Params.yue2_abc?.trim()) {
+        alert("Supplied ABC requires YuE2 symbolic planning to be enabled.");
+        return;
+      }
 
       const audioParams: Txt2AudParams = {
         prompt: processedPrompt,
         lyrics: params.lyrics,
         audio_duration: resolvedAudioDuration,
         seed: params.seed,
-        // ACE-Step ONLY. Omitted entirely on a MiniMax Music 3 request:
-        // `generateTxt2Aud()`'s own `?? 8`/`?? 1.0`/`?? 3.0`/`?? "euler"`/
-        // `?? "en"` fallbacks (api.ts) then send ACE-Step's clean baseline
-        // values instead of whatever this panel's shared `params` state
-        // happens to hold for a field Music 3's pipeline backend never
-        // reads -- otherwise a later inspection of that song's saved
-        // parameters (params_for_db / the FLAC sidecar) reads e.g.
-        // `guidance_scale: 7.0` as if it had influenced audio it had no
-        // part in.
-        ...(freshIsMusic3 ? {} : {
+        // ACE-Step controls must not leak into another architecture's request.
+        ...(freshIsMusic3 || freshIsYue2 ? {} : {
           inference_steps: params.inference_steps,
           guidance_scale: params.guidance_scale,
           shift: params.shift,
           sampler_mode: params.sampler_mode,
           vocal_language: params.vocal_language,
         }),
-        // MiniMax Music 3 ONLY -- unread by ACE-Step's pipeline backend, so
-        // omitted there for the same reason as above. Must be threaded
-        // through here when Music 3 IS loaded (this is the one and only
-        // enqueue path for txt2aud; there is no separate loop-generation
-        // stepParams construction for audio) or they silently become
-        // undefined on every queued/looped generation even though the first
-        // generation from a fresh panel state works (CLAUDE.md "Loop
-        // Generation" failure pattern).
+        // Audio has one enqueue path; queued items retain these exact values.
         ...(freshIsMusic3 ? {
           num_inference_steps: resolvedMusic3Steps,
           flow_guidance_scale: resolvedFlowGuidance,
+        } : {}),
+        ...(freshIsYue2 ? {
+          yue2_cot: yue2Params?.yue2_cot,
+          yue2_abc: yue2Params?.yue2_abc,
+          yue2_abc_max_tokens: yue2Params?.yue2_abc_max_tokens,
+          temperature: yue2Params?.temperature,
+          top_p: yue2Params?.top_p,
+          top_k: yue2Params?.top_k,
+          repetition_penalty: yue2Params?.repetition_penalty,
+          guidance_scale: audioParamsStale ? undefined : params.yue2_guidance_scale,
+          vae_decode_mode: yue2Params?.vae_decode_mode,
+          vae_tile_frames: yue2Params?.vae_tile_frames,
         } : {}),
         // LoRA is not applied on MiniMax Music 3 (arch_capabilities "lora";
         // the UI hides the selector for it below), but the field is still
         // carried through unconditionally: on ACE-Step it is the real
         // generation-time LoRA list, and on Music 3 an empty/hidden selector
         // means `params.loras` is always [] there anyway.
-        loras: params.loras,
+        loras: freshIsYue2 ? [] : params.loras,
         // Weight-only quantization (both axes). The panel controls are rendered
         // from arch capabilities, and `acestep` is now in runtime_int8_archs +
         // quantized_linear_archs, so these must be carried into the audio
         // params or the UI value is silently dropped. MiniMax Music 3 does not
         // honor either (phase 1 loads BF16/FP16 only; arch_capabilities warns).
-        unet_quantization: params.unet_quantization,
-        quantized_gemm_mode: params.quantized_gemm_mode,
-        blocks_to_swap: params.enable_block_swap ? params.blocks_to_swap : 0,
-        use_pinned_memory: params.use_pinned_memory,
-        block_swap_ring_size: params.block_swap_ring_size,
+        unet_quantization: freshIsYue2 ? undefined : params.unet_quantization,
+        quantized_gemm_mode: freshIsYue2 ? undefined : params.quantized_gemm_mode,
+        blocks_to_swap: !freshIsYue2 && params.enable_block_swap ? params.blocks_to_swap : 0,
+        use_pinned_memory: freshIsYue2 ? undefined : params.use_pinned_memory,
+        block_swap_ring_size: freshIsYue2 ? undefined : params.block_swap_ring_size,
       };
       addToQueue({
         type: "txt2aud",
@@ -3362,7 +3378,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       )}
       <Textarea
         label="Lyrics"
-        placeholder={isMusic3 ? "Required. Instrumental tracks: describe them in Caption instead." : "Enter lyrics (optional)..."}
+        placeholder={isYue2 ? "Required structured lyrics, with section labels such as [Verse] and [Chorus]." : isMusic3 ? "Required. Instrumental tracks: describe them in Caption instead." : "Enter lyrics (optional)..."}
         rows={3}
         resizeStorageKey={GENERATION_LYRICS_HEIGHT_KEY}
         value={params.lyrics ?? ""}
@@ -3823,7 +3839,11 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
           </Card>
         )}
 
-        {isAudio && !isMusic3 && (
+        {isAudio && isYue2 && yue2Defaults && (
+          <Yue2AudioControls params={params} defaults={yue2Defaults} onChange={setParams} />
+        )}
+
+        {isAudio && !isMusic3 && !isYue2 && (
           <Card title="Audio Settings">
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
@@ -3915,7 +3935,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
           </Card>
         )}
 
-        {isAudio && !isMusic3 && visibility.lora && (
+        {isAudio && !isMusic3 && !isYue2 && visibility.lora && (
           <LoRASelector
             value={params.loras || []}
             onChange={(loras) => {

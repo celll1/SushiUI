@@ -1288,7 +1288,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     } else if (
       arch === "anima" || arch === "lens" || arch === "ideogram4" ||
       arch === "minit2i" || arch === "krea2" || arch === "ltx2" || arch === "acestep" ||
-      arch === "minimax_h3"
+      arch === "minimax_h3" || arch === "yue2"
     ) {
       // Other bf16-native DiT archs: same bf16 dtype preset as Z-Image/FLUX.2.
       // These models' weights are bfloat16, so bf16 training is the correct default
@@ -5867,6 +5867,69 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   </div>
                 )}
               </>
+            )}
+
+            {/* YuE2 Phase-A token-native score-planner LoRA */}
+            {baseModelArch === "yue2" && trainingMethod === "lora" && (
+              <div className="space-y-3 rounded border border-cyan-900/60 bg-cyan-950/20 p-3">
+                <div>
+                  <div className="text-xs font-medium text-cyan-200">YuE2 ABC score planner</div>
+                  <p className="mt-1 text-xs text-gray-400">
+                    Trains the AR planner from style, structured lyrics, and a sibling .abc score.
+                    Semantic-token and acoustic NAR training are not released.
+                  </p>
+                </div>
+                <div>
+                  <label htmlFor="yue2-abc-mode" className="block text-xs text-gray-300 mb-1">
+                    Planning mode
+                  </label>
+                  <select
+                    id="yue2-abc-mode"
+                    value={params.yue2_abc_mode ?? "full"}
+                    onChange={(e) => updateParam("yue2_abc_mode", e.target.value as "full" | "melody")}
+                    className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+                  >
+                    <option value="full">Full arrangement</option>
+                    <option value="melody">Melody</option>
+                  </select>
+                </div>
+                {(() => {
+                  const scope = params.yue2_lora_scope ?? "attention";
+                  const includeMlp = scope === "attention,mlp";
+                  return (
+                    <div>
+                      <div className="text-xs text-gray-300 mb-1">LoRA targets</div>
+                      <label className="flex items-center gap-1.5 text-xs text-gray-300">
+                        <input type="checkbox" checked readOnly className="w-3.5 h-3.5" />
+                        Attention Q/K/V/Out (all 28 AR layers)
+                      </label>
+                      <label className="mt-1 flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={includeMlp}
+                          onChange={(e) => updateParam(
+                            "yue2_lora_scope", e.target.checked ? "attention,mlp" : "attention"
+                          )}
+                          className="w-3.5 h-3.5"
+                        />
+                        Also train MLP gate/up/down projections
+                      </label>
+                    </div>
+                  );
+                })()}
+                <label className="flex items-start gap-2 text-xs text-amber-200 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={!!params.yue2_allow_truncated_targets}
+                    onChange={(e) => updateParam("yue2_allow_truncated_targets", e.target.checked)}
+                    className="mt-0.5 w-3.5 h-3.5"
+                  />
+                  <span>
+                    Allow reviewed ABC targets to be truncated at the model context limit.
+                    Leave off to reject lossy targets and sidecars marked truncated.
+                  </span>
+                </label>
+              </div>
             )}
 
             {/* LTX-2.3-only options */}

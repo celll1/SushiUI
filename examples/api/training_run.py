@@ -35,16 +35,32 @@ import requests
 BASE_URL = "http://localhost:8000/api/v1"
 
 
-def build_create_payload(dataset_id: int, base_model_path: str, total_steps: int) -> dict:
+def build_create_payload(dataset_id: int, base_model_path: str, total_steps: int,
+                         *, yue2: bool = False) -> dict:
     """Minimal required fields per TrainingRunCreateRequest (routes.py line ~6768).
     Everything else falls back to TRAINING_DEFAULTS server-side."""
-    return {
+    payload = {
         "training_method": "lora",
         "base_model_path": base_model_path,
         "dataset_id": dataset_id,
         "total_steps": total_steps,
         # epochs is intentionally omitted -- total_steps/epochs are mutually exclusive
     }
+    if yue2:
+        payload.update({
+            "weight_dtype": "bf16",
+            "training_dtype": "bf16",
+            "lora_dtype": "fp32",
+            "train_unet": True,
+            "train_text_encoder": False,
+            "attention_backend": "native",
+            "gradient_checkpointing": True,
+            "yue2_training_objective": "abc_ar",
+            "yue2_lora_scope": "attention",
+            "yue2_abc_mode": "full",
+            "yue2_allow_truncated_targets": False,
+        })
+    return payload
 
 
 def print_plan(method: str, url: str, body=None, params=None):
@@ -62,12 +78,18 @@ def main():
     parser.add_argument("--base-model-path", default="C:/path/to/base_model.safetensors",
                          help="Absolute path to the base checkpoint")
     parser.add_argument("--total-steps", type=int, default=1000)
+    parser.add_argument(
+        "--yue2", action="store_true",
+        help="Use the supported YuE2 Phase-A ABC-planner LoRA contract",
+    )
     parser.add_argument("--no-dry-run", dest="dry_run", action="store_false",
                          help="Actually create/start/poll a real training run (heavy, stateful)")
     parser.set_defaults(dry_run=True)
     args = parser.parse_args()
 
-    create_body = build_create_payload(args.dataset_id, args.base_model_path, args.total_steps)
+    create_body = build_create_payload(
+        args.dataset_id, args.base_model_path, args.total_steps, yue2=args.yue2
+    )
     create_url = f"{BASE_URL}/training/runs"
 
     if args.dry_run:

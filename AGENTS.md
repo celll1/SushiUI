@@ -1,23 +1,24 @@
 # AGENTS.md
 
 SushiUI is a Stable-Diffusion-style web UI: a FastAPI backend (`backend/`)
-driving 14 diffusion architectures — 10 image (SD1.5, SDXL, Z-Image, Flux2,
+driving 15 generation architectures — 10 image (SD1.5, SDXL, Z-Image, Flux2,
 Anima, Lens, Krea2, Ideogram4, MiniT2I, SenseNova U1.5), 2 video (LTX-2.3,
-MiniMax-H3, both of which also generate audio jointly) and 2 audio (ACE-Step
-1.5, MiniMax Music 3) — plus LoRA / full-parameter / tagger / VAE-decoder
+MiniMax-H3, both of which also generate audio jointly) and 3 audio (ACE-Step
+1.5, MiniMax Music 3, YuE2) — plus LoRA / full-parameter / tagger / VAE-decoder
 training, and a Next.js frontend (`frontend/`). The authoritative *generation*
 list is `ModelType` in `backend/core/model_loader.py`; the authoritative
 *training-capable* list is `ARCH_REGISTRY` in
-`backend/core/training/arch/__init__.py` (13 entries — every generation
-architecture except MiniMax Music 3). SenseNova U1.5 trains LoRA and either
+`backend/core/training/arch/__init__.py` (14 entries — MiniMax Music 3 is
+generation-only; YuE2 trains Phase-A ABC-planner LoRA only). SenseNova U1.5 trains LoRA and either
 MoT half by full parameter, refuses `relora` and `controlnet`, and carries a
 per-run contract enforced before the model loads — the contract itself lives in
 `docs/guides/SENSENOVA_TRAINING_DESIGN.md`, and a copy here has already drifted
-once. `docs/guides/MINIMAX_MUSIC3_DESIGN.md` covers the one architecture that
-does not train at all.
+once. `docs/guides/MINIMAX_MUSIC3_DESIGN.md` covers MiniMax Music 3's
+generation-only boundary; YuE2's shipped boundary is recorded in
+`docs/guides/MODEL_FACTS.md`.
 Per-architecture facts are
 in `docs/guides/MODEL_FACTS.md`. **Adapters are an architecture-neutral
-subsystem**, `backend/core/adapters/`, which eleven architectures install
+subsystem**, `backend/core/adapters/`, which architectures install
 through. Which `(algorithm, weight_decompose)` pairs an architecture accepts is
 decided by the two tables in `backend/core/adapters/capability.py` — one for
 generation, one for training — and nowhere else. See

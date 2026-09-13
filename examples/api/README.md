@@ -40,6 +40,9 @@ So, e.g., the health check is `GET http://localhost:8000/api/v1/health`, not
   model exists elsewhere in `routes.py` (it's only used by the
   training-preview endpoints). Defaults to dry-run (prints the exact
   method/url/headers/body); pass `--no-dry-run` to actually generate.
+- `yue2_txt2aud.py` — POST JSON to `/api/v1/generate/txt2aud` with YuE2's
+  symbolic-planning and semantic-sampling controls. Defaults to dry-run;
+  pass `--no-dry-run` only after YuE2 is loaded and VRAM is available.
 - `gallery_browse.py` — GET `/api/v1/images` (pagination params are `skip`
   and `limit`, not `page`/`offset`) then GET `/api/v1/images/{image_id}` for
   the first result. Read-only, runs for real by default.
@@ -49,6 +52,10 @@ So, e.g., the health check is `GET http://localhost:8000/api/v1/health`, not
   starting a real training run spawns a GPU-resident subprocess and mutates
   `training.db` and disk state — pass `--no-dry-run` (with valid
   `--dataset-id`/`--base-model-path`) only when you actually intend to train.
+  Pass `--yue2` for the supported Phase-A ABC-planner LoRA fields. Each YuE2
+  dataset item must be an audio item whose primary caption is the style prompt,
+  whose `lyrics` caption is non-empty structured lyrics, and whose source audio
+  has a same-stem `.abc` sibling. The waveform is not consumed by Phase A.
 - `bench_fp8_scaled_mm.py` — measurement gate **G1** for the opt-in FP8 W8A8
   scaled-GEMM fast path in `Fp8Linear`. Two vehicles, two arms each; times
   sampler steps (via the progress WebSocket), not wall clock including model

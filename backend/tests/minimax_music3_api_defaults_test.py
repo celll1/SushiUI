@@ -87,8 +87,8 @@ def test_minimax_music3_overlay_matches_the_design_doc_table():
     assert resolved["seed"] == AUDIO_GEN_DEFAULTS["seed"]
 
 
-def test_minimax_music3_is_the_only_overlay_entry_today():
-    assert set(AUDIO_GEN_ARCH_OVERLAYS.keys()) == {"minimax_music3"}
+def test_audio_architectures_with_overlays():
+    assert set(AUDIO_GEN_ARCH_OVERLAYS.keys()) == {"minimax_music3", "yue2"}
 
 
 def test_aud2aud_twin_is_populated_only_for_minimax_music3():

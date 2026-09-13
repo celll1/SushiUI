@@ -23,6 +23,7 @@ from core.models.components.wiring import (  # noqa: F401
     ACESTEP_WIRING,
     MINIMAX_H3_WIRING,
     SENSENOVA_WIRING,
+    YUE2_WIRING,
     TemporalSpec,
     LTX2_TEMPORAL,
     MINIMAX_H3_TEMPORAL,
@@ -50,4 +51,5 @@ __all__ = [
     "ACESTEP_WIRING",
     "MINIMAX_H3_WIRING",
     "SENSENOVA_WIRING",
+    "YUE2_WIRING",
 ]

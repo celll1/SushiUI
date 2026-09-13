@@ -367,6 +367,7 @@ const ARCH_DISPLAY_NAMES: Record<string, string> = {
   acestep: "ACE-Step 1.5",
   minimax_h3: "MiniMax H3",
   minimax_music3: "MiniMax Music 3",
+  yue2: "YuE2",
 };
 
 export function archDisplayName(arch: string | null | undefined): string;

@@ -7,10 +7,14 @@ Run with:
 """
 
 import asyncio
+import json
 import os
 import sys
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
+import torch
 from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -126,6 +130,43 @@ def test_full_delete_with_no_preview_proxy_does_not_error(env):
     result = asyncio.run(routes.delete_image(image_id=row.id, delete_files=True, db=session))
     assert result["success"] is True
     assert "preview_proxy" not in result["deleted_files"]
+
+
+def test_full_delete_removes_yue2_token_latent_and_score_artifacts(env):
+    from core.models.yue2.artifacts import write_yue2_sidecar
+
+    outputs_dir, thumbs_dir, session = env
+    row = GeneratedImage(filename="yue2_delete_test.flac", prompt="Pop", generation_type="txt2aud",
+                         parameters={"is_audio": True, "yue2_cot": "full"})
+    session.add(row)
+    session.commit()
+    paths = routes._generated_image_file_paths(row)
+    labels = ("yue2_tokens_latents", "yue2_sidecar", "yue2_score", "media")
+    _write(paths["media"], b"audio")
+    result = SimpleNamespace(
+        abc_ids=[3, 4], semantic_tokens=[5, 6, 7],
+        latents=torch.tensor([[1.0, 2.0], [3.0, 4.0]]), abc_text="X:1\nK:C\nC|",
+        seed=11, sample_rate=48000, truncated={"abc": False, "semantic": False},
+        effective_config={"vae_decode_mode": "tiled"}, timings={"nar": {"seconds": 1.0}},
+        model_identity={"checkpoint": "yue2.safetensors"},
+    )
+    write_yue2_sidecar(paths["media"], result, media_sha256="known-audio-hash")
+    with np.load(paths["yue2_tokens_latents"]) as arrays:
+        assert arrays["abc_ids"].dtype == np.int32
+        assert arrays["semantic_tokens"].tolist() == [5, 6, 7]
+        np.testing.assert_array_equal(arrays["latents"], result.latents.numpy())
+    with open(paths["yue2_sidecar"], encoding="utf-8") as stream:
+        manifest = json.load(stream)
+    assert manifest["artifacts"][os.path.basename(paths["media"])] == "known-audio-hash"
+    assert set(manifest["artifacts"]) == {
+        os.path.basename(paths["media"]), os.path.basename(paths["yue2_tokens_latents"]),
+        os.path.basename(paths["yue2_score"]),
+    }
+    assert list(paths)[-1] == "media"
+    deletion = asyncio.run(routes.delete_image(image_id=row.id, delete_files=True, db=session))
+    assert deletion["success"] is True
+    assert set(deletion["deleted_files"]) == set(labels)
+    assert all(not os.path.exists(paths[label]) for label in labels)
 
 
 def test_media_is_deleted_last_so_a_partial_failure_stays_retryable(env):

@@ -34,6 +34,7 @@ the sign that biases toward "clean" or "noisy" flips.
 """
 
 from abc import ABC, abstractmethod
+import math
 import torch
 from typing import Dict, Any
 
@@ -502,10 +503,13 @@ def canonicalize_timestep_config(config: Dict[str, Any]) -> Dict[str, Any]:
         if key == "custom_weights":
             if not value:
                 raise ValueError("custom timestep distribution requires non-empty custom_weights")
-            total = float(sum(float(w) for w in value))
+            weights = [float(w) for w in value]
+            if any(not math.isfinite(w) or w < 0 for w in weights):
+                raise ValueError("custom_weights must contain only finite, non-negative values")
+            total = float(sum(weights))
             if total <= 0:
                 raise ValueError("custom_weights must sum to a positive value")
-            canon[key] = [_round(float(w) / total) for w in value]
+            canon[key] = [_round(w / total) for w in weights]
         else:
             canon[key] = _round(value)
     validate_timestep_config(canon)
@@ -514,8 +518,6 @@ def canonicalize_timestep_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
 def validate_timestep_config(canon: Dict[str, Any]) -> None:
     """Refuse a config that would sample nothing, or nothing finite."""
-    import math
-
     for key in ("min_timestep", "max_timestep"):
         if not math.isfinite(canon[key]):
             raise ValueError(f"{key} must be finite, got {canon[key]}")
@@ -541,7 +543,7 @@ def validate_morph_config(morph: Dict[str, Any]) -> None:
     if not morph.get("enabled"):
         return
     steps = morph.get("steps", 0)
-    if not isinstance(steps, (int, float)) or isinstance(steps, bool) or int(steps) <= 0:
+    if not isinstance(steps, int) or isinstance(steps, bool) or steps <= 0:
         raise ValueError(f"timestep_sampling.morph.steps must be a positive integer, got {steps!r}")
     curve = str(morph.get("curve", "cosine")).lower()
     if curve not in MORPH_CURVES:
@@ -820,6 +822,8 @@ class MorphingTimestepSampler(TimestepSampler):
     # -- sampling -------------------------------------------------------
 
     def sample(self, batch_size: int, device: torch.device) -> torch.Tensor:
+        if self.is_finished():
+            return self.target.sample(batch_size, device)
         if self.interpolation == "quantile":
             return self.icdf(torch.rand(batch_size, device=device))
         lam = self.lam
@@ -830,6 +834,8 @@ class MorphingTimestepSampler(TimestepSampler):
         return drawn
 
     def icdf(self, u: torch.Tensor) -> torch.Tensor:
+        if self.is_finished():
+            return self.target.icdf(u)
         if self.interpolation != "quantile":
             raise NotImplementedError(
                 "mixture morph interpolation has no closed-form quantile function")
@@ -840,6 +846,11 @@ class MorphingTimestepSampler(TimestepSampler):
 
     def median(self) -> float:
         """The active law's median, for the grad-t-cosine probe's split."""
+        if self.is_finished():
+            try:
+                return float(self.target.icdf(torch.tensor([0.5])).item())
+            except NotImplementedError:
+                return float(quantile_table(self.target)[512].item())
         if self.interpolation == "quantile":
             return float(self.icdf(torch.tensor([0.5])).item())
         if self._mixture_cdf_tables is None:

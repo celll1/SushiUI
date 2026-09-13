@@ -44,6 +44,7 @@ _METHODS = (
     "_stratified_mnt_timesteps",
     "_stratified_mnt_timesteps_morphing",
     "_timestep_morph_state",
+    "_timestep_sampler_state",
     "timestep_morph_status",
 )
 
@@ -63,6 +64,7 @@ class _StubTrainer:
         self._optimizer_update_step = 0
         self._resume_optimizer_update_step = 0
         self._resume_timestep_morph = None
+        self._resume_timestep_sampler = None
         self.arch = None
 
 
@@ -90,6 +92,20 @@ class UpdateCounterTest(unittest.TestCase):
             trainer._advance_optimizer_update(sampler)
         self.assertEqual(trainer._optimizer_update_step, 5)
         self.assertAlmostEqual(sampler.lam, 0.5, places=6)
+
+    def test_completion_replaces_the_live_wrapper_with_its_target(self):
+        trainer = _StubTrainer()
+        target = _target()
+        sampler = MorphingTimestepSampler(_target(UNIFORM), target, steps=2,
+                                          curve="linear")
+        trainer._timestep_morph = sampler
+        trainer.timestep_sampler = sampler
+        trainer._advance_optimizer_update(sampler)
+        self.assertIs(trainer._timestep_morph, sampler)
+        trainer._advance_optimizer_update(sampler)
+        self.assertIsNone(trainer._timestep_morph)
+        self.assertIs(trainer.timestep_sampler, target)
+        self.assertFalse(trainer.timestep_morph_status()["active"])
 
     def test_offsets_follow_the_accumulation_boundary(self):
         trainer = _StubTrainer()
@@ -198,15 +214,15 @@ class ArmMorphTest(unittest.TestCase):
             target, {**LOGIT, "morph": {"enabled": False}}, "t0")
         self.assertIs(armed, target)
 
-    def test_unreadable_record_falls_back_to_the_configured_source(self):
+    def test_unreadable_record_fails_closed(self):
         trainer = _StubTrainer()
         trainer._resume_timestep_morph = {"version": 99, "from": {}, "to": {},
                                           "steps": 1, "curve": "linear",
                                           "interpolation": "quantile",
                                           "start_update": 0}
-        armed = trainer._arm_timestep_morph(
-            _target(), _morph_config(**{"from": UNIFORM}), "t0")
-        self.assertIsInstance(armed, MorphingTimestepSampler)
+        with self.assertRaisesRegex(ValueError, "refusing to guess"):
+            trainer._arm_timestep_morph(
+                _target(), _morph_config(**{"from": UNIFORM}), "t0")
 
     def test_over_deep_nesting_is_flattened(self):
         trainer = _StubTrainer()
@@ -251,6 +267,28 @@ class PartitionedStratificationTest(unittest.TestCase):
         self.assertEqual(tuple(block.shape), (8, 1))
         # Position is left where training expects it, not at a predicted one.
         self.assertEqual(morphing.update_step, 0)
+
+    def test_later_partition_reads_actual_update_position_after_a_skip(self):
+        trainer = _StubTrainer()
+        morphing = MorphingTimestepSampler(_target(UNIFORM), _target(), steps=8,
+                                           curve="linear")
+        trainer._timestep_morph = morphing
+        trainer.timestep_sampler = morphing
+        block = trainer._stratified_mnt_timesteps(
+            morphing, 8, 1, global_step=0, gradient_accumulation_steps=4)
+        # Materialise the first accumulation partition. Simulate its boundary
+        # being skipped by deliberately not advancing the successful counter.
+        for i in range(4):
+            _ = block[i]
+        _ = block[4]
+        self.assertEqual(morphing.update_step, 0)
+
+        # A real successful boundary is observed by the following partition.
+        trainer._advance_optimizer_update(morphing)
+        second = trainer._stratified_mnt_timesteps(
+            morphing, 8, 1, global_step=0, gradient_accumulation_steps=4)
+        _ = second[4]
+        self.assertEqual(morphing.update_step, 1)
 
     def test_mixture_morph_falls_back_to_independent_draws(self):
         trainer = _StubTrainer()
@@ -320,7 +358,27 @@ class CheckpointStateRoundTripTest(unittest.TestCase):
             saver._optimizer_update_step = 10
             saver.save_training_state(step=10, epoch=0, batch_idx=1)
             resumed = self._StateStub(tmp)
-            self.assertIsNone(resumed.load_training_state(10)["timestep_morph"])
+            state = resumed.load_training_state(10)
+            self.assertIsNone(state["timestep_morph"])
+            self.assertEqual(state["timestep_sampler"], sampler_expr(_target()))
+            # The stamped config source remains uniform, as it does after a real
+            # API update. The selected checkpoint's steady target must win and
+            # prevent the completed morph from starting again.
+            armed = resumed._arm_timestep_morph(
+                _target(), _morph_config(**{"from": UNIFORM}), "t0")
+            self.assertNotIsInstance(armed, MorphingTimestepSampler)
+
+    def test_selected_checkpoint_steady_law_outranks_latest_run_config(self):
+        trainer = _StubTrainer()
+        trainer._resume_optimizer_update_step = 50
+        trainer._resume_timestep_sampler = sampler_expr(_target(UNIFORM))
+        new_target = _target({"distribution": "normal", "mean": 0.3, "std": 0.2})
+        config = _morph_config(
+            target={"distribution": "normal", "mean": 0.3, "std": 0.2},
+            **{"from": LOGIT},
+        )
+        armed = trainer._arm_timestep_morph(new_target, config, "t0")
+        self.assertEqual(sampler_expr(armed.source), sampler_expr(_target(UNIFORM)))
 
     def test_a_pre_morph_checkpoint_resumes_as_no_morph(self):
         import json

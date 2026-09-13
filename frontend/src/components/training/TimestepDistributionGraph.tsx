@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 /** One pre-computed density, for the morph overlay (see `curves` below). */
 export interface TimestepGraphCurve {
@@ -109,6 +109,27 @@ export default function TimestepDistributionGraph({
   height = 80,
   curves,
 }: TimestepDistributionGraphProps) {
+  const graphContainerRef = useRef<HTMLDivElement>(null);
+  const [measuredWidth, setMeasuredWidth] = useState<number | null>(null);
+
+  useEffect(() => {
+    const element = graphContainerRef.current;
+    if (!element) return;
+
+    const updateWidth = () => {
+      const nextWidth = Math.max(16, Math.round(element.getBoundingClientRect().width));
+      setMeasuredWidth((current) => current === nextWidth ? current : nextWidth);
+    };
+
+    updateWidth();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  const renderWidth = measuredWidth ?? width;
+
   // Validate and sanitize numeric inputs
   const safeNum = (val: any, fallback: number): number => {
     const num = typeof val === 'string' ? parseFloat(val) : val;
@@ -174,7 +195,7 @@ export default function TimestepDistributionGraph({
     const maxYVal = Math.max(...pts.map(p => p.y), 0.001);
 
     const padding = 4;
-    const graphWidth = width - padding * 2;
+    const graphWidth = renderWidth - padding * 2;
     const graphHeight = height - padding * 2 - 15; // Leave room for axis labels
 
     let pathStr = "";
@@ -189,12 +210,12 @@ export default function TimestepDistributionGraph({
     });
 
     return { path: pathStr, maxY: maxYVal, points: pts };
-  }, [distribution, isValidForRender, safeMinTimestep, safeMaxTimestep, safeMean, safeStd, safeAlpha, safeBeta, width, height]);
+  }, [distribution, isValidForRender, safeMinTimestep, safeMaxTimestep, safeMean, safeStd, safeAlpha, safeBeta, renderWidth, height]);
 
   const overlayPaths = useMemo(() => {
     if (!curves || curves.length === 0) return null;
     const pad = 4;
-    const w = width - pad * 2;
+    const w = renderWidth - pad * 2;
     const h = height - pad * 2 - 15;
     const peak = Math.max(
       0.001,
@@ -210,7 +231,7 @@ export default function TimestepDistributionGraph({
         })
         .join(" "),
     }));
-  }, [curves, width, height]);
+  }, [curves, renderWidth, height]);
 
   const expectedMean = useMemo(() => {
     if (!isValidForRender) return 0.5;
@@ -233,7 +254,7 @@ export default function TimestepDistributionGraph({
   }, [distribution, isValidForRender, safeMinTimestep, safeMaxTimestep, safeMean, safeAlpha, safeBeta]);
 
   const padding = 4;
-  const graphWidth = width - padding * 2;
+  const graphWidth = renderWidth - padding * 2;
   const graphHeight = height - padding * 2 - 15;
 
   // Min/max range indicator positions
@@ -244,34 +265,36 @@ export default function TimestepDistributionGraph({
   if (overlayPaths) {
     return (
       <div className="bg-gray-900 rounded p-2">
-        <svg width={width} height={height} className="w-full">
-          <defs>
-            <pattern id="grid-overlay" width="20" height="20" patternUnits="userSpaceOnUse">
-              <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#374151" strokeWidth="0.5" />
-            </pattern>
-          </defs>
-          <rect x={padding} y={padding} width={graphWidth} height={graphHeight} fill="url(#grid-overlay)" />
-          {overlayPaths.map((curve, i) => (
-            <path
-              key={i}
-              d={curve.d}
-              fill="none"
-              stroke={curve.color}
-              strokeWidth={curve.dashed ? 1 : 2}
-              strokeDasharray={curve.dashed ? "3,2" : undefined}
-              strokeLinecap="round"
-              strokeLinejoin="round"
+        <div ref={graphContainerRef}>
+          <svg width={renderWidth} height={height} className="block">
+            <defs>
+              <pattern id="grid-overlay" width="20" height="20" patternUnits="userSpaceOnUse">
+                <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#374151" strokeWidth="0.5" />
+              </pattern>
+            </defs>
+            <rect x={padding} y={padding} width={graphWidth} height={graphHeight} fill="url(#grid-overlay)" />
+            {overlayPaths.map((curve, i) => (
+              <path
+                key={i}
+                d={curve.d}
+                fill="none"
+                stroke={curve.color}
+                strokeWidth={curve.dashed ? 1 : 2}
+                strokeDasharray={curve.dashed ? "3,2" : undefined}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            ))}
+            <line
+              x1={padding} y1={padding + graphHeight}
+              x2={padding + graphWidth} y2={padding + graphHeight}
+              stroke="#6b7280" strokeWidth="1"
             />
-          ))}
-          <line
-            x1={padding} y1={padding + graphHeight}
-            x2={padding + graphWidth} y2={padding + graphHeight}
-            stroke="#6b7280" strokeWidth="1"
-          />
-          <text x={padding} y={height - 2} fontSize="9" fill="#9ca3af" textAnchor="start">0</text>
-          <text x={padding + graphWidth / 2} y={height - 2} fontSize="9" fill="#9ca3af" textAnchor="middle">0.5</text>
-          <text x={padding + graphWidth} y={height - 2} fontSize="9" fill="#9ca3af" textAnchor="end">1</text>
-        </svg>
+            <text x={padding} y={height - 2} fontSize="9" fill="#9ca3af" textAnchor="start">0</text>
+            <text x={padding + graphWidth / 2} y={height - 2} fontSize="9" fill="#9ca3af" textAnchor="middle">0.5</text>
+            <text x={padding + graphWidth} y={height - 2} fontSize="9" fill="#9ca3af" textAnchor="end">1</text>
+          </svg>
+        </div>
         <div className="flex justify-center gap-3 text-[10px] text-gray-400 mt-1">
           {overlayPaths.filter((c) => c.label).map((curve, i) => (
             <span key={i} className="flex items-center gap-1">
@@ -291,19 +314,22 @@ export default function TimestepDistributionGraph({
   if (!isValidForRender) {
     return (
       <div className="bg-gray-900 rounded p-2">
-        <svg width={width} height={height} className="w-full">
-          <rect x={padding} y={padding} width={graphWidth} height={graphHeight} fill="#1f2937" />
-          <text x={width / 2} y={height / 2} fontSize="10" fill="#6b7280" textAnchor="middle">
-            Enter valid parameters
-          </text>
-        </svg>
+        <div ref={graphContainerRef}>
+          <svg width={renderWidth} height={height} className="block">
+            <rect x={padding} y={padding} width={graphWidth} height={graphHeight} fill="#1f2937" />
+            <text x={renderWidth / 2} y={height / 2} fontSize="10" fill="#6b7280" textAnchor="middle">
+              Enter valid parameters
+            </text>
+          </svg>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="bg-gray-900 rounded p-2">
-      <svg width={width} height={height} className="w-full">
+      <div ref={graphContainerRef}>
+        <svg width={renderWidth} height={height} className="block">
         {/* Background grid */}
         <defs>
           <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
@@ -386,7 +412,8 @@ export default function TimestepDistributionGraph({
             ? `beta(${safeAlpha.toFixed(1)}, ${safeBeta.toFixed(1)})`
             : "uniform"}
         </text>
-      </svg>
+        </svg>
+      </div>
 
       {/* Legend below graph */}
       <div className="flex justify-center gap-4 text-[10px] text-gray-400 mt-1">

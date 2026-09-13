@@ -161,6 +161,7 @@ def preflight_yue2(path, *, require_runtime=False):
 class EmbeddedTokenizer:
     def __init__(self, payload):
         from tokenizers import Tokenizer
+        self.payload = payload
         self.tokenizer = Tokenizer.from_str(payload)
         if self.tokenizer.get_vocab_size(with_added_tokens=False) != 151643:
             raise ValueError("YuE2 ordinary vocabulary must contain exactly 151643 tokens")
@@ -232,4 +233,6 @@ def load_yue2_from_path(path, torch_dtype=torch.bfloat16):
     return dict(type="yue2", transformer=model, vae=vae, tokenizer=preflight["tokenizer"],
                 sample_rate=48000, frame_rate=25, latent_channels=64,
                 model_identity={**preflight["metadata"], "upstream_revision": UPSTREAM_REVISION,
-                                "checkpoint": Path(path).name, "vae_execution_dtype": "float32"})
+                                "checkpoint": Path(path).name, "vae_execution_dtype": "float32",
+                                "weight_storage": ("convrot_int8" if preflight["quantized"]
+                                                   else "dense_bf16")})

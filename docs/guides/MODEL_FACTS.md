@@ -3081,11 +3081,16 @@ Paths below are relative to `backend/core/training/`.
     FP32 noise draw. The VAE always computes in FP32; `vae_decode_mode="full"`
     falls back to exact-boundary tiled decode on CUDA OOM, and tiled is the
     default (`vae_tile_frames=1024`, fixed 16-frame halo).
-  - **Load contract**: only a complete Comfy-packaged safetensors file is
-    accepted. Header preflight validates every tensor mapping and ConvRot
-    marker before teardown; the tokenizer and VAE must be bundled. Directory
-    loading, sibling completion, external tokenizer/VAE selection, and
-    component hot-swap are not implemented.
+  - **Load contract**: only a complete single-file safetensors checkpoint is
+    accepted. Header preflight validates every tensor mapping and any ConvRot
+    marker before teardown; the tokenizer and VAE must be bundled. Both the
+    inference-only ConvRot INT8 file and SushiUI's canonical dense-BF16 training
+    file use this same namespace. `core.models.yue2.repack_dense` creates the
+    latter from the official 628-tensor BF16 core plus the VAE/tokenizer in an
+    existing complete file; it copies `model.norm` into a separately stored
+    frozen NAR norm because the official release shares that final norm.
+    Directory loading, sibling completion, external tokenizer/VAE selection,
+    and component hot-swap are not implemented.
   - **Capability boundary**: ConvRot is a checkpoint format, not a runtime
     `quantized_gemm_mode` toggle; YuE2 is intentionally absent from
     `RUNTIME_INT8_ARCHS`/`QUANTIZED_LINEAR_ARCHS`. Caller negative prompts,

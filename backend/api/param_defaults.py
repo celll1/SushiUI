@@ -2688,7 +2688,15 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # Bilinear sketch width per parameter; the concatenated sketch has
     # (trainable Linears) x k^2 dimensions, 37,632 at k=8 over SenseNova's 588.
     "grad_timestep_cosine_sketch_dim": 8,
-    "timestep_sampling": {"distribution": "uniform", "min_timestep": 0.0, "max_timestep": 1.0},
+    # `morph` carries the distribution from the law a resumed run was previously
+    # training at to this one over `steps` SUCCESSFUL OPTIMIZER UPDATES, instead
+    # of switching on the first step after the resume
+    # (docs/guides/TIMESTEP_DISTRIBUTION_MORPH_DESIGN.md). Inert on a fresh run
+    # and when the distribution did not change. `from: null` means "resolve the
+    # previous distribution from the run".
+    "timestep_sampling": {"distribution": "uniform", "min_timestep": 0.0, "max_timestep": 1.0,
+                          "morph": {"enabled": False, "steps": 2000, "curve": "cosine",
+                                    "interpolation": "quantile", "from": None}},
     # Regularization
     "regularization_type": None,
     "snr_regularization_weight": 0.1,       # Fix: frontend had 0.0

@@ -1187,7 +1187,35 @@ def poll_lr_schedule_commands(trainer, global_step: int = 0) -> int:
             code="lr_schedule_command", prefix=prefix)
     refresh_lr_schedule_status(trainer, global_step=global_step,
                                force=bool(requests))
+    refresh_timestep_status(trainer, global_step=global_step)
     return applied
+
+
+def refresh_timestep_status(trainer, global_step: Optional[int] = None,
+                            force: bool = False) -> bool:
+    """Rewrite `.timestep_distribution.json` when the active law moved.
+
+    Display-only, like the LR schedule status: the run config carries user
+    intent, but an in-flight morph source can be a frozen or flattened law that
+    no config expresses, so the monitor reads this instead.
+    """
+    try:
+        status = trainer.timestep_morph_status()
+        if status is None:
+            return False
+        status = {**status, "global_step": global_step}
+        signature = (status.get("active"), status.get("distribution"),
+                     round(float(status.get("lam") or 0.0), 4),
+                     status.get("optimizer_update_step") if status.get("active") else None)
+        if not force and signature == getattr(trainer, "_timestep_status_signature", None):
+            return False
+        control_rpc.write_timestep_status(trainer.output_dir, status)
+        trainer._timestep_status_signature = signature
+        return True
+    except Exception as e:   # noqa: BLE001
+        prefix = getattr(trainer, "log_prefix", "[Trainer]")
+        print(f"{prefix} WARNING: could not write timestep distribution status: {e}")
+        return False
 
 
 def lr_decay_state_code(trainer) -> Optional[int]:
@@ -15864,6 +15892,7 @@ class BaseTrainer(ABC):
         timestep_sampler = self._arm_timestep_morph(
             timestep_sampler, timestep_sampling_config, _convention)
         self.timestep_sampler = timestep_sampler
+        refresh_timestep_status(self, global_step=global_step, force=True)
 
         # AFTER setup_optimizer: the probe needs `use_fused_backward` (set while
         # the optimizer is built) and the adapter's parameter classification.

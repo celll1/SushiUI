@@ -1187,7 +1187,6 @@ def poll_lr_schedule_commands(trainer, global_step: int = 0) -> int:
             code="lr_schedule_command", prefix=prefix)
     refresh_lr_schedule_status(trainer, global_step=global_step,
                                force=bool(requests))
-    refresh_timestep_status(trainer, global_step=global_step)
     return applied
 
 
@@ -7449,7 +7448,7 @@ class BaseTrainer(ABC):
             try:
                 saved_source = build_sampler_from_expr(record["from"])
                 saved_target = build_sampler_from_expr(record["to"])
-                if record["to"] == target_expr:
+                if record["to"] == target_expr and morph_cfg.get("enabled"):
                     # Same target: continue the transition from where it stopped.
                     continued = MorphingTimestepSampler(
                         source=saved_source, target=target,
@@ -7477,7 +7476,9 @@ class BaseTrainer(ABC):
                 )
                 in_flight.set_optimizer_update_step(updates)
                 source = in_flight.freeze()
-                origin = "retargeted from the in-flight morph"
+                origin = ("continued from the in-flight morph"
+                          if record["to"] == target_expr
+                          else "retargeted from the in-flight morph")
             except Exception as exc:
                 emit_training_warning(
                     f"checkpoint timestep_morph record could not be restored "
@@ -17064,6 +17065,9 @@ class BaseTrainer(ABC):
                     # step the optimizer from a backward hook, so a multiplier
                     # written after the forward misses this batch's update.
                     poll_lr_schedule_commands(self, global_step)
+                    # Here rather than inside the poll: that returns early for a
+                    # run with no LR timeline, and lambda moves regardless.
+                    refresh_timestep_status(self, global_step=global_step)
 
                     # Periodically publish Danbooru augmentation metrics for the
                     # UI (read by the /training/runs/{id}/danbooru-metrics endpoint).

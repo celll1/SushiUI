@@ -1,6 +1,37 @@
 # Timestep Distribution Morphing (resume-time)
 
-Status: design only — nothing below is implemented yet.
+Status: **implemented** (backend, API and UI). The behavioural acceptance
+measurement at the end of this document has NOT been run — nothing here claims
+the transition improves a real run yet, only that the run samples the intended
+law and carries it across a resume.
+
+Where the code lives:
+
+| Part | File |
+|---|---|
+| Interpolation, canonical config, sampler expressions, flattening | `backend/core/training/timestep_sampler.py` |
+| Update counter, arming, MNT partitioning, probe split, metrics, state | `backend/core/training/base_trainer.py` |
+| `morph.from` stamped from the config being replaced | `stamp_timestep_morph_source` in `backend/core/training/training_config.py` |
+| Validation, `GET /training/runs/{id}/timestep-distribution` | `backend/api/routes.py` |
+| Live status transport | `backend/core/training/training_control_rpc.py` |
+| Chart series | `backend/core/training/metric_registry.py` |
+| Config UI, monitor readout, density evaluation | `frontend/src/components/training/{TrainingConfig,TrainingMonitor,TimestepDistributionGraph}.tsx`, `frontend/src/utils/timestepDistribution.ts` |
+| Tests | `backend/tests/timestep_morph{,_trainer,_config}_test.py` |
+
+Two deviations from what is described below, both deliberate:
+
+1. **Runtime status is a dedicated endpoint, not a field on the training-status
+   response.** The trainer runs in a subprocess, and the existing precedent for
+   publishing live trainer state is the LR schedule's `.lr_schedule.json` +
+   `GET /training/runs/{id}/lr-schedule`. The morph uses the same transport
+   (`.timestep_distribution.json`) and its own GET, rather than threading a
+   subprocess value onto a DB-backed response. The payload is as specified.
+2. **A partitioned MNT window uses a PREDICTED update position** for the parts
+   after the boundary (current position + boundaries crossed so far). The draws
+   for the whole window happen before any of them steps, so the exact future
+   count is not knowable; the prediction is only wrong if a step inside the
+   window is skipped, which shifts lambda by at most one update.
+
 
 ## Problem
 

@@ -254,5 +254,81 @@ class PartitionedStratificationTest(unittest.TestCase):
         self.assertEqual(tuple(block.shape), (4, 2))
 
 
+class CheckpointStateRoundTripTest(unittest.TestCase):
+    """save -> load -> arm, through a real state.json on disk."""
+
+    class _StateStub(_StubTrainer):
+        run_name = "run"
+        lr_scheduler = None
+        lr_schedulers: list = []
+        optimizer = None
+
+        def __init__(self, output_dir, **config):
+            super().__init__(**config)
+            self.output_dir = Path(output_dir)
+
+    _StateStub.save_training_state = BaseTrainer.__dict__["save_training_state"]
+    _StateStub.load_training_state = BaseTrainer.__dict__["load_training_state"]
+
+    def test_an_in_flight_morph_survives_a_crash_resume(self):
+        import tempfile
+
+        target = _target()
+        with tempfile.TemporaryDirectory() as tmp:
+            saver = self._StateStub(tmp)
+            morphing = MorphingTimestepSampler(_target(UNIFORM), target, steps=100,
+                                               curve="linear", start_update=1000)
+            morphing.set_optimizer_update_step(1040)
+            saver._timestep_morph = morphing
+            saver._optimizer_update_step = 1040
+            saver.save_training_state(step=40, epoch=0, batch_idx=3)
+
+            resumed = self._StateStub(tmp)
+            state = resumed.load_training_state(40)
+            self.assertEqual(state["optimizer_update_step"], 1040)
+
+            # No API update between the crash and the resume: morph.from is
+            # still null, and the record alone has to carry the transition.
+            armed = resumed._arm_timestep_morph(target, _morph_config(steps=9999), "t0")
+            self.assertIsInstance(armed, MorphingTimestepSampler)
+            self.assertEqual(armed.start_update, 1000)
+            self.assertEqual(armed.steps, 100)
+            self.assertAlmostEqual(armed.lam, 0.4, places=6)
+
+    def test_a_finished_morph_is_not_persisted(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            saver = self._StateStub(tmp)
+            morphing = MorphingTimestepSampler(_target(UNIFORM), _target(), steps=10,
+                                               start_update=0)
+            morphing.set_optimizer_update_step(10)
+            saver._timestep_morph = morphing
+            saver._optimizer_update_step = 10
+            saver.save_training_state(step=10, epoch=0, batch_idx=1)
+            resumed = self._StateStub(tmp)
+            self.assertIsNone(resumed.load_training_state(10)["timestep_morph"])
+
+    def test_a_pre_morph_checkpoint_resumes_as_no_morph(self):
+        import json
+        import random
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "run_step_000005_state.json"
+            version, rng_state, gauss_next = random.getstate()
+            path.write_text(json.dumps({
+                "global_step": 5, "epoch": 0, "batch_idx": 1,
+                "random_state": {"version": version, "state": list(rng_state),
+                                 "gauss_next": gauss_next},
+            }))
+            resumed = self._StateStub(tmp)
+            resumed.load_training_state(5)
+            self.assertEqual(resumed._resume_optimizer_update_step, 0)
+            target = _target()
+            self.assertIs(resumed._arm_timestep_morph(target, _morph_config(), "t0"),
+                          target)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -7597,27 +7597,29 @@ class BaseTrainer(ABC):
 
         Logged every iteration whether or not a morph is active: it is the
         direct answer to "what timesteps is this run seeing", which no other
-        series carries.
+        series carries. The t statistics are DEFERRED tensors -- reading them
+        here would force a GPU sync at the head of the iteration, ahead of the
+        previous backward; the deferred channel materializes them on the wait
+        backward already performs.
         """
         try:
             flat = timesteps.detach().reshape(-1).float()
             if flat.numel() == 0:
                 return
-            self.log_extra_metric("timestep_batch_mean", float(flat.mean()))
-            if flat.numel() == 1:
-                low = high = float(flat[0])
-            else:
-                quantiles = torch.quantile(
-                    flat.cpu(), torch.tensor([0.1, 0.9], dtype=flat.dtype))
-                low, high = float(quantiles[0]), float(quantiles[1])
-            self.log_extra_metric("timestep_batch_p10", low)
-            self.log_extra_metric("timestep_batch_p90", high)
+            self.defer_extra_metric("timestep_batch_mean", flat.mean())
+            quantiles = torch.quantile(
+                flat, torch.tensor([0.1, 0.9], dtype=flat.dtype, device=flat.device))
+            self.defer_extra_metric("timestep_batch_p10", quantiles[0])
+            self.defer_extra_metric("timestep_batch_p90", quantiles[1])
             morphing = getattr(self, "_timestep_morph", None)
             if morphing is not None:
+                # A CPU float already: no sync, and it is the one value that
+                # must be right even when the deferred flush is skipped.
                 self.log_extra_metric("timestep_morph_lambda", float(morphing.lam))
         except Exception:
             # A diagnostic series must never be able to take down a run.
             pass
+
 
     def _rearm_warmup_after_optimizer_reset(self, global_step: int) -> bool:
         """Re-apply the configured warmup when a resume got a FRESH optimizer.

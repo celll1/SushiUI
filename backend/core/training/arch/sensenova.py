@@ -69,6 +69,7 @@ class SenseNovaArchHandler(ArchHandler):
         from core.models.sensenova.latent_refiner import (
             REFINER_INPUTS, REFINER_NORM, REFINER_VERSION, LatentRefiner,
         )
+        from core.models.sensenova.latent_space import gen_geometry
         from core.training.ops.training_method import is_full_finetune
 
         config = getattr(trainer, "config", None) or {}
@@ -86,9 +87,10 @@ class SenseNovaArchHandler(ArchHandler):
         )).strip().lower()
         raw_config = dict(getattr(trainer, "sensenova_config_dict", None) or {})
         declaration = raw_config.get("gen_refiner")
+        fm_modules = getattr(trainer.transformer, "fm_modules", None)
         module = (
-            trainer.transformer.fm_modules["fm_refiner"]
-            if "fm_refiner" in trainer.transformer.fm_modules else None
+            fm_modules["fm_refiner"]
+            if fm_modules is not None and "fm_refiner" in fm_modules else None
         )
         full_ft = is_full_finetune(trainer)
 
@@ -100,15 +102,21 @@ class SenseNovaArchHandler(ArchHandler):
             return
 
         if request == "attach" and declaration is None:
+            if fm_modules is None:
+                raise ValueError("SenseNova refiner attach requires fm_modules")
             if mode == "base_only":
                 raise ValueError("Cannot attach a zero-initialized SenseNova refiner in base_only mode")
+            if not gen_geometry(trainer.transformer).is_latent:
+                raise ValueError(
+                    "SenseNova latent refiner attach requires a latent-space checkpoint"
+                )
             width = int(config.get("sensenova_refiner_width", 0) or 128)
             depth = int(config.get("sensenova_refiner_depth", 0) or 3)
             module = LatentRefiner(
                 int(trainer.transformer.gen_in_channels), width, depth
             ).to(device="cpu", dtype=trainer.weight_dtype)
             module.gate.data = module.gate.data.float()
-            trainer.transformer.fm_modules["fm_refiner"] = module
+            fm_modules["fm_refiner"] = module
             declaration = {
                 "version": REFINER_VERSION,
                 "width": width,
@@ -120,7 +128,8 @@ class SenseNovaArchHandler(ArchHandler):
                 "detach_accum": None,
             }
             raw_config["gen_refiner"] = declaration
-        elif request == "attach" and declaration is not None:
+            trainer.sensenova_refiner_newly_attached = True
+        if request in {"inherit", "attach"} and declaration is not None:
             requested_width = int(config.get("sensenova_refiner_width", 0) or 0)
             requested_depth = int(config.get("sensenova_refiner_depth", 0) or 0)
             if requested_width and requested_width != int(declaration["width"]):
@@ -130,11 +139,11 @@ class SenseNovaArchHandler(ArchHandler):
 
         if request == "detach" and module is not None:
             if detach_mode == "hard":
-                del trainer.transformer.fm_modules["fm_refiner"]
+                del fm_modules["fm_refiner"]
                 raw_config.pop("gen_refiner", None)
                 module = None
                 declaration = None
-            else:
+            elif declaration.get("detach_anchor_step") is None:
                 steps = int(config.get("sensenova_refiner_detach_steps", 1000))
                 accum = int(config.get("gradient_accumulation_steps", 1) or 1)
                 anchor = int(getattr(trainer, "sensenova_checkpoint_step", 0) or 0) // accum
@@ -150,12 +159,27 @@ class SenseNovaArchHandler(ArchHandler):
         if declaration is not None and declaration.get("detach_anchor_step") is not None:
             if request == "attach":
                 raise ValueError("Re-attaching a SenseNova refiner mid-anneal is unsupported")
+            accum = int(config.get("gradient_accumulation_steps", 1) or 1)
+            if accum != int(declaration["detach_accum"]):
+                raise ValueError(
+                    "SenseNova refiner anneal cannot change gradient_accumulation_steps"
+                )
             mode = "base_only"
             state = "anneal"
         elif module is None:
+            if mode == "refiner_only":
+                raise ValueError(
+                    "SenseNova refiner_only requires an attached checkpoint refiner "
+                    "or sensenova_latent_refiner='attach'"
+                )
             state, mode = "none", "none"
         else:
             state = "attached"
+
+        if module is not None and not bool(config.get("train_unet", True)):
+            raise ValueError(
+                "Training an attached SenseNova refiner requires train_unet=true"
+            )
 
         trainer.sensenova_config_dict = raw_config
         trainer.sensenova_refiner_state = state
@@ -524,29 +548,46 @@ class SenseNovaArchHandler(ArchHandler):
 
         log = getattr(trainer, "log_prefix", "[SenseNova]")
         _gain, auto = self.resolve_noise_scale_config(getattr(trainer, "config", None))
-        if not auto:
+        guard_refiner = bool(getattr(
+            trainer, "sensenova_refiner_newly_attached", False
+        ))
+        if not auto and not guard_refiner:
             return
-        self._require_full_finetune_for_noise_scale(
-            trainer, "sensenova_noise_scale_auto")
         if getattr(trainer, "vae", None) is None:
             raise ValueError(
-                "sensenova_noise_scale_auto measures the RMS of this run's "
-                "LATENTS, and this run is pixel-space (no VAE swap): its data "
-                "scale is the one the checkpoint is already calibrated for.")
+                "SenseNova latent calibration requires a latent-space checkpoint; "
+                "this run is pixel-space")
         config_dict = getattr(trainer, "sensenova_config_dict", None)
         carried = recalibrated_noise_scale_gain(config_dict)
-        if carried is not None:
+        if auto and carried is not None and not guard_refiner:
             print(f"{log} generation noise scale already recalibrated "
                   f"(x{carried:g}); inheriting it rather than re-measuring.")
             return
-        rms = sensenova_ops.measure_latent_rms(trainer, datasets)
-        gain = noise_scale_gain_for_rms(rms)
-        trainer.sensenova_config_dict = apply_noise_scale_gain(
-            trainer.transformer, config_dict, gain, provenance="measured")
-        print(f"{log} measured latent RMS {rms:.4f} against the pixel "
-              f"checkpoint's {PIXEL_RMS:.4f}: generation noise scale "
-              f"recalibrated x{gain:.4f} -> {trainer.transformer.noise_scale:g}")
-        self._warn_noise_scale_clamp(trainer, getattr(trainer, "config", None))
+        rms, means, channel_rms = sensenova_ops.measure_latent_rms(
+            trainer, datasets, per_channel=True
+        )
+        if guard_refiner:
+            bad = [
+                (index, mean, value)
+                for index, (mean, value) in enumerate(zip(means, channel_rms))
+                if abs(mean) > 0.5 or not 0.5 <= value <= 2.0
+            ]
+            if bad:
+                raise ValueError(
+                    "SenseNova refiner attach refused: latent per-channel "
+                    f"mean/RMS outside |mean|<=0.5 and [0.5,2.0]: {bad}"
+                )
+            print(f"{log} refiner latent channel guard: mean={means}, RMS={channel_rms}")
+        if auto and carried is None:
+            self._require_full_finetune_for_noise_scale(
+                trainer, "sensenova_noise_scale_auto")
+            gain = noise_scale_gain_for_rms(rms)
+            trainer.sensenova_config_dict = apply_noise_scale_gain(
+                trainer.transformer, config_dict, gain, provenance="measured")
+            print(f"{log} measured latent RMS {rms:.4f} against the pixel "
+                  f"checkpoint's {PIXEL_RMS:.4f}: generation noise scale "
+                  f"recalibrated x{gain:.4f} -> {trainer.transformer.noise_scale:g}")
+            self._warn_noise_scale_clamp(trainer, getattr(trainer, "config", None))
 
     def lora_adapter_class(self):
         from core.training.adapters import SenseNovaLoRAAdapter

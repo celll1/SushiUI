@@ -2731,6 +2731,15 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # tokens. Nothing recalibrates the noise-scale schedule for a patch other
     # than 4 (warned at swap time).
     "sensenova_gen_patch": 0,
+    # Optional latent-cell correction branch. "inherit" never removes a
+    # checkpoint-declared branch; attach/detach are full-fine-tune transitions.
+    "sensenova_latent_refiner": "inherit",
+    "sensenova_refiner_width": 0,
+    "sensenova_refiner_depth": 0,
+    "sensenova_refiner_training_mode": "joint",
+    "sensenova_refiner_lr_factor": 1.0,
+    "sensenova_refiner_detach_mode": "anneal",
+    "sensenova_refiner_detach_steps": 1000,
     # SenseNova VAE swap only: multiplier on the checkpoint's own generation
     # noise scale, 0 = inherit (see latent_space.apply_noise_scale_gain for why
     # a swapped latent space needs one). Inherit is the default because every UI

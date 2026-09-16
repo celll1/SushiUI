@@ -247,11 +247,15 @@ def assert_full_finetune_contract(trainer: Any, optimizer_type: Any = None) -> N
         optimizer_type if optimizer_type is not None else settings["optimizer"]
     ).strip().lower()
     if name in SENSENOVA_FULL_FINETUNE_OPTIMIZERS:
-        assert_ringbuffer_host_state(
-            name,
-            bool(settings.get("optimizer_state_host_resident", False))
-            or bool(getattr(trainer, "optimizer_state_host_resident", False)),
-        )
+        if str(getattr(
+            trainer, "sensenova_refiner_training_mode",
+            settings.get("sensenova_refiner_training_mode", "joint"),
+        )).strip().lower() != "refiner_only":
+            assert_ringbuffer_host_state(
+                name,
+                bool(settings.get("optimizer_state_host_resident", False))
+                or bool(getattr(trainer, "optimizer_state_host_resident", False)),
+            )
         return
     extra = ""
     if name == "adamw":
@@ -1211,6 +1215,12 @@ def load_components(trainer: Any) -> None:
     trainer.transformer = components["transformer"]
     _metadata = components.get("metadata") or {}
     trainer.sensenova_checkpoint_step = int(_metadata.get("step") or 0)
+    trainer.sensenova_source_trained_branch = str(
+        _metadata.get("sensenova_trained_branch") or ""
+    )
+    trainer.sensenova_source_save_format = str(
+        _metadata.get("sensenova_save_format") or ""
+    )
     refiner_mode = str((getattr(trainer, "config", None) or {}).get(
         "sensenova_refiner_training_mode", "joint"
     )).strip().lower()
@@ -1218,12 +1228,12 @@ def load_components(trainer: Any) -> None:
     # from which base a new run may be pointed at; only the resume path can
     # widen, and only to the layout it was already training in.
     resumed_format = None
-    if branch is not None:
+    if branch is not None and refiner_mode != "refiner_only":
         resumed_format = accept_resume_shaped_base(
             trainer, trainer.transformer, components.get("metadata"), branch=branch
         )
     trainer.sensenova_resumed_save_format = resumed_format
-    if resumed_format is None:
+    if resumed_format is None and refiner_mode != "refiner_only":
         _assert_supported_quantized_training_base(
             trainer.transformer,
             training_method=training_method,
@@ -1261,10 +1271,10 @@ def load_components(trainer: Any) -> None:
 
     apply_latent_space(trainer, components.get("declared_vae"))
     handler = getattr(trainer, "arch", None)
-    if handler is None:
-        from core.training.arch import get_arch_handler
+    if handler is None or not hasattr(handler, "resolve_latent_refiner"):
+        from core.training.arch.sensenova import SenseNovaArchHandler
 
-        handler = get_arch_handler(trainer)
+        handler = SenseNovaArchHandler()
     handler.resolve_latent_refiner(trainer)
     if getattr(trainer, "vae", None) is not None:
         trainer.vae.requires_grad_(False)
@@ -1969,7 +1979,8 @@ _RMS_SAMPLE_IMAGES = 64
 
 
 def measure_latent_rms(trainer: Any, datasets: Any, *,
-                       images: int = _RMS_SAMPLE_IMAGES, seed: int = 1234) -> float:
+                       images: int = _RMS_SAMPLE_IMAGES, seed: int = 1234,
+                       per_channel: bool = False):
     """Pooled RMS of this run's images in the swapped latent space.
 
     Encodes through ``trainer.encode_image`` at the dimensions the item ALREADY
@@ -2006,6 +2017,9 @@ def measure_latent_rms(trainer: Any, datasets: Any, *,
     total = 0
     squared = 0.0
     measured = 0
+    channel_sum = None
+    channel_squared = None
+    channel_count = 0
     for path, width, height in items[:images]:
         try:
             with Image.open(path) as handle:
@@ -2020,6 +2034,15 @@ def measure_latent_rms(trainer: Any, datasets: Any, *,
         values = latent.detach().float()
         total += values.numel()
         squared += float(values.pow(2).sum())
+        if per_channel:
+            reduce_dims = (0, *range(2, values.ndim))
+            sums = values.sum(dim=reduce_dims)
+            squares = values.square().sum(dim=reduce_dims)
+            channel_sum = sums if channel_sum is None else channel_sum + sums
+            channel_squared = (
+                squares if channel_squared is None else channel_squared + squares
+            )
+            channel_count += values.numel() // values.shape[1]
         measured += 1
     if not total:
         raise ValueError(
@@ -2029,6 +2052,10 @@ def measure_latent_rms(trainer: Any, datasets: Any, *,
     rms = (squared / total) ** 0.5
     print(f"{getattr(trainer, 'log_prefix', '[SenseNova]')} latent RMS measured "
           f"over {measured} image(s), {total / 1e6:.1f}M elements: {rms:.4f}")
+    if per_channel:
+        means = channel_sum / channel_count
+        channel_rms = torch.sqrt(channel_squared / channel_count)
+        return rms, means.tolist(), channel_rms.tolist()
     return rms
 
 
@@ -2366,6 +2393,16 @@ def train_step(
                 noise_scale,
                 checkpoint_blocks=bool(trainer.gradient_checkpointing),
             )
+            delta_rel = getattr(
+                transformer.fm_modules["fm_refiner"], "_last_delta_rel", None
+            )
+            if delta_rel is not None:
+                trainer.defer_extra_metric("sn_refiner_delta_rel", delta_rel)
+            if getattr(trainer, "sensenova_refiner_state", None) == "anneal":
+                trainer.defer_extra_metric(
+                    "sn_refiner_gate",
+                    transformer.fm_modules["fm_refiner"].gate.detach(),
+                )
         x0_pred = transformer.patchify(decoded, patch)
         x0_tokens = transformer.patchify(x0, patch)
         # fp32 t here lifts v into fp32, which the MSE below wanted anyway --

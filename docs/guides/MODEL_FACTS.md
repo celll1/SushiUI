@@ -3326,6 +3326,10 @@ Paths below are relative to `backend/core/training/`.
   trains the complete donor-equal U-Net; `joint` trains both. Understanding and
   VAE stay frozen. A transplanted U-Net requires an aligned bridge; scratch
   diffusion training with an unaligned bridge requires an explicit override.
+- REPA: pixel-teacher representation alignment is supported for `unet` and
+  `joint`, using the SDXL-shaped U-Net's deepest-down/mid/first-up spatial tap
+  menu and the shared projector sidecar. `bridge_align` and `latent_stem` are
+  refused before model load.
 - Text output: i2t and text-instructed i2t use the frozen understanding-only
   path. Generation-time adapters are not applied to that path.
 - Real bootstrap: `sensenova_int8.safetensors` plus

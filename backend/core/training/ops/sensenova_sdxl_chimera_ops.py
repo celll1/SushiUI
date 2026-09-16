@@ -200,6 +200,20 @@ def bridge_alignment_loss(trainer, student: torch.Tensor, auxiliary: dict) -> tu
     return loss, metrics
 
 
+def repa_tap(trainer):
+    """Expose the SDXL-shaped U-Net map only when that U-Net is trainable."""
+    stage = training_stage(trainer)
+    if stage == "bridge_align":
+        raise ValueError(
+            "repa_enable is not supported for Chimera bridge_align: that stage "
+            "freezes the U-Net, so representation alignment would update only "
+            "the projector and could not align the denoiser"
+        )
+    from core.training.ops import sd_sdxl_ops
+
+    return sd_sdxl_ops.repa_tap(trainer, "sensenova_sdxl_chimera")
+
+
 def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
     conditioning = ctx.text_embeddings.to(device=trainer.device, dtype=trainer.training_dtype)
     auxiliary = ctx.attention_mask or {}
@@ -246,17 +260,39 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
             target_width=width,
         ),
     )
-    prediction = trainer.unet(
-        noisy,
-        timesteps,
-        encoder_hidden_states=conditioning,
-        added_cond_kwargs={"text_embeds": pooled, "time_ids": time_ids},
-        return_dict=False,
-    )[0]
+    repa_pixels = getattr(ctx, "repa_pixels", None)
+    repa_armed = bool(getattr(trainer, "repa_enable", False)) and repa_pixels is not None
+    repa_handle = None
+    if repa_armed:
+        from core.training.repa import arm_spatial_tap, spatial_tap_sites
+
+        site = spatial_tap_sites(trainer.unet)[trainer.repa_align_depth][1]
+        repa_handle = arm_spatial_tap(trainer._repa_tap_module, site)
+    try:
+        prediction = trainer.unet(
+            noisy,
+            timesteps,
+            encoder_hidden_states=conditioning,
+            added_cond_kwargs={"text_embeds": pooled, "time_ids": time_ids},
+            return_dict=False,
+        )[0]
+    finally:
+        if repa_handle is not None:
+            repa_handle.remove()
     loss = F.mse_loss(prediction.float(), target.float())
     value = float(loss.detach().cpu())
     if hasattr(trainer, "log_extra_metric"):
         trainer.log_extra_metric("chimera_velocity_loss", value)
+    if repa_armed:
+        from core.training.repa import apply_repa_loss_spatial, take_repa_tap
+
+        trainer._ensure_repa_on_device()
+        tap = take_repa_tap(trainer)
+        if tap is None:
+            raise RuntimeError(
+                "REPA is enabled but the Chimera U-Net forward produced no spatial tap"
+            )
+        loss = apply_repa_loss_spatial(trainer, loss, tap, repa_pixels)
     # Gradient checkpointing replays the U-Net during backward, after this
     # function returns. The next step overwrites this small context in place.
     return loss, value, 0.0

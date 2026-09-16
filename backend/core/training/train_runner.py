@@ -1376,11 +1376,25 @@ def _apply_chimera_training_contract(
             raise ValueError(f"Chimera does not support {label}; set {key}=0")
     for key, label in (
         ("use_ema", "EMA"),
-        ("repa_enable", "REPA"),
         ("use_reference_images", "reference-image training"),
     ):
         if _normalize_scope_flag(train_config, key, False):
             raise ValueError(f"Chimera does not support {label} in this release")
+    repa_enable = _normalize_scope_flag(train_config, "repa_enable", False)
+    if repa_enable and stage == "bridge_align":
+        raise ValueError(
+            "Chimera REPA requires chimera_training_stage='unet' or 'joint'; "
+            "bridge_align freezes the U-Net"
+        )
+    repa_target_source = str(
+        train_config.get("repa_target_source", "pixel")
+    ).strip().lower()
+    train_config["repa_target_source"] = repa_target_source
+    if repa_enable and repa_target_source != "pixel":
+        raise ValueError(
+            "Chimera REPA currently requires repa_target_source='pixel'; its "
+            "bundled donor VAE has not been validated against latent-stem teachers"
+        )
     if train_config.get("vae_swap_source"):
         raise ValueError("Chimera artifacts pin and bundle their donor VAE; VAE swap is unsupported")
     if stage == "bridge_align":

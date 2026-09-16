@@ -127,6 +127,10 @@ directories with stage, step, epoch, metrics, and bridge-state provenance.
 - Gradient checkpointing attaches to the U-Net. Block swap, generation-time
   adapters, ControlNet, NAG, FBCache, spectrum forecasting, VAE override, and
   tiled decode are explicitly refused by the capability table.
+- Pixel-teacher REPA is available in `unet` and `joint`. It aligns one of the
+  donor-shaped U-Net's deepest-down, mid, or first-up spatial maps through the
+  shared trainable projector. `bridge_align` is refused because its U-Net is
+  frozen, and `latent_stem` remains refused for the bundled donor VAE.
 - Directory checkpoint discovery, size accounting, rotation, and resume use
   the shared trainer machinery with Chimera's directory artifact writer.
 - Component staging is explicit in the backend; Chimera is not in the generic

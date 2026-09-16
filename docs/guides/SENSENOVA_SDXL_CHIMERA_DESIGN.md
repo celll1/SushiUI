@@ -752,7 +752,7 @@ First release:
 | conditioning cache | supported for `unet` stage |
 | gradient checkpointing | supported through the donor U-Net implementation |
 | block swap | unsupported initially; add only after a dedicated U-Net training conductor is measured |
-| REPA | unsupported initially; it needs its own U-Net tap validation |
+| REPA | pixel-teacher REPA is supported for `unet` and `joint` through the donor-shaped U-Net's down/mid/up spatial tap menu; `bridge_align` and `latent_stem` are refused |
 | EMA | follows the ordinary U-Net path only after save/resume coverage |
 
 Both adapter capability tables need explicit conservative rows. Do not inherit

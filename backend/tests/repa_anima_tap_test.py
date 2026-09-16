@@ -494,7 +494,7 @@ def test_a_full_finetune_save_pairs_the_projector_with_the_file_it_wrote(tmp_pat
 # ---------------------------------------------------------------------------
 
 _WIRED = {"minit2i", "anima", "lens", "krea2", "ideogram4", "sensenova",
-          "sd15", "sdxl"}
+          "sd15", "sdxl", "sensenova_sdxl_chimera"}
 
 
 @pytest.mark.parametrize("arch", sorted(ARCH_REGISTRY))

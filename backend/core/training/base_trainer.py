@@ -3529,10 +3529,8 @@ class BaseTrainer(ABC):
         # Resume: load a sibling projector saved next to the base checkpoint, if present
         # (dims must match the current encoder/variant; otherwise keep the fresh head).
         try:
-            from core.training.repa import CHECKPOINT_SUFFIXES
-            mp = str(getattr(self, "model_path", "") or "")
-            if mp.endswith(CHECKPOINT_SUFFIXES):
-                sib = repa_sidecar_path(mp)
+            sib = self._repa_resume_sidecar_path()
+            if sib is not None:
                 if os.path.isfile(sib):
                     from safetensors.torch import load_file as _load_file
                     self.repa_projector.load_state_dict(_load_file(sib))
@@ -3553,6 +3551,17 @@ class BaseTrainer(ABC):
         if self.repa_profile_steps:
             print(f"{self.log_prefix} [REPA profile] direct component timing armed for "
                   f"{self.repa_profile_steps} REPA-bearing call(s); DB timestamps are not used")
+
+    def _repa_resume_sidecar_path(self) -> Optional[str]:
+        """Projector sibling for the resolved resume base, including directories."""
+        if not getattr(self, "resume_from_checkpoint", None):
+            return None
+        model_path = str(getattr(self, "model_path", "") or "")
+        if not model_path:
+            return None
+        from core.training.repa import repa_sidecar_path
+
+        return repa_sidecar_path(model_path)
 
     def _ensure_repa_on_device(self):
         """Idempotently ensure the REPA encoder + projector live on the training device."""
@@ -11702,6 +11711,7 @@ class BaseTrainer(ABC):
                 timesteps=timesteps,
                 cfg_drop_mask=cfg_drop_mask,
                 profile_vram=self.debug_vram,
+                repa_pixels=mnt_repa_pixels,
             )
             loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
         elif self.is_zimage:

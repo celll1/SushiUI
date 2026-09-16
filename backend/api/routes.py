@@ -9715,6 +9715,7 @@ class CreateScratchMiniT2IRequest(BaseModel):
 
 class InitializeSenseNovaSDXLChimeraRequest(BaseModel):
     output_name: str
+    target_dir: Optional[str] = None
     understanding_source: str
     sdxl_source: str
     unet_initialization: Literal["scratch", "sdxl_transplant"] = (
@@ -9727,16 +9728,27 @@ class InitializeSenseNovaSDXLChimeraRequest(BaseModel):
 @router.post("/models/sensenova-sdxl-chimera/initialize")
 async def initialize_sensenova_sdxl_chimera_endpoint(
     request: InitializeSenseNovaSDXLChimeraRequest,
+    db: Session = Depends(get_gallery_db),
 ):
     """Build a complete Chimera artifact under the configured model root."""
     from core.models.sensenova_sdxl_chimera.builder import initialize_chimera_from_paths
+
+    settings_record = db.query(UserSettings).first()
+    additional = settings_record.model_dirs if settings_record else []
+    allowed = [settings.models_dir] + list(additional)
+    model_root = request.target_dir or settings.models_dir
+    if model_root not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"target_dir must be one of the configured model dirs: {allowed}",
+        )
 
     try:
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             executor,
             lambda: initialize_chimera_from_paths(
-                settings.models_dir,
+                model_root,
                 request.output_name,
                 understanding_source=request.understanding_source,
                 sdxl_source=request.sdxl_source,

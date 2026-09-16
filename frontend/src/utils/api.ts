@@ -4715,6 +4715,7 @@ export const createScratchMiniT2I = async (
 
 export interface InitializeChimeraRequest {
   output_name: string;
+  target_dir?: string;
   understanding_source: string;
   sdxl_source: string;
   unet_initialization?: "scratch" | "sdxl_transplant";

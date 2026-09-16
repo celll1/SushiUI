@@ -131,6 +131,10 @@ directories with stage, step, epoch, metrics, and bridge-state provenance.
   the shared trainer machinery with Chimera's directory artifact writer.
 - Component staging is explicit in the backend; Chimera is not in the generic
   keep-hot path.
+- U-Net and bridge execution use bf16 in the measured configuration, while the
+  bundled SDXL VAE executes in fp16. Its artifact tensors are stored in fp32
+  and retain their exact identity across training checkpoints; encode/decode
+  casts happen only at the runtime boundary.
 
 ## Constraints
 
@@ -141,9 +145,10 @@ directories with stage, step, epoch, metrics, and bridge-state provenance.
   training are refused.
 - Transplanted diffusion training is illegal before the held-out bridge
   alignment gate has passed and been recorded.
-- Real bootstrap source selection, threshold registration, peak-memory/time
-  measurements, and reference-ti2i quality remain measured gates. The code
-  does not infer or promote them from training loss.
+- Held-out threshold registration and reference-ti2i quality remain measured
+  gates. Real bootstrap and peak-memory/time measurements are recorded in the
+  handoff and model-facts documents. The code does not infer or promote a
+  bridge from training loss.
 
 The detailed invariants and acceptance sequence live in
 `docs/guides/SENSENOVA_SDXL_CHIMERA_DESIGN.md`; current shipped facts and local

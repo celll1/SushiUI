@@ -822,7 +822,8 @@ POST /api/v1/models/sensenova-sdxl-chimera/initialize
 Inputs:
 
 ```text
-output_name                 relative name under configured model root
+output_name                 relative name under the selected configured model root
+target_dir                  optional configured model root
 understanding_source        existing SenseNova model
 sdxl_source                 existing SDXL model
 unet_initialization         scratch | sdxl_transplant
@@ -830,9 +831,11 @@ initialization_seed         integer
 context_tokens              fixed to 77 in format v1
 ```
 
-The endpoint accepts only an output name, not an arbitrary output path. The
-backend resolves and verifies that the target remains beneath its configured
-model root. It refuses a non-empty target. It writes to a temporary sibling
+The endpoint accepts an output name and an optional `target_dir`; the latter
+must exactly match the default model root or one of the user's configured model
+directories, so it is not an arbitrary output path. The backend resolves and
+verifies that the target remains beneath that root. It refuses a non-empty
+target. It writes to a temporary sibling
 directory and atomically renames only after validation, so an interrupted build
 does not leave a selectable partial model.
 

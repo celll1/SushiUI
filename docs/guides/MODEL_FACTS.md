@@ -3306,3 +3306,24 @@ Paths below are relative to `backend/core/training/`.
   preflight/load, staged AR/NAR/VAE generation, and reproducibility sidecars;
   `vendor/{modeling_yue2,modeling_vae,protocol,sampling,nar}.py` holds the
   adapted checkpoint-compatible implementation.
+## SenseNova SDXL Chimera
+
+- Architecture id: `sensenova_sdxl_chimera`.
+- Artifact: a directory containing `chimera.json`, `config.json`, and one or
+  more safetensors shards. It pins an external SenseNova understanding source
+  by content hash and bundles the selected SDXL donor VAE.
+- Generation: four-channel SDXL-shaped U-Net, `t=0` noise / `t=1` clean flow
+  velocity, SenseNova three-axis RoPE, SDXL time IDs, sequential or batched CFG,
+  and a generation-local post-RoPE cross-attention K/V cache.
+- Conditioning: the frozen understanding branch is reduced immediately to
+  `77 x 2048` hidden states plus a `1280` pooled vector by the trainable bridge.
+  `_mot_gen`, the flow head, and the refiner are never materialized.
+- Training: full-parameter only. `bridge_align` trains only the bridge; `unet`
+  trains the complete donor-equal U-Net; `joint` trains both. Understanding and
+  VAE stay frozen. A transplanted U-Net requires an aligned bridge; scratch
+  diffusion training with an unaligned bridge requires an explicit override.
+- Text output: i2t and text-instructed i2t use the frozen understanding-only
+  path. Generation-time adapters are not applied to that path.
+- Deferred gates: production bootstrap source selection and held-out alignment
+  thresholds; img2img/inpaint/outpaint/reference-ti2i quality gates. These
+  routes are not advertised before their own gates pass.

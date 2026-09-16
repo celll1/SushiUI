@@ -269,7 +269,7 @@ def test_refiner_guard_caps_its_sample_count_and_resolution(tmp_path, monkeypatc
         max_pixels=sensenova_ops._REFINER_GUARD_MAX_PIXELS,
     )
 
-    assert len(calls) == 8
+    assert len(calls) == 20
     assert set(calls) == {(1024, 1024, "resize")}
     assert rms == pytest.approx(1.0)
     assert means == pytest.approx([1.0] * 4)
@@ -308,5 +308,5 @@ def test_refiner_guard_evicts_base_while_measuring(monkeypatch):
     assert events[:2] == ["base_cpu", "vae_gpu"]
     assert events[-2:] == ["vae_cpu", "base_gpu"]
     kwargs = events[2][1]
-    assert kwargs["images"] == 8
+    assert kwargs["images"] == 64
     assert kwargs["max_pixels"] == 1024 * 1024

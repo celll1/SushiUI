@@ -13,7 +13,11 @@ from .conditioning_bridge import (
     selected_layer_indices,
 )
 from .artifact import ChimeraArtifactError, MODEL_TYPE, FORMAT_VERSION
-from .builder import build_chimera_artifact_from_components, initialize_chimera_atomically
+from .builder import (
+    build_chimera_artifact_from_components,
+    initialize_chimera_atomically,
+    initialize_chimera_from_paths,
+)
 from .flow import flow_noising, flow_velocity_target, flow_euler_step
 from .loader import load_chimera_artifact
 from .positional import (
@@ -46,6 +50,7 @@ __all__ = [
     "flow_noising",
     "flow_velocity_target",
     "initialize_chimera_atomically",
+    "initialize_chimera_from_paths",
     "load_chimera_artifact",
     "parameter_census",
     "selected_layer_indices",

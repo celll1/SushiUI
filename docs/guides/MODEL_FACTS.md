@@ -30,6 +30,13 @@ them. No subjective performance claims.
 > inference; the training-mode guard still resolves Sage to native because the
 > registered Sage path has no backward contract.
 
+> **SenseNova latent-refiner addendum (2026-09-16):** a latent-space checkpoint
+> may declare a versioned local residual refiner after `fm_head`. It consumes
+> the head prediction, normalized noisy latent and timestep at the VAE latent
+> grid. Full fine-tuning supports `joint`, `refiner_only` and `base_only`;
+> non-full-FT methods can only inherit it frozen. The exact schema and measured
+> release gates are in `SENSENOVA_LATENT_REFINER_DESIGN.md`.
+
 > **MiniMax-H3 attention update (2026-09-12):** dense remains the exact default.
 > All video endpoints expose two inference-only approximate mechanisms:
 > `h3_video_window` is the FlexAttention connectivity reference, while

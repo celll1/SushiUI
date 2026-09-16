@@ -192,6 +192,80 @@ def _apply_sensenova_training_contract(
             f"network.type='full_finetune', not '{network_type}'"
         )
     is_full_finetune = network_type == "full_finetune"
+    from api.param_defaults import TRAINING_DEFAULTS
+
+    refiner_request = str(train_config.get(
+        "sensenova_latent_refiner",
+        TRAINING_DEFAULTS["sensenova_latent_refiner"],
+    )).strip().lower()
+    if refiner_request not in {"inherit", "attach", "detach"}:
+        raise ValueError(f"Unknown sensenova_latent_refiner {refiner_request!r}")
+    refiner_mode = str(train_config.get(
+        "sensenova_refiner_training_mode",
+        TRAINING_DEFAULTS["sensenova_refiner_training_mode"],
+    )).strip().lower()
+    if refiner_mode not in {"joint", "refiner_only", "base_only"}:
+        raise ValueError(f"Unknown sensenova_refiner_training_mode {refiner_mode!r}")
+    refiner_width = _normalize_sensenova_integer(
+        train_config, "sensenova_refiner_width", 0
+    )
+    if refiner_width and (not 16 <= refiner_width <= 1024 or refiner_width % 16):
+        raise ValueError("sensenova_refiner_width must be 0 or a multiple of 16 in [16, 1024]")
+    refiner_depth = _normalize_sensenova_integer(
+        train_config, "sensenova_refiner_depth", 0
+    )
+    if refiner_depth and not 1 <= refiner_depth <= 8:
+        raise ValueError("sensenova_refiner_depth must be 0 or in [1, 8]")
+    refiner_lr = _normalize_sensenova_float(
+        train_config, "sensenova_refiner_lr_factor", 1.0
+    )
+    if refiner_lr <= 0:
+        raise ValueError("sensenova_refiner_lr_factor must be > 0")
+    detach_mode = str(train_config.get(
+        "sensenova_refiner_detach_mode", "anneal"
+    )).strip().lower()
+    if detach_mode not in {"anneal", "hard"}:
+        raise ValueError(f"Unknown sensenova_refiner_detach_mode {detach_mode!r}")
+    detach_steps = _normalize_sensenova_integer(
+        train_config, "sensenova_refiner_detach_steps", 1000
+    )
+    if detach_steps < 1:
+        raise ValueError("sensenova_refiner_detach_steps must be >= 1")
+    train_config.update({
+        "sensenova_latent_refiner": refiner_request,
+        "sensenova_refiner_training_mode": refiner_mode,
+        "sensenova_refiner_width": refiner_width,
+        "sensenova_refiner_depth": refiner_depth,
+        "sensenova_refiner_lr_factor": refiner_lr,
+        "sensenova_refiner_detach_mode": detach_mode,
+        "sensenova_refiner_detach_steps": detach_steps,
+    })
+    if not is_full_finetune and refiner_request != "inherit":
+        raise ValueError("SenseNova refiner attach/detach requires full_finetune")
+    if is_full_finetune and refiner_request in {"attach", "detach"} and not _normalize_sensenova_bool(
+        train_config, "train_unet", True
+    ):
+        raise ValueError("SenseNova refiner attach/detach requires train_unet=true")
+    if is_full_finetune and refiner_mode == "refiner_only":
+        if _normalize_sensenova_bool(train_config, "train_text_encoder", False):
+            raise ValueError("SenseNova refiner_only requires train_text_encoder=false")
+        if bool(train_config.get("repa_enable", False)):
+            raise ValueError("SenseNova refiner_only does not train a REPA projector")
+        if train_config.get("sensenova_train_scopes"):
+            raise ValueError("SenseNova refiner_only does not accept explicit trainable task scopes")
+        if str(train_config.get(
+            "sensenova_full_finetune_save_format", "mixed"
+        )).strip().lower() != "mixed":
+            raise ValueError("SenseNova refiner_only requires sensenova_full_finetune_save_format='mixed'")
+        if train_config.get("vae_swap_source") or int(
+            train_config.get("sensenova_gen_patch", 0) or 0
+        ):
+            raise ValueError("SenseNova refiner_only cannot rebuild the frozen base geometry")
+    if is_full_finetune and refiner_request == "attach":
+        if int(train_config.get("lr_warmup_steps", 0) or 0) <= 0:
+            raise ValueError("Attaching a SenseNova refiner requires lr_warmup_steps > 0")
+        if not _normalize_sensenova_bool(train_config, "rewarmup_on_optimizer_reset", True):
+            raise ValueError("Attaching a SenseNova refiner requires rewarmup_on_optimizer_reset=true")
     batch_size = _normalize_sensenova_integer(train_config, "batch_size", 1)
     if batch_size > 1 and not _normalize_sensenova_bool(train_config, "enable_bucketing", False):
         # A physical batch is one pixel tensor at one resolution (packed
@@ -211,7 +285,7 @@ def _apply_sensenova_training_contract(
         _apply_sensenova_full_finetune_contract(
             train_config, base_model_path=base_model_path)
     elif (not _normalize_sensenova_bool(train_config, "train_unet", True)
-          and not train_config.get("_sensenova_explicit_tasks")):
+          and not train_config.get("sensenova_train_scopes")):
         # LoRA only. Under full fine-tuning the understanding half alone is a
         # branch resolve_full_finetune_branch names ("und"); under LoRA it is
         # not an artefact -- SenseNovaLoRAAdapter.save_checkpoint refuses a
@@ -228,8 +302,6 @@ def _apply_sensenova_training_contract(
     # branch (Phase U-3) rather than being refused against it. Strict typing
     # still applies.
     _normalize_sensenova_bool(train_config, "use_reference_images", False)
-    from api.param_defaults import TRAINING_DEFAULTS
-
     phase_eviction = _normalize_sensenova_bool(
         train_config,
         "sensenova_mot_phase_eviction",
@@ -656,10 +728,13 @@ def _apply_sensenova_full_finetune_contract(
             )
         # The optimizer name and the residency flag arrive on different channels
         # and can disagree; checked on both, like every other clause here.
-        assert_ringbuffer_host_state(name, _normalize_sensenova_bool(
-            train_config, "optimizer_state_host_resident",
-            TRAINING_DEFAULTS["optimizer_state_host_resident"],
-        ))
+        if str(train_config.get(
+            "sensenova_refiner_training_mode", "joint"
+        )).strip().lower() != "refiner_only":
+            assert_ringbuffer_host_state(name, _normalize_sensenova_bool(
+                train_config, "optimizer_state_host_resident",
+                TRAINING_DEFAULTS["optimizer_state_host_resident"],
+            ))
     # Refused here rather than at the first save: the adapter resolves this
     # value only when it writes, and save_every defaults to 100 steps, so an
     # unknown format authored in a hand-written YAML would take the run down
@@ -1057,8 +1132,7 @@ def _assert_training_scope_is_nonempty(
     """
     if network_type not in ("lora", "relora", "full_finetune"):
         return
-    if train_config.get("_sensenova_explicit_tasks") \
-            and train_config.get("sensenova_train_scopes"):
+    if train_config.get("sensenova_train_scopes"):
         return
     on = [name for name in _TRAINING_SCOPE_FLAGS
           if _normalize_scope_flag(train_config, name, name == "train_unet")]

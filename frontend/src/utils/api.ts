@@ -7010,6 +7010,13 @@ export interface TrainingRunCreateRequest {
   // A token covers patch * vae_scale_factor pixels, so a coarser patch is the
   // only thing that reduces the token count.
   sensenova_gen_patch?: number;
+  sensenova_latent_refiner?: "inherit" | "attach" | "detach";
+  sensenova_refiner_width?: number;
+  sensenova_refiner_depth?: number;
+  sensenova_refiner_training_mode?: "joint" | "refiner_only" | "base_only";
+  sensenova_refiner_lr_factor?: number;
+  sensenova_refiner_detach_mode?: "anneal" | "hard";
+  sensenova_refiner_detach_steps?: number;
   sensenova_noise_scale_gain?: number;
   sensenova_noise_scale_auto?: boolean;
   // DEPRECATED spelling of vae_swap_source, SDXL + registry keys only. Kept so

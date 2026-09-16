@@ -219,6 +219,16 @@ export const PRESETS: MetricPreset[] = [
     preferredAxes: ["guidance_relative", "signed_unit"],
   },
   {
+    id: "sensenova-refiner",
+    name: "SenseNova refiner",
+    question: "How strongly is the refiner changing the base latent prediction?",
+    families: ["bounded_diagnostic"],
+    restrict: { bounded_diagnostic: /^sn_refiner_(delta_rel|gate)$/ },
+    requires: ["sn_refiner_delta_rel"],
+    anchors: [],
+    preferredAxes: ["guidance_relative", "unit_interval"],
+  },
+  {
     id: "timestep-gradcos",
     name: "Timestep grad cos",
     question: "Do distant timesteps pull the gradient in opposite directions?",

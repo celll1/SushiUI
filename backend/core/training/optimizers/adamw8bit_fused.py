@@ -25,8 +25,7 @@ from .stochastic_rounding import (
 )
 from .update_census import record_param_update
 from .fresh_param_warmup import parameter_warmup_lr
-
-_INDEX_ATTR = "_sushiui_bnb_param_index"
+from .live_param_group import live_param_group
 
 
 def _param_index(self, p):
@@ -34,18 +33,11 @@ def _param_index(self, p):
 
     They are used for one thing only -- ``get_config`` looks up
     ``GlobalOptimManager.index2config[(gindex, pindex)]`` (optimizer.py:316) --
-    so the hook has to reproduce ``step()``'s enumeration order. ``(-1, -1)``
-    for a parameter that is in no group can never match an override.
+    so the hook has to reproduce ``step()``'s enumeration order over the live
+    param_groups.
     """
-    index = getattr(self, _INDEX_ATTR, None)
-    if index is None or id(p) not in index:
-        index = {
-            id(param): (gindex, pindex)
-            for gindex, group in enumerate(self.param_groups)
-            for pindex, param in enumerate(group["params"])
-        }
-        setattr(self, _INDEX_ATTR, index)
-    return index.get(id(p), (-1, -1))
+    _, gindex, pindex = live_param_group(self, p)
+    return gindex, pindex
 
 
 def _bnb_update(self, p, group):

@@ -8935,13 +8935,14 @@ class BaseTrainer(ABC):
             record_fused_grad_norm,
             record_fused_grad_observation,
         )
+        from .optimizers.live_param_group import live_param_group
 
         hooks_registered = 0
         for param_group in self.optimizer.param_groups:
             for parameter in param_group["params"]:
                 if parameter.requires_grad:
 
-                    def __grad_hook(tensor: torch.Tensor, pg=param_group):
+                    def __grad_hook(tensor: torch.Tensor):
                         """Hook called when gradient is ready for this parameter"""
                         # Before the update, which is free to scale the gradient
                         # in place, and before the clear below.
@@ -8953,7 +8954,10 @@ class BaseTrainer(ABC):
                         # here (fused_grad_clip's header says why).
                         apply_fused_grad_clip(self.optimizer, tensor)
 
-                        self.optimizer.step_param(tensor, pg)
+                        # Resolved per call: a resume's load_state_dict replaces
+                        # the group dicts the scheduler writes.
+                        self.optimizer.step_param(
+                            tensor, live_param_group(self.optimizer, tensor)[0])
 
                         # Clear gradient to save memory
                         tensor.grad = None

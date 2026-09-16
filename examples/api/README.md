@@ -34,6 +34,9 @@ So, e.g., the health check is `GET http://localhost:8000/api/v1/health`, not
 
 - `health_and_schema.py` — GET `/api/v1/health` and GET
   `/api/v1/schema/generation-defaults`. Read-only, runs for real.
+- `build_sensenova_sdxl_chimera.py` — POST JSON to the explicit Chimera
+  initializer. Defaults to dry-run because a real build reads and writes
+  multi-gigabyte model artifacts.
 - `txt2img_minimal.py` — POST `/api/v1/generate/txt2img` with only `prompt`
   set. **Surprise**: this endpoint takes `multipart/form-data` (FastAPI
   `Form(...)` params), not JSON, even though a `GenerationParams` Pydantic

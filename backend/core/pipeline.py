@@ -47,6 +47,7 @@ ARCH_COMPONENT_SETS = (
     ("minimax_h3_components", "MiniMax-H3", "is_minimax_h3_model"),
     ("minimax_music3_components", "MiniMax Music 3", "is_minimax_music3_model"),
     ("sensenova_components", "SenseNova", "is_sensenova_model"),
+    ("sensenova_sdxl_chimera_components", "SenseNova SDXL Chimera", "is_sensenova_sdxl_chimera_model"),
     ("yue2_components", "YuE2", "is_yue2_model"),
 )
 
@@ -243,6 +244,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # Loadable/slot-switchable only here; generation is a later commit.
         self.sensenova_components: Optional[Dict[str, Any]] = None
         self.is_sensenova_model: bool = False
+        self.sensenova_sdxl_chimera_components: Optional[Dict[str, Any]] = None
+        self.is_sensenova_sdxl_chimera_model: bool = False
 
         # SigLIP2 Vision Encoder (optional, for SD/SDXL vision-conditioned generation)
         self.vision_encoder: Optional[Any] = None
@@ -309,6 +312,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             return "minimax_music3"
         if self.is_sensenova_model:
             return "sensenova"
+        if self.is_sensenova_sdxl_chimera_model:
+            return "sensenova_sdxl_chimera"
         pipe = self.txt2img_pipeline
         if pipe is not None:
             try:
@@ -486,6 +491,14 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 and not music3_te_selection_changed
                 and self.component_health != "degraded"):
             return
+
+        # Exact source hashing is intentionally paid only for a real load, not
+        # for the same-model no-op. It still precedes every teardown below.
+        if source_type == "diffusers" and os.path.isdir(source):
+            if ModelLoader.detect_model_type(source) == "sensenova_sdxl_chimera":
+                from core.models.sensenova_sdxl_chimera.loader import preflight_chimera_artifact
+
+                preflight_chimera_artifact(source)
 
         # MiniMax-H3's selectable files differ only in the DiT. Rebuilding its
         # shared 48 GiB memory-mapped text encoder on every partition/format
@@ -1185,6 +1198,42 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 self._save_last_model(
                     source_type, source, pipeline_type, text_encoder_file=text_encoder_file)
                 print("[Pipeline] MiniMax Music 3 model loaded successfully")
+                return
+
+            if (isinstance(model_result, dict)
+                    and model_result.get("type") == "sensenova_sdxl_chimera"):
+                print("[Pipeline] SenseNova SDXL Chimera model detected")
+                self.sensenova_sdxl_chimera_components = model_result
+                self.is_sensenova_sdxl_chimera_model = True
+                self.current_model = model_id
+                self.current_attention_type = "normal"
+                for name in ("unet", "condition_bridge", "vae"):
+                    component = model_result.get(name)
+                    if component is not None and hasattr(component, "to"):
+                        component.to("cpu")
+                understanding = model_result.get("understanding") or {}
+                transformer = understanding.get("transformer")
+                if transformer is not None and hasattr(transformer, "to"):
+                    transformer.to("cpu")
+                manifest = model_result["manifest"]
+                self.current_model_info = {
+                    "source_type": source_type,
+                    "source": source,
+                    "type": "sensenova_sdxl_chimera",
+                    "is_v_prediction": False,
+                    "model_hash": "",
+                    "understanding_source": manifest["understanding"]["locator"],
+                    "understanding_verified": True,
+                    "sdxl_donor": manifest["sdxl_donor"]["provenance"],
+                    "unet_initialization": manifest["unet"]["initialization"],
+                    "unet_parameter_count": manifest["unet"]["parameter_count"],
+                    "bridge_state": manifest["conditioning"]["bridge_state"],
+                    "context_tokens": manifest["conditioning"]["context_tokens"],
+                    "latent_channels": 4,
+                    "vae_identity": manifest["vae"],
+                }
+                self._save_last_model(source_type, source, pipeline_type)
+                print("[Pipeline] SenseNova SDXL Chimera model loaded successfully")
                 return
 
             # Check if SenseNova-U1.5-8B-MoT (Qwen3-8B-as-flow-matching-denoiser,

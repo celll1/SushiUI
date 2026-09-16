@@ -22,6 +22,40 @@ from .conditioning_bridge import ChimeraBridgeConfig, ConditioningBridge
 from .unet import parameter_census
 
 
+def preflight_chimera_artifact(
+    directory: str,
+    *,
+    understanding_override: str | None = None,
+) -> dict[str, Any]:
+    """Validate documents, pinned understanding source, and weight headers only."""
+    root = Path(directory).resolve()
+    manifest, config = read_artifact_documents(root)
+    understanding_path = resolve_understanding_source(
+        manifest["understanding"], override=understanding_override
+    )
+    weights_path = find_weights_entry(root)
+    shapes, metadata = checkpoint_headers(weights_path)
+    if metadata.get("model_type") != "sensenova_sdxl_chimera":
+        raise ChimeraArtifactError("weights metadata does not declare sensenova_sdxl_chimera")
+    if any("_mot_gen" in key for key in shapes):
+        raise ChimeraArtifactError("Chimera artifact must not bundle SenseNova generation tensors")
+    for prefix in ("condition_bridge.", "unet.", "vae."):
+        if not any(key.startswith(prefix) for key in shapes):
+            raise ChimeraArtifactError(f"Chimera weights carry no {prefix} tensors")
+    if config_hash(config["unet"]) != manifest["unet"]["config_hash"]:
+        raise ChimeraArtifactError("U-Net config hash differs from chimera.json")
+    if config_hash(config["vae"]) != manifest["vae"]["config_hash"]:
+        raise ChimeraArtifactError("VAE config hash differs from chimera.json")
+    return {
+        "root": root,
+        "manifest": manifest,
+        "config": config,
+        "understanding_path": understanding_path,
+        "weights_path": weights_path,
+        "shapes": shapes,
+    }
+
+
 def _strict_component(module: torch.nn.Module, state: dict[str, torch.Tensor], label: str) -> None:
     expected = set(module.state_dict())
     actual = set(state)
@@ -40,25 +74,15 @@ def load_chimera_artifact(
     understanding_override: str | None = None,
     load_understanding: bool = False,
 ) -> dict[str, Any]:
-    root = Path(directory).resolve()
-    manifest, config = read_artifact_documents(root)
-    understanding_path = resolve_understanding_source(
-        manifest["understanding"], override=understanding_override
+    preflight = preflight_chimera_artifact(
+        directory, understanding_override=understanding_override
     )
-    weights_path = find_weights_entry(root)
-    shapes, metadata = checkpoint_headers(weights_path)
-    if metadata.get("model_type") != "sensenova_sdxl_chimera":
-        raise ChimeraArtifactError("weights metadata does not declare sensenova_sdxl_chimera")
-    if any("_mot_gen" in key for key in shapes):
-        raise ChimeraArtifactError("Chimera artifact must not bundle SenseNova generation tensors")
-    required_prefixes = ("condition_bridge.", "unet.", "vae.")
-    for prefix in required_prefixes:
-        if not any(key.startswith(prefix) for key in shapes):
-            raise ChimeraArtifactError(f"Chimera weights carry no {prefix} tensors")
-    if config_hash(config["unet"]) != manifest["unet"]["config_hash"]:
-        raise ChimeraArtifactError("U-Net config hash differs from chimera.json")
-    if config_hash(config["vae"]) != manifest["vae"]["config_hash"]:
-        raise ChimeraArtifactError("VAE config hash differs from chimera.json")
+    root = preflight["root"]
+    manifest = preflight["manifest"]
+    config = preflight["config"]
+    understanding_path = preflight["understanding_path"]
+    weights_path = preflight["weights_path"]
+    shapes = preflight["shapes"]
 
     from diffusers import AutoencoderKL, UNet2DConditionModel
 

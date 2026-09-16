@@ -19,7 +19,7 @@ from .builder import (
     initialize_chimera_from_paths,
 )
 from .flow import flow_noising, flow_velocity_target, flow_euler_step
-from .loader import load_chimera_artifact
+from .loader import load_chimera_artifact, preflight_chimera_artifact
 from .positional import (
     POSITION_LAYOUT_VERSION,
     apply_sensenova_rope,
@@ -53,6 +53,7 @@ __all__ = [
     "initialize_chimera_atomically",
     "initialize_chimera_from_paths",
     "load_chimera_artifact",
+    "preflight_chimera_artifact",
     "parameter_census",
     "selected_layer_indices",
     "spatial_query_positions",

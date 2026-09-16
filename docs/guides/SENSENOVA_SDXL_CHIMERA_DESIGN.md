@@ -593,6 +593,48 @@ override is unsupported in the first boundary because the U-Net was trained in
 the bundled donor VAE's latent identity, even though another SDXL-shaped VAE
 has the same four channels.
 
+### 7.6 SenseNova multimodal route preservation
+
+Chimera does not replace the understanding path. It therefore advertises the
+same `img2txt` capability as its pinned SenseNova source when that source passes
+the existing text-output preflight:
+
+- **i2t** sends an image plus a versioned task preset through the frozen
+  understanding vision tower and causal LM, bypassing the bridge, U-Net, and
+  VAE;
+- **ti2t / it2t** uses the same path with the user's explicit instruction and
+  optional hint text;
+- their output schema, streaming/cancellation behavior, task templates, and
+  safety limits remain those in
+  `docs/decisions/SENSENOVA_TEXT_OUTPUT_DESIGN.md`.
+
+The architecture id remains `sensenova_sdxl_chimera` throughout dispatch and
+queue persistence. The backend may internally reuse the SenseNova img2txt
+operation, but it must use the already-loaded understanding-only component; it
+must not load the omitted `_mot_gen` branch as an implementation shortcut.
+
+Reference-image **ti2i** is also structurally preserved. The prompt and one or
+more reference images are encoded into the ordinary SenseNova multimodal
+prefix. Its text, special, and reference tokens retain their `(t,h,w)`, token
+type, and reference-segment ids through the bridge. The resulting `cond` and
+optional `img_cond` contexts feed the SDXL-like U-Net; reference pixels are not
+concatenated to the four-channel denoising latent.
+
+This distinction is explicit in capabilities:
+
+- i2t and ti2t are available as soon as the production understanding-only
+  loader passes parity with the referenced SenseNova model;
+- ti2i API/backend wiring may be present earlier, but the frontend control and
+  advertised quality capability stay gated until an image-conditioned
+  bridge/joint checkpoint passes the reference suite;
+- text-only CLIP alignment does not establish ti2i quality. Bridge alignment
+  or joint training must include multimodal prefixes and reference/no-reference
+  controls before that gate can pass.
+
+No first-release Chimera training promise is made for i2t/ti2t. Those inference
+routes still work because their computation ends in the frozen understanding
+branch rather than in the newly trained bridge or U-Net.
+
 ## 8. Training design
 
 ### 8.1 Training stages
@@ -1102,7 +1144,7 @@ Gate:
 - queue reload retains the architecture id and reference payload metadata;
 - repository owner runs frontend type-check/build.
 
-### P7 — img2img, inpaint, outpaint, references, and joint finish
+### P7 — img2img, inpaint, outpaint, references, text output, and joint finish
 
 Ship each independently after its gate:
 
@@ -1111,6 +1153,8 @@ Ship each independently after its gate:
 - outpaint: canvas placement and preserved-region comparison;
 - reference images: fixed prompt/reference suite against no-reference controls,
   including identity/detail and prompt adherence;
+- i2t/ti2t: parity of preset and explicit-instruction requests with the pinned
+  SenseNova understanding branch, with proof that no `_mot_gen` tensor loads;
 - joint stage: measured peak VRAM/step time and proof that understanding stays
   frozen while bridge and U-Net update.
 

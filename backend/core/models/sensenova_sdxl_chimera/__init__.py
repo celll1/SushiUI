@@ -12,7 +12,10 @@ from .conditioning_bridge import (
     ConditioningBridge,
     selected_layer_indices,
 )
+from .artifact import ChimeraArtifactError, MODEL_TYPE, FORMAT_VERSION
+from .builder import build_chimera_artifact_from_components, initialize_chimera_atomically
 from .flow import flow_noising, flow_velocity_target, flow_euler_step
+from .loader import load_chimera_artifact
 from .positional import (
     POSITION_LAYOUT_VERSION,
     apply_sensenova_rope,
@@ -28,6 +31,9 @@ from .unet import (
 
 __all__ = [
     "POSITION_LAYOUT_VERSION",
+    "MODEL_TYPE",
+    "FORMAT_VERSION",
+    "ChimeraArtifactError",
     "ChimeraBridgeConfig",
     "ChimeraBridgeOutput",
     "ChimeraUNetBuildReport",
@@ -35,9 +41,12 @@ __all__ = [
     "apply_sensenova_rope",
     "apply_sensenova_rope_qk",
     "build_donor_equal_unet",
+    "build_chimera_artifact_from_components",
     "flow_euler_step",
     "flow_noising",
     "flow_velocity_target",
+    "initialize_chimera_atomically",
+    "load_chimera_artifact",
     "parameter_census",
     "selected_layer_indices",
     "spatial_query_positions",

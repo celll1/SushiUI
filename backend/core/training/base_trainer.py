@@ -1686,7 +1686,7 @@ def _checkpoint_aux_base(entry_path: Path) -> str:
         return name[: -len(_INDEX_SUFFIX)]
     if name.endswith(_SAFETENSORS_SUFFIX):
         return name[: -len(_SAFETENSORS_SUFFIX)]
-    return entry_path.stem
+    return entry_path.name if entry_path.is_dir() else entry_path.stem
 
 
 # Marker inserted into the run_name for weight-EMA checkpoint saves
@@ -1731,8 +1731,9 @@ def _list_checkpoint_entries(
 ) -> List[Path]:
     """Return the checkpoint *entry* files under ``output_dir``.
 
-    An entry is either a single-file ``*_step_*.safetensors`` save or a sharded
-    ``*_step_*.safetensors.index.json`` save. Shard MEMBER files
+    An entry is a single-file ``*.safetensors`` save, a sharded index, or a
+    production-loadable Chimera artifact directory containing ``chimera.json``.
+    Shard MEMBER files
     (``-NNNNN-of-NNNNN.safetensors``) are excluded — they belong to their index.
     ``exclude_substr`` drops entries whose name contains it (e.g.
     ``vision_encoder``); a string or a sequence of strings may be passed.
@@ -1748,6 +1749,12 @@ def _list_checkpoint_entries(
         return any(sub in name for sub in excludes)
 
     entries: List[Path] = []
+    for p in output_dir.glob("*_step_*"):
+        if not p.is_dir() or not (p / "chimera.json").is_file():
+            continue
+        if _is_excluded(p.name):
+            continue
+        entries.append(p)
     for p in output_dir.glob("*_step_*.safetensors.index.json"):
         if _is_excluded(p.name):
             continue
@@ -1778,6 +1785,9 @@ def _checkpoint_member_files(entry_path: Path) -> List[Path]:
     distinct shard listed in its ``weight_map`` (read from the index), falling
     back to the ``<stem>-NNNNN-of-NNNNN.safetensors`` glob for orphan tolerance.
     """
+    if entry_path.is_dir():
+        return [path for path in entry_path.rglob("*") if path.is_file()]
+
     name = entry_path.name
     if not name.endswith(_INDEX_SUFFIX):
         return [entry_path]
@@ -2603,6 +2613,10 @@ class BaseTrainer(ABC):
         # train_config.get(...)). Defaults: h2d_only=False, ring_size=2.
         _tc = train_config if train_config else {}
         from api.param_defaults import TRAINING_DEFAULTS as _TD_PHASE_EVICTION
+        _chimera_bridge_lr = _tc.get("chimera_bridge_lr", _TD_PHASE_EVICTION["chimera_bridge_lr"])
+        self.chimera_bridge_lr = (
+            None if _chimera_bridge_lr is None else float(_chimera_bridge_lr)
+        )
         self.sensenova_mot_phase_eviction = bool(_tc.get(
             "sensenova_mot_phase_eviction",
             _TD_PHASE_EVICTION["sensenova_mot_phase_eviction"],
@@ -3251,6 +3265,7 @@ class BaseTrainer(ABC):
         self.is_minimax_h3 = (model_type == "minimax_h3")
         self.is_acestep = (model_type == "acestep")
         self.is_sensenova = (model_type == "sensenova")
+        self.is_sensenova_sdxl_chimera = (model_type == "sensenova_sdxl_chimera")
         self.is_yue2 = (model_type == "yue2")
         self.is_sdxl = False
 
@@ -3265,12 +3280,14 @@ class BaseTrainer(ABC):
         from core.training.ops import (
             sd_sdxl_ops, zimage_ops, anima_ops, lens_ops, ideogram4_ops,
             minit2i_ops, krea2_ops, flux2_ops, ltx2_ops, acestep_ops,
-            minimax_h3_ops, sensenova_ops, yue2_ops,
+            minimax_h3_ops, sensenova_ops, sensenova_sdxl_chimera_ops, yue2_ops,
         )
         if self.is_yue2:
             yue2_ops.load_components(self)
         elif self.is_sensenova:
             sensenova_ops.load_components(self)
+        elif self.is_sensenova_sdxl_chimera:
+            sensenova_sdxl_chimera_ops.load_components(self)
         elif self.is_ltx2:
             ltx2_ops.load_components(self)
         elif self.is_minimax_h3:
@@ -4317,6 +4334,7 @@ class BaseTrainer(ABC):
         self.is_minimax_h3 = (model_type == "minimax_h3")
         self.is_acestep = (model_type == "acestep")
         self.is_sensenova = (model_type == "sensenova")
+        self.is_sensenova_sdxl_chimera = (model_type == "sensenova_sdxl_chimera")
         self.is_yue2 = (model_type == "yue2")
         self.is_sdxl = False
 
@@ -4332,6 +4350,13 @@ class BaseTrainer(ABC):
             from core.training.ops import sensenova_ops
             sensenova_ops.load_components(self)
             print(f"{self.log_prefix} SenseNova checkpoint loaded successfully as base model")
+            return
+
+        if self.is_sensenova_sdxl_chimera:
+            self.model_path = checkpoint_path
+            from core.training.ops import sensenova_sdxl_chimera_ops
+            sensenova_sdxl_chimera_ops.load_components(self)
+            print(f"{self.log_prefix} Chimera checkpoint loaded successfully as base model")
             return
 
         if self.is_flux2:
@@ -6423,6 +6448,20 @@ class BaseTrainer(ABC):
                 return False
         return False
 
+    def _safe_remove_checkpoint_entry(self, path) -> bool:
+        """Delete one checkpoint entry, including directory artifacts."""
+        if not path.is_dir():
+            return self._safe_unlink(path)
+        import shutil
+        try:
+            shutil.rmtree(path)
+            return True
+        except FileNotFoundError:
+            return True
+        except (PermissionError, OSError) as exc:
+            print(f"{self.log_prefix} WARNING: could not delete {path.name} ({exc}); leaving it (non-fatal)")
+            return False
+
     def _cleanup_old_checkpoints(self, max_step_saves_to_keep: int):
         """
         Delete old checkpoints, keeping only the most recent N checkpoints.
@@ -6465,8 +6504,11 @@ class BaseTrainer(ABC):
             member_files = _checkpoint_member_files(checkpoint_path)
             print(f"{self.log_prefix} Deleting old checkpoint: {checkpoint_path.name}"
                   + (f" (+{len(member_files) - 1} shard file(s))" if len(member_files) > 1 else ""))
-            for member in member_files:
-                self._safe_unlink(member)
+            if checkpoint_path.is_dir():
+                self._safe_remove_checkpoint_entry(checkpoint_path)
+            else:
+                for member in member_files:
+                    self._safe_unlink(member)
 
             if optimizer_pt_path.exists():
                 print(f"{self.log_prefix} Deleting old optimizer state: {optimizer_pt_path.name}")
@@ -9572,6 +9614,10 @@ class BaseTrainer(ABC):
                 requires_grad=requires_grad,
                 reference_image_paths=reference_image_paths,
             ), None
+        elif self.is_sensenova_sdxl_chimera:
+            return self.arch.encode_prompt(
+                self, caption, requires_grad=requires_grad
+            )
         elif self.is_lens:
             return self.encode_prompt_lens(caption)
         elif self.is_ideogram4:
@@ -11644,6 +11690,18 @@ class BaseTrainer(ABC):
                 debug_reference_image_paths=batch_reference_paths if debug_save_path else None,
                 profile_vram=self.debug_vram,
                 repa_pixels=mnt_repa_pixels,
+            )
+            loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
+        elif self.is_sensenova_sdxl_chimera:
+            from core.training.arch.base_arch import TrainStepContext
+            ctx = TrainStepContext(
+                latents=mnt_latents,
+                text_embeddings=mnt_text_embeddings,
+                attention_mask=mnt_attention_mask,
+                time_ids=mnt_time_ids,
+                timesteps=timesteps,
+                cfg_drop_mask=cfg_drop_mask,
+                profile_vram=self.debug_vram,
             )
             loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
         elif self.is_zimage:
@@ -15143,6 +15201,12 @@ class BaseTrainer(ABC):
                 text_encoder_trainable = True
                 print(f"{self.log_prefix}   Custom TE adapters trainable -> recompute embeddings each step")
 
+        if getattr(self, "is_sensenova_sdxl_chimera", False) and any(
+            parameter.requires_grad for parameter in self.condition_bridge.parameters()
+        ):
+            text_encoder_trainable = True
+            print(f"{self.log_prefix}   Chimera bridge trainable -> recompute conditioning each step")
+
         # Log trainable parameter counts (U-Net + Text Encoders)
         unet_obj = getattr(self, 'unet', None) or getattr(self, 'transformer', None)
         if unet_obj is not None:
@@ -17488,7 +17552,9 @@ class BaseTrainer(ABC):
                     # SDXL micro-conditioning: per-item (orig_h,orig_w,crop_top,crop_left,
                     # target_h,target_w) for time_ids, parallel to latents_list.
                     micro_cond_list = []
-                    _sdxl_microcond_active = self.is_sdxl and bool(self.config.get("sdxl_micro_conditioning", True))
+                    _sdxl_microcond_active = (
+                        self.is_sdxl or self.is_sensenova_sdxl_chimera
+                    ) and bool(self.config.get("sdxl_micro_conditioning", True))
                     self._last_micro_cond = None
 
                     # A trainable TE at MNT>1 re-encodes every caption once per MNT
@@ -18264,6 +18330,8 @@ class BaseTrainer(ABC):
                         # collate into one dict carried through attention_mask
                         # (train_step_acestep reads it).
                         attention_mask = self.arch.collate_aux(self, auxiliary_data_list)
+                    elif self.is_sensenova_sdxl_chimera:
+                        attention_mask = self.arch.collate_aux(self, auxiliary_data_list)
                     elif self.is_sdxl and any(aux is not None for aux in auxiliary_data_list):
                         pooled_embeddings = torch.cat([aux for aux in auxiliary_data_list if aux is not None], dim=0)
 
@@ -18570,6 +18638,11 @@ class BaseTrainer(ABC):
                             elif self.is_acestep:
                                 # ACE-Step: per-item dict → one collated aux dict.
                                 mnt_attention_mask = self.arch.collate_aux(self, mnt_auxiliary_data_list)
+                                mnt_pooled_embeddings = None
+                            elif self.is_sensenova_sdxl_chimera:
+                                mnt_attention_mask = self.arch.collate_aux(
+                                    self, mnt_auxiliary_data_list
+                                )
                                 mnt_pooled_embeddings = None
                             elif self.is_sdxl and any(aux is not None for aux in mnt_auxiliary_data_list):
                                 mnt_pooled_embeddings = torch.cat([aux for aux in mnt_auxiliary_data_list if aux is not None], dim=0)

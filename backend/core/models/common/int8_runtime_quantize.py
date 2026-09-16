@@ -460,6 +460,7 @@ ARCH_DISPLAY_NAMES: Dict[str, str] = {
     "minimax_h3": "MiniMax H3",
     "yue2": "YuE2",
     "sensenova": "SenseNova U1.5",
+    "sensenova_sdxl_chimera": "SenseNova SDXL Chimera",
 }
 
 

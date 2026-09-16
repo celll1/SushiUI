@@ -15139,6 +15139,25 @@ class TrainingRunCreateRequest(BaseModel):
         "understanding_vision", "understanding_decoder", "understanding_norms", "shared",
         "generation_decoder", "generation_norms", "generation_flow",
     ]] = Field(default_factory=lambda: list(TRAINING_DEFAULTS["sensenova_train_scopes"]))
+    chimera_training_stage: Literal["bridge_align", "unet", "joint"] = (
+        TRAINING_DEFAULTS["chimera_training_stage"]
+    )
+    chimera_allow_unaligned_scratch: bool = TRAINING_DEFAULTS[
+        "chimera_allow_unaligned_scratch"
+    ]
+    chimera_conditioning_cache: bool = TRAINING_DEFAULTS["chimera_conditioning_cache"]
+    chimera_bridge_lr: Optional[float] = Field(
+        default=TRAINING_DEFAULTS["chimera_bridge_lr"], ge=0
+    )
+    chimera_context_dropout: float = Field(
+        default=TRAINING_DEFAULTS["chimera_context_dropout"], ge=0, le=1
+    )
+    chimera_clip_hidden_weight: Optional[float] = Field(
+        default=TRAINING_DEFAULTS["chimera_clip_hidden_weight"], ge=0
+    )
+    chimera_clip_pooled_weight: Optional[float] = Field(
+        default=TRAINING_DEFAULTS["chimera_clip_pooled_weight"], ge=0
+    )
 
     @field_validator("sensenova_train_scopes")
     @classmethod

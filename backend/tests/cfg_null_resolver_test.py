@@ -278,8 +278,12 @@ def test_only_the_delivered_architectures_declare_a_stage():
     no other architecture may read as enabled."""
     declared = {arch: stage for arch, stage in CFG_NULL_STAGE_BY_ARCH.items()
                 if stage is not None}
-    assert declared == {"minit2i": "collated", "lens": "collated",
-                        "sensenova": "encode"}
+    assert declared == {
+        "minit2i": "collated",
+        "lens": "collated",
+        "sensenova": "encode",
+        "sensenova_sdxl_chimera": "encode",
+    }
 
 
 def test_every_stageless_arch_declares_the_feature_unsupported():

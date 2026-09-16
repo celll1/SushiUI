@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
+import tempfile
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -232,3 +234,72 @@ def find_weights_entry(directory: str | os.PathLike[str]) -> str:
 def prefixed_state(module: torch.nn.Module, prefix: str) -> Iterable[tuple[str, torch.Tensor]]:
     for name, tensor in module.state_dict().items():
         yield f"{prefix}{name}", tensor.detach().cpu().contiguous()
+
+
+def save_chimera_checkpoint(
+    output_directory: str | os.PathLike[str],
+    *,
+    base_manifest: Mapping[str, Any],
+    runtime: Mapping[str, Any],
+    bridge: torch.nn.Module,
+    unet: torch.nn.Module,
+    vae: torch.nn.Module,
+    stage: str,
+    step: int,
+    epoch: int,
+    alignment_metrics: Mapping[str, float] | None = None,
+    alignment_passed: bool = False,
+    max_shard_bytes: int = 10 * 1024**3,
+) -> Path:
+    """Atomically save a production-loadable Chimera training checkpoint."""
+    from core.models.common.single_file_format import dedup_tensors, save_single_file_state
+
+    target = Path(output_directory).resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        manifest, _config = read_artifact_documents(target)
+        if int((manifest.get("training") or {}).get("step", -1)) == int(step):
+            return target
+        raise FileExistsError(f"Chimera checkpoint target already exists: {target}")
+    temporary = Path(tempfile.mkdtemp(prefix=f".{target.name}.saving-", dir=str(target.parent)))
+    try:
+        manifest = json.loads(json.dumps(dict(base_manifest)))
+        metrics = {key: float(value) for key, value in (alignment_metrics or {}).items()}
+        if alignment_passed:
+            manifest["conditioning"]["bridge_state"] = "aligned"
+        manifest["training"] = {
+            "stage": str(stage),
+            "step": int(step),
+            "epoch": int(epoch),
+            "alignment_metrics": metrics,
+            "alignment_passed": bool(alignment_passed),
+        }
+        tensors, dropped = dedup_tensors((
+            *prefixed_state(bridge, "condition_bridge."),
+            *prefixed_state(unet, "unet."),
+            *prefixed_state(vae, "vae."),
+        ))
+        metadata = {
+            "model_type": MODEL_TYPE,
+            "format": "pt",
+            "format_version": str(FORMAT_VERSION),
+            "training_stage": str(stage),
+            "training_step": str(int(step)),
+            "training_epoch": str(int(epoch)),
+            "tied_weights_dropped": json.dumps(dropped),
+        }
+        save_single_file_state(
+            tensors,
+            metadata,
+            str(temporary / WEIGHTS_BASENAME),
+            max_shard_bytes=max_shard_bytes,
+        )
+        with (temporary / CONFIG_NAME).open("w", encoding="utf-8") as handle:
+            json.dump(dict(runtime), handle, indent=2, ensure_ascii=False)
+        with (temporary / MANIFEST_NAME).open("w", encoding="utf-8") as handle:
+            json.dump(manifest, handle, indent=2, ensure_ascii=False)
+        os.replace(temporary, target)
+        return target
+    except BaseException:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise

@@ -6,7 +6,7 @@ from .conditioning_bridge import (
     ConditioningBridge,
     selected_layer_indices,
 )
-from .artifact import ChimeraArtifactError, MODEL_TYPE, FORMAT_VERSION
+from .artifact import ChimeraArtifactError, MODEL_TYPE, FORMAT_VERSION, save_chimera_checkpoint
 from .attention_processor import (
     ChimeraAttentionContext,
     ChimeraAttnProcessor,
@@ -57,6 +57,7 @@ __all__ = [
     "initialize_chimera_from_paths",
     "load_chimera_artifact",
     "preflight_chimera_artifact",
+    "save_chimera_checkpoint",
     "parameter_census",
     "selected_layer_indices",
     "spatial_query_positions",

@@ -563,6 +563,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     return model?.architecture === "sensenova";
   }
 
+  function isChimeraModel(modelPath: string): boolean {
+    const model = availableModels.find(m => m.path === modelPath);
+    return model?.architecture === "sensenova_sdxl_chimera";
+  }
+
   function getModelArchitecture(modelPath: string): string | undefined {
     if (modelPath.startsWith("scratch:minit2i:")) return "minit2i";
     const model = availableModels.find(m => m.path === modelPath);
@@ -577,7 +582,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // branches), so "auto" cannot be resolved client-side.
   const getTimestepConvention = (modelPath: string, noiseProcessValue: string): "t0" | "t1" | "auto" => {
     const arch = getModelArchitecture(modelPath);
-    if (arch === "sensenova" || arch === "minit2i") return "t1";
+    if (arch === "sensenova" || arch === "sensenova_sdxl_chimera" || arch === "minit2i") return "t1";
     if (arch === "sd15" || arch === "sdxl") {
       if (noiseProcessValue === "flow") return "t0";
       if (noiseProcessValue === "ddpm") return "t1";
@@ -5248,6 +5253,64 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             Lower precision dtypes reduce VRAM usage. FP8 can save ~50% VRAM. Use FP32 output for best loss calculation accuracy. Flash Attention improves training speed and reduces memory usage. Min-SNR gamma reweights loss to balance learning across all timesteps. Reconstruction loss weight enables dual loss training (direct image quality optimization).
           </p>
         </div>
+
+        {isChimeraModel(baseModelPath) && trainingMethod === "full_finetune" && (
+          <div className="break-inside-avoid border border-cyan-900/70 rounded p-4 space-y-3">
+            <h3 className="text-sm font-medium text-cyan-200">SenseNova SDXL Chimera</h3>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Training stage</label>
+              <select
+                value={params.chimera_training_stage ?? "unet"}
+                onChange={(e) => updateParam("chimera_training_stage", e.target.value)}
+                className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+              >
+                <option value="bridge_align">Bridge alignment</option>
+                <option value="unet">U-Net</option>
+                <option value="joint">Joint (experimental)</option>
+              </select>
+            </div>
+            <label className="flex items-center gap-2 text-xs text-gray-300">
+              <input type="checkbox" checked={params.chimera_conditioning_cache ?? true}
+                onChange={(e) => updateParam("chimera_conditioning_cache", e.target.checked)} />
+              Cache conditioning in U-Net stage
+            </label>
+            <label className="flex items-center gap-2 text-xs text-amber-300">
+              <input type="checkbox" checked={params.chimera_allow_unaligned_scratch ?? false}
+                onChange={(e) => updateParam("chimera_allow_unaligned_scratch", e.target.checked)} />
+              Allow unaligned scratch bridge (unsafe override)
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="text-xs text-gray-400">Bridge LR
+                <input type="number" step="any" min={0}
+                  value={params.chimera_bridge_lr ?? ""}
+                  onChange={(e) => updateParam("chimera_bridge_lr", e.target.value === "" ? null : Number(e.target.value))}
+                  className="mt-1 w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded" />
+              </label>
+              <label className="text-xs text-gray-400">Context dropout
+                <input type="number" step="0.01" min={0} max={1}
+                  value={params.chimera_context_dropout ?? 0.1}
+                  onChange={(e) => updateParam("chimera_context_dropout", Number(e.target.value))}
+                  className="mt-1 w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded" />
+              </label>
+            </div>
+            {(params.chimera_training_stage ?? "unet") === "bridge_align" && (
+              <div className="grid grid-cols-2 gap-2">
+                <label className="text-xs text-gray-400">Hidden RMS weight
+                  <input type="number" step="any" min={0}
+                    value={params.chimera_clip_hidden_weight ?? ""}
+                    onChange={(e) => updateParam("chimera_clip_hidden_weight", e.target.value === "" ? null : Number(e.target.value))}
+                    className="mt-1 w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded" />
+                </label>
+                <label className="text-xs text-gray-400">Pooled weight
+                  <input type="number" step="any" min={0}
+                    value={params.chimera_clip_pooled_weight ?? ""}
+                    onChange={(e) => updateParam("chimera_clip_pooled_weight", e.target.value === "" ? null : Number(e.target.value))}
+                    className="mt-1 w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded" />
+                </label>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* One interlocked setting, not two independent toggles — the backend
             refuses eviction + train_text_encoder without the split, and the

@@ -25406,6 +25406,56 @@ components:
             selects the understanding decoder Linears and all understanding-side
             decoder RMSNorms; shared embeddings and the LM head remain a separate
             explicit scope.
+        chimera_training_stage:
+          type: string
+          enum: [bridge_align, unet, joint]
+          default: unet
+          description: >-
+            SenseNova SDXL Chimera full-training graph. bridge_align trains only
+            the conditioning bridge against the pinned donor CLIP encoders; unet
+            trains only the donor-equal U-Net; joint trains bridge and U-Net while
+            keeping the understanding tower and bundled VAE frozen.
+        chimera_allow_unaligned_scratch:
+          type: boolean
+          default: false
+          description: >-
+            Explicit safety override allowing diffusion training of a scratch
+            U-Net before the conditioning bridge has passed its held-out alignment
+            gate. Never permits an unaligned SDXL transplant.
+        chimera_conditioning_cache:
+          type: boolean
+          default: true
+          description: >-
+            Cache frozen bridge outputs during the unet stage. Ignored for
+            bridge_align and joint, where bridge outputs require gradients.
+        chimera_bridge_lr:
+          type: number
+          nullable: true
+          minimum: 0
+          default: null
+          description: Conditioning-bridge learning-rate override; null uses learning_rate.
+        chimera_context_dropout:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 0.1
+          description: Probability of replacing a training caption with Chimera's inference-equivalent null condition.
+        chimera_clip_hidden_weight:
+          type: number
+          nullable: true
+          minimum: 0
+          default: null
+          description: >-
+            Explicit bridge-align weight for hidden-state RMS matching. Null is
+            refused for bridge_align because no unmeasured numerical default is shipped.
+        chimera_clip_pooled_weight:
+          type: number
+          nullable: true
+          minimum: 0
+          default: null
+          description: >-
+            Explicit bridge-align weight for pooled-embedding MSE. Null is refused
+            for bridge_align because no unmeasured numerical default is shipped.
         sensenova_full_finetune_save_format:
           type: 'string'
           enum: ['mixed', 'bf16', 'int8']

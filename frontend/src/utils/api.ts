@@ -4713,6 +4713,30 @@ export const createScratchMiniT2I = async (
   return response.data;
 };
 
+export interface InitializeChimeraRequest {
+  output_name: string;
+  understanding_source: string;
+  sdxl_source: string;
+  unet_initialization?: "scratch" | "sdxl_transplant";
+  initialization_seed?: number;
+  context_tokens?: 77;
+}
+
+export const initializeSenseNovaSDXLChimera = async (
+  request: InitializeChimeraRequest,
+) => {
+  const response = await api.post("/models/sensenova-sdxl-chimera/initialize", request);
+  return response.data as {
+    status: "success";
+    path: string;
+    output_name: string;
+    model_type: "sensenova_sdxl_chimera";
+    unet_initialization: "scratch" | "sdxl_transplant";
+    unet_parameter_count: number;
+    bridge_state: "unaligned" | "aligned";
+  };
+};
+
 export const getCurrentModel = async () => {
   const response = await api.get("/models/current");
   return response.data;
@@ -6835,6 +6859,13 @@ export interface TrainingRunCreateRequest {
   // Separate trailing group so a legacy resume re-warms only these fresh params.
   sensenova_train_generation_norms?: boolean;
   sensenova_train_scopes?: SenseNovaTrainScope[];
+  chimera_training_stage?: "bridge_align" | "unet" | "joint";
+  chimera_allow_unaligned_scratch?: boolean;
+  chimera_conditioning_cache?: boolean;
+  chimera_bridge_lr?: number | null;
+  chimera_context_dropout?: number;
+  chimera_clip_hidden_weight?: number | null;
+  chimera_clip_pooled_weight?: number | null;
   base_model_path: string;
   gpu_index?: number | null;  // Physical GPU index to run this training run on; null = backend default device
   // Decoder-only VAE fine-tune options (training_method "vae_decoder" only).

@@ -1,10 +1,4 @@
-"""SenseNova-understanding + SDXL-U-Net Chimera building blocks.
-
-The production loader and pipeline land in later implementation phases.  This
-package starts with the checkpoint-independent contracts shared by those paths:
-donor-equal U-Net construction, conditioning bridge shapes, spatial RoPE, and
-the flow objective.
-"""
+"""SenseNova-understanding + SDXL-U-Net Chimera runtime and contracts."""
 
 from .conditioning_bridge import (
     ChimeraBridgeConfig,
@@ -13,6 +7,13 @@ from .conditioning_bridge import (
     selected_layer_indices,
 )
 from .artifact import ChimeraArtifactError, MODEL_TYPE, FORMAT_VERSION
+from .attention_processor import (
+    ChimeraAttentionContext,
+    ChimeraAttnProcessor,
+    clear_chimera_attention_caches,
+    install_chimera_attention_processors,
+    set_chimera_attention_context,
+)
 from .builder import (
     build_chimera_artifact_from_components,
     initialize_chimera_atomically,
@@ -39,6 +40,8 @@ __all__ = [
     "MODEL_TYPE",
     "FORMAT_VERSION",
     "ChimeraArtifactError",
+    "ChimeraAttentionContext",
+    "ChimeraAttnProcessor",
     "ChimeraBridgeConfig",
     "ChimeraBridgeOutput",
     "ChimeraUNetBuildReport",
@@ -60,5 +63,8 @@ __all__ = [
     "trainable_parameter_count",
     "UnderstandingPrefix",
     "capture_understanding_prefix",
+    "clear_chimera_attention_caches",
+    "install_chimera_attention_processors",
     "load_understanding_only",
+    "set_chimera_attention_context",
 ]

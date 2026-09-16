@@ -17,6 +17,7 @@ from core.pipeline_backends.acestep import AceStepMixin
 from core.pipeline_backends.minimax_h3 import MiniMaxH3Mixin
 from core.pipeline_backends.minimax_music3 import MiniMaxMusic3Mixin
 from core.pipeline_backends.sensenova import SenseNovaMixin
+from core.pipeline_backends.sensenova_sdxl_chimera import SenseNovaSDXLChimeraMixin
 from core.pipeline_backends.yue2 import YuE2Mixin
 
 __all__ = [
@@ -32,5 +33,6 @@ __all__ = [
     "MiniMaxH3Mixin",
     "MiniMaxMusic3Mixin",
     "SenseNovaMixin",
+    "SenseNovaSDXLChimeraMixin",
     "YuE2Mixin",
 ]

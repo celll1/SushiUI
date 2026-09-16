@@ -42,6 +42,7 @@ try:
         MINIMAX_H3_WIRING,
         MINIMAX_MUSIC3_WIRING,
         SENSENOVA_WIRING,
+        SENSENOVA_SDXL_CHIMERA_WIRING,
     )
     _WIRING_BY_ARCH: Dict[str, ComponentWiringSpec] = {
         "sd15": SD15_WIRING,
@@ -66,6 +67,7 @@ try:
         # Pixel-space DiT (Qwen3-8B-as-denoiser), latent_channels=0 like
         # minit2i -- see SENSENOVA_WIRING's own comment.
         "sensenova": SENSENOVA_WIRING,
+        "sensenova_sdxl_chimera": SENSENOVA_SDXL_CHIMERA_WIRING,
     }
 except Exception as _e:  # pragma: no cover - wiring is a hard dependency
     _WIRING_BY_ARCH = {}
@@ -73,7 +75,7 @@ except Exception as _e:  # pragma: no cover - wiring is a hard dependency
 
 
 # archs whose backbone is a U-Net; everything else is a transformer/DiT
-_UNET_ARCHS = {"sd15", "sdxl"}
+_UNET_ARCHS = {"sd15", "sdxl", "sensenova_sdxl_chimera"}
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +193,7 @@ def _constituent_files(path: str, source_type: str) -> List[str]:
                                 fp = os.path.join(sub, fn)
                                 if os.path.isfile(fp):
                                     files.append(fp)
-                    elif os.path.isfile(sub) and name.endswith(".json"):
+                    elif os.path.isfile(sub) and name.endswith((".json", ".safetensors", ".bin")):
                         files.append(sub)
             except OSError:
                 pass
@@ -307,7 +309,7 @@ def compute_content_hash(path: str, source_type: str) -> str:
                     parts.append("model_index=ERR")
             for fp in sorted(_constituent_files(path, source_type)):
                 rel = os.path.relpath(fp, path).replace("\\", "/")
-                if fp.endswith("config.json") or fp.endswith(".index.json"):
+                if fp.endswith(".json"):
                     try:
                         with open(fp, encoding="utf-8") as f:
                             parts.append(f"{rel}=" + json.dumps(json.load(f), sort_keys=True))
@@ -573,6 +575,48 @@ def _read_json(path: str) -> Optional[dict]:
 
 def _scan_diffusers(path: str, arch: str, components: Dict[str, Any]) -> None:
     """Diffusers dir: pure JSON config reads per subfolder (no weight load)."""
+    if arch == "sensenova_sdxl_chimera":
+        config = _read_json(os.path.join(path, "config.json")) or {}
+        manifest = _read_json(os.path.join(path, "chimera.json")) or {}
+        unet_cfg = config.get("unet") if isinstance(config.get("unet"), dict) else {}
+        bridge_cfg = (
+            config.get("conditioning_bridge")
+            if isinstance(config.get("conditioning_bridge"), dict)
+            else {}
+        )
+        vae_cfg = config.get("vae") if isinstance(config.get("vae"), dict) else {}
+        vae_manifest = manifest.get("vae") if isinstance(manifest.get("vae"), dict) else {}
+
+        components["backbone"]["kind"] = "unet"
+        for field in ("in_channels", "out_channels"):
+            if unet_cfg.get(field) is not None:
+                components["backbone"][field] = int(unet_cfg[field])
+        cond_dim = unet_cfg.get("cross_attention_dim") or bridge_cfg.get("context_dim")
+        if cond_dim is not None:
+            components["backbone"]["cond_dim"] = int(cond_dim)
+
+        understanding = manifest.get("understanding")
+        components["text_encoder"]["present"] = isinstance(understanding, dict)
+        components["text_encoder"]["embedded"] = False
+        components["text_encoder"]["te_type"] = "sensenova_understanding"
+        if bridge_cfg.get("context_dim") is not None:
+            components["text_encoder"]["out_dim"] = int(bridge_cfg["context_dim"])
+        if bridge_cfg.get("pooled_dim") is not None:
+            components["text_encoder"]["pooled_dim"] = int(bridge_cfg["pooled_dim"])
+
+        components["vae"]["present"] = bool(vae_cfg)
+        components["vae"]["embedded"] = bool(vae_manifest.get("embedded", True))
+        latent_channels = vae_cfg.get("latent_channels") or vae_manifest.get("latent_channels")
+        if latent_channels is not None:
+            components["vae"]["latent_channels"] = int(latent_channels)
+        scale_spatial = vae_manifest.get("scale_factor")
+        if scale_spatial is not None:
+            components["vae"]["scale_spatial"] = int(scale_spatial)
+        scale_temporal = vae_manifest.get("scale_temporal")
+        if scale_temporal is not None:
+            components["vae"]["scale_temporal"] = int(scale_temporal)
+        return
+
     model_index = _read_json(os.path.join(path, "model_index.json")) or {}
 
     # --- VAE ---
@@ -836,7 +880,9 @@ def scan_model(path: str, source_type: Optional[str] = None) -> Dict[str, Any]:
 #     checkpoint cached under v5 carries the arch baseline (4ch for SDXL) and
 #     must be rescanned. Records of native checkpoints are unchanged by the
 #     rescan.
-_REGISTRY_SCHEMA_VERSION = 6
+# v7: Chimera root artifacts expose their source, U-Net, embedded VAE, and root
+#     weight file instead of appearing as an empty Diffusers directory.
+_REGISTRY_SCHEMA_VERSION = 7
 
 
 class ComponentRegistryCache:

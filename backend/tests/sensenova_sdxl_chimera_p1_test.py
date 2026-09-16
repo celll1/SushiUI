@@ -10,6 +10,7 @@ from diffusers import AutoencoderKL, UNet2DConditionModel
 from safetensors.torch import save_file
 
 from core.models.common.vae_source import ResolvedVAE, content_hash_for_state_dict
+from core.models.component_registry import scan_model
 from core.models.sensenova_sdxl_chimera.artifact import (
     ChimeraArtifactError,
     save_chimera_checkpoint,
@@ -21,6 +22,52 @@ from core.models.sensenova_sdxl_chimera.builder import (
 from core.models.sensenova_sdxl_chimera.loader import load_chimera_artifact
 from core.models.sensenova_sdxl_chimera.loader import preflight_chimera_artifact
 from core.model_loader import ModelLoader
+
+
+def test_component_registry_reads_chimera_root_artifact(tmp_path):
+    artifact = tmp_path / "chimera"
+    artifact.mkdir()
+    (artifact / "chimera.json").write_text(
+        '{"model_type":"sensenova_sdxl_chimera","format_version":1,'
+        '"understanding":{"locator":"model:teacher.safetensors"},'
+        '"vae":{"embedded":true,"latent_channels":4,"scale_factor":8,'
+        '"scale_temporal":1}}',
+        encoding="utf-8",
+    )
+    (artifact / "config.json").write_text(
+        '{"model_type":"sensenova_sdxl_chimera","format_version":1,'
+        '"unet":{"in_channels":4,"out_channels":4,"cross_attention_dim":2048},'
+        '"conditioning_bridge":{"context_dim":2048,"pooled_dim":1280},'
+        '"vae":{"latent_channels":4}}',
+        encoding="utf-8",
+    )
+    save_file(
+        {"unet.conv_in.weight": torch.zeros(4, 4, 1, 1)},
+        artifact / "model.safetensors",
+    )
+
+    record = scan_model(str(artifact))
+
+    assert record["arch"] == "sensenova_sdxl_chimera"
+    assert record["expected"]["latent_channels"] == 4
+    assert record["components"]["backbone"] == {
+        "kind": "unet", "in_channels": 4, "out_channels": 4, "cond_dim": 2048,
+    }
+    assert record["components"]["text_encoder"] == {
+        "present": True,
+        "out_dim": 2048,
+        "pooled_dim": 1280,
+        "te_type": "sensenova_understanding",
+        "embedded": False,
+    }
+    assert record["components"]["vae"] == {
+        "present": True,
+        "latent_channels": 4,
+        "scale_spatial": 8,
+        "scale_temporal": 1,
+        "embedded": True,
+    }
+    assert record["mismatches"] == []
 
 
 def _tiny_unet() -> UNet2DConditionModel:

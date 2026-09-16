@@ -174,7 +174,8 @@ def patch_adafactor_fused(optimizer: Adafactor):
         >>> for param in model.parameters():
         >>>     if param.requires_grad:
         >>>         param.register_post_accumulate_grad_hook(
-        >>>             lambda tensor: optimizer.step_param(tensor, optimizer.param_groups[0])
+        >>>             lambda tensor: optimizer.step_param(
+        >>>                 tensor, live_param_group(optimizer, tensor)[0])
         >>>         )
     """
     optimizer.step_param = adafactor_step_param.__get__(optimizer)

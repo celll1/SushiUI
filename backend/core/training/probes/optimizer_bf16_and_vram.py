@@ -183,13 +183,14 @@ def register_fused_hooks(name: str, opt: Any, bag: ParamBag) -> str:
         return "register_lion8bit_fused_backward"
 
     # base_trainer.py:3818-3838 generic loop
+    from core.training.optimizers.live_param_group import live_param_group
     for group in opt.param_groups:
         for p in group["params"]:
             if not p.requires_grad:
                 continue
 
-            def hook(tensor: torch.Tensor, pg=group):
-                opt.step_param(tensor, pg)
+            def hook(tensor: torch.Tensor):
+                opt.step_param(tensor, live_param_group(opt, tensor)[0])
                 tensor.grad = None
 
             p.register_post_accumulate_grad_hook(hook)

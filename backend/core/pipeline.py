@@ -4934,6 +4934,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             self.is_zimage_model or self.is_flux2_model or self.is_anima_model
             or self.is_lens_model or self.is_ideogram4_model or self.is_minit2i_model
             or self.is_krea2_model or self.is_ltx2_model or self.is_sensenova_model
+            or self.is_sensenova_sdxl_chimera_model
         ):
             from api.error_handlers import ValidationError
             raise ValidationError(
@@ -4970,6 +4971,11 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # SenseNova-U1.5-8B-MoT (SDEdit over the flow-matching denoise loop)
         if self.is_sensenova_model:
             return self._generate_img2img_sensenova(params, init_image, progress_callback, step_callback)
+
+        if self.is_sensenova_sdxl_chimera_model:
+            return self._generate_img2img_sensenova_sdxl_chimera(
+                params, init_image, progress_callback, step_callback
+            )
 
         # LTX-2.3 is a video model — image endpoints must not run it (P1b adds
         # /generate/txt2vid, /generate/img2vid).
@@ -5729,6 +5735,11 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # SenseNova-U1.5-8B-MoT (RePaint over the flow-matching denoise loop)
         if self.is_sensenova_model:
             return self._generate_inpaint_sensenova(params, init_image, mask_image, progress_callback, step_callback)
+
+        if self.is_sensenova_sdxl_chimera_model:
+            return self._generate_inpaint_sensenova_sdxl_chimera(
+                params, init_image, mask_image, progress_callback, step_callback
+            )
 
         # LTX-2.3 is a video model — image endpoints must not run it (P1b adds
         # /generate/txt2vid, /generate/img2vid).

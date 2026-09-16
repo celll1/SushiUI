@@ -1,4 +1,4 @@
-"""Text-to-image inference operations for SenseNova SDXL Chimera."""
+"""Image inference operations for SenseNova SDXL Chimera."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from .attention_processor import (
     install_chimera_attention_processors,
     set_chimera_attention_context,
 )
-from .flow import flow_euler_step
+from .flow import flow_euler_step, flow_noising
 from .prefix import encode_chimera_conditioning
 
 
@@ -117,36 +117,67 @@ def _unet_velocity(
     )[0]
 
 
-def sample_txt2img_latents(
+def encode_image_latents(
+    vae,
+    image: Image.Image,
+    *,
+    height: int,
+    width: int,
+    device: torch.device | str,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """Encode one RGB image with the artifact VAE's deterministic posterior mode."""
+    image = image.convert("RGB").resize((width, height), Image.Resampling.LANCZOS)
+    pixels = torch.from_numpy(np.asarray(image, dtype=np.float32).copy())
+    pixels = pixels.permute(2, 0, 1).unsqueeze(0).to(device=device, dtype=dtype)
+    pixels = pixels.mul(2.0).sub(1.0)
+    encoded = vae.encode(pixels).latent_dist.mode()
+    scaling = float(getattr(vae.config, "scaling_factor", 1.0))
+    shift = float(getattr(vae.config, "shift_factor", 0.0) or 0.0)
+    return (encoded - shift) * scaling
+
+
+def prepare_generate_mask(
+    mask_image: Image.Image,
+    *,
+    latent_height: int,
+    latent_width: int,
+    device: torch.device | str,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """Return a latent mask where one means generate and zero means preserve."""
+    mask = mask_image.convert("L").resize(
+        (latent_width, latent_height), Image.Resampling.NEAREST
+    )
+    values = torch.from_numpy(np.asarray(mask, dtype=np.float32).copy())
+    return values.unsqueeze(0).unsqueeze(0).to(device=device, dtype=dtype).div(255.0)
+
+
+def _sample_flow_latents(
     unet,
     positive: ChimeraConditioning,
     negative: ChimeraConditioning | None,
     *,
+    sample: torch.Tensor,
+    times: torch.Tensor,
+    start_index: int,
+    source_latents: torch.Tensor | None,
+    source_noise: torch.Tensor | None,
+    generate_mask: torch.Tensor | None,
     height: int,
     width: int,
-    steps: int,
     cfg_scale: float,
-    seed: int,
-    timestep_shift: float = 1.0,
-    cfg_mode: str = "sequential",
-    original_height: int | None = None,
-    original_width: int | None = None,
-    crop_top: int = 0,
-    crop_left: int = 0,
-    attention_backend: str = "normal",
-    progress_callback: Callable[[int, int, torch.Tensor], None] | None = None,
+    cfg_mode: str,
+    original_height: int,
+    original_width: int,
+    crop_top: int,
+    crop_left: int,
+    attention_backend: str,
+    progress_callback: Callable[[int, int, torch.Tensor], None] | None,
 ) -> torch.Tensor:
-    if height % 8 or width % 8:
-        raise ValueError("Chimera width and height must be divisible by 8")
-    if cfg_mode not in {"sequential", "batched"}:
-        raise ValueError(f"unsupported Chimera CFG mode: {cfg_mode}")
-    device = next(unet.parameters()).device
-    dtype = next(unet.parameters()).dtype
-    generator = torch.Generator(device=device).manual_seed(int(seed))
-    sample = torch.randn((1, 4, height // 8, width // 8), generator=generator, device=device, dtype=dtype)
-    times = shifted_timesteps(steps, timestep_shift, device=device)
-    original_height = int(original_height or height)
-    original_width = int(original_width or width)
+    device = sample.device
+    dtype = sample.dtype
+    steps = len(times) - 1
     time_ids = sdxl_time_ids(
         1,
         original_height=original_height,
@@ -163,7 +194,7 @@ def sample_txt2img_latents(
     install_chimera_attention_processors(unet, backend=attention_backend)
     try:
         with torch.inference_mode():
-            for index in range(steps):
+            for index in range(start_index, steps):
                 timestep = times[index].to(dtype=dtype)
                 if not needs_cfg:
                     velocity = _unet_velocity(
@@ -201,11 +232,138 @@ def sample_txt2img_latents(
                     )
                     velocity = uncond + float(cfg_scale) * (cond - uncond)
                 sample = flow_euler_step(sample, velocity, times[index], times[index + 1])
+                if generate_mask is not None:
+                    source_at_next = flow_noising(
+                        source_latents, source_noise, times[index + 1]
+                    )
+                    sample = generate_mask * sample + (1.0 - generate_mask) * source_at_next
                 if progress_callback is not None:
                     progress_callback(index + 1, steps, sample)
         return sample
     finally:
         clear_chimera_attention_caches(unet)
+
+
+def sample_txt2img_latents(
+    unet,
+    positive: ChimeraConditioning,
+    negative: ChimeraConditioning | None,
+    *,
+    height: int,
+    width: int,
+    steps: int,
+    cfg_scale: float,
+    seed: int,
+    timestep_shift: float = 1.0,
+    cfg_mode: str = "sequential",
+    original_height: int | None = None,
+    original_width: int | None = None,
+    crop_top: int = 0,
+    crop_left: int = 0,
+    attention_backend: str = "normal",
+    progress_callback: Callable[[int, int, torch.Tensor], None] | None = None,
+) -> torch.Tensor:
+    if height % 8 or width % 8:
+        raise ValueError("Chimera width and height must be divisible by 8")
+    if cfg_mode not in {"sequential", "batched"}:
+        raise ValueError(f"unsupported Chimera CFG mode: {cfg_mode}")
+    device = next(unet.parameters()).device
+    dtype = next(unet.parameters()).dtype
+    generator = torch.Generator(device=device).manual_seed(int(seed))
+    sample = torch.randn((1, 4, height // 8, width // 8), generator=generator, device=device, dtype=dtype)
+    times = shifted_timesteps(steps, timestep_shift, device=device)
+    original_height = int(original_height or height)
+    original_width = int(original_width or width)
+    return _sample_flow_latents(
+        unet,
+        positive,
+        negative,
+        sample=sample,
+        times=times,
+        start_index=0,
+        source_latents=None,
+        source_noise=None,
+        generate_mask=None,
+        height=height,
+        width=width,
+        cfg_scale=cfg_scale,
+        cfg_mode=cfg_mode,
+        original_height=original_height,
+        original_width=original_width,
+        crop_top=crop_top,
+        crop_left=crop_left,
+        attention_backend=attention_backend,
+        progress_callback=progress_callback,
+    )
+
+
+def sample_img2img_latents(
+    unet,
+    positive: ChimeraConditioning,
+    negative: ChimeraConditioning | None,
+    source_latents: torch.Tensor,
+    *,
+    steps: int,
+    denoising_strength: float,
+    cfg_scale: float,
+    seed: int,
+    generate_mask: torch.Tensor | None = None,
+    timestep_shift: float = 1.0,
+    cfg_mode: str = "sequential",
+    original_height: int | None = None,
+    original_width: int | None = None,
+    crop_top: int = 0,
+    crop_left: int = 0,
+    attention_backend: str = "normal",
+    progress_callback: Callable[[int, int, torch.Tensor], None] | None = None,
+) -> torch.Tensor:
+    """Run deterministic SDEdit, optionally pinning the mask's preserve region."""
+    if not 0.0 <= float(denoising_strength) <= 1.0:
+        raise ValueError("Chimera denoising_strength must be between 0 and 1")
+    if cfg_mode not in {"sequential", "batched"}:
+        raise ValueError(f"unsupported Chimera CFG mode: {cfg_mode}")
+    if source_latents.ndim != 4 or source_latents.shape[0] != 1:
+        raise ValueError("Chimera source latents must have shape [1,C,H,W]")
+    device = next(unet.parameters()).device
+    dtype = next(unet.parameters()).dtype
+    source_latents = source_latents.to(device=device, dtype=dtype)
+    height = int(source_latents.shape[-2] * 8)
+    width = int(source_latents.shape[-1] * 8)
+    if generate_mask is not None:
+        expected = (1, 1, source_latents.shape[-2], source_latents.shape[-1])
+        if tuple(generate_mask.shape) != expected:
+            raise ValueError(f"Chimera generate mask must have shape {expected}")
+        generate_mask = generate_mask.to(device=device, dtype=dtype).clamp(0, 1)
+    generator = torch.Generator(device=device).manual_seed(int(seed))
+    noise = torch.randn(
+        source_latents.shape, generator=generator, device=device, dtype=dtype
+    )
+    times = shifted_timesteps(steps, timestep_shift, device=device)
+    start_index = min(steps, max(0, int(round((1.0 - float(denoising_strength)) * steps))))
+    if start_index == steps:
+        return source_latents
+    sample = flow_noising(source_latents, noise, times[start_index])
+    return _sample_flow_latents(
+        unet,
+        positive,
+        negative,
+        sample=sample,
+        times=times,
+        start_index=start_index,
+        source_latents=source_latents,
+        source_noise=noise,
+        generate_mask=generate_mask,
+        height=height,
+        width=width,
+        cfg_scale=cfg_scale,
+        cfg_mode=cfg_mode,
+        original_height=int(original_height or height),
+        original_width=int(original_width or width),
+        crop_top=crop_top,
+        crop_left=crop_left,
+        attention_backend=attention_backend,
+        progress_callback=progress_callback,
+    )
 
 
 def decode_latents(vae, latents: torch.Tensor) -> Image.Image:

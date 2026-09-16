@@ -25662,6 +25662,44 @@ components:
             checkpoint's `gen_patch_size`, and the generation loader rebuilds
             the tree from it, so a checkpoint trained at 8 reloads at 8.
           example: 0
+        sensenova_latent_refiner:
+          type: 'string'
+          enum: ['inherit', 'attach', 'detach']
+          default: 'inherit'
+          description: SenseNova only. Inherit the checkpoint branch, attach a zero-initialized latent-grid refiner, or detach an existing one at a full-fine-tune resume boundary.
+        sensenova_refiner_width:
+          type: 'integer'
+          minimum: 0
+          maximum: 1024
+          default: 0
+          description: 0 inherits the checkpoint width or selects 128 on first attach; positive values must be multiples of 16.
+        sensenova_refiner_depth:
+          type: 'integer'
+          minimum: 0
+          maximum: 8
+          default: 0
+          description: 0 inherits the checkpoint depth or selects 3 on first attach.
+        sensenova_refiner_training_mode:
+          type: 'string'
+          enum: ['joint', 'refiner_only', 'base_only']
+          default: 'joint'
+          description: Train base and refiner, only the refiner, or only the base while retaining input gradients through the frozen refiner.
+        sensenova_refiner_lr_factor:
+          type: 'number'
+          format: 'float'
+          exclusiveMinimum: 0
+          default: 1
+          description: Refiner learning-rate multiplier relative to unet_lr.
+        sensenova_refiner_detach_mode:
+          type: 'string'
+          enum: ['anneal', 'hard']
+          default: 'anneal'
+          description: Linearly anneal an existing refiner gate before removal, or remove it immediately.
+        sensenova_refiner_detach_steps:
+          type: 'integer'
+          minimum: 1
+          default: 1000
+          description: Optimizer updates used by annealed detach.
         sensenova_noise_scale_gain:
           type: 'number'
           format: 'float'

@@ -225,6 +225,21 @@ def _build_train_section(
                                            _TD["vae_swap_new_channel_init"]),
         "sensenova_gen_patch": p.get("sensenova_gen_patch",
                                      _TD["sensenova_gen_patch"]),
+        "sensenova_latent_refiner": p.get(
+            "sensenova_latent_refiner", _TD["sensenova_latent_refiner"]),
+        "sensenova_refiner_width": p.get(
+            "sensenova_refiner_width", _TD["sensenova_refiner_width"]),
+        "sensenova_refiner_depth": p.get(
+            "sensenova_refiner_depth", _TD["sensenova_refiner_depth"]),
+        "sensenova_refiner_training_mode": p.get(
+            "sensenova_refiner_training_mode",
+            _TD["sensenova_refiner_training_mode"]),
+        "sensenova_refiner_lr_factor": p.get(
+            "sensenova_refiner_lr_factor", _TD["sensenova_refiner_lr_factor"]),
+        "sensenova_refiner_detach_mode": p.get(
+            "sensenova_refiner_detach_mode", _TD["sensenova_refiner_detach_mode"]),
+        "sensenova_refiner_detach_steps": p.get(
+            "sensenova_refiner_detach_steps", _TD["sensenova_refiner_detach_steps"]),
         "sensenova_noise_scale_gain": p.get("sensenova_noise_scale_gain",
                                             _TD["sensenova_noise_scale_gain"]),
         "sensenova_noise_scale_auto": p.get("sensenova_noise_scale_auto",

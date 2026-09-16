@@ -9,6 +9,12 @@ The implemented image-to-text and mixed-objective contract is recorded in
 the legacy meaning of `train_text_encoder` remain unchanged for configurations
 that do not declare text-task views.
 
+Latent-space SenseNova checkpoints may also carry the optional local
+generation refiner. Its checkpoint schema, `joint` / `refiner_only` /
+`base_only` update boundaries, detach lifecycle, 2048-4096px cost envelope and
+acceptance protocol are owned by
+`docs/guides/SENSENOVA_LATENT_REFINER_DESIGN.md`.
+
 ## Supported methods
 
 - LoRA training of the generation branch is supported.

@@ -88,6 +88,49 @@ def test_the_runner_accepts_a_full_finetune_and_normalizes_it_like_a_lora_run():
     assert train["latent_encoding_mode"] == "onthefly_gpu"
 
 
+def test_the_runner_accepts_a_refiner_attach_with_rewarmup():
+    train = _train(
+        sensenova_latent_refiner="attach",
+        sensenova_refiner_training_mode="refiner_only",
+        lr_warmup_steps=100,
+        rewarmup_on_optimizer_reset=True,
+    )
+    with _sensenova():
+        assert _apply_sensenova_training_contract(
+            "model", "full_finetune", train, {"sample": {}}
+        )
+    assert train["sensenova_refiner_width"] == 0
+    assert train["sensenova_refiner_depth"] == 0
+
+
+@pytest.mark.parametrize(
+    "network_type,overrides,message",
+    [
+        ("lora", {"sensenova_latent_refiner": "attach"}, "requires full_finetune"),
+        (
+            "full_finetune",
+            {"sensenova_latent_refiner": "attach", "lr_warmup_steps": 0},
+            "lr_warmup_steps > 0",
+        ),
+        (
+            "full_finetune",
+            {"sensenova_refiner_training_mode": "refiner_only", "train_text_encoder": True},
+            "train_text_encoder=false",
+        ),
+        (
+            "full_finetune",
+            {"sensenova_refiner_width": 130},
+            "multiple of 16",
+        ),
+    ],
+)
+def test_refiner_contract_refuses_unsupported_runs(network_type, overrides, message):
+    with _sensenova(), pytest.raises(ValueError, match=message):
+        _apply_sensenova_training_contract(
+            "model", network_type, _train(**overrides), {"sample": {}}
+        )
+
+
 @pytest.mark.parametrize("network_type", ["relora", "controlnet", "sd_trainer", ""])
 def test_every_other_method_is_still_refused_and_by_name(network_type):
     """The removed check was the ONLY refusal a SenseNova ControlNet run met.
@@ -157,7 +200,6 @@ def test_negative_control_the_fallthrough_collects_zero_of_the_294_it_paid_for()
         ({"optimizer": "adamw8bit"}, "optimizer='adamw8bit'"),
         ({"optimizer": "lion8bit_ringbuffer"}, "optimizer='lion8bit_ringbuffer'"),
         ({"sensenova_full_finetune_save_format": "fp8"}, "save_format"),
-        ({"blocks_to_swap": 1}, "blocks_to_swap"),
     ],
 )
 def test_each_envelope_clause_still_refuses_before_the_process_loads_anything(

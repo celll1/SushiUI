@@ -15174,6 +15174,27 @@ class TrainingRunCreateRequest(BaseModel):
     sensenova_gen_patch: int = Field(
         default=TRAINING_DEFAULTS["sensenova_gen_patch"], ge=0
     )
+    sensenova_latent_refiner: Literal["inherit", "attach", "detach"] = (
+        TRAINING_DEFAULTS["sensenova_latent_refiner"]
+    )
+    sensenova_refiner_width: int = Field(
+        default=TRAINING_DEFAULTS["sensenova_refiner_width"], ge=0, le=1024
+    )
+    sensenova_refiner_depth: int = Field(
+        default=TRAINING_DEFAULTS["sensenova_refiner_depth"], ge=0, le=8
+    )
+    sensenova_refiner_training_mode: Literal[
+        "joint", "refiner_only", "base_only"
+    ] = TRAINING_DEFAULTS["sensenova_refiner_training_mode"]
+    sensenova_refiner_lr_factor: float = Field(
+        default=TRAINING_DEFAULTS["sensenova_refiner_lr_factor"], gt=0
+    )
+    sensenova_refiner_detach_mode: Literal["anneal", "hard"] = (
+        TRAINING_DEFAULTS["sensenova_refiner_detach_mode"]
+    )
+    sensenova_refiner_detach_steps: int = Field(
+        default=TRAINING_DEFAULTS["sensenova_refiner_detach_steps"], ge=1
+    )
     sensenova_noise_scale_gain: float = Field(
         default=TRAINING_DEFAULTS["sensenova_noise_scale_gain"], ge=0
     )

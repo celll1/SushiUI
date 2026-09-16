@@ -663,6 +663,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // understanding-only branch; the backend warns and proceeds rather than
   // refusing, so this is a note next to the control, not a disable.
   const fmModulesUnsupported = unsupportedTrainingFeature("sensenova_train_fm_modules");
+  const latentRefinerUnsupported = unsupportedTrainingFeature("sensenova_latent_refiner");
   const fmModulesInertReason: string | undefined =
     !trainUnet
       ? "Train U-Net is off, so this run trains the understanding half only. fm_modules is generation-side: the backend warns and trains the decoder Linears alone."
@@ -5428,6 +5429,89 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 </label>
               );
             })}
+          </div>
+        )}
+
+        {isSenseNovaModel(baseModelPath) && trainingMethod === "full_finetune" && (
+          <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-3">
+            <h3 className="text-sm font-medium text-gray-300">SenseNova Latent Refiner</h3>
+            {latentRefinerUnsupported ? (
+              <p className="text-xs text-yellow-500">{latentRefinerUnsupported}</p>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">State</label>
+                    <select
+                      value={params.sensenova_latent_refiner ?? "inherit"}
+                      onChange={(e) => updateParam("sensenova_latent_refiner", e.target.value)}
+                      disabled={!!requiredValue("sensenova_latent_refiner")}
+                      className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs disabled:opacity-60"
+                    >
+                      <option value="inherit">Inherit checkpoint</option>
+                      <option value="attach">Attach / continue</option>
+                      <option value="detach">Detach</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Training mode</label>
+                    <select
+                      value={params.sensenova_refiner_training_mode ?? "joint"}
+                      onChange={(e) => updateParam("sensenova_refiner_training_mode", e.target.value)}
+                      className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+                    >
+                      <option value="joint">Joint (base + refiner)</option>
+                      <option value="refiner_only">Refiner only</option>
+                      <option value="base_only">Base only</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-3">
+                  <label className="text-xs text-gray-400">
+                    Width (0 = inherit/128)
+                    <input type="number" min={0} max={1024} step={16}
+                      value={params.sensenova_refiner_width ?? 0}
+                      onChange={(e) => updateParam("sensenova_refiner_width", parseInt(e.target.value) || 0)}
+                      className="mt-1 w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                  </label>
+                  <label className="text-xs text-gray-400">
+                    Depth (0 = inherit/3)
+                    <input type="number" min={0} max={8}
+                      value={params.sensenova_refiner_depth ?? 0}
+                      onChange={(e) => updateParam("sensenova_refiner_depth", parseInt(e.target.value) || 0)}
+                      className="mt-1 w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                  </label>
+                  <label className="text-xs text-gray-400">
+                    LR factor
+                    <input type="number" min={0.0001} step="any"
+                      value={params.sensenova_refiner_lr_factor ?? 1}
+                      onChange={(e) => updateParam("sensenova_refiner_lr_factor", parseFloat(e.target.value) || 1)}
+                      className="mt-1 w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                  </label>
+                </div>
+                {(params.sensenova_latent_refiner ?? "inherit") === "detach" && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <select value={params.sensenova_refiner_detach_mode ?? "anneal"}
+                      onChange={(e) => updateParam("sensenova_refiner_detach_mode", e.target.value)}
+                      className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs">
+                      <option value="anneal">Anneal gate</option>
+                      <option value="hard">Hard detach</option>
+                    </select>
+                    <input type="number" min={1}
+                      value={params.sensenova_refiner_detach_steps ?? 1000}
+                      onChange={(e) => updateParam("sensenova_refiner_detach_steps", parseInt(e.target.value) || 1000)}
+                      disabled={(params.sensenova_refiner_detach_mode ?? "anneal") === "hard"}
+                      className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs disabled:opacity-60" />
+                  </div>
+                )}
+                <RequiredValueNote entry={requiredValue("sensenova_latent_refiner")} />
+                <p className="text-xs text-gray-500">
+                  Refiner-only freezes the distributed base and trains only the local latent-grid branch.
+                  It requires the Mixed checkpoint format. Base-only keeps the refiner fixed while gradients
+                  continue through it into the generation base.
+                </p>
+              </>
+            )}
           </div>
         )}
 

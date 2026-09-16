@@ -7,6 +7,7 @@ import torch
 from safetensors.torch import save_file
 
 from core.models.sensenova_sdxl_chimera.understanding import (
+    _configure_understanding_tokens,
     _read_understanding_state_dict,
     is_understanding_tensor_key,
 )
@@ -31,6 +32,23 @@ def test_understanding_key_filter_excludes_every_generation_component():
     )
     assert all(is_understanding_tensor_key(key) for key in accepted)
     assert not any(is_understanding_tensor_key(key) for key in refused)
+
+
+def test_understanding_loader_configures_image_prefix_token_ids():
+    class Model:
+        img_context_token_id = None
+        img_start_token_id = None
+
+    class Tokenizer:
+        ids = {"<IMG_CONTEXT>": 151671, "<img>": 151670}
+
+        def convert_tokens_to_ids(self, token):
+            return self.ids.get(token)
+
+    model = Model()
+    _configure_understanding_tokens(model, Tokenizer())
+    assert model.img_context_token_id == 151671
+    assert model.img_start_token_id == 151670
 
 
 def test_selective_reader_never_requests_generation_payload(tmp_path):

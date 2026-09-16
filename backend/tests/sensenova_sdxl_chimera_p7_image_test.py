@@ -9,6 +9,8 @@ from PIL import Image
 from core.models.sensenova_sdxl_chimera.attention_processor import ChimeraAttnProcessor
 from core.models.sensenova_sdxl_chimera.pipeline_ops import (
     ChimeraConditioning,
+    decode_latents,
+    encode_image_latents,
     sample_img2img_latents,
 )
 
@@ -26,6 +28,46 @@ class _ZeroUNet(torch.nn.Module):
     def forward(self, sample, timestep, **kwargs):
         self.calls += 1
         return (torch.zeros_like(sample),)
+
+
+class _DtypeVAE(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.anchor = torch.nn.Parameter(torch.zeros((), dtype=torch.float16))
+        self.config = SimpleNamespace(scaling_factor=0.13025, shift_factor=None)
+        self.seen_encode_dtype = None
+        self.seen_decode_dtype = None
+
+    def encode(self, pixels):
+        self.seen_encode_dtype = pixels.dtype
+        latents = torch.zeros(
+            pixels.shape[0], 4, pixels.shape[2] // 8, pixels.shape[3] // 8,
+            device=pixels.device, dtype=pixels.dtype,
+        )
+        return SimpleNamespace(latent_dist=SimpleNamespace(mode=lambda: latents))
+
+    def decode(self, latents, return_dict=False):
+        self.seen_decode_dtype = latents.dtype
+        pixels = torch.zeros(
+            latents.shape[0], 3, latents.shape[2] * 8, latents.shape[3] * 8,
+            device=latents.device, dtype=latents.dtype,
+        )
+        return (pixels,)
+
+
+def test_vae_boundary_uses_vae_dtype_and_returns_unet_dtype():
+    vae = _DtypeVAE()
+    image = Image.new("RGB", (16, 16), (10, 20, 30))
+
+    latents = encode_image_latents(
+        vae, image, height=16, width=16, device="cpu", dtype=torch.bfloat16
+    )
+    decoded = decode_latents(vae, latents)
+
+    assert vae.seen_encode_dtype == torch.float16
+    assert latents.dtype == torch.bfloat16
+    assert vae.seen_decode_dtype == torch.float16
+    assert decoded.size == (16, 16)
 
 
 def _conditioning() -> ChimeraConditioning:

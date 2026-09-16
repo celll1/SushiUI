@@ -129,12 +129,17 @@ def encode_image_latents(
     """Encode one RGB image with the artifact VAE's deterministic posterior mode."""
     image = image.convert("RGB").resize((width, height), Image.Resampling.LANCZOS)
     pixels = torch.from_numpy(np.asarray(image, dtype=np.float32).copy())
-    pixels = pixels.permute(2, 0, 1).unsqueeze(0).to(device=device, dtype=dtype)
+    vae_parameter = next(vae.parameters(), None)
+    vae_device = vae_parameter.device if vae_parameter is not None else torch.device(device)
+    vae_dtype = vae_parameter.dtype if vae_parameter is not None else dtype
+    pixels = pixels.permute(2, 0, 1).unsqueeze(0).to(
+        device=vae_device, dtype=vae_dtype
+    )
     pixels = pixels.mul(2.0).sub(1.0)
     encoded = vae.encode(pixels).latent_dist.mode()
     scaling = float(getattr(vae.config, "scaling_factor", 1.0))
     shift = float(getattr(vae.config, "shift_factor", 0.0) or 0.0)
-    return (encoded - shift) * scaling
+    return ((encoded - shift) * scaling).to(device=device, dtype=dtype)
 
 
 def prepare_generate_mask(
@@ -369,6 +374,9 @@ def sample_img2img_latents(
 def decode_latents(vae, latents: torch.Tensor) -> Image.Image:
     scaling = float(getattr(vae.config, "scaling_factor", 1.0))
     shift = float(getattr(vae.config, "shift_factor", 0.0) or 0.0)
+    vae_parameter = next(vae.parameters(), None)
+    if vae_parameter is not None:
+        latents = latents.to(device=vae_parameter.device, dtype=vae_parameter.dtype)
     decoded = vae.decode(latents / scaling + shift, return_dict=False)[0]
     pixels = (decoded.float() / 2.0 + 0.5).clamp(0, 1)
     array = (

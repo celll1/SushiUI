@@ -820,7 +820,10 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
         import os
 
         from core.models.sensenova.loader import (
+            SENSENOVA_REFINER_DELTA_KIND,
             save_sensenova_full_finetune_checkpoint,
+            save_sensenova_refiner_delta_checkpoint,
+            sensenova_checkpoint_metadata,
         )
         from core.training.training_events import emit_training_warning
 
@@ -830,6 +833,7 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
         refiner_only = _refiner_mode(trainer) == "refiner_only"
         save_branch = branch
         source_branch = ""
+        source_format = ""
         if refiner_only:
             source_branch = str(getattr(
                 trainer, "sensenova_source_trained_branch", ""
@@ -848,24 +852,6 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
         configured_base = str(
             getattr(trainer, "configured_model_path", "") or ""
         ).strip()
-
-        if save_format == "mixed" and save_branch == "both":
-            message = (
-                "SenseNova refiner_only is preserving a source checkpoint whose "
-                "two MoT halves are already floating point, so 'mixed' has no "
-                "int8 half to retain and is written as 'bf16'. The decoder "
-                "weights remain frozen; only the latent refiner was trained."
-                if refiner_only else
-                "SenseNova full fine-tuning is training both MoT halves, so the "
-                "'mixed' checkpoint format has no int8 half left to keep and the "
-                "'bf16' file is written instead (both halves floating point). "
-                "The checkpoint's metadata records the effective format."
-            )
-            emit_training_warning(
-                message,
-                code="sensenova_save_format_degenerate",
-                prefix=getattr(trainer, "log_prefix", "[SenseNova]"),
-            )
 
         extra_metadata = {"step": str(step), "epoch": str(epoch)}
         if refiner_only:
@@ -895,6 +881,7 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
                 ),
                 "sensenova_save_layout_branch": save_branch,
                 "sensenova_refiner_training_mode": "refiner_only",
+                "sensenova_base_save_format": source_format,
             })
         scopes = _explicit_scopes(trainer)
         if scopes:
@@ -905,6 +892,46 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
                 list((getattr(trainer, "config", None) or {}).get(
                     "_sensenova_prompt_template_versions", ()
                 ))
+            )
+
+        save_kind = str(getattr(trainer, "_checkpoint_save_kind", "manual"))
+        if refiner_only and save_kind == "periodic":
+            base_path = configured_base or str(model_path or "").strip()
+            if not base_path:
+                raise RuntimeError(
+                    "SenseNova periodic refiner delta has no complete base checkpoint"
+                )
+            written = save_sensenova_refiner_delta_checkpoint(
+                trainer.transformer,
+                str(output_path),
+                base_model_path=base_path,
+                config=getattr(trainer, "sensenova_model_config", None),
+                raw_config=getattr(trainer, "sensenova_config_dict", None),
+                source_dir=source_dir,
+                extra_metadata=extra_metadata,
+            )
+            print(
+                f"[SenseNovaFullParameterAdapter] step {step}: saved periodic "
+                f"refiner delta -> {written}"
+            )
+            return written
+
+        if save_format == "mixed" and save_branch == "both":
+            message = (
+                "SenseNova refiner_only is preserving a source checkpoint whose "
+                "two MoT halves are already floating point, so 'mixed' has no "
+                "int8 half to retain and is written as 'bf16'. The decoder "
+                "weights remain frozen; only the latent refiner was trained."
+                if refiner_only else
+                "SenseNova full fine-tuning is training both MoT halves, so the "
+                "'mixed' checkpoint format has no int8 half left to keep and the "
+                "'bf16' file is written instead (both halves floating point). "
+                "The checkpoint's metadata records the effective format."
+            )
+            emit_training_warning(
+                message,
+                code="sensenova_save_format_degenerate",
+                prefix=getattr(trainer, "log_prefix", "[SenseNova]"),
             )
         # A run in another VAE's latent space declares it, and bundles the VAE
         # unless it named a resolvable locator (design §8.7). The pixel run's
@@ -943,6 +970,17 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
             extra_metadata=extra_metadata,
             vae=vae_to_bundle,
         )
+        delta_path = str(output_path)
+        if not delta_path.endswith(".safetensors"):
+            delta_path += ".safetensors"
+        if os.path.isfile(delta_path) and os.path.abspath(delta_path) != os.path.abspath(written):
+            try:
+                if sensenova_checkpoint_metadata(delta_path).get(
+                    "sensenova_checkpoint_kind"
+                ) == SENSENOVA_REFINER_DELTA_KIND:
+                    os.unlink(delta_path)
+            except (OSError, ValueError, KeyError):
+                pass
         action = "preserved" if refiner_only else f"saved {len(targets)}"
         print(
             f"[SenseNovaFullParameterAdapter] step {step}: {action} "

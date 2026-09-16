@@ -14,6 +14,10 @@ that five smoke-test updates improve image quality.
   calibration memory (`a620d484`, `d7aa561e`), separate base lineage from save
   layout (`901564dd`, `15b794bc`), and admit a self-contained refined
   checkpoint as a portable base-training input (`567fe62f`).
+- Periodic `refiner_only` saves are small base-referenced refiner deltas;
+  completion, manual stop and recoverable emergency saves remain complete
+  portable checkpoints. This avoids rewriting the ~32 GiB frozen base at every
+  checkpoint interval while preserving ordinary latest-resume behavior.
 - Run 128,
   `sensenova_refiner_only_w128d3_run127_s93791`, starts from run127 step 93,791,
   uses dataset 38 only, one 2048-area bucket family, batch size 1, width 128,
@@ -540,7 +544,7 @@ group; after hard detach or completion, no module under that name.
 
 ### Tensors
 
-Under `fm_modules.fm_refiner.*`. The save iterates `transformer.state_dict()`
+Under `fm_modules.fm_refiner.*`. A portable save iterates `transformer.state_dict()`
 (`core/models/sensenova/loader.py:961`), which includes persistent buffers, so
 `gate` is written. Every save format (`mixed` / `bf16` / `int8`) writes
 non-decoder-Linear tensors as-is under the `other` census bucket
@@ -551,29 +555,50 @@ resume restores only `iter_sensenova_lora_targets(branch=frozen_half)` from the
 base (`loader.py:600-602`), so refiner tensors always come from the checkpoint.
 
 `refiner_only` requires requested
-`sensenova_full_finetune_save_format="mixed"`. The loaded decoder halves remain
-in their original classes and are emitted unchanged; the refiner is added under
-`other`. An int8/mixed source therefore stays mixed. A source such as run127
-whose two halves are already floating point is preserved as bf16: the metadata
-records requested `mixed`, effective `bf16`, the source base-training lineage
-(`gen` for run127), save layout `both`, and mode `refiner_only`. This distinction
-prevents a refiner-only save from falsely claiming that it trained both MoT
-halves. `bf16` and `int8` are refused as *requested* refiner-only formats because
-either would otherwise imply a base conversion that the run did not train.
-Round-trip tests compare every non-refiner tensor to the input checkpoint and
-require exact dtype, shape and value equality.
+`sensenova_full_finetune_save_format="mixed"`, but it has two deliberately
+different persistence products:
 
-The result is a complete checkpoint, not a sidecar. It can always run inference
-or continue `refiner_only` without the original base. It can also seed a new
-`base_only` or `joint` full fine-tune without the original int8 base only when
-all of the following fail-closed stamps agree: mode `refiner_only`, effective
-format `bf16`, save layout `both`, requested branch equal to the inherited
-base lineage, and a validated refiner declaration/tensor set. In that portable
-route the frozen MoT half remains bf16, so resident VRAM is higher and every
-subsequent full-parameter save must request `bf16`. Ordinary bf16 checkpoints
-remain refused as new training bases. When the original int8 base is available,
-the existing resume path may instead restore the frozen half to int8 for the
-lower-memory layout.
+- A **periodic checkpoint** is a refiner delta. It contains only
+  `transformer.fm_modules.fm_refiner.*`, the declaration, step/epoch, inherited
+  base lineage/save format, and an absolute path plus stat identity for the
+  complete base checkpoint. It keeps the ordinary `*_step_N.safetensors` name,
+  so latest-checkpoint discovery, paired training state, optimizer state and
+  retention keep working without a second resume mechanism. Loading it first
+  loads the referenced base, verifies its identity, strictly validates the
+  refiner payload, and installs the refiner. A delta chain is collapsed to the
+  original complete base when the next delta is written. This artefact is a
+  local resume point, not a distribution file: moving or deleting its base makes
+  it intentionally unloadable.
+- A **final, explicit/manual, interrupt or recoverable-emergency checkpoint** is
+  the complete portable checkpoint. The loaded decoder halves remain in their
+  original classes and are emitted unchanged; the refiner is added under
+  `other`. An int8/mixed source therefore stays mixed. A source such as run127
+  whose two halves are already floating point is preserved as bf16. Completion
+  always materializes this portable form even when the final step also hit the
+  periodic interval; after the complete shard index commits, the same-step
+  delta is removed.
+
+The portable metadata records requested `mixed`, the effective base format,
+the source base-training lineage (`gen` for run127), save layout `both`, and
+mode `refiner_only`. This distinction prevents a refiner-only save from falsely
+claiming that it trained both MoT halves. `bf16` and `int8` remain refused as
+*requested* refiner-only formats because either would imply a base conversion
+that the run did not train. Round-trip tests cover both products: the periodic
+file has exactly the declared refiner tensor set and composes with its named
+base; the portable save compares every non-refiner tensor to the input
+checkpoint and requires exact dtype, shape and value equality.
+
+The portable result can always run inference or continue `refiner_only` without
+the original base. It can also seed a new `base_only` or `joint` full fine-tune
+without the original int8 base only when all of the following fail-closed stamps
+agree: mode `refiner_only`, effective format `bf16`, save layout `both`,
+requested branch equal to the inherited base lineage, and a validated refiner
+declaration/tensor set. In that portable route the frozen MoT half remains bf16,
+so resident VRAM is higher and every subsequent full-parameter save must request
+`bf16`. Ordinary bf16 checkpoints and periodic deltas remain refused as new
+base-training inputs. When the original int8 base is available, the existing
+resume path may instead restore the frozen half to int8 for the lower-memory
+layout.
 
 ### Declaration
 

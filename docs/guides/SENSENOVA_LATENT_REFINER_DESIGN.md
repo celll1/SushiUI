@@ -536,48 +536,46 @@ This does not change the existing tolerance for other keys.
   therefore ramps nothing, and the zero-init `out` moves at full Lion LR on its
   first update. The runner refuses `attach` when the effective warmup is 0
   updates or the re-arm flag is off, with the reason, rather than warn.
-- **Warmup on attach does NOT work as is on the fused path. Two defects, both
-  fixed in P0 before any refiner code:**
-  1. *Whole-group fresh never reaches the per-tensor cohort.*
-     `_rearm_warmup_after_optimizer_reset` arms `arm_fresh_param_warmup` only for
-     `mixed_ids`, i.e. fresh tensors in groups that also hold restored tensors
-     (`base_trainer.py:7806-7823`). A wholly fresh appended group such as
-     `generation_refiner` instead gets a composed `scheduler.lr_lambdas[i]`
-     (`base_trainer.py:7835-7839`), which the fused hook never reads (defect 2).
-     Fix: on the fused path without fused groups, arm the cohort for **all** fresh
-     ids, whole-group included. `fresh_param_warmup_factor` is read off the
-     optimizer object (`fresh_param_warmup.py:25`) and does reach the hook
-     (`lion8bit_ringbuffer.py:697`). Established by code reading.
-  2. *Fused hooks read a stale group dict after any resume.* The hooks capture
-     the group dict at registration (`lion8bit_ringbuffer.py:642-647`, via
-     `fused_backward_registration.py:57-62`). Registration runs in
-     `setup_optimizer`, before the scheduler fast-forward
-     (`base_trainer.py:15818`) and the state load (`:15826`).
-     `_load_state_dict_uint8`'s `update_group` returns the *saved* dict (a
-     packed copy produced by `state_dict()`), and `__setstate__` replaces
-     `param_groups` with it (`lion8bit_ringbuffer.py:374-383`; the named load
-     calls it at `base_trainer.py:6061` with the live groups' packed copies).
-     From then on the scheduler writes the live dicts and the kernel reads the
-     orphaned one. **This is an existing defect independent of the refiner.**
-     Every fused Lion RB resume applies the LR frozen at the resume position,
-     while the logged LR (read from the live dicts) keeps following the
-     schedule. Verification level: code reading. A CPU repro script exists in
-     the session scratchpad (`hook_group_identity.py`), but its recorded output
-     is empty, so the runtime confirmation is **UNCONFIRMED** until P0's test
-     runs it. Fix: make `_load_state_dict_uint8` update the live group dicts in
-     place (keep identity), or make hooks resolve their group by index at call
-     time. Apply the same audit to the other ring-buffer/fused optimizers that
-     capture `group` (`adamw8bit_ringbuffer.py`, `adafactor_fused.py`,
-     `adamw8bit_fused.py`).
-- With both fixed, attach ramps the refiner 0 -> 1 over `lr_warmup_steps`
+- **Warmup on attach on the fused path: one defect, fixed in P0 (558ebf7d).**
+  Fused-backward hooks held the param-group dict captured at registration,
+  while a resume (`load_state_dict`, the trainer's direct or named load)
+  replaces `param_groups` with new dicts. The scheduler then wrote the live
+  dicts and the kernel read the orphaned one, so every fused resume applied the
+  LR frozen at the resume position. A wholly fresh appended group such as
+  `generation_refiner` gets its warmup from a composed `scheduler.lr_lambdas[i]`
+  (`_rearm_warmup_after_optimizer_reset`), which acts through the live group
+  LR; it failed to reach the kernel only as a consequence of the stale dict,
+  not as a separate defect. Fix: hooks hold no group and resolve the live
+  group on every call via `live_param_group(optimizer, param) -> (group,
+  gindex, pindex)` (`optimizers/live_param_group.py`; an id->position cache
+  accepted only if `optimizer.param_groups[gindex]["params"][pindex] is param`,
+  rebuilt otherwise). Applied in `lion8bit_ringbuffer.py`,
+  `adamw8bit_ringbuffer.py`, the generic hook in `base_trainer.py`
+  `_setup_fused_backward_pass` (Adafactor / bitsandbytes AdamW8bit) and
+  `adamw8bit_fused._param_index`. `fused_optimizer_groups.py`
+  (`num_optimizer_groups > 0`) was not affected: its hook calls `step()` on the
+  sub-optimizer, which reads live groups.
+- Tests: `backend/tests/fused_hook_live_param_group_test.py` (19 tests, CPU,
+  recording kernel stand-in; all 19 fail on the pre-fix code, pass after). They
+  cover `optimizer.load_state_dict`, trainer direct load, named load, prefix
+  remap, a `param_groups` split, and a wholly fresh appended group on resume:
+  through `_rearm_warmup_after_optimizer_reset` + `reassert_config_lr` the
+  fresh group's kernel LR is 0 at the anchor, 0.25x at +25 steps and the full
+  live scheduled LR from +100 (warmup 100), while the restored group gets the
+  live scheduled LR throughout. Verification level: CPU stand-in; real CUDA
+  kernels not exercised.
+- Arming the per-tensor cohort (`arm_fresh_param_warmup`) for whole-group fresh
+  ids is not needed: the test shows the composed-lambda warmup reaches the
+  kernel. The cohort stays limited to `mixed_ids`.
+- Attach therefore ramps the refiner 0 -> 1 over `lr_warmup_steps`
   (trainer attribute `optimizer_warmup_steps`, `base_trainer.py:2820`,
   `:7755`) from the resumed scheduler position. A new run that attaches at
   step 0 is covered by the global warmup.
-- Limitation, not changed here: the cohort is one per optimizer (the `setattr`
-  at `fresh_param_warmup.py:14`) with one warmup length. The refiner ramps over
-  the same length together with any other tensor fresh in the same resume. A
-  separate refiner warmup length would need a multi-cohort extension. It is
-  not proposed until a measurement shows the shared length is wrong.
+- The refiner group's warmup is its own composed lambda, per group, with length
+  `lr_warmup_steps`. The one-per-optimizer cohort (`fresh_param_warmup.py:14`)
+  applies only to fresh tensors mixed into restored groups. A separate refiner
+  warmup length would need a per-group length option; it is not proposed until
+  a measurement shows the shared length is wrong.
 - Annealed detach: the refiner is frozen, so it is in no group. The named load
   passes only matched state (`base_trainer.py:6056`), so the saved refiner
   state is dropped at that resume and is not in the next save. Fused
@@ -723,7 +721,7 @@ Per the existing SenseNova option path (template: `sensenova_gen_patch`):
 
 | Phase | Content | Gate |
 |---|---|---|
-| P0 | Fused-hook stale group dict fix (all capturing optimizers); cohort armed for whole-group fresh ids | CPU test: after `load_state_dict`, an LR written to the live group is the LR the kernel receives; a wholly fresh appended group gets factor 0 at the anchor. Independent of the refiner, committed on its own |
+| P0 (done, 558ebf7d) | Fused-hook stale group dict fix (all capturing optimizers; hooks resolve the live group per call) | CPU test (`fused_hook_live_param_group_test.py`): after `load_state_dict`, an LR written to the live group is the LR the kernel receives; a wholly fresh appended group gets LR 0 at the anchor via the composed lambda. Independent of the refiner, committed on its own |
 | P1 | `latent_refiner.py`, vendor build+call, `train_step` call, `noise_scale` threading, declaration, schema validator | CPU tests below pass |
 | P2 | State table, owning site, optimizer group, warmup path, anneal, census/grad-norm wiring, latent statistics guard, metrics | CPU tests below pass |
 | P3 | Params, API, YAML, runner refusals, capabilities, UI, probes, committed spectrum/grid probe | grep parity against `sensenova_gen_patch`, `py_compile` plus real import |
@@ -763,8 +761,8 @@ fp32):
    `_sushi_param_names` present after attach; plus `generation_refiner` in
    the census active set on an image batch and absent on a text batch.
 7. **Warmup:** resume of a refiner-less checkpoint with `attach` on the fused
-   Lion RB path marks exactly the refiner tensors fresh and arms the cohort for
-   them (whole-group case). The LR the hook hands the kernel is 0 at the anchor
+   Lion RB path marks exactly the refiner tensors fresh and composes the warmup
+   lambda for the refiner group (whole-group case). The LR the hook hands the kernel is 0 at the anchor
    and the live group LR after the warmup length. Restored tensors
    receive the live scheduled LR throughout (P0 regression). Refusal when the
    effective warmup is 0 or the re-arm flag is off.

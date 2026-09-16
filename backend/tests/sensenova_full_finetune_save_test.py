@@ -599,6 +599,19 @@ def test_refiner_only_preserves_a_bf16_source_as_both_halves(tmp_path):
     assert metadata["sensenova_save_format"] == "bf16"
 
 
+def test_portable_refiner_base_can_save_a_frozen_float_half_as_bf16(tmp_path):
+    transformer = _trained_tree("both")
+    adapter = _adapter(transformer, "gen", "bf16")
+    trainer = adapter.trainer
+    trainer.sensenova_portable_refiner_base = True
+
+    written = adapter.save_checkpoint(101, 1, tmp_path / "portable_base_only")
+    _raw, metadata = read_state_dict(written)
+
+    assert metadata["sensenova_trained_branch"] == "gen"
+    assert metadata["sensenova_save_format"] == "bf16"
+
+
 def test_adapter_refuses_an_unknown_format(tmp_path):
     adapter = _adapter(_trained_tree("gen"), "gen", "fp8")
     with pytest.raises(ValueError, match="Unknown sensenova_full_finetune_save_format"):

@@ -291,6 +291,33 @@ def test_a_float_tree_that_is_not_a_resume_is_left_to_the_shipped_gate(tmp_path)
         _assert_supported_quantized_training_base(tree, training_method="full")
 
 
+def test_a_refiner_distribution_is_a_portable_single_half_training_base(tmp_path):
+    tree = _MoTTree(gen_factory=_float, und_factory=_float)
+    tree.fm_modules = nn.ModuleDict({"fm_refiner": nn.Linear(4, 4, bias=False)})
+    trainer = SimpleNamespace(
+        model_path=str(tmp_path / "published_refiner.safetensors.index.json"),
+        output_dir=tmp_path / "new_run",
+        run_name="new_run",
+        resume_from_checkpoint=None,
+        log_prefix="[test]",
+    )
+    metadata = _metadata(
+        "gen",
+        "bf16",
+        sensenova_refiner_training_mode="refiner_only",
+        sensenova_save_layout_branch="both",
+    )
+
+    with patch("core.training.ops.sensenova_ops.emit_training_event") as event:
+        assert accept_resume_shaped_base(
+            trainer, tree, metadata, branch="gen"
+        ) == "bf16"
+
+    assert trainer.sensenova_portable_refiner_base is True
+    assert _half_linear_layout(tree)["und"]["counts"]["float"] == PER_HALF
+    assert "self-contained refiner distribution" in event.call_args.args[1]
+
+
 def test_the_acceptance_is_announced_on_the_channel_not_only_stdout(tmp_path):
     """Relaxing a gate is at least as worth telling the user about as degrading."""
     entry = f"{RUN_NAME}_step_000100.safetensors"

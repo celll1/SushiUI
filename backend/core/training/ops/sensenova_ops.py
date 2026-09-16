@@ -744,7 +744,7 @@ def accept_resume_shaped_base(
     *,
     branch: str,
 ) -> Optional[str]:
-    """Accept a full fine-tune's OWN checkpoint as a resume base, losslessly.
+    """Accept a lossless resume, or a self-contained refiner distribution base.
 
     Returns the accepted format label, or ``None`` to leave the decision to
     ``_assert_supported_quantized_training_base`` unchanged.
@@ -789,10 +789,25 @@ def accept_resume_shaped_base(
     if sum(layout[half]["counts"]["float"] for half in ("gen", "und")) == 0:
         # The distributed int8 layout, or something the shipped gate refuses.
         return None
+    claimed = metadata or {}
     checkpoint = _resume_selected_checkpoint(trainer)
-    if checkpoint is None:
-        # A float-carrying tree handed over as model_path: not this path's
-        # question, and the shipped gate already refuses it by name.
+    fm_modules = getattr(transformer, "fm_modules", None)
+    has_refiner = bool(
+        fm_modules is not None and "fm_refiner" in fm_modules
+    )
+    portable_refiner_base = bool(
+        checkpoint is None
+        and str(claimed.get("sensenova_refiner_training_mode") or "")
+        == "refiner_only"
+        and str(claimed.get("sensenova_save_layout_branch") or "") == "both"
+        and str(claimed.get("sensenova_save_format") or "") == "bf16"
+        and str(claimed.get("sensenova_trained_branch") or "") == branch
+        and has_refiner
+    )
+    if checkpoint is None and not portable_refiner_base:
+        # Ordinary float-carrying trees handed over as model_path remain under
+        # the shipped refusal. Only the self-describing refiner distribution
+        # contract above widens it.
         return None
 
     census = "; ".join(
@@ -806,8 +821,13 @@ def accept_resume_shaped_base(
     # ".safetensors" (test_the_acceptance_is_announced_on_the_channel_not_only_stdout),
     # so the refusal messages below match that convention rather than
     # switching case by case.
-    entry = _resume_entry_stem(checkpoint.name) or checkpoint.stem
-    step = int(_RESUME_STEP_RE.search(entry).group(1))
+    if portable_refiner_base:
+        path = Path(str(getattr(trainer, "model_path", "sensenova_refiner")))
+        entry = _resume_entry_stem(path.name) or path.stem
+        step = int(claimed.get("step") or 0)
+    else:
+        entry = _resume_entry_stem(checkpoint.name) or checkpoint.stem
+        step = int(_RESUME_STEP_RE.search(entry).group(1))
     trained_halves = ("gen", "und") if branch == "both" else (branch,)
     frozen_halves = tuple(h for h in ("gen", "und") if h not in trained_halves)
     HALF = _SENSENOVA_QUANT_LINEAR_COUNT // 2
@@ -851,7 +871,6 @@ def accept_resume_shaped_base(
             f"refused unconditionally."
         )
 
-    claimed = metadata or {}
     claimed_branch = str(claimed.get("sensenova_trained_branch") or "").strip()
     claimed_format = str(claimed.get("sensenova_save_format") or "").strip()
     if not claimed_branch or not claimed_format:
@@ -875,7 +894,7 @@ def accept_resume_shaped_base(
             f"tell different stories is refused rather than believed on either."
         )
 
-    if using_bf16_fallback:
+    if using_bf16_fallback and not portable_refiner_base:
         frozen_half = frozen_halves[0]
         base_path = _sensenova_resume_base_model_path(trainer, claimed)
         if not base_path:
@@ -914,12 +933,14 @@ def accept_resume_shaped_base(
                 f"half."
             )
 
-    aux_base = f"{getattr(trainer, 'run_name', '')}_step_{step:06d}"
-    missing = [
-        name
-        for name in (f"{aux_base}_optimizer.pt", f"{aux_base}_state.json")
-        if not (checkpoint.parent / name).is_file()
-    ]
+    missing = []
+    if not portable_refiner_base:
+        aux_base = f"{getattr(trainer, 'run_name', '')}_step_{step:06d}"
+        missing = [
+            name
+            for name in (f"{aux_base}_optimizer.pt", f"{aux_base}_state.json")
+            if not (checkpoint.parent / name).is_file()
+        ]
     if missing:
         # The weights resume losslessly either way; these two carry the Adafactor
         # state and the epoch/batch position. Losing them silently is what the
@@ -937,16 +958,27 @@ def accept_resume_shaped_base(
 
     # On the channel, not just stdout: relaxing a safety gate is at least as
     # worth telling the user about as the degraded case above, which warns.
-    detail = (
-        f"its frozen {frozen_halves[0]} half was restored from this run's own "
-        f"base model, verified tensor-for-tensor before the swap"
-        if using_bf16_fallback else
-        "the trained half is already floating point, so it is loaded as "
-        "saved and not re-materialized from int8"
-    )
+    if portable_refiner_base:
+        trainer.sensenova_portable_refiner_base = True
+        detail = (
+            f"its frozen {frozen_halves[0]} half stays floating point so the "
+            "artifact is portable without the original int8 base; this uses "
+            "more resident VRAM and subsequent saves must use bf16"
+        )
+    elif using_bf16_fallback:
+        detail = (
+            f"its frozen {frozen_halves[0]} half was restored from this run's "
+            "own base model, verified tensor-for-tensor before the swap"
+        )
+    else:
+        detail = (
+            "the trained half is already floating point, so it is loaded as "
+            "saved and not re-materialized from int8"
+        )
     emit_training_event(
         "info",
-        f"SenseNova is resuming the {branch!r} branch from its own checkpoint "
+        f"SenseNova accepted the {branch!r} branch from "
+        f"{'a self-contained refiner distribution' if portable_refiner_base else 'its own checkpoint'} "
         f"{entry} at step {step}, accepted losslessly as "
         f"sensenova_full_finetune_save_format='{claimed_format}' ({census}); "
         f"{detail}.",

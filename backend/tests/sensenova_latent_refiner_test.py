@@ -163,6 +163,13 @@ def test_refiner_only_uses_its_lr_factor_and_one_group():
     }
 
 
+def test_portable_refiner_base_requires_bf16_saves():
+    adapter, _transformer, _refiner = _training_adapter("base_only")
+    adapter.trainer.sensenova_portable_refiner_base = True
+    with pytest.raises(ValueError, match="requires.*save_format='bf16'"):
+        adapter.prepare_models_for_training()
+
+
 def _resolver_trainer(*, module=None, declaration=None, **config):
     transformer = torch.nn.Module()
     transformer.fm_modules = torch.nn.ModuleDict()

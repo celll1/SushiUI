@@ -575,6 +575,15 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
         # already trained. train_runner refuses it earlier still; this covers a
         # trainer built directly.
         save_format = self._resolve_save_format()
+        if (getattr(trainer, "sensenova_portable_refiner_base", False)
+                and save_format != "bf16"):
+            raise ValueError(
+                "SenseNova base_only/joint training from a self-contained "
+                "refiner distribution requires "
+                "sensenova_full_finetune_save_format='bf16': its frozen MoT "
+                "half is intentionally kept floating point because the "
+                "original int8 base is not required or assumed available"
+            )
         if _refiner_mode(trainer) == "refiner_only" and save_format != "mixed":
             raise ValueError(
                 "SenseNova refiner_only requires "

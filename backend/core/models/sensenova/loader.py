@@ -926,12 +926,23 @@ def save_sensenova_full_finetune_checkpoint(
             f"writing them would produce a file that loads clean and silently "
             f"carries the base weights for part of the half."
         )
-    not_int8 = sorted(path for path, module in frozen.items() if type(module) is not Int8Linear)
-    if not_int8:
+    invalid_frozen = sorted(
+        path for path, module in frozen.items()
+        if not (
+            type(module) is Int8Linear
+            or (
+                effective == "bf16"
+                and isinstance(getattr(module, "weight", None), nn.Parameter)
+                and module.weight.dtype.is_floating_point
+            )
+        )
+    )
+    if invalid_frozen:
         raise RuntimeError(
             f"SenseNova save expects the untrained half's {len(frozen)} decoder "
-            f"Linear(s) to be plain Int8Linear, but {len(not_int8)} is/are not "
-            f"(first: {not_int8[0]})."
+            f"Linear(s) to be plain Int8Linear, or already-floating nn.Linear "
+            f"when writing bf16, but {len(invalid_frozen)} is/are neither "
+            f"(first: {invalid_frozen[0]})."
         )
 
     output_path = str(output_path)
@@ -1005,6 +1016,14 @@ def save_sensenova_full_finetune_checkpoint(
                         # scale-shape refusal: a mis-shaped scale broadcasts
                         # into a silently wrong weight rather than raising.
                         module = frozen[stem]
+                        if type(module) is not Int8Linear:
+                            writer.add(
+                                f"{TRANSFORMER_PREFIX}{key}",
+                                tensor.cpu().contiguous(),
+                            )
+                            weight_dtypes[stem] = tensor.dtype
+                            census["frozen_bf16"] += 1
+                            continue
                         scale = module.weight_scale
                         if scale.dim() != 1 or scale.shape[0] != module.out_features:
                             raise RuntimeError(

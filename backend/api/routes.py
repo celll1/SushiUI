@@ -60,7 +60,7 @@ from api.param_defaults import (
     OUTPAINT_AUDIO_ARCH_OVERLAYS,
     IMAGE_GEN_ARCH_OVERLAYS,
     PROMPT_ASSIST_DEFAULTS, MUSIC_PROMPT_ASSIST_DEFAULTS, MUSIC_LYRICS_ASSIST_DEFAULTS,
-    STUDIO_RENDER_DEFAULTS, H3_HYBRID_LOAD_DEFAULTS,
+    STUDIO_RENDER_DEFAULTS, H3_HYBRID_LOAD_DEFAULTS, CHIMERA_INITIALIZE_DEFAULTS,
     LORA_ITEM_DEFAULTS,
     VIDEO_CHAIN_DEFAULTS,
     VIDEO_CHAIN_PROVENANCE_DEFAULTS,
@@ -9700,6 +9700,57 @@ class CreateScratchMiniT2IRequest(BaseModel):
     vae_type: str = "sdxl"     # "sdxl" | "flux1" | "none" (none = pixel-space)
     name: str                  # output directory name
     target_dir: Optional[str] = None  # parent dir; default = first configured models dir
+
+
+class InitializeSenseNovaSDXLChimeraRequest(BaseModel):
+    output_name: str
+    understanding_source: str
+    sdxl_source: str
+    unet_initialization: Literal["scratch", "sdxl_transplant"] = (
+        CHIMERA_INITIALIZE_DEFAULTS["unet_initialization"]
+    )
+    initialization_seed: int = CHIMERA_INITIALIZE_DEFAULTS["initialization_seed"]
+    context_tokens: Literal[77] = CHIMERA_INITIALIZE_DEFAULTS["context_tokens"]
+
+
+@router.post("/models/sensenova-sdxl-chimera/initialize")
+async def initialize_sensenova_sdxl_chimera_endpoint(
+    request: InitializeSenseNovaSDXLChimeraRequest,
+):
+    """Build a complete Chimera artifact under the configured model root."""
+    from core.models.sensenova_sdxl_chimera.builder import initialize_chimera_from_paths
+
+    try:
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            executor,
+            lambda: initialize_chimera_from_paths(
+                settings.models_dir,
+                request.output_name,
+                understanding_source=request.understanding_source,
+                sdxl_source=request.sdxl_source,
+                unet_initialization=request.unet_initialization,
+                initialization_seed=request.initialization_seed,
+                context_tokens=request.context_tokens,
+            ),
+        )
+    except (FileNotFoundError, FileExistsError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to initialize Chimera: {exc}") from exc
+
+    global _models_cache
+    _models_cache = None
+    manifest = result["manifest"]
+    return {
+        "status": "success",
+        "path": result["directory"],
+        "output_name": request.output_name,
+        "model_type": manifest["model_type"],
+        "unet_initialization": manifest["unet"]["initialization"],
+        "unet_parameter_count": manifest["unet"]["parameter_count"],
+        "bridge_state": manifest["conditioning"]["bridge_state"],
+    }
 
 
 @router.post("/models/minit2i/create-scratch")

@@ -9786,6 +9786,60 @@ paths:
                         source_dir:
                           type: string
 
+  /models/sensenova-sdxl-chimera/initialize:
+    post:
+      tags: [models]
+      summary: Build a SenseNova SDXL Chimera artifact
+      description: |
+        Builds a complete, atomically published Chimera directory beneath the
+        configured model root. The SenseNova understanding source is hash-pinned,
+        the selected SDXL donor's U-Net geometry is preserved exactly, and its VAE
+        is bundled into the artifact. Scratch initialization is the default;
+        SDXL U-Net transplantation is experimental and still requires bridge alignment.
+      operationId: initializeSenseNovaSDXLChimera
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InitializeSenseNovaSDXLChimeraRequest'
+            examples:
+              scratch:
+                summary: Default scratch U-Net
+                value:
+                  output_name: snu1.5_sdxl_chimera
+                  understanding_source: "<MODEL_ROOT>/sensenova/sensenova_int8_convrot.safetensors"
+                  sdxl_source: "<MODEL_ROOT>/sdxl/donor.safetensors"
+                  unet_initialization: scratch
+                  initialization_seed: 0
+              transplant:
+                summary: Experimental strict SDXL U-Net transplant
+                value:
+                  output_name: snu1.5_sdxl_chimera_sdxl_init
+                  understanding_source: "<MODEL_ROOT>/sensenova/sensenova_int8_convrot.safetensors"
+                  sdxl_source: "<MODEL_ROOT>/sdxl/donor.safetensors"
+                  unet_initialization: sdxl_transplant
+                  initialization_seed: 0
+      responses:
+        '200':
+          description: Chimera artifact created and production-reload verified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InitializeSenseNovaSDXLChimeraResponse'
+        '400':
+          description: Invalid source, output name, initialization mode, or existing target
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Artifact construction failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /models/minit2i/create-scratch:
     post:
       tags: [models]
@@ -20951,6 +21005,43 @@ components:
         operation_id:
           type: string
           nullable: true
+
+    InitializeSenseNovaSDXLChimeraRequest:
+      type: object
+      required: [output_name, understanding_source, sdxl_source]
+      properties:
+        output_name:
+          type: string
+          description: One relative directory name beneath the configured model root
+        understanding_source:
+          type: string
+          description: Existing local SenseNova checkpoint path returned by the model catalog
+        sdxl_source:
+          type: string
+          description: Existing local SDXL single-file or diffusers-directory donor path
+        unet_initialization:
+          type: string
+          enum: [scratch, sdxl_transplant]
+          default: scratch
+        initialization_seed:
+          type: integer
+          default: 0
+        context_tokens:
+          type: integer
+          enum: [77]
+          default: 77
+
+    InitializeSenseNovaSDXLChimeraResponse:
+      type: object
+      required: [status, path, output_name, model_type, unet_initialization, unet_parameter_count, bridge_state]
+      properties:
+        status: {type: string}
+        path: {type: string}
+        output_name: {type: string}
+        model_type: {type: string, enum: [sensenova_sdxl_chimera]}
+        unet_initialization: {type: string, enum: [scratch, sdxl_transplant]}
+        unet_parameter_count: {type: integer}
+        bridge_state: {type: string}
 
     CreateScratchMiniT2IRequest:
       type: object

@@ -16,6 +16,8 @@ from core.models.sensenova_sdxl_chimera.builder import (
     initialize_chimera_atomically,
 )
 from core.models.sensenova_sdxl_chimera.loader import load_chimera_artifact
+from core.models.sensenova_sdxl_chimera.loader import preflight_chimera_artifact
+from core.model_loader import ModelLoader
 
 
 def _tiny_unet() -> UNet2DConditionModel:
@@ -177,3 +179,17 @@ def test_artifact_refuses_weight_census_damage(tmp_path):
     index_path.write_text(json.dumps(index), encoding="utf-8")
     with pytest.raises(ChimeraArtifactError, match="census mismatch"):
         load_chimera_artifact(result["directory"])
+
+
+def test_directory_detection_and_header_only_preflight(tmp_path, monkeypatch):
+    _und, _donor, _vae, result = _build(tmp_path)
+    assert ModelLoader.detect_model_type(result["directory"]) == "sensenova_sdxl_chimera"
+
+    def refuse_payload(*_args, **_kwargs):
+        raise AssertionError("preflight must not read artifact tensor payloads")
+
+    monkeypatch.setattr(
+        "core.models.sensenova_sdxl_chimera.loader.read_state_dict", refuse_payload
+    )
+    checked = preflight_chimera_artifact(result["directory"])
+    assert checked["manifest"]["model_type"] == "sensenova_sdxl_chimera"

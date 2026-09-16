@@ -8,7 +8,7 @@ from safetensors.torch import load_file
 from pathlib import Path
 
 ModelSource = Literal["safetensors", "diffusers", "huggingface", "gguf"]
-ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens", "ideogram4", "minit2i", "krea2", "ltx2", "acestep", "minimax_h3", "minimax_music3", "sensenova", "yue2"]
+ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens", "ideogram4", "minit2i", "krea2", "ltx2", "acestep", "minimax_h3", "minimax_music3", "sensenova", "sensenova_sdxl_chimera", "yue2"]
 
 class ModelLoader:
     """Handles loading models from various sources"""
@@ -145,7 +145,7 @@ class ModelLoader:
             # default noise_process by architecture family (ddpm for SD/SDXL).
             if "modelspec.prediction_type" in metadata:
                 pred_target = str(metadata["modelspec.prediction_type"]).strip().lower()
-                default_np = "flow" if model_type in ("zimage", "flux2", "minit2i", "krea2", "anima", "lens", "ltx2", "minimax_h3", "minimax_music3", "sensenova") else "ddpm"
+                default_np = "flow" if model_type in ("zimage", "flux2", "minit2i", "krea2", "anima", "lens", "ltx2", "minimax_h3", "minimax_music3", "sensenova", "sensenova_sdxl_chimera") else "ddpm"
                 print(f"[ModelLoader] Detected prediction_type from ModelSpec metadata: {pred_target}")
                 return {
                     "noise_process": metadata.get("modelspec.noise_process", default_np),
@@ -248,6 +248,12 @@ class ModelLoader:
                     "prediction_target": "velocity",
                     "source": "inferred"
                 }
+            elif model_type == "sensenova_sdxl_chimera":
+                return {
+                    "noise_process": "flow",
+                    "prediction_target": "velocity",
+                    "source": "inferred"
+                }
             else:  # sd15, sdxl
                 print(f"[ModelLoader] Inferred prediction config from {model_type.upper()} architecture")
                 return {
@@ -261,7 +267,7 @@ class ModelLoader:
             import traceback
             traceback.print_exc()
             # Fallback to safe defaults
-            flow_velocity = model_type in {"zimage", "sensenova"}
+            flow_velocity = model_type in {"zimage", "sensenova", "sensenova_sdxl_chimera"}
             return {
                 "noise_process": "flow" if flow_velocity else "ddpm",
                 "prediction_target": "velocity" if flow_velocity else "epsilon",
@@ -341,6 +347,8 @@ class ModelLoader:
         """
         if not os.path.isdir(path):
             return False
+        if os.path.isfile(os.path.join(path, "chimera.json")):
+            return True
         # Z-Image: transformer/config.json with Z-Image-specific keys
         transformer_config = os.path.join(path, "transformer", "config.json")
         if os.path.exists(transformer_config):
@@ -592,7 +600,7 @@ class ModelLoader:
             return "sd15"
         if mt in ("zimage", "z-image"):
             return "zimage"
-        if mt in ("minit2i", "krea2", "anima", "lens", "ideogram4", "sensenova"):
+        if mt in ("minit2i", "krea2", "anima", "lens", "ideogram4", "sensenova", "sensenova_sdxl_chimera"):
             return mt
         if mt == "siglip2_vision_encoder":
             return "vision_encoder"
@@ -629,6 +637,20 @@ class ModelLoader:
         # not a filesystem path — handled by the in-memory build path in the loader.
         if isinstance(model_path, str) and model_path.startswith("scratch:minit2i:"):
             return "minit2i"
+
+        # Chimera is a directory artifact with its own completion manifest.
+        # Match it before every broad diffusers/SDXL directory heuristic.
+        if os.path.isdir(model_path):
+            manifest_path = os.path.join(model_path, "chimera.json")
+            if os.path.isfile(manifest_path):
+                try:
+                    with open(manifest_path, encoding="utf-8") as handle:
+                        manifest = json.load(handle)
+                    if (manifest.get("model_type") == "sensenova_sdxl_chimera"
+                            and int(manifest.get("format_version", 0)) == 1):
+                        return "sensenova_sdxl_chimera"
+                except Exception:
+                    pass
 
         # sushiUI shard index (<stem>.safetensors.index.json): read metadata
         # model_type first; else probe weight_map KEY NAMES (no tensor open).
@@ -2670,6 +2692,13 @@ class ModelLoader:
         # Z-Image uses component-based loading
         if model_type == "zimage":
             return ModelLoader.load_zimage_from_diffusers(model_path, device, torch.bfloat16)
+
+        if model_type == "sensenova_sdxl_chimera":
+            from core.models.sensenova_sdxl_chimera.loader import load_chimera_artifact
+
+            return load_chimera_artifact(
+                model_path, torch_dtype=torch.bfloat16, load_understanding=True
+            )
 
         # Anima split-files directory layout
         if model_type == "anima":

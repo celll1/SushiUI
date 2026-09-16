@@ -161,6 +161,12 @@ H3_HYBRID_LOAD_DEFAULTS: Dict[str, Any] = {
     "final_adaln_from_overlay": DEFAULT_FINAL_ADALN_FROM_OVERLAY,
 }
 
+CHIMERA_INITIALIZE_DEFAULTS: Dict[str, Any] = {
+    "unet_initialization": "scratch",
+    "initialization_seed": 0,
+    "context_tokens": 77,
+}
+
 # ---------------------------------------------------------------------------
 # SenseNova-U1.5-8B-MoT generation defaults
 # ---------------------------------------------------------------------------

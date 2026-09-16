@@ -18,6 +18,7 @@ def main():
     parser.add_argument("--understanding-source", required=True)
     parser.add_argument("--sdxl-source", required=True)
     parser.add_argument("--output-name", default="snu1.5_sdxl_chimera")
+    parser.add_argument("--target-dir")
     parser.add_argument(
         "--unet-initialization", choices=("scratch", "sdxl_transplant"), default="scratch"
     )
@@ -29,6 +30,7 @@ def main():
     url = f"{BASE_URL}/models/sensenova-sdxl-chimera/initialize"
     payload = {
         "output_name": args.output_name,
+        "target_dir": args.target_dir,
         "understanding_source": args.understanding_source,
         "sdxl_source": args.sdxl_source,
         "unet_initialization": args.unet_initialization,

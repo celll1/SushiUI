@@ -9794,7 +9794,7 @@ paths:
       summary: Build a SenseNova SDXL Chimera artifact
       description: |
         Builds a complete, atomically published Chimera directory beneath the
-        configured model root. The SenseNova understanding source is hash-pinned,
+        selected configured model root. The SenseNova understanding source is hash-pinned,
         the selected SDXL donor's U-Net geometry is preserved exactly, and its VAE
         is bundled into the artifact. Scratch initialization is the default;
         SDXL U-Net transplantation is experimental and still requires bridge alignment.
@@ -9810,6 +9810,7 @@ paths:
                 summary: Default scratch U-Net
                 value:
                   output_name: snu1.5_sdxl_chimera
+                  target_dir: "M:/models"
                   understanding_source: "<MODEL_ROOT>/sensenova/sensenova_int8_convrot.safetensors"
                   sdxl_source: "<MODEL_ROOT>/sdxl/donor.safetensors"
                   unet_initialization: scratch
@@ -21014,7 +21015,11 @@ components:
       properties:
         output_name:
           type: string
-          description: One relative directory name beneath the configured model root
+          description: One relative directory name beneath the selected configured model root
+        target_dir:
+          type: string
+          nullable: true
+          description: Configured model directory to use; defaults to the primary model root
         understanding_source:
           type: string
           description: Existing local SenseNova checkpoint path returned by the model catalog

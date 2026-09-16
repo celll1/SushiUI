@@ -6,6 +6,7 @@ import { initializeSenseNovaSDXLChimera } from "@/utils/api";
 
 export default function ChimeraInitializer() {
   const [outputName, setOutputName] = useState("snu1.5_sdxl_chimera");
+  const [targetDir, setTargetDir] = useState("");
   const [understandingSource, setUnderstandingSource] = useState("");
   const [sdxlSource, setSdxlSource] = useState("");
   const [initialization, setInitialization] = useState<"scratch" | "sdxl_transplant">("scratch");
@@ -19,6 +20,7 @@ export default function ChimeraInitializer() {
     try {
       const result = await initializeSenseNovaSDXLChimera({
         output_name: outputName,
+        target_dir: targetDir || undefined,
         understanding_source: understandingSource,
         sdxl_source: sdxlSource,
         unet_initialization: initialization,
@@ -47,6 +49,9 @@ export default function ChimeraInitializer() {
       </p>
       <label className="block text-xs text-gray-400">Output directory name
         <input className={`${fieldClass} mt-1`} value={outputName} onChange={(e) => setOutputName(e.target.value)} />
+      </label>
+      <label className="block text-xs text-gray-400">Configured model directory (optional)
+        <input className={`${fieldClass} mt-1`} value={targetDir} onChange={(e) => setTargetDir(e.target.value)} placeholder="M:\\models" />
       </label>
       <label className="block text-xs text-gray-400">SenseNova source
         <input className={`${fieldClass} mt-1`} value={understandingSource} onChange={(e) => setUnderstandingSource(e.target.value)} placeholder="M:\\model\\sensenova\\...safetensors" />

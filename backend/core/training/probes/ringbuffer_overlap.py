@@ -168,14 +168,15 @@ def build_and_hook(
         register_lion8bit_fused_backward(opt, model)
     elif name == "adafactor":
         from core.training.optimizers.adafactor_fused import patch_adafactor_fused
+        from core.training.optimizers.live_param_group import live_param_group
         patch_adafactor_fused(opt)
         for group in opt.param_groups:
             for p in group["params"]:
                 if not p.requires_grad:
                     continue
 
-                def hook(tensor: torch.Tensor, pg=group):
-                    opt.step_param(tensor, pg)
+                def hook(tensor: torch.Tensor):
+                    opt.step_param(tensor, live_param_group(opt, tensor)[0])
                     tensor.grad = None
 
                 p.register_post_accumulate_grad_hook(hook)

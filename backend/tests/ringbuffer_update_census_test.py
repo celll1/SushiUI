@@ -252,7 +252,7 @@ class CensusScopeIsParamGroupsTest(unittest.TestCase):
         optimizer = _FakeOptimizer([{"params": [module[0].weight], "use_8bit": True}])
         with self.assertRaises(RuntimeError) as ctx:
             register_fused_backward_hooks(
-                optimizer, module, "test", lambda p, g: (lambda param: None)
+                optimizer, module, "test", lambda p: (lambda param: None)
             )
         self.assertIn("in no param_group", str(ctx.exception))
 

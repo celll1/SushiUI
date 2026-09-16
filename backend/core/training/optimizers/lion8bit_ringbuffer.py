@@ -56,6 +56,7 @@ from .fused_grad_norm import record_fused_grad_norm, record_fused_grad_observati
 # Updated-parameter census (G-RB3): which parameters an update actually reached
 from .update_census import record_param_update
 from .fresh_param_warmup import fresh_param_warmup_factor
+from .live_param_group import live_param_group
 
 # Stochastic rounding helpers (shared with AdamW8bit_RingBuffer)
 from .stochastic_rounding import (
@@ -639,12 +640,8 @@ def register_lion8bit_fused_backward(optimizer, model):
     # constructor refuses schedule_free outright, so a Schedule-Free
     # Lion8bit_RingBuffer cannot be constructed to be passed in.
 
-    def create_update_hook(p: nn.Parameter, group: dict):
+    def create_update_hook(p: nn.Parameter):
         """Create hook function for a specific parameter."""
-
-        # The group is resolved once at registration (it comes from the iteration
-        # over param_groups) instead of being searched for on every backward: the
-        # previous per-hook scan was O(P) per parameter, i.e. O(P^2) per step.
 
         def hook(param: nn.Parameter):
             # Was a silent `return` here. Under fused backward nothing applies the
@@ -692,7 +689,7 @@ def register_lion8bit_fused_backward(optimizer, model):
                     f"so skipping would leave this parameter untrained for the whole run."
                 )
 
-            # Perform 8-bit update
+            group, _, _ = live_param_group(optimizer, param)
             beta1, beta2 = group['betas']
             lr = group['lr'] * fresh_param_warmup_factor(optimizer, param)
             weight_decay = group['weight_decay']

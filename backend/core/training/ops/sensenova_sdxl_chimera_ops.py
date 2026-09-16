@@ -62,10 +62,12 @@ def load_components(trainer) -> None:
     components = load_chimera_artifact(
         trainer.model_path,
         torch_dtype=trainer.weight_dtype,
+        vae_dtype=trainer.vae_dtype,
         load_understanding=True,
     )
     trainer.unet = components["unet"]
     trainer.vae = components["vae"].to(dtype=trainer.vae_dtype)
+    trainer.chimera_frozen_vae_state = components["frozen_vae_state"]
     trainer.condition_bridge = components["condition_bridge"]
     trainer.chimera_understanding = components["understanding"]["transformer"]
     trainer.text_encoder = trainer.chimera_understanding

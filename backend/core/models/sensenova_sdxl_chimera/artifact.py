@@ -15,6 +15,7 @@ import torch
 from safetensors import safe_open
 
 from core.models.common.single_file_format import is_index_path
+from core.models.common.vae_source import content_hash_for_state_dict
 from core.models.sensenova.loader import is_sensenova_state_dict_keys
 
 from .conditioning_bridge import ChimeraBridgeConfig
@@ -244,6 +245,7 @@ def save_chimera_checkpoint(
     bridge: torch.nn.Module,
     unet: torch.nn.Module,
     vae: torch.nn.Module,
+    frozen_vae_state: Mapping[str, torch.Tensor] | None = None,
     stage: str,
     step: int,
     epoch: int,
@@ -264,6 +266,9 @@ def save_chimera_checkpoint(
     temporary = Path(tempfile.mkdtemp(prefix=f".{target.name}.saving-", dir=str(target.parent)))
     try:
         manifest = json.loads(json.dumps(dict(base_manifest)))
+        vae_state = dict(frozen_vae_state or vae.state_dict())
+        if content_hash_for_state_dict(vae_state) != manifest["vae"]["content_hash"]:
+            raise ValueError("checkpoint VAE state differs from the pinned donor VAE")
         metrics = {key: float(value) for key, value in (alignment_metrics or {}).items()}
         if alignment_passed:
             manifest["conditioning"]["bridge_state"] = "aligned"
@@ -277,7 +282,8 @@ def save_chimera_checkpoint(
         tensors, dropped = dedup_tensors((
             *prefixed_state(bridge, "condition_bridge."),
             *prefixed_state(unet, "unet."),
-            *prefixed_state(vae, "vae."),
+            *((f"vae.{name}", tensor.detach().cpu().contiguous())
+              for name, tensor in vae_state.items()),
         ))
         metadata = {
             "model_type": MODEL_TYPE,

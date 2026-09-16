@@ -10,7 +10,10 @@ from diffusers import AutoencoderKL, UNet2DConditionModel
 from safetensors.torch import save_file
 
 from core.models.common.vae_source import ResolvedVAE, content_hash_for_state_dict
-from core.models.sensenova_sdxl_chimera.artifact import ChimeraArtifactError
+from core.models.sensenova_sdxl_chimera.artifact import (
+    ChimeraArtifactError,
+    save_chimera_checkpoint,
+)
 from core.models.sensenova_sdxl_chimera.builder import (
     build_chimera_artifact_from_components,
     initialize_chimera_atomically,
@@ -127,8 +130,40 @@ def test_tiny_artifact_round_trip_and_component_identity(tmp_path):
     for name, tensor in vae.state_dict.items():
         assert torch.equal(loaded["vae"].state_dict()[name], tensor)
     assert loaded["manifest"]["vae"]["content_hash"] == vae.content_hash
+    assert content_hash_for_state_dict(loaded["frozen_vae_state"]) == vae.content_hash
     assert not any("_mot_gen" in name for name in loaded["manifest"].keys())
     assert loaded["understanding"] is None
+
+
+def test_checkpoint_preserves_pinned_vae_across_runtime_dtype_cast(tmp_path):
+    _und, _donor, vae, result = _build(tmp_path)
+    loaded = load_chimera_artifact(result["directory"], torch_dtype=torch.float16)
+    checkpoint = save_chimera_checkpoint(
+        tmp_path / "checkpoint",
+        base_manifest=loaded["manifest"],
+        runtime=loaded["config"],
+        bridge=loaded["condition_bridge"],
+        unet=loaded["unet"],
+        vae=loaded["vae"],
+        frozen_vae_state=loaded["frozen_vae_state"],
+        stage="bridge_align",
+        step=1,
+        epoch=0,
+        max_shard_bytes=100_000,
+    )
+    reloaded = load_chimera_artifact(str(checkpoint))
+    assert reloaded["manifest"]["vae"]["content_hash"] == vae.content_hash
+    assert content_hash_for_state_dict(reloaded["vae"].state_dict()) == vae.content_hash
+
+
+def test_runtime_can_keep_bf16_backbone_and_fp16_vae(tmp_path):
+    _und, _donor, _vae, result = _build(tmp_path)
+    loaded = load_chimera_artifact(
+        result["directory"], torch_dtype=torch.bfloat16, vae_dtype=torch.float16
+    )
+    assert next(loaded["unet"].parameters()).dtype == torch.bfloat16
+    assert next(loaded["condition_bridge"].parameters()).dtype == torch.bfloat16
+    assert next(loaded["vae"].parameters()).dtype == torch.float16
 
 
 def test_understanding_relocation_same_hash_and_mutation_refusal(tmp_path):

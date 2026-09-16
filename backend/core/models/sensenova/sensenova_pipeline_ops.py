@@ -704,7 +704,7 @@ def _build_step_context(transformer, prefix: SenseNovaPrefix, image_prediction: 
 @torch.no_grad()
 def _predict_v_branch(transformer, prefix: SenseNovaPrefix, image_embeds: torch.Tensor,
                       timestep_embeddings: torch.Tensor, z: torch.Tensor, t: torch.Tensor,
-                      branch: str = "cond") -> torch.Tensor:
+                      noise_scale: float, branch: str = "cond") -> torch.Tensor:
     """One ``_t2i_predict_v`` call against the cond/img_cond/uncond prefix KV
     cache, reusing the embeds ``_build_step_context`` already built for this
     step (see that function's docstring).
@@ -736,6 +736,7 @@ def _predict_v_branch(transformer, prefix: SenseNovaPrefix, image_embeds: torch.
         image_token_num=prefix.token_h * prefix.token_w,
         timestep_embeddings=timestep_embeddings, image_size=prefix.image_size,
         token_hw=(prefix.token_h, prefix.token_w),
+        noise_scale=noise_scale,
     )
 
 
@@ -921,7 +922,10 @@ def _style_capture(
     capture_ctx = StyleContext(mode="capture", config=style_cfg, progress=progress)
     Qwen3Attention._style_ctx = capture_ctx
     try:
-        _predict_v_branch(transformer, prefix, image_embeds_ref, timestep_embeddings_ref, z_ref, t, branch="cond")
+        _predict_v_branch(
+            transformer, prefix, image_embeds_ref, timestep_embeddings_ref,
+            z_ref, t, noise_scale, branch="cond"
+        )
     finally:
         Qwen3Attention._style_ctx = None
     return capture_ctx
@@ -1077,15 +1081,15 @@ def _euler_run(
                     use_cfg = has_uncond and cfg_scale > 1 and in_interval
                 if use_cfg:
                     if has_img_cond:
-                        v_img_cond = _predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t,
+                        v_img_cond = _predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t, noise_scale,
                                                        branch="img_cond")
-                        v_uncond = (_predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t,
+                        v_uncond = (_predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t, noise_scale,
                                                       branch="uncond") if has_uncond else None)
                         return _cfg_combine_refs(v_cond, v_img_cond, v_uncond, cfg_scale, img_cfg_scale, cfg_norm)
                     # Classic 2-branch path -- IDENTICAL call to before (also
                     # the only path a no-refs prefix can ever reach, since
                     # has_img_cond is always False there).
-                    v_uncond = _predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t,
+                    v_uncond = _predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t, noise_scale,
                                                  branch="uncond")
                     # z/t are passed for the guidance diagnostic only; the blend
                     # itself is byte-for-byte the call it always was.
@@ -1111,7 +1115,7 @@ def _euler_run(
                     Qwen3Attention._style_ctx = inject_ctx
                     try:
                         v_cond = _predict_v_branch(
-                            transformer, prefix, image_embeds, timestep_embeddings, z, t, branch="cond")
+                            transformer, prefix, image_embeds, timestep_embeddings, z, t, noise_scale, branch="cond")
                         if inject_all:
                             # Armed window MUST span img_cond/uncond too: the
                             # finally below empties the capture stores, so a
@@ -1128,7 +1132,7 @@ def _euler_run(
                         v_pred = _combine_branches(v_cond)
                 else:
                     v_pred = _combine_branches(_predict_v_branch(
-                        transformer, prefix, image_embeds, timestep_embeddings, z, t, branch="cond"))
+                        transformer, prefix, image_embeds, timestep_embeddings, z, t, noise_scale, branch="cond"))
             elif style_active and style_cfg.is_step_active(j, total):
                 from core.inference.reference_style import StyleContext
                 from .vendor.modeling_qwen3 import Qwen3Attention
@@ -1141,7 +1145,7 @@ def _euler_run(
                 Qwen3Attention._style_ctx = inject_ctx
                 try:
                     v_cond = _predict_v_branch(
-                        transformer, prefix, image_embeds, timestep_embeddings, z, t, branch="cond")
+                        transformer, prefix, image_embeds, timestep_embeddings, z, t, noise_scale, branch="cond")
                     if inject_all:
                         v_pred = _combine_branches(v_cond)
                 finally:
@@ -1152,7 +1156,7 @@ def _euler_run(
                     v_pred = _combine_branches(v_cond)
             else:
                 v_pred = _combine_branches(
-                    _predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t, branch="cond"))
+                    _predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t, noise_scale, branch="cond"))
 
             pred_x0 = None
             if step_callback is not None:

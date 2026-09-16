@@ -63,6 +63,130 @@ class SenseNovaArchHandler(ArchHandler):
     consumes_crop_decode_loss = True
     supplies_predicted_latent = True
 
+    def resolve_latent_refiner(self, trainer) -> None:
+        """Resolve checkpoint/request/mode before the adapter builds scopes."""
+        from api.param_defaults import TRAINING_DEFAULTS
+        from core.models.sensenova.latent_refiner import (
+            REFINER_INPUTS, REFINER_NORM, REFINER_VERSION, LatentRefiner,
+        )
+        from core.training.ops.training_method import is_full_finetune
+
+        config = getattr(trainer, "config", None) or {}
+        request = str(config.get(
+            "sensenova_latent_refiner",
+            TRAINING_DEFAULTS["sensenova_latent_refiner"],
+        )).strip().lower()
+        mode = str(config.get(
+            "sensenova_refiner_training_mode",
+            TRAINING_DEFAULTS["sensenova_refiner_training_mode"],
+        )).strip().lower()
+        detach_mode = str(config.get(
+            "sensenova_refiner_detach_mode",
+            TRAINING_DEFAULTS["sensenova_refiner_detach_mode"],
+        )).strip().lower()
+        raw_config = dict(getattr(trainer, "sensenova_config_dict", None) or {})
+        declaration = raw_config.get("gen_refiner")
+        module = (
+            trainer.transformer.fm_modules["fm_refiner"]
+            if "fm_refiner" in trainer.transformer.fm_modules else None
+        )
+        full_ft = is_full_finetune(trainer)
+
+        if not full_ft:
+            if request != "inherit":
+                raise ValueError("SenseNova refiner attach/detach requires full_finetune")
+            trainer.sensenova_refiner_state = "frozen" if module is not None else "none"
+            trainer.sensenova_refiner_training_mode = "none"
+            return
+
+        if request == "attach" and declaration is None:
+            if mode == "base_only":
+                raise ValueError("Cannot attach a zero-initialized SenseNova refiner in base_only mode")
+            width = int(config.get("sensenova_refiner_width", 0) or 128)
+            depth = int(config.get("sensenova_refiner_depth", 0) or 3)
+            module = LatentRefiner(
+                int(trainer.transformer.gen_in_channels), width, depth
+            ).to(device="cpu", dtype=trainer.weight_dtype)
+            module.gate.data = module.gate.data.float()
+            trainer.transformer.fm_modules["fm_refiner"] = module
+            declaration = {
+                "version": REFINER_VERSION,
+                "width": width,
+                "depth": depth,
+                "inputs": list(REFINER_INPUTS),
+                "norm": REFINER_NORM,
+                "detach_anchor_step": None,
+                "detach_steps": None,
+                "detach_accum": None,
+            }
+            raw_config["gen_refiner"] = declaration
+        elif request == "attach" and declaration is not None:
+            requested_width = int(config.get("sensenova_refiner_width", 0) or 0)
+            requested_depth = int(config.get("sensenova_refiner_depth", 0) or 0)
+            if requested_width and requested_width != int(declaration["width"]):
+                raise ValueError("sensenova_refiner_width cannot change on continue")
+            if requested_depth and requested_depth != int(declaration["depth"]):
+                raise ValueError("sensenova_refiner_depth cannot change on continue")
+
+        if request == "detach" and module is not None:
+            if detach_mode == "hard":
+                del trainer.transformer.fm_modules["fm_refiner"]
+                raw_config.pop("gen_refiner", None)
+                module = None
+                declaration = None
+            else:
+                steps = int(config.get("sensenova_refiner_detach_steps", 1000))
+                accum = int(config.get("gradient_accumulation_steps", 1) or 1)
+                anchor = int(getattr(trainer, "sensenova_checkpoint_step", 0) or 0) // accum
+                declaration = dict(declaration)
+                declaration.update({
+                    "detach_anchor_step": anchor,
+                    "detach_steps": steps,
+                    "detach_accum": accum,
+                })
+                raw_config["gen_refiner"] = declaration
+                mode = "base_only"
+
+        if declaration is not None and declaration.get("detach_anchor_step") is not None:
+            if request == "attach":
+                raise ValueError("Re-attaching a SenseNova refiner mid-anneal is unsupported")
+            mode = "base_only"
+            state = "anneal"
+        elif module is None:
+            state, mode = "none", "none"
+        else:
+            state = "attached"
+
+        trainer.sensenova_config_dict = raw_config
+        trainer.sensenova_refiner_state = state
+        trainer.sensenova_refiner_training_mode = mode
+
+    @staticmethod
+    def update_latent_refiner_anneal(trainer) -> None:
+        if getattr(trainer, "sensenova_refiner_state", None) != "anneal":
+            return
+        declaration = (getattr(trainer, "sensenova_config_dict", None) or {}).get(
+            "gen_refiner"
+        )
+        if not declaration:
+            raise RuntimeError("SenseNova refiner anneal state has no declaration")
+        scheduler = getattr(trainer, "lr_scheduler", None)
+        position = int(
+            getattr(scheduler, "last_epoch", None)
+            if scheduler is not None and getattr(scheduler, "last_epoch", None) is not None
+            else int(getattr(trainer, "sensenova_checkpoint_step", 0) or 0)
+        )
+        anchor = int(declaration["detach_anchor_step"])
+        steps = int(declaration["detach_steps"])
+        gate = min(1.0, max(0.0, 1.0 - (position - anchor) / steps))
+        module = trainer.transformer.fm_modules["fm_refiner"]
+        module.gate.fill_(gate)
+        if gate == 0.0:
+            del trainer.transformer.fm_modules["fm_refiner"]
+            trainer.sensenova_config_dict.pop("gen_refiner", None)
+            trainer.sensenova_refiner_state = "none"
+            trainer.sensenova_refiner_training_mode = "none"
+
     @property
     def pixel_align(self) -> int:
         """One token's pixel width: 32 in pixel space, ``patch * scale`` after a swap.
@@ -545,6 +669,8 @@ class SenseNovaArchHandler(ArchHandler):
 
     def train_step(self, trainer, ctx: TrainStepContext):
         from core.training.ops import sensenova_ops
+
+        self.update_latent_refiner_anneal(trainer)
 
         if ctx.sensenova_text_batch is not None:
             return sensenova_ops.train_i2t_step(

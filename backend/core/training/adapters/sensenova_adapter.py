@@ -818,8 +818,10 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
         trainer = self.trainer
         save_format = self._resolve_save_format()
         branch, targets = self._resolve_scope()
+        refiner_only = _refiner_mode(trainer) == "refiner_only"
         save_branch = branch
-        if _refiner_mode(trainer) == "refiner_only":
+        source_branch = ""
+        if refiner_only:
             source_branch = str(getattr(
                 trainer, "sensenova_source_trained_branch", ""
             ) or "").strip()
@@ -836,16 +838,37 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
         source_dir = os.path.dirname(str(model_path)) if model_path else None
 
         if save_format == "mixed" and save_branch == "both":
-            emit_training_warning(
+            message = (
+                "SenseNova refiner_only is preserving a source checkpoint whose "
+                "two MoT halves are already floating point, so 'mixed' has no "
+                "int8 half to retain and is written as 'bf16'. The decoder "
+                "weights remain frozen; only the latent refiner was trained."
+                if refiner_only else
                 "SenseNova full fine-tuning is training both MoT halves, so the "
                 "'mixed' checkpoint format has no int8 half left to keep and the "
                 "'bf16' file is written instead (both halves floating point). "
-                "The checkpoint's metadata records the effective format.",
+                "The checkpoint's metadata records the effective format."
+            )
+            emit_training_warning(
+                message,
                 code="sensenova_save_format_degenerate",
                 prefix=getattr(trainer, "log_prefix", "[SenseNova]"),
             )
 
         extra_metadata = {"step": str(step), "epoch": str(epoch)}
+        if refiner_only:
+            # ``branch`` passed to the writer describes the tensor layout it must
+            # preserve. The compatibility stamp describes which base branch a
+            # later base_only/joint continuation may resume; conflating the two
+            # made a refiner-only save claim that both MoT halves were trained.
+            extra_metadata.update({
+                "sensenova_trained_branch": (
+                    source_branch if source_branch in {"gen", "und", "both"}
+                    else "none"
+                ),
+                "sensenova_save_layout_branch": save_branch,
+                "sensenova_refiner_training_mode": "refiner_only",
+            })
         scopes = _explicit_scopes(trainer)
         if scopes:
             import json
@@ -894,8 +917,9 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
             extra_metadata=extra_metadata,
             vae=vae_to_bundle,
         )
+        action = "preserved" if refiner_only else f"saved {len(targets)}"
         print(
-            f"[SenseNovaFullParameterAdapter] step {step}: saved {len(targets)} "
+            f"[SenseNovaFullParameterAdapter] step {step}: {action} "
             f"{save_branch} decoder layout as '{census['effective_format']}' -> {written}"
         )
         # The resolved path, not the argument: the save appends the suffix and,

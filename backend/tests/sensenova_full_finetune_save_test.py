@@ -567,6 +567,8 @@ def test_refiner_only_preserves_the_source_mixed_decoder_layout(tmp_path):
     written = adapter.save_checkpoint(100, 1, tmp_path / "refiner_only")
     raw, metadata = read_state_dict(written)
     assert metadata["sensenova_trained_branch"] == "gen"
+    assert metadata["sensenova_save_layout_branch"] == "gen"
+    assert metadata["sensenova_refiner_training_mode"] == "refiner_only"
     assert metadata["sensenova_save_format"] == "mixed"
     assert any("fm_modules.fm_refiner." in key for key in raw)
 
@@ -585,7 +587,9 @@ def test_refiner_only_preserves_a_bf16_source_as_both_halves(tmp_path):
     trainer.sensenova_source_save_format = "bf16"
     written = adapter.save_checkpoint(100, 1, tmp_path / "refiner_only_bf16")
     _raw, metadata = read_state_dict(written)
-    assert metadata["sensenova_trained_branch"] == "both"
+    assert metadata["sensenova_trained_branch"] == "gen"
+    assert metadata["sensenova_save_layout_branch"] == "both"
+    assert metadata["sensenova_refiner_training_mode"] == "refiner_only"
     assert metadata["sensenova_save_format"] == "bf16"
 
 

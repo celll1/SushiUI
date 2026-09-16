@@ -514,6 +514,20 @@ def sensenova_base_model_identity(path: str) -> str:
     return str(os.path.getsize(str(path)))
 
 
+def sensenova_checkpoint_metadata(path: str) -> Dict[str, str]:
+    """Read only a checkpoint's metadata without materializing its tensors."""
+    resolved = str(path)
+    if not is_index_path(resolved) and not os.path.isfile(resolved):
+        sibling_index = resolved + ".index.json"
+        if os.path.isfile(sibling_index):
+            resolved = sibling_index
+    if is_index_path(resolved):
+        with open(resolved, encoding="utf-8") as handle:
+            return dict((json.load(handle).get("metadata") or {}))
+    with safe_open(resolved, framework="pt", device="cpu") as handle:
+        return dict(handle.metadata() or {})
+
+
 class _LazySafetensorsSource:
     """Per-tensor lazy reader for a single-file or shard-index safetensors save.
 

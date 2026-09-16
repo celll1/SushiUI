@@ -583,8 +583,14 @@ def test_refiner_only_preserves_a_bf16_source_as_both_halves(tmp_path):
     adapter = _adapter(transformer, "gen", "mixed")
     trainer = adapter.trainer
     trainer.sensenova_refiner_training_mode = "refiner_only"
-    trainer.sensenova_source_trained_branch = "gen"
+    trainer.sensenova_source_trained_branch = "both"
     trainer.sensenova_source_save_format = "bf16"
+    base = tmp_path / "base.safetensors.index.json"
+    base.write_text(json.dumps({
+        "metadata": {"sensenova_trained_branch": "gen"},
+        "weight_map": {},
+    }), encoding="utf-8")
+    trainer.configured_model_path = str(base)
     written = adapter.save_checkpoint(100, 1, tmp_path / "refiner_only_bf16")
     _raw, metadata = read_state_dict(written)
     assert metadata["sensenova_trained_branch"] == "gen"

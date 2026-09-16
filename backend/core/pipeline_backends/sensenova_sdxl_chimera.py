@@ -3,11 +3,102 @@
 from __future__ import annotations
 
 import random
+import time
 
 import torch
 
 
 class SenseNovaSDXLChimeraMixin:
+    def _generate_img2txt_sensenova_sdxl_chimera(
+        self, params, image, progress_callback=None
+    ) -> tuple:
+        """Run text output through the frozen understanding-only component."""
+        components = self.sensenova_sdxl_chimera_components
+        if not components:
+            raise RuntimeError("SenseNova SDXL Chimera components not loaded")
+        from transformers import StoppingCriteria, StoppingCriteriaList
+        from core.models.sensenova.vendor.utils import load_image_native
+
+        understanding = components["understanding"]
+        transformer = understanding["transformer"]
+        tokenizer = understanding["tokenizer"]
+        max_new_tokens = int(params["max_new_tokens"])
+        seed = int(params.get("seed", -1))
+        if seed < 0:
+            seed = random.SystemRandom().randint(0, 2**31 - 1)
+
+        manager = self
+        class _CancelAndProgress(StoppingCriteria):
+            def __init__(inner_self):
+                inner_self.generated = 0
+
+            def __call__(inner_self, _input_ids, _scores, **_kwargs):
+                inner_self.generated += 1
+                if progress_callback is not None:
+                    progress_callback(
+                        min(inner_self.generated, max_new_tokens),
+                        max_new_tokens,
+                        "Generating text",
+                    )
+                return bool(manager.cancel_requested)
+
+        generation_config = {
+            "max_new_tokens": max_new_tokens,
+            "do_sample": bool(params.get("do_sample", False)),
+            "stopping_criteria": StoppingCriteriaList([_CancelAndProgress()]),
+        }
+        if generation_config["do_sample"]:
+            generation_config.update({
+                "temperature": float(params.get("temperature", 0.7)),
+                "top_p": float(params.get("top_p", 0.9)),
+            })
+            if params.get("top_k") is not None:
+                generation_config["top_k"] = int(params["top_k"])
+        if params.get("repetition_penalty") is not None:
+            generation_config["repetition_penalty"] = float(params["repetition_penalty"])
+
+        pixel_values = grid_hw = None
+        try:
+            transformer.to(self.device)
+            if progress_callback is not None:
+                progress_callback(0, max_new_tokens, "Encoding image")
+            started = time.perf_counter()
+            pixel_values, grid_hw = load_image_native(
+                image,
+                transformer.patch_size,
+                transformer.downsample_ratio,
+                min_pixels=512 * 512,
+                max_pixels=2048 * 2048,
+                upscale=False,
+            )
+            pixel_values = pixel_values.to(device=self.device, dtype=torch.bfloat16)
+            grid_hw = grid_hw.to(self.device)
+            preprocess_seconds = time.perf_counter() - started
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
+            started = time.perf_counter()
+            with torch.inference_mode():
+                response = transformer.chat(
+                    tokenizer,
+                    pixel_values,
+                    params["instruction"],
+                    generation_config,
+                    history=None,
+                    return_history=False,
+                    grid_hw=grid_hw,
+                    verbose=False,
+                )
+            return response, seed, {
+                "preprocess_seconds": preprocess_seconds,
+                "generation_seconds": time.perf_counter() - started,
+            }
+        finally:
+            del pixel_values, grid_hw
+            transformer.to("cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
     def _generate_txt2img_sensenova_sdxl_chimera(
         self, params, progress_callback=None, step_callback=None
     ) -> tuple:

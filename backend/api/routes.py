@@ -1020,10 +1020,13 @@ async def generate_img2txt(
 ):
     """Generate caption/tag/custom text through SenseNova's understanding path."""
     current_info = pipeline_manager.current_model_info or {}
-    if current_info.get("type") != "sensenova" or not pipeline_manager.is_sensenova_model:
+    if current_info.get("type") not in {"sensenova", "sensenova_sdxl_chimera"} or not (
+        pipeline_manager.is_sensenova_model
+        or pipeline_manager.is_sensenova_sdxl_chimera_model
+    ):
         raise HTTPException(
             status_code=409,
-            detail="Load a SenseNova model before calling /generate/img2txt.",
+            detail="Load a SenseNova or SenseNova SDXL Chimera model before calling /generate/img2txt.",
         )
     if len(images) != 1:
         raise HTTPException(
@@ -1046,6 +1049,11 @@ async def generate_img2txt(
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     parsed_loras = await parse_lora_items(loras)
+    if current_info.get("type") == "sensenova_sdxl_chimera" and parsed_loras:
+        raise HTTPException(
+            status_code=422,
+            detail="SenseNova SDXL Chimera img2txt does not support LoRA adapters",
+        )
 
     # Bound compressed bytes and decoded pixels before model residency or a GPU
     # slot. The upstream visual preprocessor later caps its own working image at
@@ -1104,7 +1112,10 @@ async def generate_img2txt(
             # Loading another architecture while the upload is decoded must not
             # turn a capability error into an internal pipeline failure.
             current_info = pipeline_manager.current_model_info or {}
-            if current_info.get("type") != "sensenova" or not pipeline_manager.is_sensenova_model:
+            if current_info.get("type") not in {"sensenova", "sensenova_sdxl_chimera"} or not (
+                pipeline_manager.is_sensenova_model
+                or pipeline_manager.is_sensenova_sdxl_chimera_model
+            ):
                 raise HTTPException(
                     status_code=409,
                     detail="The loaded model changed before img2txt could start.",

@@ -4179,6 +4179,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
     def generate_img2txt(self, params: Dict[str, Any], image: Image.Image,
                          progress_callback=None) -> tuple[str, int, Dict[str, float]]:
         """Generate text from an image with a loaded SenseNova model."""
+        if self.is_sensenova_sdxl_chimera_model:
+            return self._generate_img2txt_sensenova_sdxl_chimera(
+                params, image, progress_callback=progress_callback)
         if not self.is_sensenova_model:
             raise RuntimeError("img2txt requires a loaded SenseNova model")
         return self._generate_img2txt_sensenova(

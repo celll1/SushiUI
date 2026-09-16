@@ -11,10 +11,11 @@ from core.models.sensenova_sdxl_chimera.conditioning_bridge import (
     ChimeraBridgeConfig,
     ConditioningBridge,
 )
+from core.models.sensenova_sdxl_chimera.attention_processor import ChimeraAttnProcessor
 from core.training.adapters.sensenova_sdxl_chimera_adapter import (
     SenseNovaSDXLChimeraFullParameterAdapter,
 )
-from core.training.ops.sensenova_sdxl_chimera_ops import bridge_alignment_loss
+from core.training.ops.sensenova_sdxl_chimera_ops import bridge_alignment_loss, train_step
 
 
 def _module() -> torch.nn.Module:
@@ -93,6 +94,39 @@ def test_bridge_alignment_loss_updates_only_student_graph():
         "hidden_mse", "hidden_rms_mse", "pooled_mse",
         "hidden_cosine", "pooled_cosine",
     }
+
+
+def test_unet_step_retains_attention_context_through_backward():
+    class FakeUNet(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.scale = torch.nn.Parameter(torch.ones(()))
+            self.attn_processors = {"fake": ChimeraAttnProcessor()}
+
+        def forward(self, sample, *_args, **_kwargs):
+            return (sample * self.scale,)
+
+    unet = FakeUNet()
+    trainer = SimpleNamespace(
+        config={"chimera_training_stage": "unet"},
+        device="cpu",
+        training_dtype=torch.float32,
+        unet=unet,
+    )
+    ctx = SimpleNamespace(
+        text_embeddings=torch.randn(1, 3, 6),
+        attention_mask={
+            "pooled_text_embeds": torch.randn(1, 5),
+            "context_positions": torch.zeros(1, 3, 3),
+        },
+        latents=torch.randn(1, 4, 2, 2),
+        timesteps=torch.tensor([0.5]),
+        time_ids=None,
+    )
+    loss, _value, _recon = train_step(trainer, ctx)
+    assert unet.attn_processors["fake"].context is not None
+    loss.backward()
+    assert unet.scale.grad is not None
 
 
 def test_directory_checkpoint_entry_is_discoverable_and_sized(tmp_path):

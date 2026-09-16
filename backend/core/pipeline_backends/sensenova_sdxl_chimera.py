@@ -6,9 +6,150 @@ import random
 import time
 
 import torch
+from PIL import Image
 
 
 class SenseNovaSDXLChimeraMixin:
+    def _generate_edit_sensenova_sdxl_chimera(
+        self,
+        params,
+        init_image,
+        mask_image=None,
+        progress_callback=None,
+        step_callback=None,
+    ) -> tuple:
+        components = self.sensenova_sdxl_chimera_components
+        if not components:
+            raise RuntimeError("SenseNova SDXL Chimera components not loaded")
+        from api.param_defaults import GENERATION_DEFAULTS
+        from core.models.sensenova_sdxl_chimera import pipeline_ops
+
+        seed = int(params.get("seed", -1))
+        if seed < 0:
+            seed = random.SystemRandom().randint(0, 2**31 - 1)
+        width = int(params.get("width") or init_image.width)
+        height = int(params.get("height") or init_image.height)
+        if width % 8 or height % 8:
+            raise ValueError("Chimera width and height must be divisible by 8")
+        steps = int(params.get("steps") or GENERATION_DEFAULTS["steps"])
+        cfg_scale = float(params.get("cfg_scale", GENERATION_DEFAULTS["cfg_scale"]))
+        strength = float(params.get("denoising_strength", 0.75))
+        prompt = str(params.get("prompt") or "")
+        negative_prompt = str(params.get("negative_prompt") or "")
+        understanding = components["understanding"]
+        transformer = understanding["transformer"]
+        tokenizer = understanding["tokenizer"]
+        bridge = components["condition_bridge"]
+        unet = components["unet"]
+        vae = components["vae"]
+        device = self.device
+        dtype = next(unet.parameters()).dtype
+
+        positive = negative = source_latents = generate_mask = latents = None
+        resized_source = init_image.convert("RGB").resize(
+            (width, height), Image.Resampling.LANCZOS
+        )
+        try:
+            transformer.to(device)
+            bridge.to(device=device, dtype=dtype)
+            with torch.inference_mode():
+                positive = pipeline_ops.build_conditioning(
+                    transformer, tokenizer, bridge, prompt
+                )
+                if cfg_scale > 1.0:
+                    negative = pipeline_ops.build_conditioning(
+                        transformer, tokenizer, bridge, negative_prompt
+                    )
+            transformer.to("cpu")
+            bridge.to("cpu")
+            vae.to(device)
+            with torch.inference_mode():
+                source_latents = pipeline_ops.encode_image_latents(
+                    vae,
+                    resized_source,
+                    height=height,
+                    width=width,
+                    device=device,
+                    dtype=dtype,
+                )
+            if mask_image is not None:
+                generate_mask = pipeline_ops.prepare_generate_mask(
+                    mask_image,
+                    latent_height=height // 8,
+                    latent_width=width // 8,
+                    device=device,
+                    dtype=dtype,
+                )
+            vae.to("cpu")
+            unet.to(device)
+
+            def report(step, total, current):
+                if getattr(self, "cancel_requested", False):
+                    raise RuntimeError("Generation cancelled by user")
+                if progress_callback is not None:
+                    progress_callback(step, total, current, None, current)
+
+            latents = pipeline_ops.sample_img2img_latents(
+                unet,
+                positive,
+                negative,
+                source_latents,
+                steps=steps,
+                denoising_strength=strength,
+                cfg_scale=cfg_scale,
+                seed=seed,
+                generate_mask=generate_mask,
+                timestep_shift=float(
+                    params.get("timestep_shift", GENERATION_DEFAULTS["timestep_shift"])
+                ),
+                cfg_mode=str(params.get("chimera_cfg_mode", "sequential")),
+                original_height=int(params.get("original_height") or height),
+                original_width=int(params.get("original_width") or width),
+                crop_top=int(params.get("crop_top") or 0),
+                crop_left=int(params.get("crop_left") or 0),
+                attention_backend=str(params.get("attention_type") or "normal"),
+                progress_callback=report,
+            )
+            unet.to("cpu")
+            vae.to(device)
+            with torch.inference_mode():
+                image = pipeline_ops.decode_latents(vae, latents)
+            if mask_image is not None:
+                pixel_mask = mask_image.convert("L").resize(
+                    (width, height), Image.Resampling.LANCZOS
+                )
+                image = Image.composite(image, resized_source, pixel_mask)
+            return image, seed, 0
+        finally:
+            from core.models.sensenova_sdxl_chimera.attention_processor import (
+                clear_chimera_attention_caches,
+            )
+
+            clear_chimera_attention_caches(unet)
+            for component in (transformer, bridge, unet, vae):
+                try:
+                    component.to("cpu")
+                except Exception as exc:
+                    print(f"[Chimera] component offload failed: {exc}")
+            del positive, negative, source_latents, generate_mask, latents
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    def _generate_img2img_sensenova_sdxl_chimera(
+        self, params, init_image, progress_callback=None, step_callback=None
+    ) -> tuple:
+        return self._generate_edit_sensenova_sdxl_chimera(
+            params, init_image, progress_callback=progress_callback,
+            step_callback=step_callback,
+        )
+
+    def _generate_inpaint_sensenova_sdxl_chimera(
+        self, params, init_image, mask_image, progress_callback=None, step_callback=None
+    ) -> tuple:
+        return self._generate_edit_sensenova_sdxl_chimera(
+            params, init_image, mask_image, progress_callback, step_callback
+        )
+
     def _generate_img2txt_sensenova_sdxl_chimera(
         self, params, image, progress_callback=None
     ) -> tuple:

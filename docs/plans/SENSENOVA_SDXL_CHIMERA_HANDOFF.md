@@ -5,7 +5,7 @@ Status date: 2026-09-17
 ## Continuation status
 
 The implementation handoff has now been carried through P4 and the independently
-shippable text-output part of P7. Subsequent commits are:
+shippable text-output and source-image editing parts of P7. Subsequent commits are:
 
 - `af93edf9 Load Chimera production donor sources`
 - `e3a959be Load Chimera understanding branch selectively`
@@ -18,16 +18,19 @@ The shipped surface now includes path-based scratch/transplant construction,
 understanding-only loading, model/API registration, deterministic txt2img,
 stage-exact `bridge_align` / `unet` / `joint` full training, production-loadable
 directory checkpoints with resume/rotation support, OpenAPI/default/frontend
-training controls, a Settings initializer, and i2t/ti2t routed through the
-frozen understanding branch. P0-P4 plus capability/CFG regression coverage is
-75 passing tests; the additional text-output dispatch regression also passes.
+training controls, a Settings initializer, i2t/ti2t routed through the frozen
+understanding branch, and deterministic SDEdit/RePaint for img2img, inpaint,
+and the shared spatial-outpaint orchestration. Inpaint pins the preserve region
+at every flow step and composites the original pixels after decode. The
+combined Chimera P0-P4/P7, source-loader, capability, and CFG regression run is
+87 passing tests.
 
 The machine-local P5 artifact is still intentionally absent. This file's source
 choice guard remains in force: no SDXL donor was selected by the owner, and an
 unaligned bridge must not be promoted to `bridge_state="aligned"` without the
-pre-registered held-out thresholds required by the design. The remaining P7
-image-editing/reference routes also remain unadvertised until their independent
-quality gates pass.
+pre-registered held-out thresholds required by the design. Reference-ti2i also
+remains unadvertised until its image-conditioned bridge/joint quality gate
+passes; it is independent of the now-wired source-image editing routes.
 
 This note was the original restart point for implementing
 `sensenova_sdxl_chimera`; the continuation status above supersedes its original
@@ -265,11 +268,11 @@ venv. The venv is healthy.
 
 ### P6/P7: frontend and additional modes
 
-- Add initializer UI, architecture unions, model status, generation/training
-  panels, warnings, and queue persistence.
+- Initializer UI, architecture unions, model status, generation/training
+  panels, warnings, and queue persistence are implemented.
 - The repository owner—not the agent—runs frontend build/type-check.
-- Ship img2img, inpaint, outpaint, reference-ti2i, i2t, and ti2t behind their
-  independent gates from the design document.
+- Img2img, inpaint, outpaint, i2t, and ti2t are implemented. Reference-ti2i
+  remains gated on image-conditioned bridge/joint training and quality evidence.
 
 ## Repository rules to retain on resume
 

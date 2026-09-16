@@ -803,7 +803,7 @@ for _feature, _reason in {
     "text_encoder_quantization": "the hash-pinned SenseNova understanding source controls its own weight format",
     "cpu_text_encoding": "Chimera prefix encoding and bridge reduction currently run on the generation device",
     "attention_impl": "Chimera attention uses its checkpoint-fixed three-axis RoPE processor",
-    "vae_drift_correction": "Chimera img2img/inpaint is not enabled yet",
+    "vae_drift_correction": "VAE DC-drift correction is not wired into Chimera image editing",
     "flatten_in_loop": "in-loop hard flattening is not implemented for the Chimera flow sampler",
     "te_override": "Chimera uses its hash-pinned SenseNova understanding source",
     "vae_override": "Chimera uses the VAE bundled and hash-pinned in its artifact",

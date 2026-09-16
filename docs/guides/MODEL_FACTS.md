@@ -3315,6 +3315,10 @@ Paths below are relative to `backend/core/training/`.
 - Generation: four-channel SDXL-shaped U-Net, `t=0` noise / `t=1` clean flow
   velocity, SenseNova three-axis RoPE, SDXL time IDs, sequential or batched CFG,
   and a generation-local post-RoPE cross-attention K/V cache.
+- Source-image editing: img2img uses deterministic flow SDEdit. Inpaint uses
+  RePaint-style latent pinning with white meaning generate and black meaning
+  preserve, followed by pixel-space source compositing; spatial outpaint uses
+  the shared inpaint orchestration and its final exact preserved-region paste.
 - Conditioning: the frozen understanding branch is reduced immediately to
   `77 x 2048` hidden states plus a `1280` pooled vector by the trainable bridge.
   `_mot_gen`, the flow head, and the refiner are never materialized.
@@ -3325,5 +3329,5 @@ Paths below are relative to `backend/core/training/`.
 - Text output: i2t and text-instructed i2t use the frozen understanding-only
   path. Generation-time adapters are not applied to that path.
 - Deferred gates: production bootstrap source selection and held-out alignment
-  thresholds; img2img/inpaint/outpaint/reference-ti2i quality gates. These
-  routes are not advertised before their own gates pass.
+  thresholds; reference-ti2i quality evidence. Reference-ti2i is not advertised
+  before its independent image-conditioned bridge/joint gate passes.

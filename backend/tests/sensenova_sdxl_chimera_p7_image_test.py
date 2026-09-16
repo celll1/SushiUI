@@ -2,7 +2,9 @@
 
 from types import SimpleNamespace
 
+import numpy as np
 import torch
+from PIL import Image
 
 from core.models.sensenova_sdxl_chimera.attention_processor import ChimeraAttnProcessor
 from core.models.sensenova_sdxl_chimera.pipeline_ops import (
@@ -67,6 +69,17 @@ def test_sdedit_is_seed_deterministic_and_strength_controls_start_step():
     assert first_unet.calls == second_unet.calls == 2
 
 
+def test_full_strength_starts_from_seeded_noise_and_runs_every_step():
+    source = torch.zeros(1, 4, 2, 3)
+    first_unet = _ZeroUNet()
+    second_unet = _ZeroUNet()
+    first = _sample(first_unet, source, strength=1.0, seed=41)
+    second = _sample(second_unet, source, strength=1.0, seed=41)
+    assert torch.equal(first, second)
+    assert not torch.equal(first, source)
+    assert first_unet.calls == second_unet.calls == 4
+
+
 def test_repaint_pins_preserve_cells_to_clean_source_at_final_time():
     source = torch.arange(24, dtype=torch.float32).reshape(1, 4, 2, 3)
     generate = torch.zeros(1, 1, 2, 3)
@@ -115,3 +128,39 @@ def test_inpaint_dispatches_to_chimera_backend():
     assert DiffusionPipelineManager.generate_inpaint(
         manager, {}, object(), object()
     ) == sentinel
+
+
+def test_outpaint_delegates_to_inpaint_and_restores_placed_pixels_exactly():
+    from core.pipeline import DiffusionPipelineManager
+
+    source_array = np.zeros((16, 16, 3), dtype=np.uint8)
+    source_array[..., 0] = np.arange(16, dtype=np.uint8)[None, :]
+    source_array[..., 1] = np.arange(16, dtype=np.uint8)[:, None]
+    source = Image.fromarray(source_array)
+    seen = {}
+
+    def inpaint(params, canvas, mask, progress_callback=None, step_callback=None):
+        seen.update(params=dict(params), canvas=canvas.copy(), mask=mask.copy())
+        return Image.new("RGB", canvas.size, (200, 100, 50)), 73, 0
+
+    manager = SimpleNamespace(generate_inpaint=inpaint)
+    params = {
+        "canvas_width": 48,
+        "canvas_height": 32,
+        "place_x": 16,
+        "place_y": 8,
+        "place_width": 16,
+        "place_height": 16,
+        "mask_blur": 0,
+        "denoising_strength": 1.0,
+        "outpaint_seam_fix": False,
+    }
+    result, seed, ancestral_seed = DiffusionPipelineManager.generate_outpaint(
+        manager, params, source
+    )
+    assert (seed, ancestral_seed) == (73, 0)
+    assert result.size == (48, 32)
+    assert np.array_equal(np.asarray(result)[8:24, 16:32], source_array)
+    assert seen["params"]["width"] == 48
+    assert seen["params"]["height"] == 32
+    assert np.asarray(seen["mask"])[8:24, 16:32].max() == 0

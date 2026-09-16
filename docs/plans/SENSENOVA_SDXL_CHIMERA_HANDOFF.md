@@ -25,7 +25,8 @@ understanding branch, and deterministic SDEdit/RePaint for img2img, inpaint,
 and the shared spatial-outpaint orchestration. Inpaint pins the preserve region
 at every flow step and composites the original pixels after decode. The
 combined Chimera P0-P4/P7, source-loader, capability, and CFG regression run is
-88 passing tests. The frontend model union, capability-driven img2txt tab and
+90 passing tests, including zero/full-strength SDEdit and exact outpaint
+placement preservation. The frontend model union, capability-driven img2txt tab and
 queue gate preserve the Chimera architecture id rather than coercing it to
 `sensenova`; the repository owner still owns the frontend type-check/build.
 

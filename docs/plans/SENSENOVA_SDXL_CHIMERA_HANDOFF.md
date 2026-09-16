@@ -2,9 +2,36 @@
 
 Status date: 2026-09-17
 
-This note is the restart point for implementing
-`sensenova_sdxl_chimera`. The design is approved and implementation has begun,
-but the architecture is not yet registered or usable through the API/UI.
+## Continuation status
+
+The implementation handoff has now been carried through P4 and the independently
+shippable text-output part of P7. Subsequent commits are:
+
+- `af93edf9 Load Chimera production donor sources`
+- `e3a959be Load Chimera understanding branch selectively`
+- `58397fee Register Chimera model artifacts`
+- `70afa236 Add Chimera txt2img inference`
+- `2931f621 Train Chimera bridge and U-Net stages`
+- `5907b359 Preserve Chimera understanding text output`
+
+The shipped surface now includes path-based scratch/transplant construction,
+understanding-only loading, model/API registration, deterministic txt2img,
+stage-exact `bridge_align` / `unet` / `joint` full training, production-loadable
+directory checkpoints with resume/rotation support, OpenAPI/default/frontend
+training controls, a Settings initializer, and i2t/ti2t routed through the
+frozen understanding branch. P0-P4 plus capability/CFG regression coverage is
+75 passing tests; the additional text-output dispatch regression also passes.
+
+The machine-local P5 artifact is still intentionally absent. This file's source
+choice guard remains in force: no SDXL donor was selected by the owner, and an
+unaligned bridge must not be promoted to `bridge_state="aligned"` without the
+pre-registered held-out thresholds required by the design. The remaining P7
+image-editing/reference routes also remain unadvertised until their independent
+quality gates pass.
+
+This note was the original restart point for implementing
+`sensenova_sdxl_chimera`; the continuation status above supersedes its original
+implementation-state statements while preserving the source-choice history.
 
 ## User goal and fixed decisions
 

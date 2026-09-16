@@ -26,7 +26,8 @@
    shared sampling loop or an architecture-specific backend.
 5. **`backend/core/inference/custom_sampling.py`** (SD1.5/SDXL and the
    shared path) or **`backend/core/pipeline_backends/<arch>.py`**
-   (Z-Image, Flux2, Anima, Lens, Krea2, Ideogram4, MiniT2I) — runs the actual
+   (Z-Image, Flux2, Anima, Lens, Krea2, Ideogram4, MiniT2I, SenseNova,
+   SenseNova SDXL Chimera) — runs the actual
    denoising loop, applying prompt chunking, ControlNet conditioning, NAG,
    Advanced CFG, and spectrum guidance as configured.
 6. **VAE decode** and **`backend/utils/image_utils.py`** — decodes the final
@@ -38,6 +39,10 @@
    final decode — so they also apply to any in-loop `vae.decode` (SD1.5/SDXL
    `flatten_in_loop`, `vae_drift_correction`). See
    `docs/guides/VAE_DECODE_BEHAVIOR.md`.
+   Chimera instead stages its hash-pinned understanding model and conditioning
+   bridge for a one-time prefix pass, then runs its SDXL-shaped U-Net flow
+   sampler and bundled VAE. Its img2img/inpaint routes use SDEdit/RePaint in
+   `core/models/sensenova_sdxl_chimera/pipeline_ops.py`.
 7. **Database** — a `GeneratedImage` row is inserted into `gallery.db` with
    the same parameters (`backend/database/models.py`).
 8. **Response / gallery** — the API response returns the image path/id; the

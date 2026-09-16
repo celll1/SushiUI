@@ -1,12 +1,13 @@
 # Add a Model Architecture
 
-SushiUI currently supports 15 architectures: 10 image (SD1.5, SDXL, Z-Image,
-Flux2, Anima, Lens, Krea2, Ideogram4, MiniT2I, SenseNova U1.5), 2 video that
+SushiUI currently supports 16 architectures: 11 image (SD1.5, SDXL, Z-Image,
+Flux2, Anima, Lens, Krea2, Ideogram4, MiniT2I, SenseNova U1.5,
+SenseNova SDXL Chimera), 2 video that
 also generate audio jointly (LTX-2.3, MiniMax-H3) and 3 audio (ACE-Step 1.5,
 MiniMax Music 3, YuE2). `ModelType` in `backend/core/model_loader.py` is the
 authoritative *generation* list — check it rather than this sentence if the
 two ever disagree. `ARCH_REGISTRY` in `backend/core/training/arch/__init__.py`
-is the authoritative *training-capable* list; it has 14 entries. MiniMax Music
+is the authoritative *training-capable* list; it has 15 entries. MiniMax Music
 3 is generation-only; YuE2 exposes Phase-A ABC-planner LoRA only. The former's
 boundary is in `docs/guides/MINIMAX_MUSIC3_DESIGN.md`; the latter is recorded
 in `docs/guides/MODEL_FACTS.md`. Do not assume the two lists

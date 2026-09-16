@@ -33,10 +33,12 @@ the same place:
 | `ideogram4` | image | [Ideogram 4](ideogram4.md) |
 | `minit2i` | image | [MiniT2I](minit2i.md) |
 | `sensenova` | image | [SenseNova U1.5](sensenova.md) |
+| `sensenova_sdxl_chimera` | image | [SenseNova SDXL Chimera](sensenova_sdxl_chimera.md) |
 | `ltx2` | video + audio | [LTX-2.3](ltx2.md) |
 | `minimax_h3` | video + audio | [MiniMax-H3](minimax_h3.md) |
 | `acestep` | audio | [ACE-Step 1.5](acestep.md) |
 | `minimax_music3` | audio | [MiniMax Music 3](minimax_music3.md) |
+| `yue2` | audio | See [MODEL_FACTS](../../guides/MODEL_FACTS.md#yue2) pending a structural reference. |
 
 The keys are the ones `ModelType` in `backend/core/model_loader.py` uses.
 `ARCH_REGISTRY` in `backend/core/training/arch/__init__.py` carries the

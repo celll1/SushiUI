@@ -162,3 +162,35 @@ def initialize_chimera_atomically(
     except BaseException:
         shutil.rmtree(temporary, ignore_errors=True)
         raise
+
+
+def initialize_chimera_from_paths(
+    model_root: str,
+    output_name: str,
+    *,
+    understanding_source: str,
+    sdxl_source: str,
+    unet_initialization: str = "scratch",
+    initialization_seed: int = 0,
+    context_tokens: int = 77,
+    max_shard_bytes: int = 10 * 1024**3,
+    torch_dtype: torch.dtype = torch.float32,
+) -> dict[str, Any]:
+    """Load production source paths and publish one complete artifact atomically."""
+    from .source import load_sdxl_donor_components
+
+    donor_unet, vae = load_sdxl_donor_components(sdxl_source, torch_dtype=torch_dtype)
+    return initialize_chimera_atomically(
+        model_root,
+        output_name,
+        build_kwargs={
+            "understanding_source": understanding_source,
+            "sdxl_source": sdxl_source,
+            "donor_unet": donor_unet,
+            "vae": vae,
+            "unet_initialization": unet_initialization,
+            "initialization_seed": initialization_seed,
+            "context_tokens": context_tokens,
+            "max_shard_bytes": max_shard_bytes,
+        },
+    )

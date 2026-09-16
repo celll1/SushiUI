@@ -39,6 +39,11 @@ def config_hash(value: Any) -> str:
 
 def _checkpoint_files(path: str | os.PathLike[str]) -> tuple[Path, ...]:
     entry = Path(path).resolve()
+    if entry.is_dir():
+        files = tuple(sorted(item for item in entry.rglob("*") if item.is_file()))
+        if not files:
+            raise ChimeraArtifactError(f"checkpoint directory is empty: {entry}")
+        return files
     if not entry.is_file():
         raise FileNotFoundError(f"checkpoint not found: {entry}")
     if is_index_path(str(entry)):
@@ -57,8 +62,13 @@ def _checkpoint_files(path: str | os.PathLike[str]) -> tuple[Path, ...]:
 
 def checkpoint_content_hash(path: str | os.PathLike[str]) -> str:
     """Hash checkpoint bytes, including an index and every referenced shard."""
+    root = Path(path).resolve()
     digest = hashlib.sha256()
     for item in _checkpoint_files(path):
+        if root.is_dir():
+            relative = item.relative_to(root).as_posix().encode("utf-8")
+            digest.update(len(relative).to_bytes(8, "big"))
+            digest.update(relative)
         with item.open("rb") as handle:
             for chunk in iter(lambda: handle.read(16 * 1024 * 1024), b""):
                 digest.update(chunk)

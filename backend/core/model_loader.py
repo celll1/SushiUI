@@ -2697,7 +2697,10 @@ class ModelLoader:
             from core.models.sensenova_sdxl_chimera.loader import load_chimera_artifact
 
             return load_chimera_artifact(
-                model_path, torch_dtype=torch.bfloat16, load_understanding=True
+                model_path,
+                torch_dtype=torch.bfloat16,
+                vae_dtype=torch.float16,
+                load_understanding=True,
             )
 
         # Anima split-files directory layout

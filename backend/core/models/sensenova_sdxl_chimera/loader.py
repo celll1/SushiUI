@@ -71,6 +71,7 @@ def load_chimera_artifact(
     directory: str,
     *,
     torch_dtype: torch.dtype | None = None,
+    vae_dtype: torch.dtype | None = None,
     understanding_override: str | None = None,
     load_understanding: bool = False,
 ) -> dict[str, Any]:
@@ -111,7 +112,9 @@ def load_chimera_artifact(
     if torch_dtype is not None:
         unet.to(dtype=torch_dtype)
         bridge.to(dtype=torch_dtype)
-        vae.to(dtype=torch_dtype)
+    effective_vae_dtype = vae_dtype if vae_dtype is not None else torch_dtype
+    if effective_vae_dtype is not None:
+        vae.to(dtype=effective_vae_dtype)
     for module in (unet, bridge, vae):
         module.eval()
     vae.requires_grad_(False)
@@ -126,6 +129,9 @@ def load_chimera_artifact(
         "unet": unet,
         "condition_bridge": bridge,
         "vae": vae,
+        # Checkpoint saves must preserve the donor VAE bit-for-bit even when the
+        # runtime module is cast to a lower precision for encoding.
+        "frozen_vae_state": vae_state,
         "understanding": understanding,
         "understanding_path": understanding_path,
         "manifest": manifest,

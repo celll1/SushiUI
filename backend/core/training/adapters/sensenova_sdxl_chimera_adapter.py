@@ -72,6 +72,7 @@ class SenseNovaSDXLChimeraFullParameterAdapter(BaseFullParameterAdapter):
             bridge=trainer.condition_bridge,
             unet=trainer.unet,
             vae=trainer.vae,
+            frozen_vae_state=trainer.chimera_frozen_vae_state,
             stage=training_stage(trainer),
             step=step,
             epoch=epoch,

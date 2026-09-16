@@ -159,6 +159,7 @@ class NEOChatConfig(PretrainedConfig):
         template=None,
         gen_patch_size=None,
         gen_in_channels=None,
+        gen_refiner=None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -190,6 +191,7 @@ class NEOChatConfig(PretrainedConfig):
         # reference path's (design §10.1-10.2).
         self.gen_patch_size = None if gen_patch_size is None else int(gen_patch_size)
         self.gen_in_channels = None if gen_in_channels is None else int(gen_in_channels)
+        self.gen_refiner = copy.deepcopy(gen_refiner)
         self.tie_word_embeddings = self.llm_config.tie_word_embeddings
 
     @property

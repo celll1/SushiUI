@@ -33,6 +33,7 @@
 #     place of the preallocated `layer.flash_k_cache`/`flash_v_cache` when
 #     attached; absent (the default), this path is byte-for-byte unchanged.
 
+from dataclasses import dataclass
 from typing import Callable, Optional, Union
 
 import torch
@@ -64,6 +65,13 @@ from transformers import Qwen3Config
 from .transformers_compat import causal_mask_kwargs, model_input_compat, tied_weights_keys
 
 from core.attention import AttentionMode, dispatch_attention, resolve_backend
+
+
+@dataclass
+class SenseNovaBaseModelOutputWithPast(BaseModelOutputWithPast):
+    """Base output plus opt-in understanding-layer K/V captures."""
+
+    selected_kv: Optional[dict[int, tuple[torch.Tensor, torch.Tensor]]] = None
 
 try:
     from flash_attn import flash_attn_func  # type: ignore
@@ -1576,6 +1584,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
         inputs_embeds: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        capture_layers: Optional[tuple[int, ...]] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutputWithPast:
         
@@ -1645,9 +1654,15 @@ class Qwen3Model(Qwen3PreTrainedModel):
             #     causal_mask_mapping["sliding_attention"] = create_sliding_window_causal_mask(**mask_kwargs)
 
         hidden_states = inputs_embeds
+        capture = frozenset(int(index) for index in (capture_layers or ()))
+        invalid = sorted(index for index in capture if index < 0 or index >= len(self.layers))
+        if invalid:
+            raise ValueError(f"capture_layers contains out-of-range layer(s): {invalid}")
+        selected_kv = {}
+        selected_hidden = []
 
-        for decoder_layer in self.layers[: self.config.num_hidden_layers]:
-            hidden_states = decoder_layer(
+        for layer_index, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
+            layer_output = decoder_layer(
                 hidden_states,
                 image_gen_indicators=image_gen_indicators,
                 exist_non_image_gen_tokens=exist_non_image_gen_tokens,
@@ -1658,8 +1673,15 @@ class Qwen3Model(Qwen3PreTrainedModel):
                 past_key_values=past_key_values,
                 use_cache=use_cache,
                 cache_position=cache_position,
+                return_kv=layer_index in capture,
                 **kwargs,
             )
+            if layer_index in capture:
+                hidden_states, key_states, value_states = layer_output
+                selected_kv[layer_index] = (key_states, value_states)
+                selected_hidden.append(hidden_states)
+            else:
+                hidden_states = layer_output
         if not exist_image_gen_tokens:
             hidden_states = self.norm(hidden_states)
         elif not exist_non_image_gen_tokens:
@@ -1669,9 +1691,11 @@ class Qwen3Model(Qwen3PreTrainedModel):
             _hidden_states[~image_gen_indicators] = self.norm(hidden_states[~image_gen_indicators])
             _hidden_states[image_gen_indicators] = self.norm_mot_gen(hidden_states[image_gen_indicators])
             hidden_states = _hidden_states
-        return BaseModelOutputWithPast(
+        return SenseNovaBaseModelOutputWithPast(
             last_hidden_state=hidden_states,
             past_key_values=past_key_values if use_cache else None,
+            hidden_states=tuple(selected_hidden) if capture else None,
+            selected_kv=selected_kv if capture else None,
         )
 
 

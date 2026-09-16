@@ -32,6 +32,7 @@ from .unet import (
     parameter_census,
     trainable_parameter_count,
 )
+from .understanding import UnderstandingPrefix, capture_understanding_prefix, load_understanding_only
 
 __all__ = [
     "POSITION_LAYOUT_VERSION",
@@ -56,4 +57,7 @@ __all__ = [
     "selected_layer_indices",
     "spatial_query_positions",
     "trainable_parameter_count",
+    "UnderstandingPrefix",
+    "capture_understanding_prefix",
+    "load_understanding_only",
 ]

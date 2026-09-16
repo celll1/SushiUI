@@ -71,6 +71,13 @@ def _remove_generation_branch(model: NEOChatModel) -> None:
                 delattr(attention, name)
 
 
+def _configure_understanding_tokens(model: NEOChatModel, tokenizer: Any) -> None:
+    model.img_context_token_id = tokenizer.convert_tokens_to_ids("<IMG_CONTEXT>")
+    model.img_start_token_id = tokenizer.convert_tokens_to_ids("<img>")
+    if model.img_context_token_id is None or model.img_start_token_id is None:
+        raise ValueError("SenseNova tokenizer is missing required image-prefix tokens")
+
+
 def load_understanding_only(
     model_path: str,
     *,
@@ -109,6 +116,7 @@ def load_understanding_only(
     model.eval()
     model.requires_grad_(False)
     tokenizer = _load_sensenova_tokenizer(str(Path(path).parent))
+    _configure_understanding_tokens(model, tokenizer)
     return {
         "transformer": model,
         "tokenizer": tokenizer,
@@ -133,6 +141,8 @@ def capture_understanding_prefix(
     """Run one prefix pass and retain only final hidden state plus selected K/V."""
     if input_ids.ndim != 2 or input_ids.shape[0] != 1:
         raise ValueError("SenseNova prefix capture currently requires batch size 1")
+    if transformer.img_context_token_id is None:
+        raise RuntimeError("img_context_token_id must be configured before prefix capture")
     indexes = transformer.get_thw_indexes(input_ids[0], grid_hw)
     inputs_embeds = transformer.language_model.get_input_embeddings()(input_ids)
     if pixel_values is not None:

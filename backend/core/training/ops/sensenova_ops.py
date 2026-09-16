@@ -1977,7 +1977,7 @@ def vae_encode(trainer: Any, image_tensor: torch.Tensor, **_: Any) -> torch.Tens
 #: far below the per-dataset spread it averages over (0.86-1.24 measured across
 #: 20 dataset roots).
 _RMS_SAMPLE_IMAGES = 64
-_REFINER_GUARD_IMAGES = 8
+_REFINER_GUARD_IMAGES = 64
 _REFINER_GUARD_MAX_PIXELS = 1024 * 1024
 
 

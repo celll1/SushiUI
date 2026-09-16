@@ -27,7 +27,7 @@ from core.prompts.processors import PromptEditingProcessor
 from core.inference.schedulers import get_scheduler
 from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
 from core.inference.generation_timing import generation_timer
-from core.pipeline_backends import ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin, AceStepMixin, MiniMaxH3Mixin, MiniMaxMusic3Mixin, SenseNovaMixin, YuE2Mixin
+from core.pipeline_backends import ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin, AceStepMixin, MiniMaxH3Mixin, MiniMaxMusic3Mixin, SenseNovaMixin, SenseNovaSDXLChimeraMixin, YuE2Mixin
 
 LAST_MODEL_CONFIG_FILE = Path("last_model.json")
 
@@ -135,7 +135,7 @@ def offload_component_to_cpu(name: str, component, released: List[tuple]) -> int
     return nbytes
 
 
-class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin, AceStepMixin, MiniMaxH3Mixin, MiniMaxMusic3Mixin, SenseNovaMixin, YuE2Mixin):
+class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin, AceStepMixin, MiniMaxH3Mixin, MiniMaxMusic3Mixin, SenseNovaMixin, SenseNovaSDXLChimeraMixin, YuE2Mixin):
     def __init__(self):
         self.txt2img_pipeline: Optional[StableDiffusionPipeline] = None
         self.img2img_pipeline: Optional[StableDiffusionImg2ImgPipeline] = None
@@ -4244,6 +4244,11 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # SenseNova-U1.5-8B-MoT (Qwen3-8B-as-flow-matching-denoiser, pixel-space)
         if self.is_sensenova_model:
             return self._generate_txt2img_sensenova(params, progress_callback, step_callback)
+
+        if self.is_sensenova_sdxl_chimera_model:
+            return self._generate_txt2img_sensenova_sdxl_chimera(
+                params, progress_callback, step_callback
+            )
 
         # LTX-2.3 is a video model — image endpoints must not run it (P1b adds
         # /generate/txt2vid, /generate/img2vid).

@@ -774,7 +774,7 @@ _add("minimax_music3", "unet_quantization",
 # grows: FLUX.2 left this list the moment its loader gained the
 # Int8Linear/Fp8Linear swap and it joined RUNTIME_INT8_ARCHS, and the next arch
 # to be wired must not need an edit here to stop lying to the panels.
-_ALL_ARCHS = ["sd15", "sdxl"] + _DIT_ARCHS
+_ALL_ARCHS = ["sd15", "sdxl", "sensenova_sdxl_chimera"] + _DIT_ARCHS
 _QUANTIZED_GEMM_SUPPORTED = set(QUANTIZED_LINEAR_ARCHS)
 for _a in [a for a in _ALL_ARCHS if a not in _QUANTIZED_GEMM_SUPPORTED]:
     _add(_a, "quantized_gemm",
@@ -784,9 +784,33 @@ for _a in [a for a in _ALL_ARCHS if a not in _QUANTIZED_GEMM_SUPPORTED]:
 
 # timestep_shift: a SenseNova U1.5-specific flow-matching time-shift; every
 # other architecture's sampler has no equivalent knob and ignores it.
-for _a in [a for a in _ALL_ARCHS if a != "sensenova"]:
+for _a in [a for a in _ALL_ARCHS if a not in {"sensenova", "sensenova_sdxl_chimera"}]:
     _add(_a, "timestep_shift",
          "timestep_shift is a SenseNova U1.5-specific flow-matching time-shift parameter; this architecture's sampler does not consult it")
+
+# Chimera has a dedicated U-Net sampler. Features inherited only by the legacy
+# SD/SDXL sampling loop are not silently advertised for it.
+for _feature, _reason in {
+    "use_torch_compile": "torch.compile is not wired into the Chimera U-Net sampler",
+    "advanced_cfg": "advanced CFG scheduling and rescale are not wired into the Chimera flow sampler",
+    "spectrum": "Spectral Feature Forecasting is not implemented for the Chimera flow sampler",
+    "fbcache": "First Block Cache is not implemented for the Chimera flow sampler",
+    "nag": "Normalized Attention Guidance is not implemented for Chimera",
+    "controlnets": "ControlNet is not supported for Chimera",
+    "style_transfer": "training-free reference style transfer is not implemented for Chimera",
+    "unet_quantization": "per-generation U-Net quantization is not implemented for Chimera",
+    "text_encoder_quantization": "the hash-pinned SenseNova understanding source controls its own weight format",
+    "cpu_text_encoding": "Chimera prefix encoding and bridge reduction currently run on the generation device",
+    "attention_impl": "Chimera attention uses its checkpoint-fixed three-axis RoPE processor",
+    "vae_drift_correction": "Chimera img2img/inpaint is not enabled yet",
+    "flatten_in_loop": "in-loop hard flattening is not implemented for the Chimera flow sampler",
+    "te_override": "Chimera uses its hash-pinned SenseNova understanding source",
+    "vae_override": "Chimera uses the VAE bundled and hash-pinned in its artifact",
+    "lora": "generation-time LoRA is not implemented for Chimera",
+    "block_swap": "per-block CPU offload is not implemented for Chimera",
+    "vae_tiling": "VAE tiled decode is not wired into the Chimera decoder yet",
+}.items():
+    _add("sensenova_sdxl_chimera", _feature, _reason)
 
 # img_cfg_scale: a SenseNova U1.5-specific second CFG scale for reference-image
 # editing; every other architecture's sampler has no equivalent knob and

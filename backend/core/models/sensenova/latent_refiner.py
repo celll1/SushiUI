@@ -127,7 +127,14 @@ class LatentRefiner(nn.Module):
                 else:
                     h = block(h, emb)
             delta = self.out(h)
-            return x0_head + self.gate.to(device=x0_head.device, dtype=x0_head.dtype) * delta.to(x0_head.dtype)
+            gated_delta = self.gate.to(
+                device=x0_head.device, dtype=x0_head.dtype
+            ) * delta.to(x0_head.dtype)
+            denominator = x0_head.float().square().mean().sqrt().clamp_min(1e-12)
+            self._last_delta_rel = (
+                gated_delta.float().square().mean().sqrt() / denominator
+            ).detach()
+            return x0_head + gated_delta
 
 
 def apply_latent_refiner(

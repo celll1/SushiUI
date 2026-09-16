@@ -2647,6 +2647,14 @@ class BaseTrainer(ABC):
             "sensenova_full_finetune_save_format",
             _TD_PHASE_EVICTION["sensenova_full_finetune_save_format"],
         ))
+        self.sensenova_refiner_training_mode = str(_tc.get(
+            "sensenova_refiner_training_mode",
+            _TD_PHASE_EVICTION["sensenova_refiner_training_mode"],
+        ))
+        self.sensenova_refiner_lr_factor = float(_tc.get(
+            "sensenova_refiner_lr_factor",
+            _TD_PHASE_EVICTION["sensenova_refiner_lr_factor"],
+        ))
         self.block_swap_h2d_only = bool(_tc.get("block_swap_h2d_only", False))
         self.block_swap_ring_size = int(_tc.get("block_swap_ring_size", 2))
 
@@ -18701,6 +18709,7 @@ class BaseTrainer(ABC):
                                             "generation_decoder",
                                             "generation_norms",
                                             "generation_flow",
+                                            "generation_refiner",
                                         )
                                     ))
                                     _active_census_ids.update(getattr(

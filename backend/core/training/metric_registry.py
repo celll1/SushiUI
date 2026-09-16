@@ -72,6 +72,14 @@ _ITEM_RATE = {"family": "other", "scale_group": "items_per_second", "range": _AU
 _TOKEN_RATE = {"family": "other", "scale_group": "tokens_per_second", "range": _AUTO_0, "sampling": "dense"}
 
 EXTRA_METRIC_DEFS = {
+    "sn_refiner_delta_rel": {
+        "label": "SenseNova refiner Δ/x₀", "color": "#a78bfa",
+        "dashed": True, **_GUIDANCE_REL,
+    },
+    "sn_refiner_gate": {
+        "label": "SenseNova refiner gate", "color": "#8b5cf6",
+        "dashed": True, **_UNIT_DIAG,
+    },
     "loss_flow": {"label": "SenseNova flow loss", "color": "#38bdf8", "dashed": False, **_LOSS},
     "loss_ce": {"label": "SenseNova CE", "color": "#f472b6", "dashed": False, **_LOSS},
     "loss_ce_i2t_caption": {"label": "CE (caption)", "color": "#fb7185", "dashed": True, **_LOSS},

@@ -537,6 +537,40 @@ def test_adapter_saves_each_format(tmp_path, save_format):
     assert written, save_format
 
 
+def test_refiner_only_preserves_the_source_mixed_decoder_layout(tmp_path):
+    from core.models.sensenova.latent_refiner import (
+        REFINER_INPUTS, REFINER_NORM, LatentRefiner,
+    )
+
+    transformer = _trained_tree("gen")
+    transformer.fm_modules = nn.ModuleDict({
+        "fm_refiner": LatentRefiner(4, 16, 1).to(torch.bfloat16),
+    })
+    adapter = _adapter(transformer, "gen", "mixed")
+    trainer = adapter.trainer
+    trainer.sensenova_refiner_training_mode = "refiner_only"
+    trainer.sensenova_source_trained_branch = "gen"
+    trainer.sensenova_source_save_format = "mixed"
+    trainer.sensenova_config_dict = {
+        "gen_in_channels": 4,
+        "gen_refiner": {
+            "version": 1,
+            "width": 16,
+            "depth": 1,
+            "inputs": list(REFINER_INPUTS),
+            "norm": REFINER_NORM,
+            "detach_anchor_step": None,
+            "detach_steps": None,
+            "detach_accum": None,
+        },
+    }
+    written = adapter.save_checkpoint(100, 1, tmp_path / "refiner_only")
+    raw, metadata = read_state_dict(written)
+    assert metadata["sensenova_trained_branch"] == "gen"
+    assert metadata["sensenova_save_format"] == "mixed"
+    assert any("fm_modules.fm_refiner." in key for key in raw)
+
+
 def test_adapter_refuses_an_unknown_format(tmp_path):
     adapter = _adapter(_trained_tree("gen"), "gen", "fp8")
     with pytest.raises(ValueError, match="Unknown sensenova_full_finetune_save_format"):

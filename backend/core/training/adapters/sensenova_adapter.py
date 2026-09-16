@@ -33,6 +33,12 @@ def _explicit_scopes(trainer: Any) -> tuple[str, ...]:
     return tuple(settings.get("sensenova_train_scopes") or ())
 
 
+def _refiner_mode(trainer: Any) -> str:
+    return str(getattr(
+        trainer, "sensenova_refiner_training_mode", "none"
+    ) or "none").strip().lower()
+
+
 def _unique_parameters(parameters: Iterable[nn.Parameter]) -> List[nn.Parameter]:
     seen = set()
     result = []
@@ -372,7 +378,12 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
                 "has no fm_modules container; this tree is not the NEOChatModel "
                 "this route was built for."
             )
-        parameters = list(fm_modules.parameters())
+        parameters = _unique_parameters(
+            parameter
+            for name, module in fm_modules.items()
+            if name != "fm_refiner"
+            for parameter in module.parameters()
+        )
         if not parameters:
             raise RuntimeError(
                 "SenseNova sensenova_train_fm_modules collected no parameter from "
@@ -385,6 +396,7 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
         bad = [
             f"{name} ({parameter.dtype})"
             for name, parameter in fm_modules.named_parameters()
+            if not name.startswith("fm_refiner.")
             if not parameter.dtype.is_floating_point
         ]
         if bad:
@@ -401,6 +413,16 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
         trainer = self.trainer
         transformer = trainer.transformer
         by_scope: Dict[str, List[nn.Parameter]] = {}
+        mode = _refiner_mode(trainer)
+        fm_modules = getattr(transformer, "fm_modules", {})
+        refiner = (
+            fm_modules["fm_refiner"]
+            if "fm_refiner" in fm_modules else None
+        )
+        if mode == "refiner_only":
+            if refiner is None:
+                raise RuntimeError("refiner_only resolved without fm_refiner")
+            return {"generation_refiner": _unique_parameters(refiner.parameters())}
         scopes = _explicit_scopes(trainer)
         if not scopes:
             for half, scope in (("gen", "generation_decoder"),
@@ -424,6 +446,10 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
             if branch in ("und", "both"):
                 by_scope["understanding_norms"] = _understanding_norm_parameters(
                     transformer
+                )
+            if mode == "joint" and refiner is not None:
+                by_scope["generation_refiner"] = _unique_parameters(
+                    refiner.parameters()
                 )
             return by_scope
 
@@ -460,7 +486,14 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
             by_scope["generation_norms"] = _generation_norm_parameters(transformer)
         if "generation_flow" in scopes:
             by_scope["generation_flow"] = _unique_parameters(
-                transformer.fm_modules.parameters()
+                parameter
+                for name, module in transformer.fm_modules.items()
+                if name != "fm_refiner"
+                for parameter in module.parameters()
+            )
+        if mode == "joint" and refiner is not None:
+            by_scope["generation_refiner"] = _unique_parameters(
+                refiner.parameters()
             )
         empty = [scope for scope in scopes if not by_scope.get(scope)]
         if empty:
@@ -480,6 +513,8 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
             raise RuntimeError(
                 "SenseNova full fine-tuning requires a loaded transformer"
             )
+        if _refiner_mode(trainer) == "refiner_only":
+            return "none", []
         branch = resolve_full_finetune_branch(trainer)
         targets = (
             [] if branch == "none" else
@@ -539,7 +574,13 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
         # steps, so an unknown format would take the run down after it had
         # already trained. train_runner refuses it earlier still; this covers a
         # trainer built directly.
-        self._resolve_save_format()
+        save_format = self._resolve_save_format()
+        if _refiner_mode(trainer) == "refiner_only" and save_format != "mixed":
+            raise ValueError(
+                "SenseNova refiner_only requires "
+                "sensenova_full_finetune_save_format='mixed' so frozen base "
+                "tensors are preserved rather than converted"
+            )
         branch, targets = self._resolve_scope()
         # Every branch, not just the understanding ones: load_components stamps
         # train() on the whole decoder, and the prefix the loss is conditioned on
@@ -636,6 +677,9 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
                 ("generation_norms", unet_lr, "generation_norms"),
                 ("generation_flow", unet_lr, "generation_flow"),
                 ("understanding_norms", und_lr, "understanding_norms"),
+                ("generation_refiner", unet_lr * float(getattr(
+                    trainer, "sensenova_refiner_lr_factor", 1.0
+                )), "generation_refiner"),
             ) if _explicit_scopes(trainer) else (
                 ("generation_decoder", unet_lr, "unet"),
                 ("understanding_decoder", und_lr, "text_encoder_1"),
@@ -645,6 +689,9 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
                 # Keep every previously shipped group at the same index. A
                 # resume therefore restores them and rewarms only this group.
                 ("understanding_norms", und_lr, "understanding_norms"),
+                ("generation_refiner", unet_lr * float(getattr(
+                    trainer, "sensenova_refiner_lr_factor", 1.0
+                )), "generation_refiner"),
             )
         )
         groups: List[Dict[str, Any]] = []
@@ -689,6 +736,7 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
                 "generation_decoder": LORA_COMPONENT_UNET,
                 "generation_norms": LORA_COMPONENT_UNET,
                 "generation_flow": LORA_COMPONENT_UNET,
+                "generation_refiner": LORA_COMPONENT_UNET,
             }
             for scope, parameters in self._scope_parameters(branch, targets).items():
                 for parameter in parameters:
@@ -710,6 +758,11 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
         # `both` run every override is explicit or the bucket is arbitrary.
         for parameter in self._fm_parameters(branch):
             components[id(parameter)] = LORA_COMPONENT_UNET
+        refiner = getattr(self.trainer.transformer, "fm_modules", {})
+        if "fm_refiner" in refiner:
+            for parameter in refiner["fm_refiner"].parameters():
+                if parameter.requires_grad:
+                    components[id(parameter)] = LORA_COMPONENT_UNET
         if branch in ("und", "both"):
             for parameter in _understanding_norm_parameters(
                 self.trainer.transformer
@@ -765,6 +818,17 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
         trainer = self.trainer
         save_format = self._resolve_save_format()
         branch, targets = self._resolve_scope()
+        save_branch = branch
+        if _refiner_mode(trainer) == "refiner_only":
+            source_branch = str(getattr(
+                trainer, "sensenova_source_trained_branch", ""
+            ) or "").strip()
+            source_format = str(getattr(
+                trainer, "sensenova_source_save_format", ""
+            ) or "").strip()
+            save_branch = source_branch if source_format == "mixed" and source_branch in {
+                "gen", "und", "both"
+            } else "none"
         model_path = getattr(trainer, "model_path", None)
         source_dir = os.path.dirname(str(model_path)) if model_path else None
 
@@ -819,7 +883,7 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
         written, census = save_sensenova_full_finetune_checkpoint(
             trainer.transformer,
             str(output_path),
-            branch=branch,
+            branch=save_branch,
             save_format=save_format,
             config=getattr(trainer, "sensenova_model_config", None),
             raw_config=getattr(trainer, "sensenova_config_dict", None),
@@ -829,7 +893,7 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
         )
         print(
             f"[SenseNovaFullParameterAdapter] step {step}: saved {len(targets)} "
-            f"{branch} decoder Linear(s) as '{census['effective_format']}' -> {written}"
+            f"{save_branch} decoder layout as '{census['effective_format']}' -> {written}"
         )
         # The resolved path, not the argument: the save appends the suffix and,
         # past one shard, returns the index file. BaseFullParameterAdapter pairs

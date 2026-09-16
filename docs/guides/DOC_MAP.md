@@ -37,6 +37,7 @@ machine-local working material.
 | [docs/guides/SPECTRUM.md](SPECTRUM.md) | Spectrum forecasting behavior and constraints. |
 | [docs/guides/MINIMAX_H3_HYBRID_LOADER_DESIGN.md](MINIMAX_H3_HYBRID_LOADER_DESIGN.md) | Current MiniMax-H3 hybrid-loader contract. |
 | [docs/guides/MINIMAX_MUSIC3_DESIGN.md](MINIMAX_MUSIC3_DESIGN.md) | Current MiniMax Music 3 integration and refusal boundary. |
+| [docs/guides/SENSENOVA_SDXL_CHIMERA_DESIGN.md](SENSENOVA_SDXL_CHIMERA_DESIGN.md) | Proposed SenseNova-understanding plus SDXL-U-Net architecture, bootstrap artifact, training/generation wiring, frontend plan, and acceptance gates. |
 | [docs/decisions/SENSENOVA_TEXT_OUTPUT_DESIGN.md](../decisions/SENSENOVA_TEXT_OUTPUT_DESIGN.md) | Implemented SenseNova text-output and mixed-objective contract. |
 
 ## Training and data

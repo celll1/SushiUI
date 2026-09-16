@@ -103,6 +103,24 @@ def test_the_runner_accepts_a_refiner_attach_with_rewarmup():
     assert train["sensenova_refiner_depth"] == 0
 
 
+def test_portable_refiner_base_refuses_non_bf16_save_before_load(tmp_path):
+    base = tmp_path / "refined.safetensors.index.json"
+    base.write_text(json.dumps({
+        "metadata": {
+            "sensenova_refiner_training_mode": "refiner_only",
+            "sensenova_save_layout_branch": "both",
+            "sensenova_save_format": "bf16",
+        },
+        "weight_map": {},
+    }), encoding="utf-8")
+    with _sensenova(), pytest.raises(ValueError, match="requires.*save_format='bf16'"):
+        _apply_sensenova_training_contract(
+            str(base), "full_finetune", _train(
+                sensenova_refiner_training_mode="base_only",
+            ), {"sample": {}}
+        )
+
+
 @pytest.mark.parametrize(
     "network_type,overrides,message",
     [

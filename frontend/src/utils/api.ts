@@ -238,7 +238,7 @@ export interface MiniMaxH3HybridProvenance {
 export interface ModelInfo {
   source_type: string;
   source: string;
-  type: "sd15" | "sdxl" | "zimage" | "flux2" | "anima" | "lens" | "ideogram4" | "minit2i" | "krea2" | "sensenova" | "ltx2" | "acestep" | "minimax_h3" | "minimax_music3" | "yue2";
+  type: "sd15" | "sdxl" | "zimage" | "flux2" | "anima" | "lens" | "ideogram4" | "minit2i" | "krea2" | "sensenova" | "sensenova_sdxl_chimera" | "ltx2" | "acestep" | "minimax_h3" | "minimax_music3" | "yue2";
   is_v_prediction: boolean;
   model_hash: string;
   // Model-list entry fields (from GET /models)
@@ -2458,7 +2458,7 @@ export interface Img2TxtResponse {
   effective_instruction: string;
   prompt_template_version: number;
   actual_seed: number;
-  model: { type: "sensenova"; source: string | null };
+  model: { type: "sensenova" | "sensenova_sdxl_chimera"; source: string | null };
   timing: { preprocess_seconds: number; generation_seconds: number };
   warnings: Array<string | { message?: string }>;
 }

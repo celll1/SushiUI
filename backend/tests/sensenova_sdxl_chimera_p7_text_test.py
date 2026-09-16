@@ -2,6 +2,12 @@
 
 from types import SimpleNamespace
 
+from api.arch_capabilities import TEXT_OUTPUT_MODES
+
+
+def test_chimera_advertises_img2txt_capability():
+    assert TEXT_OUTPUT_MODES["sensenova_sdxl_chimera"] == ("img2txt",)
+
 
 def test_img2txt_dispatches_to_chimera_understanding_path():
     from core.pipeline import DiffusionPipelineManager

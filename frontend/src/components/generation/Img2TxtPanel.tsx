@@ -54,6 +54,7 @@ export default function Img2TxtPanel() {
   const [isDragging, setIsDragging] = useState(false);
   const [hintDraft, setHintDraft] = useState("");
   const [editedText, setEditedText] = useState("");
+  const loadedArch = modelInfo?.type ?? "sensenova";
 
   useEffect(() => {
     const defaults = generationDefaults?.img2txt;
@@ -249,7 +250,7 @@ export default function Img2TxtPanel() {
           disabled={ownsCurrent}
           storageKey="img2txt_lora_collapsed"
           simpleMode
-          loadedArch="sensenova"
+          loadedArch={loadedArch}
         />
 
         <Card title="Result">
@@ -273,8 +274,8 @@ export default function Img2TxtPanel() {
               {result.warnings?.map((warning, index) => <p key={index} className="text-xs text-amber-300">{warning}</p>)}
               <div className="flex flex-wrap gap-2">
                 <Button size="sm" variant="secondary" onClick={() => navigator.clipboard.writeText(editedText)}>Copy</Button>
-                <Button size="sm" variant="secondary" onClick={() => saveDownload("sensenova-img2txt.txt", editedText, "text/plain;charset=utf-8")}>Download .txt</Button>
-                <Button size="sm" variant="secondary" onClick={() => saveDownload("sensenova-img2txt.json", JSON.stringify({ structured: result.structured, raw_text: editedText }, null, 2), "application/json")}>Download .json</Button>
+                <Button size="sm" variant="secondary" onClick={() => saveDownload(`${result.model.type}-img2txt.txt`, editedText, "text/plain;charset=utf-8")}>Download .txt</Button>
+                <Button size="sm" variant="secondary" onClick={() => saveDownload(`${result.model.type}-img2txt.json`, JSON.stringify({ structured: result.structured, raw_text: editedText }, null, 2), "application/json")}>Download .json</Button>
                 <Button size="sm" onClick={requeueResult}>Requeue frozen request</Button>
               </div>
               <details className="text-xs text-gray-500"><summary>Effective instruction</summary><pre className="mt-1 whitespace-pre-wrap">{result.effectiveInstruction}</pre></details>

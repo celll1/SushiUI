@@ -812,9 +812,10 @@ export default function GenerationQueueProcessor() {
   const runImg2Txt = useCallback(async (item: QueueItem) => {
     try {
       const frozen = item.modelIdentity;
-      if (modelInfo?.type !== "sensenova"
-          || !archCapabilities?.text_output_modes?.sensenova?.includes("img2txt")) {
-        throw new Error("The loaded model no longer advertises SenseNova img2txt support.");
+      const loadedArch = modelInfo?.type;
+      if (!loadedArch
+          || !archCapabilities?.text_output_modes?.[loadedArch]?.includes("img2txt")) {
+        throw new Error("The loaded model no longer advertises img2txt support.");
       }
       if (frozen && (frozen.type !== modelInfo.type || frozen.source !== modelInfo.source)) {
         throw new Error("The loaded model changed after this img2txt request was queued. Requeue it for the current model.");

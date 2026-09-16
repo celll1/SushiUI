@@ -24,6 +24,7 @@ from api.param_defaults import GENERATION_DEFAULTS, TRAINING_DEFAULTS
 # ARCH_UNSUPPORTED, whose missing entries mean a parameter is honored.
 TEXT_OUTPUT_MODES: Dict[str, Tuple[str, ...]] = {
     "sensenova": ("img2txt",),
+    "sensenova_sdxl_chimera": ("img2txt",),
 }
 # Re-exported (and served by GET /schema/arch-capabilities) so the generation
 # panels can offer unet_quantization="int8" exactly where the in-place converter

@@ -13,6 +13,8 @@ shippable text-output and source-image editing parts of P7. Subsequent commits a
 - `70afa236 Add Chimera txt2img inference`
 - `2931f621 Train Chimera bridge and U-Net stages`
 - `5907b359 Preserve Chimera understanding text output`
+- `1a7f6153 Add Chimera source-image editing`
+- `75469d79 Document Chimera architecture`
 
 The shipped surface now includes path-based scratch/transplant construction,
 understanding-only loading, model/API registration, deterministic txt2img,
@@ -23,7 +25,9 @@ understanding branch, and deterministic SDEdit/RePaint for img2img, inpaint,
 and the shared spatial-outpaint orchestration. Inpaint pins the preserve region
 at every flow step and composites the original pixels after decode. The
 combined Chimera P0-P4/P7, source-loader, capability, and CFG regression run is
-87 passing tests.
+88 passing tests. The frontend model union, capability-driven img2txt tab and
+queue gate preserve the Chimera architecture id rather than coercing it to
+`sensenova`; the repository owner still owns the frontend type-check/build.
 
 The machine-local P5 artifact is still intentionally absent. This file's source
 choice guard remains in force: no SDXL donor was selected by the owner, and an

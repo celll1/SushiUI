@@ -528,6 +528,153 @@ def sensenova_checkpoint_metadata(path: str) -> Dict[str, str]:
         return dict(handle.metadata() or {})
 
 
+SENSENOVA_REFINER_DELTA_KIND = "refiner_delta_v1"
+
+
+def _resolved_refiner_delta_base(path: str) -> str:
+    """Resolve a delta chain to the complete checkpoint it depends on."""
+    current = os.path.abspath(str(path))
+    seen = set()
+    while True:
+        if not os.path.isfile(current) and os.path.isfile(current + ".index.json"):
+            current += ".index.json"
+        if current in seen:
+            raise ValueError(f"SenseNova refiner delta base chain contains a cycle at {current!r}")
+        seen.add(current)
+        metadata = sensenova_checkpoint_metadata(current)
+        if metadata.get("sensenova_checkpoint_kind") != SENSENOVA_REFINER_DELTA_KIND:
+            return current
+        base = str(metadata.get("sensenova_refiner_base_model_path") or "").strip()
+        if not base:
+            raise ValueError(f"SenseNova refiner delta {current!r} carries no base model path")
+        if not os.path.isabs(base):
+            base = os.path.join(os.path.dirname(current), base)
+        current = os.path.abspath(base)
+
+
+def save_sensenova_refiner_delta_checkpoint(
+    transformer: NEOChatModel,
+    output_path: str,
+    *,
+    base_model_path: str,
+    config: Any = None,
+    raw_config: Optional[Dict[str, Any]] = None,
+    extra_metadata: Optional[Dict[str, str]] = None,
+    source_dir: Optional[str] = None,
+) -> str:
+    """Atomically save only the refiner, plus the complete base it composes with."""
+    from safetensors.torch import save_file
+
+    from core.models.common.quantized_export import sensenova_export_metadata
+
+    from .latent_refiner import REFINER_PREFIX, validate_gen_refiner_declaration
+
+    base = _resolved_refiner_delta_base(base_model_path)
+    if not os.path.isfile(base):
+        raise FileNotFoundError(f"SenseNova refiner delta base not found: {base!r}")
+    fm_modules = getattr(transformer, "fm_modules", None)
+    if fm_modules is None or "fm_refiner" not in fm_modules:
+        raise RuntimeError("SenseNova refiner delta save requires fm_modules.fm_refiner")
+
+    config_dict = _embeddable_sensenova_config(config, source_dir, raw_config)
+    refiner_state = {
+        f"{REFINER_PREFIX}{key}": tensor.detach().cpu().contiguous()
+        for key, tensor in fm_modules["fm_refiner"].state_dict().items()
+    }
+    step = int((extra_metadata or {}).get("step", 0) or 0)
+    validate_gen_refiner_declaration(
+        config_dict, refiner_state, checkpoint_step=step
+    )
+
+    metadata = dict(sensenova_export_metadata(config_dict))
+    metadata.update({
+        "sensenova_checkpoint_kind": SENSENOVA_REFINER_DELTA_KIND,
+        "sensenova_refiner_base_model_path": base,
+        "sensenova_refiner_base_model_identity": sensenova_base_model_identity(base),
+    })
+    for key, value in (extra_metadata or {}).items():
+        metadata[str(key)] = str(value)
+
+    resolved = str(output_path)
+    if not resolved.endswith(".safetensors"):
+        resolved += ".safetensors"
+    os.makedirs(os.path.dirname(os.path.abspath(resolved)), exist_ok=True)
+    temporary = resolved + ".tmp"
+    try:
+        save_file(
+            {f"{TRANSFORMER_PREFIX}{key}": value for key, value in refiner_state.items()},
+            temporary,
+            metadata=metadata,
+        )
+        os.replace(temporary, resolved)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return resolved
+
+
+def _load_sensenova_refiner_delta(
+    model_path: str, torch_dtype: torch.dtype,
+) -> Dict[str, Any]:
+    """Load the referenced complete base, then strictly overlay one refiner delta."""
+    from .latent_refiner import (
+        REFINER_PREFIX, LatentRefiner, validate_gen_refiner_declaration,
+    )
+
+    raw_state, metadata = read_state_dict(model_path)
+    base = str(metadata.get("sensenova_refiner_base_model_path") or "").strip()
+    if not base:
+        raise ValueError(f"SenseNova refiner delta {model_path!r} carries no base model path")
+    if not os.path.isabs(base):
+        base = os.path.join(os.path.dirname(os.path.abspath(model_path)), base)
+    expected_identity = str(
+        metadata.get("sensenova_refiner_base_model_identity") or ""
+    ).strip()
+    if expected_identity and sensenova_base_model_identity(base) != expected_identity:
+        raise ValueError(
+            f"SenseNova refiner delta base identity changed for {base!r}; refusing "
+            f"to apply the refiner to a different checkpoint"
+        )
+
+    components = load_sensenova_from_path(base, torch_dtype=torch_dtype)
+    delta_state = strip_prefix(raw_state, TRANSFORMER_PREFIX)
+    config, config_dict = _load_sensenova_config(metadata, os.path.dirname(model_path))
+    step = int(metadata.get("step") or 0)
+    declaration = validate_gen_refiner_declaration(
+        config_dict, delta_state, checkpoint_step=step
+    )
+    if declaration is None:
+        raise ValueError("SenseNova refiner delta carries no gen_refiner declaration")
+
+    refiner = LatentRefiner(
+        int(config_dict["gen_in_channels"]),
+        int(declaration["width"]),
+        int(declaration["depth"]),
+    ).to(device="cpu", dtype=torch_dtype)
+    payload = {
+        key[len(REFINER_PREFIX):]: tensor
+        for key, tensor in delta_state.items()
+        if key.startswith(REFINER_PREFIX)
+    }
+    refiner.load_state_dict(payload, strict=True)
+    refiner.gate.data = refiner.gate.data.float()
+
+    transformer = components["transformer"]
+    transformer.fm_modules["fm_refiner"] = refiner
+    transformer.config.gen_refiner = dict(declaration)
+    config.gen_refiner = dict(declaration)
+    components.update({
+        "transformer": transformer,
+        "config": config,
+        "config_dict": config_dict,
+        "metadata": metadata,
+    })
+    print(
+        f"[SenseNovaLoader] composed refiner delta step {step} with base {base}"
+    )
+    return components
+
+
 class _LazySafetensorsSource:
     """Per-tensor lazy reader for a single-file or shard-index safetensors save.
 
@@ -1218,6 +1365,10 @@ def load_sensenova_from_path(
 
     if not isinstance(model_path, str) or not os.path.isfile(model_path):
         raise FileNotFoundError(f"SenseNova checkpoint not found at {model_path!r}")
+
+    initial_metadata = sensenova_checkpoint_metadata(model_path)
+    if initial_metadata.get("sensenova_checkpoint_kind") == SENSENOVA_REFINER_DELTA_KIND:
+        return _load_sensenova_refiner_delta(model_path, torch_dtype)
 
     model_dir = os.path.dirname(model_path)
     print(f"[SenseNovaLoader] Reading state dict: {model_path}")

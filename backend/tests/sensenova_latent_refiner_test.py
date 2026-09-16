@@ -96,6 +96,58 @@ def test_declaration_and_tensor_payload_are_fail_closed():
         validate_gen_refiner_declaration(undeclared, state)
 
 
+def test_delta_checkpoint_composes_its_declared_base_and_refiner(tmp_path, monkeypatch):
+    from safetensors.torch import save_file
+
+    from core.models.sensenova import loader
+
+    base = tmp_path / "base.safetensors"
+    save_file(
+        {"placeholder": torch.zeros(1)}, str(base),
+        metadata={"model_type": "sensenova"},
+    )
+    source = torch.nn.Module()
+    source.fm_modules = torch.nn.ModuleDict()
+    expected = LatentRefiner(4, 16, 1).to(torch.bfloat16)
+    expected.gate.data = expected.gate.data.float()
+    torch.nn.init.normal_(expected.out.weight, std=0.01)
+    source.fm_modules["fm_refiner"] = expected
+    config_dict = {
+        "gen_in_channels": 4,
+        "gen_refiner": _declaration(depth=1),
+    }
+    delta = loader.save_sensenova_refiner_delta_checkpoint(
+        source,
+        str(tmp_path / "run_step_000123"),
+        base_model_path=str(base),
+        raw_config=config_dict,
+        extra_metadata={"step": "123", "epoch": "2"},
+    )
+
+    target = torch.nn.Module()
+    target.fm_modules = torch.nn.ModuleDict()
+    target.config = SimpleNamespace(gen_refiner=None)
+    base_components = {
+        "transformer": target,
+        "config": target.config,
+        "config_dict": {"gen_in_channels": 4},
+        "metadata": {},
+    }
+    monkeypatch.setattr(
+        loader, "load_sensenova_from_path",
+        lambda path, torch_dtype: base_components,
+    )
+
+    loaded = loader._load_sensenova_refiner_delta(delta, torch.bfloat16)
+    actual = loaded["transformer"].fm_modules["fm_refiner"]
+
+    assert loaded["metadata"]["step"] == "123"
+    assert loaded["config_dict"]["gen_refiner"] == config_dict["gen_refiner"]
+    assert loaded["config"].gen_refiner == config_dict["gen_refiner"]
+    for key, tensor in expected.state_dict().items():
+        assert torch.equal(actual.state_dict()[key], tensor)
+
+
 def test_anneal_gate_must_match_checkpoint_clock():
     module = LatentRefiner(4, 16, 1)
     module.gate.fill_(0.5)

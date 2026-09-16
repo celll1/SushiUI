@@ -6797,7 +6797,8 @@ class BaseTrainer(ABC):
             self._safe_unlink(path)
 
     def _save_checkpoint_bundle(self, step: int, epoch: int, batch_idx: int,
-                                multi_noise_timesteps: int) -> None:
+                                multi_noise_timesteps: int,
+                                save_kind: str = "periodic") -> None:
         """One periodic save: weights, training state, optimizer, EMA.
 
         Each stage is recorded as it completes so a later failure -- in this
@@ -6808,24 +6809,32 @@ class BaseTrainer(ABC):
             self._log_metrics_to_db(step=step, force_flush=True)
         getattr(self, "_flush_layer_offload_conductors", lambda: None)()
         self._begin_checkpoint_bundle(step)
-        _pre_save_entries = set(self.output_dir.iterdir()) if self.output_dir.exists() else set()
-        self.save_checkpoint(step=step, epoch=epoch)
-        self._note_checkpoint_bundle_stage(step, "weights")
-        self._record_checkpoint_db_row(step=step, epoch=epoch, before_entries=_pre_save_entries)
-        # Set here, not after the guard returns: the post-write prune can raise,
-        # and the emergency handler that follows uses this to decide whether
-        # this step's files are partial.
-        self._last_periodic_checkpoint_step = step
-        self.save_training_state(
-            step=step, epoch=epoch, batch_idx=batch_idx,
-            multi_noise_timesteps=multi_noise_timesteps,
-        )
-        self._note_checkpoint_bundle_stage(step, "state")
-        self.save_optimizer_state(step=step)
-        self._note_checkpoint_bundle_stage(step, "optimizer")
-        self.save_ema_state(step=step)
-        self._save_ema_checkpoint(step=step, epoch=epoch)
-        self._note_checkpoint_bundle_stage(step, "ema")
+        previous_kind = getattr(self, "_checkpoint_save_kind", None)
+        self._checkpoint_save_kind = save_kind
+        try:
+            _pre_save_entries = set(self.output_dir.iterdir()) if self.output_dir.exists() else set()
+            self.save_checkpoint(step=step, epoch=epoch)
+            self._note_checkpoint_bundle_stage(step, "weights")
+            self._record_checkpoint_db_row(step=step, epoch=epoch, before_entries=_pre_save_entries)
+            # Set here, not after the guard returns: the post-write prune can raise,
+            # and the emergency handler that follows uses this to decide whether
+            # this step's files are partial.
+            self._last_periodic_checkpoint_step = step
+            self.save_training_state(
+                step=step, epoch=epoch, batch_idx=batch_idx,
+                multi_noise_timesteps=multi_noise_timesteps,
+            )
+            self._note_checkpoint_bundle_stage(step, "state")
+            self.save_optimizer_state(step=step)
+            self._note_checkpoint_bundle_stage(step, "optimizer")
+            self.save_ema_state(step=step)
+            self._save_ema_checkpoint(step=step, epoch=epoch)
+            self._note_checkpoint_bundle_stage(step, "ema")
+        finally:
+            if previous_kind is None:
+                delattr(self, "_checkpoint_save_kind")
+            else:
+                self._checkpoint_save_kind = previous_kind
 
     def _periodic_save_with_space_guard(
         self,
@@ -6836,6 +6845,7 @@ class BaseTrainer(ABC):
         max_step_saves_to_keep: int,
         max_optimizer_saves_to_keep: int,
         save_every_n_steps: int,
+        save_kind: str = "periodic",
     ) -> None:
         """Periodic save under a free-space preflight.
 
@@ -6856,7 +6866,9 @@ class BaseTrainer(ABC):
                 max(max_optimizer_saves_to_keep, 1), current_step=step)
 
         try:
-            self._save_checkpoint_bundle(step, epoch, batch_idx, multi_noise_timesteps)
+            self._save_checkpoint_bundle(
+                step, epoch, batch_idx, multi_noise_timesteps, save_kind
+            )
         except Exception as first_error:
             if not is_disk_full_error(first_error):
                 raise
@@ -6875,7 +6887,9 @@ class BaseTrainer(ABC):
                     detail=f"{type(first_error).__name__}: {first_error}",
                 ) from first_error
             try:
-                self._save_checkpoint_bundle(step, epoch, batch_idx, multi_noise_timesteps)
+                self._save_checkpoint_bundle(
+                    step, epoch, batch_idx, multi_noise_timesteps, save_kind
+                )
             except Exception as retry_error:
                 self._delete_partial_step_artifacts(step)
                 if not is_disk_full_error(retry_error):
@@ -6912,7 +6926,14 @@ class BaseTrainer(ABC):
         failure because the next interval saves again, and this has no next
         interval, so a failure here is raised and fails the run.
         """
-        if getattr(self, "_last_periodic_checkpoint_step", None) == step:
+        refiner_delta_needs_portable_final = bool(
+            getattr(self, "is_sensenova", False)
+            and str(getattr(
+                self, "sensenova_refiner_training_mode", ""
+            )).strip().lower() == "refiner_only"
+        )
+        if (getattr(self, "_last_periodic_checkpoint_step", None) == step
+                and not refiner_delta_needs_portable_final):
             print(f"{self.log_prefix} Final checkpoint: step {step} was already "
                   f"written by the periodic interval; not writing it twice")
             return
@@ -6925,6 +6946,7 @@ class BaseTrainer(ABC):
             max_step_saves_to_keep=max_step_saves_to_keep,
             max_optimizer_saves_to_keep=max_optimizer_saves_to_keep,
             save_every_n_steps=save_every_n_steps,
+            save_kind="final",
         )
         print(f"{self.log_prefix} Final checkpoint saved at step {step}")
 

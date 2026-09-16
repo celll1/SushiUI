@@ -31,12 +31,14 @@ from core.models.common.single_file_format import (
 from core.models.ideogram4.vendor.int8_linear import Int8Linear, quantize_weight_to_int8
 from core.models.sensenova.loader import (
     SENSENOVA_BRANCH_LINEAR_COUNTS,
+    SENSENOVA_REFINER_DELTA_KIND,
     install_sensenova_state_dict,
     materialize_int8_decoder_linears,
     save_sensenova_full_finetune_checkpoint,
 )
 from core.models.sensenova.sensenova_lora import iter_sensenova_lora_targets
 from core.training.adapters.sensenova_adapter import SenseNovaFullParameterAdapter
+from core.training.base_trainer import BaseTrainer
 
 _LAYERS = 42
 _IN, _OUT = 8, 4
@@ -597,6 +599,92 @@ def test_refiner_only_preserves_a_bf16_source_as_both_halves(tmp_path):
     assert metadata["sensenova_save_layout_branch"] == "both"
     assert metadata["sensenova_refiner_training_mode"] == "refiner_only"
     assert metadata["sensenova_save_format"] == "bf16"
+
+
+def test_periodic_refiner_only_save_writes_only_a_resumable_delta(tmp_path):
+    from safetensors.torch import save_file
+
+    from core.model_loader import ModelLoader
+    from core.models.sensenova.latent_refiner import (
+        REFINER_INPUTS, REFINER_NORM, LatentRefiner,
+    )
+
+    base = tmp_path / "base.safetensors"
+    save_file(
+        {"placeholder": torch.zeros(1)},
+        str(base),
+        metadata={
+            "model_type": "sensenova",
+            "sensenova_trained_branch": "gen",
+            "sensenova_save_format": "bf16",
+        },
+    )
+    transformer = _trained_tree("both")
+    transformer.fm_modules = nn.ModuleDict({
+        "fm_refiner": LatentRefiner(4, 16, 1).to(torch.bfloat16),
+    })
+    transformer.fm_modules["fm_refiner"].gate.data = (
+        transformer.fm_modules["fm_refiner"].gate.data.float()
+    )
+    adapter = _adapter(transformer, "gen", "mixed")
+    trainer = adapter.trainer
+    trainer._checkpoint_save_kind = "periodic"
+    trainer.configured_model_path = str(base)
+    trainer.sensenova_refiner_training_mode = "refiner_only"
+    trainer.sensenova_source_trained_branch = "gen"
+    trainer.sensenova_source_save_format = "bf16"
+    trainer.sensenova_config_dict = {
+        "gen_in_channels": 4,
+        "gen_refiner": {
+            "version": 1,
+            "width": 16,
+            "depth": 1,
+            "inputs": list(REFINER_INPUTS),
+            "norm": REFINER_NORM,
+            "detach_anchor_step": None,
+            "detach_steps": None,
+            "detach_accum": None,
+        },
+    }
+
+    written = adapter.save_checkpoint(100, 1, tmp_path / "periodic")
+    raw, metadata = read_state_dict(written)
+
+    assert metadata["sensenova_checkpoint_kind"] == SENSENOVA_REFINER_DELTA_KIND
+    assert metadata["sensenova_refiner_base_model_path"] == str(base.resolve())
+    assert metadata["sensenova_base_save_format"] == "bf16"
+    assert ModelLoader.detect_model_type(written) == "sensenova"
+    assert raw
+    assert all(
+        key.startswith(f"{TRANSFORMER_PREFIX}fm_modules.fm_refiner.")
+        for key in raw
+    )
+    assert Path(written).stat().st_size < 1_000_000
+
+
+def test_completion_rewrites_a_same_step_refiner_delta_as_portable():
+    calls = []
+    trainer = SimpleNamespace(
+        log_prefix="[test]",
+        is_sensenova=True,
+        sensenova_refiner_training_mode="refiner_only",
+        _last_periodic_checkpoint_step=100,
+        _periodic_save_with_space_guard=lambda **kwargs: calls.append(kwargs),
+    )
+
+    BaseTrainer._final_save_on_completion(
+        trainer,
+        step=100,
+        epoch=1,
+        batch_idx=2,
+        multi_noise_timesteps=1,
+        max_step_saves_to_keep=5,
+        max_optimizer_saves_to_keep=1,
+        save_every_n_steps=5,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["save_kind"] == "final"
 
 
 def test_portable_refiner_base_can_save_a_frozen_float_half_as_bf16(tmp_path):

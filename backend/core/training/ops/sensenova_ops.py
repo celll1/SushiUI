@@ -1252,7 +1252,9 @@ def load_components(trainer: Any) -> None:
         _metadata.get("sensenova_trained_branch") or ""
     )
     trainer.sensenova_source_save_format = str(
-        _metadata.get("sensenova_save_format") or ""
+        _metadata.get("sensenova_save_format")
+        or _metadata.get("sensenova_base_save_format")
+        or ""
     )
     refiner_mode = str((getattr(trainer, "config", None) or {}).get(
         "sensenova_refiner_training_mode", "joint"

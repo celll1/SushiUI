@@ -13530,7 +13530,7 @@ components:
           properties:
             type:
               type: string
-              enum: [sensenova]
+              enum: [sensenova, sensenova_sdxl_chimera]
             source:
               type: string
               nullable: true

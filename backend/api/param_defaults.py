@@ -2477,6 +2477,15 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "train_unet": True,
     "train_text_encoder": False,            # Fix: frontend had True
     "unet_lr": None,        # None = falls back to learning_rate (see BaseTrainer.__init__)
+    # SenseNova SDXL Chimera. Alignment-loss coefficients intentionally have no
+    # invented fallback: bridge_align refuses until an explicit measured pair is supplied.
+    "chimera_training_stage": "unet",
+    "chimera_allow_unaligned_scratch": False,
+    "chimera_conditioning_cache": True,
+    "chimera_bridge_lr": None,
+    "chimera_context_dropout": 0.1,
+    "chimera_clip_hidden_weight": None,
+    "chimera_clip_pooled_weight": None,
     "text_encoder_lr": None,  # None = falls back to learning_rate (see BaseTrainer.__init__)
     "text_encoder_1_lr": None,
     "text_encoder_2_lr": None,

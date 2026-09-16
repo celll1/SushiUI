@@ -56,6 +56,7 @@ _ADDITIVE_LYCORIS_WITH_DORA: FrozenSet[AdapterPair] = (
 ENABLED_ADAPTER_PAIRS: Mapping[str, FrozenSet[AdapterPair]] = MappingProxyType({
     "sd15": _ORDINARY_ONLY,
     "sdxl": _ORDINARY_ONLY,
+    "sensenova_sdxl_chimera": frozenset(),
     "zimage": _ADDITIVE_LYCORIS_WITH_DORA,
     "anima": _ADDITIVE_LYCORIS,
     "lens": _ADDITIVE_LYCORIS_WITH_DORA,
@@ -85,6 +86,7 @@ ENABLED_ADAPTER_PAIRS: Mapping[str, FrozenSet[AdapterPair]] = MappingProxyType({
 TRAINABLE_ADAPTER_PAIRS: Mapping[str, FrozenSet[AdapterPair]] = MappingProxyType({
     "sd15": _ORDINARY_ONLY,
     "sdxl": _ORDINARY_ONLY,
+    "sensenova_sdxl_chimera": frozenset(),
     "zimage": _ADDITIVE_LYCORIS_WITH_DORA,
     "anima": _ADDITIVE_LYCORIS,
     "lens": _ADDITIVE_LYCORIS_WITH_DORA,
@@ -190,6 +192,7 @@ def training_refusal_reason(architecture: Optional[str]) -> str:
 DECOMPOSE_REFUSAL_REASONS: Mapping[str, str] = MappingProxyType({
     "sd15": DORA_DIFFUSERS_STRIPS_MAGNITUDES,
     "sdxl": DORA_DIFFUSERS_STRIPS_MAGNITUDES,
+    "sensenova_sdxl_chimera": PHASE3_PENDING,
     "flux2": PHASE3_PENDING_DENSE_ONLY,
     "anima": PHASE3_PENDING_DENSE_ONLY,
     "ltx2": PHASE3_PENDING_DENSE_ONLY,

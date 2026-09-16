@@ -7,6 +7,7 @@ import Button from "@/components/common/Button";
 import DirectorySettings from "@/components/settings/DirectorySettings";
 import GenerationSettings from "@/components/settings/GenerationSettings";
 import QuantizedGemmSettings from "@/components/settings/QuantizedGemmSettings";
+import ChimeraInitializer from "@/components/settings/ChimeraInitializer";
 import ProtectedRoute from "@/components/common/ProtectedRoute";
 import { restartBackend, restartFrontend, restartBoth, saveVideoFrameSliderMax, saveSliderBounds } from "@/utils/api";
 import NumberInput from "@/components/common/NumberInput";
@@ -766,6 +767,10 @@ export default function SettingsPage() {
 
           <Card title="Model Directories">
             <DirectorySettings />
+          </Card>
+
+          <Card title="SenseNova SDXL Chimera Initializer">
+            <ChimeraInitializer />
           </Card>
 
           <Card title="Generation Settings">

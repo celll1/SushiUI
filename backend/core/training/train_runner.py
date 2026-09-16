@@ -1336,6 +1336,72 @@ def _apply_yue2_training_contract(
     return True
 
 
+def _apply_chimera_training_contract(
+    base_model_path: str, network_type: str, train_config: Dict[str, Any]
+) -> bool:
+    """Normalize the stage-exact Chimera graph before loading either source."""
+    if network_type == "vae_decoder":
+        return False
+    from core.model_loader import ModelLoader
+
+    try:
+        is_chimera = ModelLoader.detect_model_type(base_model_path) == "sensenova_sdxl_chimera"
+    except Exception:
+        is_chimera = False
+    if not is_chimera:
+        return False
+    if network_type != "full_finetune":
+        raise ValueError(
+            "SenseNova SDXL Chimera supports training_method='full_finetune' only"
+        )
+    stage = str(train_config.get("chimera_training_stage", "unet")).strip().lower()
+    if stage not in {"bridge_align", "unet", "joint"}:
+        raise ValueError(
+            "chimera_training_stage must be 'bridge_align', 'unet', or 'joint'"
+        )
+    train_config["chimera_training_stage"] = stage
+    train_config["train_unet"] = stage in {"unet", "joint"}
+    if _normalize_scope_flag(train_config, "train_text_encoder", False):
+        raise ValueError(
+            "Chimera keeps the SenseNova understanding tower frozen; use "
+            "chimera_training_stage='bridge_align' or 'joint' to train its bridge"
+        )
+    if _normalize_scope_flag(train_config, "train_image_encoder", False):
+        raise ValueError("Chimera has no separately trainable image encoder")
+    for key, label in (
+        ("blocks_to_swap", "block swap"),
+        ("num_optimizer_groups", "fused optimizer groups"),
+    ):
+        if int(train_config.get(key, 0) or 0):
+            raise ValueError(f"Chimera does not support {label}; set {key}=0")
+    for key, label in (
+        ("use_ema", "EMA"),
+        ("repa_enable", "REPA"),
+        ("use_reference_images", "reference-image training"),
+    ):
+        if _normalize_scope_flag(train_config, key, False):
+            raise ValueError(f"Chimera does not support {label} in this release")
+    if train_config.get("vae_swap_source"):
+        raise ValueError("Chimera artifacts pin and bundle their donor VAE; VAE swap is unsupported")
+    if stage == "bridge_align":
+        for key in ("chimera_clip_hidden_weight", "chimera_clip_pooled_weight"):
+            value = train_config.get(key)
+            if value is None:
+                raise ValueError(f"bridge_align requires an explicit measured {key}")
+            train_config[key] = float(value)
+    dropout = float(train_config.get("chimera_context_dropout", 0.1))
+    if not 0.0 <= dropout <= 1.0:
+        raise ValueError("chimera_context_dropout must be between 0 and 1")
+    train_config["chimera_context_dropout"] = dropout
+    if train_config.get("cfg_uncond_drop_rate") is None:
+        train_config["cfg_uncond_drop_rate"] = dropout
+    cache = _normalize_scope_flag(train_config, "chimera_conditioning_cache", True)
+    train_config["text_encoding_mode"] = (
+        "pre_encoded_cache" if stage == "unet" and cache else "onthefly_gpu"
+    )
+    return True
+
+
 def _prepare_training_process_config(
     config: Dict[str, Any], base_model_path: str
 ):
@@ -1345,13 +1411,17 @@ def _prepare_training_process_config(
     network_config = process_config.get('network', {})
     network_type = network_config.get('type', 'lora')
     _apply_yue2_training_contract(base_model_path, network_type, train_config)
+    is_chimera = _apply_chimera_training_contract(
+        base_model_path, network_type, train_config
+    )
     _preflight_sensenova_before_dataset_config(
         base_model_path, network_type, train_config
     )
     _apply_sensenova_task_contract(
         base_model_path, network_type, train_config, process_config
     )
-    _assert_training_scope_is_nonempty(network_type, train_config)
+    if not (is_chimera and train_config["chimera_training_stage"] == "bridge_align"):
+        _assert_training_scope_is_nonempty(network_type, train_config)
     _assert_adapter_algebra_contract(network_type, network_config,
                                      base_model_path, train_config)
     _apply_reference_training_contract(base_model_path, train_config)

@@ -128,6 +128,12 @@ EXTRA_METRIC_DEFS = {
     # REPA representation-alignment loss. Formerly the dedicated repa_loss
     # column (backfilled into extra_metrics by auto_migrate).
     "repa_loss": {"label": "REPA", "color": "#f59e0b", "dashed": True, **_LOSS},
+    "chimera_clip_hidden_mse": {"label": "Chimera hidden", "color": "#22d3ee", **_LOSS},
+    "chimera_clip_hidden_rms_mse": {"label": "Chimera hidden RMS", "color": "#67e8f9", **_LOSS},
+    "chimera_clip_pooled_mse": {"label": "Chimera pooled", "color": "#a5f3fc", **_LOSS},
+    "chimera_clip_hidden_cosine": {"label": "Chimera hidden cosine", "dashed": True, **_LOSS},
+    "chimera_clip_pooled_cosine": {"label": "Chimera pooled cosine", "dashed": True, **_LOSS},
+    "chimera_velocity_loss": {"label": "Chimera velocity", "color": "#06b6d4", **_LOSS},
     # Opt-in direct timings from repa_profile_steps. GPU components use CUDA
     # events; teacher pixels and item waits use host monotonic time.
     "repa_profile_teacher_pixels_s": {"label": "REPA teacher pixels (s)", **_DURATION},

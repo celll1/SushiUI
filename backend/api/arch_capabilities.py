@@ -246,7 +246,8 @@ TRAINING_METHODS = ("lora", "relora", "full_finetune", "controlnet")
 # `_EXPECTED_ARCH_KEYS`.
 TRAINING_DECLARED_ARCHS = frozenset({
     "sd15", "sdxl", "zimage", "anima", "lens", "ideogram4", "minit2i",
-    "krea2", "flux2", "ltx2", "minimax_h3", "acestep", "sensenova", "yue2",
+    "krea2", "flux2", "ltx2", "minimax_h3", "acestep", "sensenova",
+    "sensenova_sdxl_chimera", "yue2",
 })
 
 # ---------------------------------------------------------------------------
@@ -1045,6 +1046,11 @@ _add_training_unsupported(
     "sensenova", "controlnet",
     "SenseNova ControlNet conditioning is not implemented; its training path currently supports only LoRA on the native prefix-conditioned denoiser")
 
+for _method in ("lora", "relora", "controlnet"):
+    _add_training_unsupported(
+        "sensenova_sdxl_chimera", _method,
+        "SenseNova SDXL Chimera's first training release supports only stage-aware full fine-tuning; adapter and ControlNet save/load contracts are not implemented")
+
 # Ideogram 4: the UI carried this refusal as a hardcoded arch check since before
 # the table existed. Declared here so `_refuse_unsupported_full_finetune` /
 # `_refuse_unsupported_relora` (which read this table) enforce it too, instead of
@@ -1095,6 +1101,12 @@ for _a in ["sd15", "sdxl"]:
         _a, "fused_optimizer_groups",
         "fused optimizer groups are only set up when blocks_to_swap > 0 (base_trainer.setup_optimizer), and this architecture has no training block-swap path")
 _add_training_feature_unsupported(
+    "sensenova_sdxl_chimera", "block_swap",
+    "Chimera uses an SDXL-shaped U-Net and has no training block-swap conductor")
+_add_training_feature_unsupported(
+    "sensenova_sdxl_chimera", "fused_optimizer_groups",
+    "fused optimizer groups are only set up with training block swap, which Chimera does not implement")
+_add_training_feature_unsupported(
     "yue2", "fused_optimizer_groups",
     "fused optimizer groups are only set up with training block swap, which YuE2 does not implement")
 _add_training_feature_unsupported(
@@ -1110,6 +1122,10 @@ for _a in sorted(TRAINING_DECLARED_ARCHS - {"flux2", "sensenova", "sd15", "sdxl"
     _add_training_feature_unsupported(
         _a, "reference_images",
         "reference-image conditioning during training is implemented for FLUX.2, SenseNova, and SD1.5/SDXL with a selected SigLIP2 vision encoder")
+
+_add_training_feature_unsupported(
+    "sensenova_sdxl_chimera", "text_encoder_training",
+    "Chimera keeps the SenseNova understanding tower frozen; bridge_align and joint train the separate conditioning bridge")
 
 # --- Text-encoder training --------------------------------------------------
 # Declared where the text encoder is frozen by the adapter regardless of the
@@ -1306,6 +1322,9 @@ _add_training_feature_unsupported(
 _add_training_feature_unsupported(
     "yue2", "vae_swap",
     "YuE2 ABC-planner training never enters the acoustic latent path, so replacing the audio VAE has no defined training effect")
+_add_training_feature_unsupported(
+    "sensenova_sdxl_chimera", "vae_swap",
+    "Chimera artifacts pin and bundle the donor VAE; replacing it would invalidate the artifact identity and latent-space contract")
 
 # --- Layer-wise LR decay ----------------------------------------------------
 # `lr_layer_decay` scales a param group by the depth of the block its
@@ -1314,7 +1333,7 @@ _add_training_feature_unsupported(
 # U-Net architectures return None there: their encoder blocks feed decoder
 # blocks through skip connections, so "how deep is this block" has no single
 # answer and any number assigned to it would be a choice, not a fact.
-for _a in ("sd15", "sdxl"):
+for _a in ("sd15", "sdxl", "sensenova_sdxl_chimera"):
     _add_training_feature_unsupported(
         _a, "lr_layer_decay",
         "layer-wise LR decay needs the blocks in one forward order to measure depth on; a U-Net's down blocks, mid block and up blocks are joined by skip connections, so its blocks have no total order by depth (arch/sd15.py and arch/sdxl.py leave ArchHandler.depth_blocks at its None default)")
@@ -1402,6 +1421,7 @@ _CFG_NULL_STAGES: Dict[str, str] = {
     # to be built while encoding the item
     # (core/models/sensenova/sensenova_pipeline_ops.py::encode_prompt).
     "sensenova": "encode",
+    "sensenova_sdxl_chimera": "encode",
 }
 CFG_NULL_STAGE_BY_ARCH: Dict[str, Optional[str]] = {
     arch: _CFG_NULL_STAGES.get(arch) for arch in sorted(TRAINING_DECLARED_ARCHS)

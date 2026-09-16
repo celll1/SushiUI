@@ -483,6 +483,13 @@ def _build_train_section(
         "sensenova_full_finetune_save_format",
         _TD["sensenova_full_finetune_save_format"],
     )
+    for key in (
+        "chimera_training_stage", "chimera_allow_unaligned_scratch",
+        "chimera_conditioning_cache", "chimera_bridge_lr",
+        "chimera_context_dropout", "chimera_clip_hidden_weight",
+        "chimera_clip_pooled_weight",
+    ):
+        train[key] = p.get(key, _TD[key])
     train["gradient_checkpointing"] = p.get("gradient_checkpointing", True)
     train["cpu_offload_checkpointing"] = p.get("cpu_offload_checkpointing", False)
     train["async_cpu_offload_checkpointing"] = p.get("async_cpu_offload_checkpointing", False)

@@ -36,6 +36,7 @@ from .adapters import (
     Ltx2FullParameterAdapter,
     AceStepFullParameterAdapter,
     SenseNovaFullParameterAdapter,
+    SenseNovaSDXLChimeraFullParameterAdapter,
     YuE2FullParameterAdapter,
 )
 
@@ -244,6 +245,9 @@ class FullParameterTrainer(BaseTrainer):
             # all, after the loader had already dequantized a half for it.
             self.adapter = SenseNovaFullParameterAdapter(self)
             print(f"{self.log_prefix} Using SenseNovaFullParameterAdapter")
+        elif self.is_sensenova_sdxl_chimera:
+            self.adapter = SenseNovaSDXLChimeraFullParameterAdapter(self)
+            print(f"{self.log_prefix} Using SenseNovaSDXLChimeraFullParameterAdapter")
         elif self.is_yue2:
             self.adapter = YuE2FullParameterAdapter(self)
             print(f"{self.log_prefix} Using YuE2FullParameterAdapter")

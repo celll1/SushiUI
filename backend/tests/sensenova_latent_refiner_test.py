@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from PIL import Image
 
 from core.models.sensenova.latent_refiner import (
     REFINER_INPUTS,
@@ -236,3 +237,76 @@ def test_inherit_refuses_a_shape_override_on_an_attached_refiner():
     )
     with pytest.raises(ValueError, match="width cannot change"):
         SenseNovaArchHandler().resolve_latent_refiner(trainer)
+
+
+def test_refiner_guard_caps_its_sample_count_and_resolution(tmp_path, monkeypatch):
+    from core.training.ops import sensenova_ops
+
+    image_path = tmp_path / "guard.png"
+    Image.new("RGB", (32, 32)).save(image_path)
+    calls = []
+    transformer = _resolver_trainer().transformer
+
+    def encode_image(_image, *, target_width, target_height, bucket_strategy):
+        calls.append((target_width, target_height, bucket_strategy))
+        return torch.ones(1, 4, target_height // 8, target_width // 8)
+
+    trainer = SimpleNamespace(
+        transformer=transformer,
+        encode_image=encode_image,
+        log_prefix="[test]",
+    )
+    dataset = SimpleNamespace(items=[{
+        "image_path": str(image_path), "width": 2048, "height": 2048,
+    }] * 20)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+    rms, means, channel_rms = sensenova_ops.measure_latent_rms(
+        trainer,
+        [dataset],
+        images=sensenova_ops._REFINER_GUARD_IMAGES,
+        per_channel=True,
+        max_pixels=sensenova_ops._REFINER_GUARD_MAX_PIXELS,
+    )
+
+    assert len(calls) == 8
+    assert set(calls) == {(1024, 1024, "resize")}
+    assert rms == pytest.approx(1.0)
+    assert means == pytest.approx([1.0] * 4)
+    assert channel_rms == pytest.approx([1.0] * 4)
+
+
+def test_refiner_guard_evicts_base_while_measuring(monkeypatch):
+    from core.training.ops import sensenova_ops
+
+    events = []
+
+    class FakeTransformer:
+        def parameters(self):
+            return iter([SimpleNamespace(device=SimpleNamespace(type="cuda"))])
+
+    def measure(_trainer, _datasets, **kwargs):
+        events.append(("measure", kwargs))
+        return 1.0, [0.0] * 4, [1.0] * 4
+
+    trainer = SimpleNamespace(
+        transformer=FakeTransformer(),
+        vae=object(),
+        config={"sensenova_noise_scale_auto": False},
+        sensenova_refiner_newly_attached=True,
+        sensenova_config_dict={},
+        move_main_model_to_cpu=lambda: events.append("base_cpu"),
+        move_main_model_to_gpu=lambda: events.append("base_gpu"),
+        move_vae_to_gpu=lambda: events.append("vae_gpu"),
+        move_vae_to_cpu=lambda: events.append("vae_cpu"),
+    )
+    monkeypatch.setattr(sensenova_ops, "measure_latent_rms", measure)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+    SenseNovaArchHandler().calibrate_before_training(trainer, [object()], None)
+
+    assert events[:2] == ["base_cpu", "vae_gpu"]
+    assert events[-2:] == ["vae_cpu", "base_gpu"]
+    kwargs = events[2][1]
+    assert kwargs["images"] == 8
+    assert kwargs["max_pixels"] == 1024 * 1024

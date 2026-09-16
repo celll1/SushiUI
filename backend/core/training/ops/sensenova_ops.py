@@ -11,6 +11,7 @@ differ only in which grad-mode assertion applies -- see
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -1976,23 +1977,26 @@ def vae_encode(trainer: Any, image_tensor: torch.Tensor, **_: Any) -> torch.Tens
 #: far below the per-dataset spread it averages over (0.86-1.24 measured across
 #: 20 dataset roots).
 _RMS_SAMPLE_IMAGES = 64
+_REFINER_GUARD_IMAGES = 8
+_REFINER_GUARD_MAX_PIXELS = 1024 * 1024
 
 
 def measure_latent_rms(trainer: Any, datasets: Any, *,
                        images: int = _RMS_SAMPLE_IMAGES, seed: int = 1234,
-                       per_channel: bool = False):
+                       per_channel: bool = False,
+                       max_pixels: Optional[int] = None):
     """Pooled RMS of this run's images in the swapped latent space.
 
     Encodes through ``trainer.encode_image`` at the dimensions the item ALREADY
     carries, which is what the training loop itself reads (base_trainer's
-    ``item.get("width") or item.get("bucket_width")``). Re-deriving them from a
-    bucket manager would miss `_fit_items_to_base_area` -- whose absence made one
-    original-resolution encode transiently allocate >20GB -- and would redraw a
-    `multi_resolution_mode="random"` assignment from the global RNG.
+    ``item.get("width") or item.get("bucket_width")``). ``max_pixels`` is only
+    used by the coarse refiner channel guard; noise-scale calibration leaves it
+    unset and measures the assigned buckets unchanged.
     """
     import random
 
     from PIL import Image
+    from core.models.sensenova.latent_space import token_pixel_width
 
     items = []
     for dataset in datasets or []:
@@ -2020,7 +2024,12 @@ def measure_latent_rms(trainer: Any, datasets: Any, *,
     channel_sum = None
     channel_squared = None
     channel_count = 0
+    align = int(token_pixel_width(trainer.transformer))
     for path, width, height in items[:images]:
+        if max_pixels is not None and width * height > max_pixels:
+            scale = math.sqrt(float(max_pixels) / float(width * height))
+            width = max(align, int(width * scale) // align * align)
+            height = max(align, int(height * scale) // align * align)
         try:
             with Image.open(path) as handle:
                 latent = trainer.encode_image(
@@ -2044,6 +2053,9 @@ def measure_latent_rms(trainer: Any, datasets: Any, *,
             )
             channel_count += values.numel() // values.shape[1]
         measured += 1
+        del latent, values
+        if max_pixels is not None and torch.cuda.is_available():
+            torch.cuda.empty_cache()
     if not total:
         raise ValueError(
             "sensenova_noise_scale_auto could not encode any of the sampled "

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import torch
+
 from core.training.arch.base_arch import (
     ArchHandler, PHASE2_PENDING, SampleContext, TrainStepContext,
     QUANTIZED_ADDITIVE_SHIPPED, declare_adapter_capability,
@@ -563,9 +565,34 @@ class SenseNovaArchHandler(ArchHandler):
             print(f"{log} generation noise scale already recalibrated "
                   f"(x{carried:g}); inheriting it rather than re-measuring.")
             return
-        rms, means, channel_rms = sensenova_ops.measure_latent_rms(
-            trainer, datasets, per_channel=True
+        guard_only = guard_refiner and not auto
+        main_was_cuda = any(
+            parameter.device.type == "cuda"
+            for parameter in trainer.transformer.parameters()
         )
+        if main_was_cuda:
+            trainer.move_main_model_to_cpu()
+        try:
+            trainer.move_vae_to_gpu()
+            rms, means, channel_rms = sensenova_ops.measure_latent_rms(
+                trainer,
+                datasets,
+                per_channel=True,
+                images=(
+                    sensenova_ops._REFINER_GUARD_IMAGES
+                    if guard_only else sensenova_ops._RMS_SAMPLE_IMAGES
+                ),
+                max_pixels=(
+                    sensenova_ops._REFINER_GUARD_MAX_PIXELS
+                    if guard_only else None
+                ),
+            )
+        finally:
+            trainer.move_vae_to_cpu()
+            if main_was_cuda:
+                trainer.move_main_model_to_gpu()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         if guard_refiner:
             bad = [
                 (index, mean, value)

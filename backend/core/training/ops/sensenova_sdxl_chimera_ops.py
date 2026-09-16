@@ -10,7 +10,6 @@ import torch.nn.functional as F
 
 from core.models.sensenova_sdxl_chimera.attention_processor import (
     ChimeraAttentionContext,
-    clear_chimera_attention_caches,
     install_chimera_attention_processors,
     set_chimera_attention_context,
 )
@@ -247,21 +246,20 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
             target_width=width,
         ),
     )
-    try:
-        prediction = trainer.unet(
-            noisy,
-            timesteps,
-            encoder_hidden_states=conditioning,
-            added_cond_kwargs={"text_embeds": pooled, "time_ids": time_ids},
-            return_dict=False,
-        )[0]
-        loss = F.mse_loss(prediction.float(), target.float())
-        value = float(loss.detach().cpu())
-        if hasattr(trainer, "log_extra_metric"):
-            trainer.log_extra_metric("chimera_velocity_loss", value)
-        return loss, value, 0.0
-    finally:
-        clear_chimera_attention_caches(trainer.unet)
+    prediction = trainer.unet(
+        noisy,
+        timesteps,
+        encoder_hidden_states=conditioning,
+        added_cond_kwargs={"text_embeds": pooled, "time_ids": time_ids},
+        return_dict=False,
+    )[0]
+    loss = F.mse_loss(prediction.float(), target.float())
+    value = float(loss.detach().cpu())
+    if hasattr(trainer, "log_extra_metric"):
+        trainer.log_extra_metric("chimera_velocity_loss", value)
+    # Gradient checkpointing replays the U-Net during backward, after this
+    # function returns. The next step overwrites this small context in place.
+    return loss, value, 0.0
 
 
 def vae_encode(trainer, image_tensor: torch.Tensor, **_kwargs) -> torch.Tensor:

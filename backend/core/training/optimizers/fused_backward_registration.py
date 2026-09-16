@@ -32,7 +32,7 @@ def register_fused_backward_hooks(
     optimizer,
     module: Optional[nn.Module],
     function_name: str,
-    make_hook: Callable[[nn.Parameter, dict], Callable],
+    make_hook: Callable[[nn.Parameter], Callable],
 ) -> Tuple[int, List[str]]:
     """Register a per-parameter hook on every parameter the optimizer owns.
 
@@ -40,7 +40,9 @@ def register_fused_backward_hooks(
         optimizer: the ring-buffer optimizer whose param_groups drive registration
         module: optional module, used for parameter names and the orphan check
         function_name: public entry point's name, for the error messages
-        make_hook: ``(param, group) -> hook`` factory
+        make_hook: ``param -> hook`` factory. It gets no group: the hook must
+            resolve it at call time (``live_param_group``), since loads replace
+            the dicts.
 
     Returns:
         ``(hooked_count, frozen_descriptions)``
@@ -50,8 +52,7 @@ def register_fused_backward_hooks(
         names = {id(p): n for n, p in module.named_parameters()}
 
     # One hook per parameter, even if a parameter appears in two groups (which
-    # step() would update twice). The group it resolves to is the last one that
-    # lists it, which is what the previous per-parameter id->group map did.
+    # step() would update twice).
     param_to_group: Dict[int, dict] = {}
     order: List[nn.Parameter] = []
     for group in optimizer.param_groups:
@@ -95,14 +96,14 @@ def register_fused_backward_hooks(
 
     hooked = 0
     frozen: List[str] = []
-    for param, group in owned:
+    for param, _ in owned:
         if not param.requires_grad:
             # No gradient is ever accumulated for it, so neither a hook nor step()
             # would move it; not the silent-skip failure. Reported, not refused,
             # because callers do hand whole encoders to the optimizer.
             frozen.append(_describe(param, names))
             continue
-        param.register_post_accumulate_grad_hook(make_hook(param, group))
+        param.register_post_accumulate_grad_hook(make_hook(param))
         hooked += 1
 
     uncovered = [_describe(p, names) for p, _ in owned

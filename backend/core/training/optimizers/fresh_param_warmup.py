@@ -37,7 +37,7 @@ def fresh_param_warmup_factor(optimizer, parameter):
 
 @contextmanager
 def parameter_warmup_lr(optimizer, parameter, group):
-    """Temporarily scale a captured group's scalar LR for one fused update."""
+    """Temporarily scale the group's scalar LR for one fused update."""
     factor = fresh_param_warmup_factor(optimizer, parameter)
     if factor == 1.0:
         yield

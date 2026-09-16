@@ -1197,6 +1197,13 @@ def load_sensenova_from_path(
         )
 
     config, config_dict = _load_sensenova_config(metadata, model_dir)
+    from .latent_refiner import validate_gen_refiner_declaration
+
+    raw_step = (metadata or {}).get("step")
+    checkpoint_step = None if raw_step in (None, "") else int(raw_step)
+    validate_gen_refiner_declaration(
+        config_dict, sd, checkpoint_step=checkpoint_step
+    )
 
     # The VAE this checkpoint was trained into, when it is not pixel-space. Read
     # BEFORE the tree is built (design §8.2, §9.1): the generation geometry the
@@ -1227,6 +1234,10 @@ def load_sensenova_from_path(
     swapped = install_sensenova_state_dict(
         model, sd, int8_convrot_source_layers, torch_dtype, path=model_path
     )
+    if "fm_refiner" in model.fm_modules:
+        model.fm_modules["fm_refiner"].gate.data = (
+            model.fm_modules["fm_refiner"].gate.data.float()
+        )
 
     model.eval()
     model.requires_grad_(False)

@@ -1,6 +1,7 @@
 # SenseNova Latent Refiner (optional fine-scale head branch)
 
-Status: **design, not implemented.** Nothing here claims the branch improves a
+Status: **final implementation design; refiner not implemented.** P0 is
+complete (`558ebf7d`); P1-P4 remain. Nothing here claims the branch improves a
 run. The acceptance measurement at the end is pre-registered and has not been
 run.
 
@@ -58,12 +59,17 @@ In scope:
   rebuild (`backend/core/training/arch/sensenova.py:219-236`), and only on a
   run that trains the generation half (`train_unet`), because the branch is
   generation-side. Attach/continue on an understanding-only run is refused.
+- Three full-fine-tune modes at a resume boundary: `joint` (base and refiner),
+  `refiner_only` (frozen base) and `base_only` (frozen refiner, with gradients
+  still flowing through it into the base). The state/mode matrix below is the
+  complete contract; unsupported combinations are refused rather than coerced.
 - Attach, continue and detach at a resume boundary.
 - Generation: identical forward to training, driven by the checkpoint alone.
-- Any training method on a base that already carries a refiner: the refiner
-  runs frozen in the forward (`inherit`). This is what the value-dependent
-  contract in [Configuration](#configuration-training) admits for LoRA /
-  ReLoRA / ControlNet.
+- Any non-full-fine-tune method on a base that already carries a refiner: the
+  refiner runs frozen in the forward (`inherit`). This is what the
+  value-dependent contract in [Configuration](#configuration-training) admits
+  for LoRA / ReLoRA / ControlNet where the architecture otherwise allows the
+  method.
 
 Out of scope:
 - Pixel-space SenseNova (`gen_vae_scale_factor == 1`). The refiner grid would
@@ -89,10 +95,31 @@ x0_head  = head output, unpatchified to the latent grid   [B, C, H, W]
 z_grid   = z unpatchified to the latent grid              [B, C, H, W]
 c_in     = 1 / sqrt(t^2 + ((1 - t) * s)^2)                 [B, 1, 1, 1]   (s = noise_scale)
 h        = stem(concat(x0_head, c_in * z_grid))           3x3, 2C -> width
-h        = ResBlock_i(h, emb(t))   for i in 1..depth       GroupNorm + FiLM(t) + 3x3 x2
+h        = ResBlock_i(h, emb(t))   for i in 1..depth       ChannelRMSNorm2d + FiLM(t) + 3x3 x2
 delta    = out(h)                                          3x3, width -> C, ZERO-INIT
 x0       = x0_head + gate * delta
 ```
+
+The v1 block is fixed, not an implementation choice left to P1. All 3x3
+convolutions use stride 1 and zero padding 1. The timestep embedding is the
+standard sinusoidal embedding of width `width` and max period 10,000, followed
+by `Linear(width, 4*width) -> SiLU -> Linear(4*width, width)`. Each block owns
+`Linear(width, 2*width)` and computes:
+
+```
+scale, shift = block_film(emb(t)).chunk(2, dim=channel)
+u = norm1(h)
+u = u * (1 + scale[:, :, None, None]) + shift[:, :, None, None]
+u = conv1(silu(u))
+u = conv2(silu(norm2(u)))
+h = h + u
+```
+
+Both norms are `ChannelRMSNorm2d(eps=1e-6)` with scale initialized to one;
+all convolution and Linear biases use the PyTorch default initialization
+except `out.weight` and `out.bias`, which are exactly zero. This definition,
+including padding, epsilon, embedding and initialization, is part of
+declaration version 1.
 
 - `z = t * x0 + (1 - t) * eps * s` in this repo's convention
   (`sensenova_ops.py:2273`, t=1 clean). `c_in` gives the concatenated `z`
@@ -124,9 +151,18 @@ x0       = x0_head + gate * delta
 - `emb(t)` is the refiner's own sinusoidal embedding plus a 2-layer MLP. It
   does not reuse `fm_modules["timestep_embedder"]`, because that would couple
   the refiner's gradients into a tensor the transformer path already trains.
-- Receptive field: each ResBlock adds a radius of 2 cells. The default
-  `depth=3` gives a radius of 7 cells (stem included), which crosses the
-  8-cell (64px) token boundary.
+- **Normalization is spatially local.** `ChannelRMSNorm2d` computes, for each
+  `[B, :, H, W]` position independently, `x / sqrt(mean_c(x^2) + eps)` in
+  fp32, applies one learned per-channel scale (no bias), and casts back to the
+  parameter dtype. GroupNorm is deliberately not used: PyTorch GroupNorm
+  includes H and W in its reduction, which would make every output depend on
+  the complete image, invalidate the finite receptive-field claim, and make
+  halo tiling non-equivalent to a full-grid forward.
+- Receptive field: the stem adds radius 1, each ResBlock adds 2, and `out`
+  adds 1. The delta therefore has radius `2 * depth + 2`; at `depth=3` this
+  is 8 latent cells, a 17-cell diameter (136px with the 8x SDXL VAE). It
+  crosses the 8-cell (64px) transformer-token boundary, but is intentionally
+  a local texture/detail branch rather than a second semantic backbone.
 - `gate` is a persistent non-trainable buffer (`fm_refiner.gate`, 0-dim,
   float32), 1.0 while attached. It exists for annealed detach and is saved with
   the weights. Inference therefore reads exactly the value training last used.
@@ -134,10 +170,11 @@ x0       = x0_head + gate * delta
   `torch.autocast(cuda, bf16)` (`sensenova_ops.py:2327-2328`). Inference runs
   plain bf16 with no autocast (`sensenova_pipeline_ops.py`,
   `pipeline_backends/sensenova.py`). Today's head is convolutions only, so both
-  paths compute in bf16. GroupNorm, FiLM and the timestep MLP would not: autocast
-  runs GroupNorm in fp32. `apply_latent_refiner` therefore disables autocast
-  inside and casts explicitly: GroupNorm in fp32, everything else in the
-  refiner's parameter dtype. Both callers then compute the same thing.
+  paths compute in bf16. `apply_latent_refiner` disables autocast inside and
+  casts explicitly: the RMS reduction and reciprocal square root in
+  `ChannelRMSNorm2d` run in fp32; its result, FiLM, the timestep MLP and all
+  convolutions run in the refiner's parameter dtype. Both callers therefore
+  compute the same thing.
 - **Only under `use_pixel_head`.** The refiner is built and called only on the
   ConvDecoder branch (`modeling_neo_chat.py:275-278, 674-692`). Training
   already refuses the deep/plain heads (`sensenova_ops.py:1065-1100`).
@@ -160,12 +197,32 @@ x0       = x0_head + gate * delta
   version, not a silent reinterpretation. The `[0.5, 2.0]` band is a guard
   against a mis-normalized VAE, not a tuned value.
 
-Defaults: `width=128`, `depth=3`. These are sizes to measure, not claims.
-Estimated cost at 1536px square: 192x192 = 36,864 cells. At width 128 a 3x3
-conv is 147K params and ~5.4 GMAC (~10.9 GFLOP) forward. With three ResBlocks
-(six such convs) the branch is ~1.1M params and ~65 GFLOP per image, against
-~9,400 GFLOP (2 x 8.17B x 576 tokens) for the transformer forward. These are
-arithmetic estimates; implementation phase P4 measures them.
+Defaults: `width=128`, `depth=3`. This is a deliberately small residual
+correction head, not an attempt to reproduce the base model at 4K. Parameter
+count is independent of image size; compute and activation memory scale with
+latent-grid area. Approximate forward arithmetic (not a benchmark):
+
+| image | latent grid | transformer tokens | one width-128 bf16 map | refiner forward | transformer forward lower estimate |
+|---|---:|---:|---:|---:|---:|
+| 1536 | 192x192 | 576 | 9.4 MiB | 65 GFLOP | 9.4 TFLOP |
+| 2048 | 256x256 | 1,024 | 16 MiB | 116 GFLOP | 16.7 TFLOP |
+| 4096 | 512x512 | 4,096 | 64 MiB | 462 GFLOP | 66.8 TFLOP |
+
+The transformer estimate is `2 * 8.17B * tokens` and excludes attention, so
+the refiner remains below 1% of forward arithmetic. Width 256 is not a small
+increment: it is approximately 4x the convolutional parameters/FLOPs and 2x
+the feature activation. The pre-registered capacity ladder therefore changes
+one axis at a time: width 64/depth 3 (~0.3M), 128/3 (~1.1M), 128/5 (~1.7M,
+200px receptive-field diameter), then 256/3 (~4M). Dilation, down/up-sampling
+or attention is not added until that ladder shows that local width/depth is
+the limiting factor.
+
+The v1 forward is full-grid. The local normalization makes an exact-halo
+implementation possible later: split the latent grid into core tiles, include
+`2 * depth + 2` cells of halo, preserve the full forward's zero padding only
+at the outer image boundary, evaluate, and crop to the core. Such tiling must
+pass full-grid equality tests before it becomes an execution optimization; it
+is not a checkpoint semantic or a generation-quality toggle.
 
 ### Gradient checkpointing contract
 
@@ -181,19 +238,21 @@ position. The contract:
 - `use_reentrant=False`, the policy every checkpoint call in this repo uses
   (`sensenova_ops.py:1502`, `:2938`; `anima_models.py:664`; `krea2/vendor/transformer.py:480`;
   `base_trainer.py:15062`).
-- No stateful or RNG-consuming op inside a block: GroupNorm, FiLM, SiLU, conv.
+- No stateful or RNG-consuming op inside a block: ChannelRMSNorm2d, FiLM,
+  SiLU, conv.
   No dropout, no BatchNorm. The recompute is therefore deterministic, and the
   autocast-disabled region is inside the checkpointed function so the recompute
   runs under the same dtype policy as the first pass.
-- Activation memory, estimate at 1536px square, width 128, bf16, per image:
-  one width-sized map is 36,864 x 128 x 2 B = 9.4 MiB (18.9 MiB for the fp32
-  GroupNorm output). Without checkpointing a ResBlock retains about six such
-  maps (two GroupNorm outputs in fp32, two conv outputs, two activations),
-  about 85 MiB per block, ~260 MiB for depth 3 plus stem/out. With per-block
-  checkpointing the retained set is the block inputs (depth + 1 maps, ~38 MiB)
-  plus one block's internals transiently during backward. Both numbers are
-  arithmetic, not measurements; P4 measures peak allocated with the branch on
-  and off.
+- Activation memory scales with area. The no-checkpoint retained-activation
+  estimate for width 128/depth 3 is ~260 MiB at 1536, ~460 MiB at 2048 and
+  ~1.85 GiB at 4096. With per-block checkpointing the retained block inputs
+  are about 38 MiB, 64 MiB and 256 MiB respectively, plus one block's
+  internals transiently during backward. The expected *measured peak delta*
+  over the same base run is wider because allocator/workspace behavior is not
+  captured: 0.1-0.3 GiB, 0.2-0.5 GiB and 0.8-1.5 GiB respectively. P4 must
+  measure all three resolutions. If 4096 exceeds 1.5 GiB or the owner's usable
+  headroom, exact-halo execution becomes a release gate before increasing
+  width; the architecture and checkpoint format do not change.
 
 ### Zero-init identity
 
@@ -218,8 +277,9 @@ All defaults go in `TRAINING_DEFAULTS` first (`backend/api/param_defaults.py`).
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `sensenova_latent_refiner` | `"inherit" \| "attach" \| "detach"` | `"inherit"` | State request, see the state table |
-| `sensenova_refiner_width` | int, `0` or `>= 16` | `0` | `0` = inherit from checkpoint, else `128` on first attach |
-| `sensenova_refiner_depth` | int, `0` or `>= 1` | `0` | `0` = inherit from checkpoint, else `3` on first attach |
+| `sensenova_refiner_width` | int, `0` or a multiple of 16 in `[16,1024]` | `0` | `0` = inherit from checkpoint, else `128` on first attach |
+| `sensenova_refiner_depth` | int, `0` or `[1,8]` | `0` | `0` = inherit from checkpoint, else `3` on first attach |
+| `sensenova_refiner_training_mode` | `"joint" \| "refiner_only" \| "base_only"` | `"joint"` | Attach/continue trainability; detach has its own frozen-refiner contract |
 | `sensenova_refiner_lr_factor` | float `> 0` | `1.0` | LR = `unet_lr * factor` |
 | `sensenova_refiner_detach_mode` | `"anneal" \| "hard"` | `"anneal"` | How `detach` removes the branch |
 | `sensenova_refiner_detach_steps` | int `>= 1` | `1000` | Anneal length, in optimizer updates |
@@ -234,7 +294,7 @@ default, so editing an unrelated field of a refined run must not arrive as
 The gate is on the **value**, not on the feature, because a refined base under
 LoRA must still load and run its frozen refiner:
 
-- `TRAINING_FEATURE_PARAMS["sensenova_latent_refiner"]` lists the six keys
+- `TRAINING_FEATURE_PARAMS["sensenova_latent_refiner"]` lists the seven keys
   (`arch_capabilities.py:271`), and `_add_training_feature_unsupported` (`:352`)
   declares the feature unsupported for every **non-SenseNova** arch, all
   methods. That hides the controls where the mechanism does not exist.
@@ -247,8 +307,10 @@ LoRA must still load and run its frozen refiner:
   accepted, so a normal LoRA create/update on a refined base is unchanged.
 - `train_runner` enforces the same rule before the load: `attach` or `detach`
   with `training_method != full_finetune` is refused with the reason; `inherit`
-  passes. Width/depth/lr_factor/detach keys are inert under `inherit` and are
-  not refused on their own (a PUT carries their defaults).
+  passes. Width/depth/training-mode/lr-factor/detach keys are inert on a base
+  with no refiner under `inherit`, and are not refused on their own (a PUT
+  carries their defaults). On a refined base, the mode is interpreted only by
+  full fine-tuning; non-full methods always use the frozen-forward row.
 - Latent geometry is a **runner** refusal, not a capability entry, for the same
   reason `sensenova_gen_patch` is (`train_runner.py:596-613`): whether the base
   is latent-space is read from its metadata, which the capability table cannot
@@ -256,7 +318,7 @@ LoRA must still load and run its frozen refiner:
 - No `unless` clause: the requirement holds for the listed methods regardless
   of the rest of the config.
 
-### State table
+### State and training-mode tables
 
 Resolved in the arch handler at component load, before optimizer construction.
 `ckpt` is the refiner state recorded in the checkpoint being loaded (none for a
@@ -267,13 +329,38 @@ fresh base).
 | none | `inherit` | no refiner |
 | none | `attach` | **attach**: build at width/depth (defaults when 0), zero-init `out`, `gate=1` |
 | none | `detach` | no refiner, info notice |
-| attached | `inherit` / `attach` | **continue**. A non-zero width/depth that differs from ckpt is refused (shape change is not a resume) |
+| attached | `inherit` / `attach` | **continue**. A non-zero width/depth that differs from ckpt is refused (shape change is not a resume); the mode table below decides trainability |
 | attached | `detach` + `hard` | **hard detach**: branch dropped before the first step. A warning gives the last logged `sn_refiner_delta_rel` |
 | attached | `detach` + `anneal` | **anneal**: refiner frozen (`requires_grad=False`), `gate` ramps 1 -> 0 linearly over `detach_steps` updates from the resumed step. Rest of the model keeps training |
 | annealing | `inherit` / `detach` | **continue anneal** from the recorded anchor. The gate is a function of (anchor, steps, current step), not of the saved gate |
 | annealing | `attach` | refused in v1 (re-attach mid-anneal) |
 | anneal complete (`gate == 0`) | any but `attach` | branch dropped at load. The next save omits it, which is lossless because `gate=0` already contributed nothing |
 | any refiner state | non-full-FT method, `inherit` | **frozen forward**: module built and loaded under the strict check, `requires_grad=False`, in no optimizer group; the saved gate is used as is (no anneal clock runs, an annealing checkpoint keeps its saved gate for the whole run) |
+
+For full fine-tuning, after the state row is resolved:
+
+| resolved state | requested mode | Base | Refiner | Contract |
+|---|---|---|---|---|
+| newly attached | `joint` | train | train | default; zero-init identity and fresh-group warmup apply |
+| newly attached | `refiner_only` | frozen | train | cheapest capacity test; base forward is under `no_grad` and `x0_head`/`z_grid` are detached |
+| newly attached | `base_only` | - | - | refused: a frozen zero-init branch is exactly inert |
+| continued attached | `joint` | train | train | normal joint continuation |
+| continued attached | `refiner_only` | frozen | train | trains/retrains only the branch on the distributed base |
+| continued attached | `base_only` | train | frozen | supported for downstream base adaptation; refiner forward stays in autograd so its input gradient reaches the base |
+| detach (`anneal` or `hard`) | any | train | frozen/removed | mode is not consulted; detach is intrinsically base-only so the base can absorb the branch |
+
+Here “base” means the generation-side scopes that the full-parameter adapter
+would otherwise train, including the pixel head; it does not override the
+existing `train_unet`/MoT-half scope contract. `refiner_only` does not
+materialize or optimize decoder Linears merely because the API method is
+`full_finetune`. `base_only` freezes refiner parameters but must not wrap its
+forward in `no_grad`: doing so would cut the only gradient from the refined
+output back into `x0_head`. The expected use is a small downstream base
+adaptation followed, if necessary, by a short `joint` finish; it is supported
+for model recipients but is not the recommended first training mode.
+`refiner_only` also refuses `repa_enable` and any explicit trainable scope
+other than `generation_refiner`; otherwise its name would falsely imply that
+only the refiner changes.
 
 **Anneal clock.** The same axis the existing warmup uses. The anchor is the
 resumed scheduler position (`resume_scheduler_position`, `base_trainer.py:7772`;
@@ -328,17 +415,23 @@ after it. In load order:
    after, on the CPU tree, before the freeze at `:1263`. It validates the
    declaration (see [Persistence](#persistence)), applies the state table,
    builds or drops `fm_modules["fm_refiner"]`, mutates the declaration, and
-   records `trainer.sensenova_refiner_state ∈ {"none", "train", "anneal", "frozen"}`.
-   `"frozen"` is the non-full-FT `inherit` row. The freeze at `:1263` then
-   applies to the refiner like everything else.
+   records `trainer.sensenova_refiner_state ∈ {"none", "attached", "anneal", "frozen"}`
+   and `trainer.sensenova_refiner_training_mode ∈ {"none", "joint",
+   "refiner_only", "base_only"}`. `"frozen"` is the non-full-FT `inherit`
+   row; detach records `"base_only"`. The freeze at `:1263` then applies to
+   the refiner like everything else.
 2. `SenseNovaFullParameterAdapter.prepare_models_for_training`
    (`sensenova_adapter.py:528`): `transformer.requires_grad_(False)` (`:554`),
    then `_scope_parameters` (`:555`). **New:** `_scope_parameters` adds a
    `generation_refiner` scope holding `fm_modules.fm_refiner.parameters()`
-   **iff** `sensenova_refiner_state == "train"`, on both the default-scope
-   path (`:405-428`) and the explicit-scope path (`:430-470`). Under
-   `"anneal"` the scope is absent, so the freeze stands. The unfreeze loop
-   (`:556-558`) is what sets `requires_grad=True`; nothing else does.
+   **iff** the effective mode is `joint` or `refiner_only`, on both the
+   default-scope path (`:405-428`) and the explicit-scope path (`:430-470`).
+   Under `base_only`, `anneal` and `frozen` the scope is absent, so the freeze
+   stands. In `refiner_only`, every other generation scope is omitted and the
+   decoder stays in its loaded representation; this is a dedicated scope
+   route, not full-parameter materialization followed by freezing. The
+   unfreeze loop (`:556-558`) is what sets `requires_grad=True`; nothing else
+   does.
    `_fm_parameters` (`:340-395`) and the explicit `generation_flow` scope
    (`:461-464`) both enumerate `fm_modules.parameters()` and must **exclude**
    `fm_refiner`, or the refiner would be double-collected into
@@ -347,8 +440,9 @@ after it. In load order:
 3. `arch_param_groups` (`:602-662`): a new spec
    `("generation_refiner", unet_lr * sensenova_refiner_lr_factor, "generation_refiner")`
    **appended last in both `group_specs` tuples** (`:630-649`). The
-   `if p.requires_grad` filter (`:652`) admits the scope only in the `"train"`
-   state. Every existing arch group keeps its index. The REPA projector group
+   `if p.requires_grad` filter (`:652`) admits the scope only in `joint` or
+   `refiner_only`. Every existing arch group keeps its index in `joint`; in
+   `refiner_only`, `generation_refiner` is the sole arch group. The REPA projector group
    is appended after the arch groups (`base_adapter.py:630-631`), so on a REPA
    run its index moves by one when the refiner attaches; that is why the named
    optimizer load (item 6) is required rather than the positional one.
@@ -363,7 +457,8 @@ after it. In load order:
    `_fused_backward_target_module()` = `transformer` (`:8610`). Registration
    refuses a trainable transformer parameter in no group
    (`fused_backward_registration.py:84-94`) and skips frozen ones (`:98-104`),
-   so `"train"` and `"anneal"` both pass by construction. No `add_param_group`
+   so `joint`, `refiner_only`, `base_only` and `anneal` all pass by
+   construction. No `add_param_group`
    is needed because attach and continue both happen at process start.
 5. `_record_configured_group_lrs` (`base_trainer.py:7026`) snapshots each
    group's base LR off the adapter's groups; that snapshot, not
@@ -385,11 +480,11 @@ after it. In load order:
 The P2 test for this ordering asserts, on a CPU trainer through the real
 `prepare_models_for_training` -> `arch_param_groups` -> fused registration
 sequence: every tensor under `fm_modules.fm_refiner.` with `requires_grad`
-True (attach/continue) or False (anneal, frozen); each refiner parameter id
-present in exactly one optimizer group, exactly once, and that group named
-`generation_refiner` (attach/continue); no refiner id in any group (anneal,
-frozen); `gate` in no group; after hard detach or completion, no module under
-that name.
+True (`joint`, `refiner_only`) or False (`base_only`, anneal, frozen); each
+trainable refiner parameter id present in exactly one optimizer group, exactly
+once, and that group named `generation_refiner`; no refiner id in any group in
+the frozen modes; no base id in any group in `refiner_only`; `gate` in no
+group; after hard detach or completion, no module under that name.
 
 ## Persistence
 
@@ -405,6 +500,17 @@ non-decoder-Linear tensors as-is under the `other` census bucket
 resume restores only `iter_sensenova_lora_targets(branch=frozen_half)` from the
 base (`loader.py:600-602`), so refiner tensors always come from the checkpoint.
 
+`refiner_only` requires `sensenova_full_finetune_save_format="mixed"`, using
+the repository's existing rule for a full fine-tune with no decoder scope.
+The loaded decoder halves remain in their original classes and are emitted
+unchanged by the normal writer; the refiner is added under `other`. This makes
+the result a complete, self-contained SenseNova checkpoint rather than a
+sidecar, without materializing frozen decoder Linears or allocating base
+optimizer state. `bf16` and `int8` are refused in this mode because either
+would imply a base conversion that the run did not train. Round-trip tests
+compare every non-refiner tensor to the input checkpoint and require exact
+dtype, shape and value equality.
+
 ### Declaration
 
 The branch is **declared**, not inferred from key names. Inside `sensenova_config`
@@ -417,6 +523,7 @@ The branch is **declared**, not inferred from key names. Inside `sensenova_confi
   "width": 128,
   "depth": 3,
   "inputs": ["x0_head", "z_cin"],
+  "norm": "channel_rms_v1",
   "detach_anchor_step": null,
   "detach_steps": null,
   "detach_accum": null
@@ -440,7 +547,8 @@ same at every entry point (next subsection).
 |---|---|
 | version | `version` present, integer, in the supported set `{1}`. Unknown -> refuse (no forward-compat guess) |
 | inputs | exactly `["x0_head", "z_cin"]`, order included |
-| width | integer, `16 <= width <= 1024`, divisible by the GroupNorm group count (32) |
+| norm | exactly `"channel_rms_v1"` |
+| width | integer, `16 <= width <= 1024`, divisible by 16 |
 | depth | integer, `1 <= depth <= 8` |
 | detach fields | `detach_anchor_step`, `detach_steps`, `detach_accum` all null (attached) or all present (annealing): integers, `anchor >= 0`, `steps >= 1`, `accum >= 1`. Mixed presence -> refuse |
 | tensor set | the set of `fm_modules.fm_refiner.*` keys equals the set the module class enumerates for (width, depth), no extra, no missing |
@@ -514,9 +622,18 @@ This does not change the existing tolerance for other keys.
 - `train_step`'s `fm_trainable` (`sensenova_ops.py:2290-2295`) asks
   `any(p.requires_grad for p in fm_modules.parameters())` to decide whether
   `_build_step_context` runs with grad. It must enumerate `fm_modules` minus
-  `fm_refiner`; otherwise an attached refiner on a run with `fm_modules` frozen
-  would build a graph through the generation ViT for nothing.
-- Attach and continue both happen at process start, so the group exists when
+  `fm_refiner`; otherwise `refiner_only` would build a graph through the
+  generation ViT for nothing. In that mode the complete base prediction is
+  computed under `no_grad`, then `x0_head` and `z_grid` are detached before
+  the refiner. In `base_only`, the refiner parameters are frozen but its
+  operations remain in the graph so gradients reach `x0_head`. `joint` uses
+  the normal graph for both.
+- The accepted optimizer names remain the existing SenseNova full-FT set.
+  `refiner_only` is exempt from the host-resident-state requirement for the
+  ring-buffer optimizers because its sole optimizer group is ~1.1M parameters;
+  all other full-FT preflight rules remain. This exception is keyed to the
+  effective mode, not inferred from the current number of trainable tensors.
+- Attach and continue both happen at process start, so any refiner group exists when
   the optimizer is constructed and when fused hooks are registered
   (`setup_optimizer`, `base_trainer.py:8497`). No `add_param_group` is needed.
   This is what makes the fused path work: registration refuses a trainable
@@ -567,7 +684,7 @@ This does not change the existing tolerance for other keys.
 - Arming the per-tensor cohort (`arm_fresh_param_warmup`) for whole-group fresh
   ids is not needed: the test shows the composed-lambda warmup reaches the
   kernel. The cohort stays limited to `mixed_ids`.
-- Attach therefore ramps the refiner 0 -> 1 over `lr_warmup_steps`
+- Attach in `joint` or `refiner_only` therefore ramps the refiner 0 -> 1 over `lr_warmup_steps`
   (trainer attribute `optimizer_warmup_steps`, `base_trainer.py:2820`,
   `:7755`) from the resumed scheduler position. A new run that attaches at
   step 0 is covered by the global warmup.
@@ -584,6 +701,17 @@ This does not change the existing tolerance for other keys.
   test asserts that the first optimizer save after each of hard detach,
   anneal start and anneal completion has no `fm_refiner` name in
   `_sushi_param_names` and no state entry for a refiner tensor.
+
+The expected cost distinction is consequently simple. `joint` adds the
+refiner arithmetic and the checkpointed activation delta in the table above,
+but no second base forward; optimizer-state growth is only the refiner's
+~1.1M parameters. `refiner_only` retains the same forward cost but removes
+base backward and base optimizer state, and is the preferred first experiment
+for deciding whether the branch has useful capacity. `base_only` removes only
+the refiner's small optimizer state relative to `joint`; its backward must
+still traverse the fixed refiner, so its activation cost is close to `joint`.
+Joint training is the release-quality finish only after a refiner-only
+capacity gate is positive, not the mandatory first run.
 
 ### Enumerations that walk the model
 
@@ -677,7 +805,7 @@ test runs both on one tiny model and requires identical output.
 
 Per the existing SenseNova option path (template: `sensenova_gen_patch`):
 
-1. `backend/api/param_defaults.py` `TRAINING_DEFAULTS`: the 6 keys.
+1. `backend/api/param_defaults.py` `TRAINING_DEFAULTS`: the 7 keys.
 2. `openapi.yaml` `TrainingRunCreateRequest`: fields, descriptions, examples.
 3. `backend/api/routes.py` `TrainingRunCreateRequest` plus request checks next to
    `_check_vae_swap_params` (`routes.py:15319`), on POST (`:15390`) and PUT
@@ -688,14 +816,15 @@ Per the existing SenseNova option path (template: `sensenova_gen_patch`):
 5. `backend/core/training/train_runner.py` `_apply_sensenova_full_finetune_contract`
    (`:543`) and the method-independent path: normalization; refusals for
    `attach`/`detach` under non-full-FT, pixel geometry, width/depth change,
-   understanding-only run, zero effective warmup or `rewarmup_on_optimizer_reset`
-   off with `attach`.
+   illegal state/mode pairs, understanding-only run, REPA/extra trainable
+   scopes or non-`mixed` save format in `refiner_only`, zero effective warmup
+   or `rewarmup_on_optimizer_reset` off with a trainable fresh refiner.
 6. `backend/core/training/arch/sensenova.py`: `resolve_latent_refiner` (state
    resolution, build, declaration mutation), anneal clock, per-channel latent
    statistics guard in `calibrate_before_training`.
 7. `backend/core/training/adapters/sensenova_adapter.py`: `_fm_parameters` and
-   `generation_flow` exclusion, `generation_refiner` scope and group,
-   `grad_norm_components` mapping.
+   `generation_flow` exclusion, mode-specific base/refiner scopes,
+   `generation_refiner` group, `grad_norm_components` mapping.
 8. `backend/core/training/base_trainer.py:18693-18700`: `generation_refiner` in
    the image-batch census scope tuple.
 9. `backend/core/training/ops/sensenova_ops.py`: `train_step` call with `[B]` `t`
@@ -711,7 +840,7 @@ Per the existing SenseNova option path (template: `sensenova_gen_patch`):
     on SenseNova.
 12. `frontend/src/utils/api.ts`, `trainingConfigDefinitions.tsx` `DEFAULT_PARAMS`,
     `trainingParams.ts` `PARAM_KEYS`, `TrainingConfig.tsx` controls (state select,
-    width, depth, lr factor, detach mode/steps) with `unsupportedTrainingFeature`
+    width, depth, training mode, lr factor, detach mode/steps) with `unsupportedTrainingFeature`
     gating and the required-value pin.
 13. `backend/core/training/metric_registry.py`: the two series.
 14. Probes: call or refuse, per the table; commit the spectrum/grid probe.
@@ -722,10 +851,10 @@ Per the existing SenseNova option path (template: `sensenova_gen_patch`):
 | Phase | Content | Gate |
 |---|---|---|
 | P0 (done, 558ebf7d) | Fused-hook stale group dict fix (all capturing optimizers; hooks resolve the live group per call) | CPU test (`fused_hook_live_param_group_test.py`): after `load_state_dict`, an LR written to the live group is the LR the kernel receives; a wholly fresh appended group gets LR 0 at the anchor via the composed lambda. Independent of the refiner, committed on its own |
-| P1 | `latent_refiner.py`, vendor build+call, `train_step` call, `noise_scale` threading, declaration, schema validator | CPU tests below pass |
-| P2 | State table, owning site, optimizer group, warmup path, anneal, census/grad-norm wiring, latent statistics guard, metrics | CPU tests below pass |
+| P1 | `latent_refiner.py` with ChannelRMSNorm2d, vendor build+call, `train_step` call, `noise_scale` threading, declaration, schema validator | CPU tests below pass |
+| P2 | State/mode tables, mode-specific scope and save behavior, optimizer group, warmup path, anneal, census/grad-norm wiring, latent statistics guard, metrics | CPU tests below pass |
 | P3 | Params, API, YAML, runner refusals, capabilities, UI, probes, committed spectrum/grid probe | grep parity against `sensenova_gen_patch`, `py_compile` plus real import |
-| P4 | GPU smoke, only with the user's explicit go-ahead (a run is usually in flight) | ~3 steps, finite loss, attach/continue/anneal/hard each once; measured activation memory with the branch on/off and checkpointing on/off |
+| P4 | GPU smoke, only with the user's explicit go-ahead (a run is usually in flight) | ~3 steps, finite loss in joint/refiner-only/base-only and attach/continue/anneal/hard; measured peak and step time at 1536/2048/4096 with branch on/off and checkpointing on/off; exact-halo execution becomes a release gate if the 4096 delta exceeds 1.5 GiB or usable headroom |
 
 One commit per phase.
 
@@ -742,112 +871,146 @@ fp32):
    Cases: batch 1 with a 0-dim `t`; **batch 3 with three distinct `t` values**
    on the train side against three single-item inference calls; the packed
    train path (`prefix.packed` set) against the unpacked one; `c_in` and the
-   FiLM tensors asserted `[B,1,1,1]` and `[B,width,1,1]`.
+   FiLM tensors asserted `[B,1,1,1]` and `[B,width,1,1]`; the RMS reduction is
+   asserted fp32 and its output in the parameter dtype.
 3. **Round-trip:** save (each format) -> `load_sensenova_from_path` -> same
    output, `gate` preserved, 0-dim and float32 after load.
 4. **Schema and strictness, each a separate refusal:** declared-but-missing
    tensor; present-but-undeclared tensor; tensor shape disagreeing with the
    declared width or depth; gate missing / non-scalar / NaN / `-0.1` / `1.5`;
-   unknown `version`; `inputs` differing in content or order; annealing
+   unknown `version`; `inputs` differing in content or order; missing/unknown
+   `norm`; width not divisible by 16; annealing
    declaration with `detach_anchor_step` or `detach_steps` or `detach_accum`
    missing; saved gate differing from the recomputed one by more than `1e-6`.
    Every case asserted through the one loader entry with the four callers'
    arguments (generation, full-FT resume, LoRA training, LoRA inference) and
    the same exception text.
-5. **State table:** every row, including the default-edit case (`inherit` on a
-   refined checkpoint keeps it) and the non-full-FT frozen forward row.
+5. **State/mode tables:** every row and cross-product, including the
+   default-edit case (`inherit` on a refined checkpoint keeps it), attach plus
+   `base_only` refusal, detach's intrinsic base-only behavior, and the
+   non-full-FT frozen forward row.
 6. **Owning site / group membership:** the assertions listed under
    [Owning site and ordering](#owning-site-and-ordering); plus
    `_sushi_param_names` present after attach; plus `generation_refiner` in
    the census active set on an image batch and absent on a text batch.
-7. **Warmup:** resume of a refiner-less checkpoint with `attach` on the fused
+7. **Mode gradients and persistence:** `joint` changes both parameter sets;
+   `refiner_only` creates no base grads/group/state and an exact comparison
+   shows every non-refiner tensor unchanged after a `mixed` save/reload;
+   `base_only` creates no refiner parameter grad/state but a loss on refined
+   output produces a non-zero base-head gradient through the fixed branch.
+8. **Warmup:** resume of a refiner-less checkpoint with `attach` on the fused
    Lion RB path marks exactly the refiner tensors fresh and composes the warmup
    lambda for the refiner group (whole-group case). The LR the hook hands the kernel is 0 at the anchor
    and the live group LR after the warmup length. Restored tensors
    receive the live scheduled LR throughout (P0 regression). Refusal when the
    effective warmup is 0 or the re-arm flag is off.
-8. **Anneal:** the gate follows (anchor, steps) across a simulated re-resume
+9. **Anneal:** the gate follows (anchor, steps) across a simulated re-resume
    mid-anneal; at completion the module and the declaration are gone in-process,
    the next save has no refiner tensor, no declaration, and no refiner optimizer
    state; the output before and after the drop is equal. Same no-stale-state
    assertion for the first save after hard detach and after anneal start.
-9. **Checkpointing:** gradients with `checkpoint_blocks=True` equal those
+10. **Checkpointing:** gradients with `checkpoint_blocks=True` equal those
    without, per dtype.
-10. **Latent statistics guard:** a synthetic latent stream with one channel at
+11. **Locality:** perturbing one input latent cell cannot change delta values
+    outside radius `2 * depth + 2`. A full-grid crop equals evaluation of the
+    same crop with exactly that halo (including outer-boundary zero padding),
+    within the dtype-specific convolution tolerance. This prevents a future
+    spatial normalization from silently breaking the tiling premise.
+12. **Latent statistics guard:** a synthetic latent stream with one channel at
     RMS 3.0 refuses `attach` with the measured value in the message.
-11. **Refusals:** pixel geometry, `attach`/`detach` under LoRA, `inherit` under
-    LoRA accepted, width/depth change, re-attach mid-anneal, understanding-only
-    run, changed accumulation interval mid-anneal.
+13. **Refusals:** pixel geometry, `attach`/`detach` under LoRA, `inherit` under
+    LoRA accepted, width/depth change, illegal mode/state pair, non-`mixed`
+    refiner-only save, re-attach mid-anneal, understanding-only run, changed
+    accumulation interval mid-anneal.
 
 No convergence runs.
 
 ## Acceptance measurement (pre-registered, not run)
 
 GPU runs require the user's explicit go-ahead; a training run is usually in
-flight.
+flight. The target range is 2048-4096px. A 1536-only improvement is not enough
+to accept the design.
 
-### Design: matched control
+### Stage 1: isolate branch capacity
 
-Before/after on one run cannot attribute a change to the branch. Two arms
-branch from the **same** checkpoint and optimizer state (run127
-`step_090000` + `step_090000_optimizer.pt`), with the same `seed`,
-`dataset_configs`, resolution buckets, `lr_warmup_steps`, LR schedule and step
-budget:
+Start from run127 `step_090000`, attach width 128/depth 3, and train
+`refiner_only`. The base weights remain bit-identical, so any output change is
+caused by the new branch rather than base co-adaptation. Use the production
+mixture of 2048, 3072 and 4096 buckets; log the first 256
+`(dataset_id, item_id, bucket)` triples so repeats are auditable. Evaluate at
+2,000, 5,000 and 10,000 updates.
 
-- **Arm A:** `sensenova_latent_refiner=attach`, defaults (width 128, depth 3,
-  lr factor 1.0).
-- **Arm B:** `inherit` (no refiner). Everything else identical.
+Samples at each point are 8 fixed prompts x 3 fixed seeds at both 2048 and
+4096, with fixed steps and CFG. Metrics from the P3 probe are grid64, grid8,
+4-16px band energy, and the 8-16px residual diagnostic. Also report
+`sn_refiner_delta_rel`, peak allocated/reserved VRAM and seconds/update by
+bucket. Blind review uses label-hidden zoomed crops; a scalar result alone is
+not accepted.
 
-Data order: both arms log the first 256 `(dataset_id, item_id)` pairs they
-draw; the comparison is refused if the two logs differ. Whether the bucket
-shuffle is a pure function of `seed` across two processes is **UNCONFIRMED**
-here and is what that check settles.
+Stage 1 advances when, relative to the unmodified source checkpoint at both
+resolutions, grid64 and grid8 improve in at least 19/24 paired samples,
+4-16px energy improves in at least 19/24, artifact-focused blind review
+prefers the refined crop in at least 19/24, and large-scale composition is
+judged worse in no more than 5/24. This is a capacity gate, not the final
+causal comparison; only Stage 2 can establish benefit over continued base
+training.
 
-Evaluation points: 2,000, 5,000 and 10,000 updates after the branch point, on
-the saved checkpoint at each. Samples: 8 fixed prompts x 3 fixed seeds = 24
-per arm per point, generated with the same steps, CFG and resolution, from the
-same generation code (no bypass toggle exists, by design).
+If width 128/depth 3 is active (`delta_rel >= 0.05`) but misses the quality
+gate, change only one capacity axis at a time:
 
-Metrics, from the probe committed in P3: grid64 and grid8 (each against the
-period-61 control), and 4-16px band energy. Statistics: per-arm median and
-interquartile range over the 24 samples, and the paired sign over the 24
-(prompt, seed) pairs. Thresholds are on the paired sign because single-sample
-values ranged 0.23-1.1 in the provenance probe and a median alone would not
-separate the arms at n=24.
+1. depth 5 / width 128, testing receptive-field limitation;
+2. depth 3 / width 256, testing channel-capacity limitation;
+3. only if both help independently, width 256/depth 5.
 
-### Pre-registered outcomes, at the 10,000-update point
+Width 64/depth 3 is an optional lower-cost ablation, not a rescue arm. A
+dilated or multiscale architecture is considered only if depth helps and its
+cost is unacceptable; attention is considered only if the residual diagnostic
+shows a genuinely non-local error. This prevents one width-256/depth-6 run
+from confounding receptive field, parameter count and compute.
 
-- **Supports the hypothesis:** A < B on grid64 in >= 19 of 24 pairs, A < B on
-  grid8 in >= 19 of 24 pairs, and A > B on 4-16px band energy in >= 19 of 24
-  pairs (two-sided binomial p < 0.01 each), **and** blind visual inspection of
-  zoomed crops (arm labels hidden, 24 pairs) picks A as the less blocky /
-  less hatched in >= 19. A scalar result alone is not accepted.
-- **Refutes the "missing path" explanation, or at least this instance of it:**
-  `sn_refiner_delta_rel` in arm A exceeds 0.05 by 5,000 updates (the branch
-  is doing something) and none of the paired thresholds is met at 10,000.
-  This does not by itself locate the artifact upstream of the head. Other
-  explanations remain and are separated as follows:
-  - *capacity*: repeat arm A at width 256 / depth 6; a change in the paired
-    counts implicates capacity;
-  - *LR*: repeat arm A with `sensenova_refiner_lr_factor` = 10 (the delta
-    growth rate from P4 sets the value); a change implicates the LR;
-  - *training length*: extend both arms to 30,000 updates; a monotone trend
-    in the paired counts implicates length;
-  - *loss weighting*: the MSE on `v` weights all frequencies equally and the
-    8-16px band is a small fraction of the energy; a per-band loss diagnostic
-    (logged, not optimized) that shows the 8-16px residual flat while the
-    total loss falls implicates the objective rather than the architecture.
-  Only when the width/depth and LR arms move nothing and the band residual
-  is not flat is "upstream of the head" the remaining explanation, and the
-  branch should then be detached.
-- **Inconclusive (LR-bound):** `sn_refiner_delta_rel` does not exceed 0.05 by
-  5,000 updates. Lion moves each element by at most `lr` per update. At
-  run127's `unet_lr=1e-6` and factor 1.0, the zero-init `out` conv is bounded
-  by 1e-6 x updates (<= 0.01 after 10k). A flat result can therefore be
-  LR-bound and says nothing about the hypothesis. P4 reports the `delta_rel`
-  growth rate per 1k updates, so `sensenova_refiner_lr_factor` can be chosen
-  from a measurement before the acceptance run. The default stays 1.0 because
-  no measurement supports another value yet.
+### Stage 2: matched end-to-end control
 
-The 0.05 delta threshold and the 19/24 counts are fixed here so the outcome
-cannot be chosen after the fact; neither is derived from a measurement.
+Run only after Stage 1 shows useful capacity. Two arms branch from the **same**
+checkpoint and optimizer state (run127 `step_090000` plus its optimizer), with
+identical seed, dataset config, 2048/3072/4096 bucket sequence, warmup, LR
+schedule and update budget:
+
+- **Arm A:** `attach`, selected Stage-1 width/depth, mode `joint`.
+- **Arm B:** `inherit` on the refiner-less checkpoint; normal base training.
+
+The comparison is refused if the first 256 logged data/bucket triples differ.
+Evaluate both at 2,000, 5,000 and 10,000 updates with the same 24 prompt/seed
+pairs at 2048 and 4096. Report median/IQR and paired signs separately at each
+resolution; do not pool the two resolutions.
+
+### Pre-registered outcomes at 10,000 updates
+
+- **Accept:** at both 2048 and 4096, A < B on grid64 in at least 19/24 pairs,
+  A < B on grid8 in at least 19/24, A > B on 4-16px band energy in at least
+  19/24 (two-sided binomial p < 0.01 for each), and blind inspection selects A
+  as less blocky/hatched in at least 19/24. A may be judged worse in prompt
+  adherence or large-scale composition in no more than 5/24 pairs. P4 must
+  also keep the 4096
+  checkpointed peak delta at or below 1.5 GiB and within the owner's usable
+  headroom.
+- **Architecture/capacity failure:** `delta_rel >= 0.05`, the one-axis ladder
+  has been run, and none reaches the paired quality gate. If depth helps, test
+  dilation/multiscale; if width helps, choose the smallest passing width. If
+  neither helps and the high-frequency residual is not flat, the missing
+  information is upstream of this head and the refiner should be detached.
+- **Objective failure:** the 8-16px residual stays flat while total loss falls.
+  Adding capacity is not justified; first test frequency-aware loss weighting
+  as a separate design.
+- **Inconclusive (LR-bound):** `delta_rel < 0.05` by 5,000 updates. Lion moves
+  each element by at most `lr` per update; at run127's `unet_lr=1e-6` and
+  factor 1.0 a flat 10k result is not evidence against the branch. P4 reports
+  delta growth per 1k updates, then one pre-declared LR-factor retry is run.
+- **Inconclusive (memory-bound):** the 4096 peak delta exceeds 1.5 GiB or usable
+  headroom. Implement and verify exact-halo execution before any width increase,
+  then repeat the same arm; reducing evaluation resolution is not acceptance.
+
+The 0.05 activity threshold, 19/24 paired counts and 1.5 GiB 4096 delta are
+fixed before the runs so the outcome cannot be chosen afterward. After a
+positive result, the recommended production sequence is refiner-only warm-up
+followed by a short joint finish. Base-only fine-tuning remains a supported
+distribution/downstream operation, not the default recipe.

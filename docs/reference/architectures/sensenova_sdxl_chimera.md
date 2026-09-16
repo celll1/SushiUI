@@ -1,0 +1,151 @@
+# SenseNova SDXL Chimera (`sensenova_sdxl_chimera`)
+
+Chimera keeps SenseNova U1.5's frozen multimodal understanding branch but
+replaces its pixel-space generation branch with an SDXL-shaped four-channel
+U-Net and the selected SDXL donor's VAE. A trainable bridge converts the
+SenseNova prefix state into the two conditioning tensors the U-Net expects.
+
+## Components
+
+| Role | Class/module | Ownership |
+|---|---|---|
+| Understanding | `NEOChatModel` loaded by `understanding.load_understanding_only` | External, content-hash-pinned SenseNova checkpoint; frozen |
+| Conditioning | `ConditioningBridge` | Bundled, trainable; emits `77 x 2048`, pooled `1280`, and context positions |
+| Denoiser | diffusers `UNet2DConditionModel` | Bundled; tensor census and parameter count equal the selected SDXL donor |
+| Attention | `ChimeraAttnProcessor` | Parameter-free replacement processor with three-axis context RoPE and generation-local K/V cache |
+| VAE | diffusers `AutoencoderKL` | Bundled from the same SDXL donor and content-hash-checked |
+| Scheduler | `flow.py` / `pipeline_ops.py` | Increasing clean-time Euler flow; no diffusers scheduler object |
+
+The understanding loader removes `fm_modules`, every `_mot_gen` projection,
+and `norm_mot_gen` before installing weights. It reads only language/vision
+understanding tensors and supports the repository's plain-int8 and ConvRot-int8
+SenseNova formats.
+
+## Load path
+
+The model path is a directory with `chimera.json`, `config.json`, and a
+`model.safetensors` file or shard index. `preflight_chimera_artifact` validates
+the documents, U-Net/VAE config hashes, tensor prefixes, and the external
+understanding checkpoint's full content hash before payload loading. The
+artifact bundles `condition_bridge.*`, `unet.*`, and `vae.*`; it must not bundle
+SenseNova `_mot_gen` tensors.
+
+`ModelLoader.detect_model_type` recognizes the directory metadata before broad
+SDXL heuristics. `load_chimera_artifact` reconstructs the three bundled modules
+strictly, verifies VAE content identity and U-Net census, and then selectively
+loads the pinned understanding branch. Initialization is an explicit
+`POST /api/v1/models/sensenova-sdxl-chimera/initialize` or example-script
+operation; ordinary load and training never create an artifact implicitly.
+
+## Denoiser structure
+
+```mermaid
+flowchart LR
+  P["prompt / multimodal prefix"] --> U["frozen SenseNova understanding"]
+  U --> H["last hidden + selected layer K/V"]
+  H --> B["ConditioningBridge"]
+  B --> C["77x2048 context + 1280 pooled + 3D positions"]
+  N["4-channel noisy latent"] --> D["SDXL-shaped U-Net"]
+  T["clean-time t + SDXL time IDs"] --> D
+  C --> A["parameter-free 3D-RoPE cross attention"]
+  A --> D
+  D --> V["flow velocity"]
+  V --> E["increasing-t Euler step"]
+  E --> Z["clean latent"]
+  Z --> VAE["bundled SDXL VAE decode"]
+```
+
+Each selected SenseNova layer owns a K/V projection in the bridge. Zero-initial
+gates add those residuals to the projected final hidden state, learned queries
+resample the prefix to 77 rows, and separate projections produce cross-attention
+and pooled conditioning. The bridge also takes attention-weighted barycenters of
+the prefix `(t,h,w)` coordinates. `ChimeraAttnProcessor` applies the declared
+SenseNova `2:1:1` axis split to context keys without adding parameters.
+
+## Tensor contract
+
+| Property | Value |
+|---|---|
+| Latent | `[B,4,H/8,W/8]`, donor VAE shift/scale normalization |
+| Context | `[B,77,2048]` |
+| Pooled conditioning | `[B,1280]` |
+| Added conditioning | SDXL original/crop/target time IDs |
+| Position encoding | Three-axis `t:h:w = 2:1:1`, crop-aware physical coordinates |
+| Time | `t=0` noise, `t=1` clean |
+| Prediction | Direct velocity `x0 - noise` |
+| Spatial alignment | Width and height divisible by 8 |
+
+The artifact stores the donor U-Net config verbatim. Builders refuse a tensor
+census mismatch instead of partially transplanting weights. The VAE config and
+actual extracted weights are stored together; a generic latent scaling default
+is never substituted.
+
+## Generation path
+
+`core/pipeline_backends/sensenova_sdxl_chimera.py` owns txt2img, img2img,
+inpaint, and understanding-only img2txt dispatch. Prompt conditioning is built
+once, then the understanding model and bridge are offloaded before U-Net
+sampling. Sequential and batch-concatenated CFG share the same conditioning
+contract. Post-RoPE cross-attention K/V caches are scoped to one generation and
+cleared on success or exception.
+
+Img2img uses deterministic SDEdit in the same increasing-time flow. Inpaint
+uses white-as-generate latent masks and re-injects the correspondingly noised
+source latent into the preserve region after every Euler step, then composites
+the original pixels after VAE decode. Spatial outpaint delegates to that
+inpaint route and the architecture-neutral final exact paste. I2t and ti2t end
+inside the frozen understanding branch. Reference-image ti2i is structurally
+supported by prefix capture but remains unadvertised until a trained checkpoint
+passes its independent reference-quality suite.
+
+## Training path
+
+`SenseNovaSDXLChimeraArchHandler`,
+`SenseNovaSDXLChimeraFullParameterAdapter`, and
+`training/ops/sensenova_sdxl_chimera_ops.py` implement three full-parameter
+stages:
+
+| Stage | Trainable | Objective |
+|---|---|---|
+| `bridge_align` | Bridge only | Normalized hidden, hidden-RMS, and pooled alignment to the selected donor's frozen SDXL CLIP encoders |
+| `unet` | Complete U-Net only | Flow-velocity MSE |
+| `joint` | Bridge and complete U-Net | Flow-velocity MSE through both trainable components |
+
+Understanding and VAE always stay frozen. `bridge_align` requires explicit loss
+weights because no unmeasured numerical default is accepted. U-Net/joint
+training requires `bridge_state="aligned"`; only a scratch U-Net may bypass
+that rule through `chimera_allow_unaligned_scratch=true`, and a transplanted
+U-Net may never bypass it. Checkpoints are production-loadable Chimera
+directories with stage, step, epoch, metrics, and bridge-state provenance.
+
+## Hook points
+
+- Attention backend selection is installed through
+  `install_chimera_attention_processors`; the checkpoint-fixed positional
+  processor remains the owner of three-axis RoPE.
+- CFG-null resolution uses the encode-stage empty prompt.
+- Gradient checkpointing attaches to the U-Net. Block swap, generation-time
+  adapters, ControlNet, NAG, FBCache, spectrum forecasting, VAE override, and
+  tiled decode are explicitly refused by the capability table.
+- Directory checkpoint discovery, size accounting, rotation, and resume use
+  the shared trainer machinery with Chimera's directory artifact writer.
+- Component staging is explicit in the backend; Chimera is not in the generic
+  keep-hot path.
+
+## Constraints
+
+- Artifact format v1 accepts the dense SenseNova understanding branch only.
+- The external understanding file must still match its pinned content hash at
+  every preflight; filename and mtime are not identity.
+- Only `full_finetune` is supported. LoRA/adapter, Relora, and ControlNet
+  training are refused.
+- Transplanted diffusion training is illegal before the held-out bridge
+  alignment gate has passed and been recorded.
+- Real bootstrap source selection, threshold registration, peak-memory/time
+  measurements, and reference-ti2i quality remain measured gates. The code
+  does not infer or promote them from training loss.
+
+The detailed invariants and acceptance sequence live in
+`docs/guides/SENSENOVA_SDXL_CHIMERA_DESIGN.md`; current shipped facts and local
+bootstrap status are recorded in `docs/guides/MODEL_FACTS.md` and
+`docs/plans/SENSENOVA_SDXL_CHIMERA_HANDOFF.md`.

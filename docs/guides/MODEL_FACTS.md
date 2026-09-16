@@ -2630,7 +2630,7 @@ Paths below are relative to `backend/core/training/`.
     step-time win, passed on its own gate) and is a separate, opt-in file,
     not a replacement for this conclusion.
   - **Phase 1 LoRA training is implemented**; `"sensenova"` is one of
-    `ARCH_REGISTRY`'s 14 entries (`training/arch/__init__.py`). The base
+    `ARCH_REGISTRY`'s 15 entries (`training/arch/__init__.py`). The base
     checkpoint is converted UNMERGED from the 8-step distillation LoRA
     specifically to keep the trainable lineage canonical, which is what makes
     that lineage trainable here. Shape of the implemented envelope:

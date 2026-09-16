@@ -10,9 +10,10 @@
 1. [Stable Diffusion 1.5 (SD1.5)](#stable-diffusion-15-sd15)
 2. [Stable Diffusion XL (SDXL)](#stable-diffusion-xl-sdxl)
 3. [Z-Image](#z-image)
-4. [アーキテクチャの検出方法](#アーキテクチャの検出方法)
-5. [共通仕様](#共通仕様)
-6. [トレーニングオプション](#トレーニングオプション)
+4. [SenseNova SDXL Chimera](#sensenova-sdxl-chimera)
+5. [アーキテクチャの検出方法](#アーキテクチャの検出方法)
+6. [共通仕様](#共通仕様)
+7. [トレーニングオプション](#トレーニングオプション)
 
 ---
 
@@ -358,6 +359,48 @@ target_modules = ["to_q", "to_k", "to_v", "to_out.0"]  # ZImageAttention modules
 
 ---
 
+## SenseNova SDXL Chimera
+
+### 概要
+
+- **モデル種別**: `sensenova_sdxl_chimera`
+- **学習方式**: `full_finetune` のみ
+- **潜在空間**: SDXL donor VAE の `[B,4,H/8,W/8]`
+- **予測対象**: Flow velocity `x0 - noise`（`t=0` noise、`t=1` clean）
+
+凍結した SenseNova understanding branch の最終 hidden state と選択層 K/V
+を `ConditioningBridge` が `77 x 2048` context、`1280` pooled vector、
+3 軸 context position へ変換します。U-Net は donor SDXL U-Net と
+名前・shape・parameter count が同一で、cross-attention だけを parameter-free
+な `ChimeraAttnProcessor` に差し替えて `t:h:w = 2:1:1` RoPE を適用します。
+
+### 学習 stage
+
+| `chimera_training_stage` | trainable | loss |
+|---|---|---|
+| `bridge_align` | conditioning bridge | donor SDXL CLIP hidden/pooled alignment |
+| `unet` | U-Net 全 parameter | flow-velocity MSE |
+| `joint` | bridge + U-Net 全 parameter | flow-velocity MSE |
+
+Understanding と VAE は全 stage で凍結されます。`bridge_align` は
+`chimera_clip_hidden_weight` と `chimera_clip_pooled_weight` の明示指定が必要です。
+`unet` / `joint` は原則 `bridge_state="aligned"` を要求し、未 alignment の
+scratch artifact だけが `chimera_allow_unaligned_scratch=true` で実験的に
+進められます。`sdxl_transplant` はこの bypass を許可しません。
+
+### 実装 ownership
+
+- handler: `core/training/arch/sensenova_sdxl_chimera.py`
+- ops: `core/training/ops/sensenova_sdxl_chimera_ops.py`
+- full adapter: `core/training/adapters/sensenova_sdxl_chimera_adapter.py`
+- artifact save/resume: `core/models/sensenova_sdxl_chimera/artifact.py`
+
+LoRA/LyCORIS、Relora、ControlNet、block swap は未対応として事前拒否されます。
+checkpoint は単一ファイルではなく、production loader がそのまま再読込できる
+Chimera directory artifact として atomic に保存されます。
+
+---
+
 ## アーキテクチャの検出方法
 
 ### U-Net Configからの検出
@@ -635,5 +678,5 @@ optimizer_use_radam: bool = False                          # Use RAdam variant
 
 ---
 
-**最終更新**: 2026-01-08
-**対応アーキテクチャ**: SD1.5, SDXL, Z-Image
+**最終更新**: 2026-09-17
+**この文書で詳細化したアーキテクチャ**: SD1.5, SDXL, Z-Image, SenseNova SDXL Chimera

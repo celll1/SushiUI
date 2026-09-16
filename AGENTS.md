@@ -1,14 +1,14 @@
 # AGENTS.md
 
 SushiUI is a Stable-Diffusion-style web UI: a FastAPI backend (`backend/`)
-driving 15 generation architectures — 10 image (SD1.5, SDXL, Z-Image, Flux2,
-Anima, Lens, Krea2, Ideogram4, MiniT2I, SenseNova U1.5), 2 video (LTX-2.3,
+driving 16 generation architectures — 11 image (SD1.5, SDXL, Z-Image, Flux2,
+Anima, Lens, Krea2, Ideogram4, MiniT2I, SenseNova U1.5, SenseNova SDXL Chimera), 2 video (LTX-2.3,
 MiniMax-H3, both of which also generate audio jointly) and 3 audio (ACE-Step
 1.5, MiniMax Music 3, YuE2) — plus LoRA / full-parameter / tagger / VAE-decoder
 training, and a Next.js frontend (`frontend/`). The authoritative *generation*
 list is `ModelType` in `backend/core/model_loader.py`; the authoritative
 *training-capable* list is `ARCH_REGISTRY` in
-`backend/core/training/arch/__init__.py` (14 entries — MiniMax Music 3 is
+`backend/core/training/arch/__init__.py` (15 entries — MiniMax Music 3 is
 generation-only; YuE2 trains Phase-A ABC-planner LoRA only). SenseNova U1.5 trains LoRA and either
 MoT half by full parameter, refuses `relora` and `controlnet`, and carries a
 per-run contract enforced before the model loads — the contract itself lives in
@@ -93,6 +93,7 @@ changes.
 | Add a new model architecture (incl. the extra surface a video arch needs) | `docs/guides/ADD_A_MODEL_ARCHITECTURE.md` |
 | Per-architecture facts (CFG convention, VAE, attention, weight formats, measured performance) | `docs/guides/MODEL_FACTS.md` |
 | SenseNova img2txt inference or caption/tag/mixed-objective training | `docs/decisions/SENSENOVA_TEXT_OUTPUT_DESIGN.md`, then `docs/guides/SENSENOVA_TRAINING_DESIGN.md` for the shipped boundary |
+| SenseNova SDXL Chimera generation or training | `docs/reference/architectures/sensenova_sdxl_chimera.md`, then `docs/guides/SENSENOVA_SDXL_CHIMERA_DESIGN.md` for acceptance gates |
 | MiniMax Music 3 integration (vendoring rationale, capability refusals, frame-code state contract, weight formats) | `docs/guides/MINIMAX_MUSIC3_DESIGN.md` |
 | Call the API directly (scripts, smoke tests) | `docs/guides/API_TESTING.md`, `examples/api/` |
 | WebSocket progress messages | `backend/api/WS_PROTOCOL.md` |

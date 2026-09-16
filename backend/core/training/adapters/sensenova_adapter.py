@@ -826,13 +826,16 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
             source_format = str(getattr(
                 trainer, "sensenova_source_save_format", ""
             ) or "").strip()
-            save_branch = source_branch if source_format == "mixed" and source_branch in {
-                "gen", "und", "both"
-            } else "none"
+            if source_format == "bf16":
+                save_branch = "both"
+            elif source_format == "mixed" and source_branch in {"gen", "und"}:
+                save_branch = source_branch
+            else:
+                save_branch = "none"
         model_path = getattr(trainer, "model_path", None)
         source_dir = os.path.dirname(str(model_path)) if model_path else None
 
-        if save_format == "mixed" and branch == "both":
+        if save_format == "mixed" and save_branch == "both":
             emit_training_warning(
                 "SenseNova full fine-tuning is training both MoT halves, so the "
                 "'mixed' checkpoint format has no int8 half left to keep and the "

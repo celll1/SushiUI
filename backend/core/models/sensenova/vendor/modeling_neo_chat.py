@@ -40,6 +40,7 @@ from .modeling_neo_vit import NEOVisionModel
 from .modeling_qwen3 import Qwen3ForCausalLM, create_block_causal_mask
 from .modeling_qwen3_moe import Qwen3MoeForCausalLM
 from .modeling_fm_modules import PositionEmbedding, TimestepEmbedder, FlowMatchingHead, RMSNorm, NerfEmbedder, SimpleMLPAdaLN, ConvDecoder
+from ..latent_refiner import LatentRefiner, apply_latent_refiner
 from .utils import load_image_native, SYSTEM_MESSAGE_FOR_GEN
 
 logger = logging.get_logger(__name__)
@@ -276,6 +277,13 @@ class NEOChatModel(PreTrainedModel):
             self.fm_modules["fm_head"] = ConvDecoder(
                 llm_hidden_size, out_channels=self.gen_in_channels,
                 shuffle=self.gen_patch_size // 4)
+            refiner = getattr(config, "gen_refiner", None)
+            if refiner is not None:
+                self.fm_modules["fm_refiner"] = LatentRefiner(
+                    self.gen_in_channels,
+                    int(refiner["width"]),
+                    int(refiner["depth"]),
+                )
 
         self.concat_time_token_num = config.concat_time_token_num
         self.noise_scale = config.noise_scale
@@ -655,7 +663,7 @@ class NEOChatModel(PreTrainedModel):
 
         return past_key_values, t_idx, think_text
     
-    def _t2i_predict_v(self, input_embeds, indexes_image, attn_mask, past_key_values, t, z, image_token_num, timestep_embeddings=None, image_size=None, token_hw=None):
+    def _t2i_predict_v(self, input_embeds, indexes_image, attn_mask, past_key_values, t, z, image_token_num, timestep_embeddings=None, image_size=None, token_hw=None, noise_scale=None):
         # SushiUI: `token_hw` is the (token_h, token_w) the caller already knows.
         # `image_size` only ever answered the same question, and it cannot once
         # the generation grid is a latent rather than the image (design §10.2).
@@ -686,10 +694,18 @@ class NEOChatModel(PreTrainedModel):
 
             smoothed_img_2d = self.fm_modules['fm_head'](img_2d)
 
-            smoothed_reshaped = smoothed_img_2d.view(B, channels, token_h, patch, token_w, patch)
-            smoothed_reshaped = torch.einsum("b c h p w q -> b h w p q c", smoothed_reshaped)
-            out_1d = smoothed_reshaped.contiguous().view(B, L, patch * patch * channels)
-            x_pred = out_1d
+            if "fm_refiner" in self.fm_modules:
+                if noise_scale is None:
+                    raise ValueError("SenseNova refiner forward requires noise_scale")
+                z_grid = self.unpatchify(
+                    z, patch, token_h * patch, token_w * patch
+                )
+                smoothed_img_2d = apply_latent_refiner(
+                    self.fm_modules["fm_refiner"], smoothed_img_2d,
+                    z_grid, t, noise_scale,
+                )
+
+            x_pred = self.patchify(smoothed_img_2d, patch)
         else:
             if self.use_deep_fm_head:
                 x_pred = self.fm_modules["fm_head"](

@@ -1209,6 +1209,11 @@ def load_components(trainer: Any) -> None:
 
     components = load_sensenova_from_path(trainer.model_path, torch_dtype=trainer.weight_dtype)
     trainer.transformer = components["transformer"]
+    _metadata = components.get("metadata") or {}
+    trainer.sensenova_checkpoint_step = int(_metadata.get("step") or 0)
+    refiner_mode = str((getattr(trainer, "config", None) or {}).get(
+        "sensenova_refiner_training_mode", "joint"
+    )).strip().lower()
     # A full fine-tune resuming from its OWN checkpoint is a different question
     # from which base a new run may be pointed at; only the resume path can
     # widen, and only to the layout it was already training in.
@@ -1225,7 +1230,8 @@ def load_components(trainer: Any) -> None:
             source_metadata=components.get("metadata"),
         )
     _assert_pixel_head_fm_decoder(trainer.transformer)
-    if branch not in (None, "none") and resumed_format is None:
+    if (branch not in (None, "none") and resumed_format is None
+            and refiner_mode != "refiner_only"):
         from core.models.sensenova.loader import materialize_int8_decoder_linears
 
         materialize_int8_decoder_linears(
@@ -1254,6 +1260,12 @@ def load_components(trainer: Any) -> None:
     from core.training.vae_swap import apply_latent_space
 
     apply_latent_space(trainer, components.get("declared_vae"))
+    handler = getattr(trainer, "arch", None)
+    if handler is None:
+        from core.training.arch import get_arch_handler
+
+        handler = get_arch_handler(trainer)
+    handler.resolve_latent_refiner(trainer)
     if getattr(trainer, "vae", None) is not None:
         trainer.vae.requires_grad_(False)
         trainer.vae.eval()
@@ -2291,7 +2303,12 @@ def train_step(
     fm_trainable = (
         torch.is_grad_enabled()
         and fm_modules is not None
-        and any(p.requires_grad for p in fm_modules.parameters())
+        and any(
+            p.requires_grad
+            for name, module in fm_modules.items()
+            if name != "fm_refiner"
+            for p in module.parameters()
+        )
     )
     z, image_embeds, _ = _build_step_context(
         transformer, shape, z_image, t if batch > 1 else t[0], noise_scale,
@@ -2340,12 +2357,16 @@ def train_step(
             hidden.view(batch, token_h, token_w, -1).permute(0, 3, 1, 2).contiguous()
         )
         patch, channels = geometry.patch, geometry.channels
-        x0_pred = (
-            decoded.view(batch, channels, token_h, patch, token_w, patch)
-            .permute(0, 2, 4, 3, 5, 1)
-            .contiguous()
-            .view(batch, token_h * token_w, patch * patch * channels)
-        )
+        if "fm_refiner" in transformer.fm_modules:
+            from core.models.sensenova.latent_refiner import apply_latent_refiner
+
+            z_grid = transformer.unpatchify(z, patch, height, width)
+            decoded = apply_latent_refiner(
+                transformer.fm_modules["fm_refiner"], decoded, z_grid, t,
+                noise_scale,
+                checkpoint_blocks=bool(trainer.gradient_checkpointing),
+            )
+        x0_pred = transformer.patchify(decoded, patch)
         x0_tokens = transformer.patchify(x0, patch)
         # fp32 t here lifts v into fp32, which the MSE below wanted anyway --
         # the .float() calls become no-ops rather than extra copies.

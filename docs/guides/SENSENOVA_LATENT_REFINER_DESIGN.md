@@ -1,9 +1,40 @@
 # SenseNova Latent Refiner (optional fine-scale head branch)
 
-Status: **final implementation design; refiner not implemented.** P0 is
-complete (`558ebf7d`); P1-P4 remain. Nothing here claims the branch improves a
-run. The acceptance measurement at the end is pre-registered and has not been
-run.
+Status: **implemented on `flux2` through `567fe62f`.** P0-P3 are complete.
+The isolated GPU memory matrix and a real 2048-bucket `refiner_only` attach,
+save and two resumes are complete; the matched quality/convergence experiment
+at the end is still pre-registered and has not been run. Nothing here claims
+that five smoke-test updates improve image quality.
+
+### Implementation and runtime record (2026-09-16/17)
+
+- Forward/module and strict declaration: `fe37f4bb`; training modes and
+  persistence: `73541704`; API/UI/probes: `a792a624`.
+- Follow-up correctness commits preserve bf16 bases (`2392124e`), bound attach
+  calibration memory (`a620d484`, `d7aa561e`), separate base lineage from save
+  layout (`901564dd`, `15b794bc`), and admit a self-contained refined
+  checkpoint as a portable base-training input (`567fe62f`).
+- Run 128,
+  `sensenova_refiner_only_w128d3_run127_s93791`, starts from run127 step 93,791,
+  uses dataset 38 only, one 2048-area bucket family, batch size 1, width 128,
+  depth 3 and `refiner_only`. It completed steps 1-5 with finite flow losses
+  `2.0197, 1.1605, 0.9929, 0.6876, 0.9306`. Steps 4 and 5 each reloaded the
+  previous full checkpoint and restored all 32 named optimizer tensors.
+- The attach guard measured 64 deterministic samples capped to 1024^2 pixels:
+  pooled RMS `0.9785`, means
+  `[0.2319, -0.1943, 0.0249, -0.3664]`, and per-channel RMS
+  `[1.2435, 0.8825, 0.9190, 0.8124]`. During this measurement the base is on
+  CPU; the VAE is returned to CPU and the CUDA cache is cleared before the base
+  is restored. This fixes the original ~48 GiB base+VAE overlap.
+- The final step-5 checkpoint has 1,149 tensors, including 33 refiner tensors,
+  and records `sensenova_trained_branch=gen`,
+  `sensenova_save_layout_branch=both`,
+  `sensenova_refiner_training_mode=refiner_only`, effective format `bf16`, and
+  the run127 source path. Decoder weights remained frozen.
+- `sn_refiner_delta_rel` rose from exactly zero at steps 1-2 to
+  `5.66e-6, 1.37e-5, 2.64e-5` at steps 3-5. This proves the zero-init branch
+  begins moving and that resume continues it; it is far below the 0.05 capacity
+  threshold and says nothing about convergence after five warmup updates.
 
 ## Problem
 
@@ -35,8 +66,8 @@ scratchpad (`hf_probe.py`, `hf_probe.json`, outside the repo). **They are not
 reproducible from the repo as-is**: the probe is not committed, the sample
 directories are on `M:\sushiUI\training\...`, and the run-to-run comparison has
 no matched control. They motivate the design; nothing below depends on their
-exact values, and P3 commits the probe under
-`backend/core/training/probes/` before the acceptance measurement.
+exact values. The committed replacement is
+`backend/core/training/probes/sensenova_refiner_quality.py`.
 
 Observed on run127's samples (same prompt and seed): 64px-periodic gradient
 structure at 2.5x an incommensurate-period (61px) control (0.51 vs 0.20), and
@@ -186,15 +217,18 @@ declaration version 1.
 - **`c_in` assumes unit-RMS, mean-free latents with `x0` and `eps`
   uncorrelated.** It is exact only then: `Var(z) = t^2 Var(x0) + (1-t)^2 s^2`
   needs `Var(x0) = 1` per channel and zero cross-term. In this repo the SDXL
-  latents as wired measured RMS ~1.01 (whole-tensor; the per-channel mean and
-  variance were not measured). For another VAE it depends on that VAE's
+  run128 SDXL latents measured pooled RMS 0.9785 and per-channel RMS
+  0.812-1.244. For another VAE it depends on that VAE's
   `norm`. This is not left to hold by assumption: `calibrate_before_training`
-  (`arch/sensenova.py:388`) already sees the run's latents, and P2 adds a
+  (`arch/sensenova.py`) sees the run's latents and performs a
   per-channel mean/RMS measurement there whose result is logged and, when any
   channel's RMS is outside `[0.5, 2.0]` or `|mean| > 0.5`, refused for
   `attach` with the measured values. The declaration records
   `inputs: ["x0_head", "z_cin"]` so a later normalization change is a new
-  version, not a silent reinterpretation. The `[0.5, 2.0]` band is a guard
+  version, not a silent reinterpretation. Attach samples 64 deterministic
+  images capped to 1024^2 pixels while the base is CPU-resident; automatic
+  noise-scale calibration remains uncapped at the assigned bucket geometry.
+  The `[0.5, 2.0]` band is a guard
   against a mis-normalized VAE, not a tuned value.
 
 Defaults: `width=128`, `depth=3`. This is a deliberately small residual
@@ -249,9 +283,22 @@ position. The contract:
   are about 38 MiB, 64 MiB and 256 MiB respectively, plus one block's
   internals transiently during backward. The expected *measured peak delta*
   over the same base run is wider because allocator/workspace behavior is not
-  captured: 0.1-0.3 GiB, 0.2-0.5 GiB and 0.8-1.5 GiB respectively. P4 must
-  measure all three resolutions. If 4096 exceeds 1.5 GiB or the owner's usable
-  headroom, exact-halo execution becomes a release gate before increasing
+  captured: 0.1-0.3 GiB, 0.2-0.5 GiB and 0.8-1.5 GiB respectively. The isolated
+  RTX 6000 Ada measurement is:
+
+  | image | checkpointing | allocated delta | reserved delta |
+  |---:|:---:|---:|---:|
+  | 1536 | on | 0.204 GiB | 0.215 GiB |
+  | 2048 | on | 0.362 GiB | 0.414 GiB |
+  | 4096 | on | 1.447 GiB | 1.721 GiB |
+  | 2048 | off | 0.722 GiB | 0.809 GiB |
+  | 4096 | off | 2.888 GiB | 3.164 GiB |
+
+  The 4096 checkpointed allocated delta passes the fixed 1.5 GiB gate by a
+  narrow margin; the reserved delta does not fit that numerical bound and a
+  complete 4096 base run was not attempted on the 48 GiB card. If a future
+  complete 4096 run exceeds usable headroom, exact-halo execution becomes a
+  release gate before increasing
   width; the architecture and checkpoint format do not change.
 
 ### Zero-init identity
@@ -357,7 +404,10 @@ materialize or optimize decoder Linears merely because the API method is
 forward in `no_grad`: doing so would cut the only gradient from the refined
 output back into `x0_head`. The expected use is a small downstream base
 adaptation followed, if necessary, by a short `joint` finish; it is supported
-for model recipients but is not the recommended first training mode.
+for model recipients but is not the recommended first training mode. A new run
+pointed at a self-contained bf16 refiner distribution retains the frozen MoT
+half in bf16 and requires bf16 saves; an in-place resume with the original int8
+base available may restore that half to the lower-memory int8 layout.
 `refiner_only` also refuses `repa_enable` and any explicit trainable scope
 other than `generation_refiner`; otherwise its name would falsely imply that
 only the refiner changes.
@@ -500,16 +550,30 @@ non-decoder-Linear tensors as-is under the `other` census bucket
 resume restores only `iter_sensenova_lora_targets(branch=frozen_half)` from the
 base (`loader.py:600-602`), so refiner tensors always come from the checkpoint.
 
-`refiner_only` requires `sensenova_full_finetune_save_format="mixed"`, using
-the repository's existing rule for a full fine-tune with no decoder scope.
-The loaded decoder halves remain in their original classes and are emitted
-unchanged by the normal writer; the refiner is added under `other`. This makes
-the result a complete, self-contained SenseNova checkpoint rather than a
-sidecar, without materializing frozen decoder Linears or allocating base
-optimizer state. `bf16` and `int8` are refused in this mode because either
-would imply a base conversion that the run did not train. Round-trip tests
-compare every non-refiner tensor to the input checkpoint and require exact
-dtype, shape and value equality.
+`refiner_only` requires requested
+`sensenova_full_finetune_save_format="mixed"`. The loaded decoder halves remain
+in their original classes and are emitted unchanged; the refiner is added under
+`other`. An int8/mixed source therefore stays mixed. A source such as run127
+whose two halves are already floating point is preserved as bf16: the metadata
+records requested `mixed`, effective `bf16`, the source base-training lineage
+(`gen` for run127), save layout `both`, and mode `refiner_only`. This distinction
+prevents a refiner-only save from falsely claiming that it trained both MoT
+halves. `bf16` and `int8` are refused as *requested* refiner-only formats because
+either would otherwise imply a base conversion that the run did not train.
+Round-trip tests compare every non-refiner tensor to the input checkpoint and
+require exact dtype, shape and value equality.
+
+The result is a complete checkpoint, not a sidecar. It can always run inference
+or continue `refiner_only` without the original base. It can also seed a new
+`base_only` or `joint` full fine-tune without the original int8 base only when
+all of the following fail-closed stamps agree: mode `refiner_only`, effective
+format `bf16`, save layout `both`, requested branch equal to the inherited
+base lineage, and a validated refiner declaration/tensor set. In that portable
+route the frozen MoT half remains bf16, so resident VRAM is higher and every
+subsequent full-parameter save must request `bf16`. Ordinary bf16 checkpoints
+remain refused as new training bases. When the original int8 base is available,
+the existing resume path may instead restore the frozen half to int8 for the
+lower-memory layout.
 
 ### Declaration
 
@@ -641,7 +705,7 @@ This does not change the existing tolerance for other keys.
   later-added param would never get a hook.
 - **Fresh detection works as is.** The named optimizer load marks tensors absent
   from the saved state as fresh and sets `partially_fresh`
-  (`base_trainer.py:6026-6050`). run127's `step_090000_optimizer.pt` carries
+  (`base_trainer.py:6026-6050`). run127's `step_093791_optimizer.pt` carries
   `_sushi_param_names` (audited from the pickle header), so the named path is
   taken. Without names, the legacy prefix remap also marks a trailing group
   fresh (`base_trainer.py:5975-5987`).
@@ -851,12 +915,13 @@ Per the existing SenseNova option path (template: `sensenova_gen_patch`):
 | Phase | Content | Gate |
 |---|---|---|
 | P0 (done, 558ebf7d) | Fused-hook stale group dict fix (all capturing optimizers; hooks resolve the live group per call) | CPU test (`fused_hook_live_param_group_test.py`): after `load_state_dict`, an LR written to the live group is the LR the kernel receives; a wholly fresh appended group gets LR 0 at the anchor via the composed lambda. Independent of the refiner, committed on its own |
-| P1 | `latent_refiner.py` with ChannelRMSNorm2d, vendor build+call, `train_step` call, `noise_scale` threading, declaration, schema validator | CPU tests below pass |
-| P2 | State/mode tables, mode-specific scope and save behavior, optimizer group, warmup path, anneal, census/grad-norm wiring, latent statistics guard, metrics | CPU tests below pass |
-| P3 | Params, API, YAML, runner refusals, capabilities, UI, probes, committed spectrum/grid probe | grep parity against `sensenova_gen_patch`, `py_compile` plus real import |
-| P4 | GPU smoke, only with the user's explicit go-ahead (a run is usually in flight) | ~3 steps, finite loss in joint/refiner-only/base-only and attach/continue/anneal/hard; measured peak and step time at 1536/2048/4096 with branch on/off and checkpointing on/off; exact-halo execution becomes a release gate if the 4096 delta exceeds 1.5 GiB or usable headroom |
+| P1 (done, `fe37f4bb`) | `latent_refiner.py` with ChannelRMSNorm2d, vendor build+call, `train_step` call, `noise_scale` threading, declaration, schema validator | CPU identity, parity, strictness, locality and checkpoint-gradient tests pass |
+| P2 (done, `73541704` plus persistence fixes) | State/mode tables, mode-specific scope and save behavior, optimizer group, warmup path, anneal, census/grad-norm wiring, latent statistics guard, metrics | Parameter-boundary, save/reload, lineage and portable-base tests pass |
+| P3 (done, `a792a624`) | Params, API, YAML, runner refusals, capabilities, UI, quality and VRAM probes | `py_compile`, CUDA-stubbed real imports and API defaults verified |
+| P4 (engineering gate complete for the selected route) | Isolated GPU memory matrix plus real run128 attach/continue/save | 1536/2048/4096 isolated checkpointed deltas measured; 2048 real `refiner_only` completed five finite steps and two resumes. Real joint/base-only/anneal/hard and full 4096 runs remain optional integration coverage, not evidence for quality |
 
-One commit per phase.
+The phase boundaries describe reviewable contracts; follow-up commits fix facts
+found by the real run and are listed in the implementation record above.
 
 ## Verification plan
 
@@ -925,15 +990,17 @@ fp32):
 
 No convergence runs.
 
-## Acceptance measurement (pre-registered, not run)
+## Acceptance measurement (pre-registered quality gate, not run)
 
 GPU runs require the user's explicit go-ahead; a training run is usually in
 flight. The target range is 2048-4096px. A 1536-only improvement is not enough
-to accept the design.
+to accept the design. Run128 is an engineering smoke at the 2048-area bucket
+family, not this measurement: it proves execution, persistence and resume, not
+quality or 4096 feasibility of the complete base workload.
 
 ### Stage 1: isolate branch capacity
 
-Start from run127 `step_090000`, attach width 128/depth 3, and train
+Start from run127 `step_093791`, attach width 128/depth 3, and train
 `refiner_only`. The base weights remain bit-identical, so any output change is
 caused by the new branch rather than base co-adaptation. Use the production
 mixture of 2048, 3072 and 4096 buckets; log the first 256
@@ -971,7 +1038,7 @@ from confounding receptive field, parameter count and compute.
 ### Stage 2: matched end-to-end control
 
 Run only after Stage 1 shows useful capacity. Two arms branch from the **same**
-checkpoint and optimizer state (run127 `step_090000` plus its optimizer), with
+checkpoint and optimizer state (run127 `step_093791` plus its optimizer), with
 identical seed, dataset config, 2048/3072/4096 bucket sequence, warmup, LR
 schedule and update budget:
 
@@ -1013,4 +1080,6 @@ The 0.05 activity threshold, 19/24 paired counts and 1.5 GiB 4096 delta are
 fixed before the runs so the outcome cannot be chosen afterward. After a
 positive result, the recommended production sequence is refiner-only warm-up
 followed by a short joint finish. Base-only fine-tuning remains a supported
-distribution/downstream operation, not the default recipe.
+distribution/downstream operation, not the default recipe. A self-contained
+bf16 refined distribution can do it without the original int8 base, but pays
+for both MoT halves in floating-point VRAM and must continue saving as bf16.

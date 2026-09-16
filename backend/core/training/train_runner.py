@@ -261,6 +261,28 @@ def _apply_sensenova_training_contract(
             train_config.get("sensenova_gen_patch", 0) or 0
         ):
             raise ValueError("SenseNova refiner_only cannot rebuild the frozen base geometry")
+    if is_full_finetune and refiner_mode != "refiner_only":
+        try:
+            from core.models.sensenova.loader import sensenova_checkpoint_metadata
+
+            source_metadata = sensenova_checkpoint_metadata(base_model_path)
+        except (OSError, ValueError, KeyError):
+            source_metadata = {}
+        portable_refiner_base = bool(
+            source_metadata.get("sensenova_refiner_training_mode") == "refiner_only"
+            and source_metadata.get("sensenova_save_layout_branch") == "both"
+            and source_metadata.get("sensenova_save_format") == "bf16"
+        )
+        requested_format = str(train_config.get(
+            "sensenova_full_finetune_save_format", "mixed"
+        )).strip().lower()
+        if portable_refiner_base and requested_format != "bf16":
+            raise ValueError(
+                "SenseNova base_only/joint training from a self-contained "
+                "refiner distribution requires "
+                "sensenova_full_finetune_save_format='bf16' because its frozen "
+                "MoT half remains floating point"
+            )
     if is_full_finetune and refiner_request == "attach":
         if int(train_config.get("lr_warmup_steps", 0) or 0) <= 0:
             raise ValueError("Attaching a SenseNova refiner requires lr_warmup_steps > 0")

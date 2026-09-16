@@ -25,6 +25,11 @@ real GPU coverage. Subsequent implementation commits include:
 - `823b5a63 Register Chimera artifact components`
 - `9d7e4e42 Respect Chimera VAE runtime dtype`
 
+Pixel-teacher REPA was subsequently wired for the `unet` and `joint` stages.
+It uses the shared three-site SDXL U-Net spatial tap and projector sidecar;
+`bridge_align` remains invalid because the U-Net is frozen, and `latent_stem`
+remains unvalidated for the bundled donor VAE.
+
 The shipped surface now includes path-based scratch/transplant construction,
 understanding-only loading, model/API registration, deterministic txt2img,
 stage-exact `bridge_align` / `unet` / `joint` full training, production-loadable
@@ -65,6 +70,13 @@ Real validation completed on 2026-09-17:
 - real img2txt and img2img calls through the resumed Chimera checkpoint;
 - joint training step/save/resume through step 2; 31,714 MiB (30.97 GiB) peak
   and 88.5 seconds from resumed start through checkpoint completion;
+- pixel-teacher REPA on the U-Net stage at 256x256 with gradient checkpointing:
+  diffusion loss 2.073516, REPA loss 1.019068, total loss 2.583050 at weight
+  0.5, finite U-Net gradient norm 5.505650, and a 36,721,648-byte projector
+  sidecar next to the production-loadable directory checkpoint; a separate
+  directory-checkpoint resume loaded that sidecar explicitly and completed
+  step 2 with finite total loss 2.582740;
+- the final REPA and Chimera regression selection: `403 passed`;
 - the combined Chimera/CFG regression command: `90 passed`.
 
 Two gates remain intentionally closed, not partially implemented or silently

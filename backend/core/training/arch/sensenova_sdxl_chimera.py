@@ -47,6 +47,11 @@ class SenseNovaSDXLChimeraArchHandler(ArchHandler):
 
         ops.setup_attention_backend(trainer, trainer.attention_backend)
 
+    def repa_tap(self, trainer):
+        from core.training.ops import sensenova_sdxl_chimera_ops as ops
+
+        return ops.repa_tap(trainer)
+
     def encode_prompt(self, trainer, prompt, *, requires_grad: bool = False):
         from core.training.ops import sensenova_sdxl_chimera_ops as ops
 

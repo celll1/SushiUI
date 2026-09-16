@@ -1379,7 +1379,7 @@ for _a, _marker in _REPA_REFUSAL_MARKERS.items():
 
 for _a in sorted(TRAINING_DECLARED_ARCHS
                  - {"minit2i", "anima", "lens", "krea2", "ideogram4", "sensenova",
-                    "sd15", "sdxl"}):
+                    "sd15", "sdxl", "sensenova_sdxl_chimera"}):
     _add_training_feature_unsupported(
         _a, "repa",
         _REPA_UNSUPPORTED_REASONS.get(_a) or

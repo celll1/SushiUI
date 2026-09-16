@@ -774,7 +774,8 @@ _REPA_UNWIRED = (
     "{arch} has no REPA tap at this stage: no arch-handler repa_tap() and no "
     "forward that stashes the aligned hidden state. REPA is architecture-neutral "
     "by design, but each architecture is wired one at a time; 'minit2i', 'anima', "
-    "'lens', 'krea2', 'ideogram4', 'sensenova', 'sd15' and 'sdxl' are wired today. "
+    "'lens', 'krea2', 'ideogram4', 'sensenova', 'sd15', 'sdxl' and "
+    "'sensenova_sdxl_chimera' are wired today. "
     "Either set repa_enable=false or wire {arch}'s tap first."
 )
 

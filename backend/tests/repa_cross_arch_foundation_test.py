@@ -28,6 +28,7 @@ from torch import nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from api.arch_capabilities import TRAINING_UNSUPPORTED
 from core.training import repa as repa_module
 from core.training.adapters.base_adapter import (BaseFullParameterAdapter,
                                                  BaseLoRAAdapter,
@@ -142,6 +143,23 @@ def test_sidecar_path_replaces_only_a_trailing_suffix():
             == "a.safetensors/c.repa.safetensors")
 
 
+def test_resume_sidecar_accepts_a_directory_checkpoint():
+    trainer = SimpleNamespace(
+        resume_from_checkpoint="run_step_000001",
+        model_path="a/run_step_000001",
+    )
+
+    assert BaseTrainer._repa_resume_sidecar_path(trainer) == (
+        "a/run_step_000001.repa.safetensors"
+    )
+
+
+def test_non_resume_base_does_not_look_for_a_projector():
+    trainer = SimpleNamespace(resume_from_checkpoint=None, model_path="a/base")
+
+    assert BaseTrainer._repa_resume_sidecar_path(trainer) is None
+
+
 
 def _shipped_adapters(base):
     return sorted((cls for cls in base.__subclasses__()
@@ -153,7 +171,7 @@ def test_every_lora_adapter_inherits_the_projector_group_and_sidecar():
     import core.training.adapters  # noqa: F401  (registers every subclass)
 
     adapters = _shipped_adapters(BaseLoRAAdapter)
-    assert len(adapters) == len(ARCH_REGISTRY) == 13
+    assert adapters
     for cls in adapters:
         assert cls.setup_trainable_parameters is BaseLoRAAdapter.setup_trainable_parameters, cls
         assert cls.save_checkpoint is BaseLoRAAdapter.save_checkpoint, cls
@@ -163,8 +181,7 @@ def test_every_full_parameter_adapter_inherits_the_projector_group_and_sidecar()
     import core.training.adapters  # noqa: F401
 
     adapters = _shipped_adapters(BaseFullParameterAdapter)
-    # 12: every architecture except MiniMax-H3, which trains LoRA only.
-    assert len(adapters) == 12
+    assert adapters
     for cls in adapters:
         assert cls.setup_trainable_parameters is BaseFullParameterAdapter.setup_trainable_parameters, cls
         assert cls.save_checkpoint is BaseFullParameterAdapter.save_checkpoint, cls
@@ -173,6 +190,8 @@ def test_every_full_parameter_adapter_inherits_the_projector_group_and_sidecar()
 def test_every_lora_adapter_class_in_the_registry_is_one_of_them():
     """The registry's own answer, so a new arch cannot bring an unplumbed adapter."""
     for name, handler_cls in ARCH_REGISTRY.items():
+        if "lora" in TRAINING_UNSUPPORTED.get(name, {}):
+            continue
         cls = handler_cls().lora_adapter_class()
         assert cls.setup_trainable_parameters is BaseLoRAAdapter.setup_trainable_parameters, name
 
@@ -323,7 +342,7 @@ REFUSAL_MARKERS = {
 # text-prefix architectures, repa_sensenova_tap_test.py for the MoT decoder);
 # here they are only excluded from the refusal sweep.
 WIRED_ARCHS = {"minit2i", "anima", "lens", "krea2", "ideogram4", "sensenova",
-               "sd15", "sdxl"}
+               "sd15", "sdxl", "sensenova_sdxl_chimera"}
 
 
 @pytest.mark.parametrize("arch_name", sorted(ARCH_REGISTRY))

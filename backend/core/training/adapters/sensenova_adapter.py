@@ -836,6 +836,9 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
                 save_branch = "none"
         model_path = getattr(trainer, "model_path", None)
         source_dir = os.path.dirname(str(model_path)) if model_path else None
+        configured_base = str(
+            getattr(trainer, "configured_model_path", "") or ""
+        ).strip()
 
         if save_format == "mixed" and save_branch == "both":
             message = (
@@ -861,9 +864,24 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
             # preserve. The compatibility stamp describes which base branch a
             # later base_only/joint continuation may resume; conflating the two
             # made a refiner-only save claim that both MoT halves were trained.
+            lineage_branch = source_branch
+            if configured_base:
+                try:
+                    from core.models.sensenova.loader import (
+                        sensenova_checkpoint_metadata,
+                    )
+
+                    base_metadata = sensenova_checkpoint_metadata(configured_base)
+                    base_branch = str(
+                        base_metadata.get("sensenova_trained_branch") or ""
+                    ).strip()
+                    if base_branch in {"gen", "und", "both"}:
+                        lineage_branch = base_branch
+                except (OSError, ValueError, KeyError):
+                    pass
             extra_metadata.update({
                 "sensenova_trained_branch": (
-                    source_branch if source_branch in {"gen", "und", "both"}
+                    lineage_branch if lineage_branch in {"gen", "und", "both"}
                     else "none"
                 ),
                 "sensenova_save_layout_branch": save_branch,
@@ -894,7 +912,6 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
         # Self-describing: a later bf16 resume can name its base without this
         # run's config. Identity is a cheap size check; the resume path is
         # what actually proves the content matches.
-        configured_base = str(getattr(trainer, "configured_model_path", "") or "").strip()
         if configured_base:
             extra_metadata["sensenova_base_model_path"] = configured_base
             try:

@@ -3328,6 +3328,18 @@ Paths below are relative to `backend/core/training/`.
   diffusion training with an unaligned bridge requires an explicit override.
 - Text output: i2t and text-instructed i2t use the frozen understanding-only
   path. Generation-time adapters are not applied to that path.
-- Deferred gates: production bootstrap source selection and held-out alignment
-  thresholds; reference-ti2i quality evidence. Reference-ti2i is not advertised
-  before its independent image-conditioned bridge/joint gate passes.
+- Real bootstrap: `sensenova_int8.safetensors` plus
+  `Illustrious-XL-v2.0.safetensors` produced the machine-local scratch artifact
+  at `M:/models/snu1.5_sdxl_chimera`. Its U-Net has 2,567,463,684 parameters;
+  the embedded VAE identity is `d1851686c0205724` with scaling factor 0.13025.
+- Dtype boundary: the measured runtime uses bf16 for the U-Net/bridge and fp16
+  for the VAE. The artifact stores its VAE tensors in fp32, and training saves
+  preserve those exact tensors rather than casting them to bf16; VAE inputs are
+  cast at encode/decode boundaries.
+- Measured smoke: resumed step-6 txt2img at 256x256 / 2 steps / CFG 1.0 peaked
+  at 10.064 GiB. Joint training save/resume through step 2 peaked at 31,714 MiB
+  (30.97 GiB); the resumed run, including checkpoint completion, took 88.5 s.
+- Deferred gates: held-out alignment thresholds and reference-ti2i quality
+  evidence. Reference-ti2i is not advertised before its independent
+  image-conditioned bridge/joint gate passes, and transplant diffusion training
+  remains refused while the bridge is unaligned.

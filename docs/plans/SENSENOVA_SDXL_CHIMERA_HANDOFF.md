@@ -2,10 +2,13 @@
 
 Status date: 2026-09-17
 
-## Continuation status
+## Final continuation status
 
-The implementation handoff has now been carried through P4 and the independently
-shippable text-output and source-image editing parts of P7. Subsequent commits are:
+The implementation handoff is complete for every shippable gate. The real P5
+artifact exists at `M:/models/snu1.5_sdxl_chimera`, production load/generation
+and full-parameter save/resume have been exercised, and the independently
+shippable P7 text-output, source-image editing, and joint-training paths have
+real GPU coverage. Subsequent implementation commits include:
 
 - `af93edf9 Load Chimera production donor sources`
 - `e3a959be Load Chimera understanding branch selectively`
@@ -15,6 +18,12 @@ shippable text-output and source-image editing parts of P7. Subsequent commits a
 - `5907b359 Preserve Chimera understanding text output`
 - `1a7f6153 Add Chimera source-image editing`
 - `75469d79 Document Chimera architecture`
+- `ea24cdae Allow configured Chimera output roots`
+- `ed199d13 Configure Chimera prefix token ids`
+- `c43461bf Preserve Chimera VAE checkpoint identity`
+- `eda8fb88 Keep Chimera context through backward`
+- `823b5a63 Register Chimera artifact components`
+- `9d7e4e42 Respect Chimera VAE runtime dtype`
 
 The shipped surface now includes path-based scratch/transplant construction,
 understanding-only loading, model/API registration, deterministic txt2img,
@@ -30,12 +39,41 @@ placement preservation. The frontend model union, capability-driven img2txt tab 
 queue gate preserve the Chimera architecture id rather than coercing it to
 `sensenova`; the repository owner still owns the frontend type-check/build.
 
-The machine-local P5 artifact is still intentionally absent. This file's source
-choice guard remains in force: no SDXL donor was selected by the owner, and an
-unaligned bridge must not be promoted to `bridge_state="aligned"` without the
-pre-registered held-out thresholds required by the design. Reference-ti2i also
-remains unadvertised until its image-conditioned bridge/joint quality gate
-passes; it is independent of the now-wired source-image editing routes.
+The owner-selected real sources are:
+
+```text
+SenseNova  M:\model\sensenova\sensenova_int8.safetensors
+SDXL donor M:\model\sdxl\Illustrious-XL-v2.0.safetensors
+artifact   M:\models\snu1.5_sdxl_chimera
+```
+
+The artifact contains the exact 2,567,463,684-parameter donor-shaped U-Net and
+the donor VAE identity `d1851686c0205724` (`scaling_factor=0.13025`). Its VAE
+tensors are stored in fp32 and remain bit-exact across training checkpoints
+instead of being rewritten in bf16. At runtime, the U-Net and bridge use bf16
+while the VAE uses fp16; encode/decode boundaries explicitly cast to the VAE
+dtype and return latents to the U-Net dtype.
+
+Real validation completed on 2026-09-17:
+
+- scratch construction, production reload, model status, and component census;
+- deterministic random-weight txt2img, then resumed-checkpoint txt2img at
+  256x256 / 2 steps / CFG 1.0 (10.064 GiB peak);
+- bridge alignment step/save/reload/resume through step 2 with finite losses;
+- U-Net training for three finite steps, reload, three more finite steps, then
+  generation from step 6; save-time peak was approximately 31.38 GB;
+- real img2txt and img2img calls through the resumed Chimera checkpoint;
+- joint training step/save/resume through step 2; 31,714 MiB (30.97 GiB) peak
+  and 88.5 seconds from resumed start through checkpoint completion;
+- the combined Chimera/CFG regression command: `90 passed`.
+
+Two gates remain intentionally closed, not partially implemented or silently
+promoted: `sdxl_transplant` diffusion training still requires a bridge that
+passes pre-registered held-out alignment thresholds, and reference-ti2i still
+requires its fixed image-conditioned quality suite. The two-step smoke bridge
+is correctly recorded as `bridge_state="unaligned"`; training loss is not used
+as evidence to bypass either gate. Frontend build/type-check remains the
+repository owner's required verification step under `AGENTS.md`.
 
 This note was the original restart point for implementing
 `sensenova_sdxl_chimera`; the continuation status above supersedes its original
@@ -144,7 +182,7 @@ sensenova_sdxl_chimera 1 2.8.3
 The final number is the venv's `flash_attn` version, confirming that the repo
 venv—not global Python—was used.
 
-## Local real-model facts observed
+## Local real-model facts observed before continuation (historical)
 
 The configured external model root in `local/model_root.txt` is `M:/model`
 (singular), while the requested Chimera output path is `M:/models/...`
@@ -176,9 +214,9 @@ model.diffusion_model.*
 first_stage_model.*
 ```
 
-The donor choice among the three SDXL files has not been confirmed. Do not
-build the multi-gigabyte final artifact until that choice is explicit or an
-existing project convention unambiguously selects one.
+At the original handoff the donor choice among the three SDXL files had not
+been confirmed. The owner later selected Illustrious XL v2.0, as recorded in
+the final continuation status above.
 
 The common `resolve_vae_source("model:<animagine>")` correctly finds the VAE
 weights but refuses because the LDM single file carries no explicit latent
@@ -187,7 +225,7 @@ through diffusers' SDXL single-file conversion, then persist the resulting
 config and actual extracted tensors. It must not substitute the generic LDM
 default scaling factor.
 
-## Permission/session issue
+## Permission/session issue at the original handoff (historical)
 
 The user had enabled full access, but this session still reported
 `workspace-write / restricted`. Consequently:
@@ -203,7 +241,11 @@ unusable. On resume, first confirm the new session actually exposes full
 filesystem/process access. Do not attempt to install Python or rebuild the
 venv. The venv is healthy.
 
-## Remaining work, in dependency order
+## Original remaining-work checklist (completed or gated above)
+
+This section is retained as implementation history. The final continuation
+status is authoritative; its two quality-gated refusals are the only remaining
+closed surfaces.
 
 ### P1b: production sources and understanding-only load
 

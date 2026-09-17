@@ -139,6 +139,10 @@ passed; its status remains separately recorded.
 - Gradient checkpointing attaches to the U-Net. Block swap, generation-time
   adapters, ControlNet, NAG, FBCache, spectrum forecasting, VAE override, and
   tiled decode are explicitly refused by the capability table.
+- Resident full-parameter runs use fused backward with the supported Adafactor,
+  AdamW8bit, and ring-buffer optimizers. This makes
+  `fused_grad_clip_factor` active; staged runs register hooks for the union of
+  future trainable groups before stage-exact gradient enablement begins.
 - Pixel-teacher REPA is available in `unet` and `joint`. It aligns one of the
   donor-shaped U-Net's deepest-down, mid, or first-up spatial maps through the
   shared trainable projector. `bridge_align` is refused because its U-Net is

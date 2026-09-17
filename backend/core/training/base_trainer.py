@@ -1537,6 +1537,22 @@ def fused_backward_active(trainer) -> bool:
         getattr(trainer, "fused_optimizer_groups", None) is not None
 
 
+def resident_fused_backward_eligible(trainer, optimizer_type: str) -> bool:
+    """Whether a resident full fine-tune can use per-parameter updates."""
+    from core.training.ops.training_method import is_full_finetune
+
+    architecture_supported = bool(
+        getattr(trainer, "is_sensenova", False)
+        or getattr(trainer, "is_sensenova_sdxl_chimera", False)
+    )
+    return (
+        architecture_supported
+        and is_full_finetune(trainer)
+        and int(getattr(trainer, "num_optimizer_groups", 0) or 0) == 0
+        and str(optimizer_type).lower() in FUSED_BACKWARD_OPTIMIZERS
+    )
+
+
 class FatalCudaError(RuntimeError):
     """Raised when a CUDA error is classified as "fatal" (context presumed
     dead: e.g. cudaErrorLaunchFailure / illegal memory access). Subclasses
@@ -8566,15 +8582,11 @@ class BaseTrainer(ABC):
                     f"(2) use 'adamw8bit' or 'adafactor', which have a fused backward pass, "
                     f"(3) disable Block Swap (blocks_to_swap=0)."
                 )
-        elif (getattr(self, "is_sensenova", False)
-              and is_full_finetune(self)
-              and self.num_optimizer_groups == 0
-              and optimizer_type.lower() in FUSED_BACKWARD_OPTIMIZERS):
+        elif resident_fused_backward_eligible(self, optimizer_type):
             # The hooks have no block-swap dependency; the setup above sits
             # inside `blocks_to_swap > 0` only because that is the one place
-            # every other architecture needs them. A resident SenseNova full
-            # fine-tune would otherwise hold every gradient of the half it
-            # trains until optimizer.step().
+            # most architectures need them. Resident SenseNova and Chimera
+            # full fine-tunes use the same per-parameter update seam.
             self._setup_fused_backward_pass(optimizer_type)
 
         if (getattr(self, "is_sensenova", False) and is_full_finetune(self)

@@ -403,7 +403,7 @@ class ClipWarningTest(unittest.TestCase):
         self.assertIn("max_grad_norm=1.0", message)
         self.assertIn("IGNORED", message)
         self.assertIn("global norm", message)
-        self.assertIn("No clipping of any kind is applied", message)
+        self.assertIn("No global-norm clipping is applied", message)
 
     def test_it_fires_once(self):
         trainer = _Trainer(fused=True)

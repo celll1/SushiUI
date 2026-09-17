@@ -23,13 +23,71 @@ from core.models.sensenova_sdxl_chimera.prefix import encode_chimera_conditionin
 STAGES = ("bridge_align", "unet", "joint")
 
 
-def training_stage(trainer) -> str:
+def configured_training_stage(trainer) -> str:
     stage = str((getattr(trainer, "config", None) or {}).get(
         "chimera_training_stage", "unet"
     )).strip().lower()
     if stage not in STAGES:
         raise ValueError(f"chimera_training_stage must be one of {STAGES}, got {stage!r}")
     return stage
+
+
+def bridge_align_steps(trainer) -> int:
+    return int((getattr(trainer, "config", None) or {}).get(
+        "chimera_bridge_align_steps", 0
+    ) or 0)
+
+
+def training_stage_for_step(trainer, completed_steps: int) -> str:
+    target = configured_training_stage(trainer)
+    warmup = bridge_align_steps(trainer)
+    if warmup > 0 and target in {"unet", "joint"} and int(completed_steps) < warmup:
+        return "bridge_align"
+    return target
+
+
+def training_stage(trainer) -> str:
+    active = getattr(trainer, "chimera_active_training_stage", None)
+    if active is not None:
+        return str(active)
+    return training_stage_for_step(
+        trainer, int(getattr(trainer, "chimera_completed_steps", 0) or 0)
+    )
+
+
+def training_stage_plan(trainer) -> tuple[str, ...]:
+    target = configured_training_stage(trainer)
+    if bridge_align_steps(trainer) > 0 and target in {"unet", "joint"}:
+        return ("bridge_align", target)
+    return (target,)
+
+
+def sync_training_stage(trainer, completed_steps: int) -> str:
+    """Apply the exact staged graph before encoding the next training step."""
+    completed_steps = int(completed_steps)
+    desired = training_stage_for_step(trainer, completed_steps)
+    previous = getattr(trainer, "chimera_active_training_stage", None)
+    trainer.chimera_completed_steps = completed_steps
+    if previous == desired:
+        return desired
+
+    trainer.chimera_active_training_stage = desired
+    trainer.unet.requires_grad_(desired in {"unet", "joint"})
+    trainer.condition_bridge.requires_grad_(desired in {"bridge_align", "joint"})
+    trainer.unet.train(desired in {"unet", "joint"})
+    trainer.condition_bridge.train(desired in {"bridge_align", "joint"})
+    if previous == "bridge_align" and desired != "bridge_align":
+        teacher = getattr(trainer, "chimera_teacher", None)
+        if teacher is not None:
+            teacher.to("cpu")
+            trainer.chimera_teacher = None
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print(
+            f"{getattr(trainer, 'log_prefix', '[Chimera]')} Chimera stage transition at completed step "
+            f"{completed_steps}: bridge_align -> {desired}"
+        )
+    return desired
 
 
 def _load_alignment_teacher(trainer, donor: str) -> None:
@@ -85,6 +143,14 @@ def load_components(trainer) -> None:
 
     stage = training_stage(trainer)
     manifest = trainer.chimera_manifest
+    if bridge_align_steps(trainer) > 0:
+        initialization = manifest["unet"]["initialization"]
+        aligned = manifest["conditioning"]["bridge_state"] == "aligned"
+        if initialization == "sdxl_transplant" and not aligned:
+            raise ValueError(
+                "A staged bridge warmup cannot replace the held-out alignment gate for "
+                "sdxl_transplant; start from bridge_state='aligned' or use a scratch U-Net"
+            )
     if stage in {"unet", "joint"}:
         initialization = manifest["unet"]["initialization"]
         aligned = manifest["conditioning"]["bridge_state"] == "aligned"
@@ -139,8 +205,15 @@ def setup_attention_backend(trainer, backend: str) -> None:
 
 def encode_prompt(trainer, prompt: str, *, requires_grad: bool = False) -> tuple[torch.Tensor, dict]:
     device = torch.device(trainer.device)
-    trainer.chimera_understanding.to(device)
     trainer.condition_bridge.to(device=device, dtype=trainer.weight_dtype)
+    prefix = None
+    prefetcher = getattr(trainer, "chimera_prefix_prefetcher", None)
+    if prefetcher is not None:
+        prefix = prefetcher.take(prompt, device)
+        if prefix is None:
+            prefix = prefetcher.capture_sync(prompt, device)
+    else:
+        trainer.chimera_understanding.to(device)
     context = torch.enable_grad() if requires_grad else torch.no_grad()
     with context:
         output = encode_chimera_conditioning(
@@ -148,10 +221,13 @@ def encode_prompt(trainer, prompt: str, *, requires_grad: bool = False) -> tuple
             trainer.tokenizer,
             trainer.condition_bridge,
             prompt,
+            prefix=prefix,
         )
     auxiliary: dict[str, Any] = {
         "pooled_text_embeds": output.pooled_text_embeds,
         "context_positions": output.context_positions,
+        "context_attention_mask": output.attention_mask,
+        "alignment_hidden_states": output.alignment_hidden_states,
     }
     if training_stage(trainer) == "bridge_align":
         teacher = trainer.chimera_teacher.to(device)
@@ -172,10 +248,31 @@ def encode_prompt(trainer, prompt: str, *, requires_grad: bool = False) -> tuple
 
 def collate_aux(batch: list[dict]) -> dict:
     keys = set.intersection(*(set(item) for item in batch)) if batch else set()
-    return {key: torch.cat([item[key] for item in batch], dim=0) for key in keys}
+    result = {}
+    sequence_keys = {"context_positions", "context_attention_mask"}
+    max_length = max(
+        (int(item["context_attention_mask"].shape[1]) for item in batch),
+        default=0,
+    )
+    for key in keys:
+        values = [item[key] for item in batch]
+        if key in sequence_keys:
+            padded = []
+            for value in values:
+                pad = max_length - int(value.shape[1])
+                if pad:
+                    if key == "context_positions":
+                        value = F.pad(value, (0, 0, 0, pad))
+                    else:
+                        value = F.pad(value, (0, pad), value=False)
+                padded.append(value)
+            values = padded
+        result[key] = torch.cat(values, dim=0)
+    return result
 
 
 def bridge_alignment_loss(trainer, student: torch.Tensor, auxiliary: dict) -> tuple[torch.Tensor, dict]:
+    student = auxiliary["alignment_hidden_states"].to(student)
     teacher = auxiliary["teacher_hidden"].to(student)
     student_pooled = auxiliary["pooled_text_embeds"].to(student)
     teacher_pooled = auxiliary["teacher_pooled"].to(student)
@@ -202,8 +299,8 @@ def bridge_alignment_loss(trainer, student: torch.Tensor, auxiliary: dict) -> tu
 
 def repa_tap(trainer):
     """Expose the SDXL-shaped U-Net map only when that U-Net is trainable."""
-    stage = training_stage(trainer)
-    if stage == "bridge_align":
+    stages = training_stage_plan(trainer)
+    if stages == ("bridge_align",):
         raise ValueError(
             "repa_enable is not supported for Chimera bridge_align: that stage "
             "freezes the U-Net, so representation alignment would update only "
@@ -242,6 +339,7 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
     target = flow_velocity_target(latents, noise)
     pooled = auxiliary["pooled_text_embeds"].to(conditioning)
     positions = auxiliary["context_positions"].to(device=latents.device)
+    context_mask = auxiliary["context_attention_mask"].to(device=latents.device)
     height, width = latents.shape[-2] * 8, latents.shape[-1] * 8
     time_ids = ctx.time_ids
     if time_ids is None:
@@ -273,6 +371,7 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
             noisy,
             timesteps,
             encoder_hidden_states=conditioning,
+            encoder_attention_mask=context_mask,
             added_cond_kwargs={"text_embeds": pooled, "time_ids": time_ids},
             return_dict=False,
         )[0]

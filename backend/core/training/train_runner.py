@@ -1360,6 +1360,27 @@ def _apply_chimera_training_contract(
             "chimera_training_stage must be 'bridge_align', 'unet', or 'joint'"
         )
     train_config["chimera_training_stage"] = stage
+    align_steps = int(train_config.get("chimera_bridge_align_steps", 0) or 0)
+    if align_steps < 0:
+        raise ValueError("chimera_bridge_align_steps must be >= 0")
+    if align_steps and stage == "bridge_align":
+        raise ValueError(
+            "chimera_bridge_align_steps requires chimera_training_stage='unet' "
+            "or 'joint'; bridge_align already remains in that stage for the full run"
+        )
+    accumulation = int(train_config.get("gradient_accumulation_steps", 1) or 1)
+    if align_steps and align_steps % accumulation:
+        raise ValueError(
+            "chimera_bridge_align_steps must be divisible by "
+            "gradient_accumulation_steps so no bridge gradient crosses the stage boundary"
+        )
+    total_steps = train_config.get("total_steps")
+    if align_steps and total_steps is not None and align_steps >= int(total_steps):
+        raise ValueError(
+            "chimera_bridge_align_steps must be smaller than total_steps so the "
+            f"run reaches its {stage} stage"
+        )
+    train_config["chimera_bridge_align_steps"] = align_steps
     train_config["train_unet"] = stage in {"unet", "joint"}
     if _normalize_scope_flag(train_config, "train_text_encoder", False):
         raise ValueError(
@@ -1397,7 +1418,7 @@ def _apply_chimera_training_contract(
         )
     if train_config.get("vae_swap_source"):
         raise ValueError("Chimera artifacts pin and bundle their donor VAE; VAE swap is unsupported")
-    if stage == "bridge_align":
+    if stage == "bridge_align" or align_steps:
         for key in ("chimera_clip_hidden_weight", "chimera_clip_pooled_weight"):
             value = train_config.get(key)
             if value is None:
@@ -1410,8 +1431,24 @@ def _apply_chimera_training_contract(
     if train_config.get("cfg_uncond_drop_rate") is None:
         train_config["cfg_uncond_drop_rate"] = dropout
     cache = _normalize_scope_flag(train_config, "chimera_conditioning_cache", True)
+    prefetch = _normalize_scope_flag(train_config, "chimera_prefix_prefetch", True)
+    prefetch_device = str(
+        train_config.get("chimera_prefix_prefetch_device", "auto")
+    ).strip().lower()
+    if prefetch_device not in {"auto", "cpu", "cuda"}:
+        raise ValueError(
+            "chimera_prefix_prefetch_device must be 'auto', 'cpu', or 'cuda'"
+        )
+    prefetch_depth = int(train_config.get("chimera_prefix_prefetch_depth", 1) or 1)
+    if not 1 <= prefetch_depth <= 4:
+        raise ValueError("chimera_prefix_prefetch_depth must be between 1 and 4")
+    train_config["chimera_prefix_prefetch"] = prefetch
+    train_config["chimera_prefix_prefetch_device"] = prefetch_device
+    train_config["chimera_prefix_prefetch_depth"] = prefetch_depth
     train_config["text_encoding_mode"] = (
-        "pre_encoded_cache" if stage == "unet" and cache else "onthefly_gpu"
+        "pre_encoded_cache"
+        if stage == "unet" and cache and align_steps == 0
+        else "onthefly_gpu"
     )
     return True
 

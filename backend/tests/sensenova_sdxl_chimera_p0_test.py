@@ -75,7 +75,7 @@ def test_bridge_shapes_positions_mask_and_gradients():
         hidden_size=16,
         kv_width=8,
         selected_layers=(1, 3),
-        context_tokens=5,
+        alignment_tokens=5,
         context_dim=12,
         pooled_dim=7,
         bridge_dim=16,
@@ -91,9 +91,12 @@ def test_bridge_shapes_positions_mask_and_gradients():
     }
     out = bridge(hidden, kv, mask, positions)
 
-    assert out.encoder_hidden_states.shape == (2, 5, 12)
+    assert out.encoder_hidden_states.shape == (2, 6, 12)
     assert out.pooled_text_embeds.shape == (2, 7)
-    assert out.context_positions.shape == (2, 5, 3)
+    assert out.context_positions.shape == (2, 6, 3)
+    assert torch.equal(out.context_positions, positions.float())
+    assert torch.equal(out.attention_mask, mask)
+    assert out.alignment_hidden_states.shape == (2, 5, 12)
     assert out.resampler_weights.shape == (2, 5, 6)
     assert out.position_variance.shape == (2, 5, 3)
     assert torch.equal(out.resampler_weights[0, :, 4:6], torch.zeros(5, 2))

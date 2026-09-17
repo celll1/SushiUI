@@ -28,14 +28,14 @@ def test_component_registry_reads_chimera_root_artifact(tmp_path):
     artifact = tmp_path / "chimera"
     artifact.mkdir()
     (artifact / "chimera.json").write_text(
-        '{"model_type":"sensenova_sdxl_chimera","format_version":1,'
+        '{"model_type":"sensenova_sdxl_chimera","format_version":2,'
         '"understanding":{"locator":"model:teacher.safetensors"},'
         '"vae":{"embedded":true,"latent_channels":4,"scale_factor":8,'
         '"scale_temporal":1}}',
         encoding="utf-8",
     )
     (artifact / "config.json").write_text(
-        '{"model_type":"sensenova_sdxl_chimera","format_version":1,'
+        '{"model_type":"sensenova_sdxl_chimera","format_version":2,'
         '"unet":{"in_channels":4,"out_channels":4,"cross_attention_dim":2048},'
         '"conditioning_bridge":{"context_dim":2048,"pooled_dim":1280},'
         '"vae":{"latent_channels":4}}',
@@ -275,3 +275,13 @@ def test_directory_detection_and_header_only_preflight(tmp_path, monkeypatch):
     )
     checked = preflight_chimera_artifact(result["directory"])
     assert checked["manifest"]["model_type"] == "sensenova_sdxl_chimera"
+
+
+def test_preflight_refuses_non_native_format_v2_context_contract(tmp_path):
+    _und, _donor, _vae, result = _build(tmp_path)
+    manifest_path = Path(result["directory"]) / "chimera.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["conditioning"]["context_length"] = 77
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ChimeraArtifactError, match="conditioning contract"):
+        preflight_chimera_artifact(result["directory"])

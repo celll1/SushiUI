@@ -164,7 +164,6 @@ H3_HYBRID_LOAD_DEFAULTS: Dict[str, Any] = {
 CHIMERA_INITIALIZE_DEFAULTS: Dict[str, Any] = {
     "unet_initialization": "scratch",
     "initialization_seed": 0,
-    "context_tokens": 77,
 }
 
 # ---------------------------------------------------------------------------
@@ -2480,8 +2479,12 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # SenseNova SDXL Chimera. Alignment-loss coefficients intentionally have no
     # invented fallback: bridge_align refuses until an explicit measured pair is supplied.
     "chimera_training_stage": "unet",
+    "chimera_bridge_align_steps": 0,
     "chimera_allow_unaligned_scratch": False,
     "chimera_conditioning_cache": True,
+    "chimera_prefix_prefetch": True,
+    "chimera_prefix_prefetch_device": "auto",
+    "chimera_prefix_prefetch_depth": 1,
     "chimera_bridge_lr": None,
     "chimera_context_dropout": 0.1,
     "chimera_clip_hidden_weight": None,

@@ -72,7 +72,7 @@ Non-goals for the first shipped boundary:
 | C3 | The VAE is extracted from the selected SDXL donor and bundled into the Chimera artifact with `component.vae.*` metadata. |
 | C4 | The U-Net config is copied from the selected SDXL donor. Construction asserts exact config compatibility and exact parameter-count equality with the donor U-Net. |
 | C5 | `unet_init="scratch"` is the default. `unet_init="sdxl_transplant"` copies the donor U-Net tensors and is marked experimental. Both modes use the same U-Net config and parameter count. |
-| C6 | The bridge emits SDXL-compatible `encoder_hidden_states [B,M,2048]`, pooled conditioning `[B,1280]`, and six size/crop ids. Initial `M=77`; the value is checkpoint structure, not a per-generation knob. |
+| C6 | The bridge preserves the native SenseNova prefix as SDXL-compatible `encoder_hidden_states [B,L,2048]`, emits a validity mask `[B,L]`, pooled conditioning `[B,1280]`, and six size/crop ids. `L` is variable; a batch is right-padded only to its longest prefix. A separate fixed-77 head exists only for CLIP-space alignment. |
 | C7 | A transferred SDXL U-Net is not considered initialized for diffusion training until the bridge has passed the CLIP-space alignment gate. This is a hard gate for `sdxl_transplant`, advisory for `scratch`. |
 | C8 | U-Net training predicts flow velocity directly. It does not reproduce SenseNova's x0-head followed by division by `(1-t)`. |
 | C9 | Understanding and VAE are frozen. The default production U-Net stage uses a frozen bridge and cached conditioning, so its GPU-resident training graph matches SDXL as closely as possible. |
@@ -131,7 +131,7 @@ provenance:
 ```json
 {
   "model_type": "sensenova_sdxl_chimera",
-  "format_version": 1,
+  "format_version": 2,
   "understanding": {
     "locator": "model:<SENSENOVA_SOURCE>",
     "content_hash": "<HASH>",
@@ -148,9 +148,11 @@ provenance:
     "parameter_count": 0
   },
   "conditioning": {
-    "context_tokens": 77,
+    "context_length": "native_prefix",
     "context_dim": 2048,
     "pooled_dim": 1280,
+    "alignment_tokens": 77,
+    "attention_mask": true,
     "bridge_state": "unaligned",
     "position_encoding": {
       "mode": "sensenova_3d_rope",
@@ -251,7 +253,7 @@ total_trainable_parameters_for_stage
 - require bridge alignment before the normal U-Net diffusion stage.
 
 The transplanted U-Net expects CLIP-derived conditioning. A random bridge can
-have the right `[B,77,2048]` shape while being in the wrong feature space. The
+have the right trailing dimension while being in the wrong feature space. The
 shape match alone is not evidence that transplant initialization is useful.
 
 It also did not train with Chimera's SenseNova-style RoPE. Transplant mode is
@@ -265,7 +267,7 @@ processor applies rotary position encoding to Q/K immediately before attention
 dispatch. It uses SenseNova's `rotate_half` layout and checkpoint-declared
 `rope_theta` / `rope_theta_hw` conventions.
 
-For an attention head of width `D_head`, format v1 requires divisibility by
+For an attention head of width `D_head`, format v2 requires divisibility by
 four and uses the SenseNova split:
 
 ```text
@@ -302,17 +304,19 @@ implementation as cross-attention.
 
 #### Prefix-memory positions
 
-The bridge resampler returns memory content and a position triple:
+The bridge returns token-aligned memory content, positions, and validity:
 
 ```text
-C       [B,77,2048]
-P_ctx   [B,77,3]
+C       [B,L,2048]
+P_ctx   [B,L,3]
+M_ctx   [B,L]
 ```
 
-Each memory row's position is the masked, normalized attention-weighted
-barycenter of the source prefix positions that produced it. Text content keeps
+Each production memory row keeps its source prefix position. Text content keeps
 sequence position on `t` with `h=w=0`; reference-image content retains its
-spatial contribution. Token-type and reference-id embeddings remain separate.
+spatial position. Token-type and reference-id embeddings remain separate. A
+ragged batch is right-padded, and `M_ctx` prevents padded rows from participating
+in cross-attention.
 
 Cross-attention performs:
 
@@ -322,14 +326,11 @@ K = rope_3d(to_k(C),            P_ctx)
 V =         to_v(C)
 ```
 
-Inference caches post-RoPE K. Crop, target size, context, positional-layout
-version, or reference-layout changes therefore invalidate the cache.
+Inference caches post-RoPE K. Crop, target size, context, validity mask,
+positional-layout version, or reference-layout changes therefore invalidate the
+cache. Before the first compatible checkpoint is published, compare:
 
-A barycenter is a hypothesis, especially when one memory row combines distant
-reference regions. The bridge exposes resampler weights and position variance
-for diagnostics. Before the first compatible checkpoint is published, compare:
-
-1. full three-axis cross-attention RoPE (format-v1 proposal);
+1. full three-axis cross-attention RoPE (format-v2 proposal);
 2. spatial RoPE on U-Net self-attention only;
 3. no RoPE, reproducing donor SDXL attention treatment.
 
@@ -392,18 +393,22 @@ E_l = Project_l(concat(flatten_heads(K_l), flatten_heads(V_l)))
 E_h = Project_hidden(RMSNorm(last_hidden_state))
 ```
 
-Layer, token-type, reference-id, and position embeddings are added before a
-small learned-query resampler. The resampler emits:
+Layer, token-type, reference-id, and position embeddings are added before
+token-wise refinement. The production path emits:
 
 ```text
-encoder_hidden_states C = [B,77,2048]
+encoder_hidden_states C = [B,L,2048]
 pooled_text_embeds    G = [B,1280]
-context positions P_ctx = [B,77,3]
+context positions P_ctx = [B,L,3]
+context mask M_ctx = [B,L]
 ```
 
 The initial gate on each KV residual path is zero. The final-hidden path is
 active at initialization. This permits the bridge to begin from a stable
 content representation while measuring whether selected KV layers add value.
+A separate learned-query resampler emits exactly 77 rows for the auxiliary
+CLIP alignment loss; those rows are never substituted for `C` in generation or
+diffusion training.
 
 ### 5.3 CLIP-space alignment stage
 
@@ -416,16 +421,19 @@ G_teacher = OpenCLIP projection output                           [B,1280]
 ```
 
 For the same caption, the frozen SenseNova understanding branch and trainable
-bridge produce `C_student`, `G_student`. The bridge alignment loss is:
+bridge produce the auxiliary `C_align` and production pooled output `G_student`.
+The bridge alignment loss is:
 
 ```text
-L_bridge = mse(norm(C_student), norm(C_teacher))
-         + lambda_scale * mse(rms(C_student), rms(C_teacher))
+L_bridge = mse(norm(C_align), norm(C_teacher))
+         + lambda_scale * mse(rms(C_align), rms(C_teacher))
          + lambda_pool  * mse(G_student, G_teacher)
 ```
 
-Padding rows are masked. An additional cosine diagnostic is reported but is
-not silently substituted for the declared loss.
+Teacher padding rows are masked. An additional cosine diagnostic is reported
+but is not silently substituted for the declared loss. The auxiliary fixed-77
+target aligns the transplant warm start without compressing the production
+SenseNova prefix.
 
 Alignment is a necessary compatibility stage for `sdxl_transplant`. For a
 scratch U-Net it is recommended because it permits the same conditioning cache
@@ -646,6 +654,15 @@ chimera_training_stage:
   bridge_align | unet | joint
 ```
 
+For `unet` or `joint`, `chimera_bridge_align_steps=N` optionally makes the
+first `N` completed global steps a bridge-only alignment phase and switches at
+the exact boundary. The value must be divisible by gradient accumulation, both
+stage parameter groups are created up front so optimizer resume keeps a stable
+group census, and only the active stage has gradients enabled. REPA is dormant
+during the bridge phase and becomes active after a diffusion-stage transition.
+The staged route uses live conditioning throughout; it cannot use the frozen
+conditioning cache before the bridge stops changing.
+
 #### `bridge_align`
 
 Trainable:
@@ -724,7 +741,8 @@ The handler declares:
 - VAE normalization: component-declared SDXL normalization;
 - pixel alignment: donor U-Net structural requirement, at least 8 and reported
   from the loaded config;
-- text conditioning: fixed 77x2048 plus pooled 1280;
+- text conditioning: native-length `[B,L,2048]`, validity mask `[B,L]`, and
+  pooled 1280;
 - added conditioning: SDXL six-value time ids;
 - position encoding: SenseNova-layout three-axis RoPE, with U-Net spatial
   queries mapped into the shared 32px canonical coordinate grid;
@@ -760,13 +778,17 @@ the existing SDXL or SenseNova rows by name.
 
 ### 8.4 Parameter groups and saves
 
-Parameter groups are stage-exact:
+Parameter groups are stage-exact for single-stage runs:
 
 ```text
 bridge_align -> condition_bridge
 unet         -> unet
 joint        -> unet, condition_bridge
 ```
+
+A staged run owns the union of both phases in a stable optimizer-group order,
+while `requires_grad` remains stage-exact. This preserves optimizer-state
+compatibility across the boundary and resume.
 
 The active-parameter census must prove that every declared tensor receives a
 gradient and that no frozen understanding, donor CLIP, or VAE tensor enters the
@@ -796,12 +818,33 @@ declared in `openapi.yaml`:
 | Key | Values | Default | Meaning |
 |---|---|---|---|
 | `chimera_training_stage` | `bridge_align`, `unet`, `joint` | `unet` | Active training graph |
+| `chimera_bridge_align_steps` | integer >= 0 | 0 | For an `unet`/`joint` run, bridge-only steps before automatic transition |
 | `chimera_allow_unaligned_scratch` | bool | false | Explicitly permit scratch U-Net diffusion training before bridge alignment |
 | `chimera_conditioning_cache` | bool | true | Cache frozen bridge outputs during `unet` stage |
+| `chimera_prefix_prefetch` | bool | true | Prefetch frozen raw prefix for live-conditioning stages |
+| `chimera_prefix_prefetch_device` | `auto`, `cpu`, `cuda` | `auto` | Prefix worker execution/storage device |
+| `chimera_prefix_prefetch_depth` | 1..4 | 1 | Bounded ready-batch queue depth |
 | `chimera_bridge_lr` | float | shared LR unless set | Bridge group LR override |
 | `chimera_context_dropout` | float | 0.1 | CFG/null-conditioning training probability |
 | `chimera_clip_hidden_weight` | float | declared value | Bridge hidden alignment weight |
 | `chimera_clip_pooled_weight` | float | declared value | Bridge pooled alignment weight |
+
+### 8.6 Prefix prefetch
+
+`chimera_prefix_prefetch=true` (default) prefetches only the frozen SenseNova
+boundary: final hidden state, selected-layer K/V, mask, and positions. The live
+bridge still runs on the main thread with the current optimizer-step weights,
+so `bridge_align` and `joint` never consume stale bridge output. The worker is
+bounded by `chimera_prefix_prefetch_depth` (default 1); exact-caption mismatch
+from augmentation safely falls back to synchronous capture.
+
+For the released SenseNova geometry (`hidden=4096`, four selected layers,
+`8x128` K/V), bf16 payload is about 24 KiB per prefix token: 9.4 MiB at L=400
+or 37.5 MiB at L=1600 per sample. `auto` uses a separate CUDA stream only when
+the off-device model weights plus 10 GiB headroom fit, otherwise pinned CPU
+memory. Explicit `cpu` and `cuda` modes are available. Ordinary `unet` with
+complete conditioning cache does not
+start the worker because its iteration already performs no prefix computation.
 
 The exact numerical defaults for the loss weights are selected during the P0
 probe and then entered once in `param_defaults.py`; this proposal does not
@@ -828,8 +871,11 @@ understanding_source        existing SenseNova model
 sdxl_source                 existing SDXL model
 unet_initialization         scratch | sdxl_transplant
 initialization_seed         integer
-context_tokens              fixed to 77 in format v1
 ```
+
+The prefix length is not an initializer input. It is determined by each
+SenseNova input and preserved by the bridge; only batch-local right padding is
+allowed. The fixed alignment width is checkpoint structure, not an API knob.
 
 The endpoint accepts an output name and an optional `target_dir`; the latter
 must exactly match the default model root or one of the user's configured model
@@ -979,13 +1025,13 @@ Chimera-specific status shown read-only:
 - VAE donor identity;
 - U-Net initialization provenance;
 - bridge state;
-- context length;
+- context mode (`native_prefix`) and current effective length;
 - whether inference KV caching is active.
 
 SenseNova-only controls such as MoT phase eviction, SenseNova KV-cache
 streaming, `sensenova_gen_patch`, and latent refiner must not appear. The new
 site-local U-Net KV cache is automatic and is not a generation checkbox in
-format v1.
+format v2.
 
 Reference-image controls remain hidden until the reference acceptance gate has
 passed.
@@ -1038,7 +1084,8 @@ Gate:
 
 - exact donor/new U-Net `(name,shape)` census and parameter-count equality;
 - scratch and transplant initialization are distinguishable and reproducible;
-- bridge emits 77x2048 and pooled 1280;
+- bridge preserves multiple native prefix lengths, emits correct padding masks,
+  and emits pooled 1280 plus the auxiliary 77x2048 alignment tensor;
 - flow noising and Euler identities pass;
 - malformed/missing source declarations fail before construction.
 
@@ -1176,8 +1223,8 @@ No route is advertised before its own backend and frontend gate passes.
 - crop offsets shifting query coordinates by exactly
   `(crop_top/32,crop_left/32)`;
 - self-attention's constant `t` axis having no effect on relative attention;
-- context-position barycenters respecting padding masks and reference
-  boundaries;
+- production context positions preserving source rows and padding masks, plus
+  alignment-head barycenters respecting reference boundaries;
 - selected-layer indices for non-42-layer tiny configs;
 - artifact schema strictness and unknown-version refusal;
 - source hash and relocation behavior;
@@ -1242,9 +1289,10 @@ Quality evaluation separates:
 2. **Parameter parity is not process parity.** Keeping the frozen SenseNova
    understanding model GPU-resident during every U-Net step destroys the SDXL
    memory claim. The default U-Net stage uses cached conditioning.
-3. **Context compression.** Mapping a long multimodal SenseNova prefix to 77
-   rows may lose reference detail. Raising context length changes attention
-   activation and is a new checkpoint format decision, not a generation knob.
+3. **Variable context cost.** Preserving a long multimodal SenseNova prefix
+   avoids a fixed-77 information bottleneck but increases cross-attention work
+   linearly with `L`. Ragged batches require correct masks and packed varlen
+   attention; silently treating padding as content is invalid.
 4. **Layer-space mixing.** K/V from different understanding layers cannot be
    averaged directly. Each selected layer needs its own adapter before fusion.
 5. **Stale training KV.** U-Net site K/V cannot be cached across optimizer
@@ -1253,7 +1301,7 @@ Quality evaluation separates:
 6. **External understanding dependency.** Hash-pinned references save disk but
    are not portable. Missing dependencies must fail early and clearly.
 7. **Donor variation.** “SDXL” checkpoints may carry modified U-Nets or VAEs.
-   Format v1 accepts only the declared four-channel, 2048-context,
+   Format v2 accepts only the declared four-channel, 2048-context-width,
    1280-pooled contract; equality is to the selected accepted donor, not an
    assumed parameter number.
 8. **Random full-size smoke quality.** A scratch bootstrap can prove wiring and
@@ -1267,10 +1315,9 @@ Quality evaluation separates:
     computes the donor function even with identical tensors. Compare all three
     positional ablations at matched initialization and data order before
     attributing a convergence change to transplantation.
-12. **Soft context positions.** A barycenter can poorly describe a resampler
-    row attending to distant reference regions. Report position variance;
-    high-variance rows may require typed memory banks rather than pretending
-    they have one location.
+12. **Alignment-head positions.** The fixed-77 auxiliary resampler may combine
+    distant reference regions, but its barycenters are diagnostic-only. The
+    production memory keeps exact source positions.
 
 ## 15. Documentation updates when implemented
 

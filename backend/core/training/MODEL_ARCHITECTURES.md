@@ -369,7 +369,7 @@ target_modules = ["to_q", "to_k", "to_v", "to_out.0"]  # ZImageAttention modules
 - **予測対象**: Flow velocity `x0 - noise`（`t=0` noise、`t=1` clean）
 
 凍結した SenseNova understanding branch の最終 hidden state と選択層 K/V
-を `ConditioningBridge` が `77 x 2048` context、`1280` pooled vector、
+を `ConditioningBridge` が可変長 `L x 2048` context、mask、元の位置、`1280` pooled vector、
 3 軸 context position へ変換します。U-Net は donor SDXL U-Net と
 名前・shape・parameter count が同一で、cross-attention だけを parameter-free
 な `ChimeraAttnProcessor` に差し替えて `t:h:w = 2:1:1` RoPE を適用します。
@@ -386,7 +386,18 @@ Understanding と VAE は全 stage で凍結されます。`bridge_align` は
 `chimera_clip_hidden_weight` と `chimera_clip_pooled_weight` の明示指定が必要です。
 `unet` / `joint` は原則 `bridge_state="aligned"` を要求し、未 alignment の
 scratch artifact だけが `chimera_allow_unaligned_scratch=true` で実験的に
-進められます。`sdxl_transplant` はこの bypass を許可しません。
+進められます。`sdxl_transplant` はこの bypass を許可せず、下記 staged
+warmup も held-out alignment gate の代替にはなりません。
+
+`chimera_bridge_align_steps=N`（default 0）を `unet` / `joint` と組み合わせると、
+完了 step `[0,N)` は bridge-only、その後は指定 stage に自動遷移します。
+境界は gradient accumulation の倍数でなければならず、optimizer は両 phase の
+group を最初から保持し、active phase だけ `requires_grad` を有効にします。
+通常の `unet` は complete conditioning cache が KV 計算を iteration から除きます。
+live-conditioning stage では次 batch の凍結 raw hidden/KV/mask/position だけを
+default depth 1 で先読みし、現在 step の bridge は main thread で適用するため
+`bridge_align` / `joint` でも stale になりません。`auto` は off-device weight
+と追加 10 GiB headroom が収まる場合だけ別 CUDA stream、それ以外は pinned CPU を選びます。
 
 ### 実装 ownership
 

@@ -17,6 +17,7 @@ from core.models.sensenova.loader import is_sensenova_state_dict_keys
 
 from .artifact import (
     CONFIG_NAME,
+    FORMAT_VERSION,
     MANIFEST_NAME,
     MODEL_TYPE,
     WEIGHTS_BASENAME,
@@ -67,7 +68,6 @@ def build_chimera_artifact_from_components(
     vae: ResolvedVAE,
     unet_initialization: str = "scratch",
     initialization_seed: int = 0,
-    context_tokens: int = 77,
     max_shard_bytes: int = 10 * 1024**3,
 ) -> dict[str, Any]:
     """Build into an empty directory; callers own atomic target publication."""
@@ -75,18 +75,16 @@ def build_chimera_artifact_from_components(
     if root.exists() and any(root.iterdir()):
         raise FileExistsError(f"Chimera target must be empty: {root}")
     root.mkdir(parents=True, exist_ok=True)
-    if context_tokens != 77:
-        raise ValueError("Chimera format v1 fixes context_tokens to 77")
     if vae.state_dict is None:
         raise ValueError("builder requires a VAE resolved with load_weights=True")
     if vae.latent_channels != 4 or vae.scale_factor != 8 or vae.ndim != 4:
         raise ValueError(
-            "Chimera format v1 requires an SDXL-compatible 4-channel, 8x, 2-D VAE; "
+            "Chimera format v2 requires an SDXL-compatible 4-channel, 8x, 2-D VAE; "
             f"got {vae.latent_channels}ch/{vae.scale_factor}x/ndim={vae.ndim}"
         )
 
     und_config = _source_config(understanding_source)
-    bridge_config = infer_bridge_config(und_config, context_tokens=context_tokens)
+    bridge_config = infer_bridge_config(und_config)
     bridge = ConditioningBridge(bridge_config)
     unet, report = build_donor_equal_unet(
         donor_unet, initialization=unet_initialization, seed=initialization_seed
@@ -118,7 +116,7 @@ def build_chimera_artifact_from_components(
     metadata = {
         "model_type": MODEL_TYPE,
         "format": "pt",
-        "format_version": "1",
+        "format_version": str(FORMAT_VERSION),
         "tied_weights_dropped": json.dumps(dropped),
     }
     written = save_single_file_state(
@@ -172,7 +170,6 @@ def initialize_chimera_from_paths(
     sdxl_source: str,
     unet_initialization: str = "scratch",
     initialization_seed: int = 0,
-    context_tokens: int = 77,
     max_shard_bytes: int = 10 * 1024**3,
     torch_dtype: torch.dtype = torch.float32,
 ) -> dict[str, Any]:
@@ -190,7 +187,6 @@ def initialize_chimera_from_paths(
             "vae": vae,
             "unet_initialization": unet_initialization,
             "initialization_seed": initialization_seed,
-            "context_tokens": context_tokens,
             "max_shard_bytes": max_shard_bytes,
         },
     )

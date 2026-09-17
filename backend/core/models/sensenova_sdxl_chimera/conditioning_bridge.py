@@ -23,21 +23,21 @@ class ChimeraBridgeConfig:
     hidden_size: int
     kv_width: int
     selected_layers: tuple[int, ...]
-    context_tokens: int = 77
     context_dim: int = 2048
     pooled_dim: int = 1280
     bridge_dim: int = 1024
     num_heads: int = 8
+    alignment_tokens: int = 77
 
     def __post_init__(self) -> None:
         positive = {
             "hidden_size": self.hidden_size,
             "kv_width": self.kv_width,
-            "context_tokens": self.context_tokens,
             "context_dim": self.context_dim,
             "pooled_dim": self.pooled_dim,
             "bridge_dim": self.bridge_dim,
             "num_heads": self.num_heads,
+            "alignment_tokens": self.alignment_tokens,
         }
         bad = {name: value for name, value in positive.items() if int(value) <= 0}
         if bad:
@@ -55,12 +55,14 @@ class ChimeraBridgeOutput:
     encoder_hidden_states: torch.Tensor
     pooled_text_embeds: torch.Tensor
     context_positions: torch.Tensor
+    attention_mask: torch.Tensor
+    alignment_hidden_states: torch.Tensor
     resampler_weights: torch.Tensor
     position_variance: torch.Tensor
 
 
 class ConditioningBridge(nn.Module):
-    """Project layer-specific SenseNova K/V into fixed SDXL conditioning.
+    """Project layer-specific SenseNova K/V into native-length SDXL conditioning.
 
     K/V arrive as ``[B,H_kv,L,D_head]``; ``kv_width`` is ``H_kv*D_head``.
     Each layer owns its projection because its attention basis is independent.
@@ -82,9 +84,11 @@ class ConditioningBridge(nn.Module):
             str(layer): nn.Parameter(torch.zeros(config.bridge_dim))
             for layer in config.selected_layers
         })
-        self.queries = nn.Parameter(torch.empty(config.context_tokens, config.bridge_dim))
-        nn.init.normal_(self.queries, std=config.bridge_dim ** -0.5)
-        self.resampler = nn.MultiheadAttention(
+        self.alignment_queries = nn.Parameter(
+            torch.empty(config.alignment_tokens, config.bridge_dim)
+        )
+        nn.init.normal_(self.alignment_queries, std=config.bridge_dim ** -0.5)
+        self.alignment_resampler = nn.MultiheadAttention(
             config.bridge_dim, config.num_heads, batch_first=True
         )
         self.output_norm = nn.LayerNorm(config.bridge_dim)
@@ -152,8 +156,17 @@ class ConditioningBridge(nn.Module):
             residual = projected + self.layer_embeddings[name]
             memory = memory + torch.tanh(self.kv_gates[name]) * residual
 
-        queries = self.queries.unsqueeze(0).expand(batch, -1, -1)
-        attended, per_head_weights = self.resampler(
+        # Production conditioning preserves every native prefix row. The
+        # fixed-size resampler is alignment-only: SDXL's CLIP teacher has 77
+        # rows, but that teacher shape must not constrain the served context.
+        refined = self.output_norm(memory + self.feed_forward(memory))
+        context = self.context_projection(refined)
+        mask_f = mask.to(dtype=refined.dtype).unsqueeze(-1)
+        pooled_source = (refined * mask_f).sum(dim=1) / mask_f.sum(dim=1).clamp_min(1)
+        pooled = self.pooled_projection(pooled_source)
+
+        queries = self.alignment_queries.unsqueeze(0).expand(batch, -1, -1)
+        attended, per_head_weights = self.alignment_resampler(
             queries,
             memory,
             memory,
@@ -161,20 +174,21 @@ class ConditioningBridge(nn.Module):
             need_weights=True,
             average_attn_weights=False,
         )
-        refined = self.output_norm(attended + self.feed_forward(attended))
-        context = self.context_projection(refined)
-        pooled = self.pooled_projection(refined.mean(dim=1))
+        aligned = self.output_norm(attended + self.feed_forward(attended))
+        alignment_context = self.context_projection(aligned)
 
         weights = per_head_weights.float().mean(dim=1)
         weights = weights * mask[:, None, :].float()
         weights = weights / weights.sum(dim=-1, keepdim=True).clamp_min(1e-12)
-        context_positions = torch.matmul(weights, memory_positions.float())
-        delta = memory_positions[:, None, :, :] - context_positions[:, :, None, :]
+        alignment_positions = torch.matmul(weights, memory_positions.float())
+        delta = memory_positions[:, None, :, :] - alignment_positions[:, :, None, :]
         position_variance = (weights[..., None] * delta.square()).sum(dim=2)
         return ChimeraBridgeOutput(
             encoder_hidden_states=context,
             pooled_text_embeds=pooled,
-            context_positions=context_positions,
+            context_positions=memory_positions,
+            attention_mask=mask,
+            alignment_hidden_states=alignment_context,
             resampler_weights=weights,
             position_variance=position_variance,
         )

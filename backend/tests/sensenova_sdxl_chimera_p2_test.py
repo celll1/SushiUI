@@ -11,6 +11,7 @@ from core.models.sensenova_sdxl_chimera.attention_processor import (
 )
 from core.models.sensenova_sdxl_chimera.pipeline_ops import (
     ChimeraConditioning,
+    decode_latents,
     sample_txt2img_latents,
 )
 
@@ -230,6 +231,32 @@ def test_sampling_moves_cpu_conditioning_to_the_unet_device():
     )
     assert result.device.type == "cuda"
     assert result.dtype == torch.float16
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_training_preview_stages_fp16_vae_on_cuda_and_restores_cpu():
+    class TinyVAE(torch.nn.Module):
+        config = type("Config", (), {"scaling_factor": 1.0, "shift_factor": None})()
+
+        def __init__(self):
+            super().__init__()
+            self.anchor = torch.nn.Parameter(torch.ones((), dtype=torch.float16))
+
+        def decode(self, latents, return_dict=False):
+            assert next(self.parameters()).device.type == "cuda"
+            assert latents.device.type == "cuda"
+            assert latents.dtype == torch.float16
+            return (latents[:, :3],)
+
+    vae = TinyVAE()
+    image = decode_latents(
+        vae,
+        torch.zeros(1, 4, 8, 8, device="cuda", dtype=torch.bfloat16),
+        device="cuda",
+        restore_device=True,
+    )
+    assert image.size == (8, 8)
+    assert next(vae.parameters()).device.type == "cpu"
 
 
 def test_sampling_is_deterministic_and_cleans_cache_on_success_and_error():

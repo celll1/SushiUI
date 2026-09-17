@@ -410,15 +410,32 @@ def sample_img2img_latents(
     )
 
 
-def decode_latents(vae, latents: torch.Tensor) -> Image.Image:
+def decode_latents(
+    vae,
+    latents: torch.Tensor,
+    *,
+    device: torch.device | str | None = None,
+    restore_device: bool = False,
+) -> Image.Image:
     scaling = float(getattr(vae.config, "scaling_factor", 1.0))
     shift = float(getattr(vae.config, "shift_factor", 0.0) or 0.0)
     vae_parameter = next(vae.parameters(), None)
-    if vae_parameter is not None:
-        latents = latents.to(device=vae_parameter.device, dtype=vae_parameter.dtype)
-    decoded = vae.decode(latents / scaling + shift, return_dict=False)[0]
-    pixels = (decoded.float() / 2.0 + 0.5).clamp(0, 1)
-    array = (
-        pixels[0].permute(1, 2, 0).mul(255).round().byte().cpu().numpy()
-    )
-    return Image.fromarray(np.asarray(array))
+    original_device = vae_parameter.device if vae_parameter is not None else latents.device
+    vae_dtype = vae_parameter.dtype if vae_parameter is not None else latents.dtype
+    decode_device = torch.device(device) if device is not None else original_device
+    try:
+        if vae_parameter is not None and original_device != decode_device:
+            vae.to(device=decode_device)
+        latents = latents.to(device=decode_device, dtype=vae_dtype)
+        with torch.inference_mode():
+            decoded = vae.decode(latents / scaling + shift, return_dict=False)[0]
+            pixels = (decoded.float() / 2.0 + 0.5).clamp(0, 1)
+            array = (
+                pixels[0].permute(1, 2, 0).mul(255).round().byte().cpu().numpy()
+            )
+        return Image.fromarray(np.asarray(array))
+    finally:
+        if restore_device and vae_parameter is not None and original_device != decode_device:
+            vae.to(device=original_device)
+            if decode_device.type == "cuda":
+                torch.cuda.empty_cache()

@@ -191,6 +191,47 @@ def test_batched_cfg_pads_different_prefix_lengths_and_masks_padding():
     assert torch.allclose(run("sequential"), run("batched"), atol=1e-6, rtol=1e-6)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_sampling_moves_cpu_conditioning_to_the_unet_device():
+    class DeviceCheckingUNet(_FakeUNet):
+        def forward(self, sample, timestep, *, encoder_hidden_states,
+                    encoder_attention_mask, added_cond_kwargs, return_dict):
+            tensors = (
+                timestep,
+                encoder_hidden_states,
+                encoder_attention_mask,
+                added_cond_kwargs["text_embeds"],
+                added_cond_kwargs["time_ids"],
+            )
+            assert all(tensor.device == sample.device for tensor in tensors)
+            assert encoder_hidden_states.dtype == sample.dtype
+            assert added_cond_kwargs["text_embeds"].dtype == sample.dtype
+            assert added_cond_kwargs["time_ids"].dtype == sample.dtype
+            return super().forward(
+                sample,
+                timestep,
+                encoder_hidden_states=encoder_hidden_states,
+                encoder_attention_mask=encoder_attention_mask,
+                added_cond_kwargs=added_cond_kwargs,
+                return_dict=return_dict,
+            )
+
+    unet = DeviceCheckingUNet().to(device="cuda", dtype=torch.float16)
+    result = sample_txt2img_latents(
+        unet,
+        _conditioning(2.0, "positive"),
+        _conditioning(-1.0, "negative"),
+        height=64,
+        width=64,
+        steps=2,
+        cfg_scale=4.0,
+        seed=17,
+        cfg_mode="sequential",
+    )
+    assert result.device.type == "cuda"
+    assert result.dtype == torch.float16
+
+
 def test_sampling_is_deterministic_and_cleans_cache_on_success_and_error():
     first_unet = _FakeUNet()
     second_unet = _FakeUNet()

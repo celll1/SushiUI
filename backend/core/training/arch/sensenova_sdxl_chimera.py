@@ -83,29 +83,41 @@ class SenseNovaSDXLChimeraArchHandler(ArchHandler):
     def sample(self, trainer, sample_ctx: SampleContext):
         from core.models.sensenova_sdxl_chimera import pipeline_ops
 
-        positive, pos_aux = self.encode_prompt(trainer, sample_ctx.prompt)
-        negative, neg_aux = self.encode_prompt(trainer, sample_ctx.negative_prompt)
-        make = lambda hidden, aux, key: pipeline_ops.ChimeraConditioning(
-            encoder_hidden_states=hidden,
-            pooled_text_embeds=aux["pooled_text_embeds"],
-            context_positions=aux["context_positions"],
-            attention_mask=aux["context_attention_mask"],
-            fingerprint=key,
-        )
-        latents = pipeline_ops.sample_txt2img_latents(
-            trainer.unet,
-            make(positive, pos_aux, "training-preview-positive"),
-            make(negative, neg_aux, "training-preview-negative"),
-            height=sample_ctx.height,
-            width=sample_ctx.width,
-            steps=sample_ctx.num_inference_steps,
-            cfg_scale=sample_ctx.guidance_scale,
-            seed=sample_ctx.seed,
-            progress_callback=(
-                (lambda step, total, _latents: sample_ctx.step_progress_callback(step, total))
-                if sample_ctx.step_progress_callback else None
-            ),
-        )
+        unet = trainer.unet
+        original_device = next(unet.parameters()).device
+        sample_device = trainer.device
+        was_training = unet.training
+        try:
+            if original_device != sample_device:
+                unet.to(sample_device)
+            unet.eval()
+            positive, pos_aux = self.encode_prompt(trainer, sample_ctx.prompt)
+            negative, neg_aux = self.encode_prompt(trainer, sample_ctx.negative_prompt)
+            make = lambda hidden, aux, key: pipeline_ops.ChimeraConditioning(
+                encoder_hidden_states=hidden,
+                pooled_text_embeds=aux["pooled_text_embeds"],
+                context_positions=aux["context_positions"],
+                attention_mask=aux["context_attention_mask"],
+                fingerprint=key,
+            )
+            latents = pipeline_ops.sample_txt2img_latents(
+                unet,
+                make(positive, pos_aux, "training-preview-positive"),
+                make(negative, neg_aux, "training-preview-negative"),
+                height=sample_ctx.height,
+                width=sample_ctx.width,
+                steps=sample_ctx.num_inference_steps,
+                cfg_scale=sample_ctx.guidance_scale,
+                seed=sample_ctx.seed,
+                progress_callback=(
+                    (lambda step, total, _latents: sample_ctx.step_progress_callback(step, total))
+                    if sample_ctx.step_progress_callback else None
+                ),
+            )
+        finally:
+            unet.train(was_training)
+            if original_device != sample_device:
+                unet.to(original_device)
         return pipeline_ops.decode_latents(
             trainer.vae,
             latents,

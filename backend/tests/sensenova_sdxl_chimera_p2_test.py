@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import patch
+
 import pytest
 import torch
 from diffusers.models.attention_processor import Attention
@@ -13,6 +16,10 @@ from core.models.sensenova_sdxl_chimera.pipeline_ops import (
     ChimeraConditioning,
     decode_latents,
     sample_txt2img_latents,
+)
+from core.training.arch.base_arch import SampleContext
+from core.training.arch.sensenova_sdxl_chimera import (
+    SenseNovaSDXLChimeraArchHandler,
 )
 
 
@@ -257,6 +264,52 @@ def test_training_preview_stages_fp16_vae_on_cuda_and_restores_cpu():
     )
     assert image.size == (8, 8)
     assert next(vae.parameters()).device.type == "cpu"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_training_preview_stages_unet_on_cuda_and_restores_cpu():
+    handler = SenseNovaSDXLChimeraArchHandler()
+    unet = _FakeUNet().to(dtype=torch.float16).train()
+    trainer = SimpleNamespace(unet=unet, vae=object(), device=torch.device("cuda"))
+    hidden = torch.zeros(1, 3, 32)
+    aux = {
+        "pooled_text_embeds": torch.zeros(1, 8),
+        "context_positions": torch.zeros(1, 3, 3),
+        "context_attention_mask": torch.ones(1, 3, dtype=torch.bool),
+    }
+
+    def fake_sample(active_unet, *_args, **_kwargs):
+        assert next(active_unet.parameters()).device.type == "cuda"
+        assert not active_unet.training
+        return torch.zeros(1, 4, 8, 8, device="cuda", dtype=torch.float16)
+
+    def fake_decode(_vae, latents, **kwargs):
+        assert next(unet.parameters()).device.type == "cpu"
+        assert unet.training
+        assert latents.device.type == "cuda"
+        assert kwargs == {"device": torch.device("cuda"), "restore_device": True}
+        return "preview"
+
+    with (
+        patch.object(handler, "encode_prompt", return_value=(hidden, aux)),
+        patch(
+            "core.models.sensenova_sdxl_chimera.pipeline_ops.sample_txt2img_latents",
+            side_effect=fake_sample,
+        ),
+        patch(
+            "core.models.sensenova_sdxl_chimera.pipeline_ops.decode_latents",
+            side_effect=fake_decode,
+        ),
+    ):
+        result = handler.sample(
+            trainer,
+            SampleContext(
+                prompt="test", negative_prompt="", width=64, height=64,
+                num_inference_steps=2, guidance_scale=1.0, seed=1,
+            ),
+        )
+
+    assert result == "preview"
 
 
 def test_sampling_is_deterministic_and_cleans_cache_on_success_and_error():

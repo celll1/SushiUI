@@ -26,6 +26,7 @@ from core.training.chimera_prefix_prefetch import (
 )
 from core.training.arch import ARCH_REGISTRY
 from core.training.base_trainer import BaseTrainer
+from core.training.base_trainer import resident_fused_backward_eligible
 from core.training.ops.sensenova_sdxl_chimera_ops import (
     bridge_alignment_loss,
     collate_aux,
@@ -133,6 +134,10 @@ def test_staged_bridge_alignment_switches_exactly_at_completed_step(target):
     adapter = SenseNovaSDXLChimeraFullParameterAdapter(trainer)
     adapter.prepare_models_for_training()
 
+    # Optimizer setup runs before the first sync. Future-stage parameters need
+    # requires_grad here so fused-backward hooks are installed for the switch.
+    assert all(p.requires_grad for p in trainer.unet.parameters())
+    assert all(p.requires_grad for p in trainer.condition_bridge.parameters())
     assert training_stage_for_step(trainer, 0) == "bridge_align"
     assert training_stage_for_step(trainer, 2) == "bridge_align"
     assert training_stage_for_step(trainer, 3) == target
@@ -147,6 +152,21 @@ def test_staged_bridge_alignment_switches_exactly_at_completed_step(target):
     assert all(p.requires_grad for p in trainer.unet.parameters())
     assert all(p.requires_grad is (target == "joint")
                for p in trainer.condition_bridge.parameters())
+
+
+def test_chimera_full_finetune_is_resident_fused_backward_eligible():
+    trainer = SimpleNamespace(
+        is_sensenova=False,
+        is_sensenova_sdxl_chimera=True,
+        trains_base_weights=True,
+        num_optimizer_groups=0,
+        config={},
+    )
+    assert resident_fused_backward_eligible(trainer, "lion8bit_ringbuffer")
+    assert resident_fused_backward_eligible(trainer, "adamw8bit_ringbuffer")
+    assert not resident_fused_backward_eligible(trainer, "lion")
+    trainer.num_optimizer_groups = 2
+    assert not resident_fused_backward_eligible(trainer, "lion8bit_ringbuffer")
 
 
 def test_staged_training_contract_sets_live_encoding_and_requires_alignment_weights():

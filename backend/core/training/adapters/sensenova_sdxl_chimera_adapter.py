@@ -9,14 +9,19 @@ from .base_adapter import BaseFullParameterAdapter, resolve_component_lr
 
 class SenseNovaSDXLChimeraFullParameterAdapter(BaseFullParameterAdapter):
     def prepare_models_for_training(self):
-        from core.training.ops.sensenova_sdxl_chimera_ops import training_stage
+        from core.training.ops.sensenova_sdxl_chimera_ops import (
+            training_stage,
+            training_stage_plan,
+        )
 
         trainer = self.trainer
         stage = training_stage(trainer)
+        stages = set(training_stage_plan(trainer))
         trainer.chimera_understanding.requires_grad_(False).eval()
         trainer.vae.requires_grad_(False).eval()
-        trainer.unet.requires_grad_(stage in {"unet", "joint"})
-        trainer.condition_bridge.requires_grad_(stage in {"bridge_align", "joint"})
+        # Future-stage parameters must require gradients while fused hooks register.
+        trainer.unet.requires_grad_(bool(stages & {"unet", "joint"}))
+        trainer.condition_bridge.requires_grad_(bool(stages & {"bridge_align", "joint"}))
         trainer.unet.train(stage in {"unet", "joint"})
         trainer.condition_bridge.train(stage in {"bridge_align", "joint"})
         teacher = getattr(trainer, "chimera_teacher", None)

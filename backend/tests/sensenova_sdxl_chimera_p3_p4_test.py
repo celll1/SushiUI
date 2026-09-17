@@ -477,6 +477,44 @@ def test_repa_loss_reaches_chimera_unet_and_projector(gradient_checkpointing):
     assert unet._repa_tap_out is None
 
 
+def test_chimera_diffusion_step_writes_debug_latents(tmp_path):
+    unet = _tiny_unet().train()
+    trainer = SimpleNamespace(
+        config={"chimera_training_stage": "unet"},
+        device=torch.device("cpu"),
+        training_dtype=torch.float32,
+        unet=unet,
+        repa_enable=False,
+        log_prefix="[test]",
+        log_extra_metric=lambda *_args: None,
+    )
+    debug_dir = tmp_path / "step_001000"
+    ctx = SimpleNamespace(
+        text_embeddings=torch.randn(1, 3, 6),
+        attention_mask={
+            "pooled_text_embeds": torch.randn(1, 5),
+            "context_positions": torch.zeros(1, 3, 3),
+            "context_attention_mask": torch.ones(1, 3, dtype=torch.bool),
+        },
+        latents=torch.randn(1, 4, 8, 8),
+        timesteps=torch.tensor([0.5]),
+        time_ids=None,
+        repa_pixels=None,
+        debug_save_path=debug_dir,
+        debug_captions=["native prefix"],
+        debug_reference_image_paths=[None],
+    )
+
+    train_step(trainer, ctx)
+
+    saved = torch.load(debug_dir / "latents_t0.5000.pt", map_location="cpu")
+    assert saved["model_type"] == "sensenova_sdxl_chimera"
+    assert saved["prediction_type"] == "flow_velocity"
+    assert saved["caption"] == "native prefix"
+    assert saved["latents"].shape == saved["noisy_latents"].shape
+    assert saved["predicted_latent"].shape == saved["latents"].shape
+
+
 def test_directory_checkpoint_entry_is_discoverable_and_sized(tmp_path):
     from core.training.base_trainer import (
         _checkpoint_aux_base,

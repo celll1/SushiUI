@@ -392,6 +392,38 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
                 "REPA is enabled but the Chimera U-Net forward produced no spatial tap"
             )
         loss = apply_repa_loss_spatial(trainer, loss, tap, repa_pixels)
+    debug_save_path = getattr(ctx, "debug_save_path", None)
+    if debug_save_path is not None:
+        try:
+            debug_save_path.mkdir(parents=True, exist_ok=True)
+            t_value = float(timesteps[0].detach().float().cpu())
+            predicted_clean = (
+                noisy.detach()
+                + (1.0 - timesteps[:, None, None, None]) * prediction.detach()
+            )
+            debug_data = {
+                "timestep": t_value,
+                "model_type": "sensenova_sdxl_chimera",
+                "is_latent": True,
+                "prediction_type": "flow_velocity",
+                "loss": float(loss.detach().cpu()),
+                "recon_loss": 0.0,
+                "batch_size": int(latents.shape[0]),
+                "latents": latents[:1].detach().cpu(),
+                "noisy_latents": noisy[:1].detach().cpu(),
+                "predicted_latent": predicted_clean[:1].detach().cpu(),
+            }
+            captions = getattr(ctx, "debug_captions", None)
+            if captions:
+                debug_data["caption"] = captions[0]
+            reference_paths = getattr(ctx, "debug_reference_image_paths", None)
+            if reference_paths:
+                first_ref = next((path for path in reference_paths if path), None)
+                if first_ref:
+                    debug_data["reference_image_path"] = first_ref
+            torch.save(debug_data, debug_save_path / f"latents_t{t_value:.4f}.pt")
+        except Exception as debug_error:
+            print(f"{trainer.log_prefix} [debug_latents] save failed: {debug_error}")
     # Gradient checkpointing replays the U-Net during backward, after this
     # function returns. The next step overwrites this small context in place.
     return loss, value, 0.0

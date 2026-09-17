@@ -106,4 +106,9 @@ class SenseNovaSDXLChimeraArchHandler(ArchHandler):
                 if sample_ctx.step_progress_callback else None
             ),
         )
-        return pipeline_ops.decode_latents(trainer.vae, latents)
+        return pipeline_ops.decode_latents(
+            trainer.vae,
+            latents,
+            device=trainer.device,
+            restore_device=True,
+        )

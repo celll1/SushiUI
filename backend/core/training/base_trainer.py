@@ -8884,7 +8884,7 @@ class BaseTrainer(ABC):
             f"{mode}. Gradient clipping by global norm has to see every gradient "
             f"before it can scale them, and this mode applies each parameter's update "
             f"as soon as that parameter's gradient exists, so no global norm is ever "
-            f"available. No clipping of any kind is applied. "
+            f"available. No global-norm clipping is applied. "
             + _fused_clip_remedy(self) + remedy,
             code="fused_grad_clipping_ignored",
             prefix=self.log_prefix,

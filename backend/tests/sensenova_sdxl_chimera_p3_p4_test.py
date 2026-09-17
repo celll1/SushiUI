@@ -525,7 +525,7 @@ def test_chimera_diffusion_step_writes_debug_latents(tmp_path):
         debug_reference_image_paths=[None],
     )
 
-    train_step(trainer, ctx)
+    _loss, _velocity_loss, recon_loss = train_step(trainer, ctx)
 
     saved = torch.load(debug_dir / "latents_t0.5000.pt", map_location="cpu")
     assert saved["model_type"] == "sensenova_sdxl_chimera"
@@ -533,6 +533,8 @@ def test_chimera_diffusion_step_writes_debug_latents(tmp_path):
     assert saved["caption"] == "native prefix"
     assert saved["latents"].shape == saved["noisy_latents"].shape
     assert saved["predicted_latent"].shape == saved["latents"].shape
+    assert recon_loss > 0.0
+    assert saved["recon_loss"] == pytest.approx(recon_loss)
 
 
 def test_directory_checkpoint_entry_is_discoverable_and_sized(tmp_path):

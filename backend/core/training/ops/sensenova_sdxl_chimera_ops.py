@@ -380,6 +380,14 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
             repa_handle.remove()
     loss = F.mse_loss(prediction.float(), target.float())
     value = float(loss.detach().cpu())
+    with torch.no_grad():
+        predicted_clean = (
+            noisy.detach()
+            + (1.0 - timesteps[:, None, None, None]) * prediction.detach()
+        )
+        recon_value = float(F.mse_loss(
+            predicted_clean.float(), latents.float()
+        ).cpu())
     if hasattr(trainer, "log_extra_metric"):
         trainer.log_extra_metric("chimera_velocity_loss", value)
     if repa_armed:
@@ -397,17 +405,13 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
         try:
             debug_save_path.mkdir(parents=True, exist_ok=True)
             t_value = float(timesteps[0].detach().float().cpu())
-            predicted_clean = (
-                noisy.detach()
-                + (1.0 - timesteps[:, None, None, None]) * prediction.detach()
-            )
             debug_data = {
                 "timestep": t_value,
                 "model_type": "sensenova_sdxl_chimera",
                 "is_latent": True,
                 "prediction_type": "flow_velocity",
                 "loss": float(loss.detach().cpu()),
-                "recon_loss": 0.0,
+                "recon_loss": recon_value,
                 "batch_size": int(latents.shape[0]),
                 "latents": latents[:1].detach().cpu(),
                 "noisy_latents": noisy[:1].detach().cpu(),
@@ -426,7 +430,7 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
             print(f"{trainer.log_prefix} [debug_latents] save failed: {debug_error}")
     # Gradient checkpointing replays the U-Net during backward, after this
     # function returns. The next step overwrites this small context in place.
-    return loss, value, 0.0
+    return loss, value, recon_value
 
 
 def vae_encode(trainer, image_tensor: torch.Tensor, **_kwargs) -> torch.Tensor:

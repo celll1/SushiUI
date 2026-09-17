@@ -11986,6 +11986,8 @@ class BaseTrainer(ABC):
             # Scoped to the backward: an exception raised before or after it
             # cannot have interrupted the hooks, and keeps its ordinary
             # emergency save.
+            if self.is_sensenova and hasattr(self, "_pending_sensenova_debug_previews"):
+                delattr(self, "_pending_sensenova_debug_previews")
             self._note_partial_step_taint(_applied_before, _exc)
             raise
 
@@ -12005,6 +12007,14 @@ class BaseTrainer(ABC):
 
         # Free computation graph
         del loss, loss_for_backward, pred_loss, recon_loss
+
+        if self.is_sensenova:
+            try:
+                from core.training.ops.sensenova_ops import flush_pending_pixel_debug
+
+                flush_pending_pixel_debug(self)
+            except Exception as debug_error:
+                print(f"{self.log_prefix} [debug_latents] VAE decode failed: {debug_error}")
 
         return loss_value, pred_loss_value, recon_loss_value
 

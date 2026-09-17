@@ -2136,6 +2136,7 @@ def _save_pixel_debug(
     batch_size: int = 1,
     vae: Any = None,
     spec: Any = None,
+    trainer: Any = None,
 ) -> None:
     """Dump this step's pixel tensors, the pixel-space analogue of the latent
     archs' debug latents: ``target`` is their ``latents`` (the clean sample),
@@ -2167,11 +2168,28 @@ def _save_pixel_debug(
     torch.save(debug_data, debug_save_path / f"latents_t{t_val:.4f}.pt")
 
     x0_pred_image = transformer.unpatchify(x0_pred_tokens.detach(), patch, height, width)
-    for name, tensor in (
+    previews = (
         ("noisy", z_image),
         ("target", images),
         ("pred_x0", x0_pred_image),
-    ):
+    )
+    if vae is not None and trainer is not None:
+        # Decode after backward releases this step's activation graph. CPU fp16
+        # convolution is unusably slow, while staging the VAE during the forward
+        # competes with those activations for VRAM.
+        trainer._pending_sensenova_debug_previews = {
+            "path": debug_save_path,
+            "t_val": t_val,
+            "previews": tuple(
+                (name, tensor.detach().to(device="cpu", copy=True))
+                for name, tensor in previews
+            ),
+            "vae": vae,
+            "spec": spec,
+        }
+        return
+
+    for name, tensor in previews:
         # tensor_to_image clamps to [-1,1]: the noised map saturates at low t,
         # which is the same convention the VAE archs' decoded previews use. A
         # swapped run decodes first, so the three previews stay comparable.
@@ -2188,6 +2206,49 @@ def _save_pixel_debug(
             quality=80,
             method=4,
         )
+
+
+def flush_pending_pixel_debug(trainer: Any) -> None:
+    """Decode a deferred swapped-VAE debug triple on the training GPU."""
+    pending = getattr(trainer, "_pending_sensenova_debug_previews", None)
+    if pending is None:
+        return
+    delattr(trainer, "_pending_sensenova_debug_previews")
+
+    from core.models.sensenova.latent_space import decode as _decode
+    from core.models.sensenova.sensenova_pipeline_ops import tensor_to_image
+
+    vae = pending["vae"]
+    parameter = next(vae.parameters())
+    original_device = parameter.device
+    original_dtype = parameter.dtype
+    decode_device = torch.device(getattr(trainer, "device", original_device))
+    was_training = vae.training
+    try:
+        if decode_device.type == "cuda":
+            torch.cuda.empty_cache()
+        vae.to(device=decode_device, dtype=original_dtype)
+        vae.eval()
+        with torch.inference_mode():
+            for name, tensor in pending["previews"]:
+                preview = _decode(
+                    vae,
+                    tensor.to(device=decode_device, dtype=original_dtype),
+                    spec=pending["spec"],
+                )
+                tensor_to_image(preview.float().cpu()).save(
+                    pending["path"]
+                    / f"decode_t{pending['t_val']:.4f}_{name}.webp",
+                    "WEBP",
+                    quality=80,
+                    method=4,
+                )
+                del preview
+    finally:
+        vae.to(device=original_device, dtype=original_dtype)
+        vae.train(was_training)
+        if decode_device.type == "cuda":
+            torch.cuda.empty_cache()
 
 
 def _crop_decode_aux_loss(
@@ -2545,6 +2606,7 @@ def train_step(
                 batch_size=batch,
                 vae=getattr(trainer, "vae", None),
                 spec=getattr(trainer, "wiring", None),
+                trainer=trainer,
             )
         except Exception as debug_error:
             print(f"{trainer.log_prefix} [debug_latents] save failed: {debug_error}")

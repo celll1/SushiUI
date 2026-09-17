@@ -13,8 +13,10 @@ from core.training.arch.base_arch import SampleContext, TrainStepContext
 from core.training.arch.sensenova import SenseNovaArchHandler
 from core.training.ops.sensenova_ops import (
     SenseNovaTrainingPrefix,
+    _save_pixel_debug,
     _assert_supported_quantized_training_base,
     encode_prompt,
+    flush_pending_pixel_debug,
     load_components,
     setup_attention_backend,
     train_step,
@@ -531,6 +533,65 @@ def test_pixel_debug_dump_writes_previews_and_scalar_metrics(tmp_path):
     # Filenames the visualize endpoint derives from the .pt name.
     for name in ("noisy", "target", "pred_x0"):
         assert (debug_dir / f"decode_t0.2500_{name}.webp").exists()
+
+
+def _run_deferred_vae_debug_test(tmp_path, device):
+    vae = nn.Conv2d(4, 4, 1)
+    trainer = SimpleNamespace(device=torch.device(device), vae=vae)
+    transformer = SimpleNamespace(unpatchify=lambda value, *args: value)
+    debug_dir = tmp_path / "step_001000"
+    decoded_devices = []
+
+    def decode(model, value, *, spec=None):
+        decoded_devices.append((next(model.parameters()).device, value.device, spec))
+        return torch.zeros(1, 3, 8, 8, device=value.device)
+
+    with patch("core.models.sensenova.latent_space.decode", side_effect=decode):
+        _save_pixel_debug(
+            transformer,
+            debug_dir,
+            t_val=0.5,
+            noise_scale=1.0,
+            images=torch.zeros(1, 4, 2, 2, device=device),
+            z_image=torch.zeros(1, 4, 2, 2, device=device),
+            x0_pred_tokens=torch.zeros(1, 4, 2, 2, device=device),
+            patch=1,
+            height=2,
+            width=2,
+            loss_value=1.0,
+            recon_loss_value=0.0,
+            captions=None,
+            reference_image_paths=None,
+            vae=vae,
+            spec="sdxl",
+            trainer=trainer,
+        )
+        assert hasattr(trainer, "_pending_sensenova_debug_previews")
+        assert all(
+            tensor.device.type == "cpu"
+            for _, tensor in trainer._pending_sensenova_debug_previews["previews"]
+        )
+        assert not (debug_dir / "decode_t0.5000_target.webp").exists()
+        flush_pending_pixel_debug(trainer)
+
+    assert not hasattr(trainer, "_pending_sensenova_debug_previews")
+    assert next(vae.parameters()).device.type == "cpu"
+    assert vae.training
+    assert len(decoded_devices) == 3
+    assert all(model_device.type == device for model_device, _, _ in decoded_devices)
+    assert all(value_device.type == device for _, value_device, _ in decoded_devices)
+    assert all(spec == "sdxl" for _, _, spec in decoded_devices)
+    for name in ("noisy", "target", "pred_x0"):
+        assert (debug_dir / f"decode_t0.5000_{name}.webp").exists()
+
+
+def test_swapped_vae_debug_decode_is_deferred_and_restores_cpu(tmp_path):
+    _run_deferred_vae_debug_test(tmp_path, "cpu")
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_swapped_vae_debug_decode_stages_on_training_gpu(tmp_path):
+    _run_deferred_vae_debug_test(tmp_path, "cuda")
 
 
 class _SampleEvictor:

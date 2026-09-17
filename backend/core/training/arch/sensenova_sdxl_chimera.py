@@ -89,6 +89,7 @@ class SenseNovaSDXLChimeraArchHandler(ArchHandler):
             encoder_hidden_states=hidden,
             pooled_text_embeds=aux["pooled_text_embeds"],
             context_positions=aux["context_positions"],
+            attention_mask=aux["context_attention_mask"],
             fingerprint=key,
         )
         latents = pipeline_ops.sample_txt2img_latents(

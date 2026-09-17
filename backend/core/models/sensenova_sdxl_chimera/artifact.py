@@ -22,7 +22,7 @@ from .conditioning_bridge import ChimeraBridgeConfig
 from .positional import POSITION_LAYOUT_VERSION, SPATIAL_UNIT_PIXELS
 
 MODEL_TYPE = "sensenova_sdxl_chimera"
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 MANIFEST_NAME = "chimera.json"
 CONFIG_NAME = "config.json"
 WEIGHTS_BASENAME = "model.safetensors"
@@ -118,7 +118,7 @@ def resolve_understanding_source(
     return str(Path(candidate).resolve())
 
 
-def infer_bridge_config(sensenova_config: Mapping[str, Any], context_tokens: int = 77) -> ChimeraBridgeConfig:
+def infer_bridge_config(sensenova_config: Mapping[str, Any]) -> ChimeraBridgeConfig:
     llm = dict(sensenova_config.get("llm_config") or {})
     hidden = int(llm.get("hidden_size") or 0)
     layers = int(llm.get("num_hidden_layers") or 0)
@@ -133,7 +133,6 @@ def infer_bridge_config(sensenova_config: Mapping[str, Any], context_tokens: int
         hidden_size=hidden,
         kv_width=kv_heads * head_dim,
         selected_layers=selected_layer_indices(layers),
-        context_tokens=context_tokens,
     )
 
 
@@ -173,9 +172,11 @@ def manifest_template(
         },
         "vae": dict(vae_facts),
         "conditioning": {
-            "context_tokens": bridge_config.context_tokens,
+            "context_length": "native_prefix",
             "context_dim": bridge_config.context_dim,
             "pooled_dim": bridge_config.pooled_dim,
+            "alignment_tokens": bridge_config.alignment_tokens,
+            "attention_mask": True,
             "bridge_state": "unaligned",
             "position_encoding": {
                 "mode": "sensenova_3d_rope",
@@ -218,6 +219,28 @@ def read_artifact_documents(directory: str | os.PathLike[str]) -> tuple[dict[str
     for label, value in (("manifest", manifest), ("config", config)):
         if value.get("model_type") != MODEL_TYPE or int(value.get("format_version", 0)) != FORMAT_VERSION:
             raise ChimeraArtifactError(f"unsupported {label} model_type/format_version at {root}")
+    conditioning = manifest.get("conditioning") or {}
+    expected = {
+        "context_length": "native_prefix",
+        "context_dim": 2048,
+        "pooled_dim": 1280,
+        "alignment_tokens": 77,
+        "attention_mask": True,
+    }
+    mismatches = {
+        key: conditioning.get(key)
+        for key, value in expected.items()
+        if conditioning.get(key) != value
+    }
+    if mismatches:
+        raise ChimeraArtifactError(
+            f"invalid format-v2 conditioning contract at {root}: {mismatches}"
+        )
+    bridge = config.get("conditioning_bridge") or {}
+    if "context_tokens" in bridge or bridge.get("alignment_tokens") != 77:
+        raise ChimeraArtifactError(
+            f"invalid format-v2 conditioning bridge config at {root}"
+        )
     return manifest, config
 
 
@@ -251,6 +274,8 @@ def save_chimera_checkpoint(
     epoch: int,
     alignment_metrics: Mapping[str, float] | None = None,
     alignment_passed: bool = False,
+    stage_plan: Iterable[str] | None = None,
+    bridge_align_steps: int = 0,
     max_shard_bytes: int = 10 * 1024**3,
 ) -> Path:
     """Atomically save a production-loadable Chimera training checkpoint."""
@@ -274,6 +299,8 @@ def save_chimera_checkpoint(
             manifest["conditioning"]["bridge_state"] = "aligned"
         manifest["training"] = {
             "stage": str(stage),
+            "stage_plan": list(stage_plan or (stage,)),
+            "bridge_align_steps": int(bridge_align_steps),
             "step": int(step),
             "epoch": int(epoch),
             "alignment_metrics": metrics,

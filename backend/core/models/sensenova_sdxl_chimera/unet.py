@@ -73,14 +73,14 @@ def build_donor_equal_unet(
     config = _config_dict(donor_unet.config)
     if int(config.get("in_channels", 0)) != 4 or int(config.get("out_channels", 0)) != 4:
         raise ValueError(
-            "Chimera format v1 requires a four-channel SDXL donor U-Net, got "
+            "Chimera format v2 requires a four-channel SDXL donor U-Net, got "
             f"in={config.get('in_channels')} out={config.get('out_channels')}"
         )
     cross_dim = config.get("cross_attention_dim")
     cross_values = cross_dim if isinstance(cross_dim, (list, tuple)) else (cross_dim,)
     if any(int(value) != 2048 for value in cross_values if value is not None):
         raise ValueError(
-            f"Chimera format v1 requires SDXL cross_attention_dim=2048, got {cross_dim!r}"
+            f"Chimera format v2 requires SDXL cross_attention_dim=2048, got {cross_dim!r}"
         )
 
     devices = [] if not torch.cuda.is_available() else list(range(torch.cuda.device_count()))

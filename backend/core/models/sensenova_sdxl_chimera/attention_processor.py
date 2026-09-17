@@ -8,7 +8,7 @@ from typing import Hashable, Optional
 import torch
 from diffusers.models.attention_processor import Attention
 
-from core.attention import AttentionMode, dispatch_attention
+from core.attention import AttentionMode, dispatch_attention, dispatch_attention_varlen
 
 from .positional import apply_sensenova_rope, apply_sensenova_rope_qk, spatial_query_positions
 
@@ -63,6 +63,36 @@ class ChimeraAttnProcessor:
 
     def clear_cache(self) -> None:
         self._cross_kv_cache.clear()
+
+    @staticmethod
+    def _valid_key_rows(
+        attention_mask: torch.Tensor | None,
+        *,
+        batch: int,
+        length: int,
+    ) -> torch.Tensor | None:
+        """Recover a right-padded validity mask from diffusers' score bias."""
+        if attention_mask is None:
+            return None
+        mask = attention_mask
+        while mask.ndim > 2 and mask.shape[1] == 1:
+            mask = mask.squeeze(1)
+        if mask.shape != (batch, length):
+            raise ValueError(
+                f"Chimera context mask must reduce to {(batch, length)}, got "
+                f"{tuple(attention_mask.shape)}"
+            )
+        valid = mask if mask.dtype == torch.bool else mask > -1.0
+        valid = valid.to(dtype=torch.bool)
+        if bool(valid.all()):
+            return None
+        lengths = valid.sum(dim=1)
+        if bool((lengths == 0).any()):
+            raise ValueError("Chimera context mask cannot contain an empty prefix")
+        expected = torch.arange(length, device=valid.device)[None, :] < lengths[:, None]
+        if not torch.equal(valid, expected):
+            raise ValueError("Chimera context mask must be contiguous right padding")
+        return valid
 
     def __call__(
         self,
@@ -141,6 +171,12 @@ class ChimeraAttnProcessor:
                 key_positions = context.context_positions.to(device=query.device)
                 if key_positions.shape[0] == 1 and batch_size != 1:
                     key_positions = key_positions.expand(batch_size, -1, -1)
+                if key_positions.shape != (batch_size, key.shape[2], 3):
+                    raise ValueError(
+                        "Chimera context positions must match cross-attention keys: "
+                        f"positions={tuple(key_positions.shape)}, "
+                        f"keys={(batch_size, key.shape[2], 3)}"
+                    )
                 query, key = apply_sensenova_rope_qk(
                     query,
                     key,
@@ -160,17 +196,62 @@ class ChimeraAttnProcessor:
                 rope_theta_hw=self.rope_theta_hw,
             )
 
-        hidden_states = dispatch_attention(
-            query,
-            key,
-            value,
-            attn_mask=attention_mask,
-            dropout_p=0.0,
-            is_causal=False,
-            backend=self.backend,
-            mode=self.mode,
-            layout="BHSD",
+        valid_rows = self._valid_key_rows(
+            attention_mask,
+            batch=batch_size,
+            length=key.shape[2],
         )
+        if valid_rows is None:
+            hidden_states = dispatch_attention(
+                query,
+                key,
+                value,
+                attn_mask=None,
+                dropout_p=0.0,
+                is_causal=False,
+                backend=self.backend,
+                mode=self.mode,
+                layout="BHSD",
+            )
+        else:
+            # Packed varlen preserves FlashAttention for ragged caption batches;
+            # passing a dense padding mask would force its mask-less kernel to
+            # the native backend for every U-Net cross-attention site.
+            q_bshd = query.transpose(1, 2).contiguous()
+            k_bshd = key.transpose(1, 2).contiguous()
+            v_bshd = value.transpose(1, 2).contiguous()
+            q_length = q_bshd.shape[1]
+            key_lengths = valid_rows.sum(dim=1, dtype=torch.int32)
+            packed_q = q_bshd.reshape(-1, attn.heads, head_dim)
+            packed_k = k_bshd[valid_rows]
+            packed_v = v_bshd[valid_rows]
+            cu_q = torch.arange(
+                0,
+                (batch_size + 1) * q_length,
+                q_length,
+                device=query.device,
+                dtype=torch.int32,
+            )
+            cu_k = torch.cat((
+                torch.zeros(1, device=query.device, dtype=torch.int32),
+                key_lengths.cumsum(0),
+            ))
+            packed_out = dispatch_attention_varlen(
+                packed_q,
+                packed_k,
+                packed_v,
+                cu_q,
+                cu_k,
+                q_length,
+                int(key_lengths.max().item()),
+                dropout_p=0.0,
+                is_causal=False,
+                backend=self.backend,
+                mode=self.mode,
+            )
+            hidden_states = packed_out.reshape(
+                batch_size, q_length, attn.heads, head_dim
+            ).transpose(1, 2).contiguous()
         hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, inner_dim)
         hidden_states = attn.to_out[1](attn.to_out[0](hidden_states.to(query.dtype)))
         if input_ndim == 4:

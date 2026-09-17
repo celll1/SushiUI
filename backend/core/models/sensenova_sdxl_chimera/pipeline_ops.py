@@ -25,6 +25,7 @@ class ChimeraConditioning:
     encoder_hidden_states: torch.Tensor
     pooled_text_embeds: torch.Tensor
     context_positions: torch.Tensor
+    attention_mask: torch.Tensor
     fingerprint: str
 
 
@@ -43,11 +44,32 @@ def build_conditioning(transformer, tokenizer, bridge, prompt: str) -> ChimeraCo
         encoder_hidden_states=output.encoder_hidden_states.detach(),
         pooled_text_embeds=output.pooled_text_embeds.detach(),
         context_positions=output.context_positions.detach(),
+        attention_mask=output.attention_mask.detach(),
         fingerprint=_tensor_digest(
             output.encoder_hidden_states,
             output.pooled_text_embeds,
             output.context_positions,
+            output.attention_mask,
         ),
+    )
+
+
+def _pad_conditioning(conditioning: ChimeraConditioning, length: int) -> ChimeraConditioning:
+    current = int(conditioning.encoder_hidden_states.shape[1])
+    if current == length:
+        return conditioning
+    if current > length:
+        raise ValueError(f"cannot pad Chimera conditioning from {current} down to {length}")
+    pad = length - current
+    hidden = torch.nn.functional.pad(conditioning.encoder_hidden_states, (0, 0, 0, pad))
+    positions = torch.nn.functional.pad(conditioning.context_positions, (0, 0, 0, pad))
+    mask = torch.nn.functional.pad(conditioning.attention_mask, (0, pad), value=False)
+    return ChimeraConditioning(
+        encoder_hidden_states=hidden,
+        pooled_text_embeds=conditioning.pooled_text_embeds,
+        context_positions=positions,
+        attention_mask=mask,
+        fingerprint=conditioning.fingerprint,
     )
 
 
@@ -112,6 +134,7 @@ def _unet_velocity(
         sample,
         timestep.expand(sample.shape[0]),
         encoder_hidden_states=conditioning.encoder_hidden_states,
+        encoder_attention_mask=conditioning.attention_mask,
         added_cond_kwargs=added,
         return_dict=False,
     )[0]
@@ -194,7 +217,7 @@ def _sample_flow_latents(
         device=device,
         dtype=dtype,
     )
-    cache_metadata = (height, width, crop_top, crop_left, 0.0, "text-only-v1")
+    cache_metadata = (height, width, crop_top, crop_left, 0.0, "native-prefix-v2")
     needs_cfg = negative is not None and float(cfg_scale) > 1.0
     install_chimera_attention_processors(unet, backend=attention_backend)
     try:
@@ -206,15 +229,27 @@ def _sample_flow_latents(
                         unet, sample, timestep, positive, time_ids, cache_metadata=cache_metadata
                     )
                 elif cfg_mode == "batched":
+                    pair_length = max(
+                        negative.encoder_hidden_states.shape[1],
+                        positive.encoder_hidden_states.shape[1],
+                    )
+                    negative_padded = _pad_conditioning(negative, pair_length)
+                    positive_padded = _pad_conditioning(positive, pair_length)
                     combined = ChimeraConditioning(
                         encoder_hidden_states=torch.cat(
-                            (negative.encoder_hidden_states, positive.encoder_hidden_states)
+                            (negative_padded.encoder_hidden_states,
+                             positive_padded.encoder_hidden_states)
                         ),
                         pooled_text_embeds=torch.cat(
                             (negative.pooled_text_embeds, positive.pooled_text_embeds)
                         ),
                         context_positions=torch.cat(
-                            (negative.context_positions, positive.context_positions)
+                            (negative_padded.context_positions,
+                             positive_padded.context_positions)
+                        ),
+                        attention_mask=torch.cat(
+                            (negative_padded.attention_mask,
+                             positive_padded.attention_mask)
                         ),
                         fingerprint=f"{negative.fingerprint}:{positive.fingerprint}",
                     )

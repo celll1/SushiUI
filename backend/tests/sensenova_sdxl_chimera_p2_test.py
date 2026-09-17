@@ -4,6 +4,7 @@ import pytest
 import torch
 from diffusers.models.attention_processor import Attention
 
+from core.attention import AttentionMode
 from core.models.sensenova_sdxl_chimera.attention_processor import (
     ChimeraAttentionContext,
     ChimeraAttnProcessor,
@@ -14,11 +15,12 @@ from core.models.sensenova_sdxl_chimera.pipeline_ops import (
 )
 
 
-def _conditioning(value: float, fingerprint: str) -> ChimeraConditioning:
+def _conditioning(value: float, fingerprint: str, length: int = 5) -> ChimeraConditioning:
     return ChimeraConditioning(
-        encoder_hidden_states=torch.full((1, 5, 32), value),
+        encoder_hidden_states=torch.full((1, length, 32), value),
         pooled_text_embeds=torch.full((1, 8), value),
-        context_positions=torch.zeros(1, 5, 3),
+        context_positions=torch.zeros(1, length, 3),
+        attention_mask=torch.ones(1, length, dtype=torch.bool),
         fingerprint=fingerprint,
     )
 
@@ -57,6 +59,69 @@ def test_cross_attention_cached_and_uncached_are_equal_and_metadata_invalidates(
     assert not processor._cross_kv_cache
 
 
+def test_cross_attention_padding_mask_matches_unpadded_context():
+    torch.manual_seed(4)
+    attention = Attention(query_dim=32, cross_attention_dim=32, heads=4, dim_head=8)
+    hidden = torch.randn(2, 16, 32)
+    short = torch.randn(1, 3, 32)
+    long = torch.randn(1, 7, 32)
+    padded = torch.cat((short, torch.randn(1, 4, 32)), dim=1)
+    encoder = torch.cat((padded, long), dim=0)
+    positions = torch.zeros(2, 7, 3)
+    processor = ChimeraAttnProcessor()
+    processor.set_context(ChimeraAttentionContext(
+        context_positions=positions, target_height=32, target_width=32,
+    ))
+    additive_mask = torch.tensor(
+        [[[0.0, 0.0, 0.0, -10000.0, -10000.0, -10000.0, -10000.0]],
+         [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]]
+    )
+    batched = processor(attention, hidden, encoder, attention_mask=additive_mask)
+
+    singles = []
+    for item_hidden, item_encoder in ((hidden[:1], short), (hidden[1:], long)):
+        single = ChimeraAttnProcessor()
+        single.set_context(ChimeraAttentionContext(
+            context_positions=torch.zeros(1, item_encoder.shape[1], 3),
+            target_height=32, target_width=32,
+        ))
+        singles.append(single(attention, item_hidden, item_encoder))
+    assert torch.allclose(batched, torch.cat(singles), atol=2e-6, rtol=2e-6)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_flash_varlen_cross_attention_forward_backward_on_cuda():
+    pytest.importorskip("flash_attn")
+    torch.manual_seed(5)
+    device = torch.device("cuda")
+    attention = Attention(
+        query_dim=256, cross_attention_dim=256, heads=4, dim_head=64
+    ).to(device=device, dtype=torch.float16)
+    hidden = torch.randn(
+        2, 16, 256, device=device, dtype=torch.float16, requires_grad=True
+    )
+    encoder = torch.randn(
+        2, 7, 256, device=device, dtype=torch.float16, requires_grad=True
+    )
+    processor = ChimeraAttnProcessor(backend="flash", mode=AttentionMode.TRAINING)
+    processor.set_context(ChimeraAttentionContext(
+        context_positions=torch.zeros(2, 7, 3, device=device),
+        target_height=32,
+        target_width=32,
+    ))
+    mask = torch.tensor(
+        [[True, True, True, False, False, False, False],
+         [True, True, True, True, True, True, True]],
+        device=device,
+    )
+    output = processor(attention, hidden, encoder, attention_mask=mask)
+    output.float().square().mean().backward()
+    assert output.shape == hidden.shape
+    assert torch.isfinite(output).all()
+    assert hidden.grad is not None and torch.isfinite(hidden.grad).all()
+    assert encoder.grad is not None and torch.isfinite(encoder.grad).all()
+
+
 class _FakeUNet(torch.nn.Module):
     def __init__(self, *, fail: bool = False):
         super().__init__()
@@ -69,7 +134,8 @@ class _FakeUNet(torch.nn.Module):
         self.attn_processors = processors
 
     def forward(
-        self, sample, timestep, *, encoder_hidden_states, added_cond_kwargs, return_dict
+        self, sample, timestep, *, encoder_hidden_states, encoder_attention_mask,
+        added_cond_kwargs, return_dict
     ):
         if self.fail:
             raise RuntimeError("injected failure")
@@ -101,6 +167,28 @@ def test_sequential_and_batched_cfg_match_and_branches_remain_separate():
     assert torch.allclose(sequential, batched, atol=1e-6, rtol=1e-6)
     assert set(sequential_unet.conditioning_means) == {-1.0, 2.0}
     assert batched_unet.conditioning_means == [-1.0, 2.0] * 3
+
+
+def test_batched_cfg_pads_different_prefix_lengths_and_masks_padding():
+    class MaskAwareUNet(_FakeUNet):
+        def forward(self, sample, timestep, *, encoder_hidden_states,
+                    encoder_attention_mask, added_cond_kwargs, return_dict):
+            mask = encoder_attention_mask.to(encoder_hidden_states).unsqueeze(-1)
+            means = (encoder_hidden_states * mask).sum(dim=(1, 2)) / (
+                mask.sum(dim=(1, 2)) * encoder_hidden_states.shape[-1]
+            )
+            self.conditioning_means.extend(means.detach().cpu().tolist())
+            return (sample * 0.05 + means[:, None, None, None] * 0.01,)
+
+    def run(mode):
+        return sample_txt2img_latents(
+            MaskAwareUNet(),
+            _conditioning(2.0, "positive-long", length=9),
+            _conditioning(-1.0, "negative-short", length=2),
+            height=64, width=64, steps=2, cfg_scale=4.0, seed=7, cfg_mode=mode,
+        )
+
+    assert torch.allclose(run("sequential"), run("batched"), atol=1e-6, rtol=1e-6)
 
 
 def test_sampling_is_deterministic_and_cleans_cache_on_success_and_error():

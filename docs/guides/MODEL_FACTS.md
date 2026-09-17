@@ -3319,13 +3319,29 @@ Paths below are relative to `backend/core/training/`.
   RePaint-style latent pinning with white meaning generate and black meaning
   preserve, followed by pixel-space source compositing; spatial outpaint uses
   the shared inpaint orchestration and its final exact preserved-region paste.
-- Conditioning: the frozen understanding branch is reduced immediately to
-  `77 x 2048` hidden states plus a `1280` pooled vector by the trainable bridge.
-  `_mot_gen`, the flow head, and the refiner are never materialized.
+- Conditioning: the trainable bridge preserves all `L` rows of the frozen
+  understanding prefix as `L x 2048` hidden states, its attention mask, and
+  original `(t,h,w)` positions, plus a `1280` pooled vector. Ragged batches are
+  right-padded and use packed variable-length attention. A separate 77-row head
+  is used only for CLIP-teacher alignment. `_mot_gen`, the flow head, and the
+  refiner are never materialized.
 - Training: full-parameter only. `bridge_align` trains only the bridge; `unet`
   trains the complete donor-equal U-Net; `joint` trains both. Understanding and
   VAE stay frozen. A transplanted U-Net requires an aligned bridge; scratch
   diffusion training with an unaligned bridge requires an explicit override.
+  `chimera_bridge_align_steps=N` optionally runs bridge-only for the first `N`
+  completed steps before switching to `unet` or `joint`; the optimizer group
+  census stays stable across the boundary and resume.
+- Prefix scheduling: live-conditioning stages prefetch the next batch's frozen
+  raw hidden/KV/mask/positions by default (depth 1), then run the current bridge
+  on the main thread. `auto` uses a CUDA stream when off-device weights plus
+  10 GiB headroom fit and pinned CPU otherwise. Ordinary `unet` uses the
+  stronger complete-conditioning cache
+  and therefore does not start the redundant prefix worker.
+  Header-derived payload is about 24 KiB/token. A real
+  `sensenova_int8.safetensors` probe on RTX 6000 Ada measured 19--22-token text
+  prefixes at 0.45--0.52 MiB/sample and 88 ms steady-state GPU capture (the
+  first call, including kernel warmup, was 609 ms; 2026-09-17).
 - REPA: pixel-teacher representation alignment is supported for `unet` and
   `joint`, using the SDXL-shaped U-Net's deepest-down/mid/first-up spatial tap
   menu and the shared projector sidecar. `bridge_align` and `latent_stem` are

@@ -35,7 +35,6 @@ def main():
         "sdxl_source": args.sdxl_source,
         "unet_initialization": args.unet_initialization,
         "initialization_seed": args.initialization_seed,
-        "context_tokens": 77,
     }
     if args.dry_run:
         print("=== DRY RUN (no request sent) ===")

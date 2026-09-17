@@ -75,6 +75,7 @@ def _conditioning() -> ChimeraConditioning:
         encoder_hidden_states=torch.zeros(1, 3, 8),
         pooled_text_embeds=torch.zeros(1, 4),
         context_positions=torch.zeros(1, 3, 3),
+        attention_mask=torch.ones(1, 3, dtype=torch.bool),
         fingerprint="test",
     )
 

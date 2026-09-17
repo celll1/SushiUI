@@ -25,13 +25,13 @@ class SenseNovaSDXLChimeraFullParameterAdapter(BaseFullParameterAdapter):
                 module.requires_grad_(False).eval()
 
     def arch_param_groups(self):
-        from core.training.ops.sensenova_sdxl_chimera_ops import training_stage
+        from core.training.ops.sensenova_sdxl_chimera_ops import training_stage_plan
 
         trainer = self.trainer
-        stage = training_stage(trainer)
+        stages = set(training_stage_plan(trainer))
         groups = []
-        if stage in {"unet", "joint"}:
-            parameters = [parameter for parameter in trainer.unet.parameters() if parameter.requires_grad]
+        if stages & {"unet", "joint"}:
+            parameters = list(trainer.unet.parameters())
             if parameters:
                 groups.append({
                     "params": parameters,
@@ -39,11 +39,8 @@ class SenseNovaSDXLChimeraFullParameterAdapter(BaseFullParameterAdapter):
                     "name": "unet",
                     "component": "unet",
                 })
-        if stage in {"bridge_align", "joint"}:
-            parameters = [
-                parameter for parameter in trainer.condition_bridge.parameters()
-                if parameter.requires_grad
-            ]
+        if stages & {"bridge_align", "joint"}:
+            parameters = list(trainer.condition_bridge.parameters())
             if parameters:
                 groups.append({
                     "params": parameters,
@@ -54,12 +51,16 @@ class SenseNovaSDXLChimeraFullParameterAdapter(BaseFullParameterAdapter):
                     "component": "text_encoder",
                 })
         if not groups:
-            raise RuntimeError(f"Chimera stage {stage!r} produced no trainable parameter groups")
+            raise RuntimeError(f"Chimera stages {sorted(stages)!r} produced no parameter groups")
         return groups
 
     def write_checkpoint(self, step: int, epoch: int, output_path: Path):
         from core.models.sensenova_sdxl_chimera.artifact import save_chimera_checkpoint
-        from core.training.ops.sensenova_sdxl_chimera_ops import training_stage
+        from core.training.ops.sensenova_sdxl_chimera_ops import (
+            bridge_align_steps,
+            training_stage,
+            training_stage_plan,
+        )
 
         trainer = self.trainer
         target = Path(output_path)
@@ -78,6 +79,8 @@ class SenseNovaSDXLChimeraFullParameterAdapter(BaseFullParameterAdapter):
             epoch=epoch,
             alignment_metrics=getattr(trainer, "chimera_alignment_metrics", None),
             alignment_passed=bool(getattr(trainer, "chimera_alignment_passed", False)),
+            stage_plan=training_stage_plan(trainer),
+            bridge_align_steps=bridge_align_steps(trainer),
             max_shard_bytes=int((getattr(trainer, "config", None) or {}).get(
                 "chimera_max_shard_bytes", 10 * 1024**3
             )),

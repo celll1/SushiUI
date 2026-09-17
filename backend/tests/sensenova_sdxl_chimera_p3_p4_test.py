@@ -20,10 +20,21 @@ from core.training.adapters.sensenova_sdxl_chimera_adapter import (
     SenseNovaSDXLChimeraFullParameterAdapter,
 )
 from core.training import repa as repa_module
+from core.training.chimera_prefix_prefetch import (
+    ChimeraPrefixPrefetcher,
+    prefix_nbytes,
+)
 from core.training.arch import ARCH_REGISTRY
 from core.training.base_trainer import BaseTrainer
-from core.training.ops.sensenova_sdxl_chimera_ops import bridge_alignment_loss, train_step
+from core.training.ops.sensenova_sdxl_chimera_ops import (
+    bridge_alignment_loss,
+    collate_aux,
+    sync_training_stage,
+    train_step,
+    training_stage_for_step,
+)
 from core.training.train_runner import _apply_chimera_training_contract
+from core.models.sensenova_sdxl_chimera.understanding import UnderstandingPrefix
 
 
 def _module() -> torch.nn.Module:
@@ -66,7 +77,7 @@ def _trainer(stage: str):
         hidden_size=8,
         kv_width=4,
         selected_layers=(0,),
-        context_tokens=3,
+        alignment_tokens=3,
         context_dim=6,
         pooled_dim=5,
         bridge_dim=8,
@@ -113,6 +124,157 @@ def test_stage_freezing_and_optimizer_groups(stage, unet_trainable, bridge_train
             (unet_trainable, 2e-5), (bridge_trainable, 3e-5)
         ) if enabled
     ]
+
+
+@pytest.mark.parametrize("target", ["unet", "joint"])
+def test_staged_bridge_alignment_switches_exactly_at_completed_step(target):
+    trainer = _trainer(target)
+    trainer.config["chimera_bridge_align_steps"] = 3
+    adapter = SenseNovaSDXLChimeraFullParameterAdapter(trainer)
+    adapter.prepare_models_for_training()
+
+    assert training_stage_for_step(trainer, 0) == "bridge_align"
+    assert training_stage_for_step(trainer, 2) == "bridge_align"
+    assert training_stage_for_step(trainer, 3) == target
+    assert [group["name"] for group in adapter.arch_param_groups()] == [
+        "unet", "condition_bridge"
+    ]
+
+    sync_training_stage(trainer, 0)
+    assert not any(p.requires_grad for p in trainer.unet.parameters())
+    assert all(p.requires_grad for p in trainer.condition_bridge.parameters())
+    sync_training_stage(trainer, 3)
+    assert all(p.requires_grad for p in trainer.unet.parameters())
+    assert all(p.requires_grad is (target == "joint")
+               for p in trainer.condition_bridge.parameters())
+
+
+def test_staged_training_contract_sets_live_encoding_and_requires_alignment_weights():
+    config = {
+        "chimera_training_stage": "unet",
+        "chimera_bridge_align_steps": 8,
+        "gradient_accumulation_steps": 2,
+        "chimera_clip_hidden_weight": 0.5,
+        "chimera_clip_pooled_weight": 0.25,
+        "chimera_conditioning_cache": True,
+    }
+    with patch(
+        "core.model_loader.ModelLoader.detect_model_type",
+        return_value="sensenova_sdxl_chimera",
+    ):
+        assert _apply_chimera_training_contract("artifact", "full_finetune", config)
+    assert config["text_encoding_mode"] == "onthefly_gpu"
+    assert config["chimera_bridge_align_steps"] == 8
+
+
+@pytest.mark.parametrize(
+    "updates,match",
+    [
+        ({"chimera_training_stage": "bridge_align", "chimera_bridge_align_steps": 2},
+         "already remains"),
+        ({"chimera_training_stage": "unet", "chimera_bridge_align_steps": 3,
+          "gradient_accumulation_steps": 2}, "divisible"),
+        ({"chimera_training_stage": "joint", "chimera_bridge_align_steps": 10,
+          "total_steps": 10}, "smaller than total_steps"),
+    ],
+)
+def test_staged_training_contract_refuses_invalid_boundaries(updates, match):
+    config = {
+        "chimera_clip_hidden_weight": 0.5,
+        "chimera_clip_pooled_weight": 0.25,
+        **updates,
+    }
+    with patch(
+        "core.model_loader.ModelLoader.detect_model_type",
+        return_value="sensenova_sdxl_chimera",
+    ), pytest.raises(ValueError, match=match):
+        _apply_chimera_training_contract("artifact", "full_finetune", config)
+
+
+def test_prefix_prefetch_keeps_raw_kv_and_reuses_null_prefix(monkeypatch):
+    def capture(_transformer, _tokenizer, prompt, selected_layers):
+        length = len(prompt) + 1
+        return UnderstandingPrefix(
+            hidden_states=torch.full((1, length, 8), float(length)),
+            layer_kv={
+                layer: (
+                    torch.full((1, 2, length, 2), float(layer)),
+                    torch.full((1, 2, length, 2), float(layer + 1)),
+                )
+                for layer in selected_layers
+            },
+            attention_mask=torch.ones(1, length, dtype=torch.bool),
+            positions=torch.zeros(1, length, 3),
+        )
+
+    monkeypatch.setattr(
+        "core.training.chimera_prefix_prefetch.capture_chimera_prompt_prefix",
+        capture,
+    )
+    batches = [
+        [({"caption": "cat", "image_path": "a"}, None)],
+        [({"caption": "long cat", "image_path": "b"}, None)],
+    ]
+    prefetcher = ChimeraPrefixPrefetcher(
+        transformer=_module(), tokenizer=object(), selected_layers=(1, 3),
+        batches=batches, device="cpu", depth=1,
+    )
+    prefetcher.start()
+    prefetcher.activate_batch(0)
+    cat = prefetcher.take("cat", "cpu")
+    assert cat is not None and cat.hidden_states.shape == (1, 4, 8)
+    assert not torch.is_inference(cat.hidden_states)
+    bridge = ConditioningBridge(ChimeraBridgeConfig(
+        hidden_size=8, kv_width=4, selected_layers=(1, 3),
+        context_dim=16, pooled_dim=8, bridge_dim=8, num_heads=2,
+        alignment_tokens=3,
+    ))
+    bridge(
+        cat.hidden_states, cat.layer_kv, cat.attention_mask, cat.positions
+    ).encoder_hidden_states.square().mean().backward()
+    assert any(parameter.grad is not None for parameter in bridge.parameters())
+    assert set(cat.layer_kv) == {1, 3}
+    assert prefix_nbytes(cat) > cat.hidden_states.numel() * cat.hidden_states.element_size()
+    assert prefetcher.take("changed caption", "cpu") is None
+    null_first = prefetcher.take("", "cpu")
+    prefetcher.activate_batch(1)
+    assert prefetcher.take("long cat", "cpu") is not None
+    assert prefetcher.take("", "cpu") is null_first
+    prefetcher.stop()
+    assert prefetcher.stats.hits == 4
+    assert prefetcher.stats.misses == 1
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_prefix_prefetch_cuda_stream_hands_complete_prefix_to_main(monkeypatch):
+    def capture(transformer, _tokenizer, prompt, selected_layers):
+        anchor = next(transformer.parameters())
+        length = len(prompt) + 1
+        hidden = torch.ones(1, length, 8, device=anchor.device) * anchor.flatten()[0]
+        return UnderstandingPrefix(
+            hidden_states=hidden,
+            layer_kv={layer: (hidden.view(1, 2, length, 4),
+                              hidden.view(1, 2, length, 4) + 1)
+                      for layer in selected_layers},
+            attention_mask=torch.ones(1, length, dtype=torch.bool, device=anchor.device),
+            positions=torch.zeros(1, length, 3, device=anchor.device),
+        )
+
+    monkeypatch.setattr(
+        "core.training.chimera_prefix_prefetch.capture_chimera_prompt_prefix",
+        capture,
+    )
+    prefetcher = ChimeraPrefixPrefetcher(
+        transformer=_module(), tokenizer=object(), selected_layers=(1,),
+        batches=[[({"caption": "gpu", "image_path": "a"}, None)]],
+        device="cuda", depth=1,
+    )
+    prefetcher.start()
+    prefetcher.activate_batch(0)
+    prefix = prefetcher.take("gpu", "cuda")
+    assert prefix is not None and prefix.hidden_states.device.type == "cuda"
+    assert torch.isfinite(prefix.hidden_states).all()
+    prefetcher.stop()
 
 
 @pytest.mark.parametrize("stage", ["unet", "joint"])
@@ -198,6 +360,7 @@ def test_bridge_alignment_loss_updates_only_student_graph():
     teacher_pooled = torch.randn(2, 5)
     loss, metrics = bridge_alignment_loss(trainer, student, {
         "pooled_text_embeds": pooled,
+        "alignment_hidden_states": student,
         "teacher_hidden": teacher,
         "teacher_pooled": teacher_pooled,
     })
@@ -208,6 +371,26 @@ def test_bridge_alignment_loss_updates_only_student_graph():
         "hidden_mse", "hidden_rms_mse", "pooled_mse",
         "hidden_cosine", "pooled_cosine",
     }
+
+
+def test_variable_context_aux_collation_right_pads_positions_and_mask():
+    def item(length):
+        return {
+            "pooled_text_embeds": torch.randn(1, 5),
+            "alignment_hidden_states": torch.randn(1, 3, 6),
+            "context_positions": torch.randn(1, length, 3),
+            "context_attention_mask": torch.ones(1, length, dtype=torch.bool),
+        }
+
+    result = collate_aux([item(2), item(5)])
+    assert result["context_positions"].shape == (2, 5, 3)
+    assert result["context_attention_mask"].shape == (2, 5)
+    assert result["context_attention_mask"].tolist() == [
+        [True, True, False, False, False],
+        [True, True, True, True, True],
+    ]
+    assert torch.count_nonzero(result["context_positions"][0, 2:]) == 0
+    assert result["alignment_hidden_states"].shape == (2, 3, 6)
 
 
 def test_unet_step_retains_attention_context_through_backward():
@@ -232,6 +415,7 @@ def test_unet_step_retains_attention_context_through_backward():
         attention_mask={
             "pooled_text_embeds": torch.randn(1, 5),
             "context_positions": torch.zeros(1, 3, 3),
+            "context_attention_mask": torch.ones(1, 3, dtype=torch.bool),
         },
         latents=torch.randn(1, 4, 2, 2),
         timesteps=torch.tensor([0.5]),
@@ -274,6 +458,7 @@ def test_repa_loss_reaches_chimera_unet_and_projector(gradient_checkpointing):
         attention_mask={
             "pooled_text_embeds": torch.randn(1, 5),
             "context_positions": torch.zeros(1, 3, 3),
+            "context_attention_mask": torch.ones(1, 3, dtype=torch.bool),
         },
         latents=torch.randn(1, 4, 8, 8),
         timesteps=torch.tensor([0.5]),

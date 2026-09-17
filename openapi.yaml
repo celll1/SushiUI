@@ -21033,11 +21033,6 @@ components:
         initialization_seed:
           type: integer
           default: 0
-        context_tokens:
-          type: integer
-          enum: [77]
-          default: 77
-
     InitializeSenseNovaSDXLChimeraResponse:
       type: object
       required: [status, path, output_name, model_type, unet_initialization, unet_parameter_count, bridge_state]
@@ -25422,6 +25417,16 @@ components:
             the conditioning bridge against the pinned donor CLIP encoders; unet
             trains only the donor-equal U-Net; joint trains bridge and U-Net while
             keeping the understanding tower and bundled VAE frozen.
+        chimera_bridge_align_steps:
+          type: integer
+          minimum: 0
+          default: 0
+          description: >-
+            Optional initial bridge-alignment phase for an unet or joint run.
+            Values above zero train only the bridge for exactly this many
+            completed global steps, then switch to chimera_training_stage.
+            The boundary must align with gradient accumulation. Zero disables
+            the staged transition.
         chimera_allow_unaligned_scratch:
           type: boolean
           default: false
@@ -25435,6 +25440,27 @@ components:
           description: >-
             Cache frozen bridge outputs during the unet stage. Ignored for
             bridge_align and joint, where bridge outputs require gradients.
+        chimera_prefix_prefetch:
+          type: boolean
+          default: true
+          description: >-
+            Prefetch the next batch's frozen SenseNova hidden/KV prefix before
+            the trainable bridge. Used only for live-conditioning stages;
+            ordinary cached unet training already removes prefix work.
+        chimera_prefix_prefetch_device:
+          type: string
+          enum: [auto, cpu, cuda]
+          default: auto
+          description: >-
+            Prefix-prefetch execution/storage device. auto uses a separate CUDA
+            stream only when off-device model weights plus 10 GiB headroom fit,
+            otherwise pinned CPU memory.
+        chimera_prefix_prefetch_depth:
+          type: integer
+          minimum: 1
+          maximum: 4
+          default: 1
+          description: Number of prefetched batch payloads retained; depth 1 is recommended.
         chimera_bridge_lr:
           type: number
           nullable: true

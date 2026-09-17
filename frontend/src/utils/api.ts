@@ -4720,7 +4720,6 @@ export interface InitializeChimeraRequest {
   sdxl_source: string;
   unet_initialization?: "scratch" | "sdxl_transplant";
   initialization_seed?: number;
-  context_tokens?: 77;
 }
 
 export const initializeSenseNovaSDXLChimera = async (
@@ -6861,8 +6860,12 @@ export interface TrainingRunCreateRequest {
   sensenova_train_generation_norms?: boolean;
   sensenova_train_scopes?: SenseNovaTrainScope[];
   chimera_training_stage?: "bridge_align" | "unet" | "joint";
+  chimera_bridge_align_steps?: number;
   chimera_allow_unaligned_scratch?: boolean;
   chimera_conditioning_cache?: boolean;
+  chimera_prefix_prefetch?: boolean;
+  chimera_prefix_prefetch_device?: "auto" | "cpu" | "cuda";
+  chimera_prefix_prefetch_depth?: number;
   chimera_bridge_lr?: number | null;
   chimera_context_dropout?: number;
   chimera_clip_hidden_weight?: number | null;

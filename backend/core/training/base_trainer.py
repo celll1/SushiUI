@@ -16870,6 +16870,41 @@ class BaseTrainer(ABC):
                     print(f"{self.log_prefix} cpu_prefetch worker engaged "
                           f"(TE pinned on CPU; main model on GPU)")
 
+                chimera_prefix_prefetcher = None
+                if (
+                    self.is_sensenova_sdxl_chimera
+                    and bool(self.config.get("chimera_prefix_prefetch", True))
+                    and text_encoding_mode == "onthefly_gpu"
+                ):
+                    from core.training.chimera_prefix_prefetch import (
+                        ChimeraPrefixPrefetcher,
+                    )
+
+                    prefetch_mode = self.config.get(
+                        "chimera_prefix_prefetch_device", "auto"
+                    )
+                    reserve_bytes = 0
+                    if str(prefetch_mode).strip().lower() == "auto":
+                        for module in (self.unet, self.chimera_understanding):
+                            for tensor in (*module.parameters(), *module.buffers()):
+                                if tensor.device.type != "cuda":
+                                    reserve_bytes += tensor.numel() * tensor.element_size()
+                    prefetch_device = ChimeraPrefixPrefetcher.resolve_device(
+                        prefetch_mode,
+                        min_free_gb=10.0 + reserve_bytes / 1024**3,
+                    )
+                    chimera_prefix_prefetcher = ChimeraPrefixPrefetcher(
+                        transformer=self.chimera_understanding,
+                        tokenizer=self.tokenizer,
+                        selected_layers=tuple(self.condition_bridge.config.selected_layers),
+                        batches=list(batches),
+                        device=prefetch_device,
+                        depth=int(self.config.get("chimera_prefix_prefetch_depth", 1) or 1),
+                        log_prefix=f"{self.log_prefix} [chimera-prefix-prefetch]",
+                    )
+                    self.chimera_prefix_prefetcher = chimera_prefix_prefetcher
+                    chimera_prefix_prefetcher.start()
+
                 # Pre-fill swap buffer for first interval (swap_onthefly only —
                 # cpu_prefetch's worker drains lazily via the queue).
                 if swap_buffer is not None and text_encoding_mode == "swap_onthefly":
@@ -17186,6 +17221,14 @@ class BaseTrainer(ABC):
                             pass
 
                 for batch_idx, batch in enumerate(tqdm(batches, desc=f"Epoch {epoch+1}/{num_epochs} ({epoch_steps} steps)")):
+                    if chimera_prefix_prefetcher is not None:
+                        chimera_prefix_prefetcher.activate_batch(batch_idx)
+                    if self.is_sensenova_sdxl_chimera:
+                        from core.training.ops.sensenova_sdxl_chimera_ops import (
+                            sync_training_stage,
+                        )
+
+                        sync_training_stage(self, global_step)
                     # Drop any partial count a batch that never finished its
                     # backward left behind. The counters that matter are armed
                     # per backward, in _reset_fused_group_counters.
@@ -18481,6 +18524,12 @@ class BaseTrainer(ABC):
                     mnt_sensenova_prefix = None
 
                     for mnt_idx in range(multi_noise_timesteps):
+                        if self.is_sensenova_sdxl_chimera:
+                            from core.training.ops.sensenova_sdxl_chimera_ops import (
+                                sync_training_stage,
+                            )
+
+                            sync_training_stage(self, global_step)
                         _sensenova_task_step_started = (
                             (_sensenova_task_batch_started
                              if mnt_idx == 0 else time.perf_counter())
@@ -19756,6 +19805,9 @@ class BaseTrainer(ABC):
                         # and would exit here rather than through the epoch-exhaustion
                         # path below.
                         self._assert_trained_something()
+                        if chimera_prefix_prefetcher is not None:
+                            chimera_prefix_prefetcher.stop()
+                            self.chimera_prefix_prefetcher = None
                         self._final_save_on_completion(
                             step=global_step,
                             epoch=epoch,
@@ -19778,6 +19830,10 @@ class BaseTrainer(ABC):
                 if te_prefetcher is not None:
                     te_prefetcher.stop()
                     te_prefetcher = None
+                if chimera_prefix_prefetcher is not None:
+                    chimera_prefix_prefetcher.stop()
+                    chimera_prefix_prefetcher = None
+                    self.chimera_prefix_prefetcher = None
 
                 self._report_epoch_skips(epoch, _epoch_skips_before, len(batches))
 
@@ -19807,6 +19863,13 @@ class BaseTrainer(ABC):
             try:
                 if 'te_prefetcher' in locals() and te_prefetcher is not None:
                     te_prefetcher.stop()
+            except Exception:
+                pass
+            try:
+                if ('chimera_prefix_prefetcher' in locals()
+                        and chimera_prefix_prefetcher is not None):
+                    chimera_prefix_prefetcher.stop()
+                    self.chimera_prefix_prefetcher = None
             except Exception:
                 pass
             try:
@@ -19889,6 +19952,13 @@ class BaseTrainer(ABC):
             try:
                 if 'te_prefetcher' in locals() and te_prefetcher is not None:
                     te_prefetcher.stop()
+            except Exception:
+                pass
+            try:
+                if ('chimera_prefix_prefetcher' in locals()
+                        and chimera_prefix_prefetcher is not None):
+                    chimera_prefix_prefetcher.stop()
+                    self.chimera_prefix_prefetcher = None
             except Exception:
                 pass
             try:

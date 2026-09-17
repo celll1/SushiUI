@@ -25,7 +25,6 @@ export default function ChimeraInitializer() {
         sdxl_source: sdxlSource,
         unet_initialization: initialization,
         initialization_seed: seed,
-        context_tokens: 77,
       });
       setMessage({
         ok: true,

@@ -11,6 +11,7 @@ from core.models.common.single_file_format import read_state_dict, strip_prefix
 from core.models.common.vae_source import content_hash_for_state_dict
 
 from .artifact import (
+    FORMAT_VERSION,
     ChimeraArtifactError,
     checkpoint_headers,
     config_hash,
@@ -37,6 +38,8 @@ def preflight_chimera_artifact(
     shapes, metadata = checkpoint_headers(weights_path)
     if metadata.get("model_type") != "sensenova_sdxl_chimera":
         raise ChimeraArtifactError("weights metadata does not declare sensenova_sdxl_chimera")
+    if int(metadata.get("format_version", 0)) != FORMAT_VERSION:
+        raise ChimeraArtifactError("weights metadata does not declare Chimera format v2")
     if any("_mot_gen" in key for key in shapes):
         raise ChimeraArtifactError("Chimera artifact must not bundle SenseNova generation tensors")
     for prefix in ("condition_bridge.", "unet.", "vae."):

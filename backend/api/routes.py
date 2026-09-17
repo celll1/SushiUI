@@ -9722,7 +9722,6 @@ class InitializeSenseNovaSDXLChimeraRequest(BaseModel):
         CHIMERA_INITIALIZE_DEFAULTS["unet_initialization"]
     )
     initialization_seed: int = CHIMERA_INITIALIZE_DEFAULTS["initialization_seed"]
-    context_tokens: Literal[77] = CHIMERA_INITIALIZE_DEFAULTS["context_tokens"]
 
 
 @router.post("/models/sensenova-sdxl-chimera/initialize")
@@ -9754,7 +9753,6 @@ async def initialize_sensenova_sdxl_chimera_endpoint(
                 sdxl_source=request.sdxl_source,
                 unet_initialization=request.unet_initialization,
                 initialization_seed=request.initialization_seed,
-                context_tokens=request.context_tokens,
             ),
         )
     except (FileNotFoundError, FileExistsError, ValueError) as exc:
@@ -15165,10 +15163,20 @@ class TrainingRunCreateRequest(BaseModel):
     chimera_training_stage: Literal["bridge_align", "unet", "joint"] = (
         TRAINING_DEFAULTS["chimera_training_stage"]
     )
+    chimera_bridge_align_steps: int = Field(
+        default=TRAINING_DEFAULTS["chimera_bridge_align_steps"], ge=0
+    )
     chimera_allow_unaligned_scratch: bool = TRAINING_DEFAULTS[
         "chimera_allow_unaligned_scratch"
     ]
     chimera_conditioning_cache: bool = TRAINING_DEFAULTS["chimera_conditioning_cache"]
+    chimera_prefix_prefetch: bool = TRAINING_DEFAULTS["chimera_prefix_prefetch"]
+    chimera_prefix_prefetch_device: Literal["auto", "cpu", "cuda"] = (
+        TRAINING_DEFAULTS["chimera_prefix_prefetch_device"]
+    )
+    chimera_prefix_prefetch_depth: int = Field(
+        default=TRAINING_DEFAULTS["chimera_prefix_prefetch_depth"], ge=1, le=4
+    )
     chimera_bridge_lr: Optional[float] = Field(
         default=TRAINING_DEFAULTS["chimera_bridge_lr"], ge=0
     )

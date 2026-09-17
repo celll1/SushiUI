@@ -5269,11 +5269,50 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <option value="joint">Joint (experimental)</option>
               </select>
             </div>
+            {(params.chimera_training_stage ?? "unet") !== "bridge_align" && (
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">
+                  Initial bridge alignment steps
+                </label>
+                <input type="number" step={1} min={0}
+                  value={params.chimera_bridge_align_steps ?? 0}
+                  onChange={(e) => updateParam("chimera_bridge_align_steps", Math.max(0, Number(e.target.value) || 0))}
+                  className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                <p className="mt-1 text-xs text-gray-500">
+                  0 disables. A positive value trains only the bridge first, then switches
+                  automatically to the selected U-Net or joint stage.
+                </p>
+              </div>
+            )}
             <label className="flex items-center gap-2 text-xs text-gray-300">
               <input type="checkbox" checked={params.chimera_conditioning_cache ?? true}
                 onChange={(e) => updateParam("chimera_conditioning_cache", e.target.checked)} />
               Cache conditioning in U-Net stage
             </label>
+            <label className="flex items-center gap-2 text-xs text-gray-300">
+              <input type="checkbox" checked={params.chimera_prefix_prefetch ?? true}
+                onChange={(e) => updateParam("chimera_prefix_prefetch", e.target.checked)} />
+              Prefetch next frozen KV prefix
+            </label>
+            {params.chimera_prefix_prefetch !== false && (
+              <div className="grid grid-cols-2 gap-2">
+                <label className="text-xs text-gray-400">Prefix prefetch device
+                  <select value={params.chimera_prefix_prefetch_device ?? "auto"}
+                    onChange={(e) => updateParam("chimera_prefix_prefetch_device", e.target.value)}
+                    className="mt-1 w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded">
+                    <option value="auto">Auto</option>
+                    <option value="cpu">CPU pinned</option>
+                    <option value="cuda">CUDA stream</option>
+                  </select>
+                </label>
+                <label className="text-xs text-gray-400">Prefetch depth
+                  <input type="number" step={1} min={1} max={4}
+                    value={params.chimera_prefix_prefetch_depth ?? 1}
+                    onChange={(e) => updateParam("chimera_prefix_prefetch_depth", Math.min(4, Math.max(1, Number(e.target.value) || 1)))}
+                    className="mt-1 w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded" />
+                </label>
+              </div>
+            )}
             <label className="flex items-center gap-2 text-xs text-amber-300">
               <input type="checkbox" checked={params.chimera_allow_unaligned_scratch ?? false}
                 onChange={(e) => updateParam("chimera_allow_unaligned_scratch", e.target.checked)} />
@@ -5293,7 +5332,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   className="mt-1 w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded" />
               </label>
             </div>
-            {(params.chimera_training_stage ?? "unet") === "bridge_align" && (
+            {((params.chimera_training_stage ?? "unet") === "bridge_align" ||
+              (params.chimera_bridge_align_steps ?? 0) > 0) && (
               <div className="grid grid-cols-2 gap-2">
                 <label className="text-xs text-gray-400">Hidden RMS weight
                   <input type="number" step="any" min={0}

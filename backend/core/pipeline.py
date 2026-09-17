@@ -1228,7 +1228,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "unet_initialization": manifest["unet"]["initialization"],
                     "unet_parameter_count": manifest["unet"]["parameter_count"],
                     "bridge_state": manifest["conditioning"]["bridge_state"],
-                    "context_tokens": manifest["conditioning"]["context_tokens"],
+                    "context_length": manifest["conditioning"]["context_length"],
                     "latent_channels": 4,
                     "vae_identity": manifest["vae"],
                 }

@@ -10,7 +10,7 @@ SenseNova prefix state into the two conditioning tensors the U-Net expects.
 | Role | Class/module | Ownership |
 |---|---|---|
 | Understanding | `NEOChatModel` loaded by `understanding.load_understanding_only` | External, content-hash-pinned SenseNova checkpoint; frozen |
-| Conditioning | `ConditioningBridge` | Bundled, trainable; emits `77 x 2048`, pooled `1280`, and context positions |
+| Conditioning | `ConditioningBridge` | Bundled, trainable; preserves the native prefix length at width `2048`, emits pooled `1280`, a mask, and per-token positions |
 | Denoiser | diffusers `UNet2DConditionModel` | Bundled; tensor census and parameter count equal the selected SDXL donor |
 | Attention | `ChimeraAttnProcessor` | Parameter-free replacement processor with three-axis context RoPE and generation-local K/V cache |
 | VAE | diffusers `AutoencoderKL` | Bundled from the same SDXL donor and content-hash-checked |
@@ -44,7 +44,7 @@ flowchart LR
   P["prompt / multimodal prefix"] --> U["frozen SenseNova understanding"]
   U --> H["last hidden + selected layer K/V"]
   H --> B["ConditioningBridge"]
-  B --> C["77x2048 context + 1280 pooled + 3D positions"]
+  B --> C["Lx2048 context + mask + 1280 pooled + original 3D positions"]
   N["4-channel noisy latent"] --> D["SDXL-shaped U-Net"]
   T["clean-time t + SDXL time IDs"] --> D
   C --> A["parameter-free 3D-RoPE cross attention"]
@@ -56,18 +56,21 @@ flowchart LR
 ```
 
 Each selected SenseNova layer owns a K/V projection in the bridge. Zero-initial
-gates add those residuals to the projected final hidden state, learned queries
-resample the prefix to 77 rows, and separate projections produce cross-attention
-and pooled conditioning. The bridge also takes attention-weighted barycenters of
-the prefix `(t,h,w)` coordinates. `ChimeraAttnProcessor` applies the declared
-SenseNova `2:1:1` axis split to context keys without adding parameters.
+gates add those residuals to the projected final hidden state, then token-wise
+projections produce one cross-attention row per native prefix row. Masked pooling
+produces the pooled conditioning. The original prefix `(t,h,w)` coordinates and
+mask pass through without resampling. A separate learned 77-query head exists
+only for CLIP-teacher alignment and is never the production U-Net context.
+`ChimeraAttnProcessor` applies the declared SenseNova `2:1:1` axis split to
+context keys without adding parameters.
 
 ## Tensor contract
 
 | Property | Value |
 |---|---|
 | Latent | `[B,4,H/8,W/8]`, donor VAE shift/scale normalization |
-| Context | `[B,77,2048]` |
+| Context | `[B,L,2048]`, where `L` is the native SenseNova prefix length |
+| Context mask | `[B,L]`; ragged batches right-pad to their maximum `L` |
 | Pooled conditioning | `[B,1280]` |
 | Added conditioning | SDXL original/crop/target time IDs |
 | Position encoding | Three-axis `t:h:w = 2:1:1`, crop-aware physical coordinates |
@@ -118,6 +121,15 @@ that rule through `chimera_allow_unaligned_scratch=true`, and a transplanted
 U-Net may never bypass it. Checkpoints are production-loadable Chimera
 directories with stage, step, epoch, metrics, and bridge-state provenance.
 
+`chimera_bridge_align_steps=N` optionally turns an `unet` or `joint` run into a
+two-stage run: bridge-only for completed steps `[0,N)`, then the selected target
+stage. `N` must align with gradient accumulation. The optimizer owns the union
+of the two stage groups from startup, while gradient enablement switches exactly
+at the boundary, so resume retains the same optimizer-group structure. This
+explicit schedule may proceed from an unaligned scratch artifact but does not
+replace the held-out gate for `sdxl_transplant` and does not claim that gate
+passed; its status remains separately recorded.
+
 ## Hook points
 
 - Attention backend selection is installed through
@@ -135,6 +147,15 @@ directories with stage, step, epoch, metrics, and bridge-state provenance.
   the shared trainer machinery with Chimera's directory artifact writer.
 - Component staging is explicit in the backend; Chimera is not in the generic
   keep-hot path.
+- Next-batch prefix prefetch is enabled by default for live-conditioning stages.
+  It stores only frozen raw hidden/KV/mask/position tensors and applies the
+  current bridge on the main thread, so `bridge_align`/`joint` remain fresh.
+  `auto` selects a separate CUDA stream only when off-device weights plus 10 GiB
+  headroom fit, else pinned CPU; depth defaults to 1. Cached `unet` training
+  skips this redundant worker.
+  The released geometry stores about 24 KiB/token; a real RTX 6000 Ada probe
+  measured 0.45--0.52 MiB for 19--22-token text prefixes and 88 ms steady-state
+  GPU capture after warmup (2026-09-17).
 - U-Net and bridge execution use bf16 in the measured configuration, while the
   bundled SDXL VAE executes in fp16. Its artifact tensors are stored in fp32
   and retain their exact identity across training checkpoints; encode/decode
@@ -142,7 +163,7 @@ directories with stage, step, epoch, metrics, and bridge-state provenance.
 
 ## Constraints
 
-- Artifact format v1 accepts the dense SenseNova understanding branch only.
+- Artifact format v2 accepts the dense SenseNova understanding branch only.
 - The external understanding file must still match its pinned content hash at
   every preflight; filename and mtime are not identity.
 - Only `full_finetune` is supported. LoRA/adapter, Relora, and ControlNet

@@ -30,6 +30,16 @@ It uses the shared three-site SDXL U-Net spatial tap and projector sidecar;
 `bridge_align` remains invalid because the U-Net is frozen, and `latent_stem`
 remains unvalidated for the bundled donor VAE.
 
+The current continuation advances the artifact contract to format v2. The
+production bridge now preserves the native variable prefix length and passes
+its padding mask and exact SenseNova positions through SDXL cross-attention;
+the 77-row resampler remains only for CLIP-teacher alignment. Ragged batches
+use packed variable-length FlashAttention. Training can run an initial
+`chimera_bridge_align_steps` phase before switching automatically to `unet` or
+`joint`, and live-conditioning stages prefetch the next batch's frozen raw
+hidden/KV prefix while always applying the current bridge on the main thread.
+This keeps bridge gradients fresh in both `bridge_align` and `joint`.
+
 The shipped surface now includes path-based scratch/transplant construction,
 understanding-only loading, model/API registration, deterministic txt2img,
 stage-exact `bridge_align` / `unet` / `joint` full training, production-loadable
@@ -78,6 +88,11 @@ Real validation completed on 2026-09-17:
   step 2 with finite total loss 2.582740;
 - the final REPA and Chimera regression selection: `403 passed`;
 - the combined Chimera/CFG regression command: `90 passed`.
+- the format-v2 variable-prefix/staged-training/prefetch regression selection:
+  `193 passed`, including CUDA FlashAttention and CUDA-stream handoff;
+- a real SenseNova int8 CUDA smoke produced native context
+  `[1,17,2048]` from prefix `[1,17,4096]`, retained 28 bridge gradient tensors,
+  and used 0.399 MiB for that raw-prefix payload.
 
 Two gates remain intentionally closed, not partially implemented or silently
 promoted: `sdxl_transplant` diffusion training still requires a bridge that
@@ -145,7 +160,9 @@ The worktree was clean immediately before this handoff file was added.
 - `conditioning_bridge.py`: relative 25/50/75/100% layer selection,
   layer-specific K/V projections with initially inert zero gates, learned-query
   resampling to `77 x 2048`, pooled `1280`, context-position barycenters, and
-  position variance.
+  position variance. This describes the original format-v1 implementation;
+  format v2 preserves the native variable-length prefix for production and
+  retains fixed-77 resampling only as an auxiliary CLIP-alignment head.
 - `unet.py`: constructs `UNet2DConditionModel` from the real donor config;
   supports reproducible `scratch` and strict `sdxl_transplant`; verifies exact
   `(name, shape)` and parameter-count parity; zeroes only `conv_out` for scratch.

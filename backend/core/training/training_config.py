@@ -484,8 +484,11 @@ def _build_train_section(
         _TD["sensenova_full_finetune_save_format"],
     )
     for key in (
-        "chimera_training_stage", "chimera_allow_unaligned_scratch",
-        "chimera_conditioning_cache", "chimera_bridge_lr",
+        "chimera_training_stage", "chimera_bridge_align_steps",
+        "chimera_allow_unaligned_scratch",
+        "chimera_conditioning_cache", "chimera_prefix_prefetch",
+        "chimera_prefix_prefetch_device", "chimera_prefix_prefetch_depth",
+        "chimera_bridge_lr",
         "chimera_context_dropout", "chimera_clip_hidden_weight",
         "chimera_clip_pooled_weight",
     ):

@@ -90,7 +90,7 @@ def load_understanding_only(
     state, metadata = _read_understanding_state_dict(path)
     config, config_dict = _load_sensenova_config(metadata, str(Path(path).parent))
     if isinstance(config.llm_config, NEOMoELLMConfig):
-        raise ValueError("Chimera format v1 supports the dense SenseNova understanding branch only")
+        raise ValueError("Chimera format v2 supports the dense SenseNova understanding branch only")
 
     convrot = _int8_convrot_source_layers(state, path=path)
     if convrot:

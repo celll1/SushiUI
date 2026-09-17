@@ -11710,6 +11710,9 @@ class BaseTrainer(ABC):
                 time_ids=mnt_time_ids,
                 timesteps=timesteps,
                 cfg_drop_mask=cfg_drop_mask,
+                debug_save_path=debug_save_path,
+                debug_captions=batch_captions if debug_save_path else None,
+                debug_reference_image_paths=batch_reference_paths if debug_save_path else None,
                 profile_vram=self.debug_vram,
                 repa_pixels=mnt_repa_pixels,
             )

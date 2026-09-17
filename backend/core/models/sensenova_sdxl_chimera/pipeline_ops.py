@@ -116,8 +116,10 @@ def _unet_velocity(
     *,
     cache_metadata: tuple,
 ) -> torch.Tensor:
+    device = sample.device
+    dtype = sample.dtype
     context = ChimeraAttentionContext(
-        context_positions=conditioning.context_positions,
+        context_positions=conditioning.context_positions.to(device=device),
         target_height=int(cache_metadata[0]),
         target_width=int(cache_metadata[1]),
         crop_top=int(cache_metadata[2]),
@@ -127,14 +129,16 @@ def _unet_velocity(
     )
     set_chimera_attention_context(unet, context)
     added = {
-        "text_embeds": conditioning.pooled_text_embeds,
-        "time_ids": time_ids,
+        "text_embeds": conditioning.pooled_text_embeds.to(device=device, dtype=dtype),
+        "time_ids": time_ids.to(device=device, dtype=dtype),
     }
     return unet(
         sample,
-        timestep.expand(sample.shape[0]),
-        encoder_hidden_states=conditioning.encoder_hidden_states,
-        encoder_attention_mask=conditioning.attention_mask,
+        timestep.to(device=device).expand(sample.shape[0]),
+        encoder_hidden_states=conditioning.encoder_hidden_states.to(
+            device=device, dtype=dtype
+        ),
+        encoder_attention_mask=conditioning.attention_mask.to(device=device),
         added_cond_kwargs=added,
         return_dict=False,
     )[0]

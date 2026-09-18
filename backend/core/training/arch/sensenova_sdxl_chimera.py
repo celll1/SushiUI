@@ -81,6 +81,7 @@ class SenseNovaSDXLChimeraArchHandler(ArchHandler):
         return ops.train_step(trainer, ctx)
 
     def sample(self, trainer, sample_ctx: SampleContext):
+        from core.training.ops import sensenova_sdxl_chimera_ops as ops
         from core.models.sensenova_sdxl_chimera import pipeline_ops
 
         unet = trainer.unet
@@ -100,7 +101,7 @@ class SenseNovaSDXLChimeraArchHandler(ArchHandler):
                 attention_mask=aux["context_attention_mask"],
                 fingerprint=key,
             )
-            latents = pipeline_ops.sample_txt2img_latents(
+            latents = ops.generate_sample(
                 unet,
                 make(positive, pos_aux, "training-preview-positive"),
                 make(negative, neg_aux, "training-preview-negative"),
@@ -111,10 +112,11 @@ class SenseNovaSDXLChimeraArchHandler(ArchHandler):
                 seed=sample_ctx.seed,
                 timestep_shift=sample_ctx.sensenova_timestep_shift,
                 cfg_norm=sample_ctx.sensenova_cfg_norm,
-                progress_callback=(
-                    (lambda step, total, _latents: sample_ctx.step_progress_callback(step, total))
-                    if sample_ctx.step_progress_callback else None
-                ),
+                cfg_schedule_type=sample_ctx.cfg_schedule_type,
+                cfg_schedule_min=sample_ctx.cfg_schedule_min,
+                cfg_schedule_max=sample_ctx.cfg_schedule_max,
+                cfg_schedule_power=sample_ctx.cfg_schedule_power,
+                step_progress_callback=sample_ctx.step_progress_callback,
                 cfg_probe_callback=sample_ctx.cfg_probe_callback,
             )
         finally:

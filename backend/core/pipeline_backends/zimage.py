@@ -1750,15 +1750,22 @@ class ZImageMixin:
             conditioning_cache_key, generation_prompt_cache,
         )
         from core.keep_hot import discard_resident, is_resident
+        from core.inference.custom_sampling import cfg_schedule_peak
         from core.vram_optimization import (
             move_zimage_text_encoder_to_cpu,
             move_zimage_text_encoder_to_gpu,
         )
 
         prompt_key = (prompt,) if isinstance(prompt, str) else tuple(prompt)
+        branch_scale = cfg_schedule_peak(
+            guidance_scale,
+            params.get("cfg_schedule_type", "constant"),
+            params.get("cfg_schedule_min", 1.0),
+            params.get("cfg_schedule_max"),
+        )
         do_cfg = (
-            abs(float(guidance_scale) - 1.0) > 1e-5
-            and abs(float(guidance_scale)) > 1e-5
+            abs(branch_scale - 1.0) > 1e-5
+            and abs(branch_scale) > 1e-5
         )
         if do_cfg:
             if negative_prompt is None:
@@ -1807,7 +1814,7 @@ class ZImageMixin:
 
         prompt_embeds, negative_embeds, do_cfg = self._zimage_encode_prompt(
             text_encoder, tokenizer, prompt, negative_prompt,
-            guidance_scale, max_sequence_length, text_encoder_quantization,
+            branch_scale, max_sequence_length, text_encoder_quantization,
         )
         nag_embeds = self._zimage_encode_nag_negative(
             text_encoder, tokenizer, params, prompt, max_sequence_length,
@@ -2506,9 +2513,21 @@ class ZImageMixin:
             timestep = (1000 - timestep) / 1000
             t_norm = normalized_timestep_scalars[i]
 
-            # CFG truncation logic (disable CFG after certain timestep)
-            # Default value from Z-Image: DEFAULT_CFG_TRUNCATION = 1.0
-            current_guidance_scale = guidance_scale
+            # Dynamic CFG rises from the noisy first step toward the configured
+            # clean-end scale. Z-Image's model time t_norm already runs 0 -> 1.
+            from core.inference.custom_sampling import calculate_dynamic_cfg
+            cfg_params = spectrum_params or {}
+            current_guidance_scale = calculate_dynamic_cfg(
+                sigma=1.0 - float(t_norm),
+                sigma_max=1.0,
+                cfg_base=float(guidance_scale),
+                cfg_schedule_type=str(cfg_params.get("cfg_schedule_type", "constant")),
+                cfg_schedule_min=float(cfg_params.get("cfg_schedule_min", 1.0) or 1.0),
+                cfg_schedule_max=cfg_params.get("cfg_schedule_max"),
+                cfg_schedule_power=float(cfg_params.get("cfg_schedule_power", 2.0) or 2.0),
+                denoise_progress=i / max(len(timesteps) - 1, 1),
+            )
+            # Legacy truncation remains a final hard gate after the schedule.
             cfg_truncation = 1.0  # Z-Image default
             if do_classifier_free_guidance and cfg_truncation is not None and float(cfg_truncation) <= 1:
                 if t_norm > cfg_truncation:

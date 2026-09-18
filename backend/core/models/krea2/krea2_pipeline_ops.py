@@ -287,7 +287,8 @@ def _blend_guidance(
 ) -> Tuple[torch.Tensor, Any, Optional[float]]:
     """CFG blend. ``guidance`` is the Krea convention scale (== cfg_scale - 1).
 
-    When uncond is None (guidance <= 0), returns v_cond unchanged. Otherwise blends
+    When uncond is absent, or neither the base value nor its schedule exceeds one,
+    returns v_cond unchanged. Otherwise blends
     ``v_uncond + cfg_now * (v_cond - v_uncond)`` where ``cfg_now = 1 + guidance``,
     matching the Krea velocity ``cond + guidance*(cond - uncond)`` while exposing a
     standard CFG scale to the shared Advanced-CFG schedule/threshold helpers.
@@ -298,7 +299,7 @@ def _blend_guidance(
     guidance) can force-reproduce the SAME scale on a corrected cond without
     re-deriving it from a different (cond, uncond) pair.
     """
-    if v_uncond is None or guidance <= 0.0:
+    if v_uncond is None:
         return v_cond, None, None
 
     cfg = advanced_cfg or {}
@@ -310,6 +311,12 @@ def _blend_guidance(
     dyn_percentile = float(cfg.get("dynamic_threshold_percentile", 0.0) or 0.0)
     dyn_mimic = float(cfg.get("dynamic_threshold_mimic_scale", 1.0) or 1.0)
     developer_mode = bool(cfg.get("developer_mode", False))
+
+    from core.inference.custom_sampling import cfg_schedule_peak
+    if cfg_schedule_peak(
+        1.0 + guidance, schedule_type, schedule_min, schedule_max,
+    ) <= 1.0:
+        return v_cond, None, None
 
     from core.inference.custom_sampling import (
         calculate_cfg_metrics,
@@ -412,7 +419,14 @@ def _run_loop(
     num_train = scheduler.config.num_train_timesteps
     total_steps = len(timesteps)
     timestep_scalars = snapshot_schedule_scalars(timesteps)
-    do_cfg = neg_prompt_embeds is not None and guidance > 0.0
+    from core.inference.custom_sampling import cfg_schedule_peak
+    cfg = advanced_cfg or {}
+    do_cfg = neg_prompt_embeds is not None and cfg_schedule_peak(
+        1.0 + guidance,
+        cfg.get("cfg_schedule_type", "constant"),
+        cfg.get("cfg_schedule_min", 1.0),
+        cfg.get("cfg_schedule_max"),
+    ) > 1.0
     t_dtype = transformer.dtype
     style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
 
@@ -543,7 +557,8 @@ def _run_loop(
         # Enabled (>0) AND this step actually injected style (the SAME
         # `is_step_active` gate used for the capture/inject in the `elif
         # style_active` branch above) AND CFG is active (`v_uncond is not None`,
-        # which for Krea2's `do_cfg` gate also guarantees `guidance > 0.0`, so
+        # which for Krea2's `do_cfg` gate also guarantees a scheduled CFG peak
+        # above one, so
         # `_blend_guidance` always took its full-derivation path and `cfg_now` is
         # never `None` here): run one more cond forward -- the SAME transformer()
         # call as the styled `v_cond` above (identical hidden_states/

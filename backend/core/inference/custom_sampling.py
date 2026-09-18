@@ -689,6 +689,22 @@ def calculate_cfg_metrics(noise_pred_uncond: torch.Tensor, noise_pred_text: torc
     }
 
 
+def cfg_schedule_peak(
+    cfg_base: float,
+    cfg_schedule_type: str = "constant",
+    cfg_schedule_min: float = 1.0,
+    cfg_schedule_max: Optional[float] = None,
+) -> float:
+    """Largest CFG value a schedule can request, for branch-allocation gates."""
+    if cfg_schedule_type == "constant":
+        return float(cfg_base)
+    return max(
+        float(cfg_base),
+        float(cfg_schedule_min),
+        float(cfg_schedule_max) if cfg_schedule_max is not None else float(cfg_base),
+    )
+
+
 def calculate_dynamic_cfg(
     sigma: float,
     sigma_max: float,

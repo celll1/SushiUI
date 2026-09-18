@@ -19813,6 +19813,10 @@ class BaseTrainer(ABC):
                                 "settings": {
                                     "cfg_scale": float(sample_guidance_scale),
                                     "cfg_norm": str(sensenova_sample_cfg_norm),
+                                    "cfg_schedule_type": str(sample_cfg_schedule_type),
+                                    "cfg_schedule_min": float(sample_cfg_schedule_min),
+                                    "cfg_schedule_max": sample_cfg_schedule_max,
+                                    "cfg_schedule_power": float(sample_cfg_schedule_power),
                                     "timestep_shift": float(sensenova_sample_timestep_shift),
                                     "steps": int(sample_steps),
                                 },

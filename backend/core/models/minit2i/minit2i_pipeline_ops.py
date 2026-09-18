@@ -407,6 +407,18 @@ def _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cf
             t1 = ts[i + 1]
             t = t0.expand(1).to(x.dtype)
             t_val = timestep_scalars[i]
+            from core.inference.custom_sampling import calculate_dynamic_cfg
+            cfg_params = spectrum_params or {}
+            cfg_now = calculate_dynamic_cfg(
+                sigma=1.0 - j / max(total - 1, 1),
+                sigma_max=1.0,
+                cfg_base=float(cfg_scale),
+                cfg_schedule_type=str(cfg_params.get("cfg_schedule_type", "constant")),
+                cfg_schedule_min=float(cfg_params.get("cfg_schedule_min", 1.0) or 1.0),
+                cfg_schedule_max=cfg_params.get("cfg_schedule_max"),
+                cfg_schedule_power=float(cfg_params.get("cfg_schedule_power", 2.0) or 2.0),
+                denoise_progress=j / max(total - 1, 1),
+            )
             spectrum_skip = spectrum is not None and not spectrum.is_anchor(j)
             if spectrum_skip:
                 pred_x0 = spectrum.forecast(j)
@@ -416,14 +428,14 @@ def _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cf
                 # routed here by the caller (see docstring) so this branch does
                 # not affect single-ref behavior at all.
                 pred_x0 = _predict_x0_style_step_multi(
-                    _fb_net, x, t, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval,
+                    _fb_net, x, t, text, mask, neg_text, neg_mask, cfg_now, cfg_interval,
                     style_refs, style_combine_mode, j, total, t_val,
                 )
                 if spectrum is not None:
                     spectrum.record(j, pred_x0)
             elif style_active and style_cfg.is_step_active(j, total):
                 pred_x0 = _predict_x0_style_step(
-                    _fb_net, x, t, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval,
+                    _fb_net, x, t, text, mask, neg_text, neg_mask, cfg_now, cfg_interval,
                     style_cfg, style_ref_x0, style_eps_ref, j, total, t_val,
                 )
                 if spectrum is not None:
@@ -434,7 +446,7 @@ def _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cf
                     _fb_net._fbcache_step = j
                 pred_x0 = _predict_x0_cfg(
                     transformer, x, t, text, mask, neg_text, neg_mask,
-                    cfg_scale, cfg_interval, t_val,
+                    cfg_now, cfg_interval, t_val,
                 )
                 if spectrum is not None:
                     spectrum.record(j, pred_x0)

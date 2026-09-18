@@ -96,7 +96,11 @@ Flow sampling consumes the public timestep shift and CFG-norm controls in both
 production generation and training previews. `global` CFG norm caps the guided
 velocity norm at the conditional branch norm before each Euler step; `channel`
 does so per latent channel. Training previews use the configured shift instead
-of the sampler's neutral internal default.
+of the sampler's neutral internal default. Dynamic CFG uses the same convention
+as the other image samplers: guidance starts at `cfg_schedule_min` on the noisy
+side and rises toward `cfg_schedule_max` (or the ordinary CFG scale) at the clean
+side. A scheduled peak above one allocates the negative branch even when the base
+CFG value itself is one.
 
 Running training can queue an explicit CFG probe through
 `POST /api/v1/training/runs/{run_id}/cfg-probe` and poll its result through the

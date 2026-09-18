@@ -509,7 +509,7 @@ class SenseNovaMixin:
         return style_cfg, style_ref_x0, style_eps_ref, None, "stack"
 
     def _sensenova_common_params(self, params: Dict[str, Any], default_w: int, default_h: int) -> Dict[str, Any]:
-        from api.param_defaults import SENSENOVA_GENERATION_DEFAULTS
+        from api.param_defaults import GENERATION_DEFAULTS, SENSENOVA_GENERATION_DEFAULTS
         from core.models.sensenova import sensenova_pipeline_ops as ops
 
         seed = params.get("seed", -1)
@@ -571,6 +571,18 @@ class SenseNovaMixin:
             except Exception:
                 pass
 
+        cfg_scale = float(params.get("cfg_scale", SENSENOVA_GENERATION_DEFAULTS["cfg_scale"]))
+        cfg_schedule_type = params.get("cfg_schedule_type", GENERATION_DEFAULTS["cfg_schedule_type"])
+        cfg_schedule_min = float(params.get("cfg_schedule_min", GENERATION_DEFAULTS["cfg_schedule_min"]))
+        cfg_schedule_max = params.get("cfg_schedule_max")
+        cfg_branch_scale = cfg_scale
+        if cfg_schedule_type != "constant":
+            cfg_branch_scale = max(
+                cfg_scale,
+                cfg_schedule_min,
+                float(cfg_schedule_max) if cfg_schedule_max is not None else cfg_scale,
+            )
+
         return {
             "seed": seed,
             "prompt": params.get("prompt", ""),
@@ -578,10 +590,15 @@ class SenseNovaMixin:
             # back to the original empty-string uncond (see MODEL_FACTS.md).
             "negative_prompt": params.get("negative_prompt") or None,
             "num_inference_steps": int(params.get("steps") or SENSENOVA_GENERATION_DEFAULTS["steps"]),
-            "cfg_scale": float(params.get("cfg_scale", SENSENOVA_GENERATION_DEFAULTS["cfg_scale"])),
+            "cfg_scale": cfg_scale,
+            "cfg_branch_scale": cfg_branch_scale,
             "timestep_shift": float(params.get("timestep_shift", SENSENOVA_GENERATION_DEFAULTS["timestep_shift"])),
             "img_cfg_scale": img_cfg_scale,
             "cfg_norm": params.get("cfg_norm", SENSENOVA_GENERATION_DEFAULTS["cfg_norm"]),
+            "cfg_schedule_type": cfg_schedule_type,
+            "cfg_schedule_min": cfg_schedule_min,
+            "cfg_schedule_max": cfg_schedule_max,
+            "cfg_schedule_power": float(params.get("cfg_schedule_power", GENERATION_DEFAULTS["cfg_schedule_power"])),
             # routes.py already decodes uploads into PIL Image objects before
             # putting them in params["ref_images"]; nothing to decode here.
             "ref_images": ref_images,
@@ -744,7 +761,7 @@ class SenseNovaMixin:
                         print(f"[SenseNova] prefill progress callback raised: {exc}")
 
             prefix = ops.encode_prompt(
-                transformer, tokenizer, cfg["prompt"], cfg["height"], cfg["width"], cfg["cfg_scale"],
+                transformer, tokenizer, cfg["prompt"], cfg["height"], cfg["width"], cfg["cfg_branch_scale"],
                 prefill_callback=_prefill_note, negative_prompt=cfg["negative_prompt"],
                 ref_images=cfg["ref_images"], img_cfg_scale=cfg["img_cfg_scale"],
             )
@@ -784,6 +801,7 @@ class SenseNovaMixin:
                 step_callback=_step_bridge,
                 style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
                 style_refs=style_refs, style_combine_mode=style_combine_mode,
+                cfg_schedule=cfg,
             )
         finally:
             # Defence in depth: _euler_run already clears both prefix KV caches
@@ -872,7 +890,7 @@ class SenseNovaMixin:
                         print(f"[SenseNova] prefill progress callback raised: {exc}")
 
             prefix = ops.encode_prompt(
-                transformer, tokenizer, cfg["prompt"], cfg["height"], cfg["width"], cfg["cfg_scale"],
+                transformer, tokenizer, cfg["prompt"], cfg["height"], cfg["width"], cfg["cfg_branch_scale"],
                 prefill_callback=_prefill_note, negative_prompt=cfg["negative_prompt"],
                 ref_images=cfg["ref_images"], img_cfg_scale=cfg["img_cfg_scale"],
             )
@@ -902,6 +920,7 @@ class SenseNovaMixin:
                 step_callback=_step_bridge,
                 style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
                 style_refs=style_refs, style_combine_mode=style_combine_mode,
+                cfg_schedule=cfg,
             )
         finally:
             # Same defence-in-depth as txt2img: _euler_run already clears both
@@ -983,7 +1002,7 @@ class SenseNovaMixin:
                         print(f"[SenseNova] prefill progress callback raised: {exc}")
 
             prefix = ops.encode_prompt(
-                transformer, tokenizer, cfg["prompt"], cfg["height"], cfg["width"], cfg["cfg_scale"],
+                transformer, tokenizer, cfg["prompt"], cfg["height"], cfg["width"], cfg["cfg_branch_scale"],
                 prefill_callback=_prefill_note, negative_prompt=cfg["negative_prompt"],
                 ref_images=cfg["ref_images"], img_cfg_scale=cfg["img_cfg_scale"],
             )
@@ -1015,6 +1034,7 @@ class SenseNovaMixin:
                 step_callback=_step_bridge,
                 style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
                 style_refs=style_refs, style_combine_mode=style_combine_mode,
+                cfg_schedule=cfg,
             )
         finally:
             if prefix is not None:

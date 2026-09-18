@@ -26,6 +26,8 @@ of being silent.
 """
 from __future__ import annotations
 
+from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
+
 import math
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -792,6 +794,10 @@ def generate_sample(
     reference_image_path: Optional[str] = None,
     negative_prompt: str = "",
     step_progress_callback=None,
+    cfg_schedule_type: str = _TRAINING_DEFAULTS["sample_cfg_schedule_type"],
+    cfg_schedule_min: float = _TRAINING_DEFAULTS["sample_cfg_schedule_min"],
+    cfg_schedule_max=_TRAINING_DEFAULTS["sample_cfg_schedule_max"],
+    cfg_schedule_power: float = _TRAINING_DEFAULTS["sample_cfg_schedule_power"],
 ):
     """
     Generate sample image during training (FLUX.2 Klein).
@@ -847,7 +853,13 @@ def generate_sample(
         prompt_embeds, text_ids = _flux2_encode_prompt_for_sample(trainer, prompt)
 
         # Encode unconditional prompt only if CFG is enabled
-        if guidance_scale > 1.0:
+        cfg_peak = float(guidance_scale)
+        if cfg_schedule_type != "constant":
+            cfg_peak = max(
+                cfg_peak, float(cfg_schedule_min),
+                float(cfg_schedule_max) if cfg_schedule_max is not None else cfg_peak,
+            )
+        if cfg_peak > 1.0:
             negative_prompt_embeds, negative_text_ids = _flux2_encode_prompt_for_sample(trainer, negative_prompt)
         else:
             negative_prompt_embeds, negative_text_ids = None, None
@@ -936,7 +948,7 @@ def generate_sample(
         trainer.scheduler.set_begin_index(0)
 
         is_distilled = getattr(trainer.transformer.config, "is_distilled", False)
-        do_classifier_free_guidance = guidance_scale > 1.0 and not is_distilled
+        do_classifier_free_guidance = cfg_peak > 1.0 and not is_distilled
 
         # Autocast the denoise loop to the sampling compute dtype (transformer dtype,
         # bf16/fp16). This is unconditional (NOT gated on trainer.mixed_precision):
@@ -952,6 +964,17 @@ def generate_sample(
         total_steps = len(timesteps)
         with torch.no_grad(), torch.autocast(device_type=trainer.device.type, dtype=sample_compute_dtype):
             for i, t in enumerate(tqdm(timesteps, desc="Generating")):
+                from core.inference.custom_sampling import calculate_dynamic_cfg
+                cfg_now = calculate_dynamic_cfg(
+                    sigma=1.0 - i / max(total_steps - 1, 1),
+                    sigma_max=1.0,
+                    cfg_base=float(guidance_scale),
+                    cfg_schedule_type=cfg_schedule_type,
+                    cfg_schedule_min=cfg_schedule_min,
+                    cfg_schedule_max=cfg_schedule_max,
+                    cfg_schedule_power=cfg_schedule_power,
+                    denoise_progress=i / max(total_steps - 1, 1),
+                )
                 # Expand timestep
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
 
@@ -979,7 +1002,7 @@ def generate_sample(
 
                     # Split and apply CFG formula
                     noise_pred_uncond, noise_pred_cond = noise_pred_combined.chunk(2, dim=0)
-                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+                    noise_pred = noise_pred_uncond + cfg_now * (noise_pred_cond - noise_pred_uncond)
                 else:
                     # Distilled model: Use guidance vector (not CFG)
                     guidance_vec = torch.full(

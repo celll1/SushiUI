@@ -358,8 +358,15 @@ class AnimaMixin:
         )
         from core.keep_hot import discard_resident, is_resident, mark_resident
         from core.models.anima.anima_pipeline_ops import encode_prompt
+        from core.inference.custom_sampling import cfg_schedule_peak
 
         use_negpip = self._anima_negpip_active(params)
+        branch_scale = cfg_schedule_peak(
+            guidance_scale,
+            params.get("cfg_schedule_type", "constant"),
+            params.get("cfg_schedule_min", 1.0),
+            params.get("cfg_schedule_max"),
+        )
         nag_text = params.get("nag_negative_prompt", "") or negative_prompt or ""
         nag_enabled = bool(params.get("nag_enable", False)) \
             and abs(float(params.get("nag_scale", 1.0) or 1.0) - 1.0) > 1e-5 \
@@ -370,9 +377,9 @@ class AnimaMixin:
         cache_key = conditioning_cache_key(
             "anima", model_key, qwen3_tokenizer, enc_device, encoder_dtype,
             prompt,
-            negative_prompt if guidance_scale > 1.0 else None,
+            negative_prompt if branch_scale > 1.0 else None,
             nag_text if nag_enabled else None,
-            guidance_scale > 1.0,
+            branch_scale > 1.0,
             nag_enabled,
             use_negpip,
             tokenizer_cache_key(t5_tokenizer),
@@ -399,7 +406,7 @@ class AnimaMixin:
             device=enc_device, dtype=compute_dtype, skip_emphasis=use_negpip,
         )
         uncond = None
-        if guidance_scale > 1.0:
+        if branch_scale > 1.0:
             uncond = encode_prompt(
                 text_encoder, qwen3_tokenizer, t5_tokenizer, negative_prompt,
                 device=enc_device, dtype=compute_dtype, skip_emphasis=use_negpip,

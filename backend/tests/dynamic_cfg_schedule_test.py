@@ -9,7 +9,7 @@ BACKEND = Path(__file__).resolve().parents[1]
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
-from core.inference.custom_sampling import calculate_dynamic_cfg
+from core.inference.custom_sampling import calculate_dynamic_cfg, cfg_schedule_peak
 
 
 @pytest.mark.parametrize("schedule", ("linear", "quadratic", "cosine", "exponential"))
@@ -68,3 +68,21 @@ def test_constant_schedule_remains_exactly_the_requested_cfg():
         cfg_schedule_type="constant", cfg_schedule_min=1.0,
         denoise_progress=0.0,
     ) == pytest.approx(7.0)
+
+
+def test_schedule_peak_keeps_the_unconditional_branch_when_base_is_one():
+    assert cfg_schedule_peak(1.0, "linear", 1.0, 7.0) == pytest.approx(7.0)
+    assert cfg_schedule_peak(1.0, "constant", 7.0, 9.0) == pytest.approx(1.0)
+
+
+def test_cfg_schedule_capability_matches_classic_image_cfg_architectures():
+    from api.arch_capabilities import ARCH_UNSUPPORTED
+
+    supported = {
+        "sd15", "sdxl", "zimage", "flux2", "ideogram4", "lens",
+        "minit2i", "anima", "krea2", "sensenova",
+        "sensenova_sdxl_chimera",
+    }
+    unsupported = {"ltx2", "acestep", "minimax_h3", "minimax_music3", "yue2"}
+    assert all("cfg_schedule" not in ARCH_UNSUPPORTED.get(arch, {}) for arch in supported)
+    assert all("cfg_schedule" in ARCH_UNSUPPORTED.get(arch, {}) for arch in unsupported)

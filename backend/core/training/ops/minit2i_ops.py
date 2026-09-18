@@ -20,6 +20,8 @@ MiniT2I's token geometry to the shared loss helper.
 """
 from __future__ import annotations
 
+from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
+
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -487,6 +489,10 @@ def generate_sample(
     seed: int = -1,
     negative_prompt: str = "",
     step_progress_callback=None,
+    cfg_schedule_type: str = _TRAINING_DEFAULTS["sample_cfg_schedule_type"],
+    cfg_schedule_min: float = _TRAINING_DEFAULTS["sample_cfg_schedule_min"],
+    cfg_schedule_max=_TRAINING_DEFAULTS["sample_cfg_schedule_max"],
+    cfg_schedule_power: float = _TRAINING_DEFAULTS["sample_cfg_schedule_power"],
 ):
     """Generate a sample during MiniT2I training (pixel-space flow matching).
 
@@ -528,7 +534,13 @@ def generate_sample(
         if text_encoder_device != trainer.device:
             trainer.text_encoder.to(trainer.device)
         text, mask = _mt_encode(trainer.text_encoder, trainer.tokenizer, prompt, prompt_length, trainer.device)
-        if guidance_scale != 1.0 and negative_prompt:
+        cfg_peak = float(guidance_scale)
+        if cfg_schedule_type != "constant":
+            cfg_peak = max(
+                cfg_peak, float(cfg_schedule_min),
+                float(cfg_schedule_max) if cfg_schedule_max is not None else cfg_peak,
+            )
+        if cfg_peak > 1.0:
             neg_text, neg_mask = _mt_encode(
                 trainer.text_encoder, trainer.tokenizer, negative_prompt, prompt_length, trainer.device)
         else:
@@ -554,6 +566,12 @@ def generate_sample(
                     neg_mask=neg_mask,
                     channels=int(cfg.in_channels), noise_scale=noise_scale, clamp_output=False,
                     progress_callback=_denoise_progress_callback,
+                    spectrum_params={
+                        "cfg_schedule_type": cfg_schedule_type,
+                        "cfg_schedule_min": cfg_schedule_min,
+                        "cfg_schedule_max": cfg_schedule_max,
+                        "cfg_schedule_power": cfg_schedule_power,
+                    },
                 )
             else:
                 x = _mt_denoise(
@@ -563,6 +581,12 @@ def generate_sample(
                     neg_text=neg_text.to(t_dtype) if neg_text is not None else None,
                     neg_mask=neg_mask,
                     progress_callback=_denoise_progress_callback,
+                    spectrum_params={
+                        "cfg_schedule_type": cfg_schedule_type,
+                        "cfg_schedule_min": cfg_schedule_min,
+                        "cfg_schedule_max": cfg_schedule_max,
+                        "cfg_schedule_power": cfg_schedule_power,
+                    },
                 )
         if is_latent:
             trainer.vae.to(trainer.device)

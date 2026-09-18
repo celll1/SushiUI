@@ -42,9 +42,11 @@ from core.models.common.int8_runtime_quantize import (
 # ---------------------------------------------------------------------------
 FEATURE_PARAMS: Dict[str, List[str]] = {
     "use_torch_compile": ["use_torch_compile"],
+    "cfg_schedule": [
+        "cfg_schedule_type", "cfg_schedule_min", "cfg_schedule_max", "cfg_schedule_power",
+    ],
     "advanced_cfg": [
-        "cfg_schedule_type", "cfg_schedule_min", "cfg_schedule_max",
-        "cfg_schedule_power", "cfg_rescale_snr_alpha",
+        "cfg_rescale_snr_alpha",
         "dynamic_threshold_percentile", "dynamic_threshold_mimic_scale",
     ],
     "spectrum": ["spectrum_enable"],
@@ -80,7 +82,7 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     "flatten_in_loop": ["flatten_in_loop"],
     "te_override": ["text_encoder_path"],
     "vae_override": ["vae_path"],
-    # Guidance. Split from `advanced_cfg` (which is the U-Net scheduling block)
+    # Guidance. Split from the image CFG schedule and advanced post-processing
     # because a guidance-DISTILLED architecture ignores the guidance scale
     # itself, not just its schedule.
     "cfg": ["guidance_scale", "cfg_scale"],
@@ -158,7 +160,8 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
 # Human-readable label used in the warning message for each feature.
 FEATURE_LABELS: Dict[str, str] = {
     "use_torch_compile": "use_torch_compile",
-    "advanced_cfg": "advanced CFG (cfg_schedule_*/dynamic_threshold_*/cfg_rescale_snr_alpha)",
+    "cfg_schedule": "CFG schedule (cfg_schedule_*)",
+    "advanced_cfg": "advanced CFG (dynamic_threshold_*/cfg_rescale_snr_alpha)",
     "spectrum": "spectrum_* (Spectral Feature Forecasting)",
     "fbcache": "fbcache_* (First Block Cache)",
     "nag": "nag_* (Normalized Attention Guidance)",
@@ -380,12 +383,25 @@ for _arch in ("sd15", "sdxl"):
         "sample_nag_enable", "sample_nag_scale", "sample_nag_tau", "sample_nag_alpha",
         "sample_nag_sigma_end", "sample_nag_negative_prompt",
     ]
+for _arch in ("zimage", "flux2", "anima", "lens", "minit2i", "krea2"):
+    TRAINING_SAMPLE_SUPPORTED_PARAMS[_arch] = [
+        "sample_cfg_schedule_type", "sample_cfg_schedule_min",
+        "sample_cfg_schedule_max", "sample_cfg_schedule_power",
+    ]
 TRAINING_SAMPLE_SUPPORTED_PARAMS["sensenova"] = [
+    "sample_cfg_schedule_type",
+    "sample_cfg_schedule_min",
+    "sample_cfg_schedule_max",
+    "sample_cfg_schedule_power",
     "sensenova_sample_timestep_shift",
     "sensenova_sample_img_cfg_scale",
     "sensenova_sample_cfg_norm",
 ]
 TRAINING_SAMPLE_SUPPORTED_PARAMS["sensenova_sdxl_chimera"] = [
+    "sample_cfg_schedule_type",
+    "sample_cfg_schedule_min",
+    "sample_cfg_schedule_max",
+    "sample_cfg_schedule_power",
     "sensenova_sample_timestep_shift",
     "sensenova_sample_cfg_norm",
 ]
@@ -560,11 +576,12 @@ for _a in _DIT_ARCHS:
     _add(_a, "use_torch_compile",
          "torch.compile is only applied to the SD1.5/SDXL U-Net; this DiT architecture ignores it")
 
-# Advanced CFG block: implemented in the U-Net custom sampling loop; the
-# flow-matching DiT samplers do not run it.
+# Dynamic thresholding and CFG rescale remain U-Net-only. CFG scheduling is a
+# separate capability because classic cond/uncond guidance is also used by
+# several flow samplers.
 for _a in ["zimage", "flux2", "minit2i"]:
     _add(_a, "advanced_cfg",
-         "CFG scheduling / dynamic thresholding / CFG-rescale run only in the U-Net sampling loop, not in this DiT sampler")
+         "dynamic thresholding and CFG-rescale run only in the U-Net sampling loop, not in this DiT sampler")
 
 # Spectrum forecasting: implemented for the U-Net and every image/video DiT
 # except krea2 and acestep (see _SPECTRUM_UNSUPPORTED above).
@@ -584,7 +601,9 @@ _add("krea2", "controlnets", "ControlNet is not supported for Krea 2")
 # LTX-2.3 is a video model with its own flow-matching sampler; the image-oriented
 # guidance/conditioning features do not apply.
 _add("ltx2", "advanced_cfg",
-     "CFG scheduling / dynamic thresholding / CFG-rescale run only in the U-Net sampling loop, not in the LTX-2.3 video sampler")
+     "dynamic thresholding and CFG-rescale run only in the U-Net sampling loop, not in the LTX-2.3 video sampler")
+_add("ltx2", "cfg_schedule",
+     "the image CFG schedule control is not wired into the LTX-2.3 video pipeline")
 _add("ltx2", "nag", "Normalized Attention Guidance is not implemented for the LTX-2.3 video model")
 _add("ltx2", "controlnets", "ControlNet is not supported for the LTX-2.3 video model")
 # The img2vid endpoint's optional SECOND keyframe. LTX-2.3's image-to-video
@@ -626,7 +645,9 @@ _add("ltx2", "fuse_output_proj",
 # features apply. Image endpoints reject an ACE-Step model outright (see
 # _reject_if_audio_model), so these entries are defensive/documentation only.
 _add("acestep", "advanced_cfg",
-     "CFG scheduling / dynamic thresholding / CFG-rescale run only in the U-Net sampling loop, not in the ACE-Step turbo sampler")
+     "dynamic thresholding and CFG-rescale run only in the U-Net sampling loop, not in the ACE-Step turbo sampler")
+_add("acestep", "cfg_schedule",
+     "the image CFG schedule control is not wired into the ACE-Step audio sampler")
 _add("acestep", "nag", "Normalized Attention Guidance is not implemented for the ACE-Step audio model")
 _add("acestep", "controlnets", "ControlNet is not supported for the ACE-Step audio model")
 _add("acestep", "style_transfer", "reference style transfer is not implemented for the ACE-Step audio model, which has no image conditioning pathway at all")
@@ -644,7 +665,7 @@ _add("acestep", "style_transfer", "reference style transfer is not implemented f
 # fact, not a refusal.
 # ---------------------------------------------------------------------------
 _add("sensenova", "advanced_cfg",
-     "CFG scheduling / dynamic thresholding / CFG-rescale run only in the U-Net sampling loop, not in SenseNova's flow-matching sampler; SenseNova has its own native CFG-overshoot clamp instead (cfg_norm)")
+     "dynamic thresholding and CFG-rescale are not implemented in SenseNova's flow sampler; it has its own native CFG-overshoot clamp instead (cfg_norm)")
 # negative_prompt IS supported (see docs/guides/MODEL_FACTS.md's sensenova
 # row) -- no entry here. The cfg_scale<=1 no-op case is warned at the point
 # of use (sensenova_pipeline_ops.encode_prompt, code
@@ -685,7 +706,7 @@ _add("sensenova", "unet_quantization",
 # reachable for this architecture is `/generate/txt2aud`
 # (`Txt2AudRequest`'s declared fields) -- so an entry's status depends on
 # whether that model declares the trigger key at all:
-#   - `advanced_cfg`/`nag`/`controlnets` are UNREACHABLE today:
+#   - `cfg_schedule`/`advanced_cfg`/`nag`/`controlnets` are UNREACHABLE today:
 #     `Txt2AudRequest` has no `cfg_schedule_type`/`nag_enable`/`controlnets`
 #     field (same status as ACE-Step's identical three entries just above).
 #     Kept for documentation and so the warning fires the moment any future
@@ -709,7 +730,9 @@ _add("sensenova", "unet_quantization",
 #     surface exists.
 # ---------------------------------------------------------------------------
 _add("minimax_music3", "advanced_cfg",
-     "CFG scheduling / dynamic thresholding / CFG-rescale run only in the U-Net sampling loop, not in MiniMax Music 3's autoregressive + flow-matching samplers")
+     "dynamic thresholding and CFG-rescale run only in the U-Net sampling loop, not in MiniMax Music 3's autoregressive + flow-matching samplers")
+_add("minimax_music3", "cfg_schedule",
+     "the image CFG schedule control is not wired into MiniMax Music 3's audio samplers")
 _add("minimax_music3", "nag",
      "Normalized Attention Guidance is not implemented for MiniMax Music 3")
 _add("minimax_music3", "controlnets",
@@ -796,7 +819,7 @@ for _a in [a for a in _ALL_ARCHS if a not in {"sensenova", "sensenova_sdxl_chime
 # SD/SDXL sampling loop are not silently advertised for it.
 for _feature, _reason in {
     "use_torch_compile": "torch.compile is not wired into the Chimera U-Net sampler",
-    "advanced_cfg": "advanced CFG scheduling and rescale are not wired into the Chimera flow sampler",
+    "advanced_cfg": "dynamic thresholding and CFG-rescale are not wired into the Chimera flow sampler",
     "spectrum": "Spectral Feature Forecasting is not implemented for the Chimera flow sampler",
     "fbcache": "First Block Cache is not implemented for the Chimera flow sampler",
     "nag": "Normalized Attention Guidance is not implemented for Chimera",
@@ -980,7 +1003,9 @@ _add("minimax_h3", "cfg",
 _add("minimax_h3", "negative_prompt",
      "MiniMax-H3 is guidance-distilled and has no unconditional branch, so there is nothing for a negative prompt to steer away from")
 _add("minimax_h3", "advanced_cfg",
-     "CFG scheduling / dynamic thresholding / CFG-rescale run only in the U-Net sampling loop, and MiniMax-H3 has no guidance to schedule at all")
+     "dynamic thresholding and CFG-rescale run only in the image U-Net sampling loop, and MiniMax-H3 has no guidance to modify")
+_add("minimax_h3", "cfg_schedule",
+     "MiniMax-H3 is guidance-distilled and has no classifier-free guidance scale to schedule")
 _add("minimax_h3", "nag",
      "Normalized Attention Guidance is not implemented for the MiniMax-H3 video model")
 _add("minimax_h3", "controlnets",

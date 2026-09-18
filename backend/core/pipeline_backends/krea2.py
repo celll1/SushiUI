@@ -502,6 +502,13 @@ class Krea2Mixin:
         # UI cfg_scale -> Krea guidance (cfg_scale - 1). Distilled checkpoint: no CFG.
         cfg_scale = float(params.get("cfg_scale", 4.5))
         guidance = 0.0 if is_distilled else max(cfg_scale - 1.0, 0.0)
+        from core.inference.custom_sampling import cfg_schedule_peak
+        cfg_peak = cfg_schedule_peak(
+            cfg_scale,
+            params.get("cfg_schedule_type", "constant"),
+            params.get("cfg_schedule_min", 1.0),
+            params.get("cfg_schedule_max"),
+        )
         default_steps = 8 if is_distilled else 28
 
         return {
@@ -510,6 +517,7 @@ class Krea2Mixin:
             "negative_prompt": params.get("negative_prompt", "") or "",
             "num_inference_steps": int(params.get("steps", default_steps)),
             "guidance": guidance,
+            "cfg_branch_guidance": 0.0 if is_distilled else max(cfg_peak - 1.0, 0.0),
             "max_sequence_length": int(params.get("krea2_max_seq_len", 512)),
             "width": width,
             "height": height,
@@ -538,7 +546,7 @@ class Krea2Mixin:
         )
         cache_key = conditioning_cache_key(
             "krea2", model_key, tok, device, dtype,
-            prompt, neg_prompt, cfg["guidance"] > 0.0,
+            prompt, neg_prompt, cfg["cfg_branch_guidance"] > 0.0,
             tuple(select_layers), max_len,
         )
         cached, cache_hit = generation_prompt_cache.get(te, cache_key, device)
@@ -556,7 +564,7 @@ class Krea2Mixin:
 
         prompt_embeds, prompt_mask = encode_prompt(te, tok, prompt, select_layers, max_len, device)
         neg_embeds = neg_mask = None
-        if cfg["guidance"] > 0.0:
+        if cfg["cfg_branch_guidance"] > 0.0:
             neg_embeds, neg_mask = encode_prompt(te, tok, neg_prompt, select_layers, max_len, device)
             neg_embeds = neg_embeds.to(dtype)
 

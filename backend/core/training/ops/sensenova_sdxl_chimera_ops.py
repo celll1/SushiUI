@@ -495,3 +495,23 @@ def vae_decode(trainer, latents: torch.Tensor, **_kwargs) -> torch.Tensor:
     shift = float(getattr(trainer.vae.config, "shift_factor", 0.0) or 0.0)
     scale = float(getattr(trainer.vae.config, "scaling_factor", 1.0))
     return trainer.vae.decode(latents / scale + shift, return_dict=False)[0]
+
+
+def generate_sample(
+    unet,
+    positive,
+    negative,
+    *,
+    step_progress_callback=None,
+    **kwargs,
+):
+    """Adapt Chimera's latent sampler to the shared training-progress contract."""
+    from core.models.sensenova_sdxl_chimera import pipeline_ops
+
+    return pipeline_ops.sample_txt2img_latents(
+        unet,
+        positive,
+        negative,
+        step_progress_callback=step_progress_callback,
+        **kwargs,
+    )

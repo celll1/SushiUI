@@ -996,6 +996,7 @@ def _euler_run(
     style_eps_ref: Optional[torch.Tensor] = None,
     style_refs: Optional[Sequence[Tuple[Any, torch.Tensor, torch.Tensor]]] = None,
     style_combine_mode: str = "stack",
+    cfg_schedule: Optional[dict] = None,
 ) -> torch.Tensor:
     """Shared Euler loop from ``ts[start_idx]`` -> ``t=1`` (clean). ``t`` runs
     forward 0->1 (see module docstring for why this is NOT flux2's direction).
@@ -1056,6 +1057,19 @@ def _euler_run(
             t = ts[i]
             t_next = ts[i + 1]
             t_scalar = timestep_scalars[i]
+            cfg_now = float(cfg_scale)
+            if cfg_schedule:
+                from core.inference.custom_sampling import calculate_dynamic_cfg
+                cfg_now = calculate_dynamic_cfg(
+                    sigma=1.0 - float(t.item()),
+                    sigma_max=1.0,
+                    cfg_base=float(cfg_scale),
+                    cfg_schedule_type=str(cfg_schedule.get("cfg_schedule_type", "constant")),
+                    cfg_schedule_min=float(cfg_schedule.get("cfg_schedule_min", 1.0)),
+                    cfg_schedule_max=cfg_schedule.get("cfg_schedule_max"),
+                    cfg_schedule_power=float(cfg_schedule.get("cfg_schedule_power", 2.0)),
+                    denoise_progress=(j / max(total - 1, 1)),
+                )
 
             # Embeds built ONCE per step, reused across every CFG branch --
             # see _build_step_context's docstring (this was H1: the earlier
@@ -1078,14 +1092,14 @@ def _euler_run(
                     use_cfg = (has_img_cond or has_uncond) and in_interval
                 else:
                     # Classic path, unchanged.
-                    use_cfg = has_uncond and cfg_scale > 1 and in_interval
+                    use_cfg = has_uncond and cfg_now > 1 and in_interval
                 if use_cfg:
                     if has_img_cond:
                         v_img_cond = _predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t, noise_scale,
                                                        branch="img_cond")
                         v_uncond = (_predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t, noise_scale,
                                                       branch="uncond") if has_uncond else None)
-                        return _cfg_combine_refs(v_cond, v_img_cond, v_uncond, cfg_scale, img_cfg_scale, cfg_norm)
+                        return _cfg_combine_refs(v_cond, v_img_cond, v_uncond, cfg_now, img_cfg_scale, cfg_norm)
                     # Classic 2-branch path -- IDENTICAL call to before (also
                     # the only path a no-refs prefix can ever reach, since
                     # has_img_cond is always False there).
@@ -1093,7 +1107,7 @@ def _euler_run(
                                                  branch="uncond")
                     # z/t are passed for the guidance diagnostic only; the blend
                     # itself is byte-for-byte the call it always was.
-                    return _cfg_combine(v_cond, v_uncond, cfg_scale, cfg_norm, j, z, t)
+                    return _cfg_combine(v_cond, v_uncond, cfg_now, cfg_norm, j, z, t)
                 return v_cond
 
             if style_refs is not None and len(style_refs) > 1:
@@ -1227,6 +1241,7 @@ def denoise_loop(
     style_eps_ref: Optional[torch.Tensor] = None,
     style_refs: Optional[Sequence[Tuple[Any, torch.Tensor, torch.Tensor]]] = None,
     style_combine_mode: str = "stack",
+    cfg_schedule: Optional[dict] = None,
 ) -> torch.Tensor:
     """txt2img: start from pure (resolution-scaled) noise, integrate t: 0 -> 1.
     ``cfg_scale``/``timestep_shift``/``num_inference_steps`` are required, no
@@ -1249,7 +1264,8 @@ def denoise_loop(
                           progress_callback=progress_callback, step_callback=step_callback,
                           clamp_output=clamp_output,
                           style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
-                          style_refs=style_refs, style_combine_mode=style_combine_mode)
+                          style_refs=style_refs, style_combine_mode=style_combine_mode,
+                          cfg_schedule=cfg_schedule)
 
 
 @torch.no_grad()
@@ -1277,6 +1293,7 @@ def denoise_loop_img2img(
     style_eps_ref: Optional[torch.Tensor] = None,
     style_refs: Optional[Sequence[Tuple[Any, torch.Tensor, torch.Tensor]]] = None,
     style_combine_mode: str = "stack",
+    cfg_schedule: Optional[dict] = None,
 ) -> torch.Tensor:
     """img2img (SDEdit): ``t_start = 1 - denoising_strength``, snapped to the
     shifted timestep grid (clamped so at least one step remains); start the
@@ -1307,7 +1324,8 @@ def denoise_loop_img2img(
                           progress_callback=progress_callback, step_callback=step_callback,
                           clamp_output=clamp_output,
                           style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
-                          style_refs=style_refs, style_combine_mode=style_combine_mode)
+                          style_refs=style_refs, style_combine_mode=style_combine_mode,
+                          cfg_schedule=cfg_schedule)
 
 
 @torch.no_grad()
@@ -1337,6 +1355,7 @@ def denoise_loop_inpaint(
     style_eps_ref: Optional[torch.Tensor] = None,
     style_refs: Optional[Sequence[Tuple[Any, torch.Tensor, torch.Tensor]]] = None,
     style_combine_mode: str = "stack",
+    cfg_schedule: Optional[dict] = None,
 ) -> torch.Tensor:
     """inpaint (RePaint): every step, after the Euler update, the kept region
     is re-pinned to ``t_next*x0_orig + (1-t_next)*noise_scale*eps`` against a
@@ -1374,4 +1393,5 @@ def denoise_loop_inpaint(
                           progress_callback=progress_callback, step_callback=step_callback,
                           mask_latent=mask, init_image=x0, fixed_noise=fixed_noise, clamp_output=clamp_output,
                           style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
-                          style_refs=style_refs, style_combine_mode=style_combine_mode)
+                          style_refs=style_refs, style_combine_mode=style_combine_mode,
+                          cfg_schedule=cfg_schedule)

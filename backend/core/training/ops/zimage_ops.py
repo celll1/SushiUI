@@ -1,6 +1,8 @@
 """Z-Image component loading, training, and sampling operations."""
 from __future__ import annotations
 
+from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
+
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -546,6 +548,10 @@ def generate_sample(
     seed: int = -1,
     negative_prompt: str = "",
     step_progress_callback=None,
+    cfg_schedule_type: str = _TRAINING_DEFAULTS["sample_cfg_schedule_type"],
+    cfg_schedule_min: float = _TRAINING_DEFAULTS["sample_cfg_schedule_min"],
+    cfg_schedule_max=_TRAINING_DEFAULTS["sample_cfg_schedule_max"],
+    cfg_schedule_power: float = _TRAINING_DEFAULTS["sample_cfg_schedule_power"],
 ) -> Image.Image:
     """
     Generate sample image during training (Z-Image).
@@ -602,7 +608,13 @@ def generate_sample(
         prompt_embeds, attention_mask = trainer.encode_prompt_zimage(prompt)
 
         # Encode unconditional prompt only if CFG is enabled
-        if guidance_scale > 1.0:
+        cfg_peak = float(guidance_scale)
+        if cfg_schedule_type != "constant":
+            cfg_peak = max(
+                cfg_peak, float(cfg_schedule_min),
+                float(cfg_schedule_max) if cfg_schedule_max is not None else cfg_peak,
+            )
+        if cfg_peak > 1.0:
             uncond_embeds, uncond_mask = trainer.encode_prompt_zimage(negative_prompt)
         else:
             uncond_embeds, uncond_mask = None, None
@@ -671,6 +683,10 @@ def generate_sample(
             uncond_mask=uncond_mask,
             guidance_scale=guidance_scale,
             scheduler=inference_scheduler,
+            cfg_schedule_type=cfg_schedule_type,
+            cfg_schedule_min=cfg_schedule_min,
+            cfg_schedule_max=cfg_schedule_max,
+            cfg_schedule_power=cfg_schedule_power,
             step_progress_callback=step_progress_callback,
         )
 
@@ -747,6 +763,10 @@ def _run_zimage_denoising_loop(
     uncond_mask: torch.Tensor,
     guidance_scale: float,
     scheduler,
+    cfg_schedule_type: str = _TRAINING_DEFAULTS["sample_cfg_schedule_type"],
+    cfg_schedule_min: float = _TRAINING_DEFAULTS["sample_cfg_schedule_min"],
+    cfg_schedule_max=_TRAINING_DEFAULTS["sample_cfg_schedule_max"],
+    cfg_schedule_power: float = _TRAINING_DEFAULTS["sample_cfg_schedule_power"],
     step_progress_callback=None,
 ) -> torch.Tensor:
     """Run Z-Image denoising loop for sample generation.
@@ -775,7 +795,19 @@ def _run_zimage_denoising_loop(
                     step_progress_callback(total_steps, total_steps)
                 continue
 
-            if guidance_scale > 1.0:
+            from core.inference.custom_sampling import calculate_dynamic_cfg
+            cfg_now = calculate_dynamic_cfg(
+                sigma=1.0 - i / max(total_steps - 1, 1),
+                sigma_max=1.0,
+                cfg_base=float(guidance_scale),
+                cfg_schedule_type=cfg_schedule_type,
+                cfg_schedule_min=cfg_schedule_min,
+                cfg_schedule_max=cfg_schedule_max,
+                cfg_schedule_power=cfg_schedule_power,
+                denoise_progress=i / max(total_steps - 1, 1),
+            )
+
+            if cfg_now > 1.0:
                 latent_input = torch.cat([latents] * 2)
                 embeds_input = torch.cat([uncond_embeds, prompt_embeds])
                 mask_input = torch.cat([uncond_mask, attention_mask])
@@ -811,7 +843,7 @@ def _run_zimage_denoising_loop(
 
             # Apply CFG if enabled (same as stable lora_trainer.py:2474-2492)
             batch_size = latents.shape[0]
-            if guidance_scale > 1.0:
+            if cfg_now > 1.0:
                 # CFG output order matches input: [negative, positive]
                 neg_out = model_out_list[:batch_size]  # negative (uncond)
                 pos_out = model_out_list[batch_size:]  # positive (cond)
@@ -821,7 +853,7 @@ def _run_zimage_denoising_loop(
                     pos = pos_out[j].float()
                     # Standard CFG formula (consistent with stable version)
                     # pred = uncond + guidance_scale * (cond - uncond)
-                    pred = neg + guidance_scale * (pos - neg)
+                    pred = neg + cfg_now * (pos - neg)
                     noise_pred.append(pred)
                 noise_pred = torch.stack(noise_pred, dim=0)
             else:

@@ -5382,8 +5382,8 @@ class BaseTrainer(ABC):
             "lr_scheduler_advance_interval": lr_scheduler_advance_interval(self),
             # The runtime timeline (§5.5/D4): a LambdaLR's state_dict does not
             # carry what its lambda closed over. Truncated to at <= the saved
-            # position, so rewinding to an earlier checkpoint drops the commands
-            # issued after it -- the same semantics as _cleanup_future_metrics.
+            # position, so rewinding to an earlier checkpoint drops commands
+            # that the selected checkpoint never observed.
             "lr_schedule_events": dump_lr_schedule_events(self),
             # §20.5/D49: armed, best-so-far, the partial observation window,
             # the patience counter, the fire count and the cooldown. Trainer
@@ -16159,10 +16159,8 @@ class BaseTrainer(ABC):
                 # is preserved and the remainder is mapped onto the new one.
                 self._reanchor_lr_schedule_total(actual_total_steps, global_step)
 
-        # Clean up future steps in database (old data from previous interrupted training)
-        # This prevents duplicate metrics when training resumes from an earlier step
-        if self.run_id is not None:
-            self._cleanup_future_metrics(global_step)
+        # Metrics are append-only across resume sessions. A rollback (for example,
+        # 10k -> 8k) must retain the abandoned 8k-10k branch for comparison.
 
         self._param_tracker: Optional[ParameterChangeTracker] = None
         if param_tracking:
@@ -20782,9 +20780,11 @@ class BaseTrainer(ABC):
                 m_param_dft_te2  = metrics.get('param_cumulative_drift_te2')
                 m_param_dft_ve   = metrics.get('param_cumulative_drift_ve')
 
-                # UPSERT: Check if metric exists for this (run_id, step)
+                # UPSERT only within this resume session. A rollback can revisit
+                # the same global step without destroying the previous branch.
                 existing = history_db.query(TrainingMetrics).filter(
                     TrainingMetrics.run_id == self.run_id,
+                    TrainingMetrics.resume_seq == metrics.get('resume_seq', 0),
                     TrainingMetrics.step == m_step
                 ).first()
 
@@ -20902,63 +20902,6 @@ class BaseTrainer(ABC):
                 wait(self._db_futures, timeout=30)  # Wait up to 30 seconds
             self._db_executor.shutdown(wait=True)
             self._db_executor = None
-
-    def _cleanup_future_metrics(self, current_step: int):
-        """
-        Clean up future metrics in database (old data from previous interrupted training).
-
-        When training resumes from an earlier step (e.g., resume from step 100 when previous
-        run reached step 500), the UPSERT logic will overwrite steps 1-100, but steps 101-500
-        from the old run will remain in the database, causing duplicate/stale data.
-
-        This method removes all metrics with step > current_step to prevent this issue.
-
-        Args:
-            current_step: Current global step (resume point)
-        """
-        catalog_db = None
-        history_db = None
-        owns_history_db = False
-        try:
-            from database.models import TrainingMetrics
-            from database import get_training_db
-            from database.training_detail_store import open_training_history_session
-
-            catalog_db = next(get_training_db())
-            history_db, owns_history_db, _ = open_training_history_session(
-                catalog_db, self.run_id
-            )
-
-            future_metrics = history_db.query(TrainingMetrics).filter(
-                TrainingMetrics.run_id == self.run_id,
-                TrainingMetrics.step > current_step
-            ).all()
-
-            if future_metrics:
-                # Get range for logging
-                future_steps = [m.step for m in future_metrics]
-                min_future_step = min(future_steps)
-                max_future_step = max(future_steps)
-
-                print(f"{self.log_prefix} Found {len(future_metrics)} old metrics (steps {min_future_step}-{max_future_step}) beyond current step {current_step}")
-                print(f"{self.log_prefix} Cleaning up old metrics to prevent duplicates...")
-
-                for metric in future_metrics:
-                    history_db.delete(metric)
-
-                history_db.commit()
-                print(f"{self.log_prefix} Deleted {len(future_metrics)} old metrics")
-            else:
-                print(f"{self.log_prefix} No old metrics beyond current step {current_step} (clean start)")
-
-        except Exception as e:
-            # Non-critical: Log warning but continue training
-            print(f"{self.log_prefix} WARNING: Failed to cleanup future metrics: {e}")
-        finally:
-            if owns_history_db and history_db is not None:
-                history_db.close()
-            if catalog_db is not None:
-                catalog_db.close()
 
     def cleanup(self):
         """

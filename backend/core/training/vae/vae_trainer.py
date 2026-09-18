@@ -2275,10 +2275,8 @@ class VaeTrainer:
     def _detect_resume_seq(self):
         """0 for a fresh run, one past the highest recorded seq when resuming.
 
-        Same convention as base_trainer.py:8501-8519: the global step counter
-        continues, so (run_id, step) stays unique; resume_seq only labels which
-        session a row came from, which is what draws the resume boundary on the
-        loss chart.
+        The session id is part of row identity, so rollback resumes can retain
+        both histories for overlapping global steps.
         """
         if self.run_id is None:
             return
@@ -2352,14 +2350,13 @@ class VaeTrainer:
                 for step, entry in sorted(buffer.items()):
                     row = (history_db.query(TrainingMetrics)
                            .filter(TrainingMetrics.run_id == self.run_id,
+                                   TrainingMetrics.resume_seq == self.resume_seq,
                                    TrainingMetrics.step == step)
                            .first())
                     if row is None:
                         row = TrainingMetrics(run_id=self.run_id, step=step, epoch=0,
                                               resume_seq=self.resume_seq)
                         history_db.add(row)
-                    else:
-                        row.resume_seq = self.resume_seq
                     for column in ("loss", "recon_loss", "learning_rate", "grad_norm"):
                         if entry.get(column) is not None:
                             setattr(row, column, entry[column])

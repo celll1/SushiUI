@@ -106,7 +106,7 @@ interface SharedMetricChartProps {
   onSmoothingChange?: (next: number) => void;
 }
 
-interface Pt { step: number; value: number; }
+interface Pt { step: number; value: number; resumeSeq?: number; }
 
 interface TooltipValue {
   id: string;
@@ -171,14 +171,31 @@ function medianStepGap(pts: { step: number }[]): number | null {
 function applySmoothing(points: Pt[], factor: number): Pt[] {
   if (factor <= 0 || points.length === 0) return points;
   const out: Pt[] = [];
-  let s = 0;
-  let bias = 1;
-  for (const p of points) {
-    s = s * factor + p.value * (1 - factor);
-    bias *= factor;
-    out.push({ step: p.step, value: s / (1 - bias) });
+  for (const session of splitByResume(points)) {
+    let s = 0;
+    let bias = 1;
+    for (const p of session) {
+      s = s * factor + p.value * (1 - factor);
+      bias *= factor;
+      out.push({ ...p, value: s / (1 - bias) });
+    }
   }
   return out;
+}
+
+/** A rollback resume can revisit the same global steps. Never connect or smooth
+ * across those independent histories. */
+function splitByResume<T extends { step: number; resumeSeq?: number }>(points: T[]): T[][] {
+  const groups = new Map<number, T[]>();
+  for (const point of points) {
+    const seq = point.resumeSeq ?? 0;
+    const group = groups.get(seq) ?? [];
+    group.push(point);
+    groups.set(seq, group);
+  }
+  return [...groups.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, group]) => [...group].sort((a, b) => a.step - b.step));
 }
 
 /**
@@ -531,7 +548,7 @@ export default function SharedMetricChart({
   const smoothedSeries = useMemo<Map<string, Pt[]>>(() => {
     const out = new Map<string, Pt[]>();
     for (const s of visibleSeries) {
-      const pts = s.points.map((p) => ({ step: p.step, value: p.value }));
+      const pts = s.points.map((p) => ({ step: p.step, value: p.value, resumeSeq: p.resume_seq ?? 0 }));
       out.set(s.id, s.noSmooth ? pts : applySmoothing(pts, smoothing));
     }
     return out;
@@ -579,7 +596,7 @@ export default function SharedMetricChart({
   const visibleRaw = useMemo<Map<string, Pt[]>>(() => {
     const out = new Map<string, Pt[]>();
     for (const s of visibleSeries) {
-      const pts = s.points.map((p) => ({ step: p.step, value: p.value }));
+      const pts = s.points.map((p) => ({ step: p.step, value: p.value, resumeSeq: p.resume_seq ?? 0 }));
       out.set(s.id, xRange ? pts.filter((p) => inX(p.step)) : pts);
     }
     return out;
@@ -660,6 +677,8 @@ export default function SharedMetricChart({
       .filter((p) => inX(p.step))
       .map((p, i) => `${i === 0 ? "M" : "L"} ${toX(p.step).toFixed(1)} ${toYFn(p.value).toFixed(1)}`)
       .join(" ");
+  const buildSessionPaths = (pts: Pt[], toYFn: (v: number) => number = toY) =>
+    splitByResume(pts).map((session) => buildPath(session, toYFn)).filter(Boolean);
 
   // Shared numeric formatting; each axis unwraps its own domain (log10 or
   // identity) via fromDomain before formatting.
@@ -987,13 +1006,13 @@ export default function SharedMetricChart({
                 rather than a legible line — the smoothed dashed line alone is
                 enough context for an overlay metric. */}
             <g clipPath={`url(#${clipId})`}>
-              {smoothing > 0 && curveSeries.filter((s) => !s.dashed && !s.noSmooth && s.renderMode !== "markers" && axisOf(s) !== "right").map((s) => (
-                <path key={`${s.id}-raw`} d={buildPath(s.points.map((p) => ({ step: p.step, value: p.value })))}
-                  fill="none" stroke={s.color} strokeWidth={1}
-                  opacity={0.22} />
-              ))}
+              {smoothing > 0 && curveSeries.filter((s) => !s.dashed && !s.noSmooth && s.renderMode !== "markers" && axisOf(s) !== "right").flatMap((s) =>
+                buildSessionPaths(s.points.map((p) => ({ step: p.step, value: p.value, resumeSeq: p.resume_seq ?? 0 }))).map((d, i) => (
+                  <path key={`${s.id}-raw-${i}`} d={d} fill="none" stroke={s.color} strokeWidth={1} opacity={0.22} />
+                ))
+              )}
               {curveSeries.map((s) => {
-                const pts = (smoothing > 0 ? (smoothedSeries.get(s.id) ?? []) : s.points.map((p) => ({ step: p.step, value: p.value })));
+                const pts = (smoothing > 0 ? (smoothedSeries.get(s.id) ?? []) : s.points.map((p) => ({ step: p.step, value: p.value, resumeSeq: p.resume_seq ?? 0 })));
                 const yFn = axisOf(s) === "right" ? toY2 : toY;
                 if (s.renderMode === "markers") {
                   // A dot per sample: a handful of widely-spaced probes drawn as
@@ -1003,8 +1022,10 @@ export default function SharedMetricChart({
                   return (
                     <g key={s.id}>
                       {vis.length > 1 && (
-                        <path d={buildPath(pts, yFn)} fill="none" stroke={s.color} strokeWidth={1}
-                          strokeDasharray={s.dashed ? "4 3" : undefined} opacity={0.55} />
+                        <>{buildSessionPaths(pts, yFn).map((d, i) => (
+                          <path key={i} d={d} fill="none" stroke={s.color} strokeWidth={1}
+                            strokeDasharray={s.dashed ? "4 3" : undefined} opacity={0.55} />
+                        ))}</>
                       )}
                       {/* One sample has no line to draw, and a lone 2.5px dot is
                           easy to miss — give it a tick to sit on. */}
@@ -1019,8 +1040,10 @@ export default function SharedMetricChart({
                   );
                 }
                 return (
-                  <path key={s.id} d={buildPath(pts, yFn)} fill="none" stroke={s.color} strokeWidth={1.5}
-                    strokeDasharray={s.dashed ? "4 3" : undefined} opacity={0.95} />
+                  <g key={s.id}>{buildSessionPaths(pts, yFn).map((d, i) => (
+                    <path key={i} d={d} fill="none" stroke={s.color} strokeWidth={1.5}
+                      strokeDasharray={s.dashed ? "4 3" : undefined} opacity={0.95} />
+                  ))}</g>
                 );
               })}
             </g>

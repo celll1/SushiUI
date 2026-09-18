@@ -101,6 +101,36 @@ def run_db_session_factory(path: Path):
     return _run_db_session_factory(str(Path(path).resolve()))
 
 
+@lru_cache(maxsize=64)
+def _ensure_run_detail_schema(path_text: str) -> None:
+    """Reconcile an existing per-run DB once per process before ORM use."""
+    from .auto_migrate import auto_migrate
+    from .models import TrainingCheckpoint, TrainingMetrics, TrainingRun, TrainingSample
+
+    factory = _run_db_session_factory(path_text)
+    engine = factory.kw["bind"]
+    auto_migrate(
+        engine,
+        None,
+        Path(path_text).name,
+        model_classes=(TrainingRun, TrainingMetrics, TrainingCheckpoint, TrainingSample),
+    )
+    with engine.connect() as conn:
+        indices = conn.execute(text("PRAGMA index_list(training_metrics)")).fetchall()
+        resume_unique = False
+        for row in indices:
+            if not row[2]:  # PRAGMA index_list: column 2 is the unique flag.
+                continue
+            cols = conn.execute(text(f"PRAGMA index_info('{row[1]}')")).fetchall()
+            if [col[2] for col in cols] == ["run_id", "resume_seq", "step"]:
+                resume_unique = True
+                break
+    if not resume_unique:
+        raise DetailStoreError(
+            f"Training detail database lacks resume-safe metric identity: {path_text}"
+        )
+
+
 def _copy_run_columns(run) -> dict:
     from .models import TrainingRun
 
@@ -162,6 +192,7 @@ def open_run_detail_session(run):
         raise DetailStoreError("Training run does not use a v2 detail database")
     if not location.path.is_file():
         raise DetailStoreError(f"Training detail database is unavailable: {location.path}")
+    _ensure_run_detail_schema(str(location.path.resolve()))
     db = run_db_session_factory(location.path)()
     try:
         local = db.query(TrainingRun).filter(TrainingRun.id == run.id).first()

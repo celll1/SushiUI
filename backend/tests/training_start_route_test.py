@@ -203,6 +203,26 @@ def test_start_refuses_a_registered_but_unspawned_entry(monkeypatch, tmp_path):
     assert 1 in manager.processes
 
 
+def test_resume_marker_uses_latest_checkpoint_step(monkeypatch, tmp_path):
+    _patch_common(monkeypatch, tmp_path)
+    config_yaml = """
+config:
+  process:
+  - train:
+      resume_from_checkpoint: latest
+"""
+    run = _make_run(tmp_path, status="stopped", config_yaml=config_yaml)
+    run.started_at = routes.datetime.utcnow()
+    run.current_step = 0
+    checkpoint = tmp_path / "run_step_002560"
+    checkpoint.mkdir()
+    (checkpoint / "chimera.json").write_text("{}", encoding="utf-8")
+
+    asyncio.run(routes.start_training_run(run_id=1, db=_FakeDb(run)))
+
+    assert run.resumed_from_step == 2560
+
+
 def test_a_failed_start_removes_its_own_unspawned_entry(monkeypatch, tmp_path):
     """Corollary of the rule above: an entry that reads as live forever would
     make the run permanently unstartable, which is worse than what it replaced.

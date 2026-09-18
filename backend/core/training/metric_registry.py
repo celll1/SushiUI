@@ -243,6 +243,31 @@ EXTRA_METRIC_DEFS = {
     # 0 = still the pre-resume distribution, 1 = fully the configured one.
     "timestep_morph_lambda": {"label": "Timestep morph lambda", "color": "#facc15",
                               "dashed": True, **_UNIT_DIAG},
+    "timestep_adaptive_controls": {"label": "Adaptive controls", "color": "#fb923c",
+                                     "dashed": True, "axis": "right", **_COUNT},
+    "timestep_adaptive_x0_loss": {"label": "Adaptive x0 loss", "color": "#f472b6",
+                                   "dashed": True, **_LOSS},
+    "timestep_adaptive_density_max": {
+        "label": "Adaptive max density ratio", "color": "#c084fc", "dashed": True,
+        "axis": "right", "family": "bounded_diagnostic",
+        "scale_group": "timestep_density_ratio", "range": _AUTO_0,
+        "sampling": "periodic",
+    },
+    **{
+        f"timestep_adaptive_x0_bin_{index}": {
+            "label": f"Adaptive x0 loss bin {index}", "dashed": True, **_LOSS,
+        }
+        for index in range(32)
+    },
+    **{
+        f"timestep_adaptive_density_bin_{index}": {
+            "label": f"Adaptive density bin {index}", "dashed": True,
+            "axis": "right", "family": "bounded_diagnostic",
+            "scale_group": "timestep_density_ratio", "range": _AUTO_0,
+            "sampling": "periodic",
+        }
+        for index in range(32)
+    },
     # Run-cumulative batches abandoned before their backward pass (OOM, unusable
     # item, no valid latents, missing condition image). Monotone staircase: a
     # skip writes no metrics row of its own, so this rides the next completed

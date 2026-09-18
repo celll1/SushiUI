@@ -486,6 +486,18 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [morphSteps, setMorphSteps] = useState<number>(2000);
   const [morphCurve, setMorphCurve] = useState<string>("cosine");
   const [morphInterpolation, setMorphInterpolation] = useState<string>("quantile");
+  const [adaptiveMode, setAdaptiveMode] = useState<"off" | "observe" | "bounded">("off");
+  const [adaptiveWarmup, setAdaptiveWarmup] = useState<number>(2000);
+  const [adaptiveInterval, setAdaptiveInterval] = useState<number>(500);
+  const [adaptiveBins, setAdaptiveBins] = useState<number>(8);
+  const [adaptiveLogSnrMin, setAdaptiveLogSnrMin] = useState<number>(-10);
+  const [adaptiveLogSnrMax, setAdaptiveLogSnrMax] = useState<number>(10);
+  const [adaptiveCoverageFloor, setAdaptiveCoverageFloor] = useState<number>(0.2);
+  const [adaptiveMaxRatio, setAdaptiveMaxRatio] = useState<number>(2.0);
+  const [adaptiveGain, setAdaptiveGain] = useState<number>(0.15);
+  const [adaptiveMorphUpdates, setAdaptiveMorphUpdates] = useState<number>(1000);
+  const [adaptiveCooldown, setAdaptiveCooldown] = useState<number>(500);
+  const [adaptiveMinObservations, setAdaptiveMinObservations] = useState<number>(128);
 
   // Regularization settings (prevent overbaking)
   // Regularization (Phase 3j: migrated to params)
@@ -985,6 +997,20 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           // in-flight morph in the resumed checkpoint outranks both.
           from: null,
         },
+        adaptive: {
+          mode: adaptiveMode,
+          warmup_updates: adaptiveWarmup,
+          control_interval: adaptiveInterval,
+          bins: adaptiveBins,
+          log_snr_min: adaptiveLogSnrMin,
+          log_snr_max: adaptiveLogSnrMax,
+          coverage_floor: adaptiveCoverageFloor,
+          max_density_ratio: adaptiveMaxRatio,
+          controller_gain: adaptiveGain,
+          morph_updates: adaptiveMorphUpdates,
+          cooldown_updates: adaptiveCooldown,
+          min_observations: adaptiveMinObservations,
+        },
       },
       regularization_type: regularizationType !== "none" ? regularizationType : null,
       controlnet_type: trainingMethod === "controlnet" ? params.controlnet_type : undefined,
@@ -1026,6 +1052,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     timestepDistribution, timestepMin, timestepMax, timestepMean,
     timestepStd, timestepAlpha, timestepBeta,
     morphEnabled, morphSteps, morphCurve, morphInterpolation,
+    adaptiveMode, adaptiveWarmup, adaptiveInterval, adaptiveBins,
+    adaptiveLogSnrMin, adaptiveLogSnrMax, adaptiveCoverageFloor,
+    adaptiveMaxRatio, adaptiveGain, adaptiveMorphUpdates, adaptiveCooldown,
+    adaptiveMinObservations,
     priorityEnabled, priorityText, priorityMultiplier,
   ]);
 
@@ -1133,6 +1163,21 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         if (morph.steps !== undefined) setMorphSteps(morph.steps);
         if (morph.curve !== undefined) setMorphCurve(morph.curve);
         if (morph.interpolation !== undefined) setMorphInterpolation(morph.interpolation);
+      }
+      const adaptive = ts.adaptive;
+      if (adaptive) {
+        if (adaptive.mode !== undefined) setAdaptiveMode(adaptive.mode);
+        if (adaptive.warmup_updates !== undefined) setAdaptiveWarmup(adaptive.warmup_updates);
+        if (adaptive.control_interval !== undefined) setAdaptiveInterval(adaptive.control_interval);
+        if (adaptive.bins !== undefined) setAdaptiveBins(adaptive.bins);
+        if (adaptive.log_snr_min !== undefined) setAdaptiveLogSnrMin(adaptive.log_snr_min);
+        if (adaptive.log_snr_max !== undefined) setAdaptiveLogSnrMax(adaptive.log_snr_max);
+        if (adaptive.coverage_floor !== undefined) setAdaptiveCoverageFloor(adaptive.coverage_floor);
+        if (adaptive.max_density_ratio !== undefined) setAdaptiveMaxRatio(adaptive.max_density_ratio);
+        if (adaptive.controller_gain !== undefined) setAdaptiveGain(adaptive.controller_gain);
+        if (adaptive.morph_updates !== undefined) setAdaptiveMorphUpdates(adaptive.morph_updates);
+        if (adaptive.cooldown_updates !== undefined) setAdaptiveCooldown(adaptive.cooldown_updates);
+        if (adaptive.min_observations !== undefined) setAdaptiveMinObservations(adaptive.min_observations);
       }
     }
 
@@ -3704,7 +3749,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <input
                       type="checkbox"
                       checked={morphEnabled}
-                      onChange={(e) => setMorphEnabled(e.target.checked)}
+                      onChange={(e) => {
+                        setMorphEnabled(e.target.checked);
+                        if (e.target.checked) setAdaptiveMode("off");
+                      }}
                       className="rounded"
                     />
                     <span className="font-semibold">Morph on resume</span>
@@ -3761,6 +3809,107 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                           Quantile falls back to mixture when an endpoint has no
                           quantile function (beta).
                         </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Runtime adaptive distribution controller */}
+                <div className="mt-4 space-y-3 p-2 bg-gray-800/30 rounded border border-gray-700/30">
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">
+                      Adaptive timestep controller
+                    </label>
+                    <select
+                      value={adaptiveMode}
+                      onChange={(e) => {
+                        const mode = e.target.value as "off" | "observe" | "bounded";
+                        setAdaptiveMode(mode);
+                        if (mode !== "off") setMorphEnabled(false);
+                      }}
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="off">Off</option>
+                      <option value="observe">Observe only</option>
+                      <option value="bounded">Bounded adaptation</option>
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1">
+                      SenseNova SDXL Chimera at batch size 1 only. Observe records
+                      recommendations without changing draws. Bounded adjusts the
+                      base law from per-log-SNR learning progress while retaining a
+                      density floor. Mutually exclusive with Morph on resume.
+                    </p>
+                  </div>
+                  {adaptiveMode !== "off" && (
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">Warmup updates</label>
+                        <input type="number" value={adaptiveWarmup}
+                          onChange={(e) => setAdaptiveWarmup(parseInt(e.target.value, 10))}
+                          min="0" step="1" className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500" />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">Control interval</label>
+                        <input type="number" value={adaptiveInterval}
+                          onChange={(e) => setAdaptiveInterval(parseInt(e.target.value, 10))}
+                          min="1" step="1" className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500" />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">Log-SNR bins</label>
+                        <input type="number" value={adaptiveBins}
+                          onChange={(e) => setAdaptiveBins(parseInt(e.target.value, 10))}
+                          min="2" max="32" step="1" className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500" />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">Morph updates</label>
+                        <input type="number" value={adaptiveMorphUpdates}
+                          onChange={(e) => setAdaptiveMorphUpdates(parseInt(e.target.value, 10))}
+                          min="1" step="1" className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500" />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">Cooldown updates</label>
+                        <input type="number" value={adaptiveCooldown}
+                          onChange={(e) => setAdaptiveCooldown(parseInt(e.target.value, 10))}
+                          min="0" step="1" className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500" />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">Minimum observations</label>
+                        <input type="number" value={adaptiveMinObservations}
+                          onChange={(e) => setAdaptiveMinObservations(parseInt(e.target.value, 10))}
+                          min={adaptiveBins} step="1" className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500" />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">Log-SNR minimum</label>
+                        <input type="number" value={adaptiveLogSnrMin}
+                          onChange={(e) => setAdaptiveLogSnrMin(parseFloat(e.target.value))}
+                          step="0.5" className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500" />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">Log-SNR maximum</label>
+                        <input type="number" value={adaptiveLogSnrMax}
+                          onChange={(e) => setAdaptiveLogSnrMax(parseFloat(e.target.value))}
+                          step="0.5" className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500" />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">Coverage floor</label>
+                        <input type="number" value={adaptiveCoverageFloor}
+                          onChange={(e) => setAdaptiveCoverageFloor(parseFloat(e.target.value))}
+                          min="0.01" max="1" step="0.01"
+                          className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500" />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">Max density ratio</label>
+                        <input type="number" value={adaptiveMaxRatio}
+                          onChange={(e) => setAdaptiveMaxRatio(parseFloat(e.target.value))}
+                          min="1" step="0.1"
+                          className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500" />
+                      </div>
+                      <div className="col-span-2">
+                        <label className="block text-xs text-gray-400 mb-1">Controller gain</label>
+                        <input type="number" value={adaptiveGain}
+                          onChange={(e) => setAdaptiveGain(parseFloat(e.target.value))}
+                          min="0" max="1" step="0.01"
+                          className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500" />
                       </div>
                     </div>
                   )}

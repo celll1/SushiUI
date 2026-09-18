@@ -2717,7 +2717,15 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # previous distribution from the run".
     "timestep_sampling": {"distribution": "uniform", "min_timestep": 0.0, "max_timestep": 1.0,
                           "morph": {"enabled": False, "steps": 2000, "curve": "cosine",
-                                    "interpolation": "quantile", "from": None}},
+                                    "interpolation": "quantile", "from": None},
+                          "adaptive": {
+                              "mode": "off", "warmup_updates": 2000,
+                              "control_interval": 500, "bins": 8,
+                              "log_snr_min": -10.0, "log_snr_max": 10.0,
+                              "coverage_floor": 0.2, "max_density_ratio": 2.0,
+                              "controller_gain": 0.15, "morph_updates": 1000,
+                              "cooldown_updates": 500, "min_observations": 128,
+                          }},
     # Regularization
     "regularization_type": None,
     "snr_regularization_weight": 0.1,       # Fix: frontend had 0.0

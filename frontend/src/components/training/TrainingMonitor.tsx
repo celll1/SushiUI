@@ -904,7 +904,9 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
               <div className="flex items-center justify-between gap-2">
                 <h3 className="font-semibold text-sm">Timestep Distribution</h3>
                 <span className="font-mono text-xxs text-gray-400">
-                  {timestepStatus.status.active ? "morphing" : "steady"}
+                  {timestepStatus.status.adaptive
+                    ? `${timestepStatus.status.adaptive.mode}: ${timestepStatus.status.adaptive.action}`
+                    : timestepStatus.status.active ? "morphing" : "steady"}
                 </span>
               </div>
               <div className="font-mono text-xxs text-gray-300 break-all">
@@ -937,6 +939,27 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                 <p className="text-xxs text-yellow-400">
                   {timestepStatus.status.fallback_reason}
                 </p>
+              )}
+              {timestepStatus.status.adaptive && (
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xxs text-gray-300">
+                  <span>
+                    Controls <span className="font-mono text-gray-100">
+                      {timestepStatus.status.adaptive.control_count.toLocaleString()}
+                    </span>
+                  </span>
+                  <span>
+                    Observations <span className="font-mono text-gray-100">
+                      {timestepStatus.status.adaptive.observations_since_control.toLocaleString()}
+                    </span>
+                  </span>
+                  {!!timestepStatus.status.adaptive.density_ratio.length && (
+                    <span>
+                      Density max <span className="font-mono text-gray-100">
+                        {Math.max(...timestepStatus.status.adaptive.density_ratio).toFixed(3)}×
+                      </span>
+                    </span>
+                  )}
+                </div>
               )}
               {timestepCurves && (
                 <TimestepDistributionGraph

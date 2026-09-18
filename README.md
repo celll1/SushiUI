@@ -1,457 +1,89 @@
-# 🍣 SushiUI
+# SushiUI
 
-Stable Diffusion 1.5/XL対応の画像生成Webアプリケーション
+SushiUI は、画像・動画・音声の生成と学習をひとつのローカル UI で扱うためのプロジェクトです。FastAPI バックエンドと Next.js フロントエンドで構成され、生成、編集、データセット管理、学習、メトリクス確認までを同じワークフローから操作できます。
 
-## 特徴
+## 対応アーキテクチャ
 
-- **txt2img**: テキストから画像を生成
-- **img2img**: 画像から画像を生成（デノイジング強度調整可能）
-- **Inpainting**: マスク領域の再生成
-- **Loop Generation**: 同一パラメータで連続生成、ステップ範囲指定可能
-- **画像ビューワー**: 生成画像の閲覧とメタデータ検索
-- **Advanced CFG**: CFG Scheduling、SNR-Based Adaptive CFG、Dynamic Thresholding
-- **高度な機能**: プロンプト編集、マルチLoRA（ステップ範囲指定）、マルチControlNet
+生成側の正本は `backend/core/model_loader.py` の `ModelType`、学習側の正本は `backend/core/training/arch/__init__.py` の `ARCH_REGISTRY` です。現在は 16 の生成アーキテクチャを扱います。
 
-## 技術スタック
+| 種別 | アーキテクチャ |
+|---|---|
+| 画像 | SD 1.5、SDXL、Z-Image、Flux2、Anima、Lens、Krea2、Ideogram4、MiniT2I、SenseNova U1.5、SenseNova SDXL Chimera |
+| 動画＋音声 | LTX-2.3、MiniMax-H3 |
+| 音声 | ACE-Step 1.5、MiniMax Music 3、YuE2 |
 
-### バックエンド
-- Python 3.10+
-- FastAPI
-- PyTorch
-- Diffusers
-- SQLAlchemy
-- WebSocket (進捗表示)
+学習レジストリには 15 アーキテクチャが登録されています。MiniMax Music 3 は生成専用で、YuE2 の学習は Phase-A ABC-planner LoRA に限定されます。方式や重み形式、CFG、VAE、attention、学習可否などの詳細は [Model facts](docs/guides/MODEL_FACTS.md) と [アーキテクチャ別リファレンス](docs/reference/architectures/README.md) を参照してください。
 
-### フロントエンド
-- Next.js 14
-- TypeScript
-- Tailwind CSS
-- Axios
-- WebSocket Client
+## 主な機能
+
+- txt2img、img2img、inpaint、outpaint、upscale と参照画像条件付け
+- 動画・音声生成、および対応モデルでの動画と音声の同時生成
+- LoRA、フルパラメータ、tagger、VAE decoder の学習
+- 学習再開、サンプル生成、debug latent、リアルタイムメトリクス
+- モデル、LoRA、ControlNet、データセット、タグ、生成履歴の管理
+- architecture capability に基づく adapter 適用と学習可否判定
+- attention backend、block swap、CPU offload、量子化モデルなどのメモリ最適化
+- `/api/v1` の REST API、OpenAPI 仕様、WebSocket による進捗通知
+
+機能の対応範囲はモデルごとに異なります。実装上の境界は [Architecture map](docs/guides/ARCHITECTURE_MAP.md)、API は [openapi.yaml](openapi.yaml)、学習パラメータは [Training parameters guide](backend/core/training/TRAINING_PARAMS_GUIDE.md) が正本です。
 
 ## セットアップ
 
-### 必要要件
-- Python 3.10+
-- Node.js 18+
-- CUDA対応GPU（推奨、8GB VRAM以上）
+現行ランチャーは Windows 向けです。Python、Node.js、対応する GPU ドライバと PyTorch/CUDA 環境を用意してください。必要な VRAM はモデル、解像度、量子化、offload、学習方式によって大きく異なるため、共通の最低値は設けていません。
 
-### 自動セットアップ（推奨）
+1. リポジトリを取得します。
+2. 使用する PyTorch/CUDA の組み合わせを環境に合わせて準備します。
+3. ルートの `start.bat` を実行します。
 
-1. `start.bat` を実行
-```bash
-start.bat
+`start.bat` は `venv` がなければ作成し、`backend/requirements.txt` と `frontend/package.json` の変更を検出して依存関係を更新した後、バックエンドとフロントエンドを起動します。
+
+起動後の既定 URL:
+
+- UI: `http://localhost:3000`
+- API: `http://localhost:8000`
+
+モデルファイルは配布物に含まれません。各モデルの提供元から取得し、その利用条件を確認したうえで UI から設定してください。
+
+## API と自動化
+
+REST API は `/api/v1` 以下にあり、仕様は [openapi.yaml](openapi.yaml) に同期されています。直接 API を利用する場合は [API testing guide](docs/guides/API_TESTING.md) と [サンプルスクリプト](examples/api/) を参照してください。
+
+## リポジトリ構成
+
+```text
+SushiUI/
+├── backend/                 FastAPI、推論、モデル、学習
+├── frontend/                Next.js UI
+├── docs/                    設計、運用、アーキテクチャ資料
+├── examples/api/            REST API の利用例
+├── models/                  ローカルモデル置き場
+├── lora/                    LoRA 置き場
+├── controlnet/              ControlNet 置き場
+├── training/                学習設定と成果物
+├── outputs/                 生成出力
+├── openapi.yaml             API 仕様
+└── start.bat                Windows ランチャー
 ```
 
-このスクリプトは以下を自動的に実行します：
-- Python仮想環境の作成
-- バックエンド依存関係のインストール
-- フロントエンド依存関係のインストール
-- 必要なディレクトリの作成
-- バックエンド・フロントエンドサーバーの起動
+詳細なコード所有範囲は [Architecture map](docs/guides/ARCHITECTURE_MAP.md)、文書索引は [Documentation index](docs/README.md) を参照してください。
 
-**重要**: PyTorchのGPU版は手動でインストールする必要があります：
+## ライセンスと第三者表示
 
-```bash
-# 仮想環境をアクティベート
-venv\Scripts\activate
+現時点で、SushiUI 独自のコードに対するプロジェクトレベルのライセンスは宣言されていません。リポジトリ全体を MIT、Apache-2.0、その他のオープンソースライセンスの下で利用・再配布できるとはみなさないでください。
 
-# PyTorch GPU版をインストール（CUDA 12.1の例）
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+同梱・派生した第三者コードには、それぞれのライセンスと notice 条件が適用されます。[Third-party code provenance](docs/legal/THIRD_PARTY_PROVENANCE.md) と `docs/legal/licenses/` は、それらの出典・表示要件・監査状況を記録するためのものです。この表示は、SushiUI 独自のコードに対するライセンス付与を意味しません。
 
-# または CUDA 11.8の場合
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-```
+第三者コンポーネントの再配布を検討する場合は、同文書の未完了の notice/file audit と redistribution gate を確認してください。これらの条件を満たすことと、SushiUI 独自のコードについて許諾を得ることは別です。
 
-お使いのCUDAバージョンに応じて、[PyTorch公式サイト](https://pytorch.org/get-started/locally/)から適切なコマンドを確認してください。
+モデル重みはこのリポジトリに含まれず、SushiUI のコードライセンスの対象でもありません。利用者が取得元の利用条件を確認してください。
 
-### 手動セットアップ
+## 開発資料
 
-<details>
-<summary>クリックして手動セットアップ手順を表示</summary>
+- [Documentation index](docs/README.md)
+- [Architecture map](docs/guides/ARCHITECTURE_MAP.md)
+- [Model facts](docs/guides/MODEL_FACTS.md)
+- [Request lifecycle](docs/guides/REQUEST_LIFECYCLE.md)
+- [Training API reference](backend/core/training/API_REFERENCE.md)
+- [Third-party provenance](docs/legal/THIRD_PARTY_PROVENANCE.md)
 
-#### バックエンドのセットアップ
-
-1. プロジェクトディレクトリに移動
-```bash
-cd webui_cl
-```
-
-2. Python仮想環境を作成
-```bash
-python -m venv venv
-```
-
-3. 仮想環境を有効化
-- Windows:
-```bash
-venv\Scripts\activate
-```
-- Linux/Mac:
-```bash
-source venv/bin/activate
-```
-
-4. PyTorch GPU版をインストール
-```bash
-# CUDA 12.1の例
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-```
-
-5. その他の依存関係をインストール
-```bash
-cd backend
-pip install -r requirements.txt
-```
-
-6. 必要なディレクトリを作成
-```bash
-mkdir ../models ../lora ../controlnet ../vae ../outputs ../thumbnails
-```
-
-7. Stable Diffusionモデルをダウンロード
-```bash
-# models/ ディレクトリにsafetensorsまたはdiffusersフォーマットのモデルを配置
-# LoRAは lora/ ディレクトリに配置
-# ControlNetは controlnet/ ディレクトリに配置
-```
-
-8. バックエンドサーバーを起動
-```bash
-python main.py
-```
-
-サーバーは `http://localhost:8000` で起動します。
-
-#### フロントエンドのセットアップ
-
-1. フロントエンドディレクトリに移動
-```bash
-cd ../frontend
-```
-
-2. 依存関係をインストール
-```bash
-npm install
-```
-
-3. 開発サーバーを起動
-```bash
-npm run dev
-```
-
-フロントエンドは `http://localhost:3000` で起動します。
-
-</details>
-
-## プロジェクト構造
-
-```
-webui_cl/
-├── backend/
-│   ├── api/
-│   │   └── routes.py            # APIエンドポイント（txt2img, img2img, inpaint）
-│   ├── core/
-│   │   ├── pipeline.py          # Diffusersパイプライン管理
-│   │   ├── inference/
-│   │   │   └── custom_sampling.py # カスタムサンプリングループ、Advanced CFG
-│   │   ├── extensions/
-│   │   │   ├── lora_manager.py            # LoRA管理（動的ロード）
-│   │   │   ├── controlnet_manager.py      # ControlNet管理
-│   │   │   └── controlnet_preprocessor.py # ControlNetプリプロセッサー
-│   ├── database/
-│   │   ├── models.py            # SQLAlchemyモデル（GeneratedImage, UserSettings）
-│   │   └── db.py                # データベース接続・マイグレーション
-│   ├── utils/                   # ユーティリティ
-│   ├── config/                  # 設定
-│   ├── main.py                  # エントリーポイント
-│   └── requirements.txt
-├── frontend/
-│   ├── src/
-│   │   ├── app/
-│   │   │   ├── page.tsx                # Txt2Img
-│   │   │   ├── img2img/page.tsx        # Img2Img
-│   │   │   ├── inpaint/page.tsx        # Inpaint
-│   │   │   ├── loop-generation/page.tsx # Loop Generation
-│   │   │   ├── gallery/page.tsx        # Gallery
-│   │   │   └── settings/page.tsx       # Settings
-│   │   ├── components/
-│   │   │   ├── generation/             # 生成パネルコンポーネント
-│   │   │   ├── common/                 # 共通コンポーネント
-│   │   │   └── settings/               # 設定コンポーネント
-│   │   ├── utils/
-│   │   │   ├── api.ts                  # API クライアント
-│   │   │   └── sendHelpers.ts          # Send機能ヘルパー
-│   │   └── lib/                        # ユーティリティ
-│   └── package.json
-├── models/               # Stable Diffusionモデル
-├── lora/                 # LoRAモデル
-├── controlnet/           # ControlNetモデル
-├── vae/                  # VAEモデル
-├── outputs/              # 生成画像
-├── thumbnails/           # サムネイル
-├── start.bat             # 自動起動スクリプト
-└── README.md
-```
-
-## 使用方法
-
-### 基本的な画像生成
-
-1. ブラウザで `http://localhost:3000` を開く
-2. "Generate" ページでプロンプトを入力
-3. パラメータを調整（Steps, CFG Scale, Sampler等）
-4. "Generate" ボタンをクリック
-5. WebSocket経由でリアルタイム進捗とプレビューを確認
-6. "Gallery" ページで生成した画像を閲覧
-
-### 高度な機能
-
-#### Advanced CFG Features
-
-##### 1. CFG Scheduling (Sigma-based)
-CFGスケールを生成プロセス全体で動的に変化させる機能:
-- **Constant**: 固定CFG（デフォルト）
-- **Linear**: 線形補間（min → max）
-- **Quadratic**: 2次補間（より滑らかな変化、power パラメータで調整）
-- **Cosine**: コサイン補間（序盤と終盤で緩やかに変化）
-
-パラメータ:
-- `cfg_schedule_type`: スケジュールタイプ
-- `cfg_schedule_min`: 最小CFG値（デフォルト: 1.0）
-- `cfg_schedule_max`: 最大CFG値（デフォルト: main CFG scale）
-- `cfg_schedule_power`: Quadraticモード時の累乗値（デフォルト: 2.0）
-
-##### 2. SNR-Based Adaptive CFG
-Signal-to-Noise Ratio に基づいてCFGを自動調整:
-- `cfg_rescale_snr_alpha`: 0.0 = 無効、0.1-0.5 が一般的
-- SNRが高い（クリアな画像）ほどCFGを下げてアーティファクトを抑制
-- SNRが低い（ノイズが多い）ほどCFGを上げてプロンプト従属性を強化
-
-##### 3. Dynamic Thresholding
-生成された潜在変数の値を動的にクランプしてアーティファクトを抑制:
-- `dynamic_threshold_percentile`: 0.0 = 無効、99.5 が一般的
-- `dynamic_threshold_mimic_scale`: クランプ値（1～30、推奨 5～7）
-- 高CFG使用時のアーティファクト、色飽和を軽減
-
-#### プロンプト編集
-プロンプトに `[prompt1:prompt2:0.5]` 形式で記述することで、生成途中でプロンプトを切り替えられます。
-
-- 例: `[cat:dog:0.3]` → 最初の30%はcat、その後dog
-
-#### プロンプト強調構文
-- `(word)` - 1.1倍強調
-- `((word))` - 1.21倍強調
-- `(word:1.5)` - 1.5倍強調
-- `[word]` - 0.9倍弱体化
-
-#### LoRA
-- LoRAタブで最大5つまで同時に追加可能
-- 重み調整（-2.0 〜 2.0）
-- ステップ範囲指定（0-1000）で特定のステップ範囲でのみLoRAを適用
-- 動的読み込み: 生成時に必要なLoRAのみロード
-
-#### ControlNet
-- マルチControlNet対応（複数同時適用可能）
-- ControlNetタブで画像をアップロード
-- Conditioning Scale調整（0.0 〜 2.0）
-- ガイダンス範囲指定（開始・終了ステップ: 0-1000）
-- プリプロセッサー自動検出（モデル名から推定）
-- LLLiteサポート
-
-#### Loop Generation
-- 同一パラメータで連続生成
-- ステップ範囲指定（Start Step / End Step）
-- Advanced CFG、LoRA、ControlNet をすべてサポート
-- 各画像の生成時間を表示
-
-## サポート機能
-
-### モデル対応
-- ✅ Stable Diffusion 1.5
-- ✅ Stable Diffusion XL
-- ✅ v-prediction models（自動検出、guidance rescale適用）
-- ✅ Safetensors / Diffusersフォーマット
-- ✅ YuE2 テキスト音楽生成（完全な単一 safetensors、ABC計画・歌詞入力、ABC planner LoRA／dense BF16 full-parameter学習）
-- ✅ LoRA（マルチLoRA、ステップ範囲指定）
-- ✅ ControlNet (SD1.5/SDXL)
-
-### サンプラー
-- Euler
-- Euler a
-- DPM++ 2M
-- DPM++ SDE
-- DPM2
-- DPM2 a
-- Heun
-- DDIM
-- DDPM
-- PNDM
-- LMS
-- UniPC
-
-### スケジュール
-- Uniform
-- Karras
-- Exponential
-
-### TAESD（高速プレビュー）
-- リアルタイム生成プレビュー（5ステップごと）
-- SD1.5/SDXL自動切り替え
-
-## 実装済み機能
-
-### コア機能
-- [x] txt2img基本機能
-- [x] img2img機能
-- [x] Inpainting機能
-- [x] Loop Generation（連続生成、ステップ範囲指定）
-- [x] カスタムサンプリングループ
-- [x] プロンプト編集（ステップベース切り替え）
-- [x] プロンプト強調構文
-- [x] WebSocketリアルタイム進捗表示（Server-Sent Events）
-- [x] TAESDプレビュー
-- [x] 自動データベースマイグレーション
-
-### Advanced CFG Features
-- [x] CFG Scheduling (Sigma-based)
-  - [x] Linear
-  - [x] Quadratic (power パラメータ対応)
-  - [x] Cosine
-- [x] SNR-Based Adaptive CFG
-- [x] Dynamic Thresholding (percentile + mimic scale)
-- [x] Developer Mode（CFGメトリクス可視化）
-
-### モデル・拡張機能
-- [x] LoRA（マルチLoRA、ステップ範囲指定）
-- [x] ControlNet（マルチControlNet対応）
-  - [x] ステップ範囲指定（start_step, end_step）
-  - [x] プリプロセッサー自動検出
-  - [x] LLLiteサポート
-  - [x] Canny, Depth, OpenPose, LineArt 等のプリプロセッサー
-
-### UI機能
-- [x] 画像ビューワー・ギャラリー
-- [x] メタデータ検索・フィルタリング
-- [x] 生成パラメータ表示（Advanced CFG含む）
-- [x] プレビュー画像からパラメータ再利用
-- [x] Send機能（ギャラリー → 各パネル）
-- [x] Settings画面
-  - [x] モデルディレクトリ登録
-  - [x] Advanced CFG表示切替
-  - [x] パネル表示切替（LoRA, ControlNet, プリセット）
-  - [x] 送信サイズモード設定（absolute/scale）
-  - [x] Developer Mode切替
-  - [x] localStorage管理
-  - [x] 一時画像クリーンアップ
-  - [x] サーバー再起動機能
-
-### 高度な機能
-- [x] v-prediction モデル対応（guidance rescale自動適用）
-- [x] SDXL対応（プール済みエンベディング、time_ids）
-- [x] img2img fix steps（ステップ数固定モード）
-- [x] タグサジェスト機能
-- [x] 複数スケジュールタイプ（Karras, Exponential）
-- [x] 確率的サンプラー向けAncestral Seed
-- [x] 画像ハッシュ（SHA256）
-- [x] 生成画像メタデータ埋め込み（parameters JSON）
-- [x] アスペクト比・固定解像度プリセット
-
-## 技術的な詳細
-
-### カスタムサンプリングループ
-Diffusersパイプラインをベースにしたカスタム実装により、以下の高度な機能をサポート:
-- プロンプト編集（ステップベース切り替え）
-- LoRAステップ範囲指定（動的ロード/アンロード）
-- ControlNetステップ範囲指定
-- Advanced CFG Features（Scheduling, SNR-based, Dynamic Thresholding）
-- Ancestral Seed（確率的サンプラーの再現性）
-
-実装ファイル: [backend/core/inference/custom_sampling.py](backend/core/inference/custom_sampling.py)
-
-### Advanced CFG実装
-
-#### CFG Scheduling
-シグマベースのスケジューリングにより、ノイズレベルに応じてCFGを動的調整:
-- `t = sigma / sigma_max` でタイムステップを正規化（0.0～1.0）
-- Linear: `cfg = min + (max - min) * t`
-- Quadratic: `cfg = min + (max - min) * (t ** power)`
-- Cosine: `cfg = min + (max - min) * ((1 - cos(t * π)) / 2)`
-
-#### SNR-Based Adaptive CFG
-各ステップのSNRを計算し、CFGを自動調整:
-```python
-snr = (sigma_max ** 2) / (sigma ** 2 + 1e-8)
-snr_normalized = snr / (snr + 1.0)  # 0.0～1.0に正規化
-cfg_adjusted = cfg_base * (1.0 - alpha * snr_normalized)
-```
-- SNRが高い（終盤）→ CFGを下げてアーティファクト抑制
-- SNRが低い（序盤）→ CFGを上げてプロンプト従属性強化
-
-#### Dynamic Thresholding
-生成された潜在変数の値をパーセンタイルベースでクランプ:
-```python
-percentile_value = torch.quantile(abs_values, dynamic_threshold_percentile / 100.0)
-clamp_value = max(percentile_value, dynamic_threshold_mimic_scale)
-noise_pred = noise_pred.clamp(-clamp_value, clamp_value)
-```
-
-実装ファイル: [backend/core/inference/custom_sampling.py](backend/core/inference/custom_sampling.py)
-
-### v-prediction対応
-- `prediction_type="v_prediction"` の自動検出
-- guidance_rescale=0.7 の自動適用（論文: Common Diffusion Noise Schedules and Sample Steps are Flawed）
-- `timestep_spacing="trailing"` の適用
-
-### データベース
-- SQLite + SQLAlchemy
-- 自動マイグレーション（起動時にスキーマ差分を検出・適用）
-- 生成画像メタデータ、パラメータ、モデル情報を保存
-- Advanced CFGパラメータの保存・表示対応
-
-実装ファイル: [backend/database/models.py](backend/database/models.py)
-
-### リアルタイムプレビュー
-- WebSocket（Server-Sent Events）によるストリーミング配信
-- TAESD（Tiny AutoEncoder for Stable Diffusion）による高速デコード
-- 5ステップごとに更新（設定可能）
-- Developer Mode時はCFGメトリクス（SNR, CFG scale）も配信
-
-## 今後の実装予定
-
-- [ ] バッチ生成（現状はLoop Generationで代替可能）
-- [ ] 画像編集機能の強化
-- [ ] より高度な検索・フィルタリング（タグベース、日付範囲）
-- [ ] APIドキュメント整備（OpenAPI/Swagger）
-- [ ] Upscaler統合（RealESRGAN, SwinIR等）
-- [ ] その他のプリプロセッサー対応
-- [ ] カスタムスケジューラーの追加
-
-## 未実装機能
-
-以下の機能はUI/パラメータとして存在しますが、バックエンドでの実装は未完了です：
-
-### Inpaint at full resolution
-- **説明**: マスク領域のみを切り出して高解像度で処理し、元画像に合成する機能
-- **理由**: 局所的な再生成はモデルの学習方法を考慮すると困難なため
-- **状態**: UIでコメントアウト済み、パラメータは送信されるが処理されない
-- **関連パラメータ**:
-  - `inpaint_full_res` (boolean)
-  - `inpaint_full_res_padding` (integer): 切り出し時の余白サイズ
-
-将来的に実装する場合は、マスク領域のバウンディングボックス検出、切り出し、リサイズ、処理、貼り付けの一連の処理が必要です。
-
-## 謝辞
-
-このプロジェクトは以下のオープンソースプロジェクトを参考に開発されました：
-
-- **[ostris/ai-toolkit](https://github.com/ostris/ai-toolkit)** (MIT License) - LoRA学習アーキテクチャ、量子化アプローチ
-- **[kohya-ss/sd-scripts](https://github.com/kohya-ss/sd-scripts)** (Apache-2.0) - FP8量子化実装、学習パイプライン構造
-
-## 注意事項
-
-- GPUメモリが不足する場合は、画像サイズやバッチサイズを調整してください
-- モデルファイルは含まれていません。別途ダウンロードが必要です
-- SDXL使用時は12GB以上のVRAM推奨
-- v-predictionモデルは自動検出されますが、一部のモデルで調整が必要な場合があります
-- 使用するモデル（Stable Diffusion, LoRA等）のライセンスは各モデルの規約に従ってください
+このプロジェクトは活発に開発中です。モデルごとの制約や既知の境界は、README の概略より上記の正本文書を優先してください。

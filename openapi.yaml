@@ -22421,7 +22421,8 @@ components:
       type: object
       description: |
         Optional runtime controller for SenseNova SDXL Chimera flow-velocity
-        training at batch size 1.
+        training. Each image contributes its own prediction-loss observation,
+        including when OOM recovery executes the batch as micro-chunks.
         It bins x0-equivalent prediction loss in fixed effective-log-SNR bins
         and reacts to the fast/slow EMA ratio (learning progress), not raw loss.
         `observe` reports the recommendation without changing the law; `auto`

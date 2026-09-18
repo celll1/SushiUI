@@ -380,7 +380,13 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
     finally:
         if repa_handle is not None:
             repa_handle.remove()
-    loss = F.mse_loss(prediction.float(), target.float())
+    prediction_loss_per_item = F.mse_loss(
+        prediction.float(), target.float(), reduction="none"
+    ).flatten(1).mean(1)
+    loss = prediction_loss_per_item.mean()
+    if getattr(trainer, "_adaptive_timestep", None) is not None:
+        trainer._adaptive_prediction_loss_chunks.append(
+            prediction_loss_per_item.detach())
     value = float(loss.detach().cpu())
     with torch.no_grad():
         predicted_clean = (

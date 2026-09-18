@@ -133,10 +133,13 @@ def test_state_is_strict_json_and_round_trips_active_morph():
             convention="t1", resume_state=json.loads(payload))
 
 
-def test_batch_greater_than_one_is_refused_not_silently_misbinned():
+def test_batch_observations_use_the_matching_per_item_losses():
     sampler = AdaptiveTimestepSampler(
         UniformTimestepSampler(), _config("observe"), convention="t1")
-    with pytest.raises(ValueError, match="batch_size=1"):
+    sampler.observe(torch.tensor([0.1, 0.9]), torch.tensor([1.0, 4.0]))
+    assert sampler.counts == [1, 1]
+    assert sampler.fast_ema == pytest.approx([0.81, 0.04])
+    with pytest.raises(ValueError, match="one prediction loss per timestep"):
         sampler.observe(torch.tensor([0.1, 0.9]), 1.0)
 
 
@@ -144,19 +147,16 @@ def test_api_validation_and_openapi_are_wired(monkeypatch):
     from api.routes import _check_timestep_sampling
     from api.param_defaults import TRAINING_DEFAULTS
 
-    request = SimpleNamespace(
-        batch_size=2,
-        timestep_sampling={"distribution": "uniform", "adaptive": {"mode": "observe"}},
-    )
-    with pytest.raises(Exception, match="batch_size=1"):
-        _check_timestep_sampling(request)
     from core.model_loader import ModelLoader
     monkeypatch.setattr(
         ModelLoader, "detect_model_type",
         staticmethod(lambda _path: "sensenova_sdxl_chimera"),
     )
-    request.batch_size = 1
-    request.base_model_path = "dummy"
+    request = SimpleNamespace(
+        batch_size=4,
+        base_model_path="dummy",
+        timestep_sampling={"distribution": "uniform", "adaptive": {"mode": "observe"}},
+    )
     _check_timestep_sampling(request)
     default = TRAINING_DEFAULTS["timestep_sampling"]["adaptive"]
     assert default["mode"] == "off"

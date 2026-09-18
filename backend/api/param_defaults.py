@@ -2680,7 +2680,10 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "res_curriculum_warmup_scale": 0.5,
     # MNT
     "multi_noise_timesteps": 1,
+    # Noise coupling across one MNT window. Every mode keeps each individual
+    # noise tensor marginally N(0, I); only cross-iteration correlation changes.
     "multi_noise_mode": "independent",
+    # Correlation coefficient with the shared anchor in trajectory mode.
     "trajectory_blend_alpha": 0.7,
     # Draw the MNT window's timesteps one per equal-probability stratum of
     # `timestep_sampling` instead of independently. An MNT window is a

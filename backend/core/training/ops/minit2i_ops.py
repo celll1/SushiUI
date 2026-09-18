@@ -327,7 +327,9 @@ def train_step(
         t = trainer.scheduler.sample_train_timesteps(B, trainer.device, dtype=trainer.training_dtype)
     t_img = t.view(-1, 1, 1, 1)
 
-    noise = torch.randn_like(images) * noise_scale
+    from core.training.mnt import training_noise_like
+
+    noise = training_noise_like(trainer, images) * noise_scale
     x_t = images * t_img + noise * (1.0 - t_img)
     denom = torch.clamp(1.0 - t_img, min=0.05)
     target = (images - x_t) / denom  # ground-truth velocity

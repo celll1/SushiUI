@@ -449,7 +449,9 @@ def train_step(
         guidance = torch.full((batch_size,), 3.5, device=trainer.device, dtype=trainer.training_dtype)
 
     # Sample noise (standard normal distribution)
-    noise = torch.randn_like(latents)
+    from core.training.mnt import training_noise_like
+
+    noise = training_noise_like(trainer, latents)
 
     noisy_latents = add_noise_unified(
         noise_process=noise_process,

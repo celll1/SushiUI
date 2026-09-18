@@ -697,8 +697,10 @@ def _build_train_section(
         p.get("crop_decode_loss_snr_range", TRAINING_DEFAULTS["crop_decode_loss_snr_range"]))
 
     # Multi Noise-Timestep
-    train["multi_noise_timesteps"] = p.get("multi_noise_timesteps", 1)
-    train["multi_noise_mode"] = p.get("multi_noise_mode", "independent")
+    train["multi_noise_timesteps"] = p.get(
+        "multi_noise_timesteps", TRAINING_DEFAULTS["multi_noise_timesteps"])
+    train["multi_noise_mode"] = p.get(
+        "multi_noise_mode", TRAINING_DEFAULTS["multi_noise_mode"])
     train["stratified_timesteps"] = bool(
         p.get("stratified_timesteps", TRAINING_DEFAULTS["stratified_timesteps"]))
     train["grad_timestep_cosine_probe"] = bool(
@@ -707,7 +709,8 @@ def _build_train_section(
     train["grad_timestep_cosine_sketch_dim"] = int(
         p.get("grad_timestep_cosine_sketch_dim",
               TRAINING_DEFAULTS["grad_timestep_cosine_sketch_dim"]))
-    train["trajectory_blend_alpha"] = p.get("trajectory_blend_alpha", 0.7)
+    train["trajectory_blend_alpha"] = p.get(
+        "trajectory_blend_alpha", TRAINING_DEFAULTS["trajectory_blend_alpha"])
     if p.get("timestep_sampling"):
         train["timestep_sampling"] = p["timestep_sampling"]
 

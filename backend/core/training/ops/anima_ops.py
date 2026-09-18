@@ -391,7 +391,9 @@ def train_step(
             timesteps = torch.rand(batch_size, device=trainer.device)
     timesteps = timesteps.to(trainer.training_dtype)
 
-    noise = torch.randn_like(latents)
+    from core.training.mnt import training_noise_like
+
+    noise = training_noise_like(trainer, latents)
 
     # Flow-matching forward: x_t = (1 - sigma) * x_0 + sigma * noise
     sigma_view = timesteps.view(-1, *([1] * (latents.dim() - 1))).to(latents.dtype)

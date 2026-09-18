@@ -288,7 +288,9 @@ def train_step(
     sigma = timesteps.to(trainer.training_dtype)
     sigma_v = sigma.view(-1, 1, 1)
 
-    noise = torch.randn_like(latents)
+    from core.training.mnt import training_noise_like
+
+    noise = training_noise_like(trainer, latents)
     noisy = (1.0 - sigma_v) * latents + sigma_v * noise  # sigma=1 -> noise
     v_target = latents - noise                            # x0 - noise
     t_model = (1.0 - sigma).to(trainer.training_dtype)        # model time [0,1]

@@ -1590,12 +1590,15 @@ Grouped by concern:
 | Data and length | `datasets` (list of dataset objects from the database), `num_epochs`, `total_steps` (when set, overrides `num_epochs`), `batch_size` |
 | Checkpointing | `save_every_n_steps`, `max_step_saves_to_keep`, `max_optimizer_saves_to_keep`, `resume_from_checkpoint` |
 | Sampling during training | `sample_every_n_steps`, `sample_prompts` (`Optional[List[Dict[str, str]]]` — entries are `{positive, negative, condition_image_path?}`), `sample_guidance_scale`, `sample_steps`, `sample_width`, `sample_height`, `sample_seed`, `sample_sampler`, `sample_schedule_type`, the `sample_cfg_schedule_*` and `sample_dynamic_threshold_*` group, the `sample_nag_*` group, and `sensenova_sample_timestep_shift` / `sensenova_sample_img_cfg_scale` / `sensenova_sample_cfg_norm` |
-| Optimization | `optimizer_type`, `lr_scheduler_type`, `gradient_accumulation_steps`, `max_grad_norm`, `timestep_sampling_config`, `priority_training` |
+| Optimization | `optimizer_type`, `lr_scheduler_type`, `gradient_accumulation_steps`, `max_grad_norm`, `timestep_sampling_config`, `multi_noise_timesteps`, `multi_noise_mode`, `trajectory_blend_alpha`, `priority_training` |
 | Bucketing | `enable_bucketing`, `base_resolutions`, `bucket_strategy` (`"resize"`, `"crop"`, `"random_crop"`), `multi_resolution_mode` (`"max"`, `"random"`) |
 | Encoding residency | `text_encoding_mode`, `text_encoding_swap_interval`, `text_encoding_prefetch_depth`, `latent_encoding_mode`, `latent_encoding_swap_interval`, `force_recache` (still accepted, but no config reaches it any more: it is always `False`, and rebuilding a cache is `DELETE /datasets/{id}/latent-cache` — see `openapi.yaml`) |
 | Reference / vision encoder | `use_reference_images`, `train_vision_encoder`, `vision_encoder_path`, `vision_encoder_lr`, `gradient_routing_ve` |
 | Callbacks and instrumentation | `progress_callback`, `update_total_steps_callback`, `run_id`, `debug_latents`, `debug_latents_every`, `param_tracking`, `param_tracking_interval` |
-| Accepted but unused | `multi_noise_timesteps`, `multi_noise_mode`, `trajectory_blend_alpha` — multi-noise timesteps are disabled; these are kept for call-site compatibility |
+
+MNT reuses one assembled batch for `multi_noise_timesteps` sequential training
+passes. `multi_noise_mode` accepts `independent`, `shared`, `trajectory`, and
+`antithetic`; see `docs/guides/MNT_MODES.md` for their noise-coupling contract.
 
 `0` means "never" for every optional periodic action. `gradient_accumulation_steps`
 is not optional, so `0` folds to `1` rather than disabling the optimizer step.

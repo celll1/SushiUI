@@ -15444,9 +15444,6 @@ def _check_timestep_sampling(request) -> None:
             adaptive = validate_adaptive_timestep_config(adaptive)
             if adaptive["mode"] != "off" and bool(dict(morph or {}).get("enabled")):
                 raise ValueError("adaptive and morph cannot both be enabled")
-            if (adaptive["mode"] != "off"
-                    and int(getattr(request, "batch_size", 1) or 1) != 1):
-                raise ValueError("adaptive currently requires batch_size=1")
             if adaptive["mode"] != "off":
                 from core.model_loader import ModelLoader
 

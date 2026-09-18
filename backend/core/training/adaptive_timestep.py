@@ -144,23 +144,29 @@ class AdaptiveTimestepSampler(TimestepSampler):
         # x0 = x_t - sigma*v for straight flow interpolation.
         return index, float(prediction_loss) * sigma * sigma
 
-    def observe(self, timesteps: torch.Tensor, prediction_loss: float) -> None:
+    def observe(self, timesteps: torch.Tensor,
+                prediction_loss: float | torch.Tensor) -> None:
         if self.mode == "off":
             return
         flat = timesteps.detach().reshape(-1)
-        if flat.numel() != 1:
+        losses = torch.as_tensor(prediction_loss).detach().reshape(-1)
+        if losses.numel() == 1 and flat.numel() != 1:
             raise ValueError(
-                "adaptive timestep requires batch_size=1 until per-item prediction "
-                "losses are available")
-        loss = float(prediction_loss)
-        if not math.isfinite(loss) or loss < 0.0:
-            return
-        index, x0_loss = self._bin_and_x0_loss(float(flat.item()), loss)
-        self.counts[index] += 1
-        self.observations_since_control += 1
-        old_fast, old_slow = self.fast_ema[index], self.slow_ema[index]
-        self.fast_ema[index] = x0_loss if not math.isfinite(old_fast) else 0.1 * x0_loss + 0.9 * old_fast
-        self.slow_ema[index] = x0_loss if not math.isfinite(old_slow) else 0.01 * x0_loss + 0.99 * old_slow
+                "adaptive timestep needs one prediction loss per timestep")
+        if losses.numel() != flat.numel():
+            raise ValueError(
+                f"adaptive timestep received {losses.numel()} losses for "
+                f"{flat.numel()} timesteps")
+        for timestep, prediction in zip(flat.tolist(), losses.tolist()):
+            loss = float(prediction)
+            if not math.isfinite(loss) or loss < 0.0:
+                continue
+            index, x0_loss = self._bin_and_x0_loss(float(timestep), loss)
+            self.counts[index] += 1
+            self.observations_since_control += 1
+            old_fast, old_slow = self.fast_ema[index], self.slow_ema[index]
+            self.fast_ema[index] = x0_loss if not math.isfinite(old_fast) else 0.1 * x0_loss + 0.9 * old_fast
+            self.slow_ema[index] = x0_loss if not math.isfinite(old_slow) else 0.01 * x0_loss + 0.99 * old_slow
 
     def set_optimizer_update_step(self, update_step: int) -> None:
         self.update_step = int(update_step)

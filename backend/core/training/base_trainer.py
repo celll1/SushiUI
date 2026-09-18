@@ -11170,6 +11170,8 @@ class BaseTrainer(ABC):
             cuda_error_skip is True if batch was skipped due to unrecoverable CUDA error
         """
         batch_size = mnt_latents.shape[0]
+        if getattr(self, "_adaptive_timestep", None) is not None:
+            self._adaptive_prediction_loss_chunks = []
         # A failed attempt must not leak its detached REPA scalar into an OOM retry.
         self._pending_repa_loss_metric = None
         # Original full-batch size, preserved across recursive splits so every
@@ -11246,6 +11248,8 @@ class BaseTrainer(ABC):
                 # per-forward footprint. The two-stage helper handles on-the-fly
                 # encoder graphs, so we no longer have to skip those batches.
                 self._oom_recovery_cleanup()
+                if getattr(self, "_adaptive_timestep", None) is not None:
+                    self._adaptive_prediction_loss_chunks = []
                 if batch_size <= min_split_batch_size:
                     # One sample already doesn't fit -> this bucket is un-fittable.
                     self._batch_was_unfittable = True
@@ -11283,6 +11287,8 @@ class BaseTrainer(ABC):
                             self._refuse_partial_fused_step(e_off)
                             e = e_off
                             self._oom_recovery_cleanup()
+                            if getattr(self, "_adaptive_timestep", None) is not None:
+                                self._adaptive_prediction_loss_chunks = []
                 if fused_backward_active(self):
                     # Micro-splitting under a fused path is not gradient
                     # accumulation: each chunk's hooks apply their own optimizer
@@ -11302,6 +11308,8 @@ class BaseTrainer(ABC):
                     print(f"{self.log_prefix} [OOM] retrying batch {batch_size} micro-batched "
                           f"(micro={_retry_micro}) after: {str(e)[:80]}")
                     try:
+                        if getattr(self, "_adaptive_timestep", None) is not None:
+                            self._adaptive_prediction_loss_chunks = []
                         loss, pred_loss, recon_loss = self._microbatch_two_stage(
                             _retry_micro, eff_bs,
                             {**_batch, "_sensenova_task_loss_weight": sensenova_task_loss_weight},
@@ -16212,9 +16220,6 @@ class BaseTrainer(ABC):
             if bool(dict((timestep_sampling_config or {}).get("morph") or {}).get("enabled")):
                 raise ValueError(
                     "timestep_sampling.adaptive and resume-time morph cannot both be enabled")
-            if batch_size != 1:
-                raise ValueError(
-                    "timestep_sampling.adaptive currently requires batch_size=1")
             if self.is_minimax_h3:
                 raise ValueError(
                     "timestep_sampling.adaptive does not support MiniMax-H3's coupled streams")
@@ -19161,14 +19166,24 @@ class BaseTrainer(ABC):
                                 # Non-CUDA error - re-raise
                                 raise
 
-                        # The first controller version intentionally consumes a
-                        # scalar loss only at batch size one, where it is an exact
-                        # per-item observation. Text-only SenseNova steps have no
-                        # diffusion timestep and must not enter these bins.
+                        # Text-only SenseNova steps have no diffusion timestep and
+                        # must not enter these bins. Chimera supplies an exact loss
+                        # for every item, including OOM micro-batch recovery.
                         _adaptive = getattr(self, "_adaptive_timestep", None)
                         if (_adaptive is not None and not cuda_error_skip
                                 and not _sensenova_text_batch_active):
-                            _adaptive.observe(timesteps, mnt_pred_loss_value)
+                            _loss_chunks = getattr(
+                                self, "_adaptive_prediction_loss_chunks", [])
+                            if not _loss_chunks:
+                                from core.training.ops.sensenova_sdxl_chimera_ops import (
+                                    training_stage,
+                                )
+
+                                if training_stage(self) != "bridge_align":
+                                    raise RuntimeError(
+                                        "adaptive timestep received no per-item Chimera losses")
+                            else:
+                                _adaptive.observe(timesteps, torch.cat(_loss_chunks))
 
                         # If the recovery couldn't fit even one sample, record this
                         # resolution bucket so the next epoch's re-bucketing drops it

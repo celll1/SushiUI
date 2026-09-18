@@ -5,6 +5,13 @@ forward/backward passes. Each pass remains a `global_step`; MNT does not average
 the `N` losses into one optimizer update. `stratified_timesteps` controls the
 timestep draws independently of the noise mode described here.
 
+MNT and adaptive timestep sampling are orthogonal and can be enabled together.
+The noise mode controls correlation between the Gaussian noise tensors, while
+the adaptive sampler controls the timestep marginal. Stratification draws each
+MNT window from the adaptive sampler's current effective quantiles, and the
+controller observes the exact per-item prediction loss from every pass (also
+when OOM recovery splits a physical batch into micro-chunks).
+
 ## Noise modes
 
 Every shipped mode preserves the marginal law `epsilon ~ N(0, I)`. Changing a

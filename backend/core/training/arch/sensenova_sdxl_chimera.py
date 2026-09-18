@@ -115,6 +115,7 @@ class SenseNovaSDXLChimeraArchHandler(ArchHandler):
                     (lambda step, total, _latents: sample_ctx.step_progress_callback(step, total))
                     if sample_ctx.step_progress_callback else None
                 ),
+                cfg_probe_callback=sample_ctx.cfg_probe_callback,
             )
         finally:
             unet.train(was_training)

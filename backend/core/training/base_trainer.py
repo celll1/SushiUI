@@ -12973,6 +12973,7 @@ class BaseTrainer(ABC):
         sensenova_img_cfg_scale: float = _TRAINING_DEFAULTS["sensenova_sample_img_cfg_scale"],
         sensenova_cfg_norm: str = _TRAINING_DEFAULTS["sensenova_sample_cfg_norm"],
         step_progress_callback: Optional[Callable[[int, int], None]] = None,
+        cfg_probe_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Optional[Image.Image]:
         """Route a sample request to the correct per-architecture helper.
 
@@ -13015,6 +13016,7 @@ class BaseTrainer(ABC):
             sensenova_img_cfg_scale=sensenova_img_cfg_scale,
             sensenova_cfg_norm=sensenova_cfg_norm,
             step_progress_callback=step_progress_callback,
+            cfg_probe_callback=cfg_probe_callback,
         )
         return self.arch.sample(self, sample_ctx)
 
@@ -13251,7 +13253,8 @@ class BaseTrainer(ABC):
 
     def _record_on_demand_sample_result(
         self, request_id: str, *, step: int, files: List[str],
-        seeds: List[int], error: Optional[str],
+        seeds: List[int], error: Optional[str], kind: str = "sample",
+        cfg_probe: Optional[Dict[str, Any]] = None,
     ) -> None:
         arch_name = getattr(getattr(self, "arch", None), "name", None)
         note = sample_rpc.blank_on_failure_note(arch_name)
@@ -13263,6 +13266,8 @@ class BaseTrainer(ABC):
                 "seeds": list(seeds),
                 "run_id": self.run_id,
                 "architecture": arch_name,
+                "kind": kind,
+                "cfg_probe": cfg_probe,
                 "error": error,
                 "notes": [note] if note else [],
             })
@@ -19799,6 +19804,20 @@ class BaseTrainer(ABC):
                         on_demand_files: List[str] = []
                         on_demand_seeds: List[int] = []
                         on_demand_error: Optional[str] = None
+                        on_demand_kind = str(
+                            (on_demand_request or {}).get("kind", "sample")
+                        )
+                        cfg_probe_payload: Optional[Dict[str, Any]] = None
+                        if on_demand_id is not None and on_demand_kind == "cfg_probe":
+                            cfg_probe_payload = {
+                                "settings": {
+                                    "cfg_scale": float(sample_guidance_scale),
+                                    "cfg_norm": str(sensenova_sample_cfg_norm),
+                                    "timestep_shift": float(sensenova_sample_timestep_shift),
+                                    "steps": int(sample_steps),
+                                },
+                                "samples": [],
+                            }
 
                         try:
                             for sample_idx, prompt_config in enumerate(self._sample_prompts):
@@ -19846,6 +19865,11 @@ class BaseTrainer(ABC):
                                 _arch_wires_progress = getattr(getattr(self, "arch", None), "wires_sample_step_progress", False)
                                 if _arch_wires_progress and training_feature_unsupported_reason(_arch_name, "training_samples") is None:
                                     emit_start()
+                                cfg_probe_records: List[Dict[str, Any]] = []
+                                cfg_probe_callback = (
+                                    cfg_probe_records.append
+                                    if cfg_probe_payload is not None else None
+                                )
                                 sample = self._dispatch_sample(
                                     positive,
                                     width=sample_width,
@@ -19874,7 +19898,15 @@ class BaseTrainer(ABC):
                                     sensenova_img_cfg_scale=sensenova_sample_img_cfg_scale,
                                     sensenova_cfg_norm=sensenova_sample_cfg_norm,
                                     step_progress_callback=step_progress_cb,
+                                    cfg_probe_callback=cfg_probe_callback,
                                 )
+                                if cfg_probe_payload is not None:
+                                    cfg_probe_payload["samples"].append({
+                                        "sample_index": int(sample_idx),
+                                        "seed": int(actual_seed),
+                                        "summary": sample_rpc.summarize_cfg_probe(cfg_probe_records),
+                                        "steps": cfg_probe_records,
+                                    })
                                 # None => architecture can't sample yet; skip this prompt.
                                 if sample is None:
                                     on_demand_error = (
@@ -19950,7 +19982,8 @@ class BaseTrainer(ABC):
                             if on_demand_id is not None:
                                 self._record_on_demand_sample_result(
                                     on_demand_id, step=sample_step, files=on_demand_files,
-                                    seeds=on_demand_seeds, error=on_demand_error)
+                                    seeds=on_demand_seeds, error=on_demand_error,
+                                    kind=on_demand_kind, cfg_probe=cfg_probe_payload)
 
                         torch.cuda.empty_cache()
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import math
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -203,6 +204,52 @@ def test_cfg_norm_caps_global_and_per_channel_overshoot():
     )
 
 
+@pytest.mark.parametrize("mode", ("sequential", "batched"))
+def test_cfg_probe_records_one_finite_scalar_payload_per_euler_step(mode):
+    records = []
+    sample_txt2img_latents(
+        _FakeUNet(),
+        _conditioning(2.0, "positive"),
+        _conditioning(-1.0, "negative"),
+        height=64,
+        width=64,
+        steps=4,
+        cfg_scale=7.0,
+        cfg_mode=mode,
+        cfg_norm="global",
+        seed=13,
+        cfg_probe_callback=records.append,
+    )
+
+    assert len(records) == 4
+    assert [record["step"] for record in records] == [1, 2, 3, 4]
+    assert [record["total_steps"] for record in records] == [4] * 4
+    assert [record["timestep"] for record in records] == sorted(
+        record["timestep"] for record in records
+    )
+    for record in records:
+        assert all(math.isfinite(value) for value in record.values())
+        assert record["delta_t"] > 0
+        assert record["clamp_norm_ratio"] <= 1.0 + 1e-6
+        assert record["post_cond_norm_ratio"] <= 1.0 + 1e-6
+        assert record["raw_cond_norm_ratio"] + 1e-6 >= record["post_cond_norm_ratio"]
+
+
+def test_cfg_probe_refuses_sampling_without_an_unconditional_branch():
+    with pytest.raises(ValueError, match="requires a negative branch"):
+        sample_txt2img_latents(
+            _FakeUNet(),
+            _conditioning(2.0, "positive"),
+            None,
+            height=64,
+            width=64,
+            steps=2,
+            cfg_scale=1.0,
+            seed=13,
+            cfg_probe_callback=lambda _record: None,
+        )
+
+
 def test_shift_three_allocates_more_steps_near_noise_than_shift_one():
     neutral = shifted_timesteps(4, 1.0, device="cpu")
     shifted = shifted_timesteps(4, 3.0, device="cpu")
@@ -359,6 +406,7 @@ def test_training_preview_forwards_flow_sampler_controls_on_cpu():
         "context_attention_mask": torch.ones(1, 3, dtype=torch.bool),
     }
     forwarded = {}
+    probe_callback = lambda _record: None
 
     def fake_sample(_unet, *_args, **kwargs):
         forwarded.update(kwargs)
@@ -381,12 +429,14 @@ def test_training_preview_forwards_flow_sampler_controls_on_cpu():
                 prompt="test", negative_prompt="", width=64, height=64,
                 num_inference_steps=2, guidance_scale=7.0, seed=1,
                 sensenova_timestep_shift=2.5, sensenova_cfg_norm="global",
+                cfg_probe_callback=probe_callback,
             ),
         )
 
     assert result == "preview"
     assert forwarded["timestep_shift"] == 2.5
     assert forwarded["cfg_norm"] == "global"
+    assert forwarded["cfg_probe_callback"] is probe_callback
 
 
 def test_sampling_is_deterministic_and_cleans_cache_on_success_and_error():

@@ -207,6 +207,90 @@ def _combine_cfg_velocity(
     return guided * shrink.to(dtype=guided.dtype)
 
 
+def _cfg_probe_record(
+    *,
+    step: int,
+    total_steps: int,
+    timestep: torch.Tensor,
+    next_timestep: torch.Tensor,
+    sample_before: torch.Tensor,
+    sample_after: torch.Tensor,
+    conditional: torch.Tensor,
+    unconditional: torch.Tensor,
+    guided_raw: torch.Tensor,
+    guided_post: torch.Tensor,
+) -> dict[str, float | int]:
+    """Reduce one CFG step to bounded scalar diagnostics.
+
+    The probe is explicit and sampling already stalls training, so synchronizing
+    these small reductions is acceptable. No prompt or tensor payload leaves the
+    trainer process.
+    """
+
+    eps = 1e-12
+
+    def rms(value: torch.Tensor) -> torch.Tensor:
+        return value.detach().float().square().mean().sqrt()
+
+    def ratio(numerator: torch.Tensor, denominator: torch.Tensor) -> float:
+        return float((numerator / denominator.clamp_min(eps)).item())
+
+    def cosine(left: torch.Tensor, right: torch.Tensor) -> float:
+        left_flat = left.detach().float().flatten()
+        right_flat = right.detach().float().flatten()
+        denom = torch.linalg.vector_norm(left_flat) * torch.linalg.vector_norm(right_flat)
+        if float(denom.item()) <= eps:
+            return 0.0
+        return float(torch.dot(left_flat, right_flat).div(denom).item())
+
+    def abs_p99(value: torch.Tensor) -> float:
+        return float(torch.quantile(value.detach().float().abs().flatten(), 0.99).item())
+
+    t = timestep.detach().float()
+    t_next = next_timestep.detach().float()
+    one_minus_t = 1.0 - t
+    delta = conditional - unconditional
+    x0_cond = sample_before + one_minus_t * conditional
+    x0_uncond = sample_before + one_minus_t * unconditional
+    x0_raw = sample_before + one_minus_t * guided_raw
+
+    cond_rms = rms(conditional)
+    uncond_rms = rms(unconditional)
+    delta_rms = rms(delta)
+    raw_rms = rms(guided_raw)
+    post_rms = rms(guided_post)
+    sample_rms = rms(sample_before)
+    x0_cond_rms = rms(x0_cond)
+    x0_uncond_rms = rms(x0_uncond)
+
+    return {
+        "step": int(step),
+        "total_steps": int(total_steps),
+        "timestep": float(t.item()),
+        "next_timestep": float(t_next.item()),
+        "delta_t": float((t_next - t).item()),
+        "velocity_cond_rms": float(cond_rms.item()),
+        "velocity_uncond_rms": float(uncond_rms.item()),
+        "velocity_delta_rms": float(delta_rms.item()),
+        "velocity_guided_raw_rms": float(raw_rms.item()),
+        "velocity_guided_post_rms": float(post_rms.item()),
+        "guidance_rel": ratio(delta_rms, uncond_rms),
+        "cond_uncond_cosine": cosine(conditional, unconditional),
+        "delta_cond_cosine": cosine(delta, conditional),
+        "raw_cond_norm_ratio": ratio(raw_rms, cond_rms),
+        "post_cond_norm_ratio": ratio(post_rms, cond_rms),
+        "clamp_norm_ratio": ratio(post_rms, raw_rms),
+        "euler_update_rel": ratio((t_next - t).abs() * post_rms, sample_rms),
+        "x0_guidance_rel": ratio(rms(x0_cond - x0_uncond), x0_uncond_rms),
+        "x0_raw_cond_norm_ratio": ratio(rms(x0_raw), x0_cond_rms),
+        "latent_rms_before": float(sample_rms.item()),
+        "latent_rms_after": float(rms(sample_after).item()),
+        "latent_abs_p99_before": abs_p99(sample_before),
+        "latent_abs_p99_after": abs_p99(sample_after),
+        "latent_abs_max_after": float(sample_after.detach().float().abs().max().item()),
+    }
+
+
 def _sample_flow_latents(
     unet,
     positive: ChimeraConditioning,
@@ -229,6 +313,7 @@ def _sample_flow_latents(
     crop_left: int,
     attention_backend: str,
     progress_callback: Callable[[int, int, torch.Tensor], None] | None,
+    cfg_probe_callback: Callable[[dict[str, float | int]], None] | None = None,
 ) -> torch.Tensor:
     device = sample.device
     dtype = sample.dtype
@@ -246,6 +331,8 @@ def _sample_flow_latents(
     )
     cache_metadata = (height, width, crop_top, crop_left, 0.0, "native-prefix-v2")
     needs_cfg = negative is not None and float(cfg_scale) > 1.0
+    if cfg_probe_callback is not None and not needs_cfg:
+        raise ValueError("Chimera CFG probe requires a negative branch and cfg_scale > 1")
     install_chimera_attention_processors(unet, backend=attention_backend)
     try:
         with torch.inference_mode():
@@ -289,6 +376,7 @@ def _sample_flow_latents(
                         cache_metadata=cache_metadata,
                     )
                     uncond, cond = pair.chunk(2)
+                    guided_raw = uncond + float(cfg_scale) * (cond - uncond)
                     velocity = _combine_cfg_velocity(cond, uncond, cfg_scale, cfg_norm)
                 else:
                     uncond = _unet_velocity(
@@ -297,13 +385,28 @@ def _sample_flow_latents(
                     cond = _unet_velocity(
                         unet, sample, timestep, positive, time_ids, cache_metadata=cache_metadata
                     )
+                    guided_raw = uncond + float(cfg_scale) * (cond - uncond)
                     velocity = _combine_cfg_velocity(cond, uncond, cfg_scale, cfg_norm)
+                sample_before = sample
                 sample = flow_euler_step(sample, velocity, times[index], times[index + 1])
                 if generate_mask is not None:
                     source_at_next = flow_noising(
                         source_latents, source_noise, times[index + 1]
                     )
                     sample = generate_mask * sample + (1.0 - generate_mask) * source_at_next
+                if cfg_probe_callback is not None:
+                    cfg_probe_callback(_cfg_probe_record(
+                        step=index + 1,
+                        total_steps=steps,
+                        timestep=times[index],
+                        next_timestep=times[index + 1],
+                        sample_before=sample_before,
+                        sample_after=sample,
+                        conditional=cond,
+                        unconditional=uncond,
+                        guided_raw=guided_raw,
+                        guided_post=velocity,
+                    ))
                 if progress_callback is not None:
                     progress_callback(index + 1, steps, sample)
         return sample
@@ -330,6 +433,7 @@ def sample_txt2img_latents(
     crop_left: int = 0,
     attention_backend: str = "normal",
     progress_callback: Callable[[int, int, torch.Tensor], None] | None = None,
+    cfg_probe_callback: Callable[[dict[str, float | int]], None] | None = None,
 ) -> torch.Tensor:
     if height % 8 or width % 8:
         raise ValueError("Chimera width and height must be divisible by 8")
@@ -365,6 +469,7 @@ def sample_txt2img_latents(
         crop_left=crop_left,
         attention_backend=attention_backend,
         progress_callback=progress_callback,
+        cfg_probe_callback=cfg_probe_callback,
     )
 
 

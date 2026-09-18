@@ -18146,6 +18146,41 @@ def _configured_sample_seed(run: "TrainingRun") -> Any:
         return -1
 
 
+def _configured_sample_value(run: "TrainingRun", key: str, default: Any = None) -> Any:
+    """Read one non-prompt value from the run's generated sample section."""
+    if not run.config_yaml:
+        return default
+    try:
+        import yaml as _yaml
+        cfg = _yaml.safe_load(run.config_yaml) or {}
+        process = (cfg.get("config", {}) or {}).get("process") or [{}]
+        return (process[0].get("sample") or {}).get(key, default)
+    except Exception:
+        return default
+
+
+def _training_cfg_probe_support(run: "TrainingRun") -> tuple[Optional[str], Optional[str]]:
+    """Return the architecture and any reason a live CFG probe is unavailable."""
+    arch, unsupported = _training_sample_support(run)
+    if unsupported:
+        return arch, unsupported
+    if arch != "sensenova_sdxl_chimera":
+        return arch, (
+            "per-timestep CFG probes are currently implemented only for "
+            "sensenova_sdxl_chimera"
+        )
+    try:
+        cfg_scale = float(_configured_sample_value(run, "guidance_scale", 1.0))
+    except (TypeError, ValueError):
+        cfg_scale = 1.0
+    if cfg_scale <= 1.0:
+        return arch, (
+            f"the configured training sample guidance_scale is {cfg_scale}; "
+            "a CFG probe requires guidance_scale > 1"
+        )
+    return arch, None
+
+
 @router.post("/training/runs/{run_id}/sample", status_code=202)
 async def queue_training_sample(
     run_id: int,
@@ -18198,6 +18233,59 @@ async def queue_training_sample(
     }
 
 
+@router.post("/training/runs/{run_id}/cfg-probe", status_code=202)
+async def queue_training_cfg_probe(
+    run_id: int,
+    db: Session = Depends(get_training_db),
+):
+    """Queue a scalar-only per-timestep CFG diagnostic on the live Chimera model."""
+    from core.training.training_process import training_process_manager
+    from core.training.training_sample_rpc import (
+        MAX_PENDING_REQUESTS, SampleQueueFullError, list_pending_requests,
+        queue_request, resolve_seed,
+    )
+
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    _arch, unsupported = _training_cfg_probe_support(run)
+    if unsupported:
+        raise HTTPException(status_code=400,
+                            detail=f"This run cannot execute a CFG probe: {unsupported}")
+
+    proc = training_process_manager.processes.get(int(run_id))
+    if proc is None or not proc.is_running:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Training run {run_id} is not executing; nothing would pick the request up",
+        )
+
+    try:
+        payload = queue_request(
+            proc.output_dir,
+            run_id=int(run_id),
+            seed=resolve_seed(_configured_sample_seed(run)),
+            extra={"kind": "cfg_probe"},
+        )
+    except SampleQueueFullError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except OSError as e:
+        raise HTTPException(status_code=500,
+                            detail=f"Could not queue CFG probe request: {e}")
+
+    return {
+        "request_id": payload["request_id"],
+        "run_id": int(run_id),
+        "kind": "cfg_probe",
+        "queued_at": payload["queued_at"],
+        "pending_count": len(list_pending_requests(proc.output_dir, int(run_id))),
+        "max_pending": MAX_PENDING_REQUESTS,
+        "seed": payload["seed"],
+        "poll_url": f"/api/v1/training/runs/{run_id}/cfg-probe-queue",
+    }
+
+
 @router.get("/training/runs/{run_id}/sample-queue")
 async def get_training_sample_queue(
     run_id: int,
@@ -18232,6 +18320,51 @@ async def get_training_sample_queue(
             for r in pending_requests(output_dir, int(run_id))
         ],
         "results": list_results(output_dir, int(run_id)),
+    }
+
+
+@router.get("/training/runs/{run_id}/cfg-probe-queue")
+async def get_training_cfg_probe_queue(
+    run_id: int,
+    db: Session = Depends(get_training_db),
+):
+    """Return pending and recent CFG-probe requests without exposing prompts."""
+    from core.training.training_process import training_process_manager
+    from core.training.training_sample_rpc import (
+        MAX_PENDING_REQUESTS, list_results, pending_requests,
+    )
+
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    arch, unsupported = _training_cfg_probe_support(run)
+    proc = training_process_manager.processes.get(int(run_id))
+    output_dir = proc.output_dir if proc is not None else run.output_dir
+    pending = [
+        record for record in pending_requests(output_dir, int(run_id))
+        if record.get("kind") == "cfg_probe"
+    ]
+    results = [
+        record for record in list_results(output_dir, int(run_id))
+        if record.get("kind") == "cfg_probe"
+    ]
+    return {
+        "run_id": int(run_id),
+        "is_running": bool(proc is not None and proc.is_running),
+        "architecture": arch,
+        "unsupported_reason": unsupported,
+        "max_pending": MAX_PENDING_REQUESTS,
+        "pending": [
+            {
+                "request_id": record.get("request_id"),
+                "queued_at": record.get("queued_at"),
+                "seed": record.get("seed"),
+                "kind": "cfg_probe",
+            }
+            for record in pending
+        ],
+        "results": results,
     }
 
 

@@ -196,3 +196,42 @@ def blank_on_failure_note(arch: Optional[str]) -> Optional[str]:
     if arch in BLANK_ON_FAILURE_ARCHS:
         return BLANK_ON_FAILURE_NOTE.format(arch=arch)
     return None
+
+
+def summarize_cfg_probe(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Return extrema with the step/timestep that produced each one."""
+    if not records:
+        return {"step_count": 0, "maxima": {}, "minimum_clamp_norm_ratio": None}
+
+    def point(record: Dict[str, Any], key: str) -> Dict[str, Any]:
+        return {
+            "value": float(record[key]),
+            "step": int(record["step"]),
+            "timestep": float(record["timestep"]),
+        }
+
+    maxima = {}
+    for key in (
+        "guidance_rel",
+        "raw_cond_norm_ratio",
+        "post_cond_norm_ratio",
+        "euler_update_rel",
+        "x0_guidance_rel",
+        "x0_raw_cond_norm_ratio",
+        "latent_abs_p99_after",
+        "latent_abs_max_after",
+    ):
+        candidates = [record for record in records if key in record]
+        if candidates:
+            maxima[key] = point(max(candidates, key=lambda record: float(record[key])), key)
+
+    clamp_candidates = [record for record in records if "clamp_norm_ratio" in record]
+    minimum_clamp = None
+    if clamp_candidates:
+        chosen = min(clamp_candidates, key=lambda record: float(record["clamp_norm_ratio"]))
+        minimum_clamp = point(chosen, "clamp_norm_ratio")
+    return {
+        "step_count": len(records),
+        "maxima": maxima,
+        "minimum_clamp_norm_ratio": minimum_clamp,
+    }

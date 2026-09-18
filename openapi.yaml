@@ -6291,6 +6291,92 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/cfg-probe:
+    post:
+      tags: [training]
+      summary: Queue a per-timestep CFG diagnostic for a running Chimera run
+      description: |
+        Queues one ordinary configured training sample and records bounded scalar
+        diagnostics at every Euler step. The request uses the run's configured
+        seed, sample size, step count, guidance scale, CFG norm, and timestep
+        shift. It does not accept overrides and neither the request nor result
+        exposes prompt text or tensor payloads.
+
+        The response is asynchronous. Poll
+        `GET /training/runs/{run_id}/cfg-probe-queue`; the trainer claims at most
+        one shared sample/probe request per batch. This diagnostic is currently
+        available only for SenseNova SDXL Chimera runs whose configured sample
+        `guidance_scale` is greater than 1.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '202':
+          description: CFG probe queued. It has not run yet.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrainingSampleRequestAccepted'
+        '400':
+          description: The run or its configured sample cannot execute a CFG probe.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The run is not currently executing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: The shared pending sample queue is already full.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: The request file could not be written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/cfg-probe-queue:
+    get:
+      tags: [training]
+      summary: Pending CFG diagnostics and recent scalar results
+      description: |
+        Returns only requests and results whose kind is `cfg_probe`. Prompt text
+        is never included. The recorded step list contains scalar velocity,
+        guidance, clamp, Euler-update, and latent-magnitude measurements.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: CFG probe queue state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrainingSampleQueueResponse'
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /training/runs/{run_id}/timestep-distribution:
     get:
       tags: [training]
@@ -21527,6 +21613,11 @@ components:
         run_id:
           type: integer
           example: 112
+        kind:
+          type: string
+          enum: [sample, cfg_probe]
+          description: Request kind. Omitted by older ordinary-sample responses.
+          example: cfg_probe
         queued_at:
           type: number
           format: double
@@ -21550,6 +21641,10 @@ components:
             from the global torch RNG and would perturb the training stream, so
             it is resolved in the API process instead.
           example: 3134081726
+        poll_url:
+          type: string
+          description: Relative API URL that reports this request's queue and result.
+          example: /api/v1/training/runs/112/cfg-probe-queue
       example:
         request_id: "9f1c2ab4d7e05613"
         run_id: 112
@@ -21572,6 +21667,10 @@ components:
         seed:
           type: integer
           example: 3134081726
+        kind:
+          type: string
+          enum: [sample, cfg_probe]
+          example: cfg_probe
 
     TrainingSampleResult:
       type: object
@@ -21608,6 +21707,15 @@ components:
           type: string
           nullable: true
           example: sdxl
+        kind:
+          type: string
+          enum: [sample, cfg_probe]
+          description: Defaults to `sample` for results written by older trainers.
+          example: cfg_probe
+        cfg_probe:
+          allOf:
+            - $ref: '#/components/schemas/TrainingCfgProbePayload'
+          nullable: true
         error:
           type: string
           nullable: true
@@ -21630,6 +21738,77 @@ components:
           type: number
           format: double
           example: 1772500401.117
+
+    TrainingCfgProbePoint:
+      type: object
+      required: [value, step, timestep]
+      properties:
+        value:
+          type: number
+          format: double
+        step:
+          type: integer
+        timestep:
+          type: number
+          format: double
+
+    TrainingCfgProbeSummary:
+      type: object
+      required: [step_count, maxima, minimum_clamp_norm_ratio]
+      properties:
+        step_count:
+          type: integer
+        maxima:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/TrainingCfgProbePoint'
+        minimum_clamp_norm_ratio:
+          allOf:
+            - $ref: '#/components/schemas/TrainingCfgProbePoint'
+          nullable: true
+
+    TrainingCfgProbeStep:
+      type: object
+      description: Scalar measurements for one Chimera Euler step; no tensors or prompts.
+      required: [step, total_steps, timestep, next_timestep, delta_t]
+      properties:
+        step: {type: integer}
+        total_steps: {type: integer}
+        timestep: {type: number, format: double}
+        next_timestep: {type: number, format: double}
+        delta_t: {type: number, format: double}
+      additionalProperties:
+        type: number
+
+    TrainingCfgProbeSample:
+      type: object
+      required: [sample_index, seed, summary, steps]
+      properties:
+        sample_index: {type: integer}
+        seed: {type: integer}
+        summary:
+          $ref: '#/components/schemas/TrainingCfgProbeSummary'
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrainingCfgProbeStep'
+
+    TrainingCfgProbePayload:
+      type: object
+      required: [settings, samples]
+      properties:
+        settings:
+          type: object
+          required: [cfg_scale, cfg_norm, timestep_shift, steps]
+          properties:
+            cfg_scale: {type: number, format: double}
+            cfg_norm: {type: string}
+            timestep_shift: {type: number, format: double}
+            steps: {type: integer}
+        samples:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrainingCfgProbeSample'
 
     TrainingSampleQueueResponse:
       type: object

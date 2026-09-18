@@ -1608,6 +1608,15 @@ is not optional, so `0` folds to `1` rather than disabling the optimizer step.
 `"pre_encoded_cache"` (disk cache), and `"onthefly_gpu"` (encode on GPU without
 a cache).
 
+For a running SenseNova SDXL Chimera run, the versioned API can queue a
+per-timestep CFG diagnostic with
+`POST /api/v1/training/runs/{run_id}/cfg-probe`. It uses the ordinary configured
+training sample without overrides, stalls training only while that sample is
+rendered, and publishes scalar-only results through
+`GET /api/v1/training/runs/{run_id}/cfg-probe-queue`. Prompt text and tensor
+payloads are not part of either response. The diagnostic requires configured
+sample CFG greater than 1 and shares the bounded on-demand sample queue.
+
 **Example**:
 ```python
 trainer = LoRATrainer(

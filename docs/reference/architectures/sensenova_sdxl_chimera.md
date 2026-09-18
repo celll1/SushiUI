@@ -98,6 +98,14 @@ velocity norm at the conditional branch norm before each Euler step; `channel`
 does so per latent channel. Training previews use the configured shift instead
 of the sampler's neutral internal default.
 
+Running training can queue an explicit CFG probe through
+`POST /api/v1/training/runs/{run_id}/cfg-probe` and poll its result through the
+matching `cfg-probe-queue` endpoint. The probe follows the ordinary configured
+sample path and records, per timestep, conditional/unconditional velocity
+separation, raw and post-clamp guidance norms, Euler update size, clean-endpoint
+estimates, and latent magnitude. Only bounded scalars leave the trainer process;
+prompts and tensors are excluded from the diagnostic result.
+
 Img2img uses deterministic SDEdit in the same increasing-time flow. Inpaint
 uses white-as-generate latent masks and re-injects the correspondingly noised
 source latent into the preserve region after every Euler step, then composites

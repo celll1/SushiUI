@@ -160,6 +160,9 @@ class SampleContext:
     # step_progress_callback(completed_steps, total_steps) once per completed
     # denoising step; archs that don't wire it simply never call it.
     step_progress_callback: Optional[Callable[[int, int], None]] = None
+    # Chimera-only explicit probe. Receives scalar-only records; ordinary and
+    # scheduled samples leave it unset and pay no diagnostic reductions.
+    cfg_probe_callback: Optional[Callable[[Dict[str, Any]], None]] = None
 
 
 # ---------------------------------------------------------------------------

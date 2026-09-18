@@ -7150,7 +7150,7 @@ export interface TrainingRunCreateRequest {
       from?: TimestepSamplingConfig | null;  // null => resolved server-side
     };
     adaptive?: {
-      mode: "off" | "observe" | "bounded";
+      mode: "off" | "observe" | "auto" | "bounded";
       warmup_updates: number;
       control_interval: number;
       bins: number;
@@ -7162,6 +7162,9 @@ export interface TrainingRunCreateRequest {
       morph_updates: number;
       cooldown_updates: number;
       min_observations: number;
+      auto_observe_controls: number;
+      auto_min_bin_observations: number;
+      auto_min_bin_probability: number;
     };
   };
   // FLUX.2/SenseNova explicit arm; SD/SDXL mirrors a selected SigLIP2 VE.
@@ -7875,7 +7878,8 @@ export interface TimestepDistributionStatus {
   lam?: number;
   global_step?: number | null;
   adaptive?: {
-    mode: "off" | "observe" | "bounded";
+    mode: "off" | "observe" | "auto" | "bounded";
+    effective_mode: "off" | "observe" | "bounded";
     action: string;
     control_count: number;
     observations_since_control: number;
@@ -7883,6 +7887,10 @@ export interface TimestepDistributionStatus {
     fast_ema: Array<number | null>;
     slow_ema: Array<number | null>;
     density_ratio: number[];
+    auto_promoted: boolean;
+    auto_promotion_update?: number | null;
+    auto_ready_bins: number;
+    auto_required_bins: number;
     mean_x0_loss?: number | null;
   };
 }

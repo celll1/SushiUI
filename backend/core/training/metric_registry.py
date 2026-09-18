@@ -245,6 +245,10 @@ EXTRA_METRIC_DEFS = {
                               "dashed": True, **_UNIT_DIAG},
     "timestep_adaptive_controls": {"label": "Adaptive controls", "color": "#fb923c",
                                      "dashed": True, "axis": "right", **_COUNT},
+    "timestep_adaptive_auto_promoted": {
+        "label": "Adaptive auto promoted", "color": "#facc15",
+        "dashed": True, "axis": "right", **_BINARY,
+    },
     "timestep_adaptive_x0_loss": {"label": "Adaptive x0 loss", "color": "#f472b6",
                                    "dashed": True, **_LOSS},
     "timestep_adaptive_density_max": {

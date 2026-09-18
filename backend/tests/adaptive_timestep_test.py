@@ -39,6 +39,8 @@ def test_validation_refuses_unsafe_ranges():
         validate_adaptive_timestep_config({"mode": "bounded", "coverage_floor": 0})
     with pytest.raises(ValueError, match="bins"):
         validate_adaptive_timestep_config({"mode": "bounded", "bins": 1})
+    with pytest.raises(ValueError, match="auto_observe_controls"):
+        validate_adaptive_timestep_config({"mode": "auto", "auto_observe_controls": 0})
 
 
 def test_x0_equivalent_flow_loss_uses_noise_fraction():
@@ -76,6 +78,39 @@ def test_bounded_mode_builds_quantile_morph_and_obeys_density_limits():
     ratios = sampler.status()["density_ratio"]
     assert min(ratios) >= sampler.config["coverage_floor"]
     assert max(ratios) <= sampler.config["max_density_ratio"]
+
+
+def test_auto_observes_then_promotes_when_controls_and_bins_are_ready():
+    base = UniformTimestepSampler()
+    sampler = AdaptiveTimestepSampler(
+        base,
+        _config(
+            "auto", auto_observe_controls=2, auto_min_bin_observations=1,
+            auto_min_bin_probability=0.01,
+        ),
+        convention="t1",
+    )
+    sampler.observe(torch.tensor([0.1]), 1.0)
+    sampler.observe(torch.tensor([0.9]), 1.0)
+    sampler.set_optimizer_update_step(1)
+    assert sampler.current is base
+    assert sampler.status()["effective_mode"] == "observe"
+    assert sampler.status()["action"] == "auto_observing"
+
+    sampler.observe(torch.tensor([0.1]), 2.0)
+    sampler.observe(torch.tensor([0.9]), 2.0)
+    sampler.set_optimizer_update_step(2)
+    status = sampler.status()
+    assert isinstance(sampler.current, MorphingTimestepSampler)
+    assert status["auto_promoted"] is True
+    assert status["effective_mode"] == "bounded"
+    assert status["auto_promotion_update"] == 2
+    restored = AdaptiveTimestepSampler(
+        UniformTimestepSampler(), sampler.config, convention="t1",
+        resume_state=json.loads(json.dumps(sampler.state(), allow_nan=False)),
+    )
+    assert restored.status()["auto_promoted"] is True
+    assert restored.status()["effective_mode"] == "bounded"
 
 
 def test_state_is_strict_json_and_round_trips_active_morph():
@@ -128,4 +163,5 @@ def test_api_validation_and_openapi_are_wired(monkeypatch):
     spec = yaml.safe_load(
         (Path(__file__).resolve().parents[2] / "openapi.yaml").read_text(encoding="utf-8"))
     schema = spec["components"]["schemas"]["AdaptiveTimestepSampling"]
-    assert schema["properties"]["mode"]["enum"] == ["off", "observe", "bounded"]
+    assert schema["properties"]["mode"]["enum"] == [
+        "off", "observe", "auto", "bounded"]

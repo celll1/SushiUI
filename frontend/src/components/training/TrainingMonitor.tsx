@@ -952,6 +952,18 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                       {timestepStatus.status.adaptive.observations_since_control.toLocaleString()}
                     </span>
                   </span>
+                  {timestepStatus.status.adaptive.mode === "auto" && (
+                    <span>
+                      Ready bins <span className="font-mono text-gray-100">
+                        {timestepStatus.status.adaptive.auto_ready_bins}
+                        {" / "}
+                        {timestepStatus.status.adaptive.auto_required_bins}
+                      </span>
+                      {timestepStatus.status.adaptive.auto_promoted
+                        ? ` · promoted at update ${timestepStatus.status.adaptive.auto_promotion_update?.toLocaleString()}`
+                        : " · observing"}
+                    </span>
+                  )}
                   {!!timestepStatus.status.adaptive.density_ratio.length && (
                     <span>
                       Density max <span className="font-mono text-gray-100">

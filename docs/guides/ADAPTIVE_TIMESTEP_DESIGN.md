@@ -8,6 +8,8 @@ flow-velocity training. It is off by default and does not change existing runs.
 - `off`: no instrumentation or distribution change.
 - `observe`: collect the same statistics and publish the recommendation, but
   continue sampling the configured base distribution.
+- `auto`: start as `observe`, then promote once both the configured number of
+  observation controls and active-bin sample coverage are satisfied.
 - `bounded`: move toward the recommendation with a cosine quantile morph.
 
 The first shipped version requires Chimera, `batch_size: 1`, and refuses a
@@ -53,7 +55,7 @@ timestep_sampling:
   mean: -0.8
   std: 0.8
   adaptive:
-    mode: observe          # off | observe | bounded
+    mode: auto             # off | observe | auto | bounded
     warmup_updates: 2000
     control_interval: 500
     bins: 8
@@ -65,6 +67,9 @@ timestep_sampling:
     morph_updates: 1000
     cooldown_updates: 500
     min_observations: 128
+    auto_observe_controls: 3
+    auto_min_bin_observations: 8
+    auto_min_bin_probability: 0.01
 ```
 
 ## Resume and observability
@@ -75,5 +80,8 @@ therefore continues the same law rather than rebuilding it from YAML.
 
 The timestep status sidecar includes the full `adaptive` status. Training
 metrics expose controller count, mean x0-equivalent bin loss, and the maximum
-density ratio. Use `observe` first on an established run; switch to `bounded`
-only after the bin coverage and progress ratios are credible.
+density ratio. `auto` performs that observe-first sequence in one run. Only
+bins holding at least `auto_min_bin_probability` of the configured base law are
+required for promotion, so negligible extreme tails cannot block it forever.
+After promotion, `effective_mode` is persisted as bounded and resume cannot
+repeat the observation phase.

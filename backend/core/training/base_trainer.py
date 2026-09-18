@@ -7834,6 +7834,11 @@ class BaseTrainer(ABC):
                     "timestep_adaptive_controls",
                     float(adaptive_status["control_count"]),
                 )
+                if adaptive_status.get("mode") == "auto":
+                    self.log_extra_metric(
+                        "timestep_adaptive_auto_promoted",
+                        float(bool(adaptive_status.get("auto_promoted"))),
+                    )
                 mean_loss = adaptive_status.get("mean_x0_loss")
                 if mean_loss is not None:
                     self.log_extra_metric("timestep_adaptive_x0_loss", float(mean_loss))

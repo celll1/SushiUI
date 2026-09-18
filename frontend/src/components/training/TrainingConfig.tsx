@@ -486,7 +486,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [morphSteps, setMorphSteps] = useState<number>(2000);
   const [morphCurve, setMorphCurve] = useState<string>("cosine");
   const [morphInterpolation, setMorphInterpolation] = useState<string>("quantile");
-  const [adaptiveMode, setAdaptiveMode] = useState<"off" | "observe" | "bounded">("off");
+  const [adaptiveMode, setAdaptiveMode] = useState<"off" | "observe" | "auto" | "bounded">("off");
   const [adaptiveWarmup, setAdaptiveWarmup] = useState<number>(2000);
   const [adaptiveInterval, setAdaptiveInterval] = useState<number>(500);
   const [adaptiveBins, setAdaptiveBins] = useState<number>(8);
@@ -498,6 +498,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [adaptiveMorphUpdates, setAdaptiveMorphUpdates] = useState<number>(1000);
   const [adaptiveCooldown, setAdaptiveCooldown] = useState<number>(500);
   const [adaptiveMinObservations, setAdaptiveMinObservations] = useState<number>(128);
+  const [adaptiveAutoControls, setAdaptiveAutoControls] = useState<number>(3);
+  const [adaptiveAutoMinBinObservations, setAdaptiveAutoMinBinObservations] = useState<number>(8);
+  const [adaptiveAutoMinBinProbability, setAdaptiveAutoMinBinProbability] = useState<number>(0.01);
 
   // Regularization settings (prevent overbaking)
   // Regularization (Phase 3j: migrated to params)
@@ -1010,6 +1013,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           morph_updates: adaptiveMorphUpdates,
           cooldown_updates: adaptiveCooldown,
           min_observations: adaptiveMinObservations,
+          auto_observe_controls: adaptiveAutoControls,
+          auto_min_bin_observations: adaptiveAutoMinBinObservations,
+          auto_min_bin_probability: adaptiveAutoMinBinProbability,
         },
       },
       regularization_type: regularizationType !== "none" ? regularizationType : null,
@@ -1055,7 +1061,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     adaptiveMode, adaptiveWarmup, adaptiveInterval, adaptiveBins,
     adaptiveLogSnrMin, adaptiveLogSnrMax, adaptiveCoverageFloor,
     adaptiveMaxRatio, adaptiveGain, adaptiveMorphUpdates, adaptiveCooldown,
-    adaptiveMinObservations,
+    adaptiveMinObservations, adaptiveAutoControls,
+    adaptiveAutoMinBinObservations, adaptiveAutoMinBinProbability,
     priorityEnabled, priorityText, priorityMultiplier,
   ]);
 
@@ -1178,6 +1185,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         if (adaptive.morph_updates !== undefined) setAdaptiveMorphUpdates(adaptive.morph_updates);
         if (adaptive.cooldown_updates !== undefined) setAdaptiveCooldown(adaptive.cooldown_updates);
         if (adaptive.min_observations !== undefined) setAdaptiveMinObservations(adaptive.min_observations);
+        if (adaptive.auto_observe_controls !== undefined) setAdaptiveAutoControls(adaptive.auto_observe_controls);
+        if (adaptive.auto_min_bin_observations !== undefined) setAdaptiveAutoMinBinObservations(adaptive.auto_min_bin_observations);
+        if (adaptive.auto_min_bin_probability !== undefined) setAdaptiveAutoMinBinProbability(adaptive.auto_min_bin_probability);
       }
     }
 
@@ -3823,7 +3833,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <select
                       value={adaptiveMode}
                       onChange={(e) => {
-                        const mode = e.target.value as "off" | "observe" | "bounded";
+                        const mode = e.target.value as "off" | "observe" | "auto" | "bounded";
                         setAdaptiveMode(mode);
                         if (mode !== "off") setMorphEnabled(false);
                       }}
@@ -3831,6 +3841,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     >
                       <option value="off">Off</option>
                       <option value="observe">Observe only</option>
+                      <option value="auto">Auto: observe → bounded</option>
                       <option value="bounded">Bounded adaptation</option>
                     </select>
                     <p className="text-xs text-gray-500 mt-1">
@@ -3911,6 +3922,33 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                           min="0" max="1" step="0.01"
                           className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500" />
                       </div>
+                    </div>
+                  )}
+                  {adaptiveMode === "auto" && (
+                    <div className="grid grid-cols-3 gap-2 border-t border-gray-700/50 pt-3">
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">Observe controls</label>
+                        <input type="number" value={adaptiveAutoControls}
+                          onChange={(e) => setAdaptiveAutoControls(parseInt(e.target.value, 10))}
+                          min="1" step="1" className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500" />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">Samples / active bin</label>
+                        <input type="number" value={adaptiveAutoMinBinObservations}
+                          onChange={(e) => setAdaptiveAutoMinBinObservations(parseInt(e.target.value, 10))}
+                          min="1" step="1" className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500" />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">Active-bin probability</label>
+                        <input type="number" value={adaptiveAutoMinBinProbability}
+                          onChange={(e) => setAdaptiveAutoMinBinProbability(parseFloat(e.target.value))}
+                          min="0" max="1" step="0.005" className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500" />
+                      </div>
+                      <p className="col-span-3 text-[10px] text-gray-500">
+                        Promotion requires this many observation controls and enough
+                        samples in every base-distribution bin whose probability is
+                        at least the active-bin threshold.
+                      </p>
                     </div>
                   )}
                 </div>

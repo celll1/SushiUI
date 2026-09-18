@@ -292,6 +292,39 @@ def test_queued_request_always_carries_a_concrete_seed(tmp_path):
     assert rpc.claim_next_request(tmp_path)["seed"] >= 0
 
 
+def test_cfg_probe_kind_survives_the_shared_sample_rpc(tmp_path):
+    payload = rpc.queue_request(
+        tmp_path, run_id=139, seed=17, extra={"kind": "cfg_probe"})
+    assert payload["kind"] == "cfg_probe"
+    claimed = rpc.claim_next_request(tmp_path, 139)
+    assert claimed["kind"] == "cfg_probe"
+
+
+def test_cfg_probe_summary_keeps_extrema_with_their_timestep():
+    records = [
+        {
+            "step": 1, "timestep": 0.0, "guidance_rel": 2.0,
+            "raw_cond_norm_ratio": 4.0, "post_cond_norm_ratio": 1.0,
+            "clamp_norm_ratio": 0.25, "euler_update_rel": 0.1,
+            "x0_guidance_rel": 3.0, "x0_raw_cond_norm_ratio": 2.0,
+            "latent_abs_p99_after": 1.5, "latent_abs_max_after": 2.5,
+        },
+        {
+            "step": 2, "timestep": 0.4, "guidance_rel": 5.0,
+            "raw_cond_norm_ratio": 2.0, "post_cond_norm_ratio": 0.8,
+            "clamp_norm_ratio": 0.4, "euler_update_rel": 0.3,
+            "x0_guidance_rel": 1.0, "x0_raw_cond_norm_ratio": 1.5,
+            "latent_abs_p99_after": 2.0, "latent_abs_max_after": 3.0,
+        },
+    ]
+    summary = rpc.summarize_cfg_probe(records)
+    assert summary["step_count"] == 2
+    assert summary["maxima"]["guidance_rel"] == {
+        "value": 5.0, "step": 2, "timestep": 0.4}
+    assert summary["minimum_clamp_norm_ratio"] == {
+        "value": 0.25, "step": 1, "timestep": 0.0}
+
+
 def test_a_seed_read_off_disk_is_re_resolved_before_use():
     """The request file is not trusted: a negative value in it would reach the
     arch ops as generator=None and draw from the training RNG."""
@@ -508,6 +541,14 @@ def test_endpoints_are_documented_in_openapi():
     assert "429" in post["responses"]
     assert "minutes" in post["description"]
 
+    probe_post = spec["paths"]["/training/runs/{run_id}/cfg-probe"]["post"]
+    assert set(probe_post["responses"]) >= {"202", "400", "404", "409", "429", "500"}
+    probe_get = spec["paths"]["/training/runs/{run_id}/cfg-probe-queue"]["get"]
+    assert probe_get["responses"]["200"]["content"]["application/json"]["schema"]["$ref"] \
+        == "#/components/schemas/TrainingSampleQueueResponse"
+    assert schemas["TrainingSampleResult"]["properties"]["cfg_probe"]
+    assert schemas["TrainingCfgProbePayload"]["properties"]["samples"]
+
 
 @pytest.mark.parametrize("arch", ["ideogram4", "minimax_h3", "acestep"])
 def test_architectures_that_cannot_sample_are_refused(arch):
@@ -531,3 +572,24 @@ def test_configured_sample_seed_is_read_from_the_run_yaml():
         SimpleNamespace(config_yaml=yaml_text)) == 4242
     assert _configured_sample_seed(SimpleNamespace(config_yaml=None)) == -1
     assert _configured_sample_seed(SimpleNamespace(config_yaml="{{ not yaml")) == -1
+
+
+def test_cfg_probe_support_requires_chimera_and_cfg(monkeypatch):
+    from api import routes
+
+    run = SimpleNamespace(config_yaml=(
+        "config:\n  process:\n    - sample:\n        guidance_scale: 7.0\n"))
+    monkeypatch.setattr(routes, "_training_sample_support", lambda _run: (
+        "sensenova_sdxl_chimera", None))
+    assert routes._training_cfg_probe_support(run) == (
+        "sensenova_sdxl_chimera", None)
+
+    run.config_yaml = (
+        "config:\n  process:\n    - sample:\n        guidance_scale: 1.0\n")
+    _arch, reason = routes._training_cfg_probe_support(run)
+    assert "guidance_scale > 1" in reason
+
+    monkeypatch.setattr(routes, "_training_sample_support", lambda _run: (
+        "sdxl", None))
+    _arch, reason = routes._training_cfg_probe_support(run)
+    assert "only for sensenova_sdxl_chimera" in reason

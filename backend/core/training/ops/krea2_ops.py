@@ -16,6 +16,8 @@ here.
 """
 from __future__ import annotations
 
+from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
+
 from typing import Optional, Tuple
 
 import torch
@@ -398,6 +400,10 @@ def generate_sample(
     seed: int = -1,
     negative_prompt: str = "",
     step_progress_callback=None,
+    cfg_schedule_type: str = _TRAINING_DEFAULTS["sample_cfg_schedule_type"],
+    cfg_schedule_min: float = _TRAINING_DEFAULTS["sample_cfg_schedule_min"],
+    cfg_schedule_max=_TRAINING_DEFAULTS["sample_cfg_schedule_max"],
+    cfg_schedule_power: float = _TRAINING_DEFAULTS["sample_cfg_schedule_power"],
 ):
     """Generate a validation sample during Krea 2 training (flow matching).
 
@@ -419,6 +425,12 @@ def generate_sample(
     select_layers = getattr(trainer, "krea2_select_layers", None) or [2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35]
     is_distilled = bool(getattr(trainer, "krea2_is_distilled", False))
     guidance = 0.0 if is_distilled else max(0.0, float(guidance_scale) - 1.0)
+    cfg_peak = float(guidance_scale)
+    if cfg_schedule_type != "constant":
+        cfg_peak = max(
+            cfg_peak, float(cfg_schedule_min),
+            float(cfg_schedule_max) if cfg_schedule_max is not None else cfg_peak,
+        )
 
     trainer.transformer.eval()
     trainer.text_encoder.eval()
@@ -440,7 +452,7 @@ def generate_sample(
         prompt_embeds, prompt_mask = _k_encode(
             trainer.text_encoder, trainer.tokenizer, prompt, select_layers, 512, trainer.device)
         neg_embeds = neg_mask = None
-        if guidance > 0.0:
+        if not is_distilled and cfg_peak > 1.0:
             neg_embeds, neg_mask = _k_encode(
                 trainer.text_encoder, trainer.tokenizer, negative_prompt or "", select_layers, 512, trainer.device)
         trainer.text_encoder.to("cpu")
@@ -470,6 +482,12 @@ def generate_sample(
                 neg_embeds.to(t_dtype) if neg_embeds is not None else None, neg_mask,
                 guidance, num_inference_steps, grid_h, grid_w, patch_size, is_distilled, trainer.device,
                 progress_callback=_denoise_progress_callback,
+                advanced_cfg={
+                    "cfg_schedule_type": cfg_schedule_type,
+                    "cfg_schedule_min": cfg_schedule_min,
+                    "cfg_schedule_max": cfg_schedule_max,
+                    "cfg_schedule_power": cfg_schedule_power,
+                },
             )
 
         trainer.vae.to(trainer.device)

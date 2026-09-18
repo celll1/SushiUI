@@ -183,7 +183,7 @@ def test_check_arch_capabilities_warns_on_advanced_cfg_nag_controlnets():
     params["controlnets"] = [{"type": "canny"}]
     warnings = check_arch_capabilities(params, "minimax_music3", defaults=_defaults())
     features_warned = {w["message"] for w in warnings}
-    assert any("advanced CFG" in m for m in features_warned)
+    assert any("CFG schedule" in m for m in features_warned)
     assert any("Normalized Attention Guidance" in m for m in features_warned)
     assert any("ControlNet" in m for m in features_warned)
 

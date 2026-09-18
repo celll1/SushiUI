@@ -219,6 +219,7 @@ def _cfg_probe_record(
     unconditional: torch.Tensor,
     guided_raw: torch.Tensor,
     guided_post: torch.Tensor,
+    cfg_scale: float,
 ) -> dict[str, float | int]:
     """Reduce one CFG step to bounded scalar diagnostics.
 
@@ -269,6 +270,7 @@ def _cfg_probe_record(
         "timestep": float(t.item()),
         "next_timestep": float(t_next.item()),
         "delta_t": float((t_next - t).item()),
+        "cfg_scale": float(cfg_scale),
         "velocity_cond_rms": float(cond_rms.item()),
         "velocity_uncond_rms": float(uncond_rms.item()),
         "velocity_delta_rms": float(delta_rms.item()),
@@ -305,6 +307,10 @@ def _sample_flow_latents(
     height: int,
     width: int,
     cfg_scale: float,
+    cfg_schedule_type: str,
+    cfg_schedule_min: float,
+    cfg_schedule_max: float | None,
+    cfg_schedule_power: float,
     cfg_mode: str,
     cfg_norm: str,
     original_height: int,
@@ -313,6 +319,7 @@ def _sample_flow_latents(
     crop_left: int,
     attention_backend: str,
     progress_callback: Callable[[int, int, torch.Tensor], None] | None,
+    step_progress_callback: Callable[[int, int], None] | None = None,
     cfg_probe_callback: Callable[[dict[str, float | int]], None] | None = None,
 ) -> torch.Tensor:
     device = sample.device
@@ -330,7 +337,12 @@ def _sample_flow_latents(
         dtype=dtype,
     )
     cache_metadata = (height, width, crop_top, crop_left, 0.0, "native-prefix-v2")
-    needs_cfg = negative is not None and float(cfg_scale) > 1.0
+    scheduled_peak = max(
+        float(cfg_scale),
+        float(cfg_schedule_min),
+        float(cfg_schedule_max) if cfg_schedule_max is not None else float(cfg_scale),
+    ) if cfg_schedule_type != "constant" else float(cfg_scale)
+    needs_cfg = negative is not None and scheduled_peak > 1.0
     if cfg_probe_callback is not None and not needs_cfg:
         raise ValueError("Chimera CFG probe requires a negative branch and cfg_scale > 1")
     install_chimera_attention_processors(unet, backend=attention_backend)
@@ -338,6 +350,17 @@ def _sample_flow_latents(
         with torch.inference_mode():
             for index in range(start_index, steps):
                 timestep = times[index].to(dtype=dtype)
+                from core.inference.custom_sampling import calculate_dynamic_cfg
+                cfg_now = calculate_dynamic_cfg(
+                    sigma=float(1.0 - times[index].item()),
+                    sigma_max=1.0,
+                    cfg_base=float(cfg_scale),
+                    cfg_schedule_type=cfg_schedule_type,
+                    cfg_schedule_min=cfg_schedule_min,
+                    cfg_schedule_max=cfg_schedule_max,
+                    cfg_schedule_power=cfg_schedule_power,
+                    denoise_progress=float(times[index].item()),
+                )
                 if not needs_cfg:
                     velocity = _unet_velocity(
                         unet, sample, timestep, positive, time_ids, cache_metadata=cache_metadata
@@ -376,8 +399,8 @@ def _sample_flow_latents(
                         cache_metadata=cache_metadata,
                     )
                     uncond, cond = pair.chunk(2)
-                    guided_raw = uncond + float(cfg_scale) * (cond - uncond)
-                    velocity = _combine_cfg_velocity(cond, uncond, cfg_scale, cfg_norm)
+                    guided_raw = uncond + float(cfg_now) * (cond - uncond)
+                    velocity = _combine_cfg_velocity(cond, uncond, cfg_now, cfg_norm)
                 else:
                     uncond = _unet_velocity(
                         unet, sample, timestep, negative, time_ids, cache_metadata=cache_metadata
@@ -385,8 +408,8 @@ def _sample_flow_latents(
                     cond = _unet_velocity(
                         unet, sample, timestep, positive, time_ids, cache_metadata=cache_metadata
                     )
-                    guided_raw = uncond + float(cfg_scale) * (cond - uncond)
-                    velocity = _combine_cfg_velocity(cond, uncond, cfg_scale, cfg_norm)
+                    guided_raw = uncond + float(cfg_now) * (cond - uncond)
+                    velocity = _combine_cfg_velocity(cond, uncond, cfg_now, cfg_norm)
                 sample_before = sample
                 sample = flow_euler_step(sample, velocity, times[index], times[index + 1])
                 if generate_mask is not None:
@@ -406,9 +429,12 @@ def _sample_flow_latents(
                         unconditional=uncond,
                         guided_raw=guided_raw,
                         guided_post=velocity,
+                        cfg_scale=cfg_now,
                     ))
                 if progress_callback is not None:
                     progress_callback(index + 1, steps, sample)
+                if step_progress_callback is not None:
+                    step_progress_callback(index + 1, steps)
         return sample
     finally:
         clear_chimera_attention_caches(unet)
@@ -427,12 +453,17 @@ def sample_txt2img_latents(
     timestep_shift: float = 1.0,
     cfg_mode: str = "sequential",
     cfg_norm: str = "none",
+    cfg_schedule_type: str = "constant",
+    cfg_schedule_min: float = 1.0,
+    cfg_schedule_max: float | None = None,
+    cfg_schedule_power: float = 2.0,
     original_height: int | None = None,
     original_width: int | None = None,
     crop_top: int = 0,
     crop_left: int = 0,
     attention_backend: str = "normal",
     progress_callback: Callable[[int, int, torch.Tensor], None] | None = None,
+    step_progress_callback: Callable[[int, int], None] | None = None,
     cfg_probe_callback: Callable[[dict[str, float | int]], None] | None = None,
 ) -> torch.Tensor:
     if height % 8 or width % 8:
@@ -461,6 +492,10 @@ def sample_txt2img_latents(
         height=height,
         width=width,
         cfg_scale=cfg_scale,
+        cfg_schedule_type=cfg_schedule_type,
+        cfg_schedule_min=cfg_schedule_min,
+        cfg_schedule_max=cfg_schedule_max,
+        cfg_schedule_power=cfg_schedule_power,
         cfg_mode=cfg_mode,
         cfg_norm=cfg_norm,
         original_height=original_height,
@@ -469,6 +504,7 @@ def sample_txt2img_latents(
         crop_left=crop_left,
         attention_backend=attention_backend,
         progress_callback=progress_callback,
+        step_progress_callback=step_progress_callback,
         cfg_probe_callback=cfg_probe_callback,
     )
 
@@ -487,12 +523,17 @@ def sample_img2img_latents(
     timestep_shift: float = 1.0,
     cfg_mode: str = "sequential",
     cfg_norm: str = "none",
+    cfg_schedule_type: str = "constant",
+    cfg_schedule_min: float = 1.0,
+    cfg_schedule_max: float | None = None,
+    cfg_schedule_power: float = 2.0,
     original_height: int | None = None,
     original_width: int | None = None,
     crop_top: int = 0,
     crop_left: int = 0,
     attention_backend: str = "normal",
     progress_callback: Callable[[int, int, torch.Tensor], None] | None = None,
+    step_progress_callback: Callable[[int, int], None] | None = None,
 ) -> torch.Tensor:
     """Run deterministic SDEdit, optionally pinning the mask's preserve region."""
     if not 0.0 <= float(denoising_strength) <= 1.0:
@@ -535,6 +576,10 @@ def sample_img2img_latents(
         height=height,
         width=width,
         cfg_scale=cfg_scale,
+        cfg_schedule_type=cfg_schedule_type,
+        cfg_schedule_min=cfg_schedule_min,
+        cfg_schedule_max=cfg_schedule_max,
+        cfg_schedule_power=cfg_schedule_power,
         cfg_mode=cfg_mode,
         cfg_norm=cfg_norm,
         original_height=int(original_height or height),
@@ -543,6 +588,7 @@ def sample_img2img_latents(
         crop_left=crop_left,
         attention_backend=attention_backend,
         progress_callback=progress_callback,
+        step_progress_callback=step_progress_callback,
     )
 
 

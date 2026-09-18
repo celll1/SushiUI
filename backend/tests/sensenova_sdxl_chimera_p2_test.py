@@ -235,6 +235,31 @@ def test_cfg_probe_records_one_finite_scalar_payload_per_euler_step(mode):
         assert record["raw_cond_norm_ratio"] + 1e-6 >= record["post_cond_norm_ratio"]
 
 
+@pytest.mark.parametrize("mode", ("sequential", "batched"))
+def test_cfg_probe_reports_noise_to_clean_schedule(mode):
+    records = []
+    sample_txt2img_latents(
+        _FakeUNet(),
+        _conditioning(2.0, "positive"),
+        _conditioning(-1.0, "negative"),
+        height=64,
+        width=64,
+        steps=4,
+        cfg_scale=7.0,
+        cfg_schedule_type="linear",
+        cfg_schedule_min=1.0,
+        cfg_schedule_max=7.0,
+        cfg_mode=mode,
+        seed=17,
+        cfg_probe_callback=records.append,
+    )
+
+    scales = [record["cfg_scale"] for record in records]
+    assert scales[0] == pytest.approx(1.0)
+    assert scales == sorted(scales)
+    assert scales[-1] > scales[0]
+
+
 def test_cfg_probe_refuses_sampling_without_an_unconditional_branch():
     with pytest.raises(ValueError, match="requires a negative branch"):
         sample_txt2img_latents(

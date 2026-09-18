@@ -2775,6 +2775,10 @@ def generate_sample(
     timestep_shift: float = _TRAINING_DEFAULTS["sensenova_sample_timestep_shift"],
     img_cfg_scale: float = _TRAINING_DEFAULTS["sensenova_sample_img_cfg_scale"],
     cfg_norm: str = _TRAINING_DEFAULTS["sensenova_sample_cfg_norm"],
+    cfg_schedule_type: str = _TRAINING_DEFAULTS["sample_cfg_schedule_type"],
+    cfg_schedule_min: float = _TRAINING_DEFAULTS["sample_cfg_schedule_min"],
+    cfg_schedule_max: Optional[float] = _TRAINING_DEFAULTS["sample_cfg_schedule_max"],
+    cfg_schedule_power: float = _TRAINING_DEFAULTS["sample_cfg_schedule_power"],
     negative_prompt: str = "",
     reference_image_path: Optional[str] = None,
     condition_image_path: Optional[str] = None,
@@ -2844,6 +2848,13 @@ def generate_sample(
         # pinned pool and CUDA stream); must be installed before encode_prompt
         # so its own KV-cache finalization sees ``transformer._kv_cache_streamer``.
         kv_streamer = _maybe_install_sample_kv_streaming(trainer, transformer)
+        cfg_branch_scale = float(guidance_scale)
+        if cfg_schedule_type != "constant":
+            cfg_branch_scale = max(
+                cfg_branch_scale,
+                float(cfg_schedule_min),
+                float(cfg_schedule_max) if cfg_schedule_max is not None else cfg_branch_scale,
+            )
         with torch.no_grad():
             # The evictor's full/prefix/denoise machine is driven here exactly as
             # a training step drives it, so generation's own prefix->denoise
@@ -2857,7 +2868,7 @@ def generate_sample(
                 prompt,
                 snapped_height,
                 snapped_width,
-                guidance_scale,
+                cfg_branch_scale,
                 negative_prompt=negative_prompt,
                 ref_images=ref_images,
                 img_cfg_scale=img_cfg_scale,
@@ -2878,6 +2889,12 @@ def generate_sample(
                     num_inference_steps=num_inference_steps,
                     seed=seed if seed is not None and seed >= 0 else None,
                     cfg_norm=cfg_norm,
+                    cfg_schedule={
+                        "cfg_schedule_type": cfg_schedule_type,
+                        "cfg_schedule_min": cfg_schedule_min,
+                        "cfg_schedule_max": cfg_schedule_max,
+                        "cfg_schedule_power": cfg_schedule_power,
+                    },
                     progress_callback=step_progress_callback,
                 )
             _log_sample_guidance(trainer, guidance_steps)

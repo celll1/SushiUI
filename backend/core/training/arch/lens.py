@@ -149,5 +149,9 @@ class LensArchHandler(ArchHandler):
             guidance_scale=sample_ctx.guidance_scale,
             seed=sample_ctx.seed,
             negative_prompt=sample_ctx.negative_prompt,
+            cfg_schedule_type=sample_ctx.cfg_schedule_type,
+            cfg_schedule_min=sample_ctx.cfg_schedule_min,
+            cfg_schedule_max=sample_ctx.cfg_schedule_max,
+            cfg_schedule_power=sample_ctx.cfg_schedule_power,
             step_progress_callback=sample_ctx.step_progress_callback,
         )

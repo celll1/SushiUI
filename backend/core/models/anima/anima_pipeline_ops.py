@@ -600,7 +600,13 @@ def sample_txt2img(
     """
     cond_transformer = nag_transformer if nag_transformer is not None else transformer
     uncond_transformer = negpip_uncond_transformer if negpip_uncond_transformer is not None else transformer
-    do_cfg = guidance_scale is not None and guidance_scale > 1.0 and uncond_embeds is not None
+    from core.inference.custom_sampling import cfg_schedule_peak
+    cfg_peak = cfg_schedule_peak(
+        guidance_scale if guidance_scale is not None else 1.0, (advanced_cfg or {}).get("cfg_schedule_type", "constant"),
+        (advanced_cfg or {}).get("cfg_schedule_min", 1.0),
+        (advanced_cfg or {}).get("cfg_schedule_max"),
+    )
+    do_cfg = guidance_scale is not None and cfg_peak > 1.0 and uncond_embeds is not None
     latent_h = height // 8
     latent_w = width // 8
 
@@ -864,7 +870,13 @@ def sample_img2img(
     """
     cond_transformer = nag_transformer if nag_transformer is not None else transformer
     uncond_transformer = negpip_uncond_transformer if negpip_uncond_transformer is not None else transformer
-    do_cfg = guidance_scale is not None and guidance_scale > 1.0 and uncond_embeds is not None
+    from core.inference.custom_sampling import cfg_schedule_peak
+    cfg_peak = cfg_schedule_peak(
+        guidance_scale if guidance_scale is not None else 1.0, (advanced_cfg or {}).get("cfg_schedule_type", "constant"),
+        (advanced_cfg or {}).get("cfg_schedule_min", 1.0),
+        (advanced_cfg or {}).get("cfg_schedule_max"),
+    )
+    do_cfg = guidance_scale is not None and cfg_peak > 1.0 and uncond_embeds is not None
     if init_latents.dim() == 4:
         init_latents = init_latents.unsqueeze(2)  # [1, 16, 1, H, W]
 
@@ -1078,7 +1090,13 @@ def sample_inpaint(
     """
     cond_transformer = nag_transformer if nag_transformer is not None else transformer
     uncond_transformer = negpip_uncond_transformer if negpip_uncond_transformer is not None else transformer
-    do_cfg = guidance_scale is not None and guidance_scale > 1.0 and uncond_embeds is not None
+    from core.inference.custom_sampling import cfg_schedule_peak
+    cfg_peak = cfg_schedule_peak(
+        guidance_scale if guidance_scale is not None else 1.0, (advanced_cfg or {}).get("cfg_schedule_type", "constant"),
+        (advanced_cfg or {}).get("cfg_schedule_min", 1.0),
+        (advanced_cfg or {}).get("cfg_schedule_max"),
+    )
+    do_cfg = guidance_scale is not None and cfg_peak > 1.0 and uncond_embeds is not None
     if init_latents.dim() == 4:
         init_latents = init_latents.unsqueeze(2)
     if mask_latents.dim() == 3:

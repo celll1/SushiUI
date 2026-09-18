@@ -11758,8 +11758,14 @@ components:
           example:
             sd15: [sample_sampler, sample_schedule_type, sample_cfg_schedule_type, sample_cfg_schedule_min, sample_cfg_schedule_max, sample_cfg_schedule_power, sample_cfg_rescale_snr_alpha, sample_dynamic_threshold_percentile, sample_dynamic_threshold_mimic_scale, sample_nag_enable, sample_nag_scale, sample_nag_tau, sample_nag_alpha, sample_nag_sigma_end, sample_nag_negative_prompt]
             sdxl: [sample_sampler, sample_schedule_type, sample_cfg_schedule_type, sample_cfg_schedule_min, sample_cfg_schedule_max, sample_cfg_schedule_power, sample_cfg_rescale_snr_alpha, sample_dynamic_threshold_percentile, sample_dynamic_threshold_mimic_scale, sample_nag_enable, sample_nag_scale, sample_nag_tau, sample_nag_alpha, sample_nag_sigma_end, sample_nag_negative_prompt]
-            sensenova: [sensenova_sample_timestep_shift, sensenova_sample_img_cfg_scale, sensenova_sample_cfg_norm]
-            sensenova_sdxl_chimera: [sensenova_sample_timestep_shift, sensenova_sample_cfg_norm]
+            zimage: [sample_cfg_schedule_type, sample_cfg_schedule_min, sample_cfg_schedule_max, sample_cfg_schedule_power]
+            flux2: [sample_cfg_schedule_type, sample_cfg_schedule_min, sample_cfg_schedule_max, sample_cfg_schedule_power]
+            anima: [sample_cfg_schedule_type, sample_cfg_schedule_min, sample_cfg_schedule_max, sample_cfg_schedule_power]
+            lens: [sample_cfg_schedule_type, sample_cfg_schedule_min, sample_cfg_schedule_max, sample_cfg_schedule_power]
+            minit2i: [sample_cfg_schedule_type, sample_cfg_schedule_min, sample_cfg_schedule_max, sample_cfg_schedule_power]
+            krea2: [sample_cfg_schedule_type, sample_cfg_schedule_min, sample_cfg_schedule_max, sample_cfg_schedule_power]
+            sensenova: [sample_cfg_schedule_type, sample_cfg_schedule_min, sample_cfg_schedule_max, sample_cfg_schedule_power, sensenova_sample_timestep_shift, sensenova_sample_img_cfg_scale, sensenova_sample_cfg_norm]
+            sensenova_sdxl_chimera: [sample_cfg_schedule_type, sample_cfg_schedule_min, sample_cfg_schedule_max, sample_cfg_schedule_power, sensenova_sample_timestep_shift, sensenova_sample_cfg_norm]
             ltx2: []
         training_sample_notes:
           type: object

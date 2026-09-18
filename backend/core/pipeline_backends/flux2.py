@@ -917,7 +917,14 @@ class Flux2Mixin:
             max_sequence_length = 512  # FLUX.2 uses Qwen3 with max 512 tokens
 
             is_distilled = config.get("is_distilled", False)
-            do_classifier_free_guidance = guidance_scale > 1.0 and not is_distilled
+            from core.inference.custom_sampling import cfg_schedule_peak
+            cfg_peak = cfg_schedule_peak(
+                guidance_scale,
+                params.get("cfg_schedule_type", "constant"),
+                params.get("cfg_schedule_min", 1.0),
+                params.get("cfg_schedule_max"),
+            )
+            do_classifier_free_guidance = cfg_peak > 1.0 and not is_distilled
 
             print(f"[FLUX.2] Generating {width}x{height} image")
             print(f"[FLUX.2] Steps: {num_inference_steps}, CFG: {guidance_scale}, Seed: {seed}")
@@ -1316,6 +1323,20 @@ class Flux2Mixin:
                         block_offloader.cleanup()
                     raise RuntimeError("Generation cancelled by user")
 
+                current_guidance_scale = guidance_scale
+                if do_classifier_free_guidance:
+                    from core.inference.custom_sampling import calculate_dynamic_cfg
+                    current_guidance_scale = calculate_dynamic_cfg(
+                        sigma=1.0 - i / max(total_steps - 1, 1),
+                        sigma_max=1.0,
+                        cfg_base=float(guidance_scale),
+                        cfg_schedule_type=str(params.get("cfg_schedule_type", "constant")),
+                        cfg_schedule_min=float(params.get("cfg_schedule_min", 1.0) or 1.0),
+                        cfg_schedule_max=params.get("cfg_schedule_max"),
+                        cfg_schedule_power=float(params.get("cfg_schedule_power", 2.0) or 2.0),
+                        denoise_progress=i / max(total_steps - 1, 1),
+                    )
+
                 # Expand timestep
                 preview_pred_x0 = None  # set by the eval branch; None on Spectrum skip steps
                 # Spectrum: forecast the model output on skip steps (skip transformer + CFG)
@@ -1354,7 +1375,7 @@ class Flux2Mixin:
                                 transformer_wrapper, style_refs, style_combine_mode, style_processors,
                                 i, total_steps, t, t_scalar / 1000.0, latents, prompt_embeds, text_ids,
                                 negative_prompt_embeds, negative_text_ids, latent_ids,
-                                do_classifier_free_guidance, guidance_scale, style_guidance_vec,
+                                do_classifier_free_guidance, current_guidance_scale, style_guidance_vec,
                                 transformer_input_dtype,
                             )
                         else:
@@ -1362,7 +1383,7 @@ class Flux2Mixin:
                                 transformer_wrapper, style_cfg, style_ref_x0, style_eps_ref, style_processors,
                                 i, total_steps, t, t_scalar / 1000.0, latents, prompt_embeds, text_ids,
                                 negative_prompt_embeds, negative_text_ids, latent_ids,
-                                do_classifier_free_guidance, guidance_scale, style_guidance_vec,
+                                do_classifier_free_guidance, current_guidance_scale, style_guidance_vec,
                                 transformer_input_dtype,
                             )
                     else:
@@ -1422,7 +1443,7 @@ class Flux2Mixin:
 
                             # Split and apply CFG formula
                             noise_pred_uncond, noise_pred_cond = noise_pred_combined.chunk(2, dim=0)
-                            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+                            noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_cond - noise_pred_uncond)
                         else:
                             # Distilled model: Use guidance vector (not CFG)
                             guidance_vec = torch.full(
@@ -2534,7 +2555,14 @@ class Flux2Mixin:
             print(f"[FLUX.2] img2img: {width}x{height}, strength: {denoising_strength}")
 
             is_distilled = config.get("is_distilled", False)
-            do_classifier_free_guidance = guidance_scale > 1.0 and not is_distilled
+            from core.inference.custom_sampling import cfg_schedule_peak
+            cfg_peak = cfg_schedule_peak(
+                guidance_scale,
+                params.get("cfg_schedule_type", "constant"),
+                params.get("cfg_schedule_min", 1.0),
+                params.get("cfg_schedule_max"),
+            )
+            do_classifier_free_guidance = cfg_peak > 1.0 and not is_distilled
 
             # Import VRAM optimization functions
             from core.vram_optimization import (
@@ -2930,6 +2958,20 @@ class Flux2Mixin:
                         block_offloader.cleanup()
                     raise RuntimeError("Generation cancelled by user")
 
+                current_guidance_scale = guidance_scale
+                if do_classifier_free_guidance:
+                    from core.inference.custom_sampling import calculate_dynamic_cfg
+                    current_guidance_scale = calculate_dynamic_cfg(
+                        sigma=1.0 - i / max(total_steps - 1, 1),
+                        sigma_max=1.0,
+                        cfg_base=float(guidance_scale),
+                        cfg_schedule_type=str(params.get("cfg_schedule_type", "constant")),
+                        cfg_schedule_min=float(params.get("cfg_schedule_min", 1.0) or 1.0),
+                        cfg_schedule_max=params.get("cfg_schedule_max"),
+                        cfg_schedule_power=float(params.get("cfg_schedule_power", 2.0) or 2.0),
+                        denoise_progress=i / max(total_steps - 1, 1),
+                    )
+
                 preview_pred_x0 = None  # set by the eval branch; None on Spectrum skip steps
                 # Spectrum: forecast the model output on skip steps (skip transformer + CFG)
                 spectrum_skip = spectrum is not None and not spectrum.is_anchor(i)
@@ -2967,7 +3009,7 @@ class Flux2Mixin:
                                 transformer_wrapper, style_refs, style_combine_mode, style_processors,
                                 i, total_steps, t, t_scalar / 1000.0, latents, prompt_embeds, text_ids,
                                 negative_prompt_embeds, negative_text_ids, latent_ids,
-                                do_classifier_free_guidance, guidance_scale, style_guidance_vec,
+                                do_classifier_free_guidance, current_guidance_scale, style_guidance_vec,
                                 transformer_input_dtype,
                             )
                         else:
@@ -2975,7 +3017,7 @@ class Flux2Mixin:
                                 transformer_wrapper, style_cfg, style_ref_x0, style_eps_ref, style_processors,
                                 i, total_steps, t, t_scalar / 1000.0, latents, prompt_embeds, text_ids,
                                 negative_prompt_embeds, negative_text_ids, latent_ids,
-                                do_classifier_free_guidance, guidance_scale, style_guidance_vec,
+                                do_classifier_free_guidance, current_guidance_scale, style_guidance_vec,
                                 transformer_input_dtype,
                             )
                     else:
@@ -3035,7 +3077,7 @@ class Flux2Mixin:
 
                             # Split and apply CFG formula
                             noise_pred_uncond, noise_pred_cond = noise_pred_combined.chunk(2, dim=0)
-                            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+                            noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_cond - noise_pred_uncond)
                         else:
                             # Distilled model: Use guidance vector (not CFG)
                             guidance_vec = torch.full(
@@ -3340,7 +3382,14 @@ class Flux2Mixin:
                 mask_image = mask_image.filter(ImageFilter.GaussianBlur(radius=mask_blur))
 
             is_distilled = config.get("is_distilled", False)
-            do_classifier_free_guidance = guidance_scale > 1.0 and not is_distilled
+            from core.inference.custom_sampling import cfg_schedule_peak
+            cfg_peak = cfg_schedule_peak(
+                guidance_scale,
+                params.get("cfg_schedule_type", "constant"),
+                params.get("cfg_schedule_min", 1.0),
+                params.get("cfg_schedule_max"),
+            )
+            do_classifier_free_guidance = cfg_peak > 1.0 and not is_distilled
 
             # Import VRAM optimization functions
             from core.vram_optimization import (
@@ -3758,6 +3807,20 @@ class Flux2Mixin:
                         block_offloader.cleanup()
                     raise RuntimeError("Generation cancelled by user")
 
+                current_guidance_scale = guidance_scale
+                if do_classifier_free_guidance:
+                    from core.inference.custom_sampling import calculate_dynamic_cfg
+                    current_guidance_scale = calculate_dynamic_cfg(
+                        sigma=1.0 - i / max(total_steps - 1, 1),
+                        sigma_max=1.0,
+                        cfg_base=float(guidance_scale),
+                        cfg_schedule_type=str(params.get("cfg_schedule_type", "constant")),
+                        cfg_schedule_min=float(params.get("cfg_schedule_min", 1.0) or 1.0),
+                        cfg_schedule_max=params.get("cfg_schedule_max"),
+                        cfg_schedule_power=float(params.get("cfg_schedule_power", 2.0) or 2.0),
+                        denoise_progress=i / max(total_steps - 1, 1),
+                    )
+
                 preview_pred_x0 = None  # set by the eval branch; None on Spectrum skip steps
                 # Spectrum: forecast the model output on skip steps (skip transformer + CFG)
                 spectrum_skip = spectrum is not None and not spectrum.is_anchor(i)
@@ -3795,7 +3858,7 @@ class Flux2Mixin:
                                 transformer_wrapper, style_refs, style_combine_mode, style_processors,
                                 i, total_steps, t, t_scalar / 1000.0, latents, prompt_embeds, text_ids,
                                 negative_prompt_embeds, negative_text_ids, latent_ids,
-                                do_classifier_free_guidance, guidance_scale, style_guidance_vec,
+                                do_classifier_free_guidance, current_guidance_scale, style_guidance_vec,
                                 transformer_input_dtype,
                             )
                         else:
@@ -3803,7 +3866,7 @@ class Flux2Mixin:
                                 transformer_wrapper, style_cfg, style_ref_x0, style_eps_ref, style_processors,
                                 i, total_steps, t, t_scalar / 1000.0, latents, prompt_embeds, text_ids,
                                 negative_prompt_embeds, negative_text_ids, latent_ids,
-                                do_classifier_free_guidance, guidance_scale, style_guidance_vec,
+                                do_classifier_free_guidance, current_guidance_scale, style_guidance_vec,
                                 transformer_input_dtype,
                             )
                     else:
@@ -3863,7 +3926,7 @@ class Flux2Mixin:
 
                             # Split and apply CFG formula
                             noise_pred_uncond, noise_pred_cond = noise_pred_combined.chunk(2, dim=0)
-                            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+                            noise_pred = noise_pred_uncond + current_guidance_scale * (noise_pred_cond - noise_pred_uncond)
                         else:
                             # Distilled model: Use guidance vector (not CFG)
                             guidance_vec = torch.full(

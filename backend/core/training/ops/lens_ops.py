@@ -13,6 +13,8 @@ call sites); each body is defined exactly once here.
 """
 from __future__ import annotations
 
+from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
+
 from typing import Optional, Tuple
 
 import torch
@@ -493,6 +495,10 @@ def generate_sample(
     seed: int = -1,
     negative_prompt: str = "",
     step_progress_callback=None,
+    cfg_schedule_type: str = _TRAINING_DEFAULTS["sample_cfg_schedule_type"],
+    cfg_schedule_min: float = _TRAINING_DEFAULTS["sample_cfg_schedule_min"],
+    cfg_schedule_max=_TRAINING_DEFAULTS["sample_cfg_schedule_max"],
+    cfg_schedule_power: float = _TRAINING_DEFAULTS["sample_cfg_schedule_power"],
 ):
     """Generate a sample image during training (Lens).
 
@@ -562,6 +568,12 @@ def generate_sample(
                 encoder_mask=encoder_mask,
                 guidance_scale=guidance_scale, num_inference_steps=num_inference_steps,
                 latent_h=latent_h, latent_w=latent_w, tokenizer=trainer.tokenizer,
+                advanced_cfg={
+                    "cfg_schedule_type": cfg_schedule_type,
+                    "cfg_schedule_min": cfg_schedule_min,
+                    "cfg_schedule_max": cfg_schedule_max,
+                    "cfg_schedule_power": cfg_schedule_power,
+                },
                 spectrum_params={},
                 progress_callback=_denoise_progress_callback,
             )

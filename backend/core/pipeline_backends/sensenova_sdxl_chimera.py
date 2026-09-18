@@ -33,6 +33,13 @@ class SenseNovaSDXLChimeraMixin:
             raise ValueError("Chimera width and height must be divisible by 8")
         steps = int(params.get("steps") or GENERATION_DEFAULTS["steps"])
         cfg_scale = float(params.get("cfg_scale", GENERATION_DEFAULTS["cfg_scale"]))
+        from core.inference.custom_sampling import cfg_schedule_peak
+        cfg_peak = cfg_schedule_peak(
+            cfg_scale,
+            params.get("cfg_schedule_type", GENERATION_DEFAULTS["cfg_schedule_type"]),
+            params.get("cfg_schedule_min", GENERATION_DEFAULTS["cfg_schedule_min"]),
+            params.get("cfg_schedule_max"),
+        )
         strength = float(params.get("denoising_strength", 0.75))
         prompt = str(params.get("prompt") or "")
         negative_prompt = str(params.get("negative_prompt") or "")
@@ -56,7 +63,7 @@ class SenseNovaSDXLChimeraMixin:
                 positive = pipeline_ops.build_conditioning(
                     transformer, tokenizer, bridge, prompt
                 )
-                if cfg_scale > 1.0:
+                if cfg_peak > 1.0:
                     negative = pipeline_ops.build_conditioning(
                         transformer, tokenizer, bridge, negative_prompt
                     )
@@ -104,6 +111,10 @@ class SenseNovaSDXLChimeraMixin:
                 ),
                 cfg_mode=str(params.get("chimera_cfg_mode", "sequential")),
                 cfg_norm=str(params.get("cfg_norm", GENERATION_DEFAULTS["cfg_norm"])),
+                cfg_schedule_type=str(params.get("cfg_schedule_type", GENERATION_DEFAULTS["cfg_schedule_type"])),
+                cfg_schedule_min=float(params.get("cfg_schedule_min", GENERATION_DEFAULTS["cfg_schedule_min"])),
+                cfg_schedule_max=params.get("cfg_schedule_max"),
+                cfg_schedule_power=float(params.get("cfg_schedule_power", GENERATION_DEFAULTS["cfg_schedule_power"])),
                 original_height=int(params.get("original_height") or height),
                 original_width=int(params.get("original_width") or width),
                 crop_top=int(params.get("crop_top") or 0),
@@ -257,6 +268,13 @@ class SenseNovaSDXLChimeraMixin:
         width = int(params.get("width") or GENERATION_DEFAULTS["width"])
         steps = int(params.get("steps") or GENERATION_DEFAULTS["steps"])
         cfg_scale = float(params.get("cfg_scale", GENERATION_DEFAULTS["cfg_scale"]))
+        from core.inference.custom_sampling import cfg_schedule_peak
+        cfg_peak = cfg_schedule_peak(
+            cfg_scale,
+            params.get("cfg_schedule_type", GENERATION_DEFAULTS["cfg_schedule_type"]),
+            params.get("cfg_schedule_min", GENERATION_DEFAULTS["cfg_schedule_min"]),
+            params.get("cfg_schedule_max"),
+        )
         prompt = str(params.get("prompt") or "")
         negative_prompt = str(params.get("negative_prompt") or "")
         understanding = components["understanding"]
@@ -276,7 +294,7 @@ class SenseNovaSDXLChimeraMixin:
                 positive = pipeline_ops.build_conditioning(
                     transformer, tokenizer, bridge, prompt
                 )
-                if cfg_scale > 1.0:
+                if cfg_peak > 1.0:
                     negative = pipeline_ops.build_conditioning(
                         transformer, tokenizer, bridge, negative_prompt
                     )
@@ -302,6 +320,10 @@ class SenseNovaSDXLChimeraMixin:
                 timestep_shift=float(params.get("timestep_shift", GENERATION_DEFAULTS["timestep_shift"])),
                 cfg_mode=str(params.get("chimera_cfg_mode", "sequential")),
                 cfg_norm=str(params.get("cfg_norm", GENERATION_DEFAULTS["cfg_norm"])),
+                cfg_schedule_type=str(params.get("cfg_schedule_type", GENERATION_DEFAULTS["cfg_schedule_type"])),
+                cfg_schedule_min=float(params.get("cfg_schedule_min", GENERATION_DEFAULTS["cfg_schedule_min"])),
+                cfg_schedule_max=params.get("cfg_schedule_max"),
+                cfg_schedule_power=float(params.get("cfg_schedule_power", GENERATION_DEFAULTS["cfg_schedule_power"])),
                 original_height=int(params.get("original_height") or height),
                 original_width=int(params.get("original_width") or width),
                 crop_top=int(params.get("crop_top") or 0),

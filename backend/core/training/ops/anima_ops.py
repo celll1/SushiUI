@@ -22,6 +22,7 @@ from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
+from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
 
 from ..training_events import emit_training_warning
 from .training_method import trains_denoiser_weights
@@ -635,6 +636,10 @@ def generate_sample(
     seed: int = -1,
     negative_prompt: str = "",
     step_progress_callback=None,
+    cfg_schedule_type: str = _TRAINING_DEFAULTS["sample_cfg_schedule_type"],
+    cfg_schedule_min: float = _TRAINING_DEFAULTS["sample_cfg_schedule_min"],
+    cfg_schedule_max=_TRAINING_DEFAULTS["sample_cfg_schedule_max"],
+    cfg_schedule_power: float = _TRAINING_DEFAULTS["sample_cfg_schedule_power"],
 ):
     """Generate a sample image during training (Anima).
 
@@ -676,8 +681,14 @@ def generate_sample(
             trainer.text_encoder, trainer.tokenizer, trainer.t5_tokenizer,
             prompt, device=device, dtype=compute_dtype,
         )
+        cfg_peak = float(guidance_scale)
+        if cfg_schedule_type != "constant":
+            cfg_peak = max(
+                cfg_peak, float(cfg_schedule_min),
+                float(cfg_schedule_max) if cfg_schedule_max is not None else cfg_peak,
+            )
         uncond = None
-        if guidance_scale > 1.0:
+        if cfg_peak > 1.0:
             uncond = _anima_encode_prompt(
                 trainer.text_encoder, trainer.tokenizer, trainer.t5_tokenizer,
                 negative_prompt, device=device, dtype=compute_dtype,
@@ -713,6 +724,12 @@ def generate_sample(
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale,
                 generator=generator, device=str(device), dtype=compute_dtype,
+                advanced_cfg={
+                    "cfg_schedule_type": cfg_schedule_type,
+                    "cfg_schedule_min": cfg_schedule_min,
+                    "cfg_schedule_max": cfg_schedule_max,
+                    "cfg_schedule_power": cfg_schedule_power,
+                },
                 spectrum_params={},
                 step_callback=_step_cb,
             )

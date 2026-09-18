@@ -552,8 +552,8 @@ class GenerationParams(BaseModel):
     original_size_scale: float = 1.0
     # Dynamic CFG scheduling
     cfg_schedule_type: str = "constant"  # constant, linear, quadratic, cosine, snr_based
-    cfg_schedule_min: float = 1.0  # Minimum CFG at end of generation
-    cfg_schedule_max: Optional[float] = None  # Maximum CFG at start (None = use cfg_scale)
+    cfg_schedule_min: float = 1.0  # CFG at noisy start
+    cfg_schedule_max: Optional[float] = None  # CFG at clean end (None = use cfg_scale)
     cfg_schedule_power: float = 2.0  # Power for quadratic schedule
     cfg_rescale_snr_alpha: float = 0.0  # SNR-based adaptive CFG (0.0 = disabled, 0.1-0.5 typical)
     # Dynamic thresholding

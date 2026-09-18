@@ -12859,16 +12859,21 @@ components:
           example: '[{"model_path": "controlnet.safetensors", "strength": 1.0}]'
         cfg_schedule_type:
           type: string
-          enum: [constant, linear, cosine, exponential]
+          enum: [constant, linear, quadratic, cosine, exponential, snr_based]
           default: constant
+          description: CFG schedule shape. Non-constant timestep schedules rise from the noisy start toward the clean end.
         cfg_schedule_min:
           type: number
           default: 1.0
+          description: CFG scale at the noisy start of generation.
         cfg_schedule_max:
           type: number
+          nullable: true
+          description: CFG scale at the clean end; null uses cfg_scale.
         cfg_schedule_power:
           type: number
           default: 2.0
+          description: Curve power used by quadratic and exponential schedules.
         cfg_rescale_snr_alpha:
           type: number
           default: 0.0
@@ -17877,10 +17882,10 @@ components:
           example: constant
         cfg_schedule_min:
           type: string
-          description: Minimum CFG scale of the schedule. Stringified number.
+          description: CFG scale at the noisy start of generation. Stringified number.
         cfg_schedule_max:
           type: string
-          description: Maximum CFG scale of the schedule. Stringified number; a row whose recorded value was null yields the literal string `"None"`.
+          description: CFG scale at the clean end of generation. Stringified number; a row whose recorded value was null yields the literal string `"None"`.
         cfg_schedule_power:
           type: string
           description: Exponent of the CFG schedule. Stringified number.
@@ -25930,20 +25935,21 @@ components:
         sample_cfg_schedule_type:
           type: string
           default: constant
-          description: SD1.5/SDXL training-preview CFG schedule (constant, linear, cosine, exponential, or quadratic).
+          enum: [constant, linear, quadratic, cosine, exponential, snr_based]
+          description: SD1.5/SDXL training-preview CFG schedule. Non-constant timestep schedules rise from the noisy start toward the clean end.
         sample_cfg_schedule_min:
           type: number
           default: 1.0
-          description: Minimum CFG scale used by the training-preview schedule.
+          description: CFG scale at the noisy start of the training preview.
         sample_cfg_schedule_max:
           type: number
           nullable: true
           default: null
-          description: Optional maximum CFG scale; null uses sample_cfg_scale.
+          description: CFG scale at the clean end of the training preview; null uses sample_cfg_scale.
         sample_cfg_schedule_power:
           type: number
           default: 2.0
-          description: Power used by the quadratic CFG schedule.
+          description: Curve power used by quadratic and exponential CFG schedules.
         sample_cfg_rescale_snr_alpha:
           type: number
           default: 0.0

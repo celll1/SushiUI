@@ -289,7 +289,7 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     "prompt_chunking_mode": "a1111",
     "max_prompt_chunks": 0,
     "developer_mode": False,
-    # CFG scheduling
+    # CFG scheduling: non-constant curves rise from noisy start to clean end.
     "cfg_schedule_type": "constant",
     "cfg_schedule_min": 1.0,
     "cfg_schedule_max": None,

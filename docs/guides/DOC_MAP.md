@@ -56,6 +56,7 @@ machine-local working material.
 | [docs/guides/LR_SCHEDULER_DESIGN.md](LR_SCHEDULER_DESIGN.md) | Learning-rate schedule controls and measured limits. |
 | [docs/guides/TRAINING_DIAGNOSTICS_AND_AUXILIARY_LOSSES.md](TRAINING_DIAGNOSTICS_AND_AUXILIARY_LOSSES.md) | Shipped diagnostics and auxiliary losses. |
 | [docs/guides/TIMESTEP_DISTRIBUTION_MORPH_DESIGN.md](TIMESTEP_DISTRIBUTION_MORPH_DESIGN.md) | Morphing the timestep distribution across a resume: design and where it lives. |
+| [docs/guides/ADAPTIVE_TIMESTEP_DESIGN.md](ADAPTIVE_TIMESTEP_DESIGN.md) | Metric-driven flow-timestep adaptation: log-SNR bins, safety bounds, resume state, and support boundary. |
 | [docs/guides/CONVERGENCE_PHASE1_SENSENOVA.md](CONVERGENCE_PHASE1_SENSENOVA.md) | SenseNova diagnostic measurements. |
 | [docs/guides/SENSENOVA_LATENT_REFINER_DESIGN.md](SENSENOVA_LATENT_REFINER_DESIGN.md) | Optional fine-grid refiner branch for latent SenseNova: design, attach/detach across resumes, generation parity (not implemented). |
 | [docs/guides/LYCORIS_ADAPTER_DESIGN.md](LYCORIS_ADAPTER_DESIGN.md) | Current adapter subsystem contract. |

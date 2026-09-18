@@ -1203,9 +1203,11 @@ def refresh_timestep_status(trainer, global_step: Optional[int] = None,
         if status is None:
             return False
         status = {**status, "global_step": global_step}
+        adaptive = status.get("adaptive") or {}
         signature = (status.get("active"), status.get("distribution"),
                      round(float(status.get("lam") or 0.0), 4),
-                     status.get("optimizer_update_step") if status.get("active") else None)
+                     status.get("optimizer_update_step") if status.get("active") else None,
+                     adaptive.get("control_count"), adaptive.get("action"))
         if not force and signature == getattr(trainer, "_timestep_status_signature", None):
             return False
         control_rpc.write_timestep_status(trainer.output_dir, status)
@@ -5377,6 +5379,10 @@ class BaseTrainer(ABC):
             # of an in-flight morph can be a frozen or flattened law that no
             # config expresses.
             "timestep_morph": self._timestep_morph_state(),
+            "adaptive_timestep": (
+                getattr(self, "_adaptive_timestep", None).state()
+                if getattr(self, "_adaptive_timestep", None) is not None else None
+            ),
             "scheduler_step": live_scheduler_step(self),
             "gradient_accumulation_steps": int(getattr(self, "_grad_accum_steps", 1) or 1),
             "lr_scheduler_advance_interval": lr_scheduler_advance_interval(self),
@@ -5459,6 +5465,7 @@ class BaseTrainer(ABC):
             self._resume_optimizer_update_step = 0
             self._resume_timestep_morph = None
             self._resume_timestep_sampler = None
+            self._resume_adaptive_timestep = None
             self._resume_scheduler_interval = None
             self._resume_lr_schedule_events = None
             self._resume_lr_triggers = None
@@ -5474,6 +5481,7 @@ class BaseTrainer(ABC):
         self._resume_optimizer_update_step = state.get("optimizer_update_step", 0) or 0
         self._resume_timestep_morph = state.get("timestep_morph")
         self._resume_timestep_sampler = state.get("timestep_sampler")
+        self._resume_adaptive_timestep = state.get("adaptive_timestep")
         self._resume_scheduler_interval = state.get("lr_scheduler_advance_interval")
         self._resume_lr_schedule_events = state.get("lr_schedule_events")
         self._resume_lr_triggers = state.get("lr_schedule_triggers")
@@ -7458,6 +7466,14 @@ class BaseTrainer(ABC):
                 return self._stratified_mnt_timesteps_morphing(
                     morphing, multi_noise_timesteps, batch_size, global_step,
                     gradient_accumulation_steps)
+            adaptive = getattr(self, "_adaptive_timestep", None)
+            adaptive_morph = getattr(adaptive, "current", None)
+            if (adaptive is timestep_sampler
+                    and callable(getattr(adaptive_morph, "is_finished", None))
+                    and not adaptive_morph.is_finished()):
+                return self._stratified_mnt_timesteps_morphing(
+                    adaptive_morph, multi_noise_timesteps, batch_size, global_step,
+                    gradient_accumulation_steps)
             return timestep_sampler.sample_stratified(
                 multi_noise_timesteps, batch_size, self.device)
         except NotImplementedError:
@@ -7724,6 +7740,10 @@ class BaseTrainer(ABC):
         """Versioned expression of the law in force at this checkpoint."""
         from .timestep_sampler import sampler_expr
 
+        adaptive = getattr(self, "_adaptive_timestep", None)
+        if adaptive is not None:
+            return sampler_expr(adaptive.effective_sampler())
+
         morphing = getattr(self, "_timestep_morph", None)
         if morphing is not None:
             if morphing.is_finished():
@@ -7745,13 +7765,22 @@ class BaseTrainer(ABC):
         if sampler is None:
             return None
         morphing = getattr(self, "_timestep_morph", None)
+        adaptive = getattr(self, "_adaptive_timestep", None)
+        if morphing is None and adaptive is not None:
+            candidate = getattr(adaptive, "current", None)
+            if (callable(getattr(candidate, "is_finished", None))
+                    and not candidate.is_finished()):
+                morphing = candidate
+        display_sampler = adaptive.effective_sampler() if adaptive is not None else sampler
         status = {
             "optimizer_update_step": int(getattr(self, "_optimizer_update_step", 0)),
             "active": morphing is not None and not morphing.is_finished(),
-            "distribution": describe_sampler(sampler),
+            "distribution": describe_sampler(display_sampler),
         }
+        if adaptive is not None:
+            status["adaptive"] = adaptive.status()
         if morphing is None:
-            status["target"] = sampler_expr(sampler)
+            status["target"] = sampler_expr(display_sampler)
             return status
         status.update({
             "source": sampler_expr(morphing.source),
@@ -7788,10 +7817,40 @@ class BaseTrainer(ABC):
             self.defer_extra_metric("timestep_batch_p10", quantiles[0])
             self.defer_extra_metric("timestep_batch_p90", quantiles[1])
             morphing = getattr(self, "_timestep_morph", None)
+            if morphing is None:
+                adaptive = getattr(self, "_adaptive_timestep", None)
+                candidate = getattr(adaptive, "current", None)
+                if (callable(getattr(candidate, "is_finished", None))
+                        and not candidate.is_finished()):
+                    morphing = candidate
             if morphing is not None and not morphing.is_finished():
                 # A CPU float already: no sync, and it is the one value that
                 # must be right even when the deferred flush is skipped.
                 self.log_extra_metric("timestep_morph_lambda", float(morphing.lam))
+            adaptive = getattr(self, "_adaptive_timestep", None)
+            if adaptive is not None:
+                adaptive_status = adaptive.status()
+                self.log_extra_metric(
+                    "timestep_adaptive_controls",
+                    float(adaptive_status["control_count"]),
+                )
+                mean_loss = adaptive_status.get("mean_x0_loss")
+                if mean_loss is not None:
+                    self.log_extra_metric("timestep_adaptive_x0_loss", float(mean_loss))
+                ratios = adaptive_status.get("density_ratio") or []
+                control_count = int(adaptive_status["control_count"])
+                if (control_count > 0 and control_count != getattr(
+                        self, "_adaptive_last_logged_control", -1)):
+                    self._adaptive_last_logged_control = control_count
+                    if ratios:
+                        self.log_extra_metric("timestep_adaptive_density_max", max(ratios))
+                    for index, value in enumerate(adaptive_status.get("fast_ema") or []):
+                        if value is not None:
+                            self.log_extra_metric(
+                                f"timestep_adaptive_x0_bin_{index}", float(value))
+                    for index, value in enumerate(ratios):
+                        self.log_extra_metric(
+                            f"timestep_adaptive_density_bin_{index}", float(value))
         except Exception:
             # A diagnostic series must never be able to take down a run.
             pass
@@ -16137,6 +16196,37 @@ class BaseTrainer(ABC):
         # against the law that will really be sampled.
         timestep_sampler = self._arm_timestep_morph(
             timestep_sampler, timestep_sampling_config, _convention)
+        self._adaptive_timestep = None
+        _adaptive_cfg = dict((timestep_sampling_config or {}).get("adaptive") or {})
+        if str(_adaptive_cfg.get("mode", "off")).lower() != "off":
+            from .adaptive_timestep import (
+                AdaptiveTimestepSampler, validate_adaptive_timestep_config,
+            )
+
+            _adaptive_cfg = validate_adaptive_timestep_config(_adaptive_cfg)
+            if bool(dict((timestep_sampling_config or {}).get("morph") or {}).get("enabled")):
+                raise ValueError(
+                    "timestep_sampling.adaptive and resume-time morph cannot both be enabled")
+            if batch_size != 1:
+                raise ValueError(
+                    "timestep_sampling.adaptive currently requires batch_size=1")
+            if self.is_minimax_h3:
+                raise ValueError(
+                    "timestep_sampling.adaptive does not support MiniMax-H3's coupled streams")
+            if not self.is_sensenova_sdxl_chimera:
+                raise ValueError(
+                    "timestep_sampling.adaptive currently supports SenseNova SDXL "
+                    "Chimera flow-velocity training only")
+            timestep_sampler = AdaptiveTimestepSampler(
+                timestep_sampler, _adaptive_cfg, convention=_convention,
+                prediction_type="flow_velocity",
+                resume_state=getattr(self, "_resume_adaptive_timestep", None),
+            )
+            timestep_sampler.set_optimizer_update_step(self._optimizer_update_step)
+            self._adaptive_timestep = timestep_sampler
+            print(f"{self.log_prefix} Adaptive timestep controller: "
+                  f"mode={timestep_sampler.mode}, bins={_adaptive_cfg['bins']}, "
+                  f"interval={_adaptive_cfg['control_interval']} updates")
         self.timestep_sampler = timestep_sampler
         refresh_timestep_status(self, global_step=global_step, force=True)
 
@@ -19065,6 +19155,15 @@ class BaseTrainer(ABC):
                             else:
                                 # Non-CUDA error - re-raise
                                 raise
+
+                        # The first controller version intentionally consumes a
+                        # scalar loss only at batch size one, where it is an exact
+                        # per-item observation. Text-only SenseNova steps have no
+                        # diffusion timestep and must not enter these bins.
+                        _adaptive = getattr(self, "_adaptive_timestep", None)
+                        if (_adaptive is not None and not cuda_error_skip
+                                and not _sensenova_text_batch_active):
+                            _adaptive.observe(timesteps, mnt_pred_loss_value)
 
                         # If the recovery couldn't fit even one sample, record this
                         # resolution bucket so the next epoch's re-bucketing drops it

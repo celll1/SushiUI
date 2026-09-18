@@ -7149,6 +7149,20 @@ export interface TrainingRunCreateRequest {
       interpolation: string;  // "quantile" | "mixture"
       from?: TimestepSamplingConfig | null;  // null => resolved server-side
     };
+    adaptive?: {
+      mode: "off" | "observe" | "bounded";
+      warmup_updates: number;
+      control_interval: number;
+      bins: number;
+      log_snr_min: number;
+      log_snr_max: number;
+      coverage_floor: number;
+      max_density_ratio: number;
+      controller_gain: number;
+      morph_updates: number;
+      cooldown_updates: number;
+      min_observations: number;
+    };
   };
   // FLUX.2/SenseNova explicit arm; SD/SDXL mirrors a selected SigLIP2 VE.
   use_reference_images?: boolean;
@@ -7860,6 +7874,17 @@ export interface TimestepDistributionStatus {
   fallback_reason?: string | null;
   lam?: number;
   global_step?: number | null;
+  adaptive?: {
+    mode: "off" | "observe" | "bounded";
+    action: string;
+    control_count: number;
+    observations_since_control: number;
+    counts: number[];
+    fast_ema: Array<number | null>;
+    slow_ema: Array<number | null>;
+    density_ratio: number[];
+    mean_x0_loss?: number | null;
+  };
 }
 
 export interface TimestepDistributionStatusResponse {

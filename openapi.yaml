@@ -12489,6 +12489,8 @@ components:
           description: Per-bin weights (custom distribution only).
         morph:
           $ref: '#/components/schemas/TimestepSamplingMorph'
+        adaptive:
+          $ref: '#/components/schemas/AdaptiveTimestepSampling'
       example:
         distribution: logit_normal
         mean: -0.8
@@ -22415,6 +22417,34 @@ components:
             config being replaced when a run is updated, and a morph record
             paired with the resumed checkpoint outranks both.
 
+    AdaptiveTimestepSampling:
+      type: object
+      description: |
+        Optional runtime controller for SenseNova SDXL Chimera flow-velocity
+        training at batch size 1.
+        It bins x0-equivalent prediction loss in fixed effective-log-SNR bins
+        and reacts to the fast/slow EMA ratio (learning progress), not raw loss.
+        `observe` reports the recommendation without changing the law;
+        `bounded` applies it through a cosine quantile morph while preserving a
+        floor relative to the configured base distribution. Mutually exclusive
+        with `morph`.
+      properties:
+        mode:
+          type: string
+          enum: ["off", observe, bounded]
+          default: "off"
+        warmup_updates: {type: integer, minimum: 0, default: 2000}
+        control_interval: {type: integer, minimum: 1, default: 500}
+        bins: {type: integer, minimum: 2, maximum: 32, default: 8}
+        log_snr_min: {type: number, default: -10.0}
+        log_snr_max: {type: number, default: 10.0}
+        coverage_floor: {type: number, exclusiveMinimum: 0, maximum: 1, default: 0.2}
+        max_density_ratio: {type: number, minimum: 1, default: 2.0}
+        controller_gain: {type: number, minimum: 0, maximum: 1, default: 0.15}
+        morph_updates: {type: integer, minimum: 1, default: 1000}
+        cooldown_updates: {type: integer, minimum: 0, default: 500}
+        min_observations: {type: integer, minimum: 2, default: 128}
+
     TimestepDistributionStatusResponse:
       type: object
       description: The distribution a run is actually sampling, published by the trainer.
@@ -22480,6 +22510,11 @@ components:
             global_step:
               type: integer
               nullable: true
+            adaptive:
+              type: object
+              nullable: true
+              additionalProperties: true
+              description: Runtime adaptive-controller statistics and state.
 
     LrScheduleStatusResponse:
       type: object

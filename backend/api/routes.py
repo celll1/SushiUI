@@ -15430,13 +15430,31 @@ def _check_timestep_sampling(request) -> None:
     from core.training.timestep_sampler import (
         canonicalize_timestep_config, validate_morph_config,
     )
+    from core.training.adaptive_timestep import validate_adaptive_timestep_config
 
     try:
         canonicalize_timestep_config(
-            {k: v for k, v in dict(sampling).items() if k != "morph"})
+            {k: v for k, v in dict(sampling).items()
+             if k not in ("morph", "adaptive")})
         morph = dict(sampling).get("morph")
         if morph is not None:
             validate_morph_config(morph)
+        adaptive = dict(sampling).get("adaptive")
+        if adaptive is not None:
+            adaptive = validate_adaptive_timestep_config(adaptive)
+            if adaptive["mode"] != "off" and bool(dict(morph or {}).get("enabled")):
+                raise ValueError("adaptive and morph cannot both be enabled")
+            if (adaptive["mode"] != "off"
+                    and int(getattr(request, "batch_size", 1) or 1) != 1):
+                raise ValueError("adaptive currently requires batch_size=1")
+            if adaptive["mode"] != "off":
+                from core.model_loader import ModelLoader
+
+                arch = str(ModelLoader.detect_model_type(
+                    getattr(request, "base_model_path", "")))
+                if arch != "sensenova_sdxl_chimera":
+                    raise ValueError(
+                        "adaptive currently supports SenseNova SDXL Chimera only")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"timestep_sampling: {exc}")
 

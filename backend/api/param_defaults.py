@@ -2725,6 +2725,9 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
                               "coverage_floor": 0.2, "max_density_ratio": 2.0,
                               "controller_gain": 0.15, "morph_updates": 1000,
                               "cooldown_updates": 500, "min_observations": 128,
+                              "auto_observe_controls": 3,
+                              "auto_min_bin_observations": 8,
+                              "auto_min_bin_probability": 0.01,
                           }},
     # Regularization
     "regularization_type": None,

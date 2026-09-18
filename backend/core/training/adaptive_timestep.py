@@ -21,7 +21,7 @@ from .timestep_sampler import (
 )
 
 
-ADAPTIVE_MODES = ("off", "observe", "bounded")
+ADAPTIVE_MODES = ("off", "observe", "auto", "bounded")
 
 
 def adaptive_defaults() -> Dict[str, Any]:
@@ -38,7 +38,8 @@ def validate_adaptive_timestep_config(config: Optional[Dict[str, Any]]) -> Dict[
         raise ValueError(f"adaptive.mode must be one of {ADAPTIVE_MODES}, got {mode!r}")
     merged["mode"] = mode
     for key in ("warmup_updates", "control_interval", "bins", "morph_updates",
-                "cooldown_updates", "min_observations"):
+                "cooldown_updates", "min_observations", "auto_observe_controls",
+                "auto_min_bin_observations"):
         raw = merged[key]
         if isinstance(raw, bool):
             raise ValueError(f"adaptive.{key} must be an integer")
@@ -57,8 +58,12 @@ def validate_adaptive_timestep_config(config: Optional[Dict[str, Any]]) -> Dict[
         raise ValueError("adaptive.bins must be in [2, 32]")
     if merged["min_observations"] < merged["bins"]:
         raise ValueError("adaptive.min_observations must be >= adaptive.bins")
+    if merged["auto_observe_controls"] < 1:
+        raise ValueError("adaptive.auto_observe_controls must be >= 1")
+    if merged["auto_min_bin_observations"] < 1:
+        raise ValueError("adaptive.auto_min_bin_observations must be >= 1")
     for key in ("log_snr_min", "log_snr_max", "coverage_floor",
-                "max_density_ratio", "controller_gain"):
+                "max_density_ratio", "controller_gain", "auto_min_bin_probability"):
         merged[key] = float(merged[key])
         if not math.isfinite(merged[key]):
             raise ValueError(f"adaptive.{key} must be finite")
@@ -70,6 +75,8 @@ def validate_adaptive_timestep_config(config: Optional[Dict[str, Any]]) -> Dict[
         raise ValueError("adaptive.max_density_ratio must be >= 1")
     if not 0.0 <= merged["controller_gain"] <= 1.0:
         raise ValueError("adaptive.controller_gain must be in [0, 1]")
+    if not 0.0 <= merged["auto_min_bin_probability"] <= 1.0:
+        raise ValueError("adaptive.auto_min_bin_probability must be in [0, 1]")
     return merged
 
 
@@ -101,7 +108,12 @@ class AdaptiveTimestepSampler(TimestepSampler):
         self.slow_ema = [math.nan] * n
         self.last_density_ratio = [1.0] * n
         self.base_bin_probability = self._base_bin_probabilities()
+        if self.mode == "auto" and not self._auto_eligible_bins():
+            raise ValueError(
+                "adaptive.auto_min_bin_probability excludes every base-law bin")
         self.control_count = 0
+        self.auto_promoted = False
+        self.auto_promotion_update: Optional[int] = None
         self._last_action = "warming_up"
         if resume_state:
             self.load_state(resume_state)
@@ -164,8 +176,10 @@ class AdaptiveTimestepSampler(TimestepSampler):
         if self.mode == "off" or self.update_step < cfg["warmup_updates"]:
             self._last_action = "warming_up"
             return
-        next_allowed = self.last_control_update + max(
-            cfg["control_interval"], cfg["cooldown_updates"], cfg["morph_updates"])
+        wait_updates = max(cfg["control_interval"], cfg["cooldown_updates"])
+        if self.mode == "bounded" or self.auto_promoted:
+            wait_updates = max(wait_updates, cfg["morph_updates"])
+        next_allowed = self.last_control_update + wait_updates
         if self.update_step < next_allowed:
             self._last_action = "cooldown"
             return
@@ -198,7 +212,21 @@ class AdaptiveTimestepSampler(TimestepSampler):
         self.last_control_update = self.update_step
         self.observations_since_control = 0
         self.control_count += 1
-        self._last_action = "observed" if self.mode == "observe" else "morphing"
+        if self.mode == "auto" and not self.auto_promoted:
+            eligible = self._auto_eligible_bins()
+            bins_ready = all(
+                self.counts[index] >= cfg["auto_min_bin_observations"]
+                for index in eligible
+            )
+            controls_ready = self.control_count >= cfg["auto_observe_controls"]
+            if not (bins_ready and controls_ready):
+                self._last_action = "auto_observing"
+                return
+            self.auto_promoted = True
+            self.auto_promotion_update = self.update_step
+            self._last_action = "auto_promoted"
+        else:
+            self._last_action = "observed" if self.mode == "observe" else "morphing"
         if self.mode == "observe":
             return
         target = self._weighted_target(ratios)
@@ -258,6 +286,13 @@ class AdaptiveTimestepSampler(TimestepSampler):
         total = sum(probabilities)
         return [value / total for value in probabilities]
 
+    def _auto_eligible_bins(self):
+        threshold = self.config["auto_min_bin_probability"]
+        return [
+            index for index, probability in enumerate(self.base_bin_probability)
+            if probability > 0.0 and probability >= threshold
+        ]
+
     def effective_sampler(self) -> TimestepSampler:
         if isinstance(self.current, MorphingTimestepSampler):
             return self.current.target if self.current.is_finished() else self.current.freeze()
@@ -280,6 +315,8 @@ class AdaptiveTimestepSampler(TimestepSampler):
             "last_density_ratio": list(self.last_density_ratio),
             "base_bin_probability": list(self.base_bin_probability),
             "control_count": self.control_count,
+            "auto_promoted": self.auto_promoted,
+            "auto_promotion_update": self.auto_promotion_update,
             "last_action": self._last_action,
         }
 
@@ -315,6 +352,18 @@ class AdaptiveTimestepSampler(TimestepSampler):
                 raise ValueError("adaptive timestep base_bin_probability has wrong length")
             self.base_bin_probability = [float(value) for value in saved_probability]
         self.control_count = int(state.get("control_count", 0))
+        saved_promoted = bool(state.get("auto_promoted", False))
+        self.auto_promoted = (
+            self.mode == "auto"
+            and (saved_promoted or saved_cfg["mode"] == "bounded")
+        )
+        promotion = state.get("auto_promotion_update")
+        self.auto_promotion_update = (
+            None if not self.auto_promoted or promotion is None else int(promotion)
+        )
+        if self.mode == "observe" and isinstance(
+                self.current, MorphingTimestepSampler):
+            self.current = self.current.freeze()
         self._last_action = str(state.get("last_action", "resumed"))
         setter = getattr(self.current, "set_optimizer_update_step", None)
         if setter is not None:
@@ -322,8 +371,17 @@ class AdaptiveTimestepSampler(TimestepSampler):
 
     def status(self) -> Dict[str, Any]:
         finite = [v for v in self.fast_ema if math.isfinite(v)]
+        eligible = self._auto_eligible_bins()
+        ready = sum(
+            self.counts[index] >= self.config["auto_min_bin_observations"]
+            for index in eligible
+        )
         return {
             "mode": self.mode,
+            "effective_mode": (
+                "bounded" if self.mode == "bounded" or self.auto_promoted
+                else "observe" if self.mode in ("observe", "auto") else "off"
+            ),
             "action": self._last_action,
             "control_count": self.control_count,
             "observations_since_control": self.observations_since_control,
@@ -332,5 +390,9 @@ class AdaptiveTimestepSampler(TimestepSampler):
             "slow_ema": [None if not math.isfinite(v) else v for v in self.slow_ema],
             "density_ratio": list(self.last_density_ratio),
             "base_bin_probability": list(self.base_bin_probability),
+            "auto_promoted": self.auto_promoted,
+            "auto_promotion_update": self.auto_promotion_update,
+            "auto_ready_bins": ready,
+            "auto_required_bins": len(eligible),
             "mean_x0_loss": (sum(finite) / len(finite)) if finite else None,
         }

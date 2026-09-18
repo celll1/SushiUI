@@ -22424,14 +22424,16 @@ components:
         training at batch size 1.
         It bins x0-equivalent prediction loss in fixed effective-log-SNR bins
         and reacts to the fast/slow EMA ratio (learning progress), not raw loss.
-        `observe` reports the recommendation without changing the law;
+        `observe` reports the recommendation without changing the law; `auto`
+        begins identically and promotes itself to bounded control after repeated
+        control observations and sufficient active-bin coverage;
         `bounded` applies it through a cosine quantile morph while preserving a
         floor relative to the configured base distribution. Mutually exclusive
         with `morph`.
       properties:
         mode:
           type: string
-          enum: ["off", observe, bounded]
+          enum: ["off", observe, auto, bounded]
           default: "off"
         warmup_updates: {type: integer, minimum: 0, default: 2000}
         control_interval: {type: integer, minimum: 1, default: 500}
@@ -22444,6 +22446,9 @@ components:
         morph_updates: {type: integer, minimum: 1, default: 1000}
         cooldown_updates: {type: integer, minimum: 0, default: 500}
         min_observations: {type: integer, minimum: 2, default: 128}
+        auto_observe_controls: {type: integer, minimum: 1, default: 3}
+        auto_min_bin_observations: {type: integer, minimum: 1, default: 8}
+        auto_min_bin_probability: {type: number, minimum: 0, maximum: 1, default: 0.01}
 
     TimestepDistributionStatusResponse:
       type: object

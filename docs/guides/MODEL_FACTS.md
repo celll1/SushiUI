@@ -3314,7 +3314,9 @@ Paths below are relative to `backend/core/training/`.
   by content hash and bundles the selected SDXL donor VAE.
 - Generation: four-channel SDXL-shaped U-Net, `t=0` noise / `t=1` clean flow
   velocity, SenseNova three-axis RoPE, SDXL time IDs, sequential or batched CFG,
-  and a generation-local post-RoPE cross-attention K/V cache.
+  optional global/per-channel CFG velocity-norm capping, public timestep shift,
+  and a generation-local post-RoPE cross-attention K/V cache. Production and
+  training previews consume the same shift and CFG-norm controls.
 - Source-image editing: img2img uses deterministic flow SDEdit. Inpaint uses
   RePaint-style latent pinning with white meaning generate and black meaning
   preserve, followed by pixel-space source compositing; spatial outpaint uses

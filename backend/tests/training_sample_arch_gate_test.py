@@ -263,7 +263,7 @@ def test_the_sensenova_preview_controls_sit_inside_the_sample_section():
     """They were eleven cards away, among the memory options -- which is where
     they were looked for and not found."""
     sample_card = _PANEL_TS.index("Sample Generation (Optional)")
-    controls = _PANEL_TS.index("SenseNova Preview Options")
+    controls = _PANEL_TS.index("Flow Preview Options")
     next_card = _PANEL_TS.index("Debug Options", sample_card)
     assert sample_card < controls < next_card
     assert "SenseNova Sample Generation" not in _PANEL_TS

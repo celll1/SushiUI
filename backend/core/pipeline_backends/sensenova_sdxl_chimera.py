@@ -103,6 +103,7 @@ class SenseNovaSDXLChimeraMixin:
                     params.get("timestep_shift", GENERATION_DEFAULTS["timestep_shift"])
                 ),
                 cfg_mode=str(params.get("chimera_cfg_mode", "sequential")),
+                cfg_norm=str(params.get("cfg_norm", GENERATION_DEFAULTS["cfg_norm"])),
                 original_height=int(params.get("original_height") or height),
                 original_width=int(params.get("original_width") or width),
                 crop_top=int(params.get("crop_top") or 0),
@@ -300,6 +301,7 @@ class SenseNovaSDXLChimeraMixin:
                 seed=seed,
                 timestep_shift=float(params.get("timestep_shift", GENERATION_DEFAULTS["timestep_shift"])),
                 cfg_mode=str(params.get("chimera_cfg_mode", "sequential")),
+                cfg_norm=str(params.get("cfg_norm", GENERATION_DEFAULTS["cfg_norm"])),
                 original_height=int(params.get("original_height") or height),
                 original_width=int(params.get("original_width") or width),
                 crop_top=int(params.get("crop_top") or 0),

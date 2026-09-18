@@ -126,14 +126,12 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     # entries just below, which are unreachable because their routes reject
     # ACE-Step on the image endpoints outright.
     "audio_reference_conditioning": ["reference_audio_path", "reference_audio_enable", "is_cover"],
-    # SenseNova U1.5's flow-matching time-shift. No other architecture has an
-    # equivalent knob at the API layer.
+    # SenseNova and Chimera's flow-matching time-shift.
     "timestep_shift": ["timestep_shift"],
     # SenseNova U1.5's second CFG scale for reference-image editing. No other
     # architecture has an equivalent knob at the API layer.
     "img_cfg_scale": ["img_cfg_scale"],
-    # SenseNova U1.5's CFG-overshoot clamp. No other architecture has an
-    # equivalent knob at the API layer.
+    # SenseNova and Chimera's CFG-overshoot clamp.
     "cfg_norm": ["cfg_norm"],
     # SenseNova U1.5's per-phase weight-half CPU eviction. No other
     # architecture has an equivalent knob at the API layer.
@@ -186,9 +184,9 @@ FEATURE_LABELS: Dict[str, str] = {
     "lora": "loras (LoRA)",
     "fuse_output_proj": "fuse_output_proj (output-tail head fusion)",
     "audio_reference_conditioning": "reference_audio_path/reference_audio_enable/is_cover (reference-audio conditioning)",
-    "timestep_shift": "timestep_shift (SenseNova U1.5 flow-matching time-shift)",
+    "timestep_shift": "timestep_shift (SenseNova/Chimera flow-matching time-shift)",
     "img_cfg_scale": "img_cfg_scale (SenseNova U1.5 reference-image editing second CFG scale)",
-    "cfg_norm": "cfg_norm (SenseNova U1.5 CFG-overshoot clamp)",
+    "cfg_norm": "cfg_norm (SenseNova/Chimera CFG-overshoot clamp)",
     "sensenova_mot_phase_eviction": "sensenova_mot_phase_eviction (SenseNova U1.5 per-phase weight-half CPU eviction)",
     "sensenova_kv_cache_streaming": "sensenova_kv_cache_streaming (SenseNova U1.5 per-layer prefix KV cache CPU streaming)",
     "block_swap": "enable_block_swap/blocks_to_swap (per-block CPU offload)",
@@ -385,6 +383,10 @@ for _arch in ("sd15", "sdxl"):
 TRAINING_SAMPLE_SUPPORTED_PARAMS["sensenova"] = [
     "sensenova_sample_timestep_shift",
     "sensenova_sample_img_cfg_scale",
+    "sensenova_sample_cfg_norm",
+]
+TRAINING_SAMPLE_SUPPORTED_PARAMS["sensenova_sdxl_chimera"] = [
+    "sensenova_sample_timestep_shift",
     "sensenova_sample_cfg_norm",
 ]
 
@@ -784,11 +786,11 @@ for _a in [a for a in _ALL_ARCHS if a not in _QUANTIZED_GEMM_SUPPORTED]:
          "quantized-GEMM path selection applies only to the weight-only quantized Linear "
          f"layers used by {arch_names(QUANTIZED_LINEAR_ARCHS)}")
 
-# timestep_shift: a SenseNova U1.5-specific flow-matching time-shift; every
-# other architecture's sampler has no equivalent knob and ignores it.
+# timestep_shift: a SenseNova/Chimera flow-matching time-shift; every other
+# architecture's sampler has no equivalent knob and ignores it.
 for _a in [a for a in _ALL_ARCHS if a not in {"sensenova", "sensenova_sdxl_chimera"}]:
     _add(_a, "timestep_shift",
-         "timestep_shift is a SenseNova U1.5-specific flow-matching time-shift parameter; this architecture's sampler does not consult it")
+         "timestep_shift is a SenseNova/Chimera flow-matching time-shift parameter; this architecture's sampler does not consult it")
 
 # Chimera has a dedicated U-Net sampler. Features inherited only by the legacy
 # SD/SDXL sampling loop are not silently advertised for it.
@@ -821,11 +823,11 @@ for _a in [a for a in _ALL_ARCHS if a != "sensenova"]:
     _add(_a, "img_cfg_scale",
          "img_cfg_scale is a SenseNova U1.5-specific second CFG scale for reference-image editing; this architecture does not consult it")
 
-# cfg_norm: a SenseNova U1.5-specific CFG-overshoot clamp; every other
+# cfg_norm: SenseNova and Chimera cap flow velocity overshoot; every other
 # architecture's sampler has no equivalent knob and ignores it.
-for _a in [a for a in _ALL_ARCHS if a != "sensenova"]:
+for _a in [a for a in _ALL_ARCHS if a not in {"sensenova", "sensenova_sdxl_chimera"}]:
     _add(_a, "cfg_norm",
-         "cfg_norm is a SenseNova U1.5-specific CFG-overshoot clamp; this architecture does not consult it")
+         "cfg_norm is a SenseNova/Chimera CFG-overshoot clamp; this architecture does not consult it")
 
 # sensenova_mot_phase_eviction: a SenseNova U1.5-specific per-phase weight-half
 # CPU eviction toggle; every other architecture's inference path has no

@@ -267,7 +267,7 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     # above). Only meaningful with ref_images on SenseNova; every other
     # architecture ignores it.
     "img_cfg_scale": SENSENOVA_GENERATION_DEFAULTS["img_cfg_scale"],
-    # SenseNova CFG-overshoot clamp (see SENSENOVA_GENERATION_DEFAULTS above).
+    # SenseNova/Chimera CFG-overshoot clamp (see SENSENOVA_GENERATION_DEFAULTS above).
     # Every other architecture ignores it (accepted and warned,
     # api/arch_capabilities.py).
     "cfg_norm": SENSENOVA_GENERATION_DEFAULTS["cfg_norm"],
@@ -2426,7 +2426,7 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "sample_nag_sigma_end": GENERATION_DEFAULTS["nag_sigma_end"],
     "sample_nag_negative_prompt": GENERATION_DEFAULTS["nag_negative_prompt"],
     "sample_seed": -1,
-    # SenseNova-only training-preview controls. These mirror normal generation
+    # SenseNova/Chimera training-preview controls. These mirror normal generation
     # but remain separate so training samples never inherit unrelated features.
     "sensenova_sample_timestep_shift": SENSENOVA_GENERATION_DEFAULTS["timestep_shift"],
     "sensenova_sample_img_cfg_scale": SENSENOVA_GENERATION_DEFAULTS["img_cfg_scale"],

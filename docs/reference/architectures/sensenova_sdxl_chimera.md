@@ -92,6 +92,12 @@ sampling. Sequential and batch-concatenated CFG share the same conditioning
 contract. Post-RoPE cross-attention K/V caches are scoped to one generation and
 cleared on success or exception.
 
+Flow sampling consumes the public timestep shift and CFG-norm controls in both
+production generation and training previews. `global` CFG norm caps the guided
+velocity norm at the conditional branch norm before each Euler step; `channel`
+does so per latent channel. Training previews use the configured shift instead
+of the sampler's neutral internal default.
+
 Img2img uses deterministic SDEdit in the same increasing-time flow. Inpaint
 uses white-as-generate latent masks and re-injects the correspondingly noised
 source latent into the preserve region after every Euler step, then composites
@@ -120,6 +126,8 @@ training requires `bridge_state="aligned"`; only a scratch U-Net may bypass
 that rule through `chimera_allow_unaligned_scratch=true`, and a transplanted
 U-Net may never bypass it. Checkpoints are production-loadable Chimera
 directories with stage, step, epoch, metrics, and bridge-state provenance.
+Debug dumps include VAE-decoded noisy, target, and predicted-x0 WebP previews;
+the monitor prefers those over independently normalized latent channels.
 
 `chimera_bridge_align_steps=N` optionally turns an `unet` or `joint` run into a
 two-stage run: bridge-only for completed steps `[0,N)`, then the selected target

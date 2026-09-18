@@ -185,6 +185,28 @@ def prepare_generate_mask(
     return values.unsqueeze(0).unsqueeze(0).to(device=device, dtype=dtype).div(255.0)
 
 
+def _combine_cfg_velocity(
+    conditional: torch.Tensor,
+    unconditional: torch.Tensor,
+    cfg_scale: float,
+    cfg_norm: str,
+) -> torch.Tensor:
+    """Blend CFG and optionally cap its norm at the conditional branch norm."""
+    guided = unconditional + float(cfg_scale) * (conditional - unconditional)
+    if float(cfg_scale) <= 1.0 or cfg_norm == "none":
+        return guided
+    if cfg_norm == "global":
+        dims = tuple(range(1, guided.ndim))
+    elif cfg_norm == "channel":
+        dims = tuple(range(2, guided.ndim))
+    else:
+        raise ValueError(f"unsupported Chimera CFG norm: {cfg_norm}")
+    conditional_norm = torch.linalg.vector_norm(conditional.float(), dim=dims, keepdim=True)
+    guided_norm = torch.linalg.vector_norm(guided.float(), dim=dims, keepdim=True)
+    shrink = (conditional_norm / guided_norm.clamp_min(1e-8)).clamp(max=1.0)
+    return guided * shrink.to(dtype=guided.dtype)
+
+
 def _sample_flow_latents(
     unet,
     positive: ChimeraConditioning,
@@ -200,6 +222,7 @@ def _sample_flow_latents(
     width: int,
     cfg_scale: float,
     cfg_mode: str,
+    cfg_norm: str,
     original_height: int,
     original_width: int,
     crop_top: int,
@@ -266,7 +289,7 @@ def _sample_flow_latents(
                         cache_metadata=cache_metadata,
                     )
                     uncond, cond = pair.chunk(2)
-                    velocity = uncond + float(cfg_scale) * (cond - uncond)
+                    velocity = _combine_cfg_velocity(cond, uncond, cfg_scale, cfg_norm)
                 else:
                     uncond = _unet_velocity(
                         unet, sample, timestep, negative, time_ids, cache_metadata=cache_metadata
@@ -274,7 +297,7 @@ def _sample_flow_latents(
                     cond = _unet_velocity(
                         unet, sample, timestep, positive, time_ids, cache_metadata=cache_metadata
                     )
-                    velocity = uncond + float(cfg_scale) * (cond - uncond)
+                    velocity = _combine_cfg_velocity(cond, uncond, cfg_scale, cfg_norm)
                 sample = flow_euler_step(sample, velocity, times[index], times[index + 1])
                 if generate_mask is not None:
                     source_at_next = flow_noising(
@@ -300,6 +323,7 @@ def sample_txt2img_latents(
     seed: int,
     timestep_shift: float = 1.0,
     cfg_mode: str = "sequential",
+    cfg_norm: str = "none",
     original_height: int | None = None,
     original_width: int | None = None,
     crop_top: int = 0,
@@ -311,6 +335,8 @@ def sample_txt2img_latents(
         raise ValueError("Chimera width and height must be divisible by 8")
     if cfg_mode not in {"sequential", "batched"}:
         raise ValueError(f"unsupported Chimera CFG mode: {cfg_mode}")
+    if cfg_norm not in {"none", "global", "channel"}:
+        raise ValueError(f"unsupported Chimera CFG norm: {cfg_norm}")
     device = next(unet.parameters()).device
     dtype = next(unet.parameters()).dtype
     generator = torch.Generator(device=device).manual_seed(int(seed))
@@ -332,6 +358,7 @@ def sample_txt2img_latents(
         width=width,
         cfg_scale=cfg_scale,
         cfg_mode=cfg_mode,
+        cfg_norm=cfg_norm,
         original_height=original_height,
         original_width=original_width,
         crop_top=crop_top,
@@ -354,6 +381,7 @@ def sample_img2img_latents(
     generate_mask: torch.Tensor | None = None,
     timestep_shift: float = 1.0,
     cfg_mode: str = "sequential",
+    cfg_norm: str = "none",
     original_height: int | None = None,
     original_width: int | None = None,
     crop_top: int = 0,
@@ -366,6 +394,8 @@ def sample_img2img_latents(
         raise ValueError("Chimera denoising_strength must be between 0 and 1")
     if cfg_mode not in {"sequential", "batched"}:
         raise ValueError(f"unsupported Chimera CFG mode: {cfg_mode}")
+    if cfg_norm not in {"none", "global", "channel"}:
+        raise ValueError(f"unsupported Chimera CFG norm: {cfg_norm}")
     if source_latents.ndim != 4 or source_latents.shape[0] != 1:
         raise ValueError("Chimera source latents must have shape [1,C,H,W]")
     device = next(unet.parameters()).device
@@ -401,6 +431,7 @@ def sample_img2img_latents(
         width=width,
         cfg_scale=cfg_scale,
         cfg_mode=cfg_mode,
+        cfg_norm=cfg_norm,
         original_height=int(original_height or height),
         original_width=int(original_width or width),
         crop_top=crop_top,

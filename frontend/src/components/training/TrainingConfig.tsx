@@ -7430,7 +7430,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             </div>}
           </div>
 
-          {/* SenseNova's preview controls belong to the preview, not to the
+          {/* Flow-preview controls belong to the preview, not to the
               memory options they used to sit among -- eleven cards away from
               the section they configure, which is where they were looked for
               and not found. */}
@@ -7438,7 +7438,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             sensenovaTimestepShiftSupported || sensenovaImgCfgSupported || sensenovaCfgNormSupported
           ) && (
             <details className="border border-gray-700 rounded p-3">
-              <summary className="text-sm text-gray-300 cursor-pointer">SenseNova Preview Options</summary>
+              <summary className="text-sm text-gray-300 cursor-pointer">Flow Preview Options</summary>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-3">
                 {sensenovaTimestepShiftSupported && <div>
                   <label className="block text-xs text-gray-400 mb-1">Timestep Shift</label>
@@ -7475,8 +7475,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 </div>}
               </div>
               <p className="text-xs text-gray-500 mt-2">
-                These settings affect only SenseNova training previews. Image CFG is used when the sample prompt includes a reference image.
+                These settings affect SenseNova and Chimera training previews. Image CFG is SenseNova-only and is used when the sample includes a reference image.
               </p>
+              {trainingSampleArch === "sensenova" && <>
               <div className="flex items-center space-x-2 mt-2">
                 <input
                   type="checkbox"
@@ -7492,6 +7493,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               <p className="text-xs text-gray-500 mt-1">
                 Applies only to the in-training sample image, not to training steps. Streams each layer&apos;s prefix KV cache from pinned host memory through a 2-slot GPU ring instead of holding the full per-layer, per-branch KV cache resident during the sample&apos;s denoise loop. Independent of MoT Phase Eviction in the SenseNova Training Memory section. If the install fails, the sample runs with the full resident cache and a warning is logged.
               </p>
+              </>}
             </details>
           )}
 

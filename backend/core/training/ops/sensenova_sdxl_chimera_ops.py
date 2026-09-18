@@ -426,11 +426,54 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
                 if first_ref:
                     debug_data["reference_image_path"] = first_ref
             torch.save(debug_data, debug_save_path / f"latents_t{t_value:.4f}.pt")
+            trainer._pending_chimera_debug_previews = {
+                "path": debug_save_path,
+                "t_val": t_value,
+                "previews": (
+                    ("noisy", debug_data["noisy_latents"]),
+                    ("target", debug_data["latents"]),
+                    ("pred_x0", debug_data["predicted_latent"]),
+                ),
+            }
         except Exception as debug_error:
             print(f"{trainer.log_prefix} [debug_latents] save failed: {debug_error}")
     # Gradient checkpointing replays the U-Net during backward, after this
     # function returns. The next step overwrites this small context in place.
     return loss, value, recon_value
+
+
+def flush_pending_debug_previews(trainer) -> None:
+    """Decode the deferred Chimera debug triple after backward frees activations."""
+    pending = getattr(trainer, "_pending_chimera_debug_previews", None)
+    if pending is None:
+        return
+    delattr(trainer, "_pending_chimera_debug_previews")
+
+    from core.models.sensenova_sdxl_chimera.pipeline_ops import decode_latents
+
+    vae = trainer.vae
+    parameter = next(vae.parameters())
+    original_device = parameter.device
+    decode_device = torch.device(getattr(trainer, "device", original_device))
+    was_training = vae.training
+    try:
+        if decode_device.type == "cuda":
+            torch.cuda.empty_cache()
+        vae.to(device=decode_device)
+        vae.eval()
+        for name, tensor in pending["previews"]:
+            image = decode_latents(vae, tensor, device=decode_device)
+            image.save(
+                pending["path"] / f"decode_t{pending['t_val']:.4f}_{name}.webp",
+                "WEBP",
+                quality=80,
+                method=4,
+            )
+    finally:
+        vae.to(device=original_device)
+        vae.train(was_training)
+        if decode_device.type == "cuda":
+            torch.cuda.empty_cache()
 
 
 def vae_encode(trainer, image_tensor: torch.Tensor, **_kwargs) -> torch.Tensor:

@@ -12003,6 +12003,9 @@ class BaseTrainer(ABC):
             # emergency save.
             if self.is_sensenova and hasattr(self, "_pending_sensenova_debug_previews"):
                 delattr(self, "_pending_sensenova_debug_previews")
+            if self.is_sensenova_sdxl_chimera and hasattr(
+                    self, "_pending_chimera_debug_previews"):
+                delattr(self, "_pending_chimera_debug_previews")
             self._note_partial_step_taint(_applied_before, _exc)
             raise
 
@@ -12028,6 +12031,15 @@ class BaseTrainer(ABC):
                 from core.training.ops.sensenova_ops import flush_pending_pixel_debug
 
                 flush_pending_pixel_debug(self)
+            except Exception as debug_error:
+                print(f"{self.log_prefix} [debug_latents] VAE decode failed: {debug_error}")
+        elif self.is_sensenova_sdxl_chimera:
+            try:
+                from core.training.ops.sensenova_sdxl_chimera_ops import (
+                    flush_pending_debug_previews,
+                )
+
+                flush_pending_debug_previews(self)
             except Exception as debug_error:
                 print(f"{self.log_prefix} [debug_latents] VAE decode failed: {debug_error}")
 

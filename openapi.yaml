@@ -11673,6 +11673,7 @@ components:
             sd15: [sample_sampler, sample_schedule_type, sample_cfg_schedule_type, sample_cfg_schedule_min, sample_cfg_schedule_max, sample_cfg_schedule_power, sample_cfg_rescale_snr_alpha, sample_dynamic_threshold_percentile, sample_dynamic_threshold_mimic_scale, sample_nag_enable, sample_nag_scale, sample_nag_tau, sample_nag_alpha, sample_nag_sigma_end, sample_nag_negative_prompt]
             sdxl: [sample_sampler, sample_schedule_type, sample_cfg_schedule_type, sample_cfg_schedule_min, sample_cfg_schedule_max, sample_cfg_schedule_power, sample_cfg_rescale_snr_alpha, sample_dynamic_threshold_percentile, sample_dynamic_threshold_mimic_scale, sample_nag_enable, sample_nag_scale, sample_nag_tau, sample_nag_alpha, sample_nag_sigma_end, sample_nag_negative_prompt]
             sensenova: [sensenova_sample_timestep_shift, sensenova_sample_img_cfg_scale, sensenova_sample_cfg_norm]
+            sensenova_sdxl_chimera: [sensenova_sample_timestep_shift, sensenova_sample_cfg_norm]
             ltx2: []
         training_sample_notes:
           type: object
@@ -12567,7 +12568,8 @@ components:
           type: number
           default: 3.0
           description: |
-            SenseNova U1.5 flow-matching time-shift (upstream `examples/t2i/inference.py`
+            SenseNova U1.5 and SenseNova SDXL Chimera flow-matching time-shift
+            (upstream `examples/t2i/inference.py`
             default 3.0, distinct from `config.json`'s `timestep_shift: 1.0` -- the example
             script's value is the one this API uses). Reshapes the sampling schedule
             (`sigma = shift*sigma / (1 + (shift-1)*sigma)`); higher values concentrate
@@ -12597,11 +12599,9 @@ components:
           enum: ["none", "global", "channel"]
           default: global
           description: |
-            SenseNova U1.5 CFG-overshoot clamp, applied to the predicted
-            velocity before the Euler step. SenseNova is a pixel-space
-            architecture with no VAE decode stage to absorb CFG overshoot
-            (unlike the U-Net architectures, where `cfg_rescale_snr_alpha`
-            plays an equivalent role); `cfg_norm` rescales the norm of the
+            SenseNova U1.5 and SenseNova SDXL Chimera CFG-overshoot clamp,
+            applied to the predicted velocity before the Euler step. `cfg_norm`
+            rescales the norm of the
             post-CFG velocity back toward the conditional branch's norm,
             clamped to never scale up. `none` disables the clamp. `global`
             computes one scale factor per sample; `channel` computes one per
@@ -25747,7 +25747,7 @@ components:
         sensenova_sample_timestep_shift:
           type: 'number'
           default: 3.0
-          description: SenseNova-only flow-matching timestep shift for training previews.
+          description: SenseNova/SenseNova SDXL Chimera flow-matching timestep shift for training previews.
         sensenova_sample_img_cfg_scale:
           type: 'number'
           default: 1.0
@@ -25756,7 +25756,7 @@ components:
           type: 'string'
           enum: ['none', 'global']
           default: 'global'
-          description: SenseNova-only CFG overshoot normalization for training previews.
+          description: SenseNova/SenseNova SDXL Chimera CFG overshoot normalization for training previews.
         noise_process:
           type: 'string'
           default: 'auto'

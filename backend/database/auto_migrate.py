@@ -163,6 +163,18 @@ def _reconcile_indices(conn, db_name: str, table_name: str, applied: list) -> No
        detected via the table's DDL text and handled by a full table rebuild.
     """
     plan = {
+        # Diffusion metrics originally treated global step as unique. A rollback
+        # resume revisits those steps, so the session id must be part of identity.
+        "training_metrics": (
+            ("CONSTRAINT uq_run_step",),
+            ("uq_run_step", "idx_run_step"),
+            (
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_run_resume_step "
+                "ON training_metrics(run_id, resume_seq, step)",
+                "CREATE INDEX IF NOT EXISTS idx_run_resume_step "
+                "ON training_metrics(run_id, resume_seq, step)",
+            ),
+        ),
         # tagger_training_metrics was originally created with an inline
         # CONSTRAINT uq_tagger_run_step UNIQUE (run_id, step).
         # That constraint is embedded in the table DDL and cannot be dropped

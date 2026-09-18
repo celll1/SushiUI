@@ -1064,8 +1064,8 @@ class TrainingMetrics(TrainingBase):
 
     Features:
     - Dual logging: TensorBoard (for external tools) + DB (for fast queries)
-    - UPSERT behavior: Same (run_id, step) will overwrite existing values
-    - Indexed for fast filtering: WHERE run_id=? AND step>?
+    - Resume-safe UPSERT: Same (run_id, resume_seq, step) updates one session
+    - Indexed for fast filtering by run/session/step
     """
     __tablename__ = "training_metrics"
 
@@ -1114,10 +1114,11 @@ class TrainingMetrics(TrainingBase):
     # Timestamp
     timestamp = Column(DateTime, default=get_local_now)
 
-    # Composite unique constraint: (run_id, step) must be unique (UPSERT target)
+    # A rollback resume may revisit the same global step. Keep both histories;
+    # resume_seq identifies the branch/session that produced each value.
     __table_args__ = (
-        UniqueConstraint('run_id', 'step', name='uq_run_step'),
-        Index('idx_run_step', 'run_id', 'step'),  # Composite index for fast queries
+        UniqueConstraint('run_id', 'resume_seq', 'step', name='uq_run_resume_step'),
+        Index('idx_run_resume_step', 'run_id', 'resume_seq', 'step'),
     )
 
     def to_dict(self):

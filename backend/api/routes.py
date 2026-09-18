@@ -16359,6 +16359,44 @@ async def delete_training_run(run_id: int, db: Session = Depends(get_training_db
 PRE_TRAINING_VRAM_RELEASE_WAIT_SECONDS = 300.0
 
 
+def _configured_resume_step(run: TrainingRun, config: dict) -> Optional[int]:
+    """Resolve the checkpoint step requested by ``resume_from_checkpoint``."""
+    root = config.get("config") or config
+    process = (root.get("process") or [{}])[0] or {}
+    resume_value = (process.get("train") or {}).get("resume_from_checkpoint")
+    if not isinstance(resume_value, str) or not resume_value.strip():
+        return None
+
+    def _step(path: Path) -> Optional[int]:
+        match = re.search(r"_step_(\d+)", path.name)
+        return int(match.group(1)) if match else None
+
+    if resume_value.lower() != "latest":
+        candidate = Path(resume_value)
+        if not candidate.is_absolute():
+            candidate = Path(run.output_dir) / candidate
+        return _step(candidate) if candidate.exists() else None
+
+    steps = []
+    for candidate in Path(run.output_dir).glob("*_step_*"):
+        name = candidate.name
+        if any(marker in name for marker in (
+            "vision_encoder", "_ema_step_", "_quarantined_partial_step_step_"
+        )):
+            continue
+        is_entry = (
+            (candidate.is_dir() and (candidate / "chimera.json").is_file())
+            or (candidate.is_file() and (
+                name.endswith(".safetensors")
+                or name.endswith(".safetensors.index.json")
+            ))
+        )
+        step = _step(candidate) if is_entry else None
+        if step is not None:
+            steps.append(step)
+    return max(steps) if steps else None
+
+
 @router.post("/training/runs/{run_id}/start")
 async def start_training_run(run_id: int, db: Session = Depends(get_training_db)):
     """Start a training run"""
@@ -16389,6 +16427,7 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
     # rather than at creation because a run's YAML can be written on one machine
     # and started on another with a different device count.
     _gpu_index = None
+    _gpu_doc = {}
     try:
         import yaml as _yaml
         _gpu_doc = _yaml.safe_load(run.config_yaml or "") or {}
@@ -16449,8 +16488,12 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
             print(f"[API] First start: started_at set")
         else:
             run.last_resumed_at = current_time
-            run.resumed_from_step = run.current_step  # Record step at resume
-            print(f"[API] Resuming: last_resumed_at set, resumed_from_step={run.current_step}")
+            checkpoint_step = _configured_resume_step(run, _gpu_doc)
+            run.resumed_from_step = (
+                checkpoint_step if checkpoint_step is not None else run.current_step
+            )
+            print(f"[API] Resuming: last_resumed_at set, "
+                  f"resumed_from_step={run.resumed_from_step}")
 
         db.commit()
         print(f"[API] Status updated and committed")
@@ -17771,6 +17814,24 @@ async def get_training_metrics_db(
     from database.models import TrainingMetrics
     from core.training.metric_registry import EXTRA_METRIC_DEFS
 
+    def _resume_markers_with_catalog_fallback(rows):
+        markers = [
+            {"resume_seq": int(rs), "step": int(step)}
+            for rs, step in rows if rs and int(rs) > 0 and step is not None
+        ]
+        fallback_step = run.resumed_from_step
+        if (
+            run.last_resumed_at is not None
+            and fallback_step is not None
+            and not any(marker["step"] == int(fallback_step) for marker in markers)
+        ):
+            # Older/in-flight writers may have labelled every row as session 0.
+            # The catalogue still records the exact restart boundary, so do not
+            # hide a known resume merely because its metric label is absent.
+            next_seq = max((marker["resume_seq"] for marker in markers), default=0) + 1
+            markers.append({"resume_seq": next_seq, "step": int(fallback_step)})
+        return sorted(markers, key=lambda marker: (marker["step"], marker["resume_seq"]))
+
     run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Training run not found")
@@ -17832,7 +17893,7 @@ async def get_training_metrics_db(
                 "param_cumulative_drift_te2": [],
                 "param_cumulative_drift_ve": [],
                 "epoch_boundaries": [],
-                "resume_markers": [],
+                "resume_markers": _resume_markers_with_catalog_fallback([]),
             }
             if owns_metrics_db:
                 metrics_db.close()
@@ -17855,7 +17916,7 @@ async def get_training_metrics_db(
         query = metrics_db.query(TrainingMetrics).filter(
             TrainingMetrics.run_id == run_id,
             TrainingMetrics.step.in_(sample_steps)
-        ).order_by(TrainingMetrics.step.asc())
+        ).order_by(TrainingMetrics.step.asc(), TrainingMetrics.resume_seq.asc())
 
         metrics = query.all()
 
@@ -17966,10 +18027,7 @@ async def get_training_metrics_db(
         ).filter(
             TrainingMetrics.run_id == run_id,
         ).group_by(TrainingMetrics.resume_seq).order_by(TrainingMetrics.resume_seq.asc()).all()
-        resume_markers = [
-            {"resume_seq": int(rs), "step": int(s)}
-            for rs, s in resume_rows if rs and int(rs) > 0 and s is not None
-        ]
+        resume_markers = _resume_markers_with_catalog_fallback(resume_rows)
 
         response = {
             "loss": loss_data,

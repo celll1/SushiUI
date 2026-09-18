@@ -733,9 +733,8 @@ class ScheduleTimeline:
              upto_step: Optional[int] = None) -> None:
         """Seam (b): install a saved event list, BEFORE the fast-forward.
 
-        ``upto_step`` drops later commands, the same semantics as
-        ``_cleanup_future_metrics``: rewinding to an earlier checkpoint un-does
-        what was ordered after it. Cut by ``issued``, like ``dump`` (§19.5): a
+        ``upto_step`` drops commands that the selected checkpoint never observed.
+        Cut by ``issued``, like ``dump`` (§19.5): a
         reservation for a future step was ordered BEFORE the checkpoint, and
         cutting it by ``at`` would delete it on the way back in.
         """

@@ -61,7 +61,6 @@ class FakeTrainer:
     _completed_checkpoint_bundle_stages = bt.BaseTrainer._completed_checkpoint_bundle_stages
     _record_checkpoint_db_row = bt.BaseTrainer._record_checkpoint_db_row
     _delete_checkpoint_db_row = bt.BaseTrainer._delete_checkpoint_db_row
-    _cleanup_future_metrics = bt.BaseTrainer._cleanup_future_metrics
     _cleanup_old_checkpoints = bt.BaseTrainer._cleanup_old_checkpoints
 
     def __init__(self, output_dir: Path, run_id=1, layout: str = "single_file"):
@@ -198,7 +197,7 @@ class RegistrationLayoutTest(TrainingDbCase):
 
 
 class RegistrationBehaviorTest(TrainingDbCase):
-    def test_v2_rewind_deletes_only_run_database_metrics(self):
+    def test_v2_rewind_keeps_overlapping_resume_sessions(self):
         session = self.SessionLocal()
         run = session.query(TrainingRun).filter_by(id=1).one()
         run.detail_store = RUN_DB_V2
@@ -216,13 +215,25 @@ class RegistrationBehaviorTest(TrainingDbCase):
         detail.close()
         session.close()
 
-        FakeTrainer(self.dir)._cleanup_future_metrics(2)
+        detail = open_run_detail_session(run)
+        detail.add_all([
+            TrainingMetrics(run_id=run.id, resume_seq=1, step=2, loss=20.0),
+            TrainingMetrics(run_id=run.id, resume_seq=1, step=3, loss=30.0),
+        ])
+        detail.commit()
+        detail.close()
 
         session = self.SessionLocal()
         self.assertEqual(session.query(TrainingMetrics).count(), 0)
         run = session.query(TrainingRun).filter_by(id=1).one()
         detail = open_run_detail_session(run)
-        self.assertEqual([row.step for row in detail.query(TrainingMetrics).all()], [1, 2])
+        rows = (detail.query(TrainingMetrics)
+                .order_by(TrainingMetrics.resume_seq, TrainingMetrics.step).all())
+        self.assertEqual(
+            [(row.resume_seq, row.step, row.loss) for row in rows],
+            [(0, 1, 1.0), (0, 2, 2.0), (0, 3, 3.0), (0, 4, 4.0),
+             (1, 2, 20.0), (1, 3, 30.0)],
+        )
         detail.close()
         session.close()
 

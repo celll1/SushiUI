@@ -79,6 +79,26 @@ def test_v2_metrics_come_from_run_database(tmp_path):
     central.close()
 
 
+def test_v2_metrics_returns_both_rollback_sessions(tmp_path):
+    central, run = _central(tmp_path, v2=True)
+    initialize_run_detail_database(run)
+    local = open_run_detail_session(run)
+    local.add_all([
+        TrainingMetrics(run_id=run.id, resume_seq=0, step=8, loss=0.8),
+        TrainingMetrics(run_id=run.id, resume_seq=0, step=9, loss=0.9),
+        TrainingMetrics(run_id=run.id, resume_seq=1, step=8, loss=1.8),
+    ])
+    local.commit()
+    local.close()
+
+    data = _metrics(central, run)
+    assert [(p["resume_seq"], p["step"], p["value"]) for p in data["loss"]] == [
+        (0, 8, 0.8), (1, 8, 1.8), (0, 9, 0.9),
+    ]
+    assert data["resume_markers"] == [{"resume_seq": 1, "step": 8}]
+    central.close()
+
+
 def test_v2_epoch_status_comes_from_run_database(tmp_path):
     central, run = _central(tmp_path, v2=True)
     run.current_step = 3

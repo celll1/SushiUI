@@ -11003,6 +11003,7 @@ class BaseTrainer(ABC):
             denominator = text_denominator if text_denominator is not None else eff_bs
             l, p, r = self._execute_forward_backward(
                 mnt_latents=leaves["mnt_latents"],
+                mnt_noise=(b["mnt_noise"][lo:hi] if b.get("mnt_noise") is not None else None),
                 mnt_text_embeddings=leaves["mnt_text_embeddings"],
                 mnt_attention_mask=self._slice_aux(b["mnt_attention_mask"], lo, hi),
                 mnt_pooled_embeddings=leaves["mnt_pooled_embeddings"],
@@ -11075,6 +11076,7 @@ class BaseTrainer(ABC):
         sensenova_text_batch: Optional[List[Dict[str, Any]]] = None,
         cfg_drop_mask: Optional[torch.Tensor] = None,
         sensenova_task_loss_weight: float = 1.0,
+        mnt_noise: Optional[torch.Tensor] = None,
     ) -> Tuple[float, float, float, bool]:
         """
         Execute forward + backward pass with OOM recovery via batch splitting.
@@ -11116,7 +11118,8 @@ class BaseTrainer(ABC):
         # (used by both the proactive escalate decision and the reactive OOM retry)
         # can slice them uniformly.
         _batch = dict(
-            mnt_latents=mnt_latents, mnt_text_embeddings=mnt_text_embeddings,
+            mnt_latents=mnt_latents, mnt_noise=mnt_noise,
+            mnt_text_embeddings=mnt_text_embeddings,
             mnt_attention_mask=mnt_attention_mask, mnt_pooled_embeddings=mnt_pooled_embeddings,
             timesteps=timesteps, debug_save_path=debug_save_path,
             batch_captions=batch_captions, batch_reference_paths=batch_reference_paths,
@@ -11684,6 +11687,7 @@ class BaseTrainer(ABC):
         sensenova_text_batch: Optional[List[Dict[str, Any]]] = None,
         cfg_drop_mask: Optional[torch.Tensor] = None,
         loss_scale: float = 1.0,
+        mnt_noise: Optional[torch.Tensor] = None,
     ) -> Tuple[float, float, float]:
         """
         Execute forward pass (train_step_xxx) and backward pass for a batch.
@@ -11697,6 +11701,7 @@ class BaseTrainer(ABC):
         the full-batch mean gradient (sum_i (m_i/B) * grad(mean_loss_i)).
         The returned loss VALUE stays unscaled (per-chunk mean) for reporting.
         """
+        self._active_mnt_noise = mnt_noise
         self._begin_repa_profile_call(mnt_repa_pixels)
         # Forward pass (architecture-specific)
         if self.is_sensenova:
@@ -12283,7 +12288,9 @@ class BaseTrainer(ABC):
         condition_images = condition_images.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
 
         # Sample noise
-        noise = torch.randn_like(latents)
+        from core.training.mnt import training_noise_like
+
+        noise = training_noise_like(self, latents)
         batch_size = latents.shape[0]
 
         # Sample timesteps (DDPM)
@@ -14979,8 +14986,8 @@ class BaseTrainer(ABC):
         gradient_accumulation_steps: int = 1,
         max_grad_norm: float = 1.0,
         multi_noise_timesteps: int = 1,
-        multi_noise_mode: str = "independent",  # Unused (MNT disabled), kept for compatibility
-        trajectory_blend_alpha: float = 0.7,  # Unused (MNT disabled), kept for compatibility
+        multi_noise_mode: str = "independent",
+        trajectory_blend_alpha: float = 0.7,
         timestep_sampling_config: Optional[Dict[str, Any]] = None,
         debug_latents: bool = False,
         debug_latents_every: int = 50,
@@ -15056,6 +15063,19 @@ class BaseTrainer(ABC):
         debug_latents_every = normalize_interval(debug_latents_every)
         convergence_diagnostics_interval = normalize_interval(convergence_diagnostics_interval)
         gradient_accumulation_steps = normalize_interval(gradient_accumulation_steps, minimum=1)
+
+        from core.training.mnt import MNTNoiseWindow, normalize_mnt_noise_mode
+
+        multi_noise_timesteps = max(1, int(multi_noise_timesteps or 1))
+        multi_noise_mode = normalize_mnt_noise_mode(multi_noise_mode)
+        trajectory_blend_alpha = float(trajectory_blend_alpha)
+        if not 0.0 <= trajectory_blend_alpha <= 1.0:
+            raise ValueError("trajectory_blend_alpha must be between 0 and 1")
+        if multi_noise_timesteps > 1 and multi_noise_mode != "independent" and self.is_minimax_h3:
+            raise ValueError(
+                "MiniMax-H3 couples video and audio noise streams; non-independent "
+                "MNT noise modes are not supported for this architecture"
+            )
 
         if self.is_sensenova:
             from core.training.ops.training_method import is_full_finetune
@@ -18549,6 +18569,11 @@ class BaseTrainer(ABC):
                     mnt_timestep_block = self._stratified_mnt_timesteps(
                         timestep_sampler, multi_noise_timesteps, batch_size,
                         global_step, gradient_accumulation_steps)
+                    mnt_noise_window = MNTNoiseWindow(
+                        multi_noise_mode,
+                        multi_noise_timesteps,
+                        trajectory_blend_alpha,
+                    )
 
                     if self._grad_t_cos_probe is not None:
                         self._grad_t_cos_probe.begin_window()
@@ -18639,6 +18664,7 @@ class BaseTrainer(ABC):
                         # Detach latents to create fresh computation graph for this MNT iteration
                         # This is necessary because backward() frees the graph
                         mnt_latents = latents.detach()
+                        mnt_noise = mnt_noise_window.noise_for(mnt_idx, mnt_latents)
                         # REPA clean-image pixels are timestep-independent -> same across MNT.
                         mnt_repa_pixels = repa_pixels_batch
                         # SDXL time_ids are per-item (size/crop), timestep-independent.
@@ -18930,6 +18956,7 @@ class BaseTrainer(ABC):
                         try:
                             mnt_loss_value, mnt_pred_loss_value, mnt_recon_loss_value, cuda_error_skip = self._forward_backward_with_oom_recovery(
                                 mnt_latents=mnt_latents,
+                                mnt_noise=mnt_noise,
                                 mnt_text_embeddings=mnt_text_embeddings,
                                 mnt_attention_mask=mnt_attention_mask,
                                 mnt_pooled_embeddings=mnt_pooled_embeddings,

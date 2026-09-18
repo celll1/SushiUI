@@ -3525,12 +3525,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               >
                 <option value="independent">Independent (Different noise)</option>
                 <option value="shared">Shared (Same noise)</option>
-                <option value="trajectory">Trajectory (Sequential learning)</option>
+                <option value="trajectory">Trajectory (Correlated noise)</option>
+                <option value="antithetic">Antithetic (Paired noise)</option>
               </select>
               <p className="text-xs text-gray-500 mt-1">
                 {multiNoiseMode === "independent" && "Each MNT iteration uses different noise (default)"}
-                {multiNoiseMode === "shared" && "All MNT iterations use same noise (trajectory consistency)"}
-                {multiNoiseMode === "trajectory" && "Sequential trajectory learning with blending"}
+                {multiNoiseMode === "shared" && "All MNT iterations lie on one clean-to-noise trajectory"}
+                {multiNoiseMode === "trajectory" && "Each noise draw keeps unit variance while sharing the selected correlation with one trajectory anchor"}
+                {multiNoiseMode === "antithetic" && "Pair each noise draw with its negative to reduce finite-window noise bias"}
               </p>
             </div>
 
@@ -3550,7 +3552,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                 />
                 <p className="text-xs text-gray-500 mt-1">
-                  Blending coefficient: 0.0=ideal only, 1.0=stepped only (default: 0.7)
+                  Correlation with the shared trajectory: 0.0=independent,
+                  1.0=fully shared. Unit noise variance is preserved (default: 0.7).
                 </p>
               </div>
             )}

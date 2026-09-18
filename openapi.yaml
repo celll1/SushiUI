@@ -25578,12 +25578,28 @@ components:
         multi_noise_timesteps:
           type: 'integer'
           default: 1
+          minimum: 1
         multi_noise_mode:
           type: 'string'
           default: 'independent'
+          enum: ['independent', 'shared', 'trajectory', 'antithetic']
+          description: >-
+            Coupling of diffusion noise across one multi-noise-timestep window.
+            independent preserves the legacy fresh draw per iteration; shared
+            evaluates every timestep on one noise trajectory; trajectory uses
+            trajectory_blend_alpha as the correlation with a shared anchor while
+            preserving unit Gaussian variance; antithetic uses epsilon/-epsilon
+            pairs. Inert when multi_noise_timesteps is 1. MiniMax-H3 currently
+            accepts independent only because it has coupled video/audio streams.
         trajectory_blend_alpha:
           type: 'number'
           default: 0.7
+          minimum: 0.0
+          maximum: 1.0
+          description: >-
+            Pearson correlation with the shared noise anchor in trajectory mode.
+            The independent component is scaled by sqrt(1-alpha^2), so every
+            iteration remains marginally standard normal.
         stratified_timesteps:
           type: 'boolean'
           default: true

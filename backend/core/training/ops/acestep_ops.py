@@ -602,7 +602,9 @@ def train_step(
             timesteps = torch.rand(batch_size, device=device)
     sigma = timesteps.to(dtype)
 
-    noise = torch.randn_like(latents)
+    from core.training.mnt import training_noise_like
+
+    noise = training_noise_like(trainer, latents)
     sigma_view = sigma.view(-1, 1, 1).to(latents.dtype)
     xt = (1.0 - sigma_view) * latents + sigma_view * noise
 

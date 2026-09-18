@@ -697,7 +697,9 @@ def train_step(
     latents = latents.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True)
 
     # Sample noise (now on GPU)
-    noise = torch.randn_like(latents)
+    from core.training.mnt import training_noise_like
+
+    noise = training_noise_like(trainer, latents)
 
     if profile_vram:
         print_vram_usage("[train_step] After noise generation")

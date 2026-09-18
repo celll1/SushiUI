@@ -319,7 +319,9 @@ def train_step(
         else:
             timesteps = torch.rand(batch_size, device=trainer.device)
 
-    noise = torch.randn_like(latents)
+    from core.training.mnt import training_noise_like
+
+    noise = training_noise_like(trainer, latents)
 
     # Flow matching forward process: x_t = (1-σ)*x0 + σ*noise
     sigma = timesteps.to(trainer.training_dtype)

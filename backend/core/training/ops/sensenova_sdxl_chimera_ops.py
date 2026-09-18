@@ -330,7 +330,9 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
         return loss, value, 0.0
 
     latents = ctx.latents.to(device=trainer.device, dtype=trainer.training_dtype)
-    noise = torch.randn_like(latents)
+    from core.training.mnt import training_noise_like
+
+    noise = training_noise_like(trainer, latents)
     timesteps = ctx.timesteps
     if timesteps is None:
         timesteps = torch.rand(latents.shape[0], device=latents.device)

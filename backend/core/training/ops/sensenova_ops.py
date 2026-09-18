@@ -2416,7 +2416,10 @@ def train_step(
     # (sensenova_pipeline_ops.py:1122); cast explicitly so z_image stays
     # training_dtype -- _build_step_context's ViT runs outside the autocast below.
     t_img = t.to(dtype).view(batch, 1, 1, 1)
-    z_image = t_img * x0 + (1 - t_img) * (torch.randn_like(x0) * noise_scale)
+    from core.training.mnt import training_noise_like
+
+    noise = training_noise_like(trainer, x0)
+    z_image = t_img * x0 + (1 - t_img) * (noise * noise_scale)
     shape = SimpleNamespace(
         batch_size=batch,
         merge_size=merge_size,

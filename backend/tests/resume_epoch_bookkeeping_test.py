@@ -47,6 +47,8 @@ class StateHarness:
     load_training_state = BaseTrainer.load_training_state
     _epoch_batch_position = BaseTrainer._epoch_batch_position
     _resolve_start_epoch = BaseTrainer._resolve_start_epoch
+    _timestep_sampler_state = BaseTrainer._timestep_sampler_state
+    _timestep_morph_state = BaseTrainer._timestep_morph_state
 
     def __init__(self, output_dir, batches_per_epoch=100):
         self.output_dir = Path(output_dir)

@@ -42,6 +42,8 @@ class StateHarness:
 
     save_training_state = BaseTrainer.save_training_state
     load_training_state = BaseTrainer.load_training_state
+    _timestep_sampler_state = BaseTrainer._timestep_sampler_state
+    _timestep_morph_state = BaseTrainer._timestep_morph_state
 
     def __init__(self, output_dir):
         self.output_dir = Path(output_dir)
@@ -182,6 +184,39 @@ def test_resumed_epoch_next_checkpoint_saves_the_epoch_snapshot():
         second_saved = trainer.load_training_state(523)
 
         assert second_saved["random_state"] == first_saved["random_state"]
+
+
+def test_mid_epoch_mnt_change_preserves_batch_order_and_only_repeats_each_batch():
+    """Changing MNT on resume must not reinterpret the saved dataset cursor."""
+    batches = list(range(50))
+    with tempfile.TemporaryDirectory() as tmp:
+        trainer = StateHarness(tmp)
+
+        random.seed(314159)
+        original_order = _snapshot_then_shuffle(trainer, batches)
+        resume_batch_idx = 17
+        trainer.save_training_state(
+            step=1000,
+            epoch=0,
+            batch_idx=resume_batch_idx,
+            multi_noise_timesteps=1,
+        )
+
+        loaded = trainer.load_training_state(1000)
+        assert loaded["multi_noise_timesteps"] == 1
+        random.setstate(loaded["random_state"])
+        rebuilt_order = _snapshot_then_shuffle(trainer, batches)
+
+        resumed_mnt = 4
+        resumed_passes = [
+            (batch, mnt_idx)
+            for batch in rebuilt_order[loaded["batch_idx"]:]
+            for mnt_idx in range(resumed_mnt)
+        ]
+        assert rebuilt_order == original_order
+        assert resumed_passes[::resumed_mnt] == [
+            (batch, 0) for batch in original_order[resume_batch_idx:]
+        ]
 
 
 if __name__ == "__main__":

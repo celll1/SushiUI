@@ -7697,8 +7697,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   </select>
                 </label>
                 {([
-                  ['sample_cfg_schedule_min', 'CFG min'],
-                  ['sample_cfg_schedule_max', 'CFG max (blank = scale)'],
+                  ['sample_cfg_schedule_min', 'CFG start (noise)'],
+                  ['sample_cfg_schedule_max', 'CFG end (clean; blank = scale)'],
                   ['sample_cfg_schedule_power', 'CFG power'],
                   ['sample_cfg_rescale_snr_alpha', 'SNR rescale alpha'],
                   ['sample_dynamic_threshold_percentile', 'Dynamic threshold %'],

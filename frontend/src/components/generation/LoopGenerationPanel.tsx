@@ -632,16 +632,17 @@ export default function LoopGenerationPanel({
                                 className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                               >
                                 <option value="constant">Constant (no scheduling)</option>
-                                <option value="linear">Linear (sigma-based)</option>
-                                <option value="quadratic">Quadratic (sigma-based)</option>
-                                <option value="cosine">Cosine (sigma-based)</option>
+                                <option value="linear">Linear (noise → clean)</option>
+                                <option value="quadratic">Quadratic (noise → clean)</option>
+                                <option value="cosine">Cosine (noise → clean)</option>
+                                <option value="exponential">Exponential (noise → clean)</option>
                                 <option value="snr_based">SNR-Based Adaptive</option>
                               </select>
 
                               {step.cfg_schedule_type && step.cfg_schedule_type !== "constant" && step.cfg_schedule_type !== "snr_based" && (
                                 <>
                                   <Slider
-                                    label="CFG Min (end of generation)"
+                                    label="CFG Start (noise)"
                                     value={step.cfg_schedule_min ?? 1.0}
                                     onChange={(e) => updateStep(step.id, { cfg_schedule_min: parseFloat(e.target.value) })}
                                     min={1}
@@ -649,14 +650,14 @@ export default function LoopGenerationPanel({
                                     step={0.5}
                                   />
                                   <Slider
-                                    label="CFG Max (start of generation)"
+                                    label="CFG End (clean)"
                                     value={step.cfg_schedule_max ?? step.cfgScale ?? 7.0}
                                     onChange={(e) => updateStep(step.id, { cfg_schedule_max: parseFloat(e.target.value) })}
                                     min={1}
                                     max={30}
                                     step={0.5}
                                   />
-                                  {step.cfg_schedule_type === "quadratic" && (
+                                  {(step.cfg_schedule_type === "quadratic" || step.cfg_schedule_type === "exponential") && (
                                     <Slider
                                       label="Power (curve steepness)"
                                       value={step.cfg_schedule_power ?? 2.0}

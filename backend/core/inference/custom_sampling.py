@@ -699,20 +699,23 @@ def calculate_dynamic_cfg(
     cfg_schedule_power: float = 2.0,
     snr: Optional[float] = None,
     cfg_rescale_snr_alpha: float = 0.0,
+    denoise_progress: Optional[float] = None,
 ) -> float:
-    """Calculate dynamic CFG scale based on sigma (noise level) and optionally SNR
+    """Calculate CFG with low guidance at noise and high guidance at clean time.
 
     Args:
         sigma: Current noise level
         sigma_max: Maximum sigma value (from scheduler)
         cfg_base: Base CFG scale (used when schedule_type is "constant")
         cfg_schedule_type: Type of schedule ("constant", "linear", "quadratic", "cosine", "snr_based")
-        cfg_schedule_min: Minimum CFG scale (at sigma=0, end of generation)
-        cfg_schedule_max: Maximum CFG scale (at sigma=sigma_max, start of generation)
+        cfg_schedule_min: CFG scale at the noisy start of generation
+        cfg_schedule_max: CFG scale at the clean end of generation
                           If None, uses cfg_base
         cfg_schedule_power: Power for quadratic schedule (default: 2.0)
         snr: Signal-to-Noise Ratio from CFG metrics (optional, for SNR-based scheduling)
         cfg_rescale_snr_alpha: Alpha parameter for SNR rescaling (0.0 = disabled)
+        denoise_progress: Explicit noisy-to-clean progress in [0, 1]. When absent,
+                          it is derived as 1 - sigma / sigma_max.
 
     Returns:
         CFG scale for current step
@@ -720,35 +723,40 @@ def calculate_dynamic_cfg(
     if cfg_schedule_type == "constant":
         return cfg_base
 
-    # Use cfg_base as max if not specified
+    # The public min/max names are retained for compatibility. Their corrected
+    # temporal meaning is start/noise and end/clean respectively.
     if cfg_schedule_max is None:
         cfg_schedule_max = cfg_base
 
-    # Normalize sigma to [0, 1] range
-    sigma_norm = min(sigma / sigma_max, 1.0) if sigma_max > 0 else 0.0
+    if denoise_progress is None:
+        sigma_norm = min(max(sigma / sigma_max, 0.0), 1.0) if sigma_max > 0 else 0.0
+        denoise_progress = 1.0 - sigma_norm
+    progress = min(max(float(denoise_progress), 0.0), 1.0)
+    start_cfg = float(cfg_schedule_min)
+    end_cfg = float(cfg_schedule_max)
 
     if cfg_schedule_type == "linear":
-        # Linear interpolation: high CFG at start (high sigma), low at end
-        cfg = cfg_schedule_min + (cfg_schedule_max - cfg_schedule_min) * sigma_norm
+        weight = progress
     elif cfg_schedule_type == "quadratic":
-        # Quadratic: more gradual at start, steeper drop at end
-        cfg = cfg_schedule_min + (cfg_schedule_max - cfg_schedule_min) * (sigma_norm ** cfg_schedule_power)
+        weight = progress ** max(float(cfg_schedule_power), 1e-8)
     elif cfg_schedule_type == "cosine":
-        # Cosine: smooth transition
-        cfg = cfg_schedule_min + (cfg_schedule_max - cfg_schedule_min) * cos((1 - sigma_norm) * pi / 2)
+        weight = 0.5 - 0.5 * cos(pi * progress)
+    elif cfg_schedule_type == "exponential":
+        power = max(float(cfg_schedule_power), 1e-8)
+        weight = progress if abs(power) < 1e-8 else math.expm1(power * progress) / math.expm1(power)
     elif cfg_schedule_type == "snr_based" and snr is not None:
-        # SNR-based adaptive CFG: reduce CFG when SNR is high
-        # cfg = cfg_base / (1 + alpha * sqrt(SNR))
-        import math
+        # This is an adaptive overshoot limiter, not the timestep schedule: its
+        # "SNR" is the measured conditional-delta/unconditional norm ratio.
         snr_sqrt = math.sqrt(max(snr, 0))
         cfg = cfg_base / (1.0 + cfg_rescale_snr_alpha * snr_sqrt)
-        # Clamp to min/max range
-        cfg = max(cfg_schedule_min, min(cfg_schedule_max if cfg_schedule_max else cfg_base, cfg))
+        cfg = max(min(start_cfg, end_cfg), min(max(start_cfg, end_cfg), cfg))
+        return cfg
+    elif cfg_schedule_type == "snr_based":
+        return start_cfg if cfg_rescale_snr_alpha > 0.0 else cfg_base
     else:
-        # Fallback to constant
-        cfg = cfg_base
+        return cfg_base
 
-    return cfg
+    return start_cfg + (end_cfg - start_cfg) * weight
 
 
 def rescale_noise_cfg(noise_cfg: torch.Tensor, noise_pred_text: torch.Tensor, guidance_rescale: float = 0.0) -> torch.Tensor:
@@ -2306,7 +2314,8 @@ def custom_sampling_loop(
             cfg_schedule_max=cfg_schedule_max,
             cfg_schedule_power=cfg_schedule_power,
             snr=previous_snr,
-            cfg_rescale_snr_alpha=cfg_rescale_snr_alpha
+            cfg_rescale_snr_alpha=cfg_rescale_snr_alpha,
+            denoise_progress=i / max(len(timesteps) - 1, 1),
         )
 
         # Optimize: skip unconditional pass if guidance_scale ~= 1.0 and neither NAG
@@ -3413,7 +3422,8 @@ def custom_img2img_sampling_loop(
             cfg_schedule_max=cfg_schedule_max,
             cfg_schedule_power=cfg_schedule_power,
             snr=previous_snr,
-            cfg_rescale_snr_alpha=cfg_rescale_snr_alpha
+            cfg_rescale_snr_alpha=cfg_rescale_snr_alpha,
+            denoise_progress=i / max(len(timesteps) - 1, 1),
         )
 
         # Optimize: skip unconditional pass if guidance_scale ~= 1.0 and neither NAG
@@ -5365,7 +5375,8 @@ def custom_inpaint_sampling_loop(
             cfg_schedule_max=cfg_schedule_max,
             cfg_schedule_power=cfg_schedule_power,
             snr=previous_snr,
-            cfg_rescale_snr_alpha=cfg_rescale_snr_alpha
+            cfg_rescale_snr_alpha=cfg_rescale_snr_alpha,
+            denoise_progress=i / max(len(timesteps) - 1, 1),
         )
 
         # Optimize: skip unconditional pass if guidance_scale ~= 1.0 and neither NAG

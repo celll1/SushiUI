@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 import torch
 from diffusers.models.attention_processor import Attention
+
+BACKEND = Path(__file__).resolve().parents[1]
+if str(BACKEND) not in sys.path:
+    sys.path.insert(0, str(BACKEND))
 
 from core.attention import AttentionMode
 from core.models.sensenova_sdxl_chimera.attention_processor import (
@@ -14,8 +20,10 @@ from core.models.sensenova_sdxl_chimera.attention_processor import (
 )
 from core.models.sensenova_sdxl_chimera.pipeline_ops import (
     ChimeraConditioning,
+    _combine_cfg_velocity,
     decode_latents,
     sample_txt2img_latents,
+    shifted_timesteps,
 )
 from core.training.arch.base_arch import SampleContext
 from core.training.arch.sensenova_sdxl_chimera import (
@@ -177,6 +185,32 @@ def test_sequential_and_batched_cfg_match_and_branches_remain_separate():
     assert batched_unet.conditioning_means == [-1.0, 2.0] * 3
 
 
+def test_cfg_norm_caps_global_and_per_channel_overshoot():
+    conditional = torch.tensor([[[[1.0, 0.0]], [[0.0, 2.0]]]])
+    unconditional = -conditional
+    raw = _combine_cfg_velocity(conditional, unconditional, 7.0, "none")
+    global_normed = _combine_cfg_velocity(conditional, unconditional, 7.0, "global")
+    channel_normed = _combine_cfg_velocity(conditional, unconditional, 7.0, "channel")
+
+    assert torch.linalg.vector_norm(raw) > torch.linalg.vector_norm(conditional)
+    assert torch.allclose(
+        torch.linalg.vector_norm(global_normed),
+        torch.linalg.vector_norm(conditional),
+    )
+    assert torch.allclose(
+        torch.linalg.vector_norm(channel_normed, dim=(2, 3)),
+        torch.linalg.vector_norm(conditional, dim=(2, 3)),
+    )
+
+
+def test_shift_three_allocates_more_steps_near_noise_than_shift_one():
+    neutral = shifted_timesteps(4, 1.0, device="cpu")
+    shifted = shifted_timesteps(4, 3.0, device="cpu")
+    assert shifted[0] == neutral[0] == 0
+    assert shifted[-1] == neutral[-1] == 1
+    assert torch.all(shifted[1:-1] < neutral[1:-1])
+
+
 def test_batched_cfg_pads_different_prefix_lengths_and_masks_padding():
     class MaskAwareUNet(_FakeUNet):
         def forward(self, sample, timestep, *, encoder_hidden_states,
@@ -281,6 +315,8 @@ def test_training_preview_stages_unet_on_cuda_and_restores_cpu():
     def fake_sample(active_unet, *_args, **_kwargs):
         assert next(active_unet.parameters()).device.type == "cuda"
         assert not active_unet.training
+        assert _kwargs["timestep_shift"] == 3.0
+        assert _kwargs["cfg_norm"] == "global"
         return torch.zeros(1, 4, 8, 8, device="cuda", dtype=torch.float16)
 
     def fake_decode(_vae, latents, **kwargs):
@@ -310,6 +346,47 @@ def test_training_preview_stages_unet_on_cuda_and_restores_cpu():
         )
 
     assert result == "preview"
+
+
+def test_training_preview_forwards_flow_sampler_controls_on_cpu():
+    handler = SenseNovaSDXLChimeraArchHandler()
+    unet = _FakeUNet().train()
+    trainer = SimpleNamespace(unet=unet, vae=object(), device=torch.device("cpu"))
+    hidden = torch.zeros(1, 3, 32)
+    aux = {
+        "pooled_text_embeds": torch.zeros(1, 8),
+        "context_positions": torch.zeros(1, 3, 3),
+        "context_attention_mask": torch.ones(1, 3, dtype=torch.bool),
+    }
+    forwarded = {}
+
+    def fake_sample(_unet, *_args, **kwargs):
+        forwarded.update(kwargs)
+        return torch.zeros(1, 4, 8, 8)
+
+    with (
+        patch.object(handler, "encode_prompt", return_value=(hidden, aux)),
+        patch(
+            "core.models.sensenova_sdxl_chimera.pipeline_ops.sample_txt2img_latents",
+            side_effect=fake_sample,
+        ),
+        patch(
+            "core.models.sensenova_sdxl_chimera.pipeline_ops.decode_latents",
+            return_value="preview",
+        ),
+    ):
+        result = handler.sample(
+            trainer,
+            SampleContext(
+                prompt="test", negative_prompt="", width=64, height=64,
+                num_inference_steps=2, guidance_scale=7.0, seed=1,
+                sensenova_timestep_shift=2.5, sensenova_cfg_norm="global",
+            ),
+        )
+
+    assert result == "preview"
+    assert forwarded["timestep_shift"] == 2.5
+    assert forwarded["cfg_norm"] == "global"
 
 
 def test_sampling_is_deterministic_and_cleans_cache_on_success_and_error():

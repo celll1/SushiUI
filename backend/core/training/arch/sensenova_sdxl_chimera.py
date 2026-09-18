@@ -109,6 +109,8 @@ class SenseNovaSDXLChimeraArchHandler(ArchHandler):
                 steps=sample_ctx.num_inference_steps,
                 cfg_scale=sample_ctx.guidance_scale,
                 seed=sample_ctx.seed,
+                timestep_shift=sample_ctx.sensenova_timestep_shift,
+                cfg_norm=sample_ctx.sensenova_cfg_norm,
                 progress_callback=(
                     (lambda step, total, _latents: sample_ctx.step_progress_callback(step, total))
                     if sample_ctx.step_progress_callback else None

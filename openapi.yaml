@@ -10019,6 +10019,9 @@ paths:
                   target_dir: "M:/models"
                   understanding_source: "<MODEL_ROOT>/sensenova/sensenova_int8_convrot.safetensors"
                   sdxl_source: "<MODEL_ROOT>/sdxl/donor.safetensors"
+                  flow_version: v3
+                  latent_mean: [0.0, 0.0, 0.0, 0.0]
+                  latent_centered_second_moment: 1.0
                   unet_initialization: scratch
                   initialization_seed: 0
               transplant:
@@ -21245,6 +21248,33 @@ components:
         sdxl_source:
           type: string
           description: Existing local SDXL single-file or diffusers-directory donor path
+        flow_version:
+          type: string
+          enum: [v1, v2, v3]
+          default: v1
+          description: Prediction/path contract written into the new artifact.
+        latent_mean:
+          type: array
+          nullable: true
+          minItems: 4
+          maxItems: 4
+          items: {type: number, format: double}
+          default: null
+          description: Required for v2/v3 after bundled-VAE scaling and shift.
+        latent_centered_second_moment:
+          type: number
+          format: double
+          nullable: true
+          exclusiveMinimum: 0
+          default: null
+          description: Required for v2/v3; v3 uses it for proxy log-SNR bins.
+        angular_endpoint_slope:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 2
+          default: 2
+          description: Artifact-owned v3 gamma derivative at the noise endpoint.
         unet_initialization:
           type: string
           enum: [scratch, sdxl_transplant]
@@ -21254,12 +21284,14 @@ components:
           default: 0
     InitializeSenseNovaSDXLChimeraResponse:
       type: object
-      required: [status, path, output_name, model_type, unet_initialization, unet_parameter_count, bridge_state]
+      required: [status, path, output_name, model_type, format_version, prediction_type, unet_initialization, unet_parameter_count, bridge_state]
       properties:
         status: {type: string}
         path: {type: string}
         output_name: {type: string}
         model_type: {type: string, enum: [sensenova_sdxl_chimera]}
+        format_version: {type: integer, enum: [2, 3, 4]}
+        prediction_type: {type: string, enum: [flow_velocity, endpoint_observable_residual, polar_tangent_flow]}
         unet_initialization: {type: string, enum: [scratch, sdxl_transplant]}
         unet_parameter_count: {type: integer}
         bridge_state: {type: string}
@@ -25770,14 +25802,15 @@ components:
             keeping the understanding tower and bundled VAE frozen.
         chimera_flow_version:
           type: string
-          enum: [auto, v1, v2]
+          enum: [auto, v1, v2, v3]
           default: auto
           description: >-
             Chimera prediction/path contract. auto follows the artifact; v1 uses
             direct straight-flow velocity; v2 uses the endpoint-observable cubic
-            path and the selected v2 parameterization. Selecting v2 for a v1
+            path and the selected v2 parameterization; v3 selects a format-4
+            polar artifact with tangent-only CFG. Selecting v2 for a v1
             artifact explicitly migrates its U-Net weights and writes format-3
-            checkpoints.
+            checkpoints. v3 cannot be selected for a v1/v2 artifact.
         chimera_v2_latent_mean:
           type: array
           nullable: true

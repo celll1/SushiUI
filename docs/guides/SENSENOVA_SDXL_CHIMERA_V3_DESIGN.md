@@ -194,6 +194,67 @@ cannot be converted by CFG into radial growth.
 At the clean endpoint, `gamma'(1) = 0`, so the tangent target vanishes and the
 full target remains the observable clean latent.
 
+### 4.4 Noise-end variance budget
+
+The conditional direction at `s = 0` is not free. For a 1024-pixel SDXL latent,
+`D = 4 * 128 * 128 = 65,536`; an independent Gaussian direction and clean-data
+direction are overwhelmingly close to orthogonal, so `theta` concentrates near
+`pi / 2`. With `rho0 = rho1 = 1`, the reference path has:
+
+| `s` | `rho` | `||tau*||` RMS | `lambda*` |
+|---:|---:|---:|---:|
+| 0.00 | 1.00 | 3.14 | -1.00 |
+| 0.25 | 0.71 | 1.68 | -1.17 |
+| 0.50 | 0.53 | 0.83 | 0.00 |
+| 1.00 | 1.00 | 0.00 | +1.00 |
+
+At the noise endpoint, the tangent target's second moment is therefore about
+`pi^2` under this isotropic unit-RMS reference. Its irreducible conditional
+variance is:
+
+```text
+E[||tau* - E[tau* | epsilon, condition]||^2],
+```
+
+which is at most that second moment but can remain close to it when the
+condition leaves many valid directions. This is roughly one order of magnitude
+larger than the unit-RMS missing-component reference for the v1 straight path;
+it is an intentional cost of restoring a condition-dependent noise-end
+direction, not evidence by itself that training is broken.
+
+The exact conditional variance is not directly observable from one paired
+target. Diagnostics therefore keep three quantities separate: target second
+moment, predicted conditional-mean norm, and held-out residual MSE. At the MSE
+optimum the latter approaches the irreducible variance; before convergence it
+is only an upper-bound proxy and must not be labeled as a measured Bayes floor.
+
+The cause is explicit: `gamma'(0) = 2` and `theta ~= pi / 2`. The alternative
+smoothstep schedule
+
+```text
+gamma_0(s) = 3s^2 - 2s^3
+```
+
+has zero derivative at both endpoints and removes the noise-end target variance,
+but also restores a condition-independent first direction. More generally, the
+terminal-flat cubic family
+
+```text
+gamma_a(s) = a*s + (3 - 2a)*s^2 + (a - 2)*s^3
+```
+
+has `gamma_a'(0) = a` and `gamma_a'(1) = 0`; the baseline quadratic is the
+`a = 2` member and smoothstep is `a = 0`. `a` is an artifact-owned path choice,
+never an inference knob. v3 initially tests `a = 2` against `a = 0`; an
+intermediate value requires its own measured artifact contract. The design
+prefers `a = 2` only if its conditional endpoint signal improves equal-NFE
+generation enough to justify the measured variance and training allocation.
+
+Finally, this is a genuinely new interpolation. Defining `rho` by quadrature
+and `n` by a geodesic replaces the interior of `sigma*epsilon + alpha*x_c`;
+it does not merely re-express that Cartesian path. Only its endpoints and the
+chosen endpoint observability contract are shared.
+
 ## 5. Network prediction contract
 
 For `y = z - alpha(s) * mu`, compute:
@@ -205,8 +266,34 @@ n   = y / rho.
 
 The U-Net predicts two quantities:
 
-1. a scalar radial speed `lambda_theta(z, s, c)` per sample;
-2. a four-channel raw tangent field `h_theta(z, s, c)`.
+1. a scalar radial speed `lambda_theta(n, s, log(rho), c)` per sample;
+2. a four-channel raw tangent field `h_theta(n, s, log(rho), c)`.
+
+The actual trunk input is fully specified as follows:
+
+```text
+y = z - alpha(s) * mu
+rho = ||y||
+n = y / rho
+
+spatial U-Net input: n
+scalar conditioning: s and log(rho)
+cross/additional conditioning: existing SenseNova bridge, pooled, crop,
+                               resolution, and reference-image inputs
+```
+
+`(n, rho, s)` is information-equivalent to `z` because `mu` and `alpha` are
+artifact-known, while presenting the spatial trunk with unit-RMS input at every
+timestep. `log(rho)` is embedded alongside the timestep embedding rather than
+left for convolutions to reconstruct through a global reduction.
+
+The tangent head is the ordinary four-channel SDXL-shaped output convolution.
+The scalar head uses the conditioned mid-block activation: global-average pool
+over space in fp32, apply LayerNorm, concatenate the scalar time/radius
+embedding, and use one affine output to produce one `lambda` per sample. It does
+not pool the final four-channel tangent prediction. Exact feature dimensions
+and initialization are recorded in the architecture config before Phase 3;
+there is no analytic target leakage into the head.
 
 The effective tangent field is projected pointwise in sample space:
 
@@ -235,7 +322,7 @@ Because `||n|| = 1` in RMS geometry and both tangent terms are orthogonal to
 `lambda * n + tau`. The radial scalar is therefore not diluted by `D` output
 elements and needs no arbitrary dimensionality multiplier.
 
-The scalar head pools U-Net features and adds a negligible number of parameters.
+The scalar head adds a negligible number of parameters.
 It is explicit rather than recovered from a four-channel output so its loss,
 conditioning behavior, checkpoints, and diagnostics remain independently
 auditable. The final tangent and scalar heads start from default initialization
@@ -327,6 +414,12 @@ exceed an artifact-recorded limit. Its default is disabled until a CFG-scale
 sweep establishes a threshold. If enabled, the UI and metrics must distinguish
 an angular cap from the removed Cartesian CFG norm clamp.
 
+The angular risk is largest around the radius minimum: the reference
+`rho(0.5) ~= 0.53` makes `omega = tau_cfg / rho` about 1.9 times as sensitive
+to a fixed tangent RMS as it would be at unit radius. The CFG sweep must include
+this region; radial invariance is not evidence that an uncapped angular step is
+accurate.
+
 The exact noise endpoint can no longer skip the U-Net: its radial term is
 analytic, but its conditional tangent posterior is the feature v3 is designed
 to learn. Equal-NFE comparisons with v2 must count this first evaluation.
@@ -347,10 +440,19 @@ made the dominant training mass. The initial training policy is:
   radial and tangent observations.
 
 The adaptive controller must not collapse these signals into a single opaque
-loss. Its v3 observation record contains at least radial MSE, tangent MSE,
-conditional/null tangent delta, angular target variance, and angular step size.
-Any later policy that changes density is bounded by the existing floor,
-cooldown, maximum-density-ratio, and resume-state contracts.
+loss. In particular, raw tangent loss is not a cross-bin difficulty score:
+near `s = 0` it contains the expected irreducible floor described in Section
+4.4, so feeding it directly to density control would concentrate samples where
+the target is least reducible. Initial v3 runs therefore permit `observe` mode
+only. Promotion to bounded adjustment requires a per-bin learning-progress or
+excess-over-recorded-floor signal that does not normalize the training target
+or hide its physical scale.
+
+The v3 observation record contains at least radial MSE, tangent MSE,
+conditional/null tangent delta, angular target second moment, learned
+conditional-mean norm, and angular step size. Any later policy that changes
+density is bounded by the existing floor, cooldown, maximum-density-ratio, and
+resume-state contracts.
 
 MNT remains compatible because all samples in a batch are still ordinary
 `s` samples. Resume must preserve the epoch's batch order and MNT trajectory as
@@ -413,6 +515,7 @@ prediction:
   time_direction: noise_to_clean
   radial_schedule: cubic_quadrature_v1
   angular_schedule: quadratic_terminal_flat_v1
+  angular_endpoint_slope: 2.0
   cfg_mode: tangent_only_v1
   radial_anchor: positive_condition
   integrator: polar_exp_euler_v1
@@ -515,6 +618,14 @@ quality experiments rather than a prerequisite for correctness.
 - start from a new v3 run and new step zero;
 - demonstrate finite, non-collapsed radial and tangent losses in every ready
   timestep bin;
+- report the measured noise-end tangent target second moment, predicted-mean
+  norm, and held-out residual-floor proxy separately; approximately `pi^2`
+  target energy under the unit-RMS orthogonal reference is expected, not an
+  automatic failure;
+- compare the `a = 2` conditional-endpoint path with the `a = 0` smoothstep
+  control at equal data, optimizer steps, and NFE before accepting the former;
+- keep adaptive timestep in `observe` until its v3 signal is proven not to chase
+  the noise-end variance floor;
 - demonstrate a measurable positive/null tangent delta near the noise endpoint;
 - demonstrate no CFG-dependent radial divergence in the diagnostic API;
 - compare equal-NFE samples against v2 before enabling an angular cap or
@@ -544,13 +655,16 @@ The path construction follows the conditional probability-path viewpoint of
 [Stochastic Interpolants](https://arxiv.org/abs/2303.08797). The tangent update
 and spherical exponential solver are consistent with the geometric treatment
 of vector fields in
-[Riemannian Flow Matching](https://arxiv.org/abs/2302.03660). Recent CFG work
-also motivates separating or projecting the guided component rather than
-merely clipping its final norm: [CFG-Zero*](https://arxiv.org/abs/2503.18886),
+[Riemannian Flow Matching](https://arxiv.org/abs/2302.03660). Recent guidance
+and norm-control work also motivates separating or projecting the guided
+component rather than merely clipping its final norm:
+[CFG-Zero*](https://arxiv.org/abs/2503.18886),
 [Improving CFG of Flow Matching via Manifold Projection](https://arxiv.org/abs/2601.21892),
 and [NormGuard](https://arxiv.org/abs/2606.27771).
 
 Those works motivate the design direction; the particular observable polar
 path, positive radial anchor, loss identity, and Chimera artifact contract in
 this document are repository-specific proposals and require the acceptance
-tests above.
+tests above. No formula, compatibility rule, or acceptance criterion depends on
+reproducing CFG-Zero*, Manifold Projection, or NormGuard; those three references
+are non-normative context only.

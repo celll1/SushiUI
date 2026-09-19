@@ -36,6 +36,10 @@ strictly, verifies VAE content identity and U-Net census, and then selectively
 loads the pinned understanding branch. Initialization is an explicit
 `POST /api/v1/models/sensenova-sdxl-chimera/initialize` or example-script
 operation; ordinary load and training never create an artifact implicitly.
+For v3, `chimera_warmstart_source` may name a production-loadable v1/v2 Chimera
+artifact. This copies its trained bridge and U-Net trunk into a new format-4
+artifact, resets `conv_out` and the radial head under the requested seed, drops
+the source training state, and still starts optimization at global step zero.
 
 ## Denoiser structure
 

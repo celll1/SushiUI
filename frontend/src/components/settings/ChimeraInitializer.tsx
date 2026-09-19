@@ -9,6 +9,7 @@ export default function ChimeraInitializer() {
   const [targetDir, setTargetDir] = useState("");
   const [understandingSource, setUnderstandingSource] = useState("");
   const [sdxlSource, setSdxlSource] = useState("");
+  const [chimeraWarmstartSource, setChimeraWarmstartSource] = useState("");
   const [flowVersion, setFlowVersion] = useState<"v1" | "v2" | "v3">("v1");
   const [latentMean, setLatentMean] = useState("");
   const [latentMoment, setLatentMoment] = useState("");
@@ -29,6 +30,7 @@ export default function ChimeraInitializer() {
         target_dir: targetDir || undefined,
         understanding_source: understandingSource,
         sdxl_source: sdxlSource,
+        chimera_warmstart_source: chimeraWarmstartSource || null,
         flow_version: flowVersion,
         latent_mean: needsCalibration ? mean : null,
         latent_centered_second_moment: needsCalibration ? Number(latentMoment) : null,
@@ -74,6 +76,11 @@ export default function ChimeraInitializer() {
       </label>
       <label className="block text-xs text-gray-400">SDXL donor
         <input className={`${fieldClass} mt-1`} value={sdxlSource} onChange={(e) => setSdxlSource(e.target.value)} placeholder="M:\\model\\sdxl\\...safetensors" />
+      </label>
+      <label className="block text-xs text-gray-400">v1/v2 Chimera warm-start source (optional, v3 only)
+        <input className={`${fieldClass} mt-1`} value={chimeraWarmstartSource}
+          onChange={(e) => setChimeraWarmstartSource(e.target.value)}
+          placeholder="M:\\sushiUI\\training\\..._step_029307" />
       </label>
       <label className="block text-xs text-gray-400">Flow contract
         <select className={`${fieldClass} mt-1`} value={flowVersion}

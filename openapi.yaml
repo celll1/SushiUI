@@ -21248,6 +21248,14 @@ components:
         sdxl_source:
           type: string
           description: Existing local SDXL single-file or diffusers-directory donor path
+        chimera_warmstart_source:
+          type: string
+          nullable: true
+          default: null
+          description: >-
+            Optional v1/v2 Chimera artifact whose bridge and U-Net trunk seed a
+            new format-4 v3 artifact. conv_out and the radial head are reset;
+            training still starts at global step zero.
         flow_version:
           type: string
           enum: [v1, v2, v3]
@@ -21292,7 +21300,7 @@ components:
         model_type: {type: string, enum: [sensenova_sdxl_chimera]}
         format_version: {type: integer, enum: [2, 3, 4]}
         prediction_type: {type: string, enum: [flow_velocity, endpoint_observable_residual, polar_tangent_flow]}
-        unet_initialization: {type: string, enum: [scratch, sdxl_transplant]}
+        unet_initialization: {type: string, enum: [scratch, sdxl_transplant, chimera_v2_warmstart]}
         unet_parameter_count: {type: integer}
         bridge_state: {type: string}
 

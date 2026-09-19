@@ -4718,6 +4718,7 @@ export interface InitializeChimeraRequest {
   target_dir?: string;
   understanding_source: string;
   sdxl_source: string;
+  chimera_warmstart_source?: string | null;
   flow_version?: "v1" | "v2" | "v3";
   latent_mean?: number[] | null;
   latent_centered_second_moment?: number | null;
@@ -4737,7 +4738,7 @@ export const initializeSenseNovaSDXLChimera = async (
     model_type: "sensenova_sdxl_chimera";
     format_version: 2 | 3 | 4;
     prediction_type: "flow_velocity" | "endpoint_observable_residual" | "polar_tangent_flow";
-    unet_initialization: "scratch" | "sdxl_transplant";
+    unet_initialization: "scratch" | "sdxl_transplant" | "chimera_v2_warmstart";
     unet_parameter_count: number;
     bridge_state: "unaligned" | "aligned";
   };

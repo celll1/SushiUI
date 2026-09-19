@@ -1,10 +1,13 @@
 import importlib.util
 import py_compile
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import torch
 import yaml
+import pytest
 from PIL import Image
+from pydantic import TypeAdapter, ValidationError
 
 _MODULE_PATH = Path(__file__).parents[1] / "api" / "training_media.py"
 _SPEC = importlib.util.spec_from_file_location("training_media_under_test", _MODULE_PATH)
@@ -17,6 +20,7 @@ cached_image_preview = _MEDIA.cached_image_preview
 debug_image_urls = _MEDIA.debug_image_urls
 file_fingerprint = _MEDIA.file_fingerprint
 find_debug_latent_file = _MEDIA.find_debug_latent_file
+PreviewSize = _MEDIA.PreviewSize
 
 _REPO = Path(__file__).parents[2]
 
@@ -44,7 +48,7 @@ def test_debug_manifest_lists_individual_images_and_renders_only_requested_kind(
     debug_dir.mkdir()
     latent_file = debug_dir / "latents_t0.4023.pt"
     data = {
-        "timestep": 0.4023,
+        "timestep": 0.40234375,
         "model_type": "sensenova_sdxl_chimera",
         "latents": torch.randn(1, 4, 128, 128),
         "noisy_latents": torch.randn(1, 4, 128, 128),
@@ -54,17 +58,30 @@ def test_debug_manifest_lists_individual_images_and_renders_only_requested_kind(
 
     found = find_debug_latent_file(debug_dir, 0.40230001)
     assert found == latent_file
-    urls = debug_image_urls(139, 200, data["timestep"], data, latent_file)
+    urls = debug_image_urls(139, 200, data, latent_file)
     assert set(urls) == {
         "latents_image", "noisy_latents_image", "predicted_latent_image"
     }
     assert all("/images/" in url and "v=" in url for url in urls.values())
+    manifest_timestep = parse_qs(
+        urlparse(urls["latents_image"]).query
+    )["timestep"][0]
+    assert manifest_timestep == "0.4023"
+    assert find_debug_latent_file(debug_dir, float(manifest_timestep)) == latent_file
 
     preview, _etag = cached_debug_preview(latent_file, data, "target", 256)
     assert preview.is_file()
     assert list((debug_dir / ".previews").glob("*.webp")) == [preview]
     with Image.open(preview) as image:
         assert max(image.size) == 128
+
+
+def test_preview_size_query_coerces_url_text_to_integer_enum():
+    adapter = TypeAdapter(PreviewSize)
+    assert adapter.validate_python("256") is PreviewSize.SMALL
+    assert adapter.validate_python("512") is PreviewSize.MEDIUM
+    with pytest.raises(ValidationError):
+        adapter.validate_python("123")
 
 
 def test_debug_preview_prefers_saved_decode_webp(tmp_path: Path):

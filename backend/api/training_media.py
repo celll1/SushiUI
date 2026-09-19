@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from enum import IntEnum
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,13 @@ from uuid import uuid4
 
 
 PREVIEW_SIZES = (256, 512, 768)
+
+
+class PreviewSize(IntEnum):
+    SMALL = 256
+    MEDIUM = 512
+    LARGE = 768
+
 
 _DEBUG_TENSOR_KEYS = {
     "target": "latents",
@@ -132,11 +140,13 @@ def debug_image_sources(data: dict[str, Any], latent_file: Path) -> dict[str, Pa
 def debug_image_urls(
     run_id: int,
     step: int,
-    timestep: float,
     data: dict[str, Any],
     latent_file: Path,
 ) -> dict[str, str]:
     urls: dict[str, str] = {}
+    # The tensor may retain more precision than the filename used to locate it.
+    # Publish the filename token so the image request resolves the same artifact.
+    timestep = latent_file.stem.replace("latents_t", "", 1)
     for kind, source in debug_image_sources(data, latent_file).items():
         version = file_fingerprint(source)
         query = urlencode({"timestep": timestep, "v": version})

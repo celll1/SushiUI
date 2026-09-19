@@ -76,10 +76,10 @@ def prediction_contract(
         else latent_centered_second_moment
     )
     if len(mean) != 4 or not all(math.isfinite(value) for value in mean):
-        raise ChimeraArtifactError("Chimera v2 latent_mean must contain four finite values")
+        raise ChimeraArtifactError("Chimera v2/v3 latent_mean must contain four finite values")
     if not math.isfinite(q) or q <= 0.0:
         raise ChimeraArtifactError(
-            "Chimera v2 latent_centered_second_moment must be finite and > 0"
+            "Chimera v2/v3 latent_centered_second_moment must be finite and > 0"
         )
     base = {
         "type": kind,

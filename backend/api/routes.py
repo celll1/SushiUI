@@ -9719,10 +9719,27 @@ class InitializeSenseNovaSDXLChimeraRequest(BaseModel):
     target_dir: Optional[str] = None
     understanding_source: str
     sdxl_source: str
+    flow_version: Literal["v1", "v2", "v3"] = CHIMERA_INITIALIZE_DEFAULTS[
+        "flow_version"
+    ]
+    latent_mean: Optional[List[float]] = CHIMERA_INITIALIZE_DEFAULTS["latent_mean"]
+    latent_centered_second_moment: Optional[float] = Field(
+        default=CHIMERA_INITIALIZE_DEFAULTS["latent_centered_second_moment"], gt=0
+    )
+    angular_endpoint_slope: float = Field(
+        default=CHIMERA_INITIALIZE_DEFAULTS["angular_endpoint_slope"], ge=0, le=2
+    )
     unet_initialization: Literal["scratch", "sdxl_transplant"] = (
         CHIMERA_INITIALIZE_DEFAULTS["unet_initialization"]
     )
     initialization_seed: int = CHIMERA_INITIALIZE_DEFAULTS["initialization_seed"]
+
+    @field_validator("latent_mean")
+    @classmethod
+    def _latent_mean_has_four_channels(cls, value):
+        if value is not None and len(value) != 4:
+            raise ValueError("latent_mean must contain four values")
+        return value
 
 
 @router.post("/models/sensenova-sdxl-chimera/initialize")
@@ -9732,6 +9749,11 @@ async def initialize_sensenova_sdxl_chimera_endpoint(
 ):
     """Build a complete Chimera artifact under the configured model root."""
     from core.models.sensenova_sdxl_chimera.builder import initialize_chimera_from_paths
+    from core.models.sensenova_sdxl_chimera.artifact import prediction_contract
+    from core.models.sensenova_sdxl_chimera.flow import (
+        FLOW_V2_PREDICTION,
+        FLOW_V3_PREDICTION,
+    )
 
     settings_record = db.query(UserSettings).first()
     additional = settings_record.model_dirs if settings_record else []
@@ -9741,6 +9763,15 @@ async def initialize_sensenova_sdxl_chimera_endpoint(
         raise HTTPException(
             status_code=400,
             detail=f"target_dir must be one of the configured model dirs: {allowed}",
+        )
+    if request.flow_version == "v1":
+        prediction = prediction_contract()
+    else:
+        prediction = prediction_contract(
+            FLOW_V3_PREDICTION if request.flow_version == "v3" else FLOW_V2_PREDICTION,
+            latent_mean=request.latent_mean,
+            latent_centered_second_moment=request.latent_centered_second_moment,
+            angular_endpoint_slope=request.angular_endpoint_slope,
         )
 
     try:
@@ -9754,6 +9785,7 @@ async def initialize_sensenova_sdxl_chimera_endpoint(
                 sdxl_source=request.sdxl_source,
                 unet_initialization=request.unet_initialization,
                 initialization_seed=request.initialization_seed,
+                prediction=prediction,
             ),
         )
     except (FileNotFoundError, FileExistsError, ValueError) as exc:
@@ -9769,6 +9801,8 @@ async def initialize_sensenova_sdxl_chimera_endpoint(
         "path": result["directory"],
         "output_name": request.output_name,
         "model_type": manifest["model_type"],
+        "format_version": manifest["format_version"],
+        "prediction_type": manifest["prediction"]["type"],
         "unet_initialization": manifest["unet"]["initialization"],
         "unet_parameter_count": manifest["unet"]["parameter_count"],
         "bridge_state": manifest["conditioning"]["bridge_state"],
@@ -15164,7 +15198,7 @@ class TrainingRunCreateRequest(BaseModel):
     chimera_training_stage: Literal["bridge_align", "unet", "joint"] = (
         TRAINING_DEFAULTS["chimera_training_stage"]
     )
-    chimera_flow_version: Literal["auto", "v1", "v2"] = TRAINING_DEFAULTS[
+    chimera_flow_version: Literal["auto", "v1", "v2", "v3"] = TRAINING_DEFAULTS[
         "chimera_flow_version"
     ]
     chimera_v2_parameterization: Literal[

@@ -54,6 +54,46 @@ def test_x0_equivalent_flow_loss_uses_noise_fraction():
     assert loss_t1 == pytest.approx(2.25)
 
 
+@pytest.mark.parametrize(
+    "prediction_type",
+    ["endpoint_observable_residual", "endpoint_observable_velocity"],
+)
+def test_endpoint_observable_profile_uses_effective_snr_and_raw_loss(
+    prediction_type,
+):
+    sampler = AdaptiveTimestepSampler(
+        UniformTimestepSampler(),
+        _config(
+            "observe", bins=4, min_observations=4,
+            log_snr_min=-8.0, log_snr_max=8.0,
+        ),
+        convention="t1",
+        prediction_type=prediction_type,
+        latent_centered_second_moment=1.0,
+    )
+    noisy_bin, noisy_loss = sampler._bin_and_x0_loss(0.1, 4.0)
+    clean_bin, clean_loss = sampler._bin_and_x0_loss(0.9, 4.0)
+    assert noisy_bin < clean_bin
+    assert noisy_loss == pytest.approx(4.0)
+    assert clean_loss == pytest.approx(4.0)
+
+
+def test_endpoint_observable_state_rejects_latent_moment_change():
+    sampler = AdaptiveTimestepSampler(
+        UniformTimestepSampler(), _config("observe"), convention="t1",
+        prediction_type="endpoint_observable_residual",
+        latent_centered_second_moment=1.25,
+    )
+    state = sampler.state()
+    with pytest.raises(ValueError, match="centered second moment changed"):
+        AdaptiveTimestepSampler(
+            UniformTimestepSampler(), _config("observe"), convention="t1",
+            prediction_type="endpoint_observable_residual",
+            latent_centered_second_moment=1.5,
+            resume_state=state,
+        )
+
+
 def test_observe_mode_never_changes_sampler():
     base = UniformTimestepSampler()
     sampler = AdaptiveTimestepSampler(base, _config("observe"), convention="t1")

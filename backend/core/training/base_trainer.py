@@ -7839,9 +7839,11 @@ class BaseTrainer(ABC):
                         "timestep_adaptive_auto_promoted",
                         float(bool(adaptive_status.get("auto_promoted"))),
                     )
-                mean_loss = adaptive_status.get("mean_x0_loss")
+                mean_loss = adaptive_status.get("mean_controller_loss")
                 if mean_loss is not None:
-                    self.log_extra_metric("timestep_adaptive_x0_loss", float(mean_loss))
+                    self.log_extra_metric(
+                        "timestep_adaptive_controller_loss", float(mean_loss)
+                    )
                 ratios = adaptive_status.get("density_ratio") or []
                 control_count = int(adaptive_status["control_count"])
                 if (control_count > 0 and control_count != getattr(
@@ -7852,7 +7854,7 @@ class BaseTrainer(ABC):
                     for index, value in enumerate(adaptive_status.get("fast_ema") or []):
                         if value is not None:
                             self.log_extra_metric(
-                                f"timestep_adaptive_x0_bin_{index}", float(value))
+                                f"timestep_adaptive_loss_bin_{index}", float(value))
                     for index, value in enumerate(ratios):
                         self.log_extra_metric(
                             f"timestep_adaptive_density_bin_{index}", float(value))
@@ -16232,10 +16234,38 @@ class BaseTrainer(ABC):
                 raise ValueError(
                     "timestep_sampling.adaptive currently supports SenseNova SDXL "
                     "Chimera flow-velocity training only")
+            adaptive_prediction_type = "flow_velocity"
+            adaptive_latent_moment = None
+            adaptive_resume_state = getattr(
+                self, "_resume_adaptive_timestep", None
+            )
+            if self.is_sensenova_sdxl_chimera and str(
+                self.config.get("chimera_flow_version", "v1")
+            ) == "v2":
+                adaptive_prediction_type = (
+                    "endpoint_observable_velocity"
+                    if self.config.get("chimera_v2_parameterization") == "direct_velocity"
+                    else "endpoint_observable_residual"
+                )
+                adaptive_latent_moment = float(
+                    self.config["chimera_v2_latent_centered_second_moment"]
+                )
+                if adaptive_resume_state and (
+                    adaptive_resume_state.get("prediction_type")
+                    != adaptive_prediction_type
+                    or adaptive_resume_state.get("latent_centered_second_moment")
+                    != adaptive_latent_moment
+                ):
+                    print(
+                        f"{self.log_prefix} Resetting adaptive timestep controller: "
+                        "Chimera prediction/path contract changed on resume"
+                    )
+                    adaptive_resume_state = None
             timestep_sampler = AdaptiveTimestepSampler(
                 timestep_sampler, _adaptive_cfg, convention=_convention,
-                prediction_type="flow_velocity",
-                resume_state=getattr(self, "_resume_adaptive_timestep", None),
+                prediction_type=adaptive_prediction_type,
+                latent_centered_second_moment=adaptive_latent_moment,
+                resume_state=adaptive_resume_state,
             )
             timestep_sampler.set_optimizer_update_step(self._optimizer_update_step)
             self._adaptive_timestep = timestep_sampler

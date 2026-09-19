@@ -23,8 +23,14 @@ from core.models.sensenova_sdxl_chimera.pipeline_ops import (
     ChimeraConditioning,
     _combine_cfg_velocity,
     decode_latents,
+    endpoint_observable_logsnr_timesteps,
     sample_txt2img_latents,
     shifted_timesteps,
+)
+from core.models.sensenova_sdxl_chimera.artifact import prediction_contract
+from core.models.sensenova_sdxl_chimera.flow import (
+    FLOW_V2_PREDICTION,
+    FLOW_V2_VELOCITY_PREDICTION,
 )
 from core.training.arch.base_arch import SampleContext
 from core.training.arch.sensenova_sdxl_chimera import (
@@ -208,6 +214,60 @@ def test_pure_noise_first_step_is_analytic_and_skips_unet():
     assert result.shape == initial.shape
 
 
+def _v2_prediction(prediction_type):
+    return prediction_contract(
+        prediction_type,
+        latent_mean=[0.1, -0.2, 0.3, -0.4],
+        latent_centered_second_moment=1.25,
+    )
+
+
+def test_v2_residual_skips_first_unet_but_direct_velocity_evaluates_it():
+    residual_unet = _FakeUNet()
+    direct_unet = _FakeUNet()
+    common = dict(
+        positive=_conditioning(2.0, "positive"),
+        negative=None,
+        height=64,
+        width=64,
+        steps=2,
+        cfg_scale=1.0,
+        seed=29,
+    )
+    sample_txt2img_latents(
+        residual_unet,
+        prediction=_v2_prediction(FLOW_V2_PREDICTION),
+        **common,
+    )
+    sample_txt2img_latents(
+        direct_unet,
+        prediction=_v2_prediction(FLOW_V2_VELOCITY_PREDICTION),
+        **common,
+    )
+    assert len(residual_unet.conditioning_means) == 1
+    assert len(direct_unet.conditioning_means) == 2
+
+
+def test_v2_residual_cfg_probe_exposes_zero_first_endpoint_delta():
+    records = []
+    sample_txt2img_latents(
+        _FakeUNet(),
+        _conditioning(2.0, "positive"),
+        _conditioning(-1.0, "negative"),
+        height=64,
+        width=64,
+        steps=3,
+        cfg_scale=7.0,
+        seed=31,
+        prediction=_v2_prediction(FLOW_V2_PREDICTION),
+        cfg_probe_callback=records.append,
+    )
+    assert records[0]["bypassed_unet"] == 1
+    assert records[0]["prediction_delta_rms"] == 0.0
+    assert records[0]["analytic_velocity_rms"] > 0.0
+    assert all(record["bypassed_unet"] == 0 for record in records[1:])
+
+
 def test_cfg_norm_caps_global_and_per_channel_overshoot():
     conditional = torch.tensor([[[[1.0, 0.0]], [[0.0, 2.0]]]])
     unconditional = -conditional
@@ -303,6 +363,24 @@ def test_shift_three_allocates_more_steps_near_noise_than_shift_one():
     assert shifted[0] == neutral[0] == 0
     assert shifted[-1] == neutral[-1] == 1
     assert torch.all(shifted[1:-1] < neutral[1:-1])
+
+
+def test_v2_bounded_logsnr_grid_is_monotonic_and_equal_spaced_inside():
+    times = endpoint_observable_logsnr_timesteps(
+        6, 1.25, log_snr_min=-8.0, log_snr_max=8.0, device="cpu"
+    ).double()
+    assert times[0] == 0.0 and times[-1] == 1.0
+    assert torch.all(times[1:] > times[:-1])
+    interior = times[1:-1]
+    alpha = 2.0 * interior.square() - interior.pow(3)
+    sigma = 1.0 - interior - interior.square() + interior.pow(3)
+    log_snr = math.log(1.25) + 2.0 * (alpha.log() - sigma.log())
+    assert torch.allclose(
+        log_snr[1:] - log_snr[:-1],
+        torch.full_like(log_snr[1:], 16.0 / 6.0),
+        atol=2e-6,
+        rtol=2e-6,
+    )
 
 
 def test_batched_cfg_pads_different_prefix_lengths_and_masks_padding():

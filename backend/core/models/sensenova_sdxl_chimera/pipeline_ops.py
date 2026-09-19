@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import dataclass
 from typing import Callable
 
@@ -16,7 +17,16 @@ from .attention_processor import (
     install_chimera_attention_processors,
     set_chimera_attention_context,
 )
-from .flow import flow_euler_step, flow_noising
+from .flow import (
+    FLOW_V1_PREDICTION,
+    FLOW_V2_PREDICTION,
+    FLOW_V2_VELOCITY_PREDICTION,
+    endpoint_observable_noising,
+    endpoint_observable_preconditioning,
+    endpoint_observable_recover_clean,
+    flow_euler_step,
+    flow_noising,
+)
 from .prefix import encode_chimera_conditioning
 
 
@@ -82,6 +92,52 @@ def shifted_timesteps(steps: int, shift: float, *, device: torch.device | str) -
     sigma = 1.0 - time
     sigma = shift * sigma / (1.0 + (shift - 1.0) * sigma)
     return 1.0 - sigma
+
+
+def endpoint_observable_logsnr_timesteps(
+    steps: int,
+    latent_centered_second_moment: float,
+    *,
+    log_snr_min: float = -12.0,
+    log_snr_max: float = 12.0,
+    device: torch.device | str,
+) -> torch.Tensor:
+    """Place v2 interior Euler evaluations uniformly in bounded log-SNR."""
+    if steps <= 0:
+        raise ValueError(f"steps must be positive, got {steps}")
+    q = float(latent_centered_second_moment)
+    if not np.isfinite(q) or q <= 0.0:
+        raise ValueError("latent_centered_second_moment must be finite and positive")
+    if not float(log_snr_min) < float(log_snr_max):
+        raise ValueError("log_snr_min must be smaller than log_snr_max")
+    if steps == 1:
+        return torch.tensor([0.0, 1.0], device=device, dtype=torch.float32)
+    targets = torch.linspace(
+        float(log_snr_min),
+        float(log_snr_max),
+        steps + 1,
+        device=device,
+        dtype=torch.float64,
+    )[1:-1]
+    low = torch.zeros_like(targets)
+    high = torch.ones_like(targets)
+    log_q = math.log(q)
+    for _ in range(64):
+        middle = (low + high) * 0.5
+        alpha = 2.0 * middle.square() - middle.pow(3)
+        sigma = 1.0 - middle - middle.square() + middle.pow(3)
+        actual = log_q + 2.0 * (
+            alpha.clamp_min(1e-30).log() - sigma.clamp_min(1e-30).log()
+        )
+        low = torch.where(actual < targets, middle, low)
+        high = torch.where(actual < targets, high, middle)
+    return torch.cat(
+        (
+            torch.zeros(1, device=device, dtype=torch.float64),
+            (low + high) * 0.5,
+            torch.ones(1, device=device, dtype=torch.float64),
+        )
+    ).to(torch.float32)
 
 
 def sdxl_time_ids(
@@ -220,6 +276,14 @@ def _cfg_probe_record(
     guided_raw: torch.Tensor,
     guided_post: torch.Tensor,
     cfg_scale: float,
+    prediction_type: str = FLOW_V1_PREDICTION,
+    analytic: torch.Tensor | None = None,
+    prediction_conditional: torch.Tensor | None = None,
+    prediction_unconditional: torch.Tensor | None = None,
+    prediction_guided_raw: torch.Tensor | None = None,
+    prediction_guided_post: torch.Tensor | None = None,
+    bypassed_unet: bool = False,
+    latent_mean: list[float] | None = None,
 ) -> dict[str, float | int]:
     """Reduce one CFG step to bounded scalar diagnostics.
 
@@ -249,11 +313,23 @@ def _cfg_probe_record(
 
     t = timestep.detach().float()
     t_next = next_timestep.detach().float()
-    one_minus_t = 1.0 - t
     delta = conditional - unconditional
-    x0_cond = sample_before + one_minus_t * conditional
-    x0_uncond = sample_before + one_minus_t * unconditional
-    x0_raw = sample_before + one_minus_t * guided_raw
+    if prediction_type in {FLOW_V2_PREDICTION, FLOW_V2_VELOCITY_PREDICTION}:
+        mean = latent_mean or [0.0] * 4
+        x0_cond = endpoint_observable_recover_clean(
+            sample_before, conditional, t, latent_mean=mean
+        )
+        x0_uncond = endpoint_observable_recover_clean(
+            sample_before, unconditional, t, latent_mean=mean
+        )
+        x0_raw = endpoint_observable_recover_clean(
+            sample_before, guided_raw, t, latent_mean=mean
+        )
+    else:
+        one_minus_t = 1.0 - t
+        x0_cond = sample_before + one_minus_t * conditional
+        x0_uncond = sample_before + one_minus_t * unconditional
+        x0_raw = sample_before + one_minus_t * guided_raw
 
     cond_rms = rms(conditional)
     uncond_rms = rms(unconditional)
@@ -264,7 +340,7 @@ def _cfg_probe_record(
     x0_cond_rms = rms(x0_cond)
     x0_uncond_rms = rms(x0_uncond)
 
-    return {
+    record = {
         "step": int(step),
         "total_steps": int(total_steps),
         "timestep": float(t.item()),
@@ -290,7 +366,24 @@ def _cfg_probe_record(
         "latent_abs_p99_before": abs_p99(sample_before),
         "latent_abs_p99_after": abs_p99(sample_after),
         "latent_abs_max_after": float(sample_after.detach().float().abs().max().item()),
+        "bypassed_unet": int(bypassed_unet),
     }
+    if analytic is not None:
+        record["analytic_velocity_rms"] = float(rms(analytic).item())
+    prediction_values = {
+        "prediction_cond_rms": prediction_conditional,
+        "prediction_uncond_rms": prediction_unconditional,
+        "prediction_guided_raw_rms": prediction_guided_raw,
+        "prediction_guided_post_rms": prediction_guided_post,
+    }
+    for name, value in prediction_values.items():
+        if value is not None:
+            record[name] = float(rms(value).item())
+    if prediction_conditional is not None and prediction_unconditional is not None:
+        record["prediction_delta_rms"] = float(
+            rms(prediction_conditional - prediction_unconditional).item()
+        )
+    return record
 
 
 def _sample_flow_latents(
@@ -321,6 +414,7 @@ def _sample_flow_latents(
     progress_callback: Callable[[int, int, torch.Tensor], None] | None,
     step_progress_callback: Callable[[int, int], None] | None = None,
     cfg_probe_callback: Callable[[dict[str, float | int]], None] | None = None,
+    prediction: dict | None = None,
 ) -> torch.Tensor:
     device = sample.device
     dtype = sample.dtype
@@ -343,6 +437,13 @@ def _sample_flow_latents(
         float(cfg_schedule_max) if cfg_schedule_max is not None else float(cfg_scale),
     ) if cfg_schedule_type != "constant" else float(cfg_scale)
     needs_cfg = negative is not None and scheduled_peak > 1.0
+    prediction = dict(prediction or {"type": FLOW_V1_PREDICTION})
+    prediction_type = str(prediction.get("type") or FLOW_V1_PREDICTION)
+    is_residual_v2 = prediction_type == FLOW_V2_PREDICTION
+    is_direct_v2 = prediction_type == FLOW_V2_VELOCITY_PREDICTION
+    is_v2 = is_residual_v2 or is_direct_v2
+    latent_mean = prediction.get("latent_mean")
+    latent_moment = prediction.get("latent_centered_second_moment")
     if cfg_probe_callback is not None and not needs_cfg:
         raise ValueError("Chimera CFG probe requires a negative branch and cfg_scale > 1")
     install_chimera_attention_processors(unet, backend=attention_backend)
@@ -361,17 +462,37 @@ def _sample_flow_latents(
                     cfg_schedule_power=cfg_schedule_power,
                     denoise_progress=float(times[index].item()),
                 )
-                analytic_noise_step = index == 0 and float(times[index].item()) == 0.0
+                analytic_noise_step = (
+                    index == 0
+                    and float(times[index].item()) == 0.0
+                    and not is_direct_v2
+                )
+                analytic = None
                 if analytic_noise_step:
                     # At the pure-noise endpoint the paired x0 is unobservable.
                     # Advance only the known -epsilon term before asking the U-Net.
                     velocity = -sample
+                    if is_residual_v2:
+                        analytic = velocity
+                    prediction_cond = prediction_uncond = prediction_raw = prediction_post = (
+                        torch.zeros_like(sample) if is_residual_v2 else velocity
+                    )
                     if cfg_probe_callback is not None:
                         cond = uncond = guided_raw = velocity
                 elif not needs_cfg:
-                    velocity = _unet_velocity(
+                    prediction_post = _unet_velocity(
                         unet, sample, timestep, positive, time_ids, cache_metadata=cache_metadata
                     )
+                    if is_residual_v2:
+                        analytic, _ = endpoint_observable_preconditioning(
+                            sample,
+                            timestep,
+                            latent_mean=latent_mean,
+                            latent_centered_second_moment=latent_moment,
+                        )
+                        velocity = analytic + prediction_post
+                    else:
+                        velocity = prediction_post
                 elif cfg_mode == "batched":
                     pair_length = max(
                         negative.encoder_hidden_states.shape[1],
@@ -405,23 +526,54 @@ def _sample_flow_latents(
                         time_ids.repeat(2, 1),
                         cache_metadata=cache_metadata,
                     )
-                    uncond, cond = pair.chunk(2)
-                    guided_raw = uncond + float(cfg_now) * (cond - uncond)
-                    velocity = _combine_cfg_velocity(cond, uncond, cfg_now, cfg_norm)
+                    prediction_uncond, prediction_cond = pair.chunk(2)
+                    prediction_raw = prediction_uncond + float(cfg_now) * (
+                        prediction_cond - prediction_uncond
+                    )
+                    prediction_post = _combine_cfg_velocity(
+                        prediction_cond, prediction_uncond, cfg_now, cfg_norm
+                    )
                 else:
-                    uncond = _unet_velocity(
+                    prediction_uncond = _unet_velocity(
                         unet, sample, timestep, negative, time_ids, cache_metadata=cache_metadata
                     )
-                    cond = _unet_velocity(
+                    prediction_cond = _unet_velocity(
                         unet, sample, timestep, positive, time_ids, cache_metadata=cache_metadata
                     )
-                    guided_raw = uncond + float(cfg_now) * (cond - uncond)
-                    velocity = _combine_cfg_velocity(cond, uncond, cfg_now, cfg_norm)
+                    prediction_raw = prediction_uncond + float(cfg_now) * (
+                        prediction_cond - prediction_uncond
+                    )
+                    prediction_post = _combine_cfg_velocity(
+                        prediction_cond, prediction_uncond, cfg_now, cfg_norm
+                    )
+                if needs_cfg and not analytic_noise_step:
+                    if is_residual_v2:
+                        analytic, _ = endpoint_observable_preconditioning(
+                            sample,
+                            timestep,
+                            latent_mean=latent_mean,
+                            latent_centered_second_moment=latent_moment,
+                        )
+                        uncond = analytic + prediction_uncond
+                        cond = analytic + prediction_cond
+                        guided_raw = analytic + prediction_raw
+                        velocity = analytic + prediction_post
+                    else:
+                        uncond = prediction_uncond
+                        cond = prediction_cond
+                        guided_raw = prediction_raw
+                        velocity = prediction_post
                 sample_before = sample
                 sample = flow_euler_step(sample, velocity, times[index], times[index + 1])
                 if generate_mask is not None:
-                    source_at_next = flow_noising(
-                        source_latents, source_noise, times[index + 1]
+                    source_at_next = (
+                        endpoint_observable_noising(
+                            source_latents, source_noise, times[index + 1]
+                        )
+                        if is_v2
+                        else flow_noising(
+                            source_latents, source_noise, times[index + 1]
+                        )
                     )
                     sample = generate_mask * sample + (1.0 - generate_mask) * source_at_next
                 if cfg_probe_callback is not None:
@@ -437,6 +589,14 @@ def _sample_flow_latents(
                         guided_raw=guided_raw,
                         guided_post=velocity,
                         cfg_scale=cfg_now,
+                        prediction_type=prediction_type,
+                        analytic=analytic,
+                        prediction_conditional=prediction_cond,
+                        prediction_unconditional=prediction_uncond,
+                        prediction_guided_raw=prediction_raw,
+                        prediction_guided_post=prediction_post,
+                        bypassed_unet=analytic_noise_step,
+                        latent_mean=latent_mean,
                     ))
                 if progress_callback is not None:
                     progress_callback(index + 1, steps, sample)
@@ -472,6 +632,7 @@ def sample_txt2img_latents(
     progress_callback: Callable[[int, int, torch.Tensor], None] | None = None,
     step_progress_callback: Callable[[int, int], None] | None = None,
     cfg_probe_callback: Callable[[dict[str, float | int]], None] | None = None,
+    prediction: dict | None = None,
 ) -> torch.Tensor:
     if height % 8 or width % 8:
         raise ValueError("Chimera width and height must be divisible by 8")
@@ -513,6 +674,7 @@ def sample_txt2img_latents(
         progress_callback=progress_callback,
         step_progress_callback=step_progress_callback,
         cfg_probe_callback=cfg_probe_callback,
+        prediction=prediction,
     )
 
 
@@ -541,6 +703,7 @@ def sample_img2img_latents(
     attention_backend: str = "normal",
     progress_callback: Callable[[int, int, torch.Tensor], None] | None = None,
     step_progress_callback: Callable[[int, int], None] | None = None,
+    prediction: dict | None = None,
 ) -> torch.Tensor:
     """Run deterministic SDEdit, optionally pinning the mask's preserve region."""
     if not 0.0 <= float(denoising_strength) <= 1.0:
@@ -569,7 +732,16 @@ def sample_img2img_latents(
     start_index = min(steps, max(0, int(round((1.0 - float(denoising_strength)) * steps))))
     if start_index == steps:
         return source_latents
-    sample = flow_noising(source_latents, noise, times[start_index])
+    prediction = dict(prediction or {"type": FLOW_V1_PREDICTION})
+    is_v2 = prediction.get("type") in {
+        FLOW_V2_PREDICTION,
+        FLOW_V2_VELOCITY_PREDICTION,
+    }
+    sample = (
+        endpoint_observable_noising(source_latents, noise, times[start_index])
+        if is_v2
+        else flow_noising(source_latents, noise, times[start_index])
+    )
     return _sample_flow_latents(
         unet,
         positive,
@@ -596,6 +768,7 @@ def sample_img2img_latents(
         attention_backend=attention_backend,
         progress_callback=progress_callback,
         step_progress_callback=step_progress_callback,
+        prediction=prediction,
     )
 
 

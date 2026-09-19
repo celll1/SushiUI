@@ -121,6 +121,7 @@ class SenseNovaSDXLChimeraMixin:
                 crop_left=int(params.get("crop_left") or 0),
                 attention_backend=str(params.get("attention_type") or "normal"),
                 progress_callback=report,
+                prediction=components["prediction"],
             )
             unet.to("cpu")
             vae.to(device)
@@ -330,6 +331,7 @@ class SenseNovaSDXLChimeraMixin:
                 crop_left=int(params.get("crop_left") or 0),
                 attention_backend=str(params.get("attention_type") or "normal"),
                 progress_callback=report,
+                prediction=components["prediction"],
             )
             unet.to("cpu")
             vae.to(device)

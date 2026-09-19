@@ -43,6 +43,7 @@ from utils import save_image_with_metadata, create_thumbnail, dataset_thumbnail_
 from utils.upload_names import recover_upload_filename
 from config.settings import settings
 from api.websocket import manager
+from api.training_media import PreviewSize
 from auth import create_access_token, verify_credentials, require_auth
 from api.param_defaults import (
     GENERATION_DEFAULTS, IMG2TXT_DEFAULTS, TXT2IMG_DEFAULTS, IMG2IMG_DEFAULTS, INPAINT_DEFAULTS,
@@ -17650,7 +17651,7 @@ async def visualize_debug_latent(
 
     from api.training_media import debug_image_urls
     result["image_urls"] = debug_image_urls(
-        run_id, step, float(result["timestep"]), data, latent_file
+        run_id, step, data, latent_file
     )
     if not include_images:
         return result
@@ -17746,7 +17747,7 @@ def get_debug_latent_image(
     ],
     request: Request,
     timestep: Optional[float] = None,
-    size: Literal[256, 512, 768] = TRAINING_MONITOR_MEDIA_DEFAULTS["preview_size"],
+    size: PreviewSize = PreviewSize(TRAINING_MONITOR_MEDIA_DEFAULTS["preview_size"]),
     v: Optional[str] = None,
     db: Session = Depends(get_training_db),
 ):
@@ -17774,7 +17775,7 @@ def get_debug_latent_image(
             raise KeyError(kind)
         if v is not None and v != file_fingerprint(source):
             raise FileNotFoundError("stale debug visualization version")
-        preview_path, etag = cached_debug_preview(latent_file, data, kind, size)
+        preview_path, etag = cached_debug_preview(latent_file, data, kind, int(size))
     except (FileNotFoundError, KeyError) as exc:
         raise HTTPException(status_code=404, detail=f"Debug visualization {kind!r} not found") from exc
     except (OSError, ValueError) as exc:
@@ -19536,7 +19537,7 @@ def get_training_sample_preview(
     run_id: int,
     filename: str,
     request: Request,
-    size: Literal[256, 512, 768] = TRAINING_MONITOR_MEDIA_DEFAULTS["preview_size"],
+    size: PreviewSize = PreviewSize(TRAINING_MONITOR_MEDIA_DEFAULTS["preview_size"]),
     v: Optional[str] = None,
     db: Session = Depends(get_training_db),
 ):
@@ -19557,7 +19558,7 @@ def get_training_sample_preview(
         if v is not None and v != file_fingerprint(file_path):
             raise FileNotFoundError("stale sample image version")
         preview_path, etag = cached_image_preview(
-            file_path, samples_dir / ".previews", size
+            file_path, samples_dir / ".previews", int(size)
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Sample image version not found") from exc

@@ -15,7 +15,9 @@ from core.models.sensenova_sdxl_chimera.artifact import (
 )
 from core.models.sensenova_sdxl_chimera.flow import (
     FLOW_V3_PREDICTION,
+    polar_compose_velocity,
     polar_flow_target,
+    polar_recover_clean,
     polar_tangent_projection,
     terminal_flat_angular_schedule,
 )
@@ -127,6 +129,33 @@ def test_projection_and_cfg_are_pointwise_tangent_and_loss_decomposes():
     split_mse = (predicted_radial - target_radial).square()
     split_mse = split_mse + (tau_c - target_tangent).square().flatten(1).mean(dim=1)
     assert torch.allclose(direct_mse, split_mse, atol=2e-15, rtol=2e-15)
+
+
+def test_polar_targets_compose_velocity_and_recover_clean_interior():
+    generator = torch.Generator().manual_seed(37)
+    mean = [0.1, -0.2, 0.05, 0.3]
+    clean = torch.randn(4, 4, 5, 7, generator=generator, dtype=torch.float64)
+    clean = clean + torch.tensor(mean, dtype=clean.dtype).reshape(1, 4, 1, 1)
+    noise = torch.randn(clean.shape, generator=generator, dtype=clean.dtype)
+    times = torch.tensor([0.15, 0.35, 0.65, 0.85], dtype=clean.dtype)
+    target = polar_flow_target(clean, noise, times, latent_mean=mean)
+    composed = polar_compose_velocity(
+        target.sample,
+        target.radial_velocity,
+        target.tangent_velocity,
+        times,
+        latent_mean=mean,
+    )
+    recovered = polar_recover_clean(
+        target.sample,
+        target.radial_velocity,
+        target.tangent_velocity,
+        times,
+        latent_mean=mean,
+        latent_centered_second_moment=1.0,
+    )
+    assert torch.allclose(composed, target.full_velocity, atol=2e-12, rtol=2e-12)
+    assert torch.allclose(recovered, clean, atol=2e-10, rtol=2e-10)
 
 
 def test_coincident_and_antipodal_policies_are_finite_and_deterministic():

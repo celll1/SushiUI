@@ -16261,6 +16261,31 @@ class BaseTrainer(ABC):
                         "Chimera prediction/path contract changed on resume"
                     )
                     adaptive_resume_state = None
+            elif self.is_sensenova_sdxl_chimera and str(
+                self.config.get("chimera_flow_version", "v1")
+            ) == "v3":
+                if str(_adaptive_cfg.get("mode", "off")).lower() not in {
+                    "off", "observe"
+                }:
+                    raise ValueError(
+                        "Chimera v3 adaptive timestep is observation-only until "
+                        "its noise-end variance floor is calibrated"
+                    )
+                adaptive_prediction_type = "polar_tangent_flow"
+                adaptive_latent_moment = float(
+                    self.config["chimera_v3_latent_centered_second_moment"]
+                )
+                if adaptive_resume_state and (
+                    adaptive_resume_state.get("prediction_type")
+                    != adaptive_prediction_type
+                    or adaptive_resume_state.get("latent_centered_second_moment")
+                    != adaptive_latent_moment
+                ):
+                    print(
+                        f"{self.log_prefix} Resetting adaptive timestep controller: "
+                        "Chimera v3 prediction/path contract changed on resume"
+                    )
+                    adaptive_resume_state = None
             timestep_sampler = AdaptiveTimestepSampler(
                 timestep_sampler, _adaptive_cfg, convention=_convention,
                 prediction_type=adaptive_prediction_type,

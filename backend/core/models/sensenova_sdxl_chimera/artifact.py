@@ -381,16 +381,20 @@ def runtime_config(
     bridge_config: ChimeraBridgeConfig,
     vae_config: Mapping[str, Any],
     format_version: int = FORMAT_VERSION,
+    polar_radial_head: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     bridge = asdict(bridge_config)
     bridge["selected_layers"] = list(bridge["selected_layers"])
-    return {
+    result = {
         "model_type": MODEL_TYPE,
         "format_version": int(format_version),
         "unet": dict(unet_config),
         "conditioning_bridge": bridge,
         "vae": dict(vae_config),
     }
+    if polar_radial_head is not None:
+        result["polar_radial_head"] = dict(polar_radial_head)
+    return result
 
 
 def read_artifact_documents(directory: str | os.PathLike[str]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -411,7 +415,25 @@ def read_artifact_documents(directory: str | os.PathLike[str]) -> tuple[dict[str
     if len(versions) != 1:
         raise ChimeraArtifactError(f"manifest/config format version mismatch at {root}")
     version = versions.pop()
-    validated_prediction_contract(manifest, artifact_format=version)
+    prediction = validated_prediction_contract(manifest, artifact_format=version)
+    radial_head = config.get("polar_radial_head")
+    if prediction["type"] == FLOW_V3_PREDICTION:
+        expected_head = {"version": 1, "source": "conditioned_mid_block"}
+        if not isinstance(radial_head, dict):
+            raise ChimeraArtifactError(f"Chimera v3 artifact has no radial-head config at {root}")
+        mismatched_head = {
+            key: radial_head.get(key)
+            for key, expected_value in expected_head.items()
+            if radial_head.get(key) != expected_value
+        }
+        width = int(radial_head.get("mid_channels", 0) or 0)
+        if mismatched_head or width <= 0:
+            raise ChimeraArtifactError(
+                f"invalid Chimera v3 radial-head config at {root}: "
+                f"fields={mismatched_head}, mid_channels={width}"
+            )
+    elif radial_head is not None:
+        raise ChimeraArtifactError("legacy Chimera artifact unexpectedly declares a radial head")
     conditioning = manifest.get("conditioning") or {}
     expected = {
         "context_length": "native_prefix",

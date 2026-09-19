@@ -55,6 +55,7 @@ from api.param_defaults import (
     LR_RETARGET_DEFAULTS,
     LR_PREVIEW_DEFAULTS,
     LR_TRIGGER_DEFAULTS,
+    TRAINING_MONITOR_MEDIA_DEFAULTS,
     BUNDLE_VAE_DEFAULTS_BY_ARCH,
     VIDEO_GEN_ARCH_OVERLAYS,
     OUTPAINT_AUDIO_ARCH_OVERLAYS,
@@ -17414,14 +17415,17 @@ async def download_checkpoint(run_id: int, checkpoint_filename: str, db: Session
     )
 
 @router.get("/training/runs/{run_id}/debug-latents")
-async def get_debug_latents(run_id: int, db: Session = Depends(get_training_db)):
+async def get_debug_latents(
+    run_id: int,
+    since_step: Optional[int] = None,
+    db: Session = Depends(get_training_db),
+):
     """Get list of debug latent saves for a training run"""
     run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Training run not found")
 
     from pathlib import Path
-    import glob
 
     output_dir = Path(run.output_dir)
     debug_dir = output_dir / "debug"
@@ -17436,6 +17440,8 @@ async def get_debug_latents(run_id: int, db: Session = Depends(get_training_db))
         step_str = step_dir.name.replace("step_", "")
         try:
             step = int(step_str)
+            if since_step is not None and step < since_step:
+                continue
 
             latent_files = sorted(step_dir.glob("latents_t*.pt"))
 
@@ -17463,7 +17469,8 @@ async def get_debug_latents(run_id: int, db: Session = Depends(get_training_db))
 async def visualize_debug_latent(
     run_id: int,
     step: int,
-    timestep: Optional[int] = None,
+    timestep: Optional[float] = None,
+    include_images: bool = TRAINING_MONITOR_MEDIA_DEFAULTS["debug_include_images"],
     db: Session = Depends(get_training_db)
 ):
     """
@@ -17476,10 +17483,6 @@ async def visualize_debug_latent(
 
     from pathlib import Path
     import torch
-    import numpy as np
-    from PIL import Image
-    import io
-    import base64
 
     output_dir = Path(run.output_dir)
     debug_dir = output_dir / "debug" / f"step_{step:06d}"
@@ -17487,20 +17490,11 @@ async def visualize_debug_latent(
     if not debug_dir.exists():
         raise HTTPException(status_code=404, detail=f"Debug directory for step {step} not found")
 
-    # Find the latent file (use timestep if provided, otherwise use first one)
-    if timestep is not None:
-        # Try both float format (Z-Image) and int format (SD/SDXL)
-        latent_file = debug_dir / f"latents_t{timestep}.pt"
-        if not latent_file.exists():
-            # Try integer format as fallback
-            latent_file = debug_dir / f"latents_t{int(timestep):04d}.pt"
-            if not latent_file.exists():
-                raise HTTPException(status_code=404, detail=f"Latent file for timestep {timestep} not found")
-    else:
-        latent_files = sorted(debug_dir.glob("latents_t*.pt"))
-        if not latent_files:
-            raise HTTPException(status_code=404, detail="No latent files found")
-        latent_file = latent_files[0]
+    from api.training_media import find_debug_latent_file
+    try:
+        latent_file = find_debug_latent_file(debug_dir, timestep)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     try:
         data = torch.load(latent_file, map_location='cpu')
@@ -17590,6 +17584,27 @@ async def visualize_debug_latent(
         if _k in data:
             result[_k] = data[_k]
 
+    if "channel_stats" in data:
+        result["channel_stats"] = data["channel_stats"]
+    for _k in ("window_latent_frames", "clip_latent_frames", "audio_sigma",
+               "audio_present", "latent_frames"):
+        if _k in data:
+            result[_k] = data[_k]
+
+    from api.training_media import debug_image_urls
+    result["image_urls"] = debug_image_urls(
+        run_id, step, float(result["timestep"]), data, latent_file
+    )
+    if not include_images:
+        return result
+
+    # Compatibility path for older clients. The monitor uses the compact
+    # manifest, so these imports and base64 encodes are normally skipped.
+    import base64
+    import io
+    import numpy as np
+    from PIL import Image
+
     if "reference_image_path" in data:
         try:
             from PIL import Image as _PILImage
@@ -17660,16 +17675,58 @@ async def visualize_debug_latent(
         if _ak in data:
             result[f"{_ak}_image"] = image_to_base64(latent_to_image(data[_ak]))
 
-    # Per-channel mean/std of each saved stream: a prediction collapsing toward
-    # the channel mean shows up here before any image is inspected.
-    if "channel_stats" in data:
-        result["channel_stats"] = data["channel_stats"]
-    for _k in ("window_latent_frames", "clip_latent_frames", "audio_sigma",
-               "audio_present", "latent_frames"):
-        if _k in data:
-            result[_k] = data[_k]
-
     return result
+
+@router.get("/training/runs/{run_id}/debug-latents/{step}/images/{kind}")
+def get_debug_latent_image(
+    run_id: int,
+    step: int,
+    kind: Literal[
+        "target", "noisy", "predicted_latent", "predicted_noise",
+        "predicted_velocity", "reference", "audio_target", "audio_noisy",
+        "audio_predicted_velocity", "audio_actual_velocity",
+        "audio_predicted_latent",
+    ],
+    request: Request,
+    timestep: Optional[float] = None,
+    size: Literal[256, 512, 768] = TRAINING_MONITOR_MEDIA_DEFAULTS["preview_size"],
+    v: Optional[str] = None,
+    db: Session = Depends(get_training_db),
+):
+    """Serve one immutable debug visualization instead of a base64 bundle."""
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    debug_dir = Path(run.output_dir) / "debug" / f"step_{step:06d}"
+    if not debug_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Debug directory for step {step} not found")
+
+    from api.training_media import (
+        cached_debug_preview,
+        debug_image_sources,
+        file_fingerprint,
+        find_debug_latent_file,
+        immutable_headers,
+    )
+    try:
+        latent_file = find_debug_latent_file(debug_dir, timestep)
+        data = torch.load(latent_file, map_location="cpu")
+        source = debug_image_sources(data, latent_file).get(kind)
+        if source is None:
+            raise KeyError(kind)
+        if v is not None and v != file_fingerprint(source):
+            raise FileNotFoundError("stale debug visualization version")
+        preview_path, etag = cached_debug_preview(latent_file, data, kind, size)
+    except (FileNotFoundError, KeyError) as exc:
+        raise HTTPException(status_code=404, detail=f"Debug visualization {kind!r} not found") from exc
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"Cannot create debug preview: {exc}") from exc
+
+    headers = immutable_headers(etag)
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return FileResponse(preview_path, media_type="image/webp", headers=headers)
 
 @router.get("/training/runs/{run_id}/metrics")
 async def get_training_metrics(
@@ -19294,6 +19351,7 @@ async def preview_lr_schedule(
 @router.get("/training/runs/{run_id}/samples")
 async def get_training_samples(
     run_id: int,
+    since_step: Optional[int] = None,
     db: Session = Depends(get_training_db)
 ):
     """
@@ -19328,6 +19386,8 @@ async def get_training_samples(
         match = pattern.match(file.name)
         if match:
             step = int(match.group(1))
+            if since_step is not None and step < since_step:
+                continue
             sample_idx = int(match.group(2))
             request_id = match.group(3)
 
@@ -19336,20 +19396,25 @@ async def get_training_samples(
 
             # Use API endpoint to serve sample images (not static files)
             # This ensures compatibility even if UserSettings.training_dir changes
-            path_url = f"/api/v1/training/runs/{run_id}/samples/{file.name}"
+            from api.training_media import file_fingerprint
+            version = file_fingerprint(file)
+            path_url = f"/api/v1/training/runs/{run_id}/samples/{file.name}?v={version}"
+            preview_url = (
+                f"/api/v1/training/runs/{run_id}/samples/{file.name}/preview?v={version}"
+            )
 
             img_params = None
             try:
-                from PIL import Image as _PILImage
-                with _PILImage.open(str(file)) as _img:
-                    if hasattr(_img, 'text') and _img.text:
-                        img_params = dict(_img.text)
+                from api.training_media import cached_png_text
+                img_params = cached_png_text(file)
             except Exception:
                 pass
 
             samples_by_step[step].append({
                 "sample_index": sample_idx,
                 "path": path_url,
+                "preview_path": preview_url,
+                "version": version,
                 "params": img_params,
                 "on_demand": request_id is not None,
                 "request_id": request_id,
@@ -19370,6 +19435,8 @@ async def get_training_samples(
 async def get_training_sample_image(
     run_id: int,
     filename: str,
+    request: Request,
+    v: Optional[str] = None,
     db: Session = Depends(get_training_db)
 ):
     """
@@ -19388,7 +19455,7 @@ async def get_training_sample_image(
     try:
         file_path = file_path.resolve()
         samples_dir = samples_dir.resolve()
-        if not str(file_path).startswith(str(samples_dir)):
+        if not file_path.is_relative_to(samples_dir):
             raise HTTPException(status_code=403, detail="Access denied")
     except Exception:
         raise HTTPException(status_code=403, detail="Invalid file path")
@@ -19396,8 +19463,53 @@ async def get_training_sample_image(
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Sample image not found")
 
-    from fastapi.responses import FileResponse
-    return FileResponse(file_path, media_type="image/png")
+    from api.training_media import file_fingerprint, immutable_headers, preview_etag
+    version = file_fingerprint(file_path)
+    if v is not None and v != version:
+        raise HTTPException(status_code=404, detail="Sample image version not found")
+    etag = preview_etag(file_path, version, "original")
+    headers = immutable_headers(etag)
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return FileResponse(file_path, media_type="image/png", headers=headers)
+
+
+@router.get("/training/runs/{run_id}/samples/{filename}/preview")
+def get_training_sample_preview(
+    run_id: int,
+    filename: str,
+    request: Request,
+    size: Literal[256, 512, 768] = TRAINING_MONITOR_MEDIA_DEFAULTS["preview_size"],
+    v: Optional[str] = None,
+    db: Session = Depends(get_training_db),
+):
+    """Serve a cached panel-sized WebP for an immutable training sample."""
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    samples_dir = (Path(run.output_dir) / "samples").resolve()
+    file_path = (samples_dir / filename).resolve()
+    if not file_path.is_relative_to(samples_dir):
+        raise HTTPException(status_code=403, detail="Access denied")
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Sample image not found")
+
+    from api.training_media import cached_image_preview, file_fingerprint, immutable_headers
+    try:
+        if v is not None and v != file_fingerprint(file_path):
+            raise FileNotFoundError("stale sample image version")
+        preview_path, etag = cached_image_preview(
+            file_path, samples_dir / ".previews", size
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Sample image version not found") from exc
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"Cannot create sample preview: {exc}") from exc
+    headers = immutable_headers(etag)
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return FileResponse(preview_path, media_type="image/webp", headers=headers)
 
 
 

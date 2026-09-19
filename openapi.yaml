@@ -5992,6 +5992,13 @@ paths:
           required: true
           schema:
             type: integer
+        - name: since_step
+          in: query
+          required: false
+          description: Return entries at or after this step for incremental polling.
+          schema:
+            type: integer
+            minimum: 0
       responses:
         '200':
           description: Debug latent entries
@@ -6010,7 +6017,11 @@ paths:
     get:
       tags: [training]
       summary: Visualize debug latents at a step
-      description: Returns base64-encoded visualizations of latents, noisy latents, and predicted noise (no VAE decoding).
+      description: |
+        Returns scalar metadata for one debug save. For compatibility,
+        `include_images=true` also embeds every available visualization as
+        base64. Bandwidth-sensitive clients should set it to false and load
+        only required fields through the individual WebP image endpoint.
       parameters:
         - name: run_id
           in: path
@@ -6026,10 +6037,18 @@ paths:
           in: query
           required: false
           schema:
-            type: integer
+            type: number
+            format: double
+        - name: include_images
+          in: query
+          required: false
+          description: Embed legacy base64 images in the JSON response.
+          schema:
+            type: boolean
+            default: true
       responses:
         '200':
-          description: Base64 visualization images
+          description: Scalar manifest with optional legacy base64 images
           content:
             application/json:
               schema:
@@ -6041,6 +6060,57 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/debug-latents/{step}/images/{kind}:
+    get:
+      tags: [training]
+      summary: Get one sized debug-latent visualization
+      description: |
+        Returns one cached WebP visualization instead of embedding all images
+        in JSON. The manifest supplies a source fingerprint in the URL, so a
+        successful response can be cached as immutable.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: {type: integer}
+        - name: step
+          in: path
+          required: true
+          schema: {type: integer}
+        - name: kind
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [target, noisy, predicted_latent, predicted_noise, predicted_velocity, reference, audio_target, audio_noisy, audio_predicted_velocity, audio_actual_velocity, audio_predicted_latent]
+        - name: timestep
+          in: query
+          required: false
+          schema: {type: number, format: double}
+        - name: size
+          in: query
+          required: false
+          schema:
+            type: integer
+            enum: [256, 512, 768]
+            default: 512
+        - name: v
+          in: query
+          required: false
+          description: Immutable source fingerprint supplied by the manifest.
+          schema: {type: string}
+      responses:
+        '200':
+          description: Cached WebP visualization
+          content:
+            image/webp:
+              schema: {type: string, format: binary}
+        '304': {description: Cached representation is current}
+        '404':
+          description: Run, debug save, or visualization kind not found
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
   /training/runs/{run_id}/metrics:
     get:
       tags: [training]
@@ -6154,6 +6224,13 @@ paths:
           required: true
           schema:
             type: integer
+        - name: since_step
+          in: query
+          required: false
+          description: Return sample groups at or after this step for incremental polling.
+          schema:
+            type: integer
+            minimum: 0
       responses:
         '200':
           description: Sample image info with step number and file path
@@ -7085,6 +7162,7 @@ paths:
     get:
       tags: [training]
       summary: Get a training sample image
+      description: Returns the immutable original PNG; panel views should use the sized WebP preview endpoint.
       parameters:
         - name: run_id
           in: path
@@ -7096,6 +7174,11 @@ paths:
           required: true
           schema:
             type: string
+        - name: v
+          in: query
+          required: false
+          description: Immutable source fingerprint supplied by the sample listing.
+          schema: {type: string}
       responses:
         '200':
           description: Sample image file
@@ -7110,6 +7193,43 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/samples/{filename}/preview:
+    get:
+      tags: [training]
+      summary: Get a sized WebP preview of a training sample
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: {type: integer}
+        - name: filename
+          in: path
+          required: true
+          schema: {type: string}
+        - name: size
+          in: query
+          required: false
+          schema:
+            type: integer
+            enum: [256, 512, 768]
+            default: 512
+        - name: v
+          in: query
+          required: false
+          description: Immutable source fingerprint supplied by the sample listing.
+          schema: {type: string}
+      responses:
+        '200':
+          description: Cached WebP sample preview
+          content:
+            image/webp:
+              schema: {type: string, format: binary}
+        '304': {description: Cached representation is current}
+        '404':
+          description: Run or sample not found
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
   /training/presets:
     get:
       tags: [training]

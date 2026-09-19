@@ -7658,6 +7658,8 @@ export const getTrainingMetrics = async (
 export interface TrainingSampleImage {
   sample_index: number;
   path: string;
+  preview_path?: string;
+  version?: string;
   params?: {
     prompt?: string;
     negative_prompt?: string;
@@ -7686,8 +7688,13 @@ export interface TrainingSamplesResponse {
   samples: TrainingSampleStep[];
 }
 
-export const getTrainingSamples = async (runId: number): Promise<TrainingSamplesResponse> => {
-  const response = await api.get(`/training/runs/${runId}/samples`);
+export const getTrainingSamples = async (
+  runId: number,
+  sinceStep?: number,
+  signal?: AbortSignal,
+): Promise<TrainingSamplesResponse> => {
+  const params = sinceStep === undefined ? {} : { since_step: sinceStep };
+  const response = await api.get(`/training/runs/${runId}/samples`, { params, signal });
   return response.data;
 };
 
@@ -8307,22 +8314,45 @@ export interface DebugLatentVisualization {
   audio_predicted_velocity_image?: string;  // base64
   audio_actual_velocity_image?: string;  // base64
   audio_predicted_latent_image?: string;  // base64
+  image_urls?: Partial<Record<
+    | "latents_image"
+    | "noisy_latents_image"
+    | "predicted_noise_image"
+    | "predicted_velocity_image"
+    | "predicted_latent_image"
+    | "reference_image"
+    | "audio_latents_image"
+    | "audio_noisy_latents_image"
+    | "audio_predicted_velocity_image"
+    | "audio_actual_velocity_image"
+    | "audio_predicted_latent_image",
+    string
+  >>;
   // Per-channel mean/std of every saved stream, keyed by tensor name.
   channel_stats?: Record<string, { mean: number[]; std: number[] }>;
 }
 
-export const getDebugLatents = async (runId: number): Promise<DebugLatentsResponse> => {
-  const response = await api.get(`/training/runs/${runId}/debug-latents`);
+export const getDebugLatents = async (
+  runId: number,
+  sinceStep?: number,
+  signal?: AbortSignal,
+): Promise<DebugLatentsResponse> => {
+  const params = sinceStep === undefined ? {} : { since_step: sinceStep };
+  const response = await api.get(`/training/runs/${runId}/debug-latents`, { params, signal });
   return response.data;
 };
 
 export const visualizeDebugLatent = async (
   runId: number,
   step: number,
-  timestep?: number
+  timestep?: number,
+  signal?: AbortSignal,
 ): Promise<DebugLatentVisualization> => {
-  const params = timestep !== undefined ? { timestep } : {};
-  const response = await api.get(`/training/runs/${runId}/debug-latents/${step}/visualize`, { params });
+  const params = timestep !== undefined
+    ? { timestep, include_images: false }
+    : { include_images: false };
+  const response = await api.get(
+    `/training/runs/${runId}/debug-latents/${step}/visualize`, { params, signal });
   return response.data;
 };
 

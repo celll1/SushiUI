@@ -1617,6 +1617,21 @@ rendered, and publishes scalar-only results through
 payloads are not part of either response. The diagnostic requires configured
 sample CFG greater than 1 and shares the bounded on-demand sample queue.
 
+### Training monitor media delivery
+
+The Samples and Debug Latents panels poll only while their tab is visible and
+use `since_step` to fetch newly appended metadata. Sample listings return both
+an immutable original URL and a `preview_path`; the panel requests cached WebP
+previews at 256 px while seeking and 512 px after the selection settles. Only
+the fullscreen viewer loads an original PNG.
+
+Debug visualization metadata is requested with `include_images=false`. Its
+`image_urls` manifest exposes each target/noisy/predicted/reference layer as a
+separate sized WebP, so opening one debug step no longer embeds every layer as
+base64 in a JSON response. Versioned URLs and ETags make both media paths safe
+for browser caching; the legacy base64 response remains available to older
+clients through `include_images=true`.
+
 **Example**:
 ```python
 trainer = LoRATrainer(

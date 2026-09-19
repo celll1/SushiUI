@@ -8,6 +8,7 @@ there is no x0 reconstruction followed by division near t=1.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 import torch
 
@@ -16,6 +17,10 @@ FLOW_V1_PREDICTION = "flow_velocity"
 FLOW_V2_PREDICTION = "endpoint_observable_residual"
 FLOW_V2_VELOCITY_PREDICTION = "endpoint_observable_velocity"
 FLOW_V2_PATH = "symmetric_cubic_observable_v1"
+FLOW_V3_PREDICTION = "polar_tangent_flow"
+FLOW_V3_PATH = "observable_polar_geodesic_v1"
+FLOW_V3_RADIAL_SCHEDULE = "cubic_quadrature_v1"
+FLOW_V3_ANGULAR_SCHEDULE = "terminal_flat_cubic_v1"
 
 
 def _batch_scalar(value: torch.Tensor | float, sample: torch.Tensor) -> torch.Tensor:
@@ -37,6 +42,189 @@ def _latent_mean(value: torch.Tensor | list[float] | tuple[float, ...], sample: 
             f"got {tuple(mean.shape)}"
         )
     return mean.reshape(1, sample.shape[1], *((1,) * (sample.ndim - 2)))
+
+
+def _geometry_dtype(sample: torch.Tensor) -> torch.dtype:
+    if not sample.is_floating_point():
+        raise TypeError("Chimera flow tensors must use a floating dtype")
+    return torch.float64 if sample.dtype == torch.float64 else torch.float32
+
+
+def _rms_inner(left: torch.Tensor, right: torch.Tensor) -> torch.Tensor:
+    if left.shape != right.shape:
+        raise ValueError(
+            f"inner-product shape mismatch: {tuple(left.shape)} vs {tuple(right.shape)}"
+        )
+    return (left * right).flatten(1).mean(dim=1).reshape(
+        left.shape[0], *((1,) * (left.ndim - 1))
+    )
+
+
+def _rms_norm(value: torch.Tensor) -> torch.Tensor:
+    return _rms_inner(value, value).clamp_min(0.0).sqrt()
+
+
+def terminal_flat_angular_schedule(
+    timestep: torch.Tensor | float,
+    sample: torch.Tensor,
+    *,
+    endpoint_slope: float = 2.0,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return a terminal-flat angular schedule and its clean-time derivative."""
+    slope = float(endpoint_slope)
+    if not math.isfinite(slope) or not 0.0 <= slope <= 2.0:
+        raise ValueError("endpoint_slope must be finite and in [0, 2]")
+    t = _batch_scalar(timestep, sample)
+    gamma = slope * t + (3.0 - 2.0 * slope) * t.square()
+    gamma = gamma + (slope - 2.0) * t.pow(3)
+    gamma_prime = slope + 2.0 * (3.0 - 2.0 * slope) * t
+    gamma_prime = gamma_prime + 3.0 * (slope - 2.0) * t.square()
+    return gamma, gamma_prime
+
+
+def polar_tangent_projection(
+    field: torch.Tensor,
+    direction: torch.Tensor,
+) -> torch.Tensor:
+    """Project one latent field onto the per-sample RMS tangent space."""
+    if field.shape != direction.shape:
+        raise ValueError(
+            f"field/direction shape mismatch: {tuple(field.shape)} vs {tuple(direction.shape)}"
+        )
+    geometry_dtype = _geometry_dtype(field)
+    field_geometry = field.to(dtype=geometry_dtype)
+    direction_geometry = direction.to(device=field.device, dtype=geometry_dtype)
+    projected = field_geometry - direction_geometry * _rms_inner(
+        direction_geometry, field_geometry
+    )
+    return projected.to(dtype=field.dtype)
+
+
+def _deterministic_orthogonal(direction: torch.Tensor) -> torch.Tensor:
+    """Choose a deterministic RMS-unit tangent for an antipodal pair."""
+    flat = direction.flatten(1)
+    width = flat.shape[1]
+    indices = flat.abs().argmin(dim=1, keepdim=True)
+    basis = torch.zeros_like(flat)
+    basis.scatter_(1, indices, math.sqrt(width))
+    basis = basis.reshape_as(direction)
+    tangent = basis - direction * _rms_inner(direction, basis)
+    return tangent / _rms_norm(tangent).clamp_min(torch.finfo(direction.dtype).eps)
+
+
+@dataclass(frozen=True)
+class PolarFlowTarget:
+    sample: torch.Tensor
+    radial_velocity: torch.Tensor
+    tangent_velocity: torch.Tensor
+    full_velocity: torch.Tensor
+    direction: torch.Tensor
+    radius: torch.Tensor
+    small_angle_mask: torch.Tensor
+    antipodal_mask: torch.Tensor
+
+
+def polar_flow_target(
+    clean: torch.Tensor,
+    noise: torch.Tensor,
+    timestep: torch.Tensor | float,
+    *,
+    latent_mean: torch.Tensor | list[float] | tuple[float, ...],
+    angular_endpoint_slope: float = 2.0,
+    radius_floor: float = 1e-8,
+    angular_singularity_threshold: float = 1e-6,
+) -> PolarFlowTarget:
+    """Build the Chimera v3 polar path and its radial/tangent targets."""
+    if clean.shape != noise.shape:
+        raise ValueError(f"clean/noise shape mismatch: {tuple(clean.shape)} vs {tuple(noise.shape)}")
+    if clean.ndim < 2 or clean.shape[0] == 0:
+        raise ValueError("clean/noise must have shape [B, ...] with a non-empty batch")
+    floor = float(radius_floor)
+    threshold = float(angular_singularity_threshold)
+    if not math.isfinite(floor) or floor <= 0.0:
+        raise ValueError("radius_floor must be finite and > 0")
+    if not math.isfinite(threshold) or threshold <= 0.0:
+        raise ValueError("angular_singularity_threshold must be finite and > 0")
+
+    geometry_dtype = _geometry_dtype(clean)
+    clean_geometry = clean.to(dtype=geometry_dtype)
+    noise_geometry = noise.to(device=clean.device, dtype=geometry_dtype)
+    mean = _latent_mean(latent_mean, clean_geometry)
+    centered_clean = clean_geometry - mean
+    rho0 = _rms_norm(noise_geometry)
+    rho1 = _rms_norm(centered_clean)
+    if bool((rho0 <= floor).any().item()) or bool((rho1 <= floor).any().item()):
+        raise ValueError("polar path endpoint radius is at or below radius_floor")
+
+    n0 = noise_geometry / rho0
+    n1 = centered_clean / rho1
+    dot = _rms_inner(n0, n1).clamp(-1.0, 1.0)
+    raw_tangent = n1 - dot * n0
+    tangent_norm = _rms_norm(raw_tangent)
+    theta = torch.atan2(tangent_norm, dot)
+    singular = tangent_norm <= threshold
+    same_direction = singular & (dot >= 0.0)
+    antipodal = singular & (dot < 0.0)
+
+    safe_norm = tangent_norm.clamp_min(threshold)
+    great_circle_direction = raw_tangent / safe_norm
+    great_circle_direction = torch.where(
+        antipodal.expand_as(great_circle_direction),
+        _deterministic_orthogonal(n0),
+        great_circle_direction,
+    )
+
+    alpha, sigma, alpha_prime, sigma_prime = endpoint_observable_coefficients(
+        timestep, clean_geometry
+    )
+    gamma, gamma_prime = terminal_flat_angular_schedule(
+        timestep,
+        clean_geometry,
+        endpoint_slope=angular_endpoint_slope,
+    )
+    phase = gamma * theta
+    direction = phase.cos() * n0 + phase.sin() * great_circle_direction
+    direction_prime = gamma_prime * theta * (
+        -phase.sin() * n0 + phase.cos() * great_circle_direction
+    )
+
+    linear_direction = (1.0 - gamma) * n0 + gamma * n1
+    linear_radius = _rms_norm(linear_direction).clamp_min(floor)
+    linear_direction = linear_direction / linear_radius
+    linear_prime_raw = gamma_prime * (n1 - n0)
+    linear_direction_prime = polar_tangent_projection(
+        linear_prime_raw, linear_direction
+    ).to(dtype=geometry_dtype) / linear_radius
+    direction = torch.where(same_direction.expand_as(direction), linear_direction, direction)
+    direction_prime = torch.where(
+        same_direction.expand_as(direction_prime),
+        linear_direction_prime,
+        direction_prime,
+    )
+
+    radius_square = sigma.square() * rho0.square() + alpha.square() * rho1.square()
+    radius = radius_square.clamp_min(floor * floor).sqrt()
+    radial_velocity = (
+        sigma * sigma_prime * rho0.square()
+        + alpha * alpha_prime * rho1.square()
+    ) / radius
+    tangent_velocity = radius * direction_prime
+    sample_geometry = alpha * mean + radius * direction
+    full_velocity_geometry = (
+        alpha_prime * mean + radial_velocity * direction + tangent_velocity
+    )
+
+    output_dtype = clean.dtype
+    return PolarFlowTarget(
+        sample=sample_geometry.to(dtype=output_dtype),
+        radial_velocity=radial_velocity.flatten(1)[:, 0],
+        tangent_velocity=tangent_velocity.to(dtype=output_dtype),
+        full_velocity=full_velocity_geometry.to(dtype=output_dtype),
+        direction=direction,
+        radius=radius.flatten(1)[:, 0],
+        small_angle_mask=same_direction.flatten(1)[:, 0],
+        antipodal_mask=antipodal.flatten(1)[:, 0],
+    )
 
 
 def endpoint_observable_coefficients(

@@ -16292,6 +16292,12 @@ class BaseTrainer(ABC):
                 latent_centered_second_moment=adaptive_latent_moment,
                 resume_state=adaptive_resume_state,
             )
+            if timestep_sampler.rebased_on_load:
+                print(
+                    f"{self.log_prefix} Adaptive timestep base distribution "
+                    "changed on resume: discarded the old adaptive morph and "
+                    "observations; continuing from the newly configured base law"
+                )
             timestep_sampler.set_optimizer_update_step(self._optimizer_update_step)
             self._adaptive_timestep = timestep_sampler
             print(f"{self.log_prefix} Adaptive timestep controller: "

@@ -1,4 +1,5 @@
 import json
+import math
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -187,10 +188,41 @@ def test_state_is_strict_json_and_round_trips_active_morph():
     assert restored.status() == sampler.status()
     assert isinstance(restored.current, MorphingTimestepSampler)
 
-    with pytest.raises(ValueError, match="base distribution changed"):
-        AdaptiveTimestepSampler(
-            LogitNormalTimestepSampler(mean=0.0, std=1.0), _config(),
-            convention="t1", resume_state=json.loads(payload))
+
+
+def test_changed_base_rebases_controller_without_carrying_old_morph():
+    sampler = AdaptiveTimestepSampler(
+        UniformTimestepSampler(), _config(), convention="t1")
+    sampler.observe(torch.tensor([0.1]), 1.0)
+    sampler.observe(torch.tensor([0.9]), 2.0)
+    sampler.set_optimizer_update_step(7)
+    assert isinstance(sampler.current, MorphingTimestepSampler)
+
+    state = json.loads(json.dumps(sampler.state(), allow_nan=False))
+    new_base = LogitNormalTimestepSampler(mean=-0.7, std=1.2)
+    restored = AdaptiveTimestepSampler(
+        new_base, _config(), convention="t1", resume_state=state)
+
+    assert restored.current is new_base
+    assert restored.rebased_on_load is True
+    assert restored.update_step == 7
+    assert restored.last_control_update == 7
+    assert restored.counts == [0, 0]
+    assert all(math.isnan(value) for value in restored.fast_ema)
+    assert all(math.isnan(value) for value in restored.slow_ema)
+    assert restored.last_density_ratio == [1.0, 1.0]
+    assert restored.control_count == 0
+    assert restored.auto_promoted is False
+    assert restored.status()["base_rebase_count"] == 1
+    assert restored.status()["last_rebased_from"] == state["base"]
+
+    round_trip = AdaptiveTimestepSampler(
+        LogitNormalTimestepSampler(mean=-0.7, std=1.2), _config(),
+        convention="t1",
+        resume_state=json.loads(json.dumps(restored.state(), allow_nan=False)),
+    )
+    assert round_trip.rebased_on_load is False
+    assert round_trip.status()["base_rebase_count"] == 1
 
 
 def test_batch_observations_use_the_matching_per_item_losses():

@@ -78,6 +78,15 @@ Checkpoint state includes bin counts, both EMAs, the current effective sampler,
 an in-flight adaptive morph, density ratios, and controller position. Resume
 therefore continues the same law rather than rebuilding it from YAML.
 
+If the configured base distribution changes deliberately across resume, that
+new base law is authoritative. The loader preserves the optimizer update step
+but discards the old adaptive target or in-flight morph, bin observations,
+density ratios, and auto-promotion state. Collection restarts from the new base
+after the configured cooldown. This prevents an adjustment learned relative to
+the old base density from being multiplied into the new one, while allowing a
+run to retarget its timestep distribution without disabling adaptation for an
+intermediate checkpoint.
+
 The timestep status sidecar includes the full `adaptive` status. Training
 metrics expose controller count, mean x0-equivalent bin loss, and the maximum
 density ratio. `auto` performs that observe-first sequence in one run. Only

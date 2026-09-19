@@ -350,6 +350,7 @@ export const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   chimera_v2_parameterization: "auto",
   chimera_v2_latent_mean: null,
   chimera_v2_latent_centered_second_moment: null,
+  chimera_v2_calibration: null,
   chimera_bridge_align_steps: 0,
   chimera_allow_unaligned_scratch: false,
   chimera_conditioning_cache: true,

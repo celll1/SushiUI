@@ -115,8 +115,10 @@ def test_prediction_contract_keeps_v1_legacy_and_validates_v2_stats():
         latent_mean=[0.1, 0.2, 0.3, 0.4],
         latent_centered_second_moment=1.25,
         prediction_type=FLOW_V2_VELOCITY_PREDICTION,
+        calibration={"sample_count": 18, "vae": "bundled"},
     )
     assert direct["prediction"]["type"] == FLOW_V2_VELOCITY_PREDICTION
+    assert direct["prediction"]["calibration"]["sample_count"] == 18
 
     with pytest.raises(ChimeraArtifactError, match="four finite"):
         prediction_contract(

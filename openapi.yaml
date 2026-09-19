@@ -25686,6 +25686,14 @@ components:
           description: >-
             Scalar E[(x0-mu)^2] measured after bundled-VAE normalization.
             Required when explicitly migrating a v1 artifact to v2.
+        chimera_v2_calibration:
+          type: object
+          nullable: true
+          additionalProperties: true
+          default: null
+          description: >-
+            Provenance for the measured v2 latent statistics. Persisted in new
+            Chimera checkpoints; it does not alter the numerical contract.
         chimera_bridge_align_steps:
           type: integer
           minimum: 0

@@ -6864,6 +6864,7 @@ export interface TrainingRunCreateRequest {
   chimera_v2_parameterization?: "auto" | "analytic_residual" | "direct_velocity";
   chimera_v2_latent_mean?: number[] | null;
   chimera_v2_latent_centered_second_moment?: number | null;
+  chimera_v2_calibration?: Record<string, unknown> | null;
   chimera_bridge_align_steps?: number;
   chimera_allow_unaligned_scratch?: boolean;
   chimera_conditioning_cache?: boolean;

@@ -62,10 +62,13 @@ from .positional import (
     spatial_query_positions,
 )
 from .unet import (
+    ChimeraPolarRadialHead,
     ChimeraUNetBuildReport,
     build_donor_equal_unet,
+    install_polar_radial_head,
     parameter_census,
     trainable_parameter_count,
+    polar_unet_forward,
 )
 from .understanding import UnderstandingPrefix, capture_understanding_prefix, load_understanding_only
 
@@ -91,10 +94,12 @@ __all__ = [
     "ChimeraBridgeConfig",
     "ChimeraBridgeOutput",
     "ChimeraUNetBuildReport",
+    "ChimeraPolarRadialHead",
     "ConditioningBridge",
     "apply_sensenova_rope",
     "apply_sensenova_rope_qk",
     "build_donor_equal_unet",
+    "install_polar_radial_head",
     "build_chimera_artifact_from_components",
     "flow_euler_step",
     "flow_noising",
@@ -121,6 +126,7 @@ __all__ = [
     "selected_layer_indices",
     "spatial_query_positions",
     "trainable_parameter_count",
+    "polar_unet_forward",
     "UnderstandingPrefix",
     "capture_understanding_prefix",
     "clear_chimera_attention_caches",

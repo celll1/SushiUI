@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 import torch
+from torch import nn
 
 
 def parameter_census(module: torch.nn.Module) -> dict[str, tuple[int, ...]]:
@@ -57,17 +58,21 @@ def build_donor_equal_unet(
     *,
     initialization: str = "scratch",
     seed: int = 0,
+    output_initialization: str = "zero",
 ) -> tuple[torch.nn.Module, ChimeraUNetBuildReport]:
     """Build an exact-shape U-Net from a donor and initialize it explicitly.
 
-    ``scratch`` retains normal diffusers/PyTorch initialization and zeros only
-    ``conv_out``. ``sdxl_transplant`` strict-loads every donor tensor.
+    ``scratch`` retains normal diffusers/PyTorch initialization.
+    ``sdxl_transplant`` strict-loads every donor tensor. The output convolution
+    is either zeroed or reset to its default initialization explicitly.
     """
     if initialization not in {"scratch", "sdxl_transplant"}:
         raise ValueError(
             f"unknown Chimera U-Net initialization {initialization!r}; "
             "expected 'scratch' or 'sdxl_transplant'"
         )
+    if output_initialization not in {"zero", "default"}:
+        raise ValueError("output_initialization must be 'zero' or 'default'")
     from diffusers import UNet2DConditionModel
 
     config = _config_dict(donor_unet.config)
@@ -89,14 +94,16 @@ def build_donor_equal_unet(
         built = UNet2DConditionModel.from_config(config)
     if initialization == "sdxl_transplant":
         built.load_state_dict(donor_unet.state_dict(), strict=True)
-    else:
-        conv_out = getattr(built, "conv_out", None)
-        if conv_out is None:
-            raise ValueError("SDXL donor U-Net has no conv_out to zero-initialize")
+    conv_out = getattr(built, "conv_out", None)
+    if conv_out is None:
+        raise ValueError("SDXL donor U-Net has no conv_out")
+    if output_initialization == "zero":
         with torch.no_grad():
             conv_out.weight.zero_()
             if conv_out.bias is not None:
                 conv_out.bias.zero_()
+    elif initialization == "sdxl_transplant":
+        conv_out.reset_parameters()
 
     donor_census = parameter_census(donor_unet)
     built_census = parameter_census(built)
@@ -129,3 +136,95 @@ def build_donor_equal_unet(
         parameter_shapes=built_census,
         attention_head_dims=head_dims,
     )
+
+
+class ChimeraPolarRadialHead(nn.Module):
+    """Predict one radial speed from the conditioned U-Net mid-block."""
+
+    VERSION = 1
+
+    def __init__(self, mid_channels: int):
+        super().__init__()
+        width = int(mid_channels)
+        if width <= 0:
+            raise ValueError("mid_channels must be positive")
+        self.mid_channels = width
+        self.norm = nn.LayerNorm(width)
+        self.projection = nn.Linear(width + 2, 1)
+
+    def forward(
+        self,
+        mid_block: torch.Tensor,
+        timestep: torch.Tensor,
+        log_radius: torch.Tensor,
+    ) -> torch.Tensor:
+        if mid_block.ndim < 3 or mid_block.shape[1] != self.mid_channels:
+            raise ValueError(
+                f"expected mid-block [B,{self.mid_channels},...], got {tuple(mid_block.shape)}"
+            )
+        batch = mid_block.shape[0]
+        if timestep.ndim == 0:
+            timestep = timestep.expand(batch)
+        if log_radius.ndim == 0:
+            log_radius = log_radius.expand(batch)
+        if timestep.shape != (batch,) or log_radius.shape != (batch,):
+            raise ValueError("timestep and log_radius must be scalar or [B]")
+        parameter = self.projection.weight
+        pooled = mid_block.float().flatten(2).mean(dim=2).to(parameter)
+        pooled = self.norm(pooled)
+        scalars = torch.stack((timestep, log_radius), dim=1).to(parameter)
+        return self.projection(torch.cat((pooled, scalars), dim=1)).flatten().float()
+
+
+def install_polar_radial_head(
+    unet: torch.nn.Module,
+    *,
+    mid_channels: int | None = None,
+) -> ChimeraPolarRadialHead:
+    existing = getattr(unet, "chimera_polar_radial_head", None)
+    if existing is not None:
+        if not isinstance(existing, ChimeraPolarRadialHead):
+            raise ValueError("U-Net carries an incompatible chimera_polar_radial_head")
+        if mid_channels is not None and existing.mid_channels != int(mid_channels):
+            raise ValueError("existing Chimera radial head width differs from config")
+        return existing
+    if mid_channels is None:
+        block_channels = tuple(getattr(unet.config, "block_out_channels", ()))
+        if not block_channels:
+            raise ValueError("U-Net config has no block_out_channels for radial head")
+        mid_channels = int(block_channels[-1])
+    head = ChimeraPolarRadialHead(int(mid_channels))
+    unet.add_module("chimera_polar_radial_head", head)
+    return head
+
+
+def polar_unet_forward(
+    unet: torch.nn.Module,
+    spatial_input: torch.Tensor,
+    timestep: torch.Tensor,
+    *,
+    log_radius: torch.Tensor,
+    **unet_kwargs,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return raw tangent and radial predictions from one U-Net evaluation."""
+    head = getattr(unet, "chimera_polar_radial_head", None)
+    if not isinstance(head, ChimeraPolarRadialHead):
+        raise ValueError("polar U-Net forward requires an installed radial head")
+    captured: dict[str, torch.Tensor] = {}
+
+    def capture_mid_block(_module, _inputs, output):
+        value = output[0] if isinstance(output, (tuple, list)) else output
+        if not isinstance(value, torch.Tensor):
+            raise TypeError("U-Net mid-block did not return a tensor")
+        captured["value"] = value
+
+    handle = unet.mid_block.register_forward_hook(capture_mid_block)
+    try:
+        output = unet(spatial_input, timestep, **unet_kwargs)
+    finally:
+        handle.remove()
+    if "value" not in captured:
+        raise RuntimeError("U-Net mid-block hook produced no activation")
+    tangent = output[0] if isinstance(output, (tuple, list)) else output.sample
+    radial = head(captured["value"], timestep, log_radius)
+    return tangent, radial

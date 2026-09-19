@@ -4,6 +4,7 @@ import math
 
 import pytest
 import torch
+from torch import nn
 
 from core.models.sensenova_sdxl_chimera.artifact import (
     FORMAT_VERSION,
@@ -17,6 +18,10 @@ from core.models.sensenova_sdxl_chimera.flow import (
     polar_flow_target,
     polar_tangent_projection,
     terminal_flat_angular_schedule,
+)
+from core.models.sensenova_sdxl_chimera.unet import (
+    install_polar_radial_head,
+    polar_unet_forward,
 )
 
 
@@ -183,3 +188,43 @@ def test_v3_prediction_contract_is_strictly_format_four():
         validated_prediction_contract(
             {"format_version": V3_FORMAT_VERSION, "prediction": invalid}
         )
+
+
+class _TinyPolarUNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.config = type("Config", (), {"block_out_channels": (6,)})()
+        self.mid_block = nn.Conv2d(4, 6, kernel_size=1)
+        self.conv_out = nn.Conv2d(6, 4, kernel_size=1)
+
+    def forward(self, sample, timestep, **_kwargs):
+        return (self.conv_out(torch.nn.functional.silu(self.mid_block(sample))),)
+
+
+def test_polar_unet_forward_uses_one_trunk_evaluation_and_backpropagates():
+    unet = _TinyPolarUNet()
+    head = install_polar_radial_head(unet)
+    assert install_polar_radial_head(unet) is head
+    calls = 0
+
+    def count_calls(_module, _inputs, _output):
+        nonlocal calls
+        calls += 1
+
+    handle = unet.register_forward_hook(count_calls)
+    sample = torch.randn(2, 4, 3, 5, requires_grad=True)
+    tangent, radial = polar_unet_forward(
+        unet,
+        sample,
+        torch.tensor([0.25, 0.75]),
+        log_radius=torch.tensor([-0.2, 0.3]),
+        return_dict=False,
+    )
+    handle.remove()
+    assert calls == 1
+    assert tangent.shape == sample.shape
+    assert radial.shape == (2,)
+    (tangent.float().square().mean() + radial.square().mean()).backward()
+    assert sample.grad is not None
+    assert head.projection.weight.grad is not None
+    assert unet.mid_block.weight.grad is not None

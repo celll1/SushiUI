@@ -21917,7 +21917,8 @@ components:
 
     TrainingCfgProbeSummary:
       type: object
-      required: [step_count, maxima, minimum_clamp_norm_ratio]
+      required:
+        [step_count, maxima, minimum_clamp_norm_ratio, minimum_polar_radius_after]
       properties:
         step_count:
           type: integer
@@ -21929,10 +21930,18 @@ components:
           allOf:
             - $ref: '#/components/schemas/TrainingCfgProbePoint'
           nullable: true
+        minimum_polar_radius_after:
+          description: Minimum v3 post-step radius, or null for non-polar probes.
+          allOf:
+            - $ref: '#/components/schemas/TrainingCfgProbePoint'
+          nullable: true
 
     TrainingCfgProbeStep:
       type: object
-      description: Scalar measurements for one Chimera Euler step; no tensors or prompts.
+      description: >-
+        Scalar measurements for one Chimera sampling step; v3 adds radial,
+        tangent-orthogonality, angular-displacement, and angular-cap fields.
+        No tensors or prompts are returned.
       required: [step, total_steps, timestep, next_timestep, delta_t]
       properties:
         step: {type: integer}

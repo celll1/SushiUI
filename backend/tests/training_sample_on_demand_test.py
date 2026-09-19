@@ -308,6 +308,7 @@ def test_cfg_probe_summary_keeps_extrema_with_their_timestep():
             "clamp_norm_ratio": 0.25, "euler_update_rel": 0.1,
             "x0_guidance_rel": 3.0, "x0_raw_cond_norm_ratio": 2.0,
             "latent_abs_p99_after": 1.5, "latent_abs_max_after": 2.5,
+            "polar_radius_min_after": 0.7,
         },
         {
             "step": 2, "timestep": 0.4, "guidance_rel": 5.0,
@@ -315,6 +316,7 @@ def test_cfg_probe_summary_keeps_extrema_with_their_timestep():
             "clamp_norm_ratio": 0.4, "euler_update_rel": 0.3,
             "x0_guidance_rel": 1.0, "x0_raw_cond_norm_ratio": 1.5,
             "latent_abs_p99_after": 2.0, "latent_abs_max_after": 3.0,
+            "polar_radius_min_after": 0.4,
         },
     ]
     summary = rpc.summarize_cfg_probe(records)
@@ -323,6 +325,8 @@ def test_cfg_probe_summary_keeps_extrema_with_their_timestep():
         "value": 5.0, "step": 2, "timestep": 0.4}
     assert summary["minimum_clamp_norm_ratio"] == {
         "value": 0.25, "step": 1, "timestep": 0.0}
+    assert summary["minimum_polar_radius_after"] == {
+        "value": 0.4, "step": 2, "timestep": 0.4}
 
 
 def test_a_seed_read_off_disk_is_re_resolved_before_use():

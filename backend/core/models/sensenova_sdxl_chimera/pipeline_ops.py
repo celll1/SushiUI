@@ -465,6 +465,7 @@ def _polar_cfg_step(
     cfg_mode: str,
     cfg_scale: float,
     cfg_norm: str,
+    collect_probe: bool,
 ) -> tuple[torch.Tensor, dict]:
     if not needs_cfg:
         radial_cond, tangent_cond, direction, radius = _unet_polar(
@@ -563,6 +564,8 @@ def _polar_cfg_step(
         radius_floor=prediction["radius_floor"],
         angular_step_limit=prediction.get("angular_step_limit"),
     )
+    if not collect_probe:
+        return result.sample, {}
 
     def full(radial, tangent):
         return polar_compose_velocity(
@@ -591,6 +594,9 @@ def _polar_cfg_step(
     x0_raw = polar_recover_clean(
         sample, radial_anchor, tangent_raw, timestep, **clean_kwargs
     )
+    radial_ratio = result.radius.float() / radius.float().clamp_min(
+        float(prediction["radius_floor"])
+    )
     tangent_inner = (
         direction.float() * tangent_post.float()
     ).flatten(1).mean(1).abs()
@@ -612,6 +618,10 @@ def _polar_cfg_step(
             "tangent_orthogonality_abs_max": float(tangent_inner.max().item()),
             "polar_radius_before": float(radius.float().mean().item()),
             "polar_radius_after": float(result.radius.float().mean().item()),
+            "polar_radius_min_after": float(result.radius.float().min().item()),
+            "radial_exponential_ratio_abs_max": float(
+                radial_ratio.abs().max().item()
+            ),
             "angular_displacement_abs_max": float(
                 result.angular_displacement.float().abs().max().item()
             ),
@@ -716,6 +726,7 @@ def _sample_flow_latents(
                         cfg_mode=cfg_mode,
                         cfg_scale=cfg_now,
                         cfg_norm=cfg_norm,
+                        collect_probe=cfg_probe_callback is not None,
                     )
                     if generate_mask is not None:
                         source_at_next = polar_flow_target(

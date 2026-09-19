@@ -11,10 +11,10 @@ SenseNova prefix state into the two conditioning tensors the U-Net expects.
 |---|---|---|
 | Understanding | `NEOChatModel` loaded by `understanding.load_understanding_only` | External, content-hash-pinned SenseNova checkpoint; frozen |
 | Conditioning | `ConditioningBridge` | Bundled, trainable; preserves the native prefix length at width `2048`, emits pooled `1280`, a mask, and per-token positions |
-| Denoiser | diffusers `UNet2DConditionModel` | Bundled; tensor census and parameter count equal the selected SDXL donor |
+| Denoiser | diffusers `UNet2DConditionModel` | Bundled; v1/v2 equal the donor census, while v3 adds one negligible pooled mid-block radial head |
 | Attention | `ChimeraAttnProcessor` | Parameter-free replacement processor with three-axis context RoPE and generation-local K/V cache |
 | VAE | diffusers `AutoencoderKL` | Bundled from the same SDXL donor and content-hash-checked |
-| Scheduler | `flow.py` / `pipeline_ops.py` | Increasing clean-time Euler flow; no diffusers scheduler object |
+| Scheduler | `flow.py` / `pipeline_ops.py` | Increasing clean-time Cartesian Euler for v1/v2 or one-NFE polar exponential Euler for v3; no diffusers scheduler object |
 
 The understanding loader removes `fm_modules`, every `_mot_gen` projection,
 and `norm_mot_gen` before installing weights. It reads only language/vision
@@ -45,12 +45,12 @@ flowchart LR
   U --> H["last hidden + selected layer K/V"]
   H --> B["ConditioningBridge"]
   B --> C["Lx2048 context + mask + 1280 pooled + original 3D positions"]
-  N["4-channel noisy latent"] --> D["SDXL-shaped U-Net"]
+  N["4-channel latent / v3 unit direction"] --> D["SDXL-shaped U-Net"]
   T["clean-time t + SDXL time IDs"] --> D
   C --> A["parameter-free 3D-RoPE cross attention"]
   A --> D
-  D --> V["flow velocity"]
-  V --> E["increasing-t Euler step"]
+  D --> V["artifact-owned velocity or radial+tangent output"]
+  V --> E["Cartesian or polar increasing-t step"]
   E --> Z["clean latent"]
   Z --> VAE["bundled SDXL VAE decode"]
 ```
@@ -75,7 +75,7 @@ context keys without adding parameters.
 | Added conditioning | SDXL original/crop/target time IDs |
 | Position encoding | Three-axis `t:h:w = 2:1:1`, crop-aware physical coordinates |
 | Time | `t=0` noise, `t=1` clean |
-| Prediction | Direct velocity `x0 - noise` |
+| Prediction | Artifact-owned: v1 direct velocity, v2 endpoint-observable residual/velocity, or v3 radial scalar plus projected tangent field |
 | Spatial alignment | Width and height divisible by 8 |
 
 The artifact stores the donor U-Net config verbatim. Builders refuse a tensor
@@ -110,13 +110,27 @@ img2img that starts after `t=0` is unchanged. It prevents an unobservable paired
 `x0` estimate from controlling the first Euler update without changing the v1
 training target or artifact contract.
 
+Format-4 v3 artifacts instead normalize the centered state into `(rho,n)`. The
+U-Net receives unit-RMS `n` plus `log(rho)` conditioning, predicts a scalar
+radial speed and a four-channel field, and projects the latter onto `n`'s
+tangent space in fp32. Positive/null CFG is applied only to those tangent
+fields; the positive branch's radial scalar is used at strength one. Radius is
+advanced with a positive exponential update and direction with a spherical
+exponential map. v3 deliberately evaluates the U-Net at `t=0` because its
+conditional tangent target is nonzero. Dynamic CFG and optional norm capping
+can scale only the projected tangent field.
+
 Running training can queue an explicit CFG probe through
 `POST /api/v1/training/runs/{run_id}/cfg-probe` and poll its result through the
 matching `cfg-probe-queue` endpoint. The probe follows the ordinary configured
-sample path and records, per timestep, conditional/unconditional velocity
-separation, raw and post-clamp guidance norms, Euler update size, clean-endpoint
-estimates, and latent magnitude. Only bounded scalars leave the trainer process;
-prompts and tensors are excluded from the diagnostic result.
+sample path and records, per timestep, conditional/unconditional separation,
+raw and post-clamp guidance norms, solver update size, clean-endpoint estimates,
+and latent magnitude. v3 also reports the selected radial prediction,
+tangent-orthogonality error, angular displacement, and angular-cap scale. Its
+zero radial-CFG delta is an equal-state guarantee; full guided trajectories may
+acquire different later radial predictions after their angular states diverge.
+Only bounded scalars leave the trainer process; prompts and tensors are excluded
+from the diagnostic result.
 
 Img2img uses deterministic SDEdit in the same increasing-time flow. Inpaint
 uses white-as-generate latent masks and re-injects the correspondingly noised
@@ -139,6 +153,13 @@ stages:
 | `bridge_align` | Bridge only | Normalized hidden, hidden-RMS, and pooled alignment to the selected donor's frozen SDXL CLIP encoders |
 | `unet` | Complete U-Net only | Flow-velocity MSE |
 | `joint` | Bridge and complete U-Net | Flow-velocity MSE through both trainable components |
+
+For v3, the diffusion-stage objective is the exact orthogonal sum of scalar
+radial MSE and projected tangent-field MSE. Metrics retain both components,
+target tangent energy, projection error, radius, and singularity counters.
+Adaptive timestep is restricted to `off` or `observe` until the noise-end
+irreducible tangent floor has been measured; v1/v2 adaptive behavior is
+unchanged.
 
 Understanding and VAE always stay frozen. `bridge_align` requires explicit loss
 weights because no unmeasured numerical default is accepted. U-Net/joint
@@ -197,8 +218,9 @@ passed; its status remains separately recorded.
 
 - Legacy artifact format 2 carries direct-flow-velocity prediction. Format 3
   adds an explicit prediction contract and can carry the v2 endpoint-observable
-  residual declaration; both formats accept the dense SenseNova understanding
-  branch only.
+  residual declaration. Format 4 is exclusively `polar_tangent_flow` and adds
+  the radial-head config and artifact-owned polar solver contract. All formats
+  accept the dense SenseNova understanding branch only.
 - The external understanding file must still match its pinned content hash at
   every preflight; filename and mtime are not identity.
 - Only `full_finetune` is supported. LoRA/adapter, Relora, and ControlNet
@@ -215,7 +237,6 @@ The detailed invariants and acceptance sequence live in
 bootstrap status are recorded in `docs/guides/MODEL_FACTS.md` and
 `docs/plans/SENSENOVA_SDXL_CHIMERA_HANDOFF.md`. The incompatible v2
 endpoint-observable contract is specified separately in
-`docs/guides/SENSENOVA_SDXL_CHIMERA_V2_DESIGN.md`. The later v3
-polar/tangent-CFG proposal is design-only and lives in
-`docs/guides/SENSENOVA_SDXL_CHIMERA_V3_DESIGN.md`; it does not describe the
-currently shipped prediction contract.
+`docs/guides/SENSENOVA_SDXL_CHIMERA_V2_DESIGN.md`. The implemented format-4
+polar/tangent-CFG contract and its still-pending measured gates live in
+`docs/guides/SENSENOVA_SDXL_CHIMERA_V3_DESIGN.md`.

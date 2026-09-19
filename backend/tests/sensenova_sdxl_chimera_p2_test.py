@@ -31,7 +31,9 @@ from core.models.sensenova_sdxl_chimera.artifact import prediction_contract
 from core.models.sensenova_sdxl_chimera.flow import (
     FLOW_V2_PREDICTION,
     FLOW_V2_VELOCITY_PREDICTION,
+    FLOW_V3_PREDICTION,
 )
+from core.models.sensenova_sdxl_chimera.unet import install_polar_radial_head
 from core.training.arch.base_arch import SampleContext
 from core.training.arch.sensenova_sdxl_chimera import (
     SenseNovaSDXLChimeraArchHandler,
@@ -168,6 +170,24 @@ class _FakeUNet(torch.nn.Module):
         return (velocity,)
 
 
+class _FakePolarUNet(_FakeUNet):
+    def __init__(self):
+        super().__init__()
+        self.config = SimpleNamespace(block_out_channels=(4,))
+        self.mid_block = torch.nn.Identity()
+        install_polar_radial_head(self)
+
+    def forward(
+        self, sample, timestep, *, encoder_hidden_states, encoder_attention_mask,
+        added_cond_kwargs, return_dict
+    ):
+        means = encoder_hidden_states.mean(dim=(1, 2))
+        self.conditioning_means.extend(means.detach().cpu().tolist())
+        conditioned = sample + means[:, None, None, None] * 0.01
+        mid = self.mid_block(conditioned)
+        return (mid * 0.05,)
+
+
 def _sample(unet, mode: str, seed: int = 11):
     return sample_txt2img_latents(
         unet,
@@ -266,6 +286,52 @@ def test_v2_residual_cfg_probe_exposes_zero_first_endpoint_delta():
     assert records[0]["prediction_delta_rms"] == 0.0
     assert records[0]["analytic_velocity_rms"] > 0.0
     assert all(record["bypassed_unet"] == 0 for record in records[1:])
+
+
+def test_v3_evaluates_noise_endpoint_and_matches_cfg_execution_modes():
+    torch.manual_seed(37)
+    sequential_unet = _FakePolarUNet()
+    batched_unet = _FakePolarUNet()
+    batched_unet.load_state_dict(sequential_unet.state_dict())
+    prediction = prediction_contract(
+        FLOW_V3_PREDICTION,
+        latent_mean=[0.0, 0.0, 0.0, 0.0],
+        latent_centered_second_moment=1.0,
+    )
+    records = []
+    common = dict(
+        positive=_conditioning(2.0, "positive"),
+        negative=_conditioning(-1.0, "negative"),
+        height=64,
+        width=64,
+        steps=3,
+        cfg_scale=4.0,
+        seed=41,
+        prediction=prediction,
+    )
+    sequential = sample_txt2img_latents(
+        sequential_unet,
+        cfg_mode="sequential",
+        cfg_probe_callback=records.append,
+        **common,
+    )
+    batched = sample_txt2img_latents(
+        batched_unet,
+        cfg_mode="batched",
+        **common,
+    )
+
+    assert torch.allclose(sequential, batched, atol=2e-6, rtol=2e-6)
+    assert len(sequential_unet.conditioning_means) == 6
+    assert batched_unet.conditioning_means == [-1.0, 2.0] * 3
+    assert len(records) == 3
+    assert records[0]["timestep"] == 0.0
+    assert all(record["bypassed_unet"] == 0 for record in records)
+    assert all(record["radial_cfg_delta"] == 0.0 for record in records)
+    assert all(
+        record["tangent_orthogonality_abs_max"] <= 1e-6
+        for record in records
+    )
 
 
 def test_cfg_norm_caps_global_and_per_channel_overshoot():

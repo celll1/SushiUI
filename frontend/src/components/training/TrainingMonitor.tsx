@@ -67,6 +67,22 @@ const formatIterationRate = (seconds: number | null): string => {
 const formatSeconds = (seconds: number): string =>
   `${seconds.toFixed(seconds < 10 ? 2 : 1)}s`;
 
+const sizedPreviewUrl = (url: string | undefined, size: 256 | 512 | 768): string | undefined => {
+  if (!url) return undefined;
+  return `${url}${url.includes("?") ? "&" : "?"}size=${size}`;
+};
+
+const debugImageUrl = (
+  visualization: DebugLatentVisualization,
+  key: keyof NonNullable<DebugLatentVisualization["image_urls"]>,
+  size: 256 | 512,
+): string | undefined => {
+  const binary = visualization.image_urls?.[key];
+  if (binary) return sizedPreviewUrl(binary, size);
+  const legacy = visualization[key];
+  return typeof legacy === "string" ? `data:image/png;base64,${legacy}` : undefined;
+};
+
 // Per-pane persistence slot and the preset each pane opens on. Pane 3 defaults
 // to the param-change view, which is why ParamChangeChart no longer exists as a
 // component -- its two tabs are two presets now.
@@ -95,6 +111,12 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
   // with it.
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   const [selectedStepIndex, setSelectedStepIndex] = useState<number>(0); // For step slider
+  const [previewStepIndex, setPreviewStepIndex] = useState<number>(0);
+  const [samplePreviewSize, setSamplePreviewSize] = useState<256 | 512>(256);
+  const sampleSeekTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sampleUpgradeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previewStepIndexRef = useRef(0);
+  const sampleSelectionInitializedRef = useRef(false);
   // Epoch lives only on the status response (there is no epoch column on the
   // run row), so it is held here rather than folded into currentRun.
   const [epochInfo, setEpochInfo] = useState<{ current: number | null; total: number | null }>({ current: null, total: null });
@@ -110,10 +132,14 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
   const [debugLatents, setDebugLatents] = useState<DebugLatent[]>([]);
   const [selectedDebugStep, setSelectedDebugStep] = useState<number | null>(null);
   const [debugVisualization, setDebugVisualization] = useState<DebugLatentVisualization | null>(null);
+  const [debugImageSize, setDebugImageSize] = useState<256 | 512>(256);
+  const debugRequestRef = useRef<AbortController | null>(null);
   const [comparisonSlider, setComparisonSlider] = useState<number>(50); // 0-100
   const [, setTimeTick] = useState(0); // Force re-render for time update
   const [recentSecondsPerIteration, setRecentSecondsPerIteration] = useState<number | null>(null);
   const speedWindowRef = useRef<Array<{ step: number; at: number }>>([]);
+  const latestSampleStepRef = useRef<number | undefined>(undefined);
+  const latestDebugStepRef = useRef<number | undefined>(undefined);
 
   // Dataset scan progress (drift detection / rescan) — shown until training proper starts
   const [scanMessage, setScanMessage] = useState<string | null>(null);
@@ -274,40 +300,125 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
     });
   }, [sampleImages.length]);
 
+  const commitSamplePreview = useCallback((index: number) => {
+    if (sampleSeekTimerRef.current) clearTimeout(sampleSeekTimerRef.current);
+    if (sampleUpgradeTimerRef.current) clearTimeout(sampleUpgradeTimerRef.current);
+    previewStepIndexRef.current = index;
+    setPreviewStepIndex(index);
+    setSamplePreviewSize(256);
+  }, []);
+
+  const promoteLoadedSamplePreview = useCallback((index: number) => {
+    if (previewStepIndexRef.current !== index) return;
+    if (sampleUpgradeTimerRef.current) clearTimeout(sampleUpgradeTimerRef.current);
+    sampleUpgradeTimerRef.current = setTimeout(() => {
+      if (previewStepIndexRef.current === index) setSamplePreviewSize(512);
+    }, 220);
+  }, []);
+
+  const seekSamplePreview = useCallback((index: number) => {
+    setSelectedStepIndex(index);
+    if (sampleSeekTimerRef.current) clearTimeout(sampleSeekTimerRef.current);
+    if (sampleUpgradeTimerRef.current) clearTimeout(sampleUpgradeTimerRef.current);
+    sampleSeekTimerRef.current = setTimeout(() => commitSamplePreview(index), 80);
+  }, [commitSamplePreview]);
+
+  useEffect(() => () => {
+    if (sampleSeekTimerRef.current) clearTimeout(sampleSeekTimerRef.current);
+    if (sampleUpgradeTimerRef.current) clearTimeout(sampleUpgradeTimerRef.current);
+  }, []);
+
+  // Once the settled panel image is present, buffer only its immediate
+  // neighbors at the low tier. Fast back-and-forth seeks then stay local while
+  // a long scrub still avoids downloading every crossed step.
+  useEffect(() => {
+    if (viewMode !== "samples" || samplePreviewSize !== 512) return;
+    const timer = setTimeout(() => {
+      for (const index of [previewStepIndex - 1, previewStepIndex + 1]) {
+        const image = samples[index]?.images[0];
+        const source = sizedPreviewUrl(image?.preview_path, 256);
+        if (source) {
+          const preload = new Image();
+          preload.decoding = "async";
+          preload.src = source;
+        }
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [viewMode, samplePreviewSize, previewStepIndex, samples]);
+
   // Keep the step slider on whatever the enlarged view is showing.
   useEffect(() => {
-    if (viewerImage) setSelectedStepIndex(viewerImage.stepIndex);
-  }, [viewerImage]);
+    if (viewerImage) {
+      setSelectedStepIndex(viewerImage.stepIndex);
+      commitSamplePreview(viewerImage.stepIndex);
+    }
+  }, [viewerImage, commitSamplePreview]);
+
+  // One tick for both: the image itself is observed through the samples
+  // listing, the queue call only reports what is pending / what failed.
+  const loadSamples = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const data = await getTrainingSamples(
+        currentRun.id, latestSampleStepRef.current, signal);
+      setSamples((previous) => {
+        const byStep = new Map(previous.map((entry) => [entry.step, entry]));
+        for (const incoming of data.samples) {
+          const existing = byStep.get(incoming.step);
+          if (!existing) {
+            byStep.set(incoming.step, incoming);
+            continue;
+          }
+          const images = new Map(existing.images.map((image) => [image.path, image]));
+          for (const image of incoming.images) images.set(image.path, image);
+          byStep.set(incoming.step, { ...incoming, images: Array.from(images.values()) });
+        }
+        const merged = Array.from(byStep.values()).sort((a, b) => a.step - b.step);
+        latestSampleStepRef.current = merged.at(-1)?.step;
+        return merged;
+      });
+    } catch (err) {
+      if (signal?.aborted) return;
+      console.error("Failed to load sample images:", err);
+    }
+    try {
+      setSampleQueue(await getTrainingSampleQueue(currentRun.id));
+    } catch (err) {
+      if (signal?.aborted) return;
+      console.error("Failed to load sample queue:", err);
+    }
+  }, [currentRun.id]);
+
+  useEffect(() => {
+    latestSampleStepRef.current = undefined;
+    sampleSelectionInitializedRef.current = false;
+    setSamples([]);
+  }, [currentRun.id]);
 
   useEffect(() => {
     if (!hasSampleImages) {
       setSamples([]);
       return;
     }
-    loadSamples();
+    if (viewMode !== "samples") return;
+    const controller = new AbortController();
+    loadSamples(controller.signal);
+    const interval = currentRun.status === "running"
+      ? setInterval(() => loadSamples(controller.signal), 5000)
+      : null;
+    return () => {
+      controller.abort();
+      if (interval) clearInterval(interval);
+    };
+  }, [currentRun.id, currentRun.status, hasSampleImages, viewMode, loadSamples]);
 
-    // Reload samples every 5 seconds when running
-    if (currentRun.status === "running") {
-      const interval = setInterval(loadSamples, 5000);
-      return () => clearInterval(interval);
-    }
-  }, [currentRun.id, currentRun.status, hasSampleImages]);
-
-  // One tick for both: the image itself is observed through the samples
-  // listing, the queue call only reports what is pending / what failed.
-  const loadSamples = async () => {
-    try {
-      const data = await getTrainingSamples(currentRun.id);
-      setSamples(data.samples);
-    } catch (err) {
-      console.error("Failed to load sample images:", err);
-    }
-    try {
-      setSampleQueue(await getTrainingSampleQueue(currentRun.id));
-    } catch (err) {
-      console.error("Failed to load sample queue:", err);
-    }
-  };
+  useEffect(() => {
+    if (!samples.length || sampleSelectionInitializedRef.current) return;
+    const latest = samples.length - 1;
+    setSelectedStepIndex(latest);
+    commitSamplePreview(latest);
+    sampleSelectionInitializedRef.current = true;
+  }, [samples.length, commitSamplePreview]);
 
   const samplesUnsupportedReason =
     trainingFeatureUnsupportedReason(
@@ -485,39 +596,111 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
     }
   }, [currentRun.phase]);
 
-  useEffect(() => {
-    loadDebugLatents();
-
-    // Reload debug latents every 5 seconds when running
-    if (currentRun.status === "running") {
-      const interval = setInterval(loadDebugLatents, 5000);
-      return () => clearInterval(interval);
-    }
-  }, [currentRun.id, currentRun.status]);
-
-  const loadDebugLatents = async () => {
+  const loadDebugLatents = useCallback(async (signal?: AbortSignal) => {
     try {
-      const data = await getDebugLatents(currentRun.id);
-      setDebugLatents(data.debug_latents);
+      const data = await getDebugLatents(
+        currentRun.id, latestDebugStepRef.current, signal);
+      setDebugLatents((previous) => {
+        const entries = new Map(
+          previous.map((entry) => [`${entry.step}:${entry.timestep}:${entry.filename}`, entry])
+        );
+        for (const entry of data.debug_latents) {
+          entries.set(`${entry.step}:${entry.timestep}:${entry.filename}`, entry);
+        }
+        const merged = Array.from(entries.values()).sort(
+          (a, b) => a.step - b.step || a.timestep - b.timestep);
+        latestDebugStepRef.current = merged.at(-1)?.step;
+        return merged;
+      });
     } catch (err) {
+      if (signal?.aborted) return;
       console.error("Failed to load debug latents:", err);
     }
-  };
+  }, [currentRun.id]);
 
   useEffect(() => {
-    if (selectedDebugStep !== null && viewMode === "debug") {
-      loadDebugVisualization(selectedDebugStep);
-    }
-  }, [selectedDebugStep, viewMode]);
+    latestDebugStepRef.current = undefined;
+    setDebugLatents([]);
+    setSelectedDebugStep(null);
+    setDebugVisualization(null);
+  }, [currentRun.id]);
 
-  const loadDebugVisualization = async (step: number) => {
-    try {
-      const data = await visualizeDebugLatent(currentRun.id, step);
-      setDebugVisualization(data);
-    } catch (err) {
-      console.error("Failed to load debug visualization:", err);
-    }
-  };
+  useEffect(() => {
+    if (viewMode !== "debug") return;
+    const controller = new AbortController();
+    loadDebugLatents(controller.signal);
+    const interval = currentRun.status === "running"
+      ? setInterval(() => loadDebugLatents(controller.signal), 5000)
+      : null;
+    return () => {
+      controller.abort();
+      if (interval) clearInterval(interval);
+    };
+  }, [currentRun.id, currentRun.status, viewMode, loadDebugLatents]);
+
+  useEffect(() => {
+    if (selectedDebugStep === null || viewMode !== "debug") return;
+    debugRequestRef.current?.abort();
+    const controller = new AbortController();
+    debugRequestRef.current = controller;
+    setDebugImageSize(256);
+    const request = setTimeout(async () => {
+      try {
+        const data = await visualizeDebugLatent(
+          currentRun.id, selectedDebugStep, undefined, controller.signal);
+        if (controller.signal.aborted) return;
+        setDebugVisualization(data);
+      } catch (err) {
+        if (!controller.signal.aborted) console.error("Failed to load debug visualization:", err);
+      }
+    }, 80);
+    return () => {
+      clearTimeout(request);
+      controller.abort();
+    };
+  }, [selectedDebugStep, viewMode, currentRun.id]);
+
+  // Fetch the small comparison layers together so the wipe itself is
+  // network-free. Promote only after every 256px layer has finished; on a slow
+  // link this prevents the 512px responses from overlapping the thumbnails.
+  useEffect(() => {
+    if (!debugVisualization || viewMode !== "debug" || debugImageSize !== 256) return;
+    let cancelled = false;
+    let upgrade: ReturnType<typeof setTimeout> | null = null;
+    const preloads = [
+      "latents_image", "predicted_latent_image", "noisy_latents_image",
+      "predicted_noise_image",
+    ].map((key) => {
+      const source = debugImageUrl(
+        debugVisualization,
+        key as keyof NonNullable<DebugLatentVisualization["image_urls"]>,
+        debugImageSize,
+      );
+      if (!source) return null;
+      const image = new Image();
+      image.decoding = "async";
+      image.src = source;
+      return image;
+    }).filter((image): image is HTMLImageElement => image !== null);
+    Promise.all(preloads.map((image) => new Promise<void>((resolve) => {
+      if (image.complete) {
+        resolve();
+        return;
+      }
+      image.onload = () => resolve();
+      image.onerror = () => resolve();
+    }))).then(() => {
+      if (cancelled) return;
+      upgrade = setTimeout(() => {
+        if (!cancelled) setDebugImageSize(512);
+      }, 220);
+    });
+    return () => {
+      cancelled = true;
+      if (upgrade) clearTimeout(upgrade);
+      for (const image of preloads) image.src = "";
+    };
+  }, [debugVisualization, debugImageSize, viewMode]);
 
   const handleStart = async () => {
     setIsStarting(true);
@@ -1317,7 +1500,9 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                         min="0"
                         max={Math.max(0, samples.length - 1)}
                         value={selectedStepIndex}
-                        onChange={(e) => setSelectedStepIndex(Number(e.target.value))}
+                        onChange={(e) => seekSamplePreview(Number(e.target.value))}
+                        onPointerUp={(e) => commitSamplePreview(Number(e.currentTarget.value))}
+                        onKeyUp={(e) => commitSamplePreview(Number(e.currentTarget.value))}
                         className="w-full mb-1"
                       />
                       <div className="flex justify-between text-xs">
@@ -1331,8 +1516,8 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                     </div>
 
                     {/* Generation Settings */}
-                    {samples[selectedStepIndex]?.images[0]?.params && (() => {
-                      const p = samples[selectedStepIndex].images[0].params!;
+                    {samples[previewStepIndex]?.images[0]?.params && (() => {
+                      const p = samples[previewStepIndex].images[0].params!;
                       return (
                         <div className="text-xs space-y-1.5 bg-gray-800 rounded p-2">
                           <div className="font-semibold text-gray-300 mb-1">Generation Settings</div>
@@ -1391,7 +1576,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
 
                     {/* Sample Images */}
                     <div className="space-y-2">
-                      {samples[selectedStepIndex]?.images.map((img) => (
+                      {samples[previewStepIndex]?.images.map((img) => (
                         <div
                           key={img.path}
                           className="relative cursor-pointer group"
@@ -1400,8 +1585,14 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                           }
                         >
                           <img
-                            src={img.path}
-                            alt={`Step ${samples[selectedStepIndex].step} Sample ${img.sample_index}`}
+                            src={sizedPreviewUrl(img.preview_path, samplePreviewSize) ?? img.path}
+                            alt={`Step ${samples[previewStepIndex].step} Sample ${img.sample_index}`}
+                            decoding="async"
+                            onLoad={() => {
+                              if (samplePreviewSize === 256) {
+                                promoteLoadedSamplePreview(previewStepIndex);
+                              }
+                            }}
                             className="w-full rounded border border-gray-700 hover:border-blue-500 transition-colors"
                           />
                           {img.on_demand && (
@@ -1497,13 +1688,14 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                               </div>
                             </div>
                           )}
-                          {debugVisualization.reference_image && (
+                          {(debugVisualization.image_urls?.reference_image || debugVisualization.reference_image) && (
                             <div className="pt-1 border-t border-gray-700">
                               <div className="text-gray-400 mb-0.5">Reference Image (training batch):</div>
                               <img
-                                src={`data:image/png;base64,${debugVisualization.reference_image}`}
+                                src={debugImageUrl(debugVisualization, "reference_image", 256)}
                                 className="h-20 w-20 object-cover rounded border border-gray-700"
                                 alt="Reference"
+                                decoding="async"
                               />
                             </div>
                           )}
@@ -1522,9 +1714,13 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                               2-way fallback (no noisy): base=target, top=predicted clipped to s. */}
                           {(() => {
                             const v = debugVisualization;
-                            const has3 = !!v.noisy_latents_image && !!v.predicted_latent_image && !!v.latents_image;
+                            const has = (key: keyof NonNullable<DebugLatentVisualization["image_urls"]>) =>
+                              !!debugImageUrl(v, key, debugImageSize);
+                            const has3 = has("noisy_latents_image") &&
+                              has("predicted_latent_image") && has("latents_image");
                             const s = comparisonSlider;
-                            const px = (b64?: string) => b64 ? `data:image/png;base64,${b64}` : undefined;
+                            const px = (key: keyof NonNullable<DebugLatentVisualization["image_urls"]>) =>
+                              debugImageUrl(v, key, debugImageSize);
                             const GREEN = "bg-green-700/80", BLUE = "bg-blue-700/80", PURPLE = "bg-purple-700/80";
                             let baseSrc: string | undefined, baseLabel = "", baseColor = GREEN;
                             let topSrc: string | undefined, topLabel = "", topColor = BLUE;
@@ -1533,30 +1729,30 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                               const stage2 = s > 50;
                               wipe = stage2 ? (s - 50) * 2 : s * 2;  // 0→100 within each stage
                               if (stage2) {
-                                baseSrc = px(v.predicted_latent_image); baseLabel = "Predicted"; baseColor = BLUE;
-                                topSrc = px(v.latents_image);           topLabel = "Target";     topColor = GREEN;
+                                baseSrc = px("predicted_latent_image"); baseLabel = "Predicted"; baseColor = BLUE;
+                                topSrc = px("latents_image");           topLabel = "Target";     topColor = GREEN;
                               } else {
-                                baseSrc = px(v.noisy_latents_image);    baseLabel = "Noisy";     baseColor = PURPLE;
-                                topSrc = px(v.predicted_latent_image);  topLabel = "Predicted";  topColor = BLUE;
+                                baseSrc = px("noisy_latents_image");    baseLabel = "Noisy";     baseColor = PURPLE;
+                                topSrc = px("predicted_latent_image");  topLabel = "Predicted";  topColor = BLUE;
                               }
                             } else {
                               wipe = s;
-                              baseSrc = px(v.latents_image);            baseLabel = "Target";    baseColor = GREEN;
-                              topSrc = px(v.predicted_latent_image);    topLabel = "Predicted";  topColor = BLUE;
+                              baseSrc = px("latents_image");            baseLabel = "Target";    baseColor = GREEN;
+                              topSrc = px("predicted_latent_image");    topLabel = "Predicted";  topColor = BLUE;
                             }
                             return (
                           <div className="relative aspect-square bg-gray-800 rounded overflow-hidden">
                             {/* Base layer (right side of the wipe) */}
                             {baseSrc && (
                               <div className="absolute inset-0">
-                                <img src={baseSrc} alt={baseLabel} className="w-full h-full object-contain" />
+                                <img src={baseSrc} alt={baseLabel} decoding="async" className="w-full h-full object-contain" />
                                 <div className={`absolute top-1 right-1 ${baseColor} text-white text-xs px-1.5 py-0.5 rounded`}>{baseLabel}</div>
                               </div>
                             )}
                             {/* Top layer (left side of the wipe), clipped to [0, wipe] */}
                             {topSrc && (
                               <div className="absolute inset-0" style={{ clipPath: `inset(0 ${100 - wipe}% 0 0)` }}>
-                                <img src={topSrc} alt={topLabel} className="w-full h-full object-contain" />
+                                <img src={topSrc} alt={topLabel} decoding="async" className="w-full h-full object-contain" />
                                 <div className={`absolute top-1 left-1 ${topColor} text-white text-xs px-1.5 py-0.5 rounded`}>{topLabel}</div>
                               </div>
                             )}
@@ -1580,7 +1776,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                             className="w-full"
                           />
                           <div className="flex justify-between text-xs text-gray-500">
-                            {debugVisualization.noisy_latents_image ? (
+                            {(debugVisualization.image_urls?.noisy_latents_image || debugVisualization.noisy_latents_image) ? (
                               <>
                                 <span>Noisy (t={debugVisualization.timestep})</span>
                                 <span>Predicted (t=0)</span>
@@ -1598,13 +1794,16 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                           <div className="grid grid-cols-2 gap-2 mt-3">
                             {/* Noisy Latents — only as a separate thumbnail when NOT
                                 shown in the 3-way comparison above (backward compat). */}
-                            {debugVisualization.noisy_latents_image && !(debugVisualization.predicted_latent_image && debugVisualization.latents_image) && (
+                            {(debugVisualization.image_urls?.noisy_latents_image || debugVisualization.noisy_latents_image) &&
+                              !((debugVisualization.image_urls?.predicted_latent_image || debugVisualization.predicted_latent_image) &&
+                                (debugVisualization.image_urls?.latents_image || debugVisualization.latents_image)) && (
                               <div>
                                 <div className="text-xs text-gray-400 mb-1">Noisy Latents (t={debugVisualization.timestep})</div>
                                 <div className="relative aspect-square bg-gray-800 rounded overflow-hidden">
                                   <img
-                                    src={`data:image/png;base64,${debugVisualization.noisy_latents_image}`}
+                                    src={debugImageUrl(debugVisualization, "noisy_latents_image", debugImageSize)}
                                     alt="Noisy Latents"
+                                    decoding="async"
                                     className="w-full h-full object-contain"
                                   />
                                 </div>
@@ -1612,13 +1811,14 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                             )}
 
                             {/* Predicted Noise */}
-                            {debugVisualization.predicted_noise_image && (
+                            {(debugVisualization.image_urls?.predicted_noise_image || debugVisualization.predicted_noise_image) && (
                               <div>
                                 <div className="text-xs text-gray-400 mb-1">Predicted Noise</div>
                                 <div className="relative aspect-square bg-gray-800 rounded overflow-hidden">
                                   <img
-                                    src={`data:image/png;base64,${debugVisualization.predicted_noise_image}`}
+                                    src={debugImageUrl(debugVisualization, "predicted_noise_image", debugImageSize)}
                                     alt="Predicted Noise"
+                                    decoding="async"
                                     className="w-full h-full object-contain"
                                   />
                                 </div>

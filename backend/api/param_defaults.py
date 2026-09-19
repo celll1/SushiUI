@@ -3372,6 +3372,14 @@ LR_PREVIEW_DEFAULTS: Dict[str, Any] = {
 }
 
 
+# Training monitor transport controls. These preserve the legacy debug JSON
+# contract while new clients select compact metadata and panel-sized media.
+TRAINING_MONITOR_MEDIA_DEFAULTS: Dict[str, Any] = {
+    "debug_include_images": True,
+    "preview_size": 512,
+}
+
+
 # ---------------------------------------------------------------------------
 # Tagger Training (TaggerTrainingRunCreateRequest)
 # ---------------------------------------------------------------------------

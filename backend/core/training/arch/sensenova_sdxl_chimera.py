@@ -118,6 +118,9 @@ class SenseNovaSDXLChimeraArchHandler(ArchHandler):
                 cfg_schedule_power=sample_ctx.cfg_schedule_power,
                 step_progress_callback=sample_ctx.step_progress_callback,
                 cfg_probe_callback=sample_ctx.cfg_probe_callback,
+                prediction=getattr(
+                    trainer, "chimera_prediction", {"type": "flow_velocity"}
+                ),
             )
         finally:
             unet.train(was_training)

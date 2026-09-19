@@ -16,6 +16,7 @@ from core.models.sensenova_sdxl_chimera.artifact import (
 from core.models.sensenova_sdxl_chimera.flow import (
     FLOW_V3_PREDICTION,
     polar_compose_velocity,
+    polar_exp_euler_step,
     polar_flow_target,
     polar_recover_clean,
     polar_tangent_projection,
@@ -156,6 +157,51 @@ def test_polar_targets_compose_velocity_and_recover_clean_interior():
     )
     assert torch.allclose(composed, target.full_velocity, atol=2e-12, rtol=2e-12)
     assert torch.allclose(recovered, clean, atol=2e-10, rtol=2e-10)
+
+
+def test_polar_step_keeps_cfg_out_of_radius_and_preserves_direction_norm():
+    generator = torch.Generator().manual_seed(41)
+    sample = torch.randn(2, 4, 5, 7, generator=generator, dtype=torch.float64)
+    direction = sample / _rms_norm(sample).reshape(2, 1, 1, 1)
+    conditional = polar_tangent_projection(
+        torch.randn(sample.shape, generator=generator, dtype=sample.dtype), direction
+    )
+    unconditional = polar_tangent_projection(
+        torch.randn(sample.shape, generator=generator, dtype=sample.dtype), direction
+    )
+    radial = torch.tensor([-0.7, -0.9], dtype=sample.dtype)
+    radii = []
+    directions = []
+    for scale in (1.0, 4.0, 12.0):
+        tangent = unconditional + scale * (conditional - unconditional)
+        result = polar_exp_euler_step(
+            sample,
+            radial,
+            tangent,
+            0.2,
+            0.3,
+            latent_mean=[0.0] * 4,
+        )
+        radii.append(result.radius)
+        directions.append(result.direction)
+        assert torch.allclose(
+            _rms_norm(result.direction), torch.ones(2, dtype=sample.dtype), atol=1e-12
+        )
+    assert torch.equal(radii[0], radii[1])
+    assert torch.equal(radii[1], radii[2])
+    assert not torch.allclose(directions[0], directions[2])
+
+    capped = polar_exp_euler_step(
+        sample,
+        radial,
+        unconditional + 100.0 * (conditional - unconditional),
+        0.2,
+        0.3,
+        latent_mean=[0.0] * 4,
+        angular_step_limit=0.05,
+    )
+    assert capped.angular_displacement.abs().max().item() <= 0.05 + 1e-12
+    assert capped.angular_cap_scale.max().item() <= 1.0
 
 
 def test_coincident_and_antipodal_policies_are_finite_and_deterministic():

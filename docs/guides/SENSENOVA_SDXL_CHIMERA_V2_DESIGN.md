@@ -1,8 +1,9 @@
 # SenseNova SDXL Chimera v2 design
 
-Status: **implementation in progress**. Pure path/preconditioning algebra and
-the backward-compatible format-2/format-3 artifact contract are implemented;
-training and generation still use v1 until the later wiring stages land.
+Status: **implemented**. Format-3 artifacts carry the v2 prediction contract;
+training, production generation, training samples, diagnostics, and adaptive
+timestep binning use the artifact-owned endpoint-observable semantics. Legacy
+format-2 artifacts retain the v1 direct-flow contract.
 
 Chimera v2 keeps the frozen SenseNova understanding branch, conditioning
 bridge, SDXL-shaped U-Net, and bundled SDXL VAE. It changes the latent path and

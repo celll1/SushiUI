@@ -183,7 +183,29 @@ def test_sequential_and_batched_cfg_match_and_branches_remain_separate():
     batched = _sample(batched_unet, "batched")
     assert torch.allclose(sequential, batched, atol=1e-6, rtol=1e-6)
     assert set(sequential_unet.conditioning_means) == {-1.0, 2.0}
-    assert batched_unet.conditioning_means == [-1.0, 2.0] * 3
+    assert batched_unet.conditioning_means == [-1.0, 2.0] * 2
+
+
+def test_pure_noise_first_step_is_analytic_and_skips_unet():
+    unet = _FakeUNet()
+    previews = []
+    result = sample_txt2img_latents(
+        unet,
+        _conditioning(2.0, "positive"),
+        None,
+        height=64,
+        width=64,
+        steps=2,
+        cfg_scale=1.0,
+        seed=23,
+        progress_callback=lambda _step, _total, sample: previews.append(sample.clone()),
+    )
+
+    generator = torch.Generator(device="cpu").manual_seed(23)
+    initial = torch.randn((1, 4, 8, 8), generator=generator)
+    assert torch.allclose(previews[0], initial * 0.5)
+    assert len(unet.conditioning_means) == 1
+    assert result.shape == initial.shape
 
 
 def test_cfg_norm_caps_global_and_per_channel_overshoot():

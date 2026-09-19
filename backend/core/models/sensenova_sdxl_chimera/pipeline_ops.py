@@ -361,7 +361,14 @@ def _sample_flow_latents(
                     cfg_schedule_power=cfg_schedule_power,
                     denoise_progress=float(times[index].item()),
                 )
-                if not needs_cfg:
+                analytic_noise_step = index == 0 and float(times[index].item()) == 0.0
+                if analytic_noise_step:
+                    # At the pure-noise endpoint the paired x0 is unobservable.
+                    # Advance only the known -epsilon term before asking the U-Net.
+                    velocity = -sample
+                    if cfg_probe_callback is not None:
+                        cond = uncond = guided_raw = velocity
+                elif not needs_cfg:
                     velocity = _unet_velocity(
                         unet, sample, timestep, positive, time_ids, cache_metadata=cache_metadata
                     )

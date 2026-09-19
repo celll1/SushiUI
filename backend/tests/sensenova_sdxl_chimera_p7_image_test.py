@@ -120,7 +120,7 @@ def test_full_strength_starts_from_seeded_noise_and_runs_every_step():
     second = _sample(second_unet, source, strength=1.0, seed=41)
     assert torch.equal(first, second)
     assert not torch.equal(first, source)
-    assert first_unet.calls == second_unet.calls == 4
+    assert first_unet.calls == second_unet.calls == 3
 
 
 def test_repaint_pins_preserve_cells_to_clean_source_at_final_time():

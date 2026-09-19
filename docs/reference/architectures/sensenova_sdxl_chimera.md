@@ -102,6 +102,14 @@ side and rises toward `cfg_schedule_max` (or the ordinary CFG scale) at the clea
 side. A scheduled peak above one allocates the negative branch even when the base
 CFG value itself is one.
 
+At the exact `t=0` endpoint, v1 sampling advances the first interval with the
+known velocity term `-epsilon == -latent` and does not call the U-Net or apply
+CFG. Later intervals retain the learned direct-velocity path. This discrete
+startup applies equally to production generation and training previews; partial
+img2img that starts after `t=0` is unchanged. It prevents an unobservable paired
+`x0` estimate from controlling the first Euler update without changing the v1
+training target or artifact contract.
+
 Running training can queue an explicit CFG probe through
 `POST /api/v1/training/runs/{run_id}/cfg-probe` and poll its result through the
 matching `cfg-probe-queue` endpoint. The probe follows the ordinary configured
@@ -202,4 +210,6 @@ passed; its status remains separately recorded.
 The detailed invariants and acceptance sequence live in
 `docs/guides/SENSENOVA_SDXL_CHIMERA_DESIGN.md`; current shipped facts and local
 bootstrap status are recorded in `docs/guides/MODEL_FACTS.md` and
-`docs/plans/SENSENOVA_SDXL_CHIMERA_HANDOFF.md`.
+`docs/plans/SENSENOVA_SDXL_CHIMERA_HANDOFF.md`. The incompatible
+endpoint-observable path proposed for the next artifact generation is specified
+separately in `docs/guides/SENSENOVA_SDXL_CHIMERA_V2_DESIGN.md`.

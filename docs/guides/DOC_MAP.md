@@ -39,6 +39,7 @@ machine-local working material.
 | [docs/guides/MINIMAX_MUSIC3_DESIGN.md](MINIMAX_MUSIC3_DESIGN.md) | Current MiniMax Music 3 integration and refusal boundary. |
 | [docs/reference/architectures/sensenova_sdxl_chimera.md](../reference/architectures/sensenova_sdxl_chimera.md) | Implemented Chimera component, tensor, generation, training, and constraint reference. |
 | [docs/guides/SENSENOVA_SDXL_CHIMERA_DESIGN.md](SENSENOVA_SDXL_CHIMERA_DESIGN.md) | Chimera architecture contract, bootstrap workflow, and remaining measured acceptance gates. |
+| [docs/guides/SENSENOVA_SDXL_CHIMERA_V2_DESIGN.md](SENSENOVA_SDXL_CHIMERA_V2_DESIGN.md) | Accepted v2 endpoint-observable path, analytic skip, residual target, versioning, and implementation gates. |
 | [docs/decisions/SENSENOVA_TEXT_OUTPUT_DESIGN.md](../decisions/SENSENOVA_TEXT_OUTPUT_DESIGN.md) | Implemented SenseNova text-output and mixed-objective contract. |
 
 ## Training and data

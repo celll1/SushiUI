@@ -21,10 +21,11 @@ u(t) = dz/dt = x0 - epsilon
 
 At `t=0`, `z=epsilon`; the particular training pair's `x0` is not determined by
 that latent and its conditioning. At `t=1`, `z=x0`; the particular epsilon is
-not determined. MSE can regress conditional statistics, but a direct-velocity
-target still carries irreducible paired-sample variance at both endpoints. CFG
-then extrapolates the conditional/unconditional difference precisely where the
-conditional direction is least identified.
+not determined. The conditional expectation `E[u | z,c]` remains well-defined,
+so this is not the absence of a conditional vector field. The problem is that a
+direct-velocity training pair still carries maximal irreducible target variance
+at both endpoints, after which CFG extrapolates the difference between learned
+conditional means.
 
 Changing only the output basis cannot remove this. Any invertible
 parameterization that reconstructs the same v1 endpoint velocity must retain
@@ -62,6 +63,13 @@ symmetric under exchanging `s <-> 1-s` and `x0 <-> epsilon`. It deliberately
 allows the latent RMS to contract in the middle; normalizing that contraction
 away would also remove the non-zero, analytically known endpoint drift.
 
+For centered unit-variance clean latents, `s=0.5` gives
+`Var(z)=0.28125` and `RMS(z)=0.5303`. Near the noise endpoint,
+`alpha(s)=O(s^2)`, hence `SNR=O(s^4)`; representative natural-log SNR values
+are about `-7.7` at `s=0.1` and `-4.7` at `s=0.2`. These are deliberate path
+properties, not implementation rounding. They require measured input-scale and
+sampler-grid gates below.
+
 The selected cubic is the lowest-degree symmetric polynomial satisfying
 
 ```text
@@ -77,23 +85,28 @@ The U-Net does not predict `u` directly. Known state-aligned motion is removed
 analytically:
 
 ```text
-u_theta(z,s,c) = c_skip(s)*z + r_theta(z,s,c)
+u_theta(z,s,c) = analytic_state_drift(z,s) + r_theta(z,s,c)
 ```
 
-For scalar clean-latent variance `q = Var(x0)` and unit noise variance,
+Let `mu` be the four-channel clean-latent mean after the bundled VAE's scaling
+and shift, `x_c=x0-mu`, and `q=E[x_c^2]` be one centered scalar second moment.
+Noise is independent, zero-mean, and unit-variance. Define `z_c=z-alpha*mu`.
+Then
 
 ```text
 c_skip(s) =
   (q*alpha(s)*alpha'(s) + sigma(s)*sigma'(s))
   / (q*alpha(s)^2 + sigma(s)^2)
 
-r_target = u_target - c_skip(s)*z
+u_theta = alpha'(s)*mu + c_skip(s)*z_c + r_theta
+r_target = u_target - alpha'(s)*mu - c_skip(s)*z_c
 ```
 
-This is the least-squares state-aligned coefficient. The artifact records `q`,
-measured from the training dataset after the bundled VAE's scaling and shift.
-The first implementation uses one scalar. A per-channel extension requires a
-new path/preconditioning version.
+This is the centered least-squares state-aligned coefficient. The artifact
+records the four-value `mu` and scalar `q`, measured from the training dataset
+after the bundled VAE's scaling and shift. Using an uncentered variance or
+silently assuming zero latent mean is invalid. A per-channel `q` extension
+requires a new path/preconditioning version.
 
 At the endpoints:
 
@@ -108,18 +121,25 @@ CFG residual all vanish exactly at both endpoints. No division by `alpha`,
 renormalized to constant variance near an endpoint; doing so would recreate the
 unobservable endpoint target that this design removes.
 
+For `q=1`, `|c_skip|` reaches about `1.64` around `s=0.3/0.7`, while residual
+variance vanishes at the endpoints and concentrates in the middle. This is the
+accepted cost of declining EDM-style output normalization: endpoint uncertainty
+is not restored merely to equalize loss scale. The magnitude is nevertheless a
+measured acceptance item, not an assumption that every SDXL latent distribution
+behaves like `q=1`.
+
 ## 4. Training contract
 
 For each example:
 
 1. Encode `x0` with the artifact's bundled SDXL VAE contract.
 2. Draw epsilon and clean time `s` using the run's timestep sampler.
-3. Construct `z`, `u_target`, `c_skip`, and the unnormalized `r_target` with the
-   equations above.
+3. Construct `z`, centered `z_c`, `u_target`, `c_skip`, and the unnormalized
+   `r_target` with the equations above.
 4. Feed `(z,s,conditioning)` to the U-Net and regress its four-channel output
    to `r_target`.
-5. Reconstruct `u_theta=c_skip*z+r_theta` only for previews, trajectory probes,
-   and velocity-space diagnostics.
+5. Reconstruct `u_theta=alpha'*mu+c_skip*z_c+r_theta` only for previews,
+   trajectory probes, and velocity-space diagnostics.
 
 The primary loss is MSE on the unnormalized residual. A normalized residual may
 be logged with a floor for diagnosis but may not drive the optimizer or the
@@ -146,7 +166,8 @@ is not resumable because its bins and loss semantics differ.
 Euler remains the default sampler:
 
 ```text
-z_next = z + (s_next-s) * (c_skip(s)*z + r_cfg)
+z_c = z - alpha(s)*mu
+z_next = z + (s_next-s) * (alpha'(s)*mu + c_skip(s)*z_c + r_cfg)
 ```
 
 At the first interval, `s=0`, v2 performs
@@ -161,11 +182,20 @@ is a destination and is not evaluated. Partial img2img beginning at `s>0` starts
 with the ordinary learned-residual step. Inpaint source re-injection uses the v2
 `alpha/sigma` path at the next time.
 
+The Euler solver and its time grid are separate choices. Uniform `s` is the
+baseline, not an accepted production default: because `SNR=O(s^4)` near noise,
+it can spend several evaluations in a region with little conditional signal.
+Before selecting the default, the implementation must compare uniform-`s` and
+bounded equal-log-SNR grids at identical NFE. Exact endpoints remain explicit;
+the log-SNR grid covers only finite interior bounds. The comparison reports
+trajectory error against a high-NFE reference, first-interval error, and fixed-
+seed sample diagnostics. No grid wins solely from image appearance.
+
 CFG is applied only to the learned residual:
 
 ```text
 r_cfg = r_uncond + cfg*(r_cond-r_uncond)
-u_cfg = c_skip*z + r_cfg
+u_cfg = alpha'*mu + c_skip*z_c + r_cfg
 ```
 
 The analytic skip is shared and is never amplified by CFG. At `s=0` and `s=1`,
@@ -190,14 +220,17 @@ requires the following prediction declaration:
     "version": 1,
     "time_direction": "zero_noise_to_one_clean",
     "path": "symmetric_cubic_observable_v1",
-    "latent_variance": 1.0
+    "latent_mean": [0.0, 0.0, 0.0, 0.0],
+    "latent_centered_second_moment": 1.0
   }
 }
 ```
 
-The real measured variance replaces the example value. The loader dispatches
-v1 direct velocity and v2 residual semantics explicitly. Missing prediction
-metadata is never guessed as v2.
+The real measured mean and centered second moment replace the example values.
+Their dataset identity, sample count, VAE identity, and accumulation precision
+are recorded in provenance. The loader dispatches v1 direct velocity and v2
+residual semantics explicitly. Missing prediction metadata is never guessed as
+v2.
 
 A v1 U-Net/checkpoint cannot resume as v2, even though tensor names and shapes
 match. Optimizer, EMA, adaptive-timestep, MNT trajectory, and checkpoint state
@@ -231,12 +264,18 @@ This startup is intentionally a discrete inference policy. Its comparison on a
 fixed live checkpoint establishes whether the observed first-step CFG burst is
 causal before v2 commits to a new training path.
 
+It is biased relative to the v1 vector field: dropping the first learned term
+removes approximately `delta_t * E[x0 | z=epsilon,c]` from the first update
+(`delta_t * E[x0|c]` when initial noise and data are independent). It is a
+bounded causal probe, not a permanent correction to the v1 probability path.
+
 ## 9. Verification and acceptance
 
 Implementation is accepted only after all of the following pass:
 
 1. Algebra tests verify endpoint state, endpoint velocity, `c_skip`, zero
-   residual, symmetry, and finite coefficients over dense fp32/fp16 grids.
+   residual, symmetry, centered-mean handling, and finite coefficients over
+   dense fp32/fp16 grids.
 2. Sampling tests prove that exact `s=0` performs the analytic Euler update with
    no U-Net or negative-branch call and that partial img2img does not take it.
 3. Training tests prove the U-Net target is `r_target`, remains unnormalized,
@@ -251,6 +290,13 @@ Implementation is accepted only after all of the following pass:
    analytic startup in production and through the live training-sample API.
 8. A new scratch v2 run demonstrates finite per-bin losses and CFG probes before
    any quality or convergence claim is made.
+9. At equal NFE, uniform-`s` and bounded equal-log-SNR Euler grids are compared
+   against a high-NFE trajectory reference. The production grid is selected
+   from measured integration error and fixed-seed diagnostics.
+10. Before the full run, a calibration pass records latent RMS, `c_skip`, raw
+    residual target RMS, learned residual RMS, and their maxima per log-SNR bin.
+    The run is not accepted if non-finite values, unrecorded middle-bin loss
+    concentration, or a material train/sample scale mismatch is observed.
 
 ## 10. Implementation sequence
 

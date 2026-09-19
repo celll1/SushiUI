@@ -21,13 +21,21 @@ from .flow import (
     FLOW_V1_PREDICTION,
     FLOW_V2_PREDICTION,
     FLOW_V2_VELOCITY_PREDICTION,
+    FLOW_V3_PREDICTION,
     endpoint_observable_noising,
     endpoint_observable_preconditioning,
     endpoint_observable_recover_clean,
     flow_euler_step,
     flow_noising,
+    polar_compose_velocity,
+    polar_exp_euler_step,
+    polar_flow_target,
+    polar_recover_clean,
+    polar_state,
+    polar_tangent_projection,
 )
 from .prefix import encode_chimera_conditioning
+from .unet import polar_unet_forward
 
 
 @dataclass(frozen=True)
@@ -200,6 +208,56 @@ def _unet_velocity(
     )[0]
 
 
+def _unet_polar(
+    unet,
+    sample: torch.Tensor,
+    timestep: torch.Tensor,
+    conditioning: ChimeraConditioning,
+    time_ids: torch.Tensor,
+    *,
+    cache_metadata: tuple,
+    prediction: dict,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    device = sample.device
+    dtype = sample.dtype
+    _centered, radius, direction = polar_state(
+        sample,
+        timestep,
+        latent_mean=prediction["latent_mean"],
+        radius_floor=prediction["radius_floor"],
+    )
+    context = ChimeraAttentionContext(
+        context_positions=conditioning.context_positions.to(device=device),
+        target_height=int(cache_metadata[0]),
+        target_width=int(cache_metadata[1]),
+        crop_top=int(cache_metadata[2]),
+        crop_left=int(cache_metadata[3]),
+        prefix_terminal_t=float(cache_metadata[4]),
+        cache_key=(conditioning.fingerprint, *cache_metadata),
+    )
+    set_chimera_attention_context(unet, context)
+    expanded_timestep = timestep.to(device=device).expand(sample.shape[0])
+    raw_tangent, radial = polar_unet_forward(
+        unet,
+        direction.to(dtype=dtype),
+        expanded_timestep,
+        log_radius=radius.clamp_min(prediction["radius_floor"]).log(),
+        encoder_hidden_states=conditioning.encoder_hidden_states.to(
+            device=device, dtype=dtype
+        ),
+        encoder_attention_mask=conditioning.attention_mask.to(device=device),
+        added_cond_kwargs={
+            "text_embeds": conditioning.pooled_text_embeds.to(
+                device=device, dtype=dtype
+            ),
+            "time_ids": time_ids.to(device=device, dtype=dtype),
+        },
+        return_dict=False,
+    )
+    tangent = polar_tangent_projection(raw_tangent, direction)
+    return radial, tangent, direction, radius
+
+
 def encode_image_latents(
     vae,
     image: Image.Image,
@@ -284,6 +342,8 @@ def _cfg_probe_record(
     prediction_guided_post: torch.Tensor | None = None,
     bypassed_unet: bool = False,
     latent_mean: list[float] | None = None,
+    x0_estimates: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None,
+    extra_metrics: dict[str, float] | None = None,
 ) -> dict[str, float | int]:
     """Reduce one CFG step to bounded scalar diagnostics.
 
@@ -314,7 +374,9 @@ def _cfg_probe_record(
     t = timestep.detach().float()
     t_next = next_timestep.detach().float()
     delta = conditional - unconditional
-    if prediction_type in {FLOW_V2_PREDICTION, FLOW_V2_VELOCITY_PREDICTION}:
+    if x0_estimates is not None:
+        x0_cond, x0_uncond, x0_raw = x0_estimates
+    elif prediction_type in {FLOW_V2_PREDICTION, FLOW_V2_VELOCITY_PREDICTION}:
         mean = latent_mean or [0.0] * 4
         x0_cond = endpoint_observable_recover_clean(
             sample_before, conditional, t, latent_mean=mean
@@ -383,7 +445,182 @@ def _cfg_probe_record(
         record["prediction_delta_rms"] = float(
             rms(prediction_conditional - prediction_unconditional).item()
         )
+    if extra_metrics:
+        record.update({key: float(value) for key, value in extra_metrics.items()})
     return record
+
+
+def _polar_cfg_step(
+    unet,
+    positive: ChimeraConditioning,
+    negative: ChimeraConditioning | None,
+    *,
+    sample: torch.Tensor,
+    timestep: torch.Tensor,
+    next_timestep: torch.Tensor,
+    time_ids: torch.Tensor,
+    cache_metadata: tuple,
+    prediction: dict,
+    needs_cfg: bool,
+    cfg_mode: str,
+    cfg_scale: float,
+    cfg_norm: str,
+) -> tuple[torch.Tensor, dict]:
+    if not needs_cfg:
+        radial_cond, tangent_cond, direction, radius = _unet_polar(
+            unet,
+            sample,
+            timestep,
+            positive,
+            time_ids,
+            cache_metadata=cache_metadata,
+            prediction=prediction,
+        )
+        radial_uncond = radial_cond
+        tangent_uncond = tangent_cond
+        tangent_raw = tangent_cond
+        tangent_post = tangent_cond
+    elif cfg_mode == "batched":
+        pair_length = max(
+            negative.encoder_hidden_states.shape[1],
+            positive.encoder_hidden_states.shape[1],
+        )
+        negative_padded = _pad_conditioning(negative, pair_length)
+        positive_padded = _pad_conditioning(positive, pair_length)
+        combined = ChimeraConditioning(
+            encoder_hidden_states=torch.cat(
+                (negative_padded.encoder_hidden_states,
+                 positive_padded.encoder_hidden_states)
+            ),
+            pooled_text_embeds=torch.cat(
+                (negative.pooled_text_embeds, positive.pooled_text_embeds)
+            ),
+            context_positions=torch.cat(
+                (negative_padded.context_positions,
+                 positive_padded.context_positions)
+            ),
+            attention_mask=torch.cat(
+                (negative_padded.attention_mask,
+                 positive_padded.attention_mask)
+            ),
+            fingerprint=f"{negative.fingerprint}:{positive.fingerprint}",
+        )
+        radial_pair, tangent_pair, direction_pair, radius_pair = _unet_polar(
+            unet,
+            sample.repeat(2, 1, 1, 1),
+            timestep,
+            combined,
+            time_ids.repeat(2, 1),
+            cache_metadata=cache_metadata,
+            prediction=prediction,
+        )
+        radial_uncond, radial_cond = radial_pair.chunk(2)
+        tangent_uncond, tangent_cond = tangent_pair.chunk(2)
+        direction = direction_pair[: sample.shape[0]]
+        radius = radius_pair[: sample.shape[0]]
+        tangent_raw = tangent_uncond + float(cfg_scale) * (
+            tangent_cond - tangent_uncond
+        )
+        tangent_post = _combine_cfg_velocity(
+            tangent_cond, tangent_uncond, cfg_scale, cfg_norm
+        )
+    else:
+        radial_uncond, tangent_uncond, direction, radius = _unet_polar(
+            unet,
+            sample,
+            timestep,
+            negative,
+            time_ids,
+            cache_metadata=cache_metadata,
+            prediction=prediction,
+        )
+        radial_cond, tangent_cond, _direction_cond, _radius_cond = _unet_polar(
+            unet,
+            sample,
+            timestep,
+            positive,
+            time_ids,
+            cache_metadata=cache_metadata,
+            prediction=prediction,
+        )
+        tangent_raw = tangent_uncond + float(cfg_scale) * (
+            tangent_cond - tangent_uncond
+        )
+        tangent_post = _combine_cfg_velocity(
+            tangent_cond, tangent_uncond, cfg_scale, cfg_norm
+        )
+
+    tangent_raw = polar_tangent_projection(tangent_raw, direction)
+    tangent_post = polar_tangent_projection(tangent_post, direction)
+    radial_anchor = radial_cond
+    result = polar_exp_euler_step(
+        sample,
+        radial_anchor,
+        tangent_post,
+        timestep,
+        next_timestep,
+        latent_mean=prediction["latent_mean"],
+        radius_floor=prediction["radius_floor"],
+        angular_step_limit=prediction.get("angular_step_limit"),
+    )
+
+    def full(radial, tangent):
+        return polar_compose_velocity(
+            sample,
+            radial,
+            tangent,
+            timestep,
+            latent_mean=prediction["latent_mean"],
+            radius_floor=prediction["radius_floor"],
+        )
+
+    clean_kwargs = {
+        "latent_mean": prediction["latent_mean"],
+        "latent_centered_second_moment": prediction[
+            "latent_centered_second_moment"
+        ],
+        "angular_endpoint_slope": prediction["angular_endpoint_slope"],
+        "radius_floor": prediction["radius_floor"],
+    }
+    x0_cond = polar_recover_clean(
+        sample, radial_cond, tangent_cond, timestep, **clean_kwargs
+    )
+    x0_uncond = polar_recover_clean(
+        sample, radial_uncond, tangent_uncond, timestep, **clean_kwargs
+    )
+    x0_raw = polar_recover_clean(
+        sample, radial_anchor, tangent_raw, timestep, **clean_kwargs
+    )
+    tangent_inner = (
+        direction.float() * tangent_post.float()
+    ).flatten(1).mean(1).abs()
+    info = {
+        "conditional": full(radial_cond, tangent_cond),
+        "unconditional": full(radial_uncond, tangent_uncond),
+        "guided_raw": full(radial_anchor, tangent_raw),
+        "guided_post": full(radial_anchor, tangent_post),
+        "prediction_conditional": tangent_cond,
+        "prediction_unconditional": tangent_uncond,
+        "prediction_guided_raw": tangent_raw,
+        "prediction_guided_post": tangent_post,
+        "x0_estimates": (x0_cond, x0_uncond, x0_raw),
+        "extra_metrics": {
+            "radial_cond": float(radial_cond.float().mean().item()),
+            "radial_uncond": float(radial_uncond.float().mean().item()),
+            "radial_anchor": float(radial_anchor.float().mean().item()),
+            "radial_cfg_delta": 0.0,
+            "tangent_orthogonality_abs_max": float(tangent_inner.max().item()),
+            "polar_radius_before": float(radius.float().mean().item()),
+            "polar_radius_after": float(result.radius.float().mean().item()),
+            "angular_displacement_abs_max": float(
+                result.angular_displacement.float().abs().max().item()
+            ),
+            "angular_cap_scale_min": float(
+                result.angular_cap_scale.float().min().item()
+            ),
+        },
+    }
+    return result.sample, info
 
 
 def _sample_flow_latents(
@@ -442,6 +679,7 @@ def _sample_flow_latents(
     is_residual_v2 = prediction_type == FLOW_V2_PREDICTION
     is_direct_v2 = prediction_type == FLOW_V2_VELOCITY_PREDICTION
     is_v2 = is_residual_v2 or is_direct_v2
+    is_v3 = prediction_type == FLOW_V3_PREDICTION
     latent_mean = prediction.get("latent_mean")
     latent_moment = prediction.get("latent_centered_second_moment")
     if cfg_probe_callback is not None and not needs_cfg:
@@ -462,10 +700,81 @@ def _sample_flow_latents(
                     cfg_schedule_power=cfg_schedule_power,
                     denoise_progress=float(times[index].item()),
                 )
+                if is_v3:
+                    sample_before = sample
+                    sample, polar_info = _polar_cfg_step(
+                        unet,
+                        positive,
+                        negative,
+                        sample=sample,
+                        timestep=timestep,
+                        next_timestep=times[index + 1],
+                        time_ids=time_ids,
+                        cache_metadata=cache_metadata,
+                        prediction=prediction,
+                        needs_cfg=needs_cfg,
+                        cfg_mode=cfg_mode,
+                        cfg_scale=cfg_now,
+                        cfg_norm=cfg_norm,
+                    )
+                    if generate_mask is not None:
+                        source_at_next = polar_flow_target(
+                            source_latents,
+                            source_noise,
+                            times[index + 1],
+                            latent_mean=latent_mean,
+                            angular_endpoint_slope=prediction[
+                                "angular_endpoint_slope"
+                            ],
+                            radius_floor=prediction["radius_floor"],
+                            angular_singularity_threshold=prediction[
+                                "angular_singularity_threshold"
+                            ],
+                        ).sample
+                        sample = (
+                            generate_mask * sample
+                            + (1.0 - generate_mask) * source_at_next
+                        )
+                    if cfg_probe_callback is not None:
+                        cfg_probe_callback(_cfg_probe_record(
+                            step=index + 1,
+                            total_steps=steps,
+                            timestep=times[index],
+                            next_timestep=times[index + 1],
+                            sample_before=sample_before,
+                            sample_after=sample,
+                            conditional=polar_info["conditional"],
+                            unconditional=polar_info["unconditional"],
+                            guided_raw=polar_info["guided_raw"],
+                            guided_post=polar_info["guided_post"],
+                            cfg_scale=cfg_now,
+                            prediction_type=prediction_type,
+                            prediction_conditional=polar_info[
+                                "prediction_conditional"
+                            ],
+                            prediction_unconditional=polar_info[
+                                "prediction_unconditional"
+                            ],
+                            prediction_guided_raw=polar_info[
+                                "prediction_guided_raw"
+                            ],
+                            prediction_guided_post=polar_info[
+                                "prediction_guided_post"
+                            ],
+                            latent_mean=latent_mean,
+                            x0_estimates=polar_info["x0_estimates"],
+                            extra_metrics=polar_info["extra_metrics"],
+                        ))
+                    if progress_callback is not None:
+                        progress_callback(index + 1, steps, sample)
+                    if step_progress_callback is not None:
+                        step_progress_callback(index + 1, steps)
+                    continue
                 analytic_noise_step = (
                     index == 0
                     and float(times[index].item()) == 0.0
                     and not is_direct_v2
+                    and not is_v3
                 )
                 analytic = None
                 if analytic_noise_step:
@@ -737,11 +1046,25 @@ def sample_img2img_latents(
         FLOW_V2_PREDICTION,
         FLOW_V2_VELOCITY_PREDICTION,
     }
-    sample = (
-        endpoint_observable_noising(source_latents, noise, times[start_index])
-        if is_v2
-        else flow_noising(source_latents, noise, times[start_index])
-    )
+    is_v3 = prediction.get("type") == FLOW_V3_PREDICTION
+    if is_v3:
+        sample = polar_flow_target(
+            source_latents,
+            noise,
+            times[start_index],
+            latent_mean=prediction["latent_mean"],
+            angular_endpoint_slope=prediction["angular_endpoint_slope"],
+            radius_floor=prediction["radius_floor"],
+            angular_singularity_threshold=prediction[
+                "angular_singularity_threshold"
+            ],
+        ).sample
+    elif is_v2:
+        sample = endpoint_observable_noising(
+            source_latents, noise, times[start_index]
+        )
+    else:
+        sample = flow_noising(source_latents, noise, times[start_index])
     return _sample_flow_latents(
         unet,
         positive,

@@ -124,6 +124,15 @@ class PolarFlowTarget:
     antipodal_mask: torch.Tensor
 
 
+@dataclass(frozen=True)
+class PolarStepResult:
+    sample: torch.Tensor
+    radius: torch.Tensor
+    direction: torch.Tensor
+    angular_displacement: torch.Tensor
+    angular_cap_scale: torch.Tensor
+
+
 def polar_state(
     sample: torch.Tensor,
     timestep: torch.Tensor | float,
@@ -242,6 +251,74 @@ def polar_recover_clean(
     clean_endpoint = alpha >= 1.0 - float(determinant_floor)
     recovered = torch.where(clean_endpoint.expand_as(recovered), sample.to(recovered), recovered)
     return recovered.to(sample.dtype)
+
+
+def polar_exp_euler_step(
+    sample: torch.Tensor,
+    radial_velocity: torch.Tensor,
+    tangent_velocity: torch.Tensor,
+    timestep: torch.Tensor | float,
+    next_timestep: torch.Tensor | float,
+    *,
+    latent_mean: torch.Tensor | list[float] | tuple[float, ...],
+    radius_floor: float = 1e-8,
+    angular_step_limit: float | None = None,
+) -> PolarStepResult:
+    """Advance one v3 step with exponential radial and spherical updates."""
+    centered, radius_vector, direction = polar_state(
+        sample, timestep, latent_mean=latent_mean, radius_floor=radius_floor
+    )
+    tangent = polar_tangent_projection(
+        tangent_velocity.to(direction), direction
+    ).to(direction)
+    radius = radius_vector.reshape(sample.shape[0], *((1,) * (sample.ndim - 1)))
+    radial = _batch_scalar(radial_velocity, centered).to(direction)
+    current = _batch_scalar(timestep, centered).to(direction)
+    following = _batch_scalar(next_timestep, centered).to(direction)
+    delta = following - current
+
+    log_radius_rate = radial / radius
+    next_radius = radius * (delta * log_radius_rate).exp()
+    if not bool(torch.isfinite(next_radius).all().item()):
+        raise FloatingPointError("polar radial update produced a non-finite radius")
+
+    omega = tangent / radius
+    omega_norm = _rms_norm(omega)
+    angular_displacement = delta * omega_norm
+    cap_scale = torch.ones_like(angular_displacement)
+    if angular_step_limit is not None:
+        limit = float(angular_step_limit)
+        if not math.isfinite(limit) or limit <= 0.0:
+            raise ValueError("angular_step_limit must be null or finite and > 0")
+        cap_scale = (
+            torch.full_like(angular_displacement, limit)
+            / angular_displacement.abs().clamp_min(float(radius_floor))
+        ).clamp(max=1.0)
+    effective_angle = angular_displacement * cap_scale
+    omega_direction = omega / omega_norm.clamp_min(float(radius_floor))
+    next_direction = (
+        effective_angle.cos() * direction
+        + effective_angle.sin() * omega_direction
+    )
+    has_angle = omega_norm > float(radius_floor)
+    next_direction = torch.where(
+        has_angle.expand_as(next_direction), next_direction, direction
+    )
+    next_direction = next_direction / _rms_norm(next_direction).clamp_min(
+        float(radius_floor)
+    )
+    next_alpha, _next_sigma, _next_alpha_prime, _next_sigma_prime = (
+        endpoint_observable_coefficients(next_timestep, centered)
+    )
+    mean = _latent_mean(latent_mean, centered)
+    next_sample = next_alpha * mean + next_radius * next_direction
+    return PolarStepResult(
+        sample=next_sample.to(sample.dtype),
+        radius=next_radius.flatten(1)[:, 0],
+        direction=next_direction,
+        angular_displacement=effective_angle.flatten(1)[:, 0],
+        angular_cap_scale=cap_scale.flatten(1)[:, 0],
+    )
 
 
 def polar_flow_target(

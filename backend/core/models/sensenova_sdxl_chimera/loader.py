@@ -11,13 +11,13 @@ from core.models.common.single_file_format import read_state_dict, strip_prefix
 from core.models.common.vae_source import content_hash_for_state_dict
 
 from .artifact import (
-    FORMAT_VERSION,
     ChimeraArtifactError,
     checkpoint_headers,
     config_hash,
     find_weights_entry,
     read_artifact_documents,
     resolve_understanding_source,
+    validated_prediction_contract,
 )
 from .conditioning_bridge import ChimeraBridgeConfig, ConditioningBridge
 from .unet import parameter_census
@@ -38,8 +38,14 @@ def preflight_chimera_artifact(
     shapes, metadata = checkpoint_headers(weights_path)
     if metadata.get("model_type") != "sensenova_sdxl_chimera":
         raise ChimeraArtifactError("weights metadata does not declare sensenova_sdxl_chimera")
-    if int(metadata.get("format_version", 0)) != FORMAT_VERSION:
-        raise ChimeraArtifactError("weights metadata does not declare Chimera format v2")
+    artifact_format = int(manifest["format_version"])
+    if int(metadata.get("format_version", 0)) != artifact_format:
+        raise ChimeraArtifactError(
+            "weights metadata format differs from Chimera manifest"
+        )
+    prediction = validated_prediction_contract(
+        manifest, artifact_format=artifact_format
+    )
     if any("_mot_gen" in key for key in shapes):
         raise ChimeraArtifactError("Chimera artifact must not bundle SenseNova generation tensors")
     for prefix in ("condition_bridge.", "unet.", "vae."):
@@ -56,6 +62,7 @@ def preflight_chimera_artifact(
         "understanding_path": understanding_path,
         "weights_path": weights_path,
         "shapes": shapes,
+        "prediction": prediction,
     }
 
 
@@ -87,6 +94,7 @@ def load_chimera_artifact(
     understanding_path = preflight["understanding_path"]
     weights_path = preflight["weights_path"]
     shapes = preflight["shapes"]
+    prediction = preflight["prediction"]
 
     from diffusers import AutoencoderKL, UNet2DConditionModel
 
@@ -139,5 +147,6 @@ def load_chimera_artifact(
         "understanding_path": understanding_path,
         "manifest": manifest,
         "config": config,
+        "prediction": prediction,
         "model_path": str(root),
     }

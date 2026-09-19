@@ -79,7 +79,7 @@ def build_chimera_artifact_from_components(
         raise ValueError("builder requires a VAE resolved with load_weights=True")
     if vae.latent_channels != 4 or vae.scale_factor != 8 or vae.ndim != 4:
         raise ValueError(
-            "Chimera format v2 requires an SDXL-compatible 4-channel, 8x, 2-D VAE; "
+            "Chimera requires an SDXL-compatible 4-channel, 8x, 2-D VAE; "
             f"got {vae.latent_channels}ch/{vae.scale_factor}x/ndim={vae.ndim}"
         )
 

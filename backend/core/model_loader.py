@@ -647,7 +647,7 @@ class ModelLoader:
                     with open(manifest_path, encoding="utf-8") as handle:
                         manifest = json.load(handle)
                     if (manifest.get("model_type") == "sensenova_sdxl_chimera"
-                            and int(manifest.get("format_version", 0)) == 2):
+                            and int(manifest.get("format_version", 0)) in (2, 3)):
                         return "sensenova_sdxl_chimera"
                 except Exception:
                     pass

@@ -1,6 +1,8 @@
 # SenseNova SDXL Chimera v2 design
 
-Status: **design accepted; implementation not started**.
+Status: **implementation in progress**. Pure path/preconditioning algebra and
+the backward-compatible format-2/format-3 artifact contract are implemented;
+training and generation still use v1 until the later wiring stages land.
 
 Chimera v2 keeps the frozen SenseNova understanding branch, conditioning
 bridge, SDXL-shaped U-Net, and bundled SDXL VAE. It changes the latent path and

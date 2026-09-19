@@ -124,6 +124,126 @@ class PolarFlowTarget:
     antipodal_mask: torch.Tensor
 
 
+def polar_state(
+    sample: torch.Tensor,
+    timestep: torch.Tensor | float,
+    *,
+    latent_mean: torch.Tensor | list[float] | tuple[float, ...],
+    radius_floor: float = 1e-8,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return centered state, RMS radius, and RMS-unit direction in fp32 geometry."""
+    floor = float(radius_floor)
+    if not math.isfinite(floor) or floor <= 0.0:
+        raise ValueError("radius_floor must be finite and > 0")
+    geometry_dtype = _geometry_dtype(sample)
+    value = sample.to(dtype=geometry_dtype)
+    alpha, _sigma, _alpha_prime, _sigma_prime = endpoint_observable_coefficients(
+        timestep, value
+    )
+    centered = value - alpha * _latent_mean(latent_mean, value)
+    radius = _rms_norm(centered)
+    if bool((radius <= floor).any().item()):
+        raise ValueError("polar state radius is at or below radius_floor")
+    return centered, radius.flatten(1)[:, 0], centered / radius
+
+
+def polar_compose_velocity(
+    sample: torch.Tensor,
+    radial_velocity: torch.Tensor,
+    tangent_velocity: torch.Tensor,
+    timestep: torch.Tensor | float,
+    *,
+    latent_mean: torch.Tensor | list[float] | tuple[float, ...],
+    radius_floor: float = 1e-8,
+) -> torch.Tensor:
+    """Compose the full Cartesian velocity from v3 polar predictions."""
+    if sample.shape != tangent_velocity.shape:
+        raise ValueError("sample/tangent_velocity shape mismatch")
+    _centered, _radius, direction = polar_state(
+        sample, timestep, latent_mean=latent_mean, radius_floor=radius_floor
+    )
+    geometry_dtype = direction.dtype
+    value = sample.to(dtype=geometry_dtype)
+    _alpha, _sigma, alpha_prime, _sigma_prime = endpoint_observable_coefficients(
+        timestep, value
+    )
+    mean = _latent_mean(latent_mean, value)
+    radial = _batch_scalar(radial_velocity, value).to(dtype=geometry_dtype)
+    tangent = tangent_velocity.to(dtype=geometry_dtype)
+    return (alpha_prime * mean + radial * direction + tangent).to(sample.dtype)
+
+
+def polar_recover_clean(
+    sample: torch.Tensor,
+    radial_velocity: torch.Tensor,
+    tangent_velocity: torch.Tensor,
+    timestep: torch.Tensor | float,
+    *,
+    latent_mean: torch.Tensor | list[float] | tuple[float, ...],
+    latent_centered_second_moment: float,
+    angular_endpoint_slope: float = 2.0,
+    radius_floor: float = 1e-8,
+    determinant_floor: float = 1e-8,
+) -> torch.Tensor:
+    """Recover a local clean-latent estimate for v3 diagnostics."""
+    q = float(latent_centered_second_moment)
+    if not math.isfinite(q) or q <= 0.0:
+        raise ValueError("latent_centered_second_moment must be finite and > 0")
+    centered, radius_vector, direction = polar_state(
+        sample, timestep, latent_mean=latent_mean, radius_floor=radius_floor
+    )
+    radius = radius_vector.reshape(sample.shape[0], *((1,) * (sample.ndim - 1)))
+    radial = _batch_scalar(radial_velocity, centered).to(direction)
+    tangent = polar_tangent_projection(
+        tangent_velocity.to(direction), direction
+    ).to(direction)
+    alpha, sigma, alpha_prime, sigma_prime = endpoint_observable_coefficients(
+        timestep, centered
+    )
+    gamma, gamma_prime = terminal_flat_angular_schedule(
+        timestep, centered, endpoint_slope=angular_endpoint_slope
+    )
+
+    determinant = sigma.square() * alpha * alpha_prime
+    determinant = determinant - alpha.square() * sigma * sigma_prime
+    clean_radius_square = (
+        sigma.square() * radius * radial
+        - sigma * sigma_prime * radius.square()
+    )
+    valid_radius = determinant.abs() >= float(determinant_floor)
+    safe_determinant = torch.where(
+        valid_radius, determinant, torch.ones_like(determinant)
+    )
+    clean_radius_square = clean_radius_square / safe_determinant
+    fallback_radius_square = torch.full_like(clean_radius_square, q)
+    clean_radius = torch.where(
+        valid_radius,
+        clean_radius_square.clamp_min(float(radius_floor) ** 2),
+        fallback_radius_square,
+    ).sqrt()
+
+    tangent_norm = _rms_norm(tangent)
+    safe_angular_rate = (radius * gamma_prime.abs()).clamp_min(float(radius_floor))
+    pair_angle = tangent_norm / safe_angular_rate
+    tangent_direction = tangent / tangent_norm.clamp_min(float(radius_floor))
+    remaining_angle = (1.0 - gamma) * pair_angle
+    clean_direction = (
+        remaining_angle.cos() * direction
+        + remaining_angle.sin() * tangent_direction
+    )
+    valid_tangent = (tangent_norm > float(radius_floor)) & (
+        gamma_prime.abs() > float(radius_floor)
+    )
+    clean_direction = torch.where(
+        valid_tangent.expand_as(clean_direction), clean_direction, direction
+    )
+    mean = _latent_mean(latent_mean, centered)
+    recovered = mean + clean_radius * clean_direction
+    clean_endpoint = alpha >= 1.0 - float(determinant_floor)
+    recovered = torch.where(clean_endpoint.expand_as(recovered), sample.to(recovered), recovered)
+    return recovered.to(sample.dtype)
+
+
 def polar_flow_target(
     clean: torch.Tensor,
     noise: torch.Tensor,

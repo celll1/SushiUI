@@ -97,21 +97,25 @@ class AdaptiveTimestepSampler(TimestepSampler):
             "flow_velocity",
             "endpoint_observable_residual",
             "endpoint_observable_velocity",
+            "polar_tangent_flow",
         }
         if prediction_type not in supported_predictions:
             raise ValueError(
                 "adaptive timestep does not support prediction type "
                 f"{prediction_type!r}"
             )
-        is_endpoint_observable = prediction_type.startswith("endpoint_observable_")
+        uses_cubic_proxy = (
+            prediction_type.startswith("endpoint_observable_")
+            or prediction_type == "polar_tangent_flow"
+        )
         q = None if latent_centered_second_moment is None else float(
             latent_centered_second_moment
         )
-        if is_endpoint_observable and (
+        if uses_cubic_proxy and (
             q is None or not math.isfinite(q) or q <= 0.0
         ):
             raise ValueError(
-                "endpoint-observable adaptive timestep requires a finite positive "
+                "cubic-path adaptive timestep requires a finite positive "
                 "latent_centered_second_moment"
             )
         self.base = base
@@ -158,7 +162,10 @@ class AdaptiveTimestepSampler(TimestepSampler):
 
     def _bin_and_x0_loss(self, timestep: float, prediction_loss: float):
         sigma = min(1.0 - 1e-6, max(1e-6, self._sigma(timestep)))
-        if self.prediction_type.startswith("endpoint_observable_"):
+        if (
+            self.prediction_type.startswith("endpoint_observable_")
+            or self.prediction_type == "polar_tangent_flow"
+        ):
             clean_time = 1.0 - sigma
             alpha = 2.0 * clean_time**2 - clean_time**3
             path_sigma = 1.0 - clean_time - clean_time**2 + clean_time**3

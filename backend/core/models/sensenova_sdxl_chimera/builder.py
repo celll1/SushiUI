@@ -18,6 +18,7 @@ from core.models.sensenova.loader import is_sensenova_state_dict_keys
 from .artifact import (
     CONFIG_NAME,
     FORMAT_VERSION,
+    V3_FORMAT_VERSION,
     MANIFEST_NAME,
     MODEL_TYPE,
     WEIGHTS_BASENAME,
@@ -28,9 +29,11 @@ from .artifact import (
     manifest_template,
     prefixed_state,
     runtime_config,
+    prediction_contract,
 )
 from .conditioning_bridge import ConditioningBridge
-from .unet import build_donor_equal_unet
+from .flow import FLOW_V3_PREDICTION
+from .unet import build_donor_equal_unet, install_polar_radial_head
 
 
 def _source_config(source: str) -> dict[str, Any]:
@@ -69,6 +72,7 @@ def build_chimera_artifact_from_components(
     unet_initialization: str = "scratch",
     initialization_seed: int = 0,
     max_shard_bytes: int = 10 * 1024**3,
+    prediction: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build into an empty directory; callers own atomic target publication."""
     root = Path(output_directory).resolve()
@@ -86,14 +90,30 @@ def build_chimera_artifact_from_components(
     und_config = _source_config(understanding_source)
     bridge_config = infer_bridge_config(und_config)
     bridge = ConditioningBridge(bridge_config)
-    unet, report = build_donor_equal_unet(
-        donor_unet, initialization=unet_initialization, seed=initialization_seed
+    declared_prediction = dict(prediction or prediction_contract())
+    is_v3 = declared_prediction.get("type") == FLOW_V3_PREDICTION
+    unet, _report = build_donor_equal_unet(
+        donor_unet,
+        initialization=unet_initialization,
+        seed=initialization_seed,
+        output_initialization="default" if is_v3 else "zero",
     )
+    radial_head_config = None
+    if is_v3:
+        radial_head = install_polar_radial_head(unet)
+        radial_head_config = {
+            "version": radial_head.VERSION,
+            "source": "conditioned_mid_block",
+            "mid_channels": radial_head.mid_channels,
+        }
     unet_config = dict(unet.config)
+    artifact_format = V3_FORMAT_VERSION if is_v3 else FORMAT_VERSION
     config = runtime_config(
         unet_config=unet_config,
         bridge_config=bridge_config,
         vae_config=vae.config,
+        format_version=artifact_format,
+        polar_radial_head=radial_head_config,
     )
     manifest = manifest_template(
         understanding_source=understanding_source,
@@ -103,9 +123,10 @@ def build_chimera_artifact_from_components(
         sdxl_hash=checkpoint_content_hash(sdxl_source),
         initialization=unet_initialization,
         unet_config=unet_config,
-        parameter_count=report.parameter_count,
+        parameter_count=sum(parameter.numel() for parameter in unet.parameters()),
         bridge_config=bridge_config,
         vae_facts=_vae_facts(vae),
+        prediction=declared_prediction,
     )
 
     tensors, dropped = dedup_tensors((
@@ -116,7 +137,7 @@ def build_chimera_artifact_from_components(
     metadata = {
         "model_type": MODEL_TYPE,
         "format": "pt",
-        "format_version": str(FORMAT_VERSION),
+        "format_version": str(artifact_format),
         "tied_weights_dropped": json.dumps(dropped),
     }
     written = save_single_file_state(
@@ -172,6 +193,7 @@ def initialize_chimera_from_paths(
     initialization_seed: int = 0,
     max_shard_bytes: int = 10 * 1024**3,
     torch_dtype: torch.dtype = torch.float32,
+    prediction: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Load production source paths and publish one complete artifact atomically."""
     from .source import load_sdxl_donor_components
@@ -188,5 +210,6 @@ def initialize_chimera_from_paths(
             "unet_initialization": unet_initialization,
             "initialization_seed": initialization_seed,
             "max_shard_bytes": max_shard_bytes,
+            "prediction": prediction,
         },
     )

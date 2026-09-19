@@ -1363,18 +1363,28 @@ def _apply_chimera_training_contract(
     from core.models.sensenova_sdxl_chimera.flow import (
         FLOW_V2_PREDICTION,
         FLOW_V2_VELOCITY_PREDICTION,
+        FLOW_V3_PREDICTION,
     )
 
     manifest, _runtime = read_artifact_documents(base_model_path)
     artifact_prediction = validated_prediction_contract(manifest)
     requested_flow = str(train_config.get("chimera_flow_version", "auto")).strip().lower()
-    if requested_flow not in {"auto", "v1", "v2"}:
-        raise ValueError("chimera_flow_version must be 'auto', 'v1', or 'v2'")
+    if requested_flow not in {"auto", "v1", "v2", "v3"}:
+        raise ValueError("chimera_flow_version must be 'auto', 'v1', 'v2', or 'v3'")
     v2_types = {FLOW_V2_PREDICTION, FLOW_V2_VELOCITY_PREDICTION}
     artifact_is_v2 = artifact_prediction["type"] in v2_types
-    resolved_flow = ("v2" if artifact_is_v2 else "v1") if requested_flow == "auto" else requested_flow
+    artifact_is_v3 = artifact_prediction["type"] == FLOW_V3_PREDICTION
+    artifact_flow = "v3" if artifact_is_v3 else "v2" if artifact_is_v2 else "v1"
+    resolved_flow = artifact_flow if requested_flow == "auto" else requested_flow
     if artifact_is_v2 and resolved_flow == "v1":
         raise ValueError("A Chimera v2 artifact cannot be trained with v1 velocity targets")
+    if artifact_is_v3 and resolved_flow != "v3":
+        raise ValueError("A Chimera v3 artifact requires v3 polar targets")
+    if resolved_flow == "v3" and not artifact_is_v3:
+        raise ValueError(
+            "Chimera v3 training requires a format-4 polar artifact; v1/v2 "
+            "optimizer and output heads are not resume-compatible"
+        )
     if resolved_flow == "v2":
         requested_parameterization = str(
             train_config.get("chimera_v2_parameterization", "auto")
@@ -1424,11 +1434,24 @@ def _apply_chimera_training_contract(
             calibration=train_config.get("chimera_v2_calibration"),
         )
         train_config["chimera_v2_parameterization"] = resolved_parameterization
+    elif resolved_flow == "v3":
+        train_config["chimera_v2_parameterization"] = "auto"
+        train_config["chimera_v2_latent_mean"] = None
+        train_config["chimera_v2_latent_centered_second_moment"] = None
+        train_config["chimera_v2_calibration"] = None
+        train_config["chimera_v3_latent_centered_second_moment"] = float(
+            artifact_prediction["latent_centered_second_moment"]
+        )
+        train_config["chimera_v3_angular_endpoint_slope"] = float(
+            artifact_prediction["angular_endpoint_slope"]
+        )
     else:
         train_config["chimera_v2_parameterization"] = "auto"
         train_config["chimera_v2_latent_mean"] = None
         train_config["chimera_v2_latent_centered_second_moment"] = None
         train_config["chimera_v2_calibration"] = None
+        train_config["chimera_v3_latent_centered_second_moment"] = None
+        train_config["chimera_v3_angular_endpoint_slope"] = None
     train_config["chimera_flow_version"] = resolved_flow
     stage = str(train_config.get("chimera_training_stage", "unet")).strip().lower()
     if stage not in {"bridge_align", "unet", "joint"}:

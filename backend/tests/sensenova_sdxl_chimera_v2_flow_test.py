@@ -15,10 +15,12 @@ from core.models.sensenova_sdxl_chimera.flow import (
     FLOW_V1_PREDICTION,
     FLOW_V2_PATH,
     FLOW_V2_PREDICTION,
+    FLOW_V2_VELOCITY_PREDICTION,
     endpoint_observable_coefficients,
     endpoint_observable_noising,
     endpoint_observable_preconditioning,
     endpoint_observable_reconstruct_velocity,
+    endpoint_observable_recover_clean,
     endpoint_observable_residual_target,
     endpoint_observable_velocity_target,
 )
@@ -68,6 +70,13 @@ def test_centered_residual_vanishes_at_endpoints_and_reconstructs_velocity():
     assert torch.equal(residual[0], torch.zeros_like(residual[0]))
     assert torch.allclose(residual[-1], torch.zeros_like(residual[-1]), atol=5e-16)
     assert torch.allclose(reconstructed, target, atol=1e-12, rtol=1e-12)
+    recovered = endpoint_observable_recover_clean(
+        sample[1:-1],
+        reconstructed[1:-1],
+        times[1:-1],
+        latent_mean=mean,
+    )
+    assert torch.allclose(recovered, clean[1:-1], atol=1e-12, rtol=1e-12)
 
     analytic, c_skip = endpoint_observable_preconditioning(
         sample,
@@ -100,6 +109,14 @@ def test_prediction_contract_keeps_v1_legacy_and_validates_v2_stats():
         latent_centered_second_moment=1.25,
     )
     assert migrated["prediction"]["path"] == FLOW_V2_PATH
+
+    direct = migrate_manifest_prediction(
+        legacy,
+        latent_mean=[0.1, 0.2, 0.3, 0.4],
+        latent_centered_second_moment=1.25,
+        prediction_type=FLOW_V2_VELOCITY_PREDICTION,
+    )
+    assert direct["prediction"]["type"] == FLOW_V2_VELOCITY_PREDICTION
 
     with pytest.raises(ChimeraArtifactError, match="four finite"):
         prediction_contract(

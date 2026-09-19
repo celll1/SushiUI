@@ -25648,6 +25648,44 @@ components:
             the conditioning bridge against the pinned donor CLIP encoders; unet
             trains only the donor-equal U-Net; joint trains bridge and U-Net while
             keeping the understanding tower and bundled VAE frozen.
+        chimera_flow_version:
+          type: string
+          enum: [auto, v1, v2]
+          default: auto
+          description: >-
+            Chimera prediction/path contract. auto follows the artifact; v1 uses
+            direct straight-flow velocity; v2 uses the endpoint-observable cubic
+            path and the selected v2 parameterization. Selecting v2 for a v1
+            artifact explicitly migrates its U-Net weights and writes format-3
+            checkpoints.
+        chimera_v2_latent_mean:
+          type: array
+          nullable: true
+          minItems: 4
+          maxItems: 4
+          items: {type: number, format: double}
+          default: null
+          description: >-
+            Four-channel clean-latent mean after the bundled VAE scaling and
+            shift. Required when explicitly migrating a v1 artifact to v2.
+        chimera_v2_parameterization:
+          type: string
+          enum: [auto, analytic_residual, direct_velocity]
+          default: auto
+          description: >-
+            v2 U-Net output meaning. analytic_residual removes the observable
+            state-aligned drift analytically and makes the endpoint residual
+            and CFG delta structurally zero. direct_velocity learns the complete
+            endpoint-observable velocity and retains model variation at pure noise.
+        chimera_v2_latent_centered_second_moment:
+          type: number
+          format: double
+          nullable: true
+          exclusiveMinimum: 0
+          default: null
+          description: >-
+            Scalar E[(x0-mu)^2] measured after bundled-VAE normalization.
+            Required when explicitly migrating a v1 artifact to v2.
         chimera_bridge_align_steps:
           type: integer
           minimum: 0

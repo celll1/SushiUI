@@ -20,7 +20,12 @@ from core.models.common.vae_source import content_hash_for_state_dict
 from core.models.sensenova.loader import is_sensenova_state_dict_keys
 
 from .conditioning_bridge import ChimeraBridgeConfig
-from .flow import FLOW_V1_PREDICTION, FLOW_V2_PATH, FLOW_V2_PREDICTION
+from .flow import (
+    FLOW_V1_PREDICTION,
+    FLOW_V2_PATH,
+    FLOW_V2_PREDICTION,
+    FLOW_V2_VELOCITY_PREDICTION,
+)
 from .positional import POSITION_LAYOUT_VERSION, SPATIAL_UNIT_PIXELS
 
 MODEL_TYPE = "sensenova_sdxl_chimera"
@@ -49,7 +54,7 @@ def prediction_contract(
             "type": FLOW_V1_PREDICTION,
             "time_direction": "zero_noise_to_one_clean",
         }
-    if kind != FLOW_V2_PREDICTION:
+    if kind not in {FLOW_V2_PREDICTION, FLOW_V2_VELOCITY_PREDICTION}:
         raise ChimeraArtifactError(f"unsupported Chimera prediction type: {prediction_type!r}")
     mean_source = () if latent_mean is None else latent_mean
     mean = [float(value) for value in mean_source]
@@ -64,7 +69,7 @@ def prediction_contract(
             "Chimera v2 latent_centered_second_moment must be finite and > 0"
         )
     return {
-        "type": FLOW_V2_PREDICTION,
+        "type": kind,
         "version": 1,
         "time_direction": "zero_noise_to_one_clean",
         "path": FLOW_V2_PATH,
@@ -98,12 +103,13 @@ def migrate_manifest_prediction(
     *,
     latent_mean: Iterable[float],
     latent_centered_second_moment: float,
+    prediction_type: str = FLOW_V2_PREDICTION,
 ) -> dict[str, Any]:
-    """Return a format-v3 manifest using v2 residual semantics."""
+    """Return a format-v3 manifest using the selected v2 prediction semantics."""
     migrated = json.loads(json.dumps(dict(manifest)))
     migrated["format_version"] = FORMAT_VERSION
     migrated["prediction"] = prediction_contract(
-        FLOW_V2_PREDICTION,
+        prediction_type,
         latent_mean=latent_mean,
         latent_centered_second_moment=latent_centered_second_moment,
     )

@@ -14,6 +14,7 @@ import torch
 
 FLOW_V1_PREDICTION = "flow_velocity"
 FLOW_V2_PREDICTION = "endpoint_observable_residual"
+FLOW_V2_VELOCITY_PREDICTION = "endpoint_observable_velocity"
 FLOW_V2_PATH = "symmetric_cubic_observable_v1"
 
 
@@ -141,6 +142,32 @@ def endpoint_observable_reconstruct_velocity(
         latent_centered_second_moment=latent_centered_second_moment,
     )
     return analytic + residual
+
+
+def endpoint_observable_recover_clean(
+    sample: torch.Tensor,
+    velocity: torch.Tensor,
+    timestep: torch.Tensor | float,
+    *,
+    latent_mean: torch.Tensor | list[float] | tuple[float, ...],
+    determinant_floor: float = 1e-8,
+) -> torch.Tensor:
+    """Recover x0 from an interior v2 state/velocity for diagnostics."""
+    if sample.shape != velocity.shape:
+        raise ValueError(
+            f"sample/velocity shape mismatch: {tuple(sample.shape)} vs {tuple(velocity.shape)}"
+        )
+    alpha, sigma, alpha_prime, sigma_prime = endpoint_observable_coefficients(
+        timestep, sample
+    )
+    determinant = alpha * sigma_prime - sigma * alpha_prime
+    valid = determinant.abs() >= float(determinant_floor)
+    safe = torch.where(valid, determinant, torch.ones_like(determinant))
+    recovered = (sigma_prime * sample - sigma * velocity) / safe
+    mean = _latent_mean(latent_mean, sample).expand_as(sample)
+    # At clean time z is x0; at noise time only the calibrated mean is defined.
+    fallback = torch.where(alpha >= sigma, sample, mean)
+    return torch.where(valid, recovered, fallback)
 
 
 def flow_noising(

@@ -15163,6 +15163,18 @@ class TrainingRunCreateRequest(BaseModel):
     chimera_training_stage: Literal["bridge_align", "unet", "joint"] = (
         TRAINING_DEFAULTS["chimera_training_stage"]
     )
+    chimera_flow_version: Literal["auto", "v1", "v2"] = TRAINING_DEFAULTS[
+        "chimera_flow_version"
+    ]
+    chimera_v2_parameterization: Literal[
+        "auto", "analytic_residual", "direct_velocity"
+    ] = TRAINING_DEFAULTS["chimera_v2_parameterization"]
+    chimera_v2_latent_mean: Optional[List[float]] = TRAINING_DEFAULTS[
+        "chimera_v2_latent_mean"
+    ]
+    chimera_v2_latent_centered_second_moment: Optional[float] = Field(
+        default=TRAINING_DEFAULTS["chimera_v2_latent_centered_second_moment"], gt=0
+    )
     chimera_bridge_align_steps: int = Field(
         default=TRAINING_DEFAULTS["chimera_bridge_align_steps"], ge=0
     )
@@ -15195,6 +15207,13 @@ class TrainingRunCreateRequest(BaseModel):
     def _unique_sensenova_train_scopes(cls, value):
         if len(value) != len(set(value)):
             raise ValueError("sensenova_train_scopes must not contain duplicates")
+        return value
+
+    @field_validator("chimera_v2_latent_mean")
+    @classmethod
+    def _chimera_v2_mean_has_four_channels(cls, value):
+        if value is not None and len(value) != 4:
+            raise ValueError("chimera_v2_latent_mean must contain four values")
         return value
     block_swap_h2d_only: bool = TRAINING_DEFAULTS["block_swap_h2d_only"]  # FLUX.2 LoRA: H2D-only swap (no device->host of frozen base)
     block_swap_ring_size: int = TRAINING_DEFAULTS["block_swap_ring_size"]  # GPU weight-buffer ring slots (>=1)

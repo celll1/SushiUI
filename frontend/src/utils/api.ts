@@ -6860,6 +6860,10 @@ export interface TrainingRunCreateRequest {
   sensenova_train_generation_norms?: boolean;
   sensenova_train_scopes?: SenseNovaTrainScope[];
   chimera_training_stage?: "bridge_align" | "unet" | "joint";
+  chimera_flow_version?: "auto" | "v1" | "v2";
+  chimera_v2_parameterization?: "auto" | "analytic_residual" | "direct_velocity";
+  chimera_v2_latent_mean?: number[] | null;
+  chimera_v2_latent_centered_second_moment?: number | null;
   chimera_bridge_align_steps?: number;
   chimera_allow_unaligned_scratch?: boolean;
   chimera_conditioning_cache?: boolean;

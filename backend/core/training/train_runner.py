@@ -1354,6 +1354,80 @@ def _apply_chimera_training_contract(
         raise ValueError(
             "SenseNova SDXL Chimera supports training_method='full_finetune' only"
         )
+    from core.models.sensenova_sdxl_chimera.artifact import (
+        migrate_manifest_prediction,
+        prediction_contract,
+        read_artifact_documents,
+        validated_prediction_contract,
+    )
+    from core.models.sensenova_sdxl_chimera.flow import (
+        FLOW_V2_PREDICTION,
+        FLOW_V2_VELOCITY_PREDICTION,
+    )
+
+    manifest, _runtime = read_artifact_documents(base_model_path)
+    artifact_prediction = validated_prediction_contract(manifest)
+    requested_flow = str(train_config.get("chimera_flow_version", "auto")).strip().lower()
+    if requested_flow not in {"auto", "v1", "v2"}:
+        raise ValueError("chimera_flow_version must be 'auto', 'v1', or 'v2'")
+    v2_types = {FLOW_V2_PREDICTION, FLOW_V2_VELOCITY_PREDICTION}
+    artifact_is_v2 = artifact_prediction["type"] in v2_types
+    resolved_flow = ("v2" if artifact_is_v2 else "v1") if requested_flow == "auto" else requested_flow
+    if artifact_is_v2 and resolved_flow == "v1":
+        raise ValueError("A Chimera v2 artifact cannot be trained with v1 velocity targets")
+    if resolved_flow == "v2":
+        requested_parameterization = str(
+            train_config.get("chimera_v2_parameterization", "auto")
+        ).strip().lower()
+        if requested_parameterization not in {
+            "auto",
+            "analytic_residual",
+            "direct_velocity",
+        }:
+            raise ValueError(
+                "chimera_v2_parameterization must be 'auto', "
+                "'analytic_residual', or 'direct_velocity'"
+            )
+        if requested_parameterization == "auto":
+            if artifact_prediction["type"] == FLOW_V2_VELOCITY_PREDICTION:
+                resolved_parameterization = "direct_velocity"
+            else:
+                resolved_parameterization = "analytic_residual"
+        else:
+            resolved_parameterization = requested_parameterization
+        selected_prediction = (
+            FLOW_V2_VELOCITY_PREDICTION
+            if resolved_parameterization == "direct_velocity"
+            else FLOW_V2_PREDICTION
+        )
+        mean = train_config.get("chimera_v2_latent_mean")
+        moment = train_config.get("chimera_v2_latent_centered_second_moment")
+        if mean is None and artifact_is_v2:
+            mean = artifact_prediction["latent_mean"]
+        if moment is None and artifact_is_v2:
+            moment = artifact_prediction["latent_centered_second_moment"]
+        contract = prediction_contract(
+            selected_prediction,
+            latent_mean=mean,
+            latent_centered_second_moment=moment,
+        )
+        train_config["chimera_v2_latent_mean"] = list(contract["latent_mean"])
+        train_config["chimera_v2_latent_centered_second_moment"] = float(
+            contract["latent_centered_second_moment"]
+        )
+        # Exercise the same migration validation here, before dataset/model load.
+        migrate_manifest_prediction(
+            manifest,
+            latent_mean=contract["latent_mean"],
+            latent_centered_second_moment=contract["latent_centered_second_moment"],
+            prediction_type=selected_prediction,
+        )
+        train_config["chimera_v2_parameterization"] = resolved_parameterization
+    else:
+        train_config["chimera_v2_parameterization"] = "auto"
+        train_config["chimera_v2_latent_mean"] = None
+        train_config["chimera_v2_latent_centered_second_moment"] = None
+    train_config["chimera_flow_version"] = resolved_flow
     stage = str(train_config.get("chimera_training_stage", "unet")).strip().lower()
     if stage not in {"bridge_align", "unet", "joint"}:
         raise ValueError(

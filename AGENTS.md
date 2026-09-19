@@ -49,6 +49,10 @@ changes.
 - **Always use the repo's virtualenv Python**, resolved relative to the repo
   root: `venv/Scripts/python.exe` on Windows, `venv/bin/python` on POSIX.
   Never invoke a bare `python`/`python3` or a system interpreter.
+  On this Windows checkout the venv launcher names its base Python 3.11 in an
+  `Unable to create process` message when sandbox execution is denied. That is
+  not evidence of global-Python use; rerun the same venv command with the
+  required execution permission instead of re-diagnosing the interpreter.
 - **After any backend edit, verify with both `python -m py_compile` on the
   changed files and a real import** (e.g.
   `venv/Scripts/python.exe -c "import backend.api.routes"`) — `py_compile`

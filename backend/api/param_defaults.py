@@ -2479,6 +2479,10 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # SenseNova SDXL Chimera. Alignment-loss coefficients intentionally have no
     # invented fallback: bridge_align refuses until an explicit measured pair is supplied.
     "chimera_training_stage": "unet",
+    "chimera_flow_version": "auto",
+    "chimera_v2_parameterization": "auto",
+    "chimera_v2_latent_mean": None,
+    "chimera_v2_latent_centered_second_moment": None,
     "chimera_bridge_align_steps": 0,
     "chimera_allow_unaligned_scratch": False,
     "chimera_conditioning_cache": True,

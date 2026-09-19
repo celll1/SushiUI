@@ -87,18 +87,39 @@ class AdaptiveTimestepSampler(TimestepSampler):
 
     def __init__(self, base: TimestepSampler, config: Dict[str, Any], *,
                  convention: str, prediction_type: str = "flow_velocity",
+                 latent_centered_second_moment: Optional[float] = None,
                  resume_state: Optional[Dict[str, Any]] = None):
         cfg = validate_adaptive_timestep_config(config)
         super().__init__(base.min_timestep, base.max_timestep)
         if convention not in ("t0", "t1"):
             raise ValueError(f"adaptive timestep needs t0/t1 convention, got {convention!r}")
-        if prediction_type != "flow_velocity":
-            raise ValueError("adaptive timestep currently supports flow_velocity training only")
+        supported_predictions = {
+            "flow_velocity",
+            "endpoint_observable_residual",
+            "endpoint_observable_velocity",
+        }
+        if prediction_type not in supported_predictions:
+            raise ValueError(
+                "adaptive timestep does not support prediction type "
+                f"{prediction_type!r}"
+            )
+        is_endpoint_observable = prediction_type.startswith("endpoint_observable_")
+        q = None if latent_centered_second_moment is None else float(
+            latent_centered_second_moment
+        )
+        if is_endpoint_observable and (
+            q is None or not math.isfinite(q) or q <= 0.0
+        ):
+            raise ValueError(
+                "endpoint-observable adaptive timestep requires a finite positive "
+                "latent_centered_second_moment"
+            )
         self.base = base
         self.current: TimestepSampler = base
         self.config = cfg
         self.convention = convention
         self.prediction_type = prediction_type
+        self.latent_centered_second_moment = q
         self.update_step = 0
         self.last_control_update = -10**18
         self.observations_since_control = 0
@@ -137,12 +158,25 @@ class AdaptiveTimestepSampler(TimestepSampler):
 
     def _bin_and_x0_loss(self, timestep: float, prediction_loss: float):
         sigma = min(1.0 - 1e-6, max(1e-6, self._sigma(timestep)))
-        log_snr = 2.0 * (math.log1p(-sigma) - math.log(sigma))
+        if self.prediction_type.startswith("endpoint_observable_"):
+            clean_time = 1.0 - sigma
+            alpha = 2.0 * clean_time**2 - clean_time**3
+            path_sigma = 1.0 - clean_time - clean_time**2 + clean_time**3
+            alpha = max(1e-12, alpha)
+            path_sigma = max(1e-12, path_sigma)
+            log_snr = (
+                math.log(self.latent_centered_second_moment)
+                + 2.0 * (math.log(alpha) - math.log(path_sigma))
+            )
+            controller_loss = float(prediction_loss)
+        else:
+            log_snr = 2.0 * (math.log1p(-sigma) - math.log(sigma))
+            # x0 = x_t - sigma*v for straight flow interpolation.
+            controller_loss = float(prediction_loss) * sigma * sigma
         lo, hi = self.config["log_snr_min"], self.config["log_snr_max"]
         position = (min(hi, max(lo, log_snr)) - lo) / (hi - lo)
         index = min(self.config["bins"] - 1, int(position * self.config["bins"]))
-        # x0 = x_t - sigma*v for straight flow interpolation.
-        return index, float(prediction_loss) * sigma * sigma
+        return index, controller_loss
 
     def observe(self, timesteps: torch.Tensor,
                 prediction_loss: float | torch.Tensor) -> None:
@@ -310,6 +344,7 @@ class AdaptiveTimestepSampler(TimestepSampler):
             "config": dict(self.config),
             "convention": self.convention,
             "prediction_type": self.prediction_type,
+            "latent_centered_second_moment": self.latent_centered_second_moment,
             "base": sampler_expr(self.base),
             "current": sampler_expr(self.current),
             "update_step": self.update_step,
@@ -333,6 +368,11 @@ class AdaptiveTimestepSampler(TimestepSampler):
             raise ValueError("adaptive timestep convention changed across resume")
         if state.get("prediction_type") != self.prediction_type:
             raise ValueError("adaptive timestep prediction type changed across resume")
+        saved_q = state.get("latent_centered_second_moment")
+        if saved_q != self.latent_centered_second_moment:
+            raise ValueError(
+                "adaptive timestep latent centered second moment changed across resume"
+            )
         saved_cfg = validate_adaptive_timestep_config(state.get("config"))
         for key in ("bins", "log_snr_min", "log_snr_max"):
             if saved_cfg[key] != self.config[key]:
@@ -400,5 +440,9 @@ class AdaptiveTimestepSampler(TimestepSampler):
             "auto_promotion_update": self.auto_promotion_update,
             "auto_ready_bins": ready,
             "auto_required_bins": len(eligible),
-            "mean_x0_loss": (sum(finite) / len(finite)) if finite else None,
+            "mean_controller_loss": (sum(finite) / len(finite)) if finite else None,
+            "mean_x0_loss": (
+                (sum(finite) / len(finite))
+                if finite and self.prediction_type == "flow_velocity" else None
+            ),
         }

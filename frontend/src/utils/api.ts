@@ -7896,6 +7896,7 @@ export interface TimestepDistributionStatus {
     auto_ready_bins: number;
     auto_required_bins: number;
     mean_x0_loss?: number | null;
+    mean_controller_loss?: number | null;
   };
 }
 

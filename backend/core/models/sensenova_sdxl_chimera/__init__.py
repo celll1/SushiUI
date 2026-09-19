@@ -6,7 +6,17 @@ from .conditioning_bridge import (
     ConditioningBridge,
     selected_layer_indices,
 )
-from .artifact import ChimeraArtifactError, MODEL_TYPE, FORMAT_VERSION, save_chimera_checkpoint
+from .artifact import (
+    FORMAT_VERSION,
+    LEGACY_FORMAT_VERSION,
+    MODEL_TYPE,
+    SUPPORTED_FORMAT_VERSIONS,
+    ChimeraArtifactError,
+    migrate_manifest_prediction,
+    prediction_contract,
+    save_chimera_checkpoint,
+    validated_prediction_contract,
+)
 from .attention_processor import (
     ChimeraAttentionContext,
     ChimeraAttnProcessor,
@@ -19,7 +29,20 @@ from .builder import (
     initialize_chimera_atomically,
     initialize_chimera_from_paths,
 )
-from .flow import flow_noising, flow_velocity_target, flow_euler_step
+from .flow import (
+    FLOW_V1_PREDICTION,
+    FLOW_V2_PATH,
+    FLOW_V2_PREDICTION,
+    endpoint_observable_coefficients,
+    endpoint_observable_noising,
+    endpoint_observable_preconditioning,
+    endpoint_observable_reconstruct_velocity,
+    endpoint_observable_residual_target,
+    endpoint_observable_velocity_target,
+    flow_euler_step,
+    flow_noising,
+    flow_velocity_target,
+)
 from .loader import load_chimera_artifact, preflight_chimera_artifact
 from .positional import (
     POSITION_LAYOUT_VERSION,
@@ -39,6 +62,11 @@ __all__ = [
     "POSITION_LAYOUT_VERSION",
     "MODEL_TYPE",
     "FORMAT_VERSION",
+    "LEGACY_FORMAT_VERSION",
+    "SUPPORTED_FORMAT_VERSIONS",
+    "FLOW_V1_PREDICTION",
+    "FLOW_V2_PATH",
+    "FLOW_V2_PREDICTION",
     "ChimeraArtifactError",
     "ChimeraAttentionContext",
     "ChimeraAttnProcessor",
@@ -53,12 +81,21 @@ __all__ = [
     "flow_euler_step",
     "flow_noising",
     "flow_velocity_target",
+    "endpoint_observable_coefficients",
+    "endpoint_observable_noising",
+    "endpoint_observable_preconditioning",
+    "endpoint_observable_reconstruct_velocity",
+    "endpoint_observable_residual_target",
+    "endpoint_observable_velocity_target",
     "initialize_chimera_atomically",
     "initialize_chimera_from_paths",
     "load_chimera_artifact",
     "preflight_chimera_artifact",
     "save_chimera_checkpoint",
     "parameter_census",
+    "prediction_contract",
+    "validated_prediction_contract",
+    "migrate_manifest_prediction",
     "selected_layer_indices",
     "spatial_query_positions",
     "trainable_parameter_count",

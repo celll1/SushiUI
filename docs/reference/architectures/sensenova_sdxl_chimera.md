@@ -195,7 +195,10 @@ passed; its status remains separately recorded.
 
 ## Constraints
 
-- Artifact format v2 accepts the dense SenseNova understanding branch only.
+- Legacy artifact format 2 carries direct-flow-velocity prediction. Format 3
+  adds an explicit prediction contract and can carry the v2 endpoint-observable
+  residual declaration; both formats accept the dense SenseNova understanding
+  branch only.
 - The external understanding file must still match its pinned content hash at
   every preflight; filename and mtime are not identity.
 - Only `full_finetune` is supported. LoRA/adapter, Relora, and ControlNet

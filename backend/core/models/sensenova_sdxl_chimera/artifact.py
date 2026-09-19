@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
 import tempfile
@@ -19,10 +20,13 @@ from core.models.common.vae_source import content_hash_for_state_dict
 from core.models.sensenova.loader import is_sensenova_state_dict_keys
 
 from .conditioning_bridge import ChimeraBridgeConfig
+from .flow import FLOW_V1_PREDICTION, FLOW_V2_PATH, FLOW_V2_PREDICTION
 from .positional import POSITION_LAYOUT_VERSION, SPATIAL_UNIT_PIXELS
 
 MODEL_TYPE = "sensenova_sdxl_chimera"
-FORMAT_VERSION = 2
+LEGACY_FORMAT_VERSION = 2
+FORMAT_VERSION = 3
+SUPPORTED_FORMAT_VERSIONS = (LEGACY_FORMAT_VERSION, FORMAT_VERSION)
 MANIFEST_NAME = "chimera.json"
 CONFIG_NAME = "config.json"
 WEIGHTS_BASENAME = "model.safetensors"
@@ -30,6 +34,80 @@ WEIGHTS_BASENAME = "model.safetensors"
 
 class ChimeraArtifactError(ValueError):
     """A Chimera artifact or one of its pinned sources is invalid."""
+
+
+def prediction_contract(
+    prediction_type: str = FLOW_V1_PREDICTION,
+    *,
+    latent_mean: Iterable[float] | None = None,
+    latent_centered_second_moment: float | None = None,
+) -> dict[str, Any]:
+    """Build and validate one explicit Chimera prediction contract."""
+    kind = str(prediction_type).strip().lower()
+    if kind == FLOW_V1_PREDICTION:
+        return {
+            "type": FLOW_V1_PREDICTION,
+            "time_direction": "zero_noise_to_one_clean",
+        }
+    if kind != FLOW_V2_PREDICTION:
+        raise ChimeraArtifactError(f"unsupported Chimera prediction type: {prediction_type!r}")
+    mean_source = () if latent_mean is None else latent_mean
+    mean = [float(value) for value in mean_source]
+    q = float(
+        0.0 if latent_centered_second_moment is None
+        else latent_centered_second_moment
+    )
+    if len(mean) != 4 or not all(math.isfinite(value) for value in mean):
+        raise ChimeraArtifactError("Chimera v2 latent_mean must contain four finite values")
+    if not math.isfinite(q) or q <= 0.0:
+        raise ChimeraArtifactError(
+            "Chimera v2 latent_centered_second_moment must be finite and > 0"
+        )
+    return {
+        "type": FLOW_V2_PREDICTION,
+        "version": 1,
+        "time_direction": "zero_noise_to_one_clean",
+        "path": FLOW_V2_PATH,
+        "latent_mean": mean,
+        "latent_centered_second_moment": q,
+    }
+
+
+def validated_prediction_contract(
+    manifest: Mapping[str, Any], *, artifact_format: int | None = None
+) -> dict[str, Any]:
+    version = int(artifact_format or manifest.get("format_version", 0))
+    declared = dict(manifest.get("prediction") or {})
+    if version == LEGACY_FORMAT_VERSION:
+        if declared.get("type") != FLOW_V1_PREDICTION:
+            raise ChimeraArtifactError("Chimera format v2 requires flow_velocity prediction")
+        return prediction_contract()
+    if version != FORMAT_VERSION:
+        raise ChimeraArtifactError(f"unsupported Chimera format version: {version}")
+    return prediction_contract(
+        str(declared.get("type") or ""),
+        latent_mean=declared.get("latent_mean"),
+        latent_centered_second_moment=declared.get(
+            "latent_centered_second_moment"
+        ),
+    )
+
+
+def migrate_manifest_prediction(
+    manifest: Mapping[str, Any],
+    *,
+    latent_mean: Iterable[float],
+    latent_centered_second_moment: float,
+) -> dict[str, Any]:
+    """Return a format-v3 manifest using v2 residual semantics."""
+    migrated = json.loads(json.dumps(dict(manifest)))
+    migrated["format_version"] = FORMAT_VERSION
+    migrated["prediction"] = prediction_contract(
+        FLOW_V2_PREDICTION,
+        latent_mean=latent_mean,
+        latent_centered_second_moment=latent_centered_second_moment,
+    )
+    return migrated
 
 
 def canonical_json(value: Any) -> str:
@@ -148,7 +226,16 @@ def manifest_template(
     parameter_count: int,
     bridge_config: ChimeraBridgeConfig,
     vae_facts: Mapping[str, Any],
+    prediction: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    declared = dict(prediction or prediction_contract())
+    declared = prediction_contract(
+        str(declared.get("type") or ""),
+        latent_mean=declared.get("latent_mean"),
+        latent_centered_second_moment=declared.get(
+            "latent_centered_second_moment"
+        ),
+    )
     return {
         "model_type": MODEL_TYPE,
         "format_version": FORMAT_VERSION,
@@ -186,10 +273,7 @@ def manifest_template(
                 "version": POSITION_LAYOUT_VERSION,
             },
         },
-        "prediction": {
-            "type": "flow_velocity",
-            "time_direction": "zero_noise_to_one_clean",
-        },
+        "prediction": declared,
     }
 
 
@@ -216,9 +300,16 @@ def read_artifact_documents(directory: str | os.PathLike[str]) -> tuple[dict[str
             config = json.load(handle)
     except (OSError, ValueError) as exc:
         raise ChimeraArtifactError(f"cannot read Chimera artifact documents at {root}: {exc}") from exc
+    versions = set()
     for label, value in (("manifest", manifest), ("config", config)):
-        if value.get("model_type") != MODEL_TYPE or int(value.get("format_version", 0)) != FORMAT_VERSION:
+        version = int(value.get("format_version", 0))
+        if value.get("model_type") != MODEL_TYPE or version not in SUPPORTED_FORMAT_VERSIONS:
             raise ChimeraArtifactError(f"unsupported {label} model_type/format_version at {root}")
+        versions.add(version)
+    if len(versions) != 1:
+        raise ChimeraArtifactError(f"manifest/config format version mismatch at {root}")
+    version = versions.pop()
+    validated_prediction_contract(manifest, artifact_format=version)
     conditioning = manifest.get("conditioning") or {}
     expected = {
         "context_length": "native_prefix",
@@ -234,12 +325,12 @@ def read_artifact_documents(directory: str | os.PathLike[str]) -> tuple[dict[str
     }
     if mismatches:
         raise ChimeraArtifactError(
-            f"invalid format-v2 conditioning contract at {root}: {mismatches}"
+            f"invalid Chimera conditioning contract at {root}: {mismatches}"
         )
     bridge = config.get("conditioning_bridge") or {}
     if "context_tokens" in bridge or bridge.get("alignment_tokens") != 77:
         raise ChimeraArtifactError(
-            f"invalid format-v2 conditioning bridge config at {root}"
+            f"invalid Chimera conditioning bridge config at {root}"
         )
     return manifest, config
 
@@ -315,7 +406,7 @@ def save_chimera_checkpoint(
         metadata = {
             "model_type": MODEL_TYPE,
             "format": "pt",
-            "format_version": str(FORMAT_VERSION),
+            "format_version": str(int(manifest["format_version"])),
             "training_stage": str(stage),
             "training_step": str(int(step)),
             "training_epoch": str(int(epoch)),

@@ -6,6 +6,7 @@ import pytest
 import torch
 from torch import nn
 
+from core.model_loader import ModelLoader
 from core.models.sensenova_sdxl_chimera.artifact import (
     FORMAT_VERSION,
     V3_FORMAT_VERSION,
@@ -263,6 +264,14 @@ def test_v3_prediction_contract_is_strictly_format_four():
         validated_prediction_contract(
             {"format_version": V3_FORMAT_VERSION, "prediction": invalid}
         )
+
+
+def test_model_loader_detects_format_four_chimera_directory(tmp_path):
+    (tmp_path / "chimera.json").write_text(
+        '{"model_type":"sensenova_sdxl_chimera","format_version":4}',
+        encoding="utf-8",
+    )
+    assert ModelLoader.detect_model_type(str(tmp_path)) == "sensenova_sdxl_chimera"
 
 
 class _TinyPolarUNet(nn.Module):

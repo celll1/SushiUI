@@ -14,6 +14,14 @@ from core.models.sensenova_sdxl_chimera.attention_processor import (
     set_chimera_attention_context,
 )
 from core.models.sensenova_sdxl_chimera.flow import (
+    FLOW_V2_PREDICTION,
+    FLOW_V2_VELOCITY_PREDICTION,
+    endpoint_observable_noising,
+    endpoint_observable_preconditioning,
+    endpoint_observable_reconstruct_velocity,
+    endpoint_observable_recover_clean,
+    endpoint_observable_residual_target,
+    endpoint_observable_velocity_target,
     flow_noising,
     flow_velocity_target,
 )
@@ -140,6 +148,46 @@ def load_components(trainer) -> None:
     trainer.chimera_model_path = components["model_path"]
     trainer.noise_process = "flow"
     trainer.prediction_target = "flow"
+
+    config = getattr(trainer, "config", None) or {}
+    flow_version = str(config.get("chimera_flow_version", "v1"))
+    if flow_version == "v2":
+        from core.models.sensenova_sdxl_chimera.artifact import (
+            FORMAT_VERSION,
+            migrate_manifest_prediction,
+            prediction_contract,
+        )
+
+        prediction_type = (
+            FLOW_V2_VELOCITY_PREDICTION
+            if config.get("chimera_v2_parameterization") == "direct_velocity"
+            else FLOW_V2_PREDICTION
+        )
+        contract = prediction_contract(
+            prediction_type,
+            latent_mean=config.get("chimera_v2_latent_mean"),
+            latent_centered_second_moment=config.get(
+                "chimera_v2_latent_centered_second_moment"
+            ),
+        )
+        trainer.chimera_manifest = migrate_manifest_prediction(
+            trainer.chimera_manifest,
+            latent_mean=contract["latent_mean"],
+            latent_centered_second_moment=contract[
+                "latent_centered_second_moment"
+            ],
+            prediction_type=prediction_type,
+        )
+        trainer.chimera_runtime_config = dict(trainer.chimera_runtime_config)
+        trainer.chimera_runtime_config["format_version"] = FORMAT_VERSION
+        trainer.chimera_prediction = contract
+        if components["prediction"]["type"] != prediction_type:
+            print(
+                f"{trainer.log_prefix} WARNING: resuming v1 Chimera weights with "
+                f"v2 {config.get('chimera_v2_parameterization')} targets by explicit configuration"
+            )
+    else:
+        trainer.chimera_prediction = components["prediction"]
 
     stage = training_stage(trainer)
     manifest = trainer.chimera_manifest
@@ -337,8 +385,30 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
     if timesteps is None:
         timesteps = torch.rand(latents.shape[0], device=latents.device)
     timesteps = timesteps.to(device=latents.device, dtype=latents.dtype)
-    noisy = flow_noising(latents, noise, timesteps)
-    target = flow_velocity_target(latents, noise)
+    prediction_contract = getattr(trainer, "chimera_prediction", {"type": "flow_velocity"})
+    prediction_type = prediction_contract["type"]
+    is_residual_v2 = prediction_type == FLOW_V2_PREDICTION
+    is_direct_v2 = prediction_type == FLOW_V2_VELOCITY_PREDICTION
+    is_v2 = is_residual_v2 or is_direct_v2
+    if is_v2:
+        latent_mean = prediction_contract["latent_mean"]
+        latent_moment = prediction_contract["latent_centered_second_moment"]
+        if is_residual_v2:
+            noisy, target, velocity_target = endpoint_observable_residual_target(
+                latents,
+                noise,
+                timesteps,
+                latent_mean=latent_mean,
+                latent_centered_second_moment=latent_moment,
+            )
+        else:
+            noisy = endpoint_observable_noising(latents, noise, timesteps)
+            velocity_target = endpoint_observable_velocity_target(latents, noise, timesteps)
+            target = velocity_target
+    else:
+        noisy = flow_noising(latents, noise, timesteps)
+        target = flow_velocity_target(latents, noise)
+        velocity_target = target
     pooled = auxiliary["pooled_text_embeds"].to(conditioning)
     positions = auxiliary["context_positions"].to(device=latents.device)
     context_mask = auxiliary["context_attention_mask"].to(device=latents.device)
@@ -389,15 +459,64 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
             prediction_loss_per_item.detach())
     value = float(loss.detach().cpu())
     with torch.no_grad():
-        predicted_clean = (
-            noisy.detach()
-            + (1.0 - timesteps[:, None, None, None]) * prediction.detach()
-        )
+        if is_v2:
+            if is_residual_v2:
+                predicted_velocity = endpoint_observable_reconstruct_velocity(
+                    noisy.detach(),
+                    prediction.detach(),
+                    timesteps,
+                    latent_mean=latent_mean,
+                    latent_centered_second_moment=latent_moment,
+                )
+            else:
+                predicted_velocity = prediction.detach()
+            predicted_clean = endpoint_observable_recover_clean(
+                noisy.detach(),
+                predicted_velocity,
+                timesteps,
+                latent_mean=latent_mean,
+            )
+        else:
+            predicted_velocity = prediction.detach()
+            predicted_clean = (
+                noisy.detach()
+                + (1.0 - timesteps[:, None, None, None]) * predicted_velocity
+            )
         recon_value = float(F.mse_loss(
             predicted_clean.float(), latents.float()
         ).cpu())
     if hasattr(trainer, "log_extra_metric"):
-        trainer.log_extra_metric("chimera_velocity_loss", value)
+        if is_v2:
+            analytic, c_skip = endpoint_observable_preconditioning(
+                noisy.detach(),
+                timesteps,
+                latent_mean=latent_mean,
+                latent_centered_second_moment=latent_moment,
+            )
+            velocity_error = F.mse_loss(
+                predicted_velocity.float(), velocity_target.float()
+            )
+            trainer.log_extra_metric("chimera_v2_prediction_loss", value)
+            trainer.log_extra_metric(
+                "chimera_velocity_error", float(velocity_error.cpu())
+            )
+            trainer.log_extra_metric(
+                "chimera_skip_abs_max", float(c_skip.detach().float().abs().max().cpu())
+            )
+            trainer.log_extra_metric(
+                "chimera_analytic_rms",
+                float(analytic.detach().float().square().mean().sqrt().cpu()),
+            )
+            trainer.log_extra_metric(
+                "chimera_prediction_target_rms",
+                float(target.detach().float().square().mean().sqrt().cpu()),
+            )
+            trainer.log_extra_metric(
+                "chimera_prediction_rms",
+                float(prediction.detach().float().square().mean().sqrt().cpu()),
+            )
+        else:
+            trainer.log_extra_metric("chimera_velocity_loss", value)
     if repa_armed:
         from core.training.repa import apply_repa_loss_spatial, take_repa_tap
 
@@ -417,7 +536,7 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
                 "timestep": t_value,
                 "model_type": "sensenova_sdxl_chimera",
                 "is_latent": True,
-                "prediction_type": "flow_velocity",
+                "prediction_type": prediction_type,
                 "loss": float(loss.detach().cpu()),
                 "recon_loss": recon_value,
                 "batch_size": int(latents.shape[0]),

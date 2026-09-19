@@ -5448,6 +5448,62 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           <div className="break-inside-avoid border border-cyan-900/70 rounded p-4 space-y-3">
             <h3 className="text-sm font-medium text-cyan-200">SenseNova SDXL Chimera</h3>
             <div>
+              <label className="block text-xs text-gray-400 mb-1">Flow contract</label>
+              <select
+                value={params.chimera_flow_version ?? "auto"}
+                onChange={(e) => updateParam("chimera_flow_version", e.target.value)}
+                className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+              >
+                <option value="auto">Artifact default</option>
+                <option value="v1">v1 direct velocity</option>
+                <option value="v2">v2 endpoint-observable residual</option>
+              </select>
+            </div>
+            {(params.chimera_flow_version ?? "auto") === "v2" && (
+              <div className="grid grid-cols-2 gap-2">
+                <label className="col-span-2 text-xs text-gray-400">v2 parameterization
+                  <select
+                    value={params.chimera_v2_parameterization ?? "auto"}
+                    onChange={(e) => updateParam("chimera_v2_parameterization", e.target.value)}
+                    className="mt-1 w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+                  >
+                    <option value="auto">Artifact default (new migration: analytic residual)</option>
+                    <option value="analytic_residual">Analytic residual (skip first U-Net evaluation)</option>
+                    <option value="direct_velocity">Direct velocity (evaluate U-Net at pure noise)</option>
+                  </select>
+                </label>
+                <div className="text-xs text-gray-400">Latent mean (channels 0–3)
+                  <div className="mt-1 grid grid-cols-4 gap-1">
+                    {[0, 1, 2, 3].map((channel) => (
+                      <input key={channel} type="number" step="any"
+                        aria-label={`Chimera latent mean channel ${channel}`}
+                        value={params.chimera_v2_latent_mean?.[channel] ?? ""}
+                        onChange={(e) => {
+                          if (e.target.value === "") {
+                            updateParam("chimera_v2_latent_mean", null);
+                            return;
+                          }
+                          const values = [...(params.chimera_v2_latent_mean ?? [0, 0, 0, 0])];
+                          values[channel] = Number(e.target.value);
+                          updateParam("chimera_v2_latent_mean", values);
+                        }}
+                        className="w-full px-1 py-1 bg-gray-700 border border-gray-600 rounded" />
+                    ))}
+                  </div>
+                </div>
+                <label className="text-xs text-gray-400">Centered second moment
+                  <input type="number" step="any" min={Number.MIN_VALUE}
+                    value={params.chimera_v2_latent_centered_second_moment ?? ""}
+                    onChange={(e) => updateParam("chimera_v2_latent_centered_second_moment",
+                      e.target.value === "" ? null : Number(e.target.value))}
+                    className="mt-1 w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded" />
+                </label>
+                <p className="col-span-2 text-xs text-amber-400">
+                  Required when migrating v1 weights. Values are measured after the bundled VAE scaling and shift.
+                </p>
+              </div>
+            )}
+            <div>
               <label className="block text-xs text-gray-400 mb-1">Training stage</label>
               <select
                 value={params.chimera_training_stage ?? "unet"}

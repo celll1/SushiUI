@@ -81,7 +81,14 @@ sigma(s)=alpha(1-s)
 
 Higher-order or learned paths are outside the first v2 boundary.
 
-## 3. Analytic skip and learned residual
+## 3. Prediction parameterizations
+
+v2 supports two artifact-owned parameterizations over the same path. New v2
+migrations default to `analytic_residual`; `direct_velocity` is experimental.
+This is not a per-request sampler switch because changing it changes the
+training target represented by the U-Net weights.
+
+### 3.1 Analytic residual (default)
 
 The U-Net does not predict `u` directly. Known state-aligned motion is removed
 analytically:
@@ -130,9 +137,23 @@ is not restored merely to equalize loss scale. The magnitude is nevertheless a
 measured acceptance item, not an assumption that every SDXL latent distribution
 behaves like `q=1`.
 
+### 3.2 Direct velocity (experimental)
+
+The alternative target is the complete path velocity
+`u_target=alpha'*x0+sigma'*epsilon`. Unlike straight flow, this target is fully
+observable at both endpoints (`-epsilon` at pure noise and `x0` at clean), so
+it does not reintroduce an undefined endpoint target. The U-Net is evaluated at
+`s=0`; finite model error and conditional variation may therefore perturb the
+first update. This is the intended experiment, but CFG can amplify that error.
+
+Direct velocity does not use the analytic first-step NFE saving and does not
+structurally force the endpoint CFG delta to zero. It must be compared with the
+default using endpoint delta, first-update norm, and equal-NFE trajectory error,
+not selected because a single seed appears more varied.
+
 ## 4. Training contract
 
-For each example:
+For analytic-residual training:
 
 1. Encode `x0` with the artifact's bundled SDXL VAE contract.
 2. Draw epsilon and clean time `s` using the run's timestep sampler.
@@ -147,6 +168,8 @@ The primary loss is MSE on the unnormalized residual. A normalized residual may
 be logged with a floor for diagnosis but may not drive the optimizer or the
 adaptive timestep controller. Raw residual loss, reconstructed velocity error,
 `c_skip`, residual RMS, and effective log-SNR are logged per timestep bin.
+Direct-velocity training uses the same `z` and `u_target`, regresses `u_target`
+without output normalization, and logs raw velocity loss on the same bins.
 
 Effective SNR is
 
@@ -172,15 +195,17 @@ z_c = z - alpha(s)*mu
 z_next = z + (s_next-s) * (alpha'(s)*mu + c_skip(s)*z_c + r_cfg)
 ```
 
-At the first interval, `s=0`, v2 performs
+With `analytic_residual`, the first interval at `s=0` performs
 
 ```text
 u=-z
 z_next=(1-delta_s)*z
 ```
 
-analytically and does not call the U-Net. This saves one NFE. The last endpoint
-is a destination and is not evaluated. Partial img2img beginning at `s>0` starts
+analytically and does not call the U-Net. This saves one NFE. With
+`direct_velocity`, the first interval calls the U-Net and integrates its full
+velocity prediction. The last endpoint is a destination and is not evaluated.
+Partial img2img beginning at `s>0` starts
 with the ordinary learned-residual step. Inpaint source re-injection uses the v2
 `alpha/sigma` path at the next time.
 
@@ -193,7 +218,7 @@ the log-SNR grid covers only finite interior bounds. The comparison reports
 trajectory error against a high-NFE reference, first-interval error, and fixed-
 seed sample diagnostics. No grid wins solely from image appearance.
 
-CFG is applied only to the learned residual:
+For `analytic_residual`, CFG is applied only to the learned residual:
 
 ```text
 r_cfg = r_uncond + cfg*(r_cond-r_uncond)
@@ -209,6 +234,8 @@ secondary policy, not as the mechanism enforcing endpoint safety.
 The CFG probe records analytic-skip RMS, conditional/unconditional residual
 RMS, residual delta, reconstructed velocity RMS, Euler update size, and whether
 the step bypassed the U-Net. The first record must report zero residual delta.
+For `direct_velocity`, CFG is applied to the complete predicted velocity and
+the first record exposes any nonzero endpoint delta rather than masking it.
 
 ## 6. Artifact and resume boundary
 
@@ -230,9 +257,10 @@ requires the following prediction declaration:
 
 The real measured mean and centered second moment replace the example values.
 Their dataset identity, sample count, VAE identity, and accumulation precision
-are recorded in provenance. The loader dispatches v1 direct velocity and v2
-residual semantics explicitly. Missing prediction metadata is never guessed as
-v2.
+are recorded in provenance. The loader dispatches v1 direct velocity, v2
+analytic residual, and v2 direct velocity semantics explicitly. The latter
+uses prediction type `endpoint_observable_velocity`; missing prediction
+metadata is never guessed as v2.
 
 A v1 U-Net/checkpoint cannot resume as v2, even though tensor names and shapes
 match. Optimizer, EMA, adaptive-timestep, MNT trajectory, and checkpoint state

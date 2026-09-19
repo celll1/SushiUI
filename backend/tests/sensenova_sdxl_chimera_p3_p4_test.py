@@ -16,6 +16,11 @@ from core.models.sensenova_sdxl_chimera.conditioning_bridge import (
     ConditioningBridge,
 )
 from core.models.sensenova_sdxl_chimera.attention_processor import ChimeraAttnProcessor
+from core.models.sensenova_sdxl_chimera.artifact import prediction_contract
+from core.models.sensenova_sdxl_chimera.flow import (
+    FLOW_V2_PREDICTION,
+    FLOW_V2_VELOCITY_PREDICTION,
+)
 from core.training.adapters.sensenova_sdxl_chimera_adapter import (
     SenseNovaSDXLChimeraFullParameterAdapter,
 )
@@ -36,6 +41,21 @@ from core.training.ops.sensenova_sdxl_chimera_ops import (
 )
 from core.training.train_runner import _apply_chimera_training_contract
 from core.models.sensenova_sdxl_chimera.understanding import UnderstandingPrefix
+
+
+@pytest.fixture(autouse=True)
+def _legacy_chimera_artifact_documents(monkeypatch):
+    monkeypatch.setattr(
+        "core.models.sensenova_sdxl_chimera.artifact.read_artifact_documents",
+        lambda _path: (
+            {
+                "model_type": "sensenova_sdxl_chimera",
+                "format_version": 2,
+                "prediction": {"type": "flow_velocity"},
+            },
+            {},
+        ),
+    )
 
 
 def _module() -> torch.nn.Module:
@@ -185,6 +205,23 @@ def test_staged_training_contract_sets_live_encoding_and_requires_alignment_weig
         assert _apply_chimera_training_contract("artifact", "full_finetune", config)
     assert config["text_encoding_mode"] == "onthefly_gpu"
     assert config["chimera_bridge_align_steps"] == 8
+
+
+@pytest.mark.parametrize("parameterization", ["analytic_residual", "direct_velocity"])
+def test_training_contract_resolves_v2_parameterization(parameterization):
+    config = {
+        "chimera_flow_version": "v2",
+        "chimera_v2_parameterization": parameterization,
+        "chimera_v2_latent_mean": [0.1, -0.2, 0.3, -0.4],
+        "chimera_v2_latent_centered_second_moment": 1.25,
+    }
+    with patch(
+        "core.model_loader.ModelLoader.detect_model_type",
+        return_value="sensenova_sdxl_chimera",
+    ):
+        assert _apply_chimera_training_contract("artifact", "full_finetune", config)
+    assert config["chimera_flow_version"] == "v2"
+    assert config["chimera_v2_parameterization"] == parameterization
 
 
 @pytest.mark.parametrize(
@@ -535,6 +572,55 @@ def test_chimera_diffusion_step_writes_debug_latents(tmp_path):
     assert saved["predicted_latent"].shape == saved["latents"].shape
     assert recon_loss > 0.0
     assert saved["recon_loss"] == pytest.approx(recon_loss)
+
+
+@pytest.mark.parametrize(
+    "prediction_type",
+    [FLOW_V2_PREDICTION, FLOW_V2_VELOCITY_PREDICTION],
+)
+def test_chimera_v2_diffusion_step_uses_selected_target(tmp_path, prediction_type):
+    unet = _tiny_unet().train()
+    logged = []
+    trainer = SimpleNamespace(
+        config={"chimera_training_stage": "unet"},
+        device=torch.device("cpu"),
+        training_dtype=torch.float32,
+        unet=unet,
+        repa_enable=False,
+        log_prefix="[test]",
+        chimera_prediction=prediction_contract(
+            prediction_type,
+            latent_mean=[0.1, -0.2, 0.3, -0.4],
+            latent_centered_second_moment=1.25,
+        ),
+        log_extra_metric=lambda name, value: logged.append((name, value)),
+    )
+    debug_dir = tmp_path / prediction_type
+    ctx = SimpleNamespace(
+        text_embeddings=torch.randn(1, 3, 6),
+        attention_mask={
+            "pooled_text_embeds": torch.randn(1, 5),
+            "context_positions": torch.zeros(1, 3, 3),
+            "context_attention_mask": torch.ones(1, 3, dtype=torch.bool),
+        },
+        latents=torch.randn(1, 4, 8, 8),
+        timesteps=torch.tensor([0.25]),
+        time_ids=None,
+        repa_pixels=None,
+        debug_save_path=debug_dir,
+        debug_captions=["v2"],
+        debug_reference_image_paths=[None],
+    )
+
+    loss, prediction_loss, recon_loss = train_step(trainer, ctx)
+    loss.backward()
+
+    saved = torch.load(debug_dir / "latents_t0.2500.pt", map_location="cpu")
+    assert saved["prediction_type"] == prediction_type
+    assert torch.isfinite(loss)
+    assert prediction_loss > 0.0
+    assert recon_loss >= 0.0
+    assert any(name == "chimera_v2_prediction_loss" for name, _value in logged)
 
 
 def test_directory_checkpoint_entry_is_discoverable_and_sized(tmp_path):

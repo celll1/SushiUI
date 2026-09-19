@@ -213,6 +213,9 @@ passed; its status remains separately recorded.
 The detailed invariants and acceptance sequence live in
 `docs/guides/SENSENOVA_SDXL_CHIMERA_DESIGN.md`; current shipped facts and local
 bootstrap status are recorded in `docs/guides/MODEL_FACTS.md` and
-`docs/plans/SENSENOVA_SDXL_CHIMERA_HANDOFF.md`. The incompatible
-endpoint-observable path proposed for the next artifact generation is specified
-separately in `docs/guides/SENSENOVA_SDXL_CHIMERA_V2_DESIGN.md`.
+`docs/plans/SENSENOVA_SDXL_CHIMERA_HANDOFF.md`. The incompatible v2
+endpoint-observable contract is specified separately in
+`docs/guides/SENSENOVA_SDXL_CHIMERA_V2_DESIGN.md`. The later v3
+polar/tangent-CFG proposal is design-only and lives in
+`docs/guides/SENSENOVA_SDXL_CHIMERA_V3_DESIGN.md`; it does not describe the
+currently shipped prediction contract.

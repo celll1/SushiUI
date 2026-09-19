@@ -201,7 +201,12 @@ def blank_on_failure_note(arch: Optional[str]) -> Optional[str]:
 def summarize_cfg_probe(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Return extrema with the step/timestep that produced each one."""
     if not records:
-        return {"step_count": 0, "maxima": {}, "minimum_clamp_norm_ratio": None}
+        return {
+            "step_count": 0,
+            "maxima": {},
+            "minimum_clamp_norm_ratio": None,
+            "minimum_polar_radius_after": None,
+        }
 
     def point(record: Dict[str, Any], key: str) -> Dict[str, Any]:
         return {
@@ -220,6 +225,10 @@ def summarize_cfg_probe(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         "x0_raw_cond_norm_ratio",
         "latent_abs_p99_after",
         "latent_abs_max_after",
+        "tangent_orthogonality_abs_max",
+        "angular_displacement_abs_max",
+        "radial_cfg_delta",
+        "radial_exponential_ratio_abs_max",
     ):
         candidates = [record for record in records if key in record]
         if candidates:
@@ -230,8 +239,19 @@ def summarize_cfg_probe(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     if clamp_candidates:
         chosen = min(clamp_candidates, key=lambda record: float(record["clamp_norm_ratio"]))
         minimum_clamp = point(chosen, "clamp_norm_ratio")
+    radius_candidates = [
+        record for record in records if "polar_radius_min_after" in record
+    ]
+    minimum_radius = None
+    if radius_candidates:
+        chosen = min(
+            radius_candidates,
+            key=lambda record: float(record["polar_radius_min_after"]),
+        )
+        minimum_radius = point(chosen, "polar_radius_min_after")
     return {
         "step_count": len(records),
         "maxima": maxima,
         "minimum_clamp_norm_ratio": minimum_clamp,
+        "minimum_polar_radius_after": minimum_radius,
     }

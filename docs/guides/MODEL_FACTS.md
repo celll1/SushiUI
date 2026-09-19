@@ -3320,11 +3320,19 @@ Paths below are relative to `backend/core/training/`.
 - Artifact: a directory containing `chimera.json`, `config.json`, and one or
   more safetensors shards. It pins an external SenseNova understanding source
   by content hash and bundles the selected SDXL donor VAE.
-- Generation: four-channel SDXL-shaped U-Net, `t=0` noise / `t=1` clean flow
-  velocity, SenseNova three-axis RoPE, SDXL time IDs, sequential or batched CFG,
-  optional global/per-channel CFG velocity-norm capping, public timestep shift,
-  and a generation-local post-RoPE cross-attention K/V cache. Production and
-  training previews consume the same shift and CFG-norm controls.
+- Prediction formats: format 2 is v1 direct flow velocity; format 3 records the
+  v2 endpoint-observable residual or direct-velocity contract; format 4 is v3
+  `polar_tangent_flow` and includes an artifact-owned scalar radial head,
+  calibrated latent mean/moment, polar path, and solver constants. Formats are
+  not relabel- or resume-compatible across prediction versions.
+- Generation: four-channel SDXL-shaped U-Net, `t=0` noise / `t=1` clean time,
+  SenseNova three-axis RoPE, SDXL time IDs, sequential or batched CFG, public
+  timestep shift, and a generation-local post-RoPE cross-attention K/V cache.
+  v1/v2 use Cartesian velocity integration. v3 feeds unit centered direction
+  plus log-radius to one U-Net evaluation, guides only the projected tangent
+  field, anchors the scalar radial speed to the positive branch, and advances
+  radius/direction with exponential polar Euler. Production and training
+  previews consume the same prediction contract and sampler controls.
 - Source-image editing: img2img uses deterministic flow SDEdit. Inpaint uses
   RePaint-style latent pinning with white meaning generate and black meaning
   preserve, followed by pixel-space source compositing; spatial outpaint uses
@@ -3342,6 +3350,13 @@ Paths below are relative to `backend/core/training/`.
   `chimera_bridge_align_steps=N` optionally runs bridge-only for the first `N`
   completed steps before switching to `unet` or `joint`; the optimizer group
   census stays stable across the boundary and resume.
+- v3 training: the diffusion loss is scalar radial MSE plus projected tangent
+  MSE, exactly matching full-vector error in the orthogonal basis. The expected
+  unit-RMS noise-end tangent target energy is about `pi^2`; this is an intended
+  irreducible floor, not evidence of divergence. Adaptive timestep is therefore
+  limited to `off` or `observe` until measured v3 runs show that it does not
+  chase that floor. v3 always starts from a format-4 artifact at global step
+  zero; v1/v2 checkpoints and controller state cannot be resumed into it.
 - Prefix scheduling: live-conditioning stages prefetch the next batch's frozen
   raw hidden/KV/mask/positions by default (depth 1), then run the current bridge
   on the main thread. `auto` uses a CUDA stream when off-device weights plus
@@ -3369,7 +3384,10 @@ Paths below are relative to `backend/core/training/`.
 - Measured smoke: resumed step-6 txt2img at 256x256 / 2 steps / CFG 1.0 peaked
   at 10.064 GiB. Joint training save/resume through step 2 peaked at 31,714 MiB
   (30.97 GiB); the resumed run, including checkpoint completion, took 88.5 s.
-- Deferred gates: held-out alignment thresholds and reference-ti2i quality
-  evidence. Reference-ti2i is not advertised before its independent
-  image-conditioned bridge/joint gate passes, and transplant diffusion training
-  remains refused while the bridge is unaligned.
+- Deferred gates: held-out alignment thresholds, reference-ti2i quality
+  evidence, and v3 GPU acceptance measurements (checkpoint continuation,
+  equal-state radial-CFG invariance, full-rollout radial boundedness, angular
+  displacement, endpoint loss floors, VRAM, and equal-NFE quality). Reference-
+  ti2i is not advertised before its independent image-conditioned bridge/joint
+  gate passes, and transplant diffusion training remains refused while the
+  bridge is unaligned.

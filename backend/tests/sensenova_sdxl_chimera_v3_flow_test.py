@@ -46,7 +46,7 @@ def test_terminal_flat_family_has_declared_endpoint_derivatives():
         assert gamma.flatten().tolist() == pytest.approx([0.0, 1.0])
         assert derivative.flatten().tolist() == pytest.approx([slope, 0.0])
 
-    with pytest.raises(ValueError, match="\[0, 2\]"):
+    with pytest.raises(ValueError, match=r"\[0, 2\]"):
         terminal_flat_angular_schedule(endpoints, probe, endpoint_slope=2.1)
 
 

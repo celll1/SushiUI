@@ -1,7 +1,10 @@
 # SenseNova SDXL Chimera v3: polar tangent-flow design
 
-Status: design only. This document does not change the running v2 trainer,
-Run 139, its checkpoints, or the generation API.
+Status: **implemented, acceptance measurements pending**. Format-4 artifacts,
+polar targets, the radial/tangent heads, training loss, one-NFE sampler,
+img2img/inpaint source paths, CFG probes, initialization API, and frontend
+selection are wired. Existing v1/v2 artifacts and Run 139 remain unchanged;
+v3 still requires a new artifact and step-zero training run.
 
 This proposal replaces Chimera v2's statistically radial residual split with a
 pointwise polar decomposition. Its central contract is:
@@ -492,10 +495,14 @@ Every diagnostic probe and training sample record for v3 must expose:
 - antipodal, small-angle, and degenerate-radius counters.
 
 The CFG diagnostic API must sweep guidance scales at identical noise, condition,
-and timesteps. Its primary v3 assertion is that changing CFG scale changes
-`tau_cfg` and the angular path but leaves every recorded radial update bitwise
-identical before final casting. Image metrics and latent percentiles remain
-secondary outcome checks.
+and timesteps. At a fixed latent state its primary v3 assertion is that changing
+CFG scale changes `tau_cfg` but leaves the selected radial prediction and radial
+update bitwise identical before final casting. A complete rollout is not
+required to have an identical radius trace: once guidance changes the direction,
+the conditioned U-Net may predict a different radial speed at a later state.
+The structural guarantee is the absence of direct CFG extrapolation in that
+radial speed. Image metrics and latent percentiles remain secondary outcome
+checks.
 
 The frontend timestep-distribution panel continues to show the realized sample
 density. It additionally labels v3's stratification axis as proxy log-SNR and
@@ -503,18 +510,16 @@ can plot radial/tangent observations independently.
 
 ## 11. Artifact and compatibility contract
 
-v3 requires a new artifact format. The exact numeric format version is assigned
-when implementation begins; this document does not pre-empt the registry. The
-prediction block must contain the equivalent of:
+v3 uses artifact format 4. The prediction block contains the equivalent of:
 
 ```yaml
 prediction:
   type: polar_tangent_flow
   version: 1
   path: observable_polar_geodesic_v1
-  time_direction: noise_to_clean
+  time_direction: zero_noise_to_one_clean
   radial_schedule: cubic_quadrature_v1
-  angular_schedule: quadratic_terminal_flat_v1
+  angular_schedule: terminal_flat_cubic_v1
   angular_endpoint_slope: 2.0
   cfg_mode: tangent_only_v1
   radial_anchor: positive_condition
@@ -608,8 +613,10 @@ quality experiments rather than a prerequisite for correctness.
 
 - one training step, checkpoint, strict reload, and deterministic continuation;
 - one generation at each supported resolution and aspect ratio;
-- equal-seed CFG sweep with identical radial traces;
-- dynamic CFG changes only angular traces;
+- equal-state CFG probes with identical selected radial predictions and radial
+  updates, plus full-rollout checks for bounded non-divergent radius traces;
+- equal-state dynamic-CFG changes only the tangent update; full trajectories
+  may subsequently produce different conditioned radial predictions;
 - reference-image, image-to-image, and inpaint routing checks;
 - peak VRAM and step-time comparison with v2 at equal U-Net geometry.
 

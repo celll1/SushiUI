@@ -139,6 +139,9 @@ class AdaptiveTimestepSampler(TimestepSampler):
         self.control_count = 0
         self.auto_promoted = False
         self.auto_promotion_update: Optional[int] = None
+        self.base_rebase_count = 0
+        self.last_rebased_from: Optional[Dict[str, Any]] = None
+        self.rebased_on_load = False
         self._last_action = "warming_up"
         if resume_state:
             self.load_state(resume_state)
@@ -365,6 +368,8 @@ class AdaptiveTimestepSampler(TimestepSampler):
             "control_count": self.control_count,
             "auto_promoted": self.auto_promoted,
             "auto_promotion_update": self.auto_promotion_update,
+            "base_rebase_count": self.base_rebase_count,
+            "last_rebased_from": self.last_rebased_from,
             "last_action": self._last_action,
         }
 
@@ -384,10 +389,25 @@ class AdaptiveTimestepSampler(TimestepSampler):
         for key in ("bins", "log_snr_min", "log_snr_max"):
             if saved_cfg[key] != self.config[key]:
                 raise ValueError(f"adaptive timestep {key} changed across resume")
-        if state.get("base") != sampler_expr(self.base):
-            raise ValueError(
-                "adaptive timestep base distribution changed across resume; disable "
-                "adaptation for the transition")
+        saved_base = state.get("base")
+        base_changed = saved_base != sampler_expr(self.base)
+        self.base_rebase_count = int(state.get("base_rebase_count", 0))
+        self.last_rebased_from = state.get("last_rebased_from")
+        if base_changed:
+            # The configured base law is authoritative on resume. A target or
+            # in-flight morph derived from the old law cannot compose with it.
+            self.current = self.base
+            self.update_step = int(state.get("update_step", 0))
+            self.last_control_update = self.update_step
+            self.observations_since_control = 0
+            self.base_rebase_count += 1
+            self.last_rebased_from = saved_base
+            self.rebased_on_load = True
+            self._last_action = "base_rebased"
+            setter = getattr(self.current, "set_optimizer_update_step", None)
+            if setter is not None:
+                setter(self.update_step)
+            return
         self.current = build_sampler_from_expr(state["current"])
         self.update_step = int(state.get("update_step", 0))
         self.last_control_update = int(state.get("last_control_update", -10**18))
@@ -445,6 +465,8 @@ class AdaptiveTimestepSampler(TimestepSampler):
             "base_bin_probability": list(self.base_bin_probability),
             "auto_promoted": self.auto_promoted,
             "auto_promotion_update": self.auto_promotion_update,
+            "base_rebase_count": self.base_rebase_count,
+            "last_rebased_from": self.last_rebased_from,
             "auto_ready_bins": ready,
             "auto_required_bins": len(eligible),
             "mean_controller_loss": (sum(finite) / len(finite)) if finite else None,

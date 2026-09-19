@@ -104,6 +104,7 @@ def migrate_manifest_prediction(
     latent_mean: Iterable[float],
     latent_centered_second_moment: float,
     prediction_type: str = FLOW_V2_PREDICTION,
+    calibration: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return a format-v3 manifest using the selected v2 prediction semantics."""
     migrated = json.loads(json.dumps(dict(manifest)))
@@ -113,6 +114,10 @@ def migrate_manifest_prediction(
         latent_mean=latent_mean,
         latent_centered_second_moment=latent_centered_second_moment,
     )
+    if calibration:
+        migrated["prediction"]["calibration"] = json.loads(
+            json.dumps(dict(calibration))
+        )
     return migrated
 
 

@@ -250,7 +250,12 @@ requires the following prediction declaration:
     "time_direction": "zero_noise_to_one_clean",
     "path": "symmetric_cubic_observable_v1",
     "latent_mean": [0.0, 0.0, 0.0, 0.0],
-    "latent_centered_second_moment": 1.0
+    "latent_centered_second_moment": 1.0,
+    "calibration": {
+      "source": "post_vae_debug_latents",
+      "sample_count": 0,
+      "scalar_count": 0
+    }
   }
 }
 ```

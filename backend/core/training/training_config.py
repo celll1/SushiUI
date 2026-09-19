@@ -487,6 +487,7 @@ def _build_train_section(
         "chimera_training_stage", "chimera_flow_version",
         "chimera_v2_parameterization",
         "chimera_v2_latent_mean", "chimera_v2_latent_centered_second_moment",
+        "chimera_v2_calibration",
         "chimera_bridge_align_steps",
         "chimera_allow_unaligned_scratch",
         "chimera_conditioning_cache", "chimera_prefix_prefetch",

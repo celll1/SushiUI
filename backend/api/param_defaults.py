@@ -2483,6 +2483,7 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "chimera_v2_parameterization": "auto",
     "chimera_v2_latent_mean": None,
     "chimera_v2_latent_centered_second_moment": None,
+    "chimera_v2_calibration": None,
     "chimera_bridge_align_steps": 0,
     "chimera_allow_unaligned_scratch": False,
     "chimera_conditioning_cache": True,

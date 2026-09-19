@@ -1421,12 +1421,14 @@ def _apply_chimera_training_contract(
             latent_mean=contract["latent_mean"],
             latent_centered_second_moment=contract["latent_centered_second_moment"],
             prediction_type=selected_prediction,
+            calibration=train_config.get("chimera_v2_calibration"),
         )
         train_config["chimera_v2_parameterization"] = resolved_parameterization
     else:
         train_config["chimera_v2_parameterization"] = "auto"
         train_config["chimera_v2_latent_mean"] = None
         train_config["chimera_v2_latent_centered_second_moment"] = None
+        train_config["chimera_v2_calibration"] = None
     train_config["chimera_flow_version"] = resolved_flow
     stage = str(train_config.get("chimera_training_stage", "unet")).strip().lower()
     if stage not in {"bridge_align", "unet", "joint"}:

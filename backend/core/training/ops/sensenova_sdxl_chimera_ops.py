@@ -177,6 +177,7 @@ def load_components(trainer) -> None:
                 "latent_centered_second_moment"
             ],
             prediction_type=prediction_type,
+            calibration=config.get("chimera_v2_calibration"),
         )
         trainer.chimera_runtime_config = dict(trainer.chimera_runtime_config)
         trainer.chimera_runtime_config["format_version"] = FORMAT_VERSION

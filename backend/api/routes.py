@@ -15175,6 +15175,9 @@ class TrainingRunCreateRequest(BaseModel):
     chimera_v2_latent_centered_second_moment: Optional[float] = Field(
         default=TRAINING_DEFAULTS["chimera_v2_latent_centered_second_moment"], gt=0
     )
+    chimera_v2_calibration: Optional[Dict[str, Any]] = TRAINING_DEFAULTS[
+        "chimera_v2_calibration"
+    ]
     chimera_bridge_align_steps: int = Field(
         default=TRAINING_DEFAULTS["chimera_bridge_align_steps"], ge=0
     )

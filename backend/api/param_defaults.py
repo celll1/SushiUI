@@ -162,6 +162,7 @@ H3_HYBRID_LOAD_DEFAULTS: Dict[str, Any] = {
 }
 
 CHIMERA_INITIALIZE_DEFAULTS: Dict[str, Any] = {
+    "chimera_warmstart_source": None,
     "flow_version": "v1",
     "latent_mean": None,
     "latent_centered_second_moment": None,

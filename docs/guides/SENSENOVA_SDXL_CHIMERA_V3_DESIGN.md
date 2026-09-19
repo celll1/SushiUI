@@ -543,6 +543,12 @@ Compatibility rules:
   initialization with both output heads reset and global step zero;
 - scratch U-Net initialization is the default.
 
+The initializer exposes that experimental path as `chimera_warmstart_source`.
+It preserves the source bridge and all U-Net parameters except `conv_out`, adds
+a freshly initialized radial head, and records the source artifact and reset
+set in `chimera.json`. Optimizer, scheduler, timestep-controller, RNG, epoch,
+and source global-step state are never copied.
+
 ## 12. API and UI surface
 
 Path, target, projector, radial anchor, and integrator are artifact-owned and

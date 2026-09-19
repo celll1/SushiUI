@@ -213,3 +213,138 @@ def initialize_chimera_from_paths(
             "prediction": prediction,
         },
     )
+
+
+def build_chimera_v3_warmstart(
+    output_directory: str,
+    *,
+    source_directory: str,
+    prediction: Mapping[str, Any],
+    initialization_seed: int = 0,
+    max_shard_bytes: int = 10 * 1024**3,
+) -> dict[str, Any]:
+    """Convert a v1/v2 Chimera checkpoint into a step-zero v3 artifact."""
+    from .loader import load_chimera_artifact
+
+    root = Path(output_directory).resolve()
+    if root.exists() and any(root.iterdir()):
+        raise FileExistsError(f"Chimera target must be empty: {root}")
+    root.mkdir(parents=True, exist_ok=True)
+    source = load_chimera_artifact(source_directory, load_understanding=False)
+    if source["prediction"]["type"] == FLOW_V3_PREDICTION:
+        raise ValueError("Chimera v3 warm-start source must be a v1/v2 artifact")
+    declared = prediction_contract(
+        str(prediction.get("type") or ""),
+        latent_mean=prediction.get("latent_mean"),
+        latent_centered_second_moment=prediction.get(
+            "latent_centered_second_moment"
+        ),
+        angular_endpoint_slope=prediction.get("angular_endpoint_slope", 2.0),
+        radius_floor=prediction.get("radius_floor", 1e-8),
+        angular_singularity_threshold=prediction.get(
+            "angular_singularity_threshold", 1e-6
+        ),
+        angular_step_limit=prediction.get("angular_step_limit"),
+    )
+    if declared["type"] != FLOW_V3_PREDICTION:
+        raise ValueError("Chimera warm-start output must use polar_tangent_flow")
+
+    unet = source["unet"]
+    with torch.random.fork_rng(
+        devices=[] if not torch.cuda.is_available() else list(range(torch.cuda.device_count()))
+    ):
+        torch.manual_seed(int(initialization_seed))
+        unet.conv_out.reset_parameters()
+        radial_head = install_polar_radial_head(unet)
+    bridge = source["condition_bridge"]
+    vae_state = source["frozen_vae_state"]
+    runtime = json.loads(json.dumps(source["config"]))
+    runtime["format_version"] = V3_FORMAT_VERSION
+    runtime["polar_radial_head"] = {
+        "version": radial_head.VERSION,
+        "source": "conditioned_mid_block",
+        "mid_channels": radial_head.mid_channels,
+    }
+    manifest = json.loads(json.dumps(source["manifest"]))
+    source_training = dict(manifest.pop("training", {}) or {})
+    manifest["format_version"] = V3_FORMAT_VERSION
+    manifest["prediction"] = declared
+    manifest["unet"]["initialization"] = "chimera_v2_warmstart"
+    manifest["unet"]["parameter_count"] = sum(
+        parameter.numel() for parameter in unet.parameters()
+    )
+    manifest["unet"]["warmstart"] = {
+        "source": str(Path(source_directory).resolve()),
+        "source_format_version": int(source["manifest"]["format_version"]),
+        "source_prediction_type": source["prediction"]["type"],
+        "source_step": source_training.get("step"),
+        "reset": ["conv_out", "chimera_polar_radial_head"],
+    }
+
+    tensors, dropped = dedup_tensors((
+        *prefixed_state(bridge, "condition_bridge."),
+        *prefixed_state(unet, "unet."),
+        *((f"vae.{name}", tensor.detach().cpu().contiguous())
+          for name, tensor in vae_state.items()),
+    ))
+    metadata = {
+        "model_type": MODEL_TYPE,
+        "format": "pt",
+        "format_version": str(V3_FORMAT_VERSION),
+        "tied_weights_dropped": json.dumps(dropped),
+    }
+    written = save_single_file_state(
+        tensors, metadata, str(root / WEIGHTS_BASENAME),
+        max_shard_bytes=max_shard_bytes,
+    )
+    with (root / CONFIG_NAME).open("w", encoding="utf-8") as handle:
+        json.dump(runtime, handle, indent=2, ensure_ascii=False)
+    with (root / MANIFEST_NAME).open("w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, indent=2, ensure_ascii=False)
+    return {
+        "directory": str(root),
+        "weights": written,
+        "manifest": manifest,
+        "config": runtime,
+    }
+
+
+def initialize_chimera_v3_warmstart_atomically(
+    model_root: str,
+    output_name: str,
+    *,
+    source_directory: str,
+    prediction: Mapping[str, Any],
+    initialization_seed: int = 0,
+    max_shard_bytes: int = 10 * 1024**3,
+) -> dict[str, Any]:
+    root = Path(model_root).resolve()
+    if not output_name or Path(output_name).name != output_name or output_name in {".", ".."}:
+        raise ValueError("output_name must be one relative directory name")
+    target = (root / output_name).resolve()
+    if target.parent != root:
+        raise ValueError("Chimera target escapes the configured model root")
+    if target.exists():
+        if not target.is_dir() or any(target.iterdir()):
+            raise FileExistsError(f"Chimera target already exists and is not empty: {target}")
+        target.rmdir()
+    root.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix=f".{output_name}.building-", dir=str(root)))
+    try:
+        result = build_chimera_v3_warmstart(
+            str(temporary),
+            source_directory=source_directory,
+            prediction=prediction,
+            initialization_seed=initialization_seed,
+            max_shard_bytes=max_shard_bytes,
+        )
+        from .loader import load_chimera_artifact
+
+        load_chimera_artifact(str(temporary), load_understanding=False)
+        os.replace(temporary, target)
+        result["directory"] = str(target)
+        result["weights"] = str(target / Path(result["weights"]).name)
+        return result
+    except BaseException:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise

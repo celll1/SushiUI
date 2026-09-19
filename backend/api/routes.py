@@ -9719,6 +9719,9 @@ class InitializeSenseNovaSDXLChimeraRequest(BaseModel):
     target_dir: Optional[str] = None
     understanding_source: str
     sdxl_source: str
+    chimera_warmstart_source: Optional[str] = CHIMERA_INITIALIZE_DEFAULTS[
+        "chimera_warmstart_source"
+    ]
     flow_version: Literal["v1", "v2", "v3"] = CHIMERA_INITIALIZE_DEFAULTS[
         "flow_version"
     ]
@@ -9748,7 +9751,10 @@ async def initialize_sensenova_sdxl_chimera_endpoint(
     db: Session = Depends(get_gallery_db),
 ):
     """Build a complete Chimera artifact under the configured model root."""
-    from core.models.sensenova_sdxl_chimera.builder import initialize_chimera_from_paths
+    from core.models.sensenova_sdxl_chimera.builder import (
+        initialize_chimera_from_paths,
+        initialize_chimera_v3_warmstart_atomically,
+    )
     from core.models.sensenova_sdxl_chimera.artifact import prediction_contract
     from core.models.sensenova_sdxl_chimera.flow import (
         FLOW_V2_PREDICTION,
@@ -9773,21 +9779,38 @@ async def initialize_sensenova_sdxl_chimera_endpoint(
             latent_centered_second_moment=request.latent_centered_second_moment,
             angular_endpoint_slope=request.angular_endpoint_slope,
         )
+    if request.chimera_warmstart_source and request.flow_version != "v3":
+        raise HTTPException(
+            status_code=400,
+            detail="chimera_warmstart_source is valid only for flow_version='v3'",
+        )
 
     try:
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            executor,
-            lambda: initialize_chimera_from_paths(
-                model_root,
-                request.output_name,
-                understanding_source=request.understanding_source,
-                sdxl_source=request.sdxl_source,
-                unet_initialization=request.unet_initialization,
-                initialization_seed=request.initialization_seed,
-                prediction=prediction,
-            ),
-        )
+        if request.chimera_warmstart_source:
+            result = await loop.run_in_executor(
+                executor,
+                lambda: initialize_chimera_v3_warmstart_atomically(
+                    model_root,
+                    request.output_name,
+                    source_directory=request.chimera_warmstart_source,
+                    prediction=prediction,
+                    initialization_seed=request.initialization_seed,
+                ),
+            )
+        else:
+            result = await loop.run_in_executor(
+                executor,
+                lambda: initialize_chimera_from_paths(
+                    model_root,
+                    request.output_name,
+                    understanding_source=request.understanding_source,
+                    sdxl_source=request.sdxl_source,
+                    unet_initialization=request.unet_initialization,
+                    initialization_seed=request.initialization_seed,
+                    prediction=prediction,
+                ),
+            )
     except (FileNotFoundError, FileExistsError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

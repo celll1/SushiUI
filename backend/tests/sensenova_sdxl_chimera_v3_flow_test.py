@@ -5,7 +5,15 @@ import math
 import pytest
 import torch
 
+from core.models.sensenova_sdxl_chimera.artifact import (
+    FORMAT_VERSION,
+    V3_FORMAT_VERSION,
+    ChimeraArtifactError,
+    prediction_contract,
+    validated_prediction_contract,
+)
 from core.models.sensenova_sdxl_chimera.flow import (
+    FLOW_V3_PREDICTION,
     polar_flow_target,
     polar_tangent_projection,
     terminal_flat_angular_schedule,
@@ -134,3 +142,44 @@ def test_coincident_and_antipodal_policies_are_finite_and_deterministic():
 
     with pytest.raises(ValueError, match="radius"):
         polar_flow_target(torch.zeros_like(clean), noise, 0.5, latent_mean=[0.0])
+
+
+def test_v3_prediction_contract_is_strictly_format_four():
+    contract = prediction_contract(
+        FLOW_V3_PREDICTION,
+        latent_mean=[0.1, -0.2, 0.3, -0.4],
+        latent_centered_second_moment=1.25,
+        angular_endpoint_slope=0.75,
+        angular_step_limit=None,
+    )
+    manifest = {"format_version": V3_FORMAT_VERSION, "prediction": contract}
+    assert validated_prediction_contract(manifest) == contract
+    assert contract["cfg_mode"] == "tangent_only_v1"
+    assert contract["integrator"] == "polar_exp_euler_v1"
+    assert contract["spatial_input"] == "unit_centered_direction_v1"
+    assert contract["angular_endpoint_slope"] == pytest.approx(0.75)
+
+    with pytest.raises(ChimeraArtifactError, match="requires Chimera format v4"):
+        validated_prediction_contract(
+            {"format_version": FORMAT_VERSION, "prediction": contract}
+        )
+    with pytest.raises(ChimeraArtifactError, match="requires polar_tangent_flow"):
+        validated_prediction_contract(
+            {
+                "format_version": V3_FORMAT_VERSION,
+                "prediction": {"type": "flow_velocity"},
+            }
+        )
+    with pytest.raises(ChimeraArtifactError, match="angular_endpoint_slope"):
+        prediction_contract(
+            FLOW_V3_PREDICTION,
+            latent_mean=[0.0] * 4,
+            latent_centered_second_moment=1.0,
+            angular_endpoint_slope=3.0,
+        )
+    invalid = dict(contract)
+    invalid["integrator"] = "cartesian_euler"
+    with pytest.raises(ChimeraArtifactError, match="prediction contract fields"):
+        validated_prediction_contract(
+            {"format_version": V3_FORMAT_VERSION, "prediction": invalid}
+        )

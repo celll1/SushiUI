@@ -25,13 +25,18 @@ from .flow import (
     FLOW_V2_PATH,
     FLOW_V2_PREDICTION,
     FLOW_V2_VELOCITY_PREDICTION,
+    FLOW_V3_ANGULAR_SCHEDULE,
+    FLOW_V3_PATH,
+    FLOW_V3_PREDICTION,
+    FLOW_V3_RADIAL_SCHEDULE,
 )
 from .positional import POSITION_LAYOUT_VERSION, SPATIAL_UNIT_PIXELS
 
 MODEL_TYPE = "sensenova_sdxl_chimera"
 LEGACY_FORMAT_VERSION = 2
 FORMAT_VERSION = 3
-SUPPORTED_FORMAT_VERSIONS = (LEGACY_FORMAT_VERSION, FORMAT_VERSION)
+V3_FORMAT_VERSION = 4
+SUPPORTED_FORMAT_VERSIONS = (LEGACY_FORMAT_VERSION, FORMAT_VERSION, V3_FORMAT_VERSION)
 MANIFEST_NAME = "chimera.json"
 CONFIG_NAME = "config.json"
 WEIGHTS_BASENAME = "model.safetensors"
@@ -46,6 +51,10 @@ def prediction_contract(
     *,
     latent_mean: Iterable[float] | None = None,
     latent_centered_second_moment: float | None = None,
+    angular_endpoint_slope: float = 2.0,
+    radius_floor: float = 1e-8,
+    angular_singularity_threshold: float = 1e-6,
+    angular_step_limit: float | None = None,
 ) -> dict[str, Any]:
     """Build and validate one explicit Chimera prediction contract."""
     kind = str(prediction_type).strip().lower()
@@ -54,7 +63,11 @@ def prediction_contract(
             "type": FLOW_V1_PREDICTION,
             "time_direction": "zero_noise_to_one_clean",
         }
-    if kind not in {FLOW_V2_PREDICTION, FLOW_V2_VELOCITY_PREDICTION}:
+    if kind not in {
+        FLOW_V2_PREDICTION,
+        FLOW_V2_VELOCITY_PREDICTION,
+        FLOW_V3_PREDICTION,
+    }:
         raise ChimeraArtifactError(f"unsupported Chimera prediction type: {prediction_type!r}")
     mean_source = () if latent_mean is None else latent_mean
     mean = [float(value) for value in mean_source]
@@ -68,14 +81,51 @@ def prediction_contract(
         raise ChimeraArtifactError(
             "Chimera v2 latent_centered_second_moment must be finite and > 0"
         )
-    return {
+    base = {
         "type": kind,
         "version": 1,
         "time_direction": "zero_noise_to_one_clean",
-        "path": FLOW_V2_PATH,
         "latent_mean": mean,
         "latent_centered_second_moment": q,
     }
+    if kind != FLOW_V3_PREDICTION:
+        base["path"] = FLOW_V2_PATH
+        return base
+
+    slope = float(angular_endpoint_slope)
+    floor = float(radius_floor)
+    threshold = float(angular_singularity_threshold)
+    step_limit = None if angular_step_limit is None else float(angular_step_limit)
+    if not math.isfinite(slope) or not 0.0 <= slope <= 2.0:
+        raise ChimeraArtifactError(
+            "Chimera v3 angular_endpoint_slope must be finite and in [0, 2]"
+        )
+    if not math.isfinite(floor) or floor <= 0.0:
+        raise ChimeraArtifactError("Chimera v3 radius_floor must be finite and > 0")
+    if not math.isfinite(threshold) or threshold <= 0.0:
+        raise ChimeraArtifactError(
+            "Chimera v3 angular_singularity_threshold must be finite and > 0"
+        )
+    if step_limit is not None and (not math.isfinite(step_limit) or step_limit <= 0.0):
+        raise ChimeraArtifactError(
+            "Chimera v3 angular_step_limit must be null or finite and > 0"
+        )
+    base.update({
+        "path": FLOW_V3_PATH,
+        "radial_schedule": FLOW_V3_RADIAL_SCHEDULE,
+        "angular_schedule": FLOW_V3_ANGULAR_SCHEDULE,
+        "angular_endpoint_slope": slope,
+        "cfg_mode": "tangent_only_v1",
+        "radial_anchor": "positive_condition",
+        "integrator": "polar_exp_euler_v1",
+        "spatial_input": "unit_centered_direction_v1",
+        "radius_conditioning": "log_rho",
+        "reduction_dtype": "float32",
+        "radius_floor": floor,
+        "angular_singularity_threshold": threshold,
+        "angular_step_limit": step_limit,
+    })
+    return base
 
 
 def validated_prediction_contract(
@@ -87,15 +137,41 @@ def validated_prediction_contract(
         if declared.get("type") != FLOW_V1_PREDICTION:
             raise ChimeraArtifactError("Chimera format v2 requires flow_velocity prediction")
         return prediction_contract()
-    if version != FORMAT_VERSION:
+    if version not in {FORMAT_VERSION, V3_FORMAT_VERSION}:
         raise ChimeraArtifactError(f"unsupported Chimera format version: {version}")
-    return prediction_contract(
-        str(declared.get("type") or ""),
+    kind = str(declared.get("type") or "")
+    if version == V3_FORMAT_VERSION and kind != FLOW_V3_PREDICTION:
+        raise ChimeraArtifactError(
+            "Chimera format v4 requires polar_tangent_flow prediction"
+        )
+    if version == FORMAT_VERSION and kind == FLOW_V3_PREDICTION:
+        raise ChimeraArtifactError(
+            "polar_tangent_flow prediction requires Chimera format v4"
+        )
+    validated = prediction_contract(
+        kind,
         latent_mean=declared.get("latent_mean"),
         latent_centered_second_moment=declared.get(
             "latent_centered_second_moment"
         ),
+        angular_endpoint_slope=declared.get("angular_endpoint_slope", 2.0),
+        radius_floor=declared.get("radius_floor", 1e-8),
+        angular_singularity_threshold=declared.get(
+            "angular_singularity_threshold", 1e-6
+        ),
+        angular_step_limit=declared.get("angular_step_limit"),
     )
+    if version == V3_FORMAT_VERSION:
+        mismatches = {
+            key: declared.get(key)
+            for key, expected in validated.items()
+            if declared.get(key) != expected
+        }
+        if mismatches:
+            raise ChimeraArtifactError(
+                f"invalid Chimera v3 prediction contract fields: {mismatches}"
+            )
+    return validated
 
 
 def migrate_manifest_prediction(
@@ -246,10 +322,21 @@ def manifest_template(
         latent_centered_second_moment=declared.get(
             "latent_centered_second_moment"
         ),
+        angular_endpoint_slope=declared.get("angular_endpoint_slope", 2.0),
+        radius_floor=declared.get("radius_floor", 1e-8),
+        angular_singularity_threshold=declared.get(
+            "angular_singularity_threshold", 1e-6
+        ),
+        angular_step_limit=declared.get("angular_step_limit"),
+    )
+    artifact_format = (
+        V3_FORMAT_VERSION
+        if declared["type"] == FLOW_V3_PREDICTION
+        else FORMAT_VERSION
     )
     return {
         "model_type": MODEL_TYPE,
-        "format_version": FORMAT_VERSION,
+        "format_version": artifact_format,
         "understanding": {
             "locator": f"model:{Path(understanding_source).resolve()}",
             "basename": Path(understanding_source).name,
@@ -289,13 +376,17 @@ def manifest_template(
 
 
 def runtime_config(
-    *, unet_config: Mapping[str, Any], bridge_config: ChimeraBridgeConfig, vae_config: Mapping[str, Any]
+    *,
+    unet_config: Mapping[str, Any],
+    bridge_config: ChimeraBridgeConfig,
+    vae_config: Mapping[str, Any],
+    format_version: int = FORMAT_VERSION,
 ) -> dict[str, Any]:
     bridge = asdict(bridge_config)
     bridge["selected_layers"] = list(bridge["selected_layers"])
     return {
         "model_type": MODEL_TYPE,
-        "format_version": FORMAT_VERSION,
+        "format_version": int(format_version),
         "unet": dict(unet_config),
         "conditioning_bridge": bridge,
         "vae": dict(vae_config),

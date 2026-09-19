@@ -41,6 +41,7 @@ machine-local working material.
 | [docs/guides/SENSENOVA_SDXL_CHIMERA_DESIGN.md](SENSENOVA_SDXL_CHIMERA_DESIGN.md) | Chimera architecture contract, bootstrap workflow, and remaining measured acceptance gates. |
 | [docs/guides/SENSENOVA_SDXL_CHIMERA_V2_DESIGN.md](SENSENOVA_SDXL_CHIMERA_V2_DESIGN.md) | Accepted v2 endpoint-observable path, analytic skip, residual target, versioning, and implementation gates. |
 | [docs/guides/SENSENOVA_SDXL_CHIMERA_V3_DESIGN.md](SENSENOVA_SDXL_CHIMERA_V3_DESIGN.md) | Implemented format-4 polar path, tangent-only CFG, learned radial flow, one-NFE polar solver, and pending measured acceptance gates. |
+| [docs/guides/SENSENOVA_SDXL_CHIMERA_V4_DESIGN.md](SENSENOVA_SDXL_CHIMERA_V4_DESIGN.md) | Proposed resolution-calibrated difficulty time, measured motivation, provisional v3 sampling response, and implementation gates. |
 | [docs/decisions/SENSENOVA_TEXT_OUTPUT_DESIGN.md](../decisions/SENSENOVA_TEXT_OUTPUT_DESIGN.md) | Implemented SenseNova text-output and mixed-objective contract. |
 
 ## Training and data

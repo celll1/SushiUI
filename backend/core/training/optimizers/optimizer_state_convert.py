@@ -164,6 +164,15 @@ def _target_format(optimizer) -> Optional[str]:
     return None
 
 
+def incompatible_optimizer_algorithm(saved_state_dict: dict, target_optimizer) -> Optional[str]:
+    """Describe a known Lion/AdamW algorithm change that requires fresh state."""
+    source = detect_state_format(saved_state_dict)
+    target = _target_format(target_optimizer)
+    if source is None or target is None or _algo(source) == _algo(target):
+        return None
+    return f"{source} -> {target}"
+
+
 
 def _algo(fmt: str) -> str:
     return "adamw" if "adamw" in fmt else "lion"

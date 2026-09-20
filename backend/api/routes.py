@@ -16500,6 +16500,55 @@ def _configured_resume_step(run: TrainingRun, config: dict) -> Optional[int]:
     return max(steps) if steps else None
 
 
+def _repair_or_refuse_missing_resume_target(
+    run: TrainingRun, config: dict, config_path: str
+) -> bool:
+    """Promote a retention-pruned ancestor to latest; refuse every other miss."""
+    root = config.get("config") or config
+    process = (root.get("process") or [{}])[0] or {}
+    train = process.get("train") or {}
+    resume_value = train.get("resume_from_checkpoint")
+    if not isinstance(resume_value, str) or not resume_value.strip() \
+            or resume_value.lower() == "latest":
+        return False
+
+    candidate = Path(resume_value)
+    if not candidate.is_absolute():
+        candidate = Path(run.output_dir) / candidate
+    if candidate.exists():
+        return False
+
+    match = re.search(r"_step_(\d+)", candidate.name)
+    requested_step = int(match.group(1)) if match else None
+    train["resume_from_checkpoint"] = "latest"
+    latest_step = _configured_resume_step(run, config)
+    if requested_step is None or latest_step is None or latest_step <= requested_step:
+        train["resume_from_checkpoint"] = resume_value
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Configured resume checkpoint does not exist: "
+                f"{resume_value}. Refusing to start from step 0; select an existing "
+                "checkpoint or set resume_from_checkpoint to 'latest'."
+            ),
+        )
+
+    import yaml as _yaml
+    repaired_yaml = _yaml.safe_dump(
+        config, sort_keys=False, allow_unicode=True
+    )
+    target = Path(config_path)
+    temporary = target.with_name(target.name + ".resume.tmp")
+    temporary.write_text(repaired_yaml, encoding="utf-8")
+    os.replace(temporary, target)
+    run.config_yaml = repaired_yaml
+    print(
+        f"[API] Resume checkpoint step {requested_step} was pruned after this run "
+        f"advanced; promoted run {run.id} to latest surviving step {latest_step}"
+    )
+    return True
+
+
 @router.post("/training/runs/{run_id}/start")
 async def start_training_run(run_id: int, db: Session = Depends(get_training_db)):
     """Start a training run"""
@@ -16576,6 +16625,11 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
 
         if not os.path.exists(config_path):
             raise HTTPException(status_code=500, detail="Config file not found")
+
+        # A run resumed from an older explicit checkpoint may later prune that
+        # ancestor after writing newer saves. Preserve the continuation head in
+        # that one provable case; every typo/unexplained missing target is fatal.
+        _repair_or_refuse_missing_resume_target(run, _gpu_doc, config_path)
 
         print(f"[API] Updating status to 'starting'")
         run.status = "starting"
@@ -17066,6 +17120,11 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
                 setattr(run, key, value)
             db.commit()
             raise HTTPException(status_code=409, detail=str(e)) from e
+        if isinstance(e, HTTPException):
+            for key, value in previous_training_state.items():
+                setattr(run, key, value)
+            db.commit()
+            raise
         # A rejected request is the caller's mistake, not a start failure:
         # restore the row and let the standard ErrorResponse handler answer 400
         # instead of masking it as a 500.
@@ -17100,8 +17159,14 @@ async def stop_training_run(run_id: int, db: Session = Depends(get_training_db))
             await process.stop()
             await training_process_manager.remove_process(run_id)
         else:
-            # Process doesn't exist (likely crashed during startup)
-            print(f"[API] No active process found for run {run_id}, updating status only")
+            # A backend restart loses the in-memory child registry while the
+            # trainer can keep running. Its cooperative flag is the only safe
+            # cross-process stop path in that state; a future start removes a
+            # stale flag if the child had already exited.
+            stop_flag = Path(run.output_dir) / ".stop_training"
+            stop_flag.touch()
+            print(f"[API] No registered process for run {run_id}; wrote stop flag: "
+                  f"{stop_flag}")
 
         run.status = "stopped"
         db.commit()

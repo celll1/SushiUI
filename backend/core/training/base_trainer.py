@@ -3192,6 +3192,14 @@ class BaseTrainer(ABC):
                         checkpoint_to_load = str(checkpoint_path_obj)
                         print(f"{self.log_prefix} Using specified checkpoint (absolute path): {checkpoint_to_load}")
 
+            if self.resume_from_checkpoint.lower() != "latest" and checkpoint_to_load is None:
+                raise FileNotFoundError(
+                    "resume_from_checkpoint was explicitly set, but the checkpoint "
+                    f"does not exist: {self.resume_from_checkpoint}. Refusing to start "
+                    "from base weights at step 0. Select an existing checkpoint or "
+                    "use resume_from_checkpoint='latest'."
+                )
+
         if checkpoint_to_load and QUARANTINE_ENTRY_MARKER in Path(checkpoint_to_load).name:
             # Resume scanning ("latest") never selects this name (see
             # QUARANTINE_ENTRY_MARKER); reaching here means resume_from_checkpoint
@@ -6178,8 +6186,19 @@ class BaseTrainer(ABC):
             _carry_step = 0
             try:
                 from core.training.optimizers.optimizer_state_convert import (
+                    incompatible_optimizer_algorithm,
                     maybe_convert_optimizer_state,
                 )
+                _algorithm_change = incompatible_optimizer_algorithm(
+                    optimizer_state, optimizer
+                )
+                if _algorithm_change is not None:
+                    print(
+                        f"{self.log_prefix} [OptConvert] {_algorithm_change} changes "
+                        "the optimizer algorithm; model/global step resume, but all "
+                        "optimizer moments start fresh and warmup is re-armed"
+                    )
+                    return False
                 _converted, _carry_step = maybe_convert_optimizer_state(
                     optimizer_state, optimizer, log_prefix=self.log_prefix
                 )
@@ -16161,8 +16180,11 @@ class BaseTrainer(ABC):
                     # current weights if no saved shadow is found)
                     self.load_ema_state(checkpoint_step)
                 else:
-                    print(f"{self.log_prefix} WARNING: Checkpoint not found: {checkpoint_path}")
-                    print(f"{self.log_prefix} Starting from scratch")
+                    raise FileNotFoundError(
+                        "resume_from_checkpoint was explicitly set, but the checkpoint "
+                        f"does not exist: {checkpoint_path}. Refusing to reset global_step "
+                        "to 0. Select an existing checkpoint or use 'latest'."
+                    )
 
         # ============================================================
         # Resume structure-change guard (dataset composition or batch structure)

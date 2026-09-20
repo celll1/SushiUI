@@ -223,6 +223,50 @@ config:
     assert run.resumed_from_step == 2560
 
 
+def test_start_promotes_a_pruned_resume_ancestor_to_latest(monkeypatch, tmp_path):
+    _patch_common(monkeypatch, tmp_path)
+    missing = tmp_path / "run_step_002956"
+    config_yaml = f"""
+config:
+  process:
+  - train:
+      resume_from_checkpoint: {missing}
+"""
+    run = _make_run(tmp_path, status="completed", config_yaml=config_yaml)
+    run.started_at = routes.datetime.utcnow()
+    checkpoint = tmp_path / "run_step_005550"
+    checkpoint.mkdir()
+    (checkpoint / "chimera.json").write_text("{}", encoding="utf-8")
+
+    asyncio.run(routes.start_training_run(run_id=1, db=_FakeDb(run)))
+
+    assert run.resumed_from_step == 5550
+    assert "resume_from_checkpoint: latest" in run.config_yaml
+    config_on_disk = (tmp_path / "run_config.yaml").read_text(encoding="utf-8")
+    assert "resume_from_checkpoint: latest" in config_on_disk
+
+
+def test_start_refuses_missing_resume_without_a_newer_survivor(monkeypatch, tmp_path):
+    _manager, _calls, created = _patch_common(monkeypatch, tmp_path)
+    missing = tmp_path / "run_step_005550"
+    config_yaml = f"""
+config:
+  process:
+  - train:
+      resume_from_checkpoint: {missing}
+"""
+    run = _make_run(tmp_path, status="completed", config_yaml=config_yaml)
+    run.started_at = routes.datetime.utcnow()
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(routes.start_training_run(run_id=1, db=_FakeDb(run)))
+
+    assert excinfo.value.status_code == 409
+    assert "Refusing to start from step 0" in excinfo.value.detail
+    assert run.status == "completed"
+    assert created == {}
+
+
 def test_a_failed_start_removes_its_own_unspawned_entry(monkeypatch, tmp_path):
     """Corollary of the rule above: an entry that reads as live forever would
     make the run permanently unstartable, which is worse than what it replaced.
@@ -267,6 +311,16 @@ def test_stop_is_allowed_whenever_a_child_is_live(monkeypatch, tmp_path):
     assert result["message"] == "Training stopped"
     assert run.status == "stopped"
     assert 1 not in manager.processes
+
+
+def test_stop_writes_cooperative_flag_after_backend_lost_child(monkeypatch, tmp_path):
+    _patch_common(monkeypatch, tmp_path)
+    run = _make_run(tmp_path, status="running")
+
+    result = asyncio.run(routes.stop_training_run(run_id=1, db=_FakeDb(run)))
+
+    assert result["message"] == "Training stopped"
+    assert (tmp_path / ".stop_training").is_file()
 
 
 def test_stop_still_refuses_a_dead_run(monkeypatch, tmp_path):

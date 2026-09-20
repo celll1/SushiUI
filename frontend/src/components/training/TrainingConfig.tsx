@@ -5458,6 +5458,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <option value="v1">v1 direct velocity</option>
                 <option value="v2">v2 endpoint-observable residual</option>
                 <option value="v3">v3 polar tangent flow</option>
+                <option value="v4">v4 destruction-coordinate tangent flow</option>
               </select>
             </div>
             {(params.chimera_flow_version ?? "auto") === "v2" && (

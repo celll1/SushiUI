@@ -4719,7 +4719,7 @@ export interface InitializeChimeraRequest {
   understanding_source: string;
   sdxl_source: string;
   chimera_warmstart_source?: string | null;
-  flow_version?: "v1" | "v2" | "v3";
+  flow_version?: "v1" | "v2" | "v3" | "v4";
   latent_mean?: number[] | null;
   latent_centered_second_moment?: number | null;
   angular_schedule?: "terminal_flat_cubic_v1" | "confidence_gated_beta_3_2_v1";
@@ -4737,9 +4737,9 @@ export const initializeSenseNovaSDXLChimera = async (
     path: string;
     output_name: string;
     model_type: "sensenova_sdxl_chimera";
-    format_version: 2 | 3 | 4;
-    prediction_type: "flow_velocity" | "endpoint_observable_residual" | "polar_tangent_flow";
-    unet_initialization: "scratch" | "sdxl_transplant" | "chimera_v2_warmstart";
+    format_version: 2 | 3 | 4 | 5;
+    prediction_type: "flow_velocity" | "endpoint_observable_residual" | "polar_tangent_flow" | "destruction_coordinate_polar_flow";
+    unet_initialization: "scratch" | "sdxl_transplant" | "chimera_v2_warmstart" | "chimera_v3_warmstart";
     unet_parameter_count: number;
     bridge_state: "unaligned" | "aligned";
   };
@@ -6868,7 +6868,7 @@ export interface TrainingRunCreateRequest {
   sensenova_train_generation_norms?: boolean;
   sensenova_train_scopes?: SenseNovaTrainScope[];
   chimera_training_stage?: "bridge_align" | "unet" | "joint";
-  chimera_flow_version?: "auto" | "v1" | "v2" | "v3";
+  chimera_flow_version?: "auto" | "v1" | "v2" | "v3" | "v4";
   chimera_v2_parameterization?: "auto" | "analytic_residual" | "direct_velocity";
   chimera_v2_latent_mean?: number[] | null;
   chimera_v2_latent_centered_second_moment?: number | null;

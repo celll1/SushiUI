@@ -3579,15 +3579,19 @@ class BaseTrainer(ABC):
                   f"{self.repa_profile_steps} REPA-bearing call(s); DB timestamps are not used")
 
     def _repa_resume_sidecar_path(self) -> Optional[str]:
-        """Projector sibling for the resolved resume base, including directories."""
-        if not getattr(self, "resume_from_checkpoint", None):
-            return None
+        """Projector state for a resume checkpoint or step-zero warm start."""
         model_path = str(getattr(self, "model_path", "") or "")
         if not model_path:
             return None
         from core.training.repa import repa_sidecar_path
 
-        return repa_sidecar_path(model_path)
+        sibling = repa_sidecar_path(model_path)
+        if os.path.isfile(sibling):
+            return sibling
+        embedded = os.path.join(model_path, "repa_projector.safetensors")
+        if os.path.isfile(embedded):
+            return embedded
+        return sibling if getattr(self, "resume_from_checkpoint", None) else None
 
     def _ensure_repa_on_device(self):
         """Idempotently ensure the REPA encoder + projector live on the training device."""

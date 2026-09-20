@@ -11,10 +11,10 @@ SenseNova prefix state into the two conditioning tensors the U-Net expects.
 |---|---|---|
 | Understanding | `NEOChatModel` loaded by `understanding.load_understanding_only` | External, content-hash-pinned SenseNova checkpoint; frozen |
 | Conditioning | `ConditioningBridge` | Bundled, trainable; preserves the native prefix length at width `2048`, emits pooled `1280`, a mask, and per-token positions |
-| Denoiser | diffusers `UNet2DConditionModel` | Bundled; v1/v2 equal the donor census, while v3 adds one negligible pooled mid-block radial head |
+| Denoiser | diffusers `UNet2DConditionModel` | Bundled; v1/v2 equal the donor census, while v3/v4 add one negligible pooled mid-block radial head |
 | Attention | `ChimeraAttnProcessor` | Parameter-free replacement processor with three-axis context RoPE and generation-local K/V cache |
 | VAE | diffusers `AutoencoderKL` | Bundled from the same SDXL donor and content-hash-checked |
-| Scheduler | `flow.py` / `pipeline_ops.py` | Increasing clean-time Cartesian Euler for v1/v2 or one-NFE polar exponential Euler for v3; no diffusers scheduler object |
+| Scheduler | `flow.py` / `pipeline_ops.py` | Increasing clean-time Cartesian Euler for v1/v2, polar exponential Euler for v3, or mixed `dt`/`dd` polar Euler for v4; no diffusers scheduler object |
 
 The understanding loader removes `fm_modules`, every `_mot_gen` projection,
 and `norm_mot_gen` before installing weights. It reads only language/vision
@@ -40,6 +40,9 @@ For v3, `chimera_warmstart_source` may name a production-loadable v1/v2 Chimera
 artifact. This copies its trained bridge and U-Net trunk into a new format-4
 artifact, resets `conv_out` and the radial head under the requested seed, drops
 the source training state, and still starts optimization at global step zero.
+For v4 the warm-start source must be v3. It inherits the trunk, time embedding,
+bridge, radial head, and a saved REPA projector when present; only `conv_out` is
+reset, and optimizer/global-step state is deliberately discarded.
 
 ## Denoiser structure
 
@@ -79,7 +82,7 @@ context keys without adding parameters.
 | Added conditioning | SDXL original/crop/target time IDs |
 | Position encoding | Three-axis `t:h:w = 2:1:1`, crop-aware physical coordinates |
 | Time | `t=0` noise, `t=1` clean |
-| Prediction | Artifact-owned: v1 direct velocity, v2 endpoint-observable residual/velocity, or v3 radial scalar plus projected tangent field |
+| Prediction | Artifact-owned: v1 direct velocity, v2 endpoint-observable residual/velocity, v3 `dt` radial+tangent flow, or v4 `dt` radial plus per-destruction-coordinate tangent flow |
 | Spatial alignment | Width and height divisible by 8 |
 
 The artifact stores the donor U-Net config verbatim. Builders refuse a tensor
@@ -124,6 +127,13 @@ exponential map. v3 deliberately evaluates the U-Net at `t=0` because its
 conditional tangent target is nonzero. Dynamic CFG and optional norm capping
 can scale only the projected tangent field.
 
+Format-5 v4 retains the Beta(3,2) v3 noised state but predicts tangent
+displacement per unit `d(t)=4t^3-3t^4`. Its solver advances radius with `delta_t`
+and direction with `delta_d`, so no path divides by the endpoint-zero `d'(t)`.
+Native-prefix and pooled conditioning contributions are multiplied by
+`sin^2(pi*d/2)`; arbitrary cond/null contexts therefore produce exactly the
+same U-Net field at `t=0`, while the context-free U-Net transport remains live.
+
 Running training can queue an explicit CFG probe through
 `POST /api/v1/training/runs/{run_id}/cfg-probe` and poll its result through the
 matching `cfg-probe-queue` endpoint. The probe follows the ordinary configured
@@ -158,9 +168,10 @@ stages:
 | `unet` | Complete U-Net only | Flow-velocity MSE |
 | `joint` | Bridge and complete U-Net | Flow-velocity MSE through both trainable components |
 
-For v3, the diffusion-stage objective is the exact orthogonal sum of scalar
+For v3/v4, the diffusion-stage objective is the exact orthogonal sum of scalar
 radial MSE and projected tangent-field MSE. Metrics retain both components,
 target tangent energy, projection error, radius, and singularity counters.
+v4 additionally records the induced destruction coordinate and derivative.
 Adaptive timestep is restricted to `off` or `observe` until the noise-end
 irreducible tangent floor has been measured; v1/v2 adaptive behavior is
 unchanged.
@@ -224,7 +235,9 @@ passed; its status remains separately recorded.
 - Legacy artifact format 2 carries direct-flow-velocity prediction. Format 3
   adds an explicit prediction contract and can carry the v2 endpoint-observable
   residual declaration. Format 4 is exclusively `polar_tangent_flow` and adds
-  the radial-head config and artifact-owned polar solver contract. All formats
+  the radial-head config and artifact-owned polar solver contract. Format 5 is
+  exclusively `destruction_coordinate_polar_flow`, with reliability-gated
+  conditioning and the mixed-coordinate solver. All formats
   accept the dense SenseNova understanding branch only.
 - The external understanding file must still match its pinned content hash at
   every preflight; filename and mtime are not identity.
@@ -248,3 +261,5 @@ polar/tangent-CFG contract and its still-pending measured gates live in
 either the original terminal-flat cubic angular path or the endpoint-flat,
 late-peaking Beta(3,2) path. The latter takes its exact `-noise` first solver
 step analytically and begins learned conditioning on the following interval.
+The implemented v4 contract is specified in
+`docs/guides/SENSENOVA_SDXL_CHIMERA_V4_DESIGN.md`.

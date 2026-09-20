@@ -9723,7 +9723,7 @@ class InitializeSenseNovaSDXLChimeraRequest(BaseModel):
     chimera_warmstart_source: Optional[str] = CHIMERA_INITIALIZE_DEFAULTS[
         "chimera_warmstart_source"
     ]
-    flow_version: Literal["v1", "v2", "v3"] = CHIMERA_INITIALIZE_DEFAULTS[
+    flow_version: Literal["v1", "v2", "v3", "v4"] = CHIMERA_INITIALIZE_DEFAULTS[
         "flow_version"
     ]
     latent_mean: Optional[List[float]] = CHIMERA_INITIALIZE_DEFAULTS["latent_mean"]
@@ -9758,11 +9758,13 @@ async def initialize_sensenova_sdxl_chimera_endpoint(
     from core.models.sensenova_sdxl_chimera.builder import (
         initialize_chimera_from_paths,
         initialize_chimera_v3_warmstart_atomically,
+        initialize_chimera_v4_warmstart_atomically,
     )
     from core.models.sensenova_sdxl_chimera.artifact import prediction_contract
     from core.models.sensenova_sdxl_chimera.flow import (
         FLOW_V2_PREDICTION,
         FLOW_V3_PREDICTION,
+        FLOW_V4_PREDICTION,
     )
 
     settings_record = db.query(UserSettings).first()
@@ -9777,25 +9779,37 @@ async def initialize_sensenova_sdxl_chimera_endpoint(
     if request.flow_version == "v1":
         prediction = prediction_contract()
     else:
+        prediction_type = (
+            FLOW_V4_PREDICTION
+            if request.flow_version == "v4"
+            else FLOW_V3_PREDICTION
+            if request.flow_version == "v3"
+            else FLOW_V2_PREDICTION
+        )
         prediction = prediction_contract(
-            FLOW_V3_PREDICTION if request.flow_version == "v3" else FLOW_V2_PREDICTION,
+            prediction_type,
             latent_mean=request.latent_mean,
             latent_centered_second_moment=request.latent_centered_second_moment,
             angular_schedule=request.angular_schedule,
             angular_endpoint_slope=request.angular_endpoint_slope,
         )
-    if request.chimera_warmstart_source and request.flow_version != "v3":
+    if request.chimera_warmstart_source and request.flow_version not in {"v3", "v4"}:
         raise HTTPException(
             status_code=400,
-            detail="chimera_warmstart_source is valid only for flow_version='v3'",
+            detail="chimera_warmstart_source is valid only for flow_version='v3' or 'v4'",
         )
 
     try:
         loop = asyncio.get_running_loop()
         if request.chimera_warmstart_source:
+            warmstart_builder = (
+                initialize_chimera_v4_warmstart_atomically
+                if request.flow_version == "v4"
+                else initialize_chimera_v3_warmstart_atomically
+            )
             result = await loop.run_in_executor(
                 executor,
-                lambda: initialize_chimera_v3_warmstart_atomically(
+                lambda: warmstart_builder(
                     model_root,
                     request.output_name,
                     source_directory=request.chimera_warmstart_source,
@@ -15226,7 +15240,7 @@ class TrainingRunCreateRequest(BaseModel):
     chimera_training_stage: Literal["bridge_align", "unet", "joint"] = (
         TRAINING_DEFAULTS["chimera_training_stage"]
     )
-    chimera_flow_version: Literal["auto", "v1", "v2", "v3"] = TRAINING_DEFAULTS[
+    chimera_flow_version: Literal["auto", "v1", "v2", "v3", "v4"] = TRAINING_DEFAULTS[
         "chimera_flow_version"
     ]
     chimera_v2_parameterization: Literal[

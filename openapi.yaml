@@ -21253,12 +21253,12 @@ components:
           nullable: true
           default: null
           description: >-
-            Optional v1/v2 Chimera artifact whose bridge and U-Net trunk seed a
-            new format-4 v3 artifact. conv_out and the radial head are reset;
-            training still starts at global step zero.
+            Optional v1/v2 source for a v3 warm start, or v3 source for v4.
+            v4 inherits the trunk, bridge, and radial head while resetting
+            conv_out; training starts at global step zero.
         flow_version:
           type: string
-          enum: [v1, v2, v3]
+          enum: [v1, v2, v3, v4]
           default: v1
           description: Prediction/path contract written into the new artifact.
         latent_mean:
@@ -21268,14 +21268,14 @@ components:
           maxItems: 4
           items: {type: number, format: double}
           default: null
-          description: Required for v2/v3 after bundled-VAE scaling and shift.
+          description: Required for v2-v4 after bundled-VAE scaling and shift.
         latent_centered_second_moment:
           type: number
           format: double
           nullable: true
           exclusiveMinimum: 0
           default: null
-          description: Required for v2/v3; v3 uses it for proxy log-SNR bins.
+          description: Required for v2-v4; polar flows use it for diagnostics.
         angular_schedule:
           type: string
           enum: [terminal_flat_cubic_v1, confidence_gated_beta_3_2_v1]
@@ -21306,9 +21306,9 @@ components:
         path: {type: string}
         output_name: {type: string}
         model_type: {type: string, enum: [sensenova_sdxl_chimera]}
-        format_version: {type: integer, enum: [2, 3, 4]}
-        prediction_type: {type: string, enum: [flow_velocity, endpoint_observable_residual, polar_tangent_flow]}
-        unet_initialization: {type: string, enum: [scratch, sdxl_transplant, chimera_v2_warmstart]}
+        format_version: {type: integer, enum: [2, 3, 4, 5]}
+        prediction_type: {type: string, enum: [flow_velocity, endpoint_observable_residual, polar_tangent_flow, destruction_coordinate_polar_flow]}
+        unet_initialization: {type: string, enum: [scratch, sdxl_transplant, chimera_v2_warmstart, chimera_v3_warmstart]}
         unet_parameter_count: {type: integer}
         bridge_state: {type: string}
 
@@ -25827,15 +25827,16 @@ components:
             keeping the understanding tower and bundled VAE frozen.
         chimera_flow_version:
           type: string
-          enum: [auto, v1, v2, v3]
+          enum: [auto, v1, v2, v3, v4]
           default: auto
           description: >-
             Chimera prediction/path contract. auto follows the artifact; v1 uses
             direct straight-flow velocity; v2 uses the endpoint-observable cubic
             path and the selected v2 parameterization; v3 selects a format-4
-            polar artifact with tangent-only CFG. Selecting v2 for a v1
+            polar artifact; v4 selects format-5 destruction-coordinate tangent
+            prediction with reliability-gated conditioning. Selecting v2 for a v1
             artifact explicitly migrates its U-Net weights and writes format-3
-            checkpoints. v3 cannot be selected for a v1/v2 artifact.
+            checkpoints. v3/v4 must match their artifact format.
         chimera_v2_latent_mean:
           type: array
           nullable: true

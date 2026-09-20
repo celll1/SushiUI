@@ -15,7 +15,9 @@ from core.models.sensenova_sdxl_chimera.artifact import (
     validated_prediction_contract,
 )
 from core.models.sensenova_sdxl_chimera.flow import (
+    FLOW_V3_CONFIDENCE_ANGULAR_SCHEDULE,
     FLOW_V3_PREDICTION,
+    confidence_gated_angular_schedule,
     polar_compose_velocity,
     polar_exp_euler_step,
     polar_flow_target,
@@ -49,6 +51,36 @@ def test_terminal_flat_family_has_declared_endpoint_derivatives():
 
     with pytest.raises(ValueError, match=r"\[0, 2\]"):
         terminal_flat_angular_schedule(endpoints, probe, endpoint_slope=2.1)
+
+
+def test_confidence_gated_schedule_is_endpoint_flat_and_late_peaking():
+    probe = torch.empty(3, 4, 1, 1, dtype=torch.float64)
+    times = torch.tensor([0.0, 0.5, 1.0], dtype=torch.float64)
+    gamma, derivative = confidence_gated_angular_schedule(times, probe)
+    assert gamma.flatten().tolist() == pytest.approx([0.0, 5.0 / 16.0, 1.0])
+    assert derivative.flatten().tolist() == pytest.approx([0.0, 1.5, 0.0])
+
+    near_peak = torch.tensor([2.0 / 3.0], dtype=torch.float64)
+    _, peak_derivative = confidence_gated_angular_schedule(
+        near_peak, probe[:1]
+    )
+    assert peak_derivative.item() == pytest.approx(16.0 / 9.0)
+
+
+def test_confidence_gated_path_has_analytic_endpoint_velocities():
+    generator = torch.Generator().manual_seed(130)
+    clean = torch.randn(2, 4, 5, 7, generator=generator, dtype=torch.float64)
+    noise = torch.randn(clean.shape, generator=generator, dtype=clean.dtype)
+    target = polar_flow_target(
+        clean,
+        noise,
+        torch.tensor([0.0, 1.0], dtype=clean.dtype),
+        latent_mean=[0.0] * 4,
+        angular_schedule=FLOW_V3_CONFIDENCE_ANGULAR_SCHEDULE,
+    )
+    assert torch.equal(target.tangent_velocity, torch.zeros_like(target.tangent_velocity))
+    assert torch.allclose(target.full_velocity[0], -noise[0], atol=1e-12, rtol=1e-12)
+    assert torch.allclose(target.full_velocity[1], clean[1], atol=1e-12, rtol=1e-12)
 
 
 def test_polar_path_is_endpoint_exact_and_tangent():
@@ -239,6 +271,21 @@ def test_v3_prediction_contract_is_strictly_format_four():
     assert contract["integrator"] == "polar_exp_euler_v1"
     assert contract["spatial_input"] == "unit_centered_direction_v1"
     assert contract["angular_endpoint_slope"] == pytest.approx(0.75)
+
+    confidence_contract = prediction_contract(
+        FLOW_V3_PREDICTION,
+        latent_mean=[0.1, -0.2, 0.3, -0.4],
+        latent_centered_second_moment=1.25,
+        angular_schedule=FLOW_V3_CONFIDENCE_ANGULAR_SCHEDULE,
+    )
+    assert confidence_contract["angular_endpoint_slope"] == 0.0
+    assert confidence_contract["angular_schedule"] == (
+        FLOW_V3_CONFIDENCE_ANGULAR_SCHEDULE
+    )
+    assert validated_prediction_contract({
+        "format_version": V3_FORMAT_VERSION,
+        "prediction": confidence_contract,
+    }) == confidence_contract
 
     with pytest.raises(ChimeraArtifactError, match="requires Chimera format v4"):
         validated_prediction_contract(

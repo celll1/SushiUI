@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 import yaml
 
@@ -31,7 +32,10 @@ def test_training_schema_advertises_v3_without_loose_path_controls():
 def test_route_defaults_are_references_not_literals():
     source = (REPO / "backend" / "api" / "routes.py").read_text(encoding="utf-8")
     for key in CHIMERA_INITIALIZE_DEFAULTS:
-        assert f'CHIMERA_INITIALIZE_DEFAULTS["{key}"]' in source
+        assert re.search(
+            rf'CHIMERA_INITIALIZE_DEFAULTS\s*\[\s*"{re.escape(key)}"\s*\]',
+            source,
+        )
 
 
 def test_initializer_accepts_only_configured_target_directories():

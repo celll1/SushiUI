@@ -21276,6 +21276,14 @@ components:
           exclusiveMinimum: 0
           default: null
           description: Required for v2/v3; v3 uses it for proxy log-SNR bins.
+        angular_schedule:
+          type: string
+          enum: [terminal_flat_cubic_v1, confidence_gated_beta_3_2_v1]
+          default: terminal_flat_cubic_v1
+          description: >-
+            Artifact-owned v3 angular path. The confidence-gated Beta(3,2)
+            schedule has zero angular velocity at both endpoints and enables
+            the analytic pure-noise first step.
         angular_endpoint_slope:
           type: number
           format: double

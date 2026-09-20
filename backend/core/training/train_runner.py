@@ -1445,6 +1445,9 @@ def _apply_chimera_training_contract(
         train_config["chimera_v3_angular_endpoint_slope"] = float(
             artifact_prediction["angular_endpoint_slope"]
         )
+        train_config["chimera_v3_angular_schedule"] = str(
+            artifact_prediction["angular_schedule"]
+        )
     else:
         train_config["chimera_v2_parameterization"] = "auto"
         train_config["chimera_v2_latent_mean"] = None
@@ -1452,6 +1455,7 @@ def _apply_chimera_training_contract(
         train_config["chimera_v2_calibration"] = None
         train_config["chimera_v3_latent_centered_second_moment"] = None
         train_config["chimera_v3_angular_endpoint_slope"] = None
+        train_config["chimera_v3_angular_schedule"] = None
     train_config["chimera_flow_version"] = resolved_flow
     stage = str(train_config.get("chimera_training_stage", "unet")).strip().lower()
     if stage not in {"bridge_align", "unet", "joint"}:

@@ -4722,6 +4722,7 @@ export interface InitializeChimeraRequest {
   flow_version?: "v1" | "v2" | "v3";
   latent_mean?: number[] | null;
   latent_centered_second_moment?: number | null;
+  angular_schedule?: "terminal_flat_cubic_v1" | "confidence_gated_beta_3_2_v1";
   angular_endpoint_slope?: number;
   unet_initialization?: "scratch" | "sdxl_transplant";
   initialization_seed?: number;

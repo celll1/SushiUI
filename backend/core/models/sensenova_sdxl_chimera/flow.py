@@ -21,6 +21,7 @@ FLOW_V3_PREDICTION = "polar_tangent_flow"
 FLOW_V3_PATH = "observable_polar_geodesic_v1"
 FLOW_V3_RADIAL_SCHEDULE = "cubic_quadrature_v1"
 FLOW_V3_ANGULAR_SCHEDULE = "terminal_flat_cubic_v1"
+FLOW_V3_CONFIDENCE_ANGULAR_SCHEDULE = "confidence_gated_beta_3_2_v1"
 
 
 def _batch_scalar(value: torch.Tensor | float, sample: torch.Tensor) -> torch.Tensor:
@@ -80,6 +81,35 @@ def terminal_flat_angular_schedule(
     gamma_prime = slope + 2.0 * (3.0 - 2.0 * slope) * t
     gamma_prime = gamma_prime + 3.0 * (slope - 2.0) * t.square()
     return gamma, gamma_prime
+
+
+def confidence_gated_angular_schedule(
+    timestep: torch.Tensor | float,
+    sample: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return the Beta(3, 2) CDF and derivative for endpoint-safe rotation."""
+    t = _batch_scalar(timestep, sample)
+    gamma = 4.0 * t.pow(3) - 3.0 * t.pow(4)
+    gamma_prime = 12.0 * t.square() * (1.0 - t)
+    return gamma, gamma_prime
+
+
+def polar_angular_schedule(
+    timestep: torch.Tensor | float,
+    sample: torch.Tensor,
+    *,
+    schedule: str = FLOW_V3_ANGULAR_SCHEDULE,
+    endpoint_slope: float = 2.0,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Resolve an artifact-owned v3 angular schedule."""
+    name = str(schedule)
+    if name == FLOW_V3_ANGULAR_SCHEDULE:
+        return terminal_flat_angular_schedule(
+            timestep, sample, endpoint_slope=endpoint_slope
+        )
+    if name == FLOW_V3_CONFIDENCE_ANGULAR_SCHEDULE:
+        return confidence_gated_angular_schedule(timestep, sample)
+    raise ValueError(f"unsupported Chimera v3 angular schedule: {name!r}")
 
 
 def polar_tangent_projection(
@@ -190,6 +220,7 @@ def polar_recover_clean(
     *,
     latent_mean: torch.Tensor | list[float] | tuple[float, ...],
     latent_centered_second_moment: float,
+    angular_schedule: str = FLOW_V3_ANGULAR_SCHEDULE,
     angular_endpoint_slope: float = 2.0,
     radius_floor: float = 1e-8,
     determinant_floor: float = 1e-8,
@@ -209,8 +240,11 @@ def polar_recover_clean(
     alpha, sigma, alpha_prime, sigma_prime = endpoint_observable_coefficients(
         timestep, centered
     )
-    gamma, gamma_prime = terminal_flat_angular_schedule(
-        timestep, centered, endpoint_slope=angular_endpoint_slope
+    gamma, gamma_prime = polar_angular_schedule(
+        timestep,
+        centered,
+        schedule=angular_schedule,
+        endpoint_slope=angular_endpoint_slope,
     )
 
     determinant = sigma.square() * alpha * alpha_prime
@@ -327,6 +361,7 @@ def polar_flow_target(
     timestep: torch.Tensor | float,
     *,
     latent_mean: torch.Tensor | list[float] | tuple[float, ...],
+    angular_schedule: str = FLOW_V3_ANGULAR_SCHEDULE,
     angular_endpoint_slope: float = 2.0,
     radius_floor: float = 1e-8,
     angular_singularity_threshold: float = 1e-6,
@@ -374,9 +409,10 @@ def polar_flow_target(
     alpha, sigma, alpha_prime, sigma_prime = endpoint_observable_coefficients(
         timestep, clean_geometry
     )
-    gamma, gamma_prime = terminal_flat_angular_schedule(
+    gamma, gamma_prime = polar_angular_schedule(
         timestep,
         clean_geometry,
+        schedule=angular_schedule,
         endpoint_slope=angular_endpoint_slope,
     )
     phase = gamma * theta

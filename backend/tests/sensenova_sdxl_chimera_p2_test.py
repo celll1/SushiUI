@@ -31,6 +31,7 @@ from core.models.sensenova_sdxl_chimera.artifact import prediction_contract
 from core.models.sensenova_sdxl_chimera.flow import (
     FLOW_V2_PREDICTION,
     FLOW_V2_VELOCITY_PREDICTION,
+    FLOW_V3_CONFIDENCE_ANGULAR_SCHEDULE,
     FLOW_V3_PREDICTION,
 )
 from core.models.sensenova_sdxl_chimera.unet import install_polar_radial_head
@@ -332,6 +333,36 @@ def test_v3_evaluates_noise_endpoint_and_matches_cfg_execution_modes():
         record["tangent_orthogonality_abs_max"] <= 1e-6
         for record in records
     )
+
+
+def test_confidence_gated_v3_uses_analytic_noise_endpoint_step():
+    unet = _FakePolarUNet()
+    prediction = prediction_contract(
+        FLOW_V3_PREDICTION,
+        latent_mean=[0.0, 0.0, 0.0, 0.0],
+        latent_centered_second_moment=1.0,
+        angular_schedule=FLOW_V3_CONFIDENCE_ANGULAR_SCHEDULE,
+    )
+    records = []
+    sample_txt2img_latents(
+        unet,
+        _conditioning(2.0, "positive"),
+        _conditioning(-1.0, "negative"),
+        height=64,
+        width=64,
+        steps=3,
+        cfg_scale=4.0,
+        seed=43,
+        prediction=prediction,
+        cfg_probe_callback=records.append,
+    )
+
+    assert len(unet.conditioning_means) == 4
+    assert records[0]["bypassed_unet"] == 1
+    assert records[0]["prediction_delta_rms"] == 0.0
+    assert records[0]["angular_displacement_abs_max"] == 0.0
+    assert records[0]["analytic_velocity_rms"] > 0.0
+    assert all(record["bypassed_unet"] == 0 for record in records[1:])
 
 
 def test_cfg_norm_caps_global_and_per_channel_overshoot():

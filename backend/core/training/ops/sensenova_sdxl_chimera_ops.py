@@ -414,6 +414,7 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
             noise,
             timesteps,
             latent_mean=latent_mean,
+            angular_schedule=prediction_contract["angular_schedule"],
             angular_endpoint_slope=prediction_contract["angular_endpoint_slope"],
             radius_floor=prediction_contract["radius_floor"],
             angular_singularity_threshold=prediction_contract[
@@ -538,6 +539,7 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
                 timesteps,
                 latent_mean=latent_mean,
                 latent_centered_second_moment=latent_moment,
+                angular_schedule=prediction_contract["angular_schedule"],
                 angular_endpoint_slope=prediction_contract[
                     "angular_endpoint_slope"
                 ],

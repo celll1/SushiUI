@@ -22,6 +22,10 @@ FLOW_V3_PATH = "observable_polar_geodesic_v1"
 FLOW_V3_RADIAL_SCHEDULE = "cubic_quadrature_v1"
 FLOW_V3_ANGULAR_SCHEDULE = "terminal_flat_cubic_v1"
 FLOW_V3_CONFIDENCE_ANGULAR_SCHEDULE = "confidence_gated_beta_3_2_v1"
+FLOW_V4_PREDICTION = "destruction_coordinate_polar_flow"
+FLOW_V4_DESTRUCTION_SCHEDULE = FLOW_V3_CONFIDENCE_ANGULAR_SCHEDULE
+FLOW_V4_CONDITIONING_GATE = "clean_alignment_squared_v1"
+FLOW_V4_INTEGRATOR = "mixed_coordinate_polar_exp_euler_v1"
 
 
 def _batch_scalar(value: torch.Tensor | float, sample: torch.Tensor) -> torch.Tensor:
@@ -92,6 +96,36 @@ def confidence_gated_angular_schedule(
     gamma = 4.0 * t.pow(3) - 3.0 * t.pow(4)
     gamma_prime = 12.0 * t.square() * (1.0 - t)
     return gamma, gamma_prime
+
+
+def destruction_coordinate(
+    timestep: torch.Tensor | float,
+    sample: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return v4 destruction coordinate ``d(t)`` and ``dd/dt``."""
+    return confidence_gated_angular_schedule(timestep, sample)
+
+
+def conditioning_reliability(
+    timestep: torch.Tensor | float,
+    sample: torch.Tensor,
+) -> torch.Tensor:
+    """Return the clean-direction energy visible at the current v4 state."""
+    coordinate, _derivative = destruction_coordinate(timestep, sample)
+    return torch.sin(0.5 * math.pi * coordinate).square()
+
+
+def gate_conditioning_tensor(
+    value: torch.Tensor,
+    timestep: torch.Tensor | float,
+    sample: torch.Tensor,
+) -> torch.Tensor:
+    """Scale a per-sample conditioning contribution by v4 reliability."""
+    if value.shape[0] != sample.shape[0]:
+        raise ValueError("conditioning/sample batch mismatch")
+    gate = conditioning_reliability(timestep, sample).flatten(1)[:, 0]
+    gate = gate.reshape(value.shape[0], *((1,) * (value.ndim - 1)))
+    return value * gate.to(device=value.device, dtype=value.dtype)
 
 
 def polar_angular_schedule(
@@ -287,6 +321,71 @@ def polar_recover_clean(
     return recovered.to(sample.dtype)
 
 
+def destruction_coordinate_recover_clean(
+    sample: torch.Tensor,
+    radial_velocity: torch.Tensor,
+    tangent_displacement: torch.Tensor,
+    timestep: torch.Tensor | float,
+    *,
+    latent_mean: torch.Tensor | list[float] | tuple[float, ...],
+    latent_centered_second_moment: float,
+    radius_floor: float = 1e-8,
+    determinant_floor: float = 1e-8,
+) -> torch.Tensor:
+    """Recover a local clean estimate from a v4 per-destruction tangent."""
+    q = float(latent_centered_second_moment)
+    if not math.isfinite(q) or q <= 0.0:
+        raise ValueError("latent_centered_second_moment must be finite and > 0")
+    centered, radius_vector, direction = polar_state(
+        sample, timestep, latent_mean=latent_mean, radius_floor=radius_floor
+    )
+    radius = radius_vector.reshape(sample.shape[0], *((1,) * (sample.ndim - 1)))
+    radial = _batch_scalar(radial_velocity, centered).to(direction)
+    tangent = polar_tangent_projection(
+        tangent_displacement.to(direction), direction
+    ).to(direction)
+    alpha, sigma, alpha_prime, sigma_prime = endpoint_observable_coefficients(
+        timestep, centered
+    )
+    coordinate, _coordinate_prime = destruction_coordinate(timestep, centered)
+
+    determinant = sigma.square() * alpha * alpha_prime
+    determinant = determinant - alpha.square() * sigma * sigma_prime
+    clean_radius_square = (
+        sigma.square() * radius * radial
+        - sigma * sigma_prime * radius.square()
+    )
+    valid_radius = determinant.abs() >= float(determinant_floor)
+    safe_determinant = torch.where(
+        valid_radius, determinant, torch.ones_like(determinant)
+    )
+    clean_radius_square = clean_radius_square / safe_determinant
+    clean_radius = torch.where(
+        valid_radius,
+        clean_radius_square.clamp_min(float(radius_floor) ** 2),
+        torch.full_like(clean_radius_square, q),
+    ).sqrt()
+
+    tangent_norm = _rms_norm(tangent)
+    pair_angle = tangent_norm / radius.clamp_min(float(radius_floor))
+    tangent_direction = tangent / tangent_norm.clamp_min(float(radius_floor))
+    remaining_angle = (1.0 - coordinate) * pair_angle
+    clean_direction = (
+        remaining_angle.cos() * direction
+        + remaining_angle.sin() * tangent_direction
+    )
+    clean_direction = torch.where(
+        (tangent_norm > float(radius_floor)).expand_as(clean_direction),
+        clean_direction,
+        direction,
+    )
+    mean = _latent_mean(latent_mean, centered)
+    recovered = mean + clean_radius * clean_direction
+    clean_endpoint = alpha >= 1.0 - float(determinant_floor)
+    recovered = torch.where(clean_endpoint.expand_as(recovered), sample.to(recovered), recovered)
+    return recovered.to(sample.dtype)
+
+
 def polar_exp_euler_step(
     sample: torch.Tensor,
     radial_velocity: torch.Tensor,
@@ -337,6 +436,77 @@ def polar_exp_euler_step(
     has_angle = omega_norm > float(radius_floor)
     next_direction = torch.where(
         has_angle.expand_as(next_direction), next_direction, direction
+    )
+    next_direction = next_direction / _rms_norm(next_direction).clamp_min(
+        float(radius_floor)
+    )
+    next_alpha, _next_sigma, _next_alpha_prime, _next_sigma_prime = (
+        endpoint_observable_coefficients(next_timestep, centered)
+    )
+    mean = _latent_mean(latent_mean, centered)
+    next_sample = next_alpha * mean + next_radius * next_direction
+    return PolarStepResult(
+        sample=next_sample.to(sample.dtype),
+        radius=next_radius.flatten(1)[:, 0],
+        direction=next_direction,
+        angular_displacement=effective_angle.flatten(1)[:, 0],
+        angular_cap_scale=cap_scale.flatten(1)[:, 0],
+    )
+
+
+def mixed_coordinate_polar_exp_euler_step(
+    sample: torch.Tensor,
+    radial_velocity: torch.Tensor,
+    tangent_displacement: torch.Tensor,
+    timestep: torch.Tensor | float,
+    next_timestep: torch.Tensor | float,
+    *,
+    latent_mean: torch.Tensor | list[float] | tuple[float, ...],
+    radius_floor: float = 1e-8,
+    angular_step_limit: float | None = None,
+) -> PolarStepResult:
+    """Advance radial state in ``dt`` and direction in v4 ``dd`` units."""
+    centered, radius_vector, direction = polar_state(
+        sample, timestep, latent_mean=latent_mean, radius_floor=radius_floor
+    )
+    tangent = polar_tangent_projection(
+        tangent_displacement.to(direction), direction
+    ).to(direction)
+    radius = radius_vector.reshape(sample.shape[0], *((1,) * (sample.ndim - 1)))
+    radial = _batch_scalar(radial_velocity, centered).to(direction)
+    current = _batch_scalar(timestep, centered).to(direction)
+    following = _batch_scalar(next_timestep, centered).to(direction)
+    delta_t = following - current
+    current_d, _current_d_prime = destruction_coordinate(timestep, centered)
+    following_d, _following_d_prime = destruction_coordinate(next_timestep, centered)
+    delta_d = following_d - current_d
+
+    next_radius = radius * (delta_t * radial / radius).exp()
+    if not bool(torch.isfinite(next_radius).all().item()):
+        raise FloatingPointError("polar radial update produced a non-finite radius")
+
+    omega = tangent / radius
+    omega_norm = _rms_norm(omega)
+    angular_displacement = delta_d * omega_norm
+    cap_scale = torch.ones_like(angular_displacement)
+    if angular_step_limit is not None:
+        limit = float(angular_step_limit)
+        if not math.isfinite(limit) or limit <= 0.0:
+            raise ValueError("angular_step_limit must be null or finite and > 0")
+        cap_scale = (
+            torch.full_like(angular_displacement, limit)
+            / angular_displacement.abs().clamp_min(float(radius_floor))
+        ).clamp(max=1.0)
+    effective_angle = angular_displacement * cap_scale
+    omega_direction = omega / omega_norm.clamp_min(float(radius_floor))
+    next_direction = (
+        effective_angle.cos() * direction
+        + effective_angle.sin() * omega_direction
+    )
+    next_direction = torch.where(
+        (omega_norm > float(radius_floor)).expand_as(next_direction),
+        next_direction,
+        direction,
     )
     next_direction = next_direction / _rms_norm(next_direction).clamp_min(
         float(radius_floor)
@@ -457,6 +627,78 @@ def polar_flow_target(
         radius=radius.flatten(1)[:, 0],
         small_angle_mask=same_direction.flatten(1)[:, 0],
         antipodal_mask=antipodal.flatten(1)[:, 0],
+    )
+
+
+def destruction_coordinate_polar_flow_target(
+    clean: torch.Tensor,
+    noise: torch.Tensor,
+    timestep: torch.Tensor | float,
+    *,
+    latent_mean: torch.Tensor | list[float] | tuple[float, ...],
+    radius_floor: float = 1e-8,
+    angular_singularity_threshold: float = 1e-6,
+) -> PolarFlowTarget:
+    """Build the v4 state with tangent displacement measured per unit ``d``."""
+    target = polar_flow_target(
+        clean,
+        noise,
+        timestep,
+        latent_mean=latent_mean,
+        angular_schedule=FLOW_V4_DESTRUCTION_SCHEDULE,
+        angular_endpoint_slope=0.0,
+        radius_floor=radius_floor,
+        angular_singularity_threshold=angular_singularity_threshold,
+    )
+    geometry_dtype = _geometry_dtype(clean)
+    clean_geometry = clean.to(dtype=geometry_dtype)
+    noise_geometry = noise.to(device=clean.device, dtype=geometry_dtype)
+    mean = _latent_mean(latent_mean, clean_geometry)
+    centered_clean = clean_geometry - mean
+    rho0 = _rms_norm(noise_geometry)
+    rho1 = _rms_norm(centered_clean)
+    n0 = noise_geometry / rho0
+    n1 = centered_clean / rho1
+    dot = _rms_inner(n0, n1).clamp(-1.0, 1.0)
+    raw_tangent = n1 - dot * n0
+    tangent_norm = _rms_norm(raw_tangent)
+    theta = torch.atan2(tangent_norm, dot)
+    same_direction = (tangent_norm <= angular_singularity_threshold) & (dot >= 0.0)
+    antipodal = (tangent_norm <= angular_singularity_threshold) & (dot < 0.0)
+    great_circle_direction = raw_tangent / tangent_norm.clamp_min(
+        angular_singularity_threshold
+    )
+    great_circle_direction = torch.where(
+        antipodal.expand_as(great_circle_direction),
+        _deterministic_orthogonal(n0),
+        great_circle_direction,
+    )
+    coordinate, derivative = destruction_coordinate(timestep, clean_geometry)
+    phase = coordinate * theta
+    direction_per_d = theta * (
+        -phase.sin() * n0 + phase.cos() * great_circle_direction
+    )
+    direction_per_d = torch.where(
+        same_direction.expand_as(direction_per_d),
+        torch.zeros_like(direction_per_d),
+        direction_per_d,
+    )
+    radius = target.radius.reshape(clean.shape[0], *((1,) * (clean.ndim - 1))).to(
+        dtype=geometry_dtype
+    )
+    tangent_per_d = radius * direction_per_d
+    tangent_per_t = target.tangent_velocity.to(dtype=geometry_dtype)
+    full_velocity = target.full_velocity.to(dtype=geometry_dtype) - tangent_per_t
+    full_velocity = full_velocity + derivative * tangent_per_d
+    return PolarFlowTarget(
+        sample=target.sample,
+        radial_velocity=target.radial_velocity,
+        tangent_velocity=tangent_per_d.to(dtype=clean.dtype),
+        full_velocity=full_velocity.to(dtype=clean.dtype),
+        direction=target.direction,
+        radius=target.radius,
+        small_angle_mask=target.small_angle_mask,
+        antipodal_mask=target.antipodal_mask,
     )
 
 

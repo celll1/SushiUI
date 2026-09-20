@@ -30,6 +30,10 @@ from .flow import (
     FLOW_V3_PATH,
     FLOW_V3_PREDICTION,
     FLOW_V3_RADIAL_SCHEDULE,
+    FLOW_V4_CONDITIONING_GATE,
+    FLOW_V4_DESTRUCTION_SCHEDULE,
+    FLOW_V4_INTEGRATOR,
+    FLOW_V4_PREDICTION,
 )
 from .positional import POSITION_LAYOUT_VERSION, SPATIAL_UNIT_PIXELS
 
@@ -37,7 +41,13 @@ MODEL_TYPE = "sensenova_sdxl_chimera"
 LEGACY_FORMAT_VERSION = 2
 FORMAT_VERSION = 3
 V3_FORMAT_VERSION = 4
-SUPPORTED_FORMAT_VERSIONS = (LEGACY_FORMAT_VERSION, FORMAT_VERSION, V3_FORMAT_VERSION)
+V4_FORMAT_VERSION = 5
+SUPPORTED_FORMAT_VERSIONS = (
+    LEGACY_FORMAT_VERSION,
+    FORMAT_VERSION,
+    V3_FORMAT_VERSION,
+    V4_FORMAT_VERSION,
+)
 MANIFEST_NAME = "chimera.json"
 CONFIG_NAME = "config.json"
 WEIGHTS_BASENAME = "model.safetensors"
@@ -69,6 +79,7 @@ def prediction_contract(
         FLOW_V2_PREDICTION,
         FLOW_V2_VELOCITY_PREDICTION,
         FLOW_V3_PREDICTION,
+        FLOW_V4_PREDICTION,
     }:
         raise ChimeraArtifactError(f"unsupported Chimera prediction type: {prediction_type!r}")
     mean_source = () if latent_mean is None else latent_mean
@@ -78,10 +89,10 @@ def prediction_contract(
         else latent_centered_second_moment
     )
     if len(mean) != 4 or not all(math.isfinite(value) for value in mean):
-        raise ChimeraArtifactError("Chimera v2/v3 latent_mean must contain four finite values")
+        raise ChimeraArtifactError("Chimera v2-v4 latent_mean must contain four finite values")
     if not math.isfinite(q) or q <= 0.0:
         raise ChimeraArtifactError(
-            "Chimera v2/v3 latent_centered_second_moment must be finite and > 0"
+            "Chimera v2-v4 latent_centered_second_moment must be finite and > 0"
         )
     base = {
         "type": kind,
@@ -90,8 +101,43 @@ def prediction_contract(
         "latent_mean": mean,
         "latent_centered_second_moment": q,
     }
-    if kind != FLOW_V3_PREDICTION:
+    if kind not in {FLOW_V3_PREDICTION, FLOW_V4_PREDICTION}:
         base["path"] = FLOW_V2_PATH
+        return base
+
+    if kind == FLOW_V4_PREDICTION:
+        floor = float(radius_floor)
+        threshold = float(angular_singularity_threshold)
+        step_limit = None if angular_step_limit is None else float(angular_step_limit)
+        if not math.isfinite(floor) or floor <= 0.0:
+            raise ChimeraArtifactError("Chimera v4 radius_floor must be finite and > 0")
+        if not math.isfinite(threshold) or threshold <= 0.0:
+            raise ChimeraArtifactError(
+                "Chimera v4 angular_singularity_threshold must be finite and > 0"
+            )
+        if step_limit is not None and (
+            not math.isfinite(step_limit) or step_limit <= 0.0
+        ):
+            raise ChimeraArtifactError(
+                "Chimera v4 angular_step_limit must be null or finite and > 0"
+            )
+        base.update({
+            "path": FLOW_V3_PATH,
+            "radial_schedule": FLOW_V3_RADIAL_SCHEDULE,
+            "radial_units": "dt",
+            "tangent_units": "beta_3_2_d",
+            "destruction_schedule": FLOW_V4_DESTRUCTION_SCHEDULE,
+            "conditioning_gate": FLOW_V4_CONDITIONING_GATE,
+            "cfg_mode": "tangent_only_v1",
+            "radial_anchor": "positive_condition",
+            "integrator": FLOW_V4_INTEGRATOR,
+            "spatial_input": "unit_centered_direction_v1",
+            "radius_conditioning": "log_rho",
+            "reduction_dtype": "float32",
+            "radius_floor": floor,
+            "angular_singularity_threshold": threshold,
+            "angular_step_limit": step_limit,
+        })
         return base
 
     schedule = str(angular_schedule).strip()
@@ -151,12 +197,20 @@ def validated_prediction_contract(
         if declared.get("type") != FLOW_V1_PREDICTION:
             raise ChimeraArtifactError("Chimera format v2 requires flow_velocity prediction")
         return prediction_contract()
-    if version not in {FORMAT_VERSION, V3_FORMAT_VERSION}:
+    if version not in {FORMAT_VERSION, V3_FORMAT_VERSION, V4_FORMAT_VERSION}:
         raise ChimeraArtifactError(f"unsupported Chimera format version: {version}")
     kind = str(declared.get("type") or "")
     if version == V3_FORMAT_VERSION and kind != FLOW_V3_PREDICTION:
         raise ChimeraArtifactError(
             "Chimera format v4 requires polar_tangent_flow prediction"
+        )
+    if version == V4_FORMAT_VERSION and kind != FLOW_V4_PREDICTION:
+        raise ChimeraArtifactError(
+            "Chimera format v5 requires destruction_coordinate_polar_flow prediction"
+        )
+    if version in {FORMAT_VERSION, V3_FORMAT_VERSION} and kind == FLOW_V4_PREDICTION:
+        raise ChimeraArtifactError(
+            "destruction_coordinate_polar_flow prediction requires Chimera format v5"
         )
     if version == FORMAT_VERSION and kind == FLOW_V3_PREDICTION:
         raise ChimeraArtifactError(
@@ -178,7 +232,7 @@ def validated_prediction_contract(
         ),
         angular_step_limit=declared.get("angular_step_limit"),
     )
-    if version == V3_FORMAT_VERSION:
+    if version in {V3_FORMAT_VERSION, V4_FORMAT_VERSION}:
         mismatches = {
             key: declared.get(key)
             for key, expected in validated.items()
@@ -186,7 +240,7 @@ def validated_prediction_contract(
         }
         if mismatches:
             raise ChimeraArtifactError(
-                f"invalid Chimera v3 prediction contract fields: {mismatches}"
+                f"invalid Chimera polar prediction contract fields: {mismatches}"
             )
     return validated
 
@@ -350,7 +404,9 @@ def manifest_template(
         angular_step_limit=declared.get("angular_step_limit"),
     )
     artifact_format = (
-        V3_FORMAT_VERSION
+        V4_FORMAT_VERSION
+        if declared["type"] == FLOW_V4_PREDICTION
+        else V3_FORMAT_VERSION
         if declared["type"] == FLOW_V3_PREDICTION
         else FORMAT_VERSION
     )
@@ -437,7 +493,7 @@ def read_artifact_documents(directory: str | os.PathLike[str]) -> tuple[dict[str
     version = versions.pop()
     prediction = validated_prediction_contract(manifest, artifact_format=version)
     radial_head = config.get("polar_radial_head")
-    if prediction["type"] == FLOW_V3_PREDICTION:
+    if prediction["type"] in {FLOW_V3_PREDICTION, FLOW_V4_PREDICTION}:
         expected_head = {"version": 1, "source": "conditioned_mid_block"}
         if not isinstance(radial_head, dict):
             raise ChimeraArtifactError(f"Chimera v3 artifact has no radial-head config at {root}")

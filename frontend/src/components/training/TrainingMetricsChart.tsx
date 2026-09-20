@@ -1,7 +1,7 @@
 "use client";
 
 import { RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MetricPoint } from "@/utils/api";
 import SharedMetricChart, {
   type AxisConfig, type ChartSeries, type MetricRangePolicy,
@@ -71,9 +71,9 @@ export function axisPolicy(
   return floor === undefined ? { kind: "auto" } : { kind: "auto", floor };
 }
 
-export default function TrainingMetricsChart({
+function TrainingMetricsChart({
   slot, defaultPreset, height = 160,
-}: { slot: "a" | "b"; defaultPreset: string; height?: number }) {
+}: { slot: "a" | "b" | "c"; defaultPreset: string; height?: number }) {
   const { seriesByKey, defs, epochBoundaries, resumeMarkers, error, refresh, loading} = useTrainingMetrics();
 
   const [preset, setPreset] = useState(defaultPreset);
@@ -386,3 +386,5 @@ export default function TrainingMetricsChart({
     </div>
   );
 }
+
+export default memo(TrainingMetricsChart);

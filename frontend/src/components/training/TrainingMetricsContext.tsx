@@ -71,6 +71,12 @@ export interface TrainingMetricsValue {
 
 const Ctx = createContext<TrainingMetricsValue | null>(null);
 
+// A chart is at most a few hundred CSS pixels wide. More samples inflate JSON
+// and SVG work without adding visible detail; live WebSocket points fill the
+// interval between authoritative refreshes.
+const METRICS_MAX_POINTS = 600;
+const METRICS_REFRESH_MS = 30_000;
+
 export function useTrainingMetrics(): TrainingMetricsValue {
   const v = useContext(Ctx);
   if (!v) throw new Error("useTrainingMetrics must be used inside <TrainingMetricsProvider>");
@@ -79,9 +85,21 @@ export function useTrainingMetrics(): TrainingMetricsValue {
 
 function upsert(prev: MetricPoint[], step: number, value: number, resumeSeq: number): MetricPoint[] {
   const pt: MetricPoint = { step, value, wall_time: Date.now() / 1000, resume_seq: resumeSeq };
-  const i = prev.findIndex((p) => p.step === step);
+  const i = prev.findIndex((p) => p.step === step && (p.resume_seq ?? 0) === resumeSeq);
   if (i >= 0) { const next = [...prev]; next[i] = pt; return next; }
-  return [...prev, pt];
+  // The DB payload is ordered by (step, resume_seq). Preserve that invariant
+  // when a rollback resume sends a lower step over the live channel, because
+  // chart hover uses binary search.
+  let lo = 0, hi = prev.length;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const p = prev[mid];
+    if (p.step < step || (p.step === step && (p.resume_seq ?? 0) < resumeSeq)) lo = mid + 1;
+    else hi = mid;
+  }
+  const next = [...prev];
+  next.splice(lo, 0, pt);
+  return next;
 }
 
 export function TrainingMetricsProvider({
@@ -96,16 +114,21 @@ export function TrainingMetricsProvider({
   const [liveMarkers, setLiveMarkers] = useState<ResumeMarker[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const requestRef = useRef<AbortController | null>(null);
 
   // Live epoch/resume tracking (refs survive re-renders without re-subscribing).
   const liveEpochRef = useRef<{ epoch: number; maxStep: number } | null>(null);
   const seenResumesRef = useRef<Set<number>>(new Set());
 
-  const fetchMetrics = useCallback(async () => {
+  const fetchMetrics = useCallback(async (showLoading: boolean) => {
+    if (requestRef.current) return;
+    const controller = new AbortController();
+    requestRef.current = controller;
     try {
-      setLoading(true);
+      if (showLoading) setLoading(true);
       setError(null);
-      const data = await getTrainingMetrics(runId);
+      const data = await getTrainingMetrics(runId, METRICS_MAX_POINTS, controller.signal);
+      if (controller.signal.aborted) return;
       const cols = data as unknown as Record<string, MetricPoint[] | undefined>;
       const next: Record<string, MetricPoint[]> = {};
       for (const c of BUILTIN_COLUMNS) next[c.key] = cols[c.field] || [];
@@ -116,22 +139,48 @@ export function TrainingMetricsProvider({
       setFetchedBoundaries(data.epoch_boundaries || []);
       setFetchedMarkers(data.resume_markers || []);
     } catch (err: any) {
+      if (controller.signal.aborted) return;
       console.error("[TrainingMetrics] Error fetching metrics:", err);
       setError(err.message || "Failed to load metrics");
     } finally {
-      setLoading(false);
+      if (requestRef.current === controller) requestRef.current = null;
+      if (showLoading && !controller.signal.aborted) setLoading(false);
     }
   }, [runId]);
 
-  useEffect(() => { fetchMetrics(); }, [runId, fetchMetrics]);
+  const refresh = useCallback(() => { void fetchMetrics(true); }, [fetchMetrics]);
 
-  // Auto-refresh while running: periodically re-fetch the (server-decimated)
-  // view so the charts update without pressing Refresh. Async — never blocks
-  // the training process; the backend uniform-samples to max_points.
+  useEffect(() => {
+    void fetchMetrics(true);
+    return () => {
+      requestRef.current?.abort();
+      requestRef.current = null;
+    };
+  }, [runId, fetchMetrics]);
+
+  // WebSocket messages carry dense live metrics. This slower poll reconciles
+  // sparse/non-pushed series and missed messages without repeatedly parsing a
+  // multi-megabyte payload on the browser's main thread.
   useEffect(() => {
     if (!isRunning) return;
-    const id = setInterval(fetchMetrics, 7000);
-    return () => clearInterval(id);
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let stopped = false;
+    const schedule = () => {
+      timer = setTimeout(async () => {
+        if (!document.hidden) await fetchMetrics(false);
+        if (!stopped) schedule();
+      }, METRICS_REFRESH_MS);
+    };
+    const onVisibility = () => {
+      if (!document.hidden) void fetchMetrics(false);
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    schedule();
+    return () => {
+      stopped = true;
+      if (timer !== null) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [isRunning, fetchMetrics]);
 
   // Reset the live-derived state when the viewed run changes, so a previous
@@ -225,8 +274,8 @@ export function TrainingMetricsProvider({
 
   const value = useMemo<TrainingMetricsValue>(() => ({
     seriesByKey, extraSeries: extras, defs,
-    epochBoundaries, resumeMarkers, loading, error, refresh: fetchMetrics,
-  }), [seriesByKey, extras, defs, epochBoundaries, resumeMarkers, loading, error, fetchMetrics]);
+    epochBoundaries, resumeMarkers, loading, error, refresh,
+  }), [seriesByKey, extras, defs, epochBoundaries, resumeMarkers, loading, error, refresh]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

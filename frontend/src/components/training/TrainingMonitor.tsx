@@ -135,7 +135,6 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
   const [debugImageSize, setDebugImageSize] = useState<256 | 512>(256);
   const debugRequestRef = useRef<AbortController | null>(null);
   const [comparisonSlider, setComparisonSlider] = useState<number>(50); // 0-100
-  const [, setTimeTick] = useState(0); // Force re-render for time update
   const [recentSecondsPerIteration, setRecentSecondsPerIteration] = useState<number | null>(null);
   const speedWindowRef = useRef<Array<{ step: number; at: number }>>([]);
   const latestSampleStepRef = useRef<number | undefined>(undefined);
@@ -264,18 +263,6 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
 
     return () => clearInterval(interval);
   }, [currentRun.status, currentRun.id, currentRun.config_yaml]);
-
-  useEffect(() => {
-    if (currentRun.status !== "running") {
-      return;
-    }
-
-    const interval = setInterval(() => {
-      setTimeTick(prev => prev + 1); // Force re-render
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [currentRun.status]);
 
   // A VAE fine-tune has no sample-image concept at all: it has no denoiser and
   // no prompt to generate from, and its quality signal is the validation

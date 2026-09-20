@@ -20,7 +20,7 @@ from .artifact import (
     validated_prediction_contract,
 )
 from .conditioning_bridge import ChimeraBridgeConfig, ConditioningBridge
-from .flow import FLOW_V3_PREDICTION
+from .flow import FLOW_V3_PREDICTION, FLOW_V4_PREDICTION
 from .unet import install_polar_radial_head, parameter_census
 
 
@@ -100,7 +100,7 @@ def load_chimera_artifact(
     from diffusers import AutoencoderKL, UNet2DConditionModel
 
     unet = UNet2DConditionModel.from_config(config["unet"])
-    if prediction["type"] == FLOW_V3_PREDICTION:
+    if prediction["type"] in {FLOW_V3_PREDICTION, FLOW_V4_PREDICTION}:
         radial_config = config["polar_radial_head"]
         install_polar_radial_head(
             unet, mid_channels=int(radial_config["mid_channels"])

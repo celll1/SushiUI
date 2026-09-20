@@ -458,6 +458,7 @@ def test_variable_context_aux_collation_right_pads_positions_and_mask():
         [True, True, False, False, False],
         [True, True, True, True, True],
     ]
+    assert result["context_key_lengths"] == (2, 5)
     assert torch.count_nonzero(result["context_positions"][0, 2:]) == 0
     assert result["alignment_hidden_states"].shape == (2, 3, 6)
 

@@ -46,6 +46,7 @@ class ChimeraConditioning:
     context_positions: torch.Tensor
     attention_mask: torch.Tensor
     fingerprint: str
+    key_lengths: tuple[int, ...] | None = None
 
 
 def _tensor_digest(*tensors: torch.Tensor) -> str:
@@ -70,6 +71,7 @@ def build_conditioning(transformer, tokenizer, bridge, prompt: str) -> ChimeraCo
             output.context_positions,
             output.attention_mask,
         ),
+        key_lengths=(int(output.attention_mask.shape[1]),),
     )
 
 
@@ -89,6 +91,7 @@ def _pad_conditioning(conditioning: ChimeraConditioning, length: int) -> Chimera
         context_positions=positions,
         attention_mask=mask,
         fingerprint=conditioning.fingerprint,
+        key_lengths=conditioning.key_lengths,
     )
 
 
@@ -191,6 +194,7 @@ def _unet_velocity(
         crop_left=int(cache_metadata[3]),
         prefix_terminal_t=float(cache_metadata[4]),
         cache_key=(conditioning.fingerprint, *cache_metadata),
+        key_lengths=conditioning.key_lengths,
     )
     set_chimera_attention_context(unet, context)
     added = {
@@ -235,6 +239,7 @@ def _unet_polar(
         crop_left=int(cache_metadata[3]),
         prefix_terminal_t=float(cache_metadata[4]),
         cache_key=(conditioning.fingerprint, *cache_metadata),
+        key_lengths=conditioning.key_lengths,
     )
     set_chimera_attention_context(unet, context)
     expanded_timestep = timestep.to(device=device).expand(sample.shape[0])
@@ -584,6 +589,10 @@ def _polar_cfg_step(
                  positive_padded.attention_mask)
             ),
             fingerprint=f"{negative.fingerprint}:{positive.fingerprint}",
+            key_lengths=(
+                *(negative_padded.key_lengths or (int(negative.encoder_hidden_states.shape[1]),)),
+                *(positive_padded.key_lengths or (int(positive.encoder_hidden_states.shape[1]),)),
+            ),
         )
         radial_pair, tangent_pair, direction_pair, radius_pair = _unet_polar(
             unet,
@@ -922,6 +931,10 @@ def _sample_flow_latents(
                              positive_padded.attention_mask)
                         ),
                         fingerprint=f"{negative.fingerprint}:{positive.fingerprint}",
+                        key_lengths=(
+                            *(negative_padded.key_lengths or (int(negative.encoder_hidden_states.shape[1]),)),
+                            *(positive_padded.key_lengths or (int(positive.encoder_hidden_states.shape[1]),)),
+                        ),
                     )
                     pair = _unet_velocity(
                         unet,

@@ -40,6 +40,56 @@ def _axis_cos_sin(
     return cos.to(dtype=dtype), sin.to(dtype=dtype)
 
 
+RopeFactors = tuple[tuple[torch.Tensor, torch.Tensor], ...]
+
+
+def sensenova_rope_factors(
+    positions: torch.Tensor,
+    width: int,
+    *,
+    dtype: torch.dtype,
+    rope_theta: float = 1_000_000.0,
+    rope_theta_hw: float = 10_000.0,
+) -> RopeFactors:
+    """Precompute broadcastable trigonometric factors for a position grid."""
+    if positions.ndim != 3 or positions.shape[-1] != 3:
+        raise ValueError(f"expected positions [B,S,3], got {tuple(positions.shape)}")
+    if width % 4:
+        raise ValueError(f"SenseNova rotary head width must be divisible by 4, got {width}")
+    widths = (width // 2, width // 4, width // 4)
+    bases = (rope_theta, rope_theta_hw, rope_theta_hw)
+    return tuple(
+        tuple(
+            factor.unsqueeze(1)
+            for factor in _axis_cos_sin(
+                positions[..., axis], axis_width, base=base, dtype=dtype
+            )
+        )
+        for axis, (axis_width, base) in enumerate(zip(widths, bases))
+    )
+
+
+def apply_sensenova_rope_factors(
+    tensor: torch.Tensor,
+    factors: RopeFactors,
+) -> torch.Tensor:
+    """Apply factors returned by :func:`sensenova_rope_factors`."""
+    if tensor.ndim != 4:
+        raise ValueError(f"expected tensor [B,H,S,D], got {tuple(tensor.shape)}")
+    width = tensor.shape[-1]
+    if width % 4:
+        raise ValueError(f"SenseNova rotary head width must be divisible by 4, got {width}")
+    parts = torch.split(tensor, (width // 2, width // 4, width // 4), dim=-1)
+    if len(factors) != len(parts):
+        raise ValueError(f"expected three rotary factor pairs, got {len(factors)}")
+    rotated = []
+    for part, (cos, sin) in zip(parts, factors):
+        if cos.shape[-1] != part.shape[-1] or sin.shape != cos.shape:
+            raise ValueError("rotary factors do not match tensor head width")
+        rotated.append(part * cos + _rotate_half(part) * sin)
+    return torch.cat(rotated, dim=-1)
+
+
 def apply_sensenova_rope(
     tensor: torch.Tensor,
     positions: torch.Tensor,
@@ -65,21 +115,14 @@ def apply_sensenova_rope(
             f"position shape {tuple(positions.shape)} cannot broadcast to tensor {tuple(tensor.shape)}"
         )
 
-    t_width = width // 2
-    hw_width = width // 4
-    t_part, h_part, w_part = torch.split(tensor, (t_width, hw_width, hw_width), dim=-1)
-    rotated = []
-    for part, axis, base in (
-        (t_part, 0, rope_theta),
-        (h_part, 1, rope_theta_hw),
-        (w_part, 2, rope_theta_hw),
-    ):
-        cos, sin = _axis_cos_sin(
-            positions[..., axis], part.shape[-1], base=base, dtype=tensor.dtype
-        )
-        cos, sin = cos.unsqueeze(1), sin.unsqueeze(1)
-        rotated.append(part * cos + _rotate_half(part) * sin)
-    return torch.cat(rotated, dim=-1)
+    factors = sensenova_rope_factors(
+        positions,
+        width,
+        dtype=tensor.dtype,
+        rope_theta=rope_theta,
+        rope_theta_hw=rope_theta_hw,
+    )
+    return apply_sensenova_rope_factors(tensor, factors)
 
 
 def apply_sensenova_rope_qk(

@@ -100,6 +100,7 @@ class SenseNovaSDXLChimeraArchHandler(ArchHandler):
                 context_positions=aux["context_positions"],
                 attention_mask=aux["context_attention_mask"],
                 fingerprint=key,
+                key_lengths=(int(aux["context_attention_mask"].shape[1]),),
             )
             latents = ops.generate_sample(
                 unet,

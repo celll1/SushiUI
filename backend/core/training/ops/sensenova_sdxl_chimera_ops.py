@@ -323,6 +323,11 @@ def collate_aux(batch: list[dict]) -> dict:
         (int(item["context_attention_mask"].shape[1]) for item in batch),
         default=0,
     )
+    if max_length:
+        # Individual prefix masks are unpadded here, so lengths need no GPU readback.
+        result["context_key_lengths"] = tuple(
+            int(item["context_attention_mask"].shape[1]) for item in batch
+        )
     for key in keys:
         values = [item[key] for item in batch]
         if key in sequence_keys:
@@ -477,6 +482,7 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
             context_positions=positions,
             target_height=height,
             target_width=width,
+            key_lengths=auxiliary.get("context_key_lengths"),
         ),
     )
     repa_pixels = getattr(ctx, "repa_pixels", None)

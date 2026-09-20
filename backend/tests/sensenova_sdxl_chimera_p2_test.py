@@ -65,18 +65,22 @@ def test_cross_attention_cached_and_uncached_are_equal_and_metadata_invalidates(
         target_height=32,
         target_width=32,
         cache_key=("bridge", 32, 32, 0, 0, "text-only-v1"),
+        key_lengths=(5,),
     )
     processor.set_context(context)
     uncached = processor(attention, hidden, encoder)
     cached = processor(attention, hidden, encoder)
     assert torch.equal(uncached, cached)
     assert len(processor._cross_kv_cache) == 1
+    assert len(processor._rope_cache._query) == 1
+    assert len(processor._rope_cache._context) == 1
     processor.set_context(
         ChimeraAttentionContext(
             context_positions=context.context_positions,
             target_height=64,
             target_width=32,
             cache_key=("bridge", 64, 32, 0, 0, "text-only-v1"),
+            key_lengths=(5,),
         )
     )
     processor(attention, hidden, encoder)
@@ -97,6 +101,7 @@ def test_cross_attention_padding_mask_matches_unpadded_context():
     processor = ChimeraAttnProcessor()
     processor.set_context(ChimeraAttentionContext(
         context_positions=positions, target_height=32, target_width=32,
+        key_lengths=(3, 7),
     ))
     additive_mask = torch.tensor(
         [[[0.0, 0.0, 0.0, -10000.0, -10000.0, -10000.0, -10000.0]],

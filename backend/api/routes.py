@@ -9730,6 +9730,9 @@ class InitializeSenseNovaSDXLChimeraRequest(BaseModel):
     latent_centered_second_moment: Optional[float] = Field(
         default=CHIMERA_INITIALIZE_DEFAULTS["latent_centered_second_moment"], gt=0
     )
+    angular_schedule: Literal[
+        "terminal_flat_cubic_v1", "confidence_gated_beta_3_2_v1"
+    ] = CHIMERA_INITIALIZE_DEFAULTS["angular_schedule"]
     angular_endpoint_slope: float = Field(
         default=CHIMERA_INITIALIZE_DEFAULTS["angular_endpoint_slope"], ge=0, le=2
     )
@@ -9778,6 +9781,7 @@ async def initialize_sensenova_sdxl_chimera_endpoint(
             FLOW_V3_PREDICTION if request.flow_version == "v3" else FLOW_V2_PREDICTION,
             latent_mean=request.latent_mean,
             latent_centered_second_moment=request.latent_centered_second_moment,
+            angular_schedule=request.angular_schedule,
             angular_endpoint_slope=request.angular_endpoint_slope,
         )
     if request.chimera_warmstart_source and request.flow_version != "v3":

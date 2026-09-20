@@ -26,6 +26,7 @@ from .flow import (
     FLOW_V2_PREDICTION,
     FLOW_V2_VELOCITY_PREDICTION,
     FLOW_V3_ANGULAR_SCHEDULE,
+    FLOW_V3_CONFIDENCE_ANGULAR_SCHEDULE,
     FLOW_V3_PATH,
     FLOW_V3_PREDICTION,
     FLOW_V3_RADIAL_SCHEDULE,
@@ -51,6 +52,7 @@ def prediction_contract(
     *,
     latent_mean: Iterable[float] | None = None,
     latent_centered_second_moment: float | None = None,
+    angular_schedule: str = FLOW_V3_ANGULAR_SCHEDULE,
     angular_endpoint_slope: float = 2.0,
     radius_floor: float = 1e-8,
     angular_singularity_threshold: float = 1e-6,
@@ -92,7 +94,19 @@ def prediction_contract(
         base["path"] = FLOW_V2_PATH
         return base
 
-    slope = float(angular_endpoint_slope)
+    schedule = str(angular_schedule).strip()
+    if schedule not in {
+        FLOW_V3_ANGULAR_SCHEDULE,
+        FLOW_V3_CONFIDENCE_ANGULAR_SCHEDULE,
+    }:
+        raise ChimeraArtifactError(
+            f"unsupported Chimera v3 angular_schedule: {schedule!r}"
+        )
+    slope = (
+        0.0
+        if schedule == FLOW_V3_CONFIDENCE_ANGULAR_SCHEDULE
+        else float(angular_endpoint_slope)
+    )
     floor = float(radius_floor)
     threshold = float(angular_singularity_threshold)
     step_limit = None if angular_step_limit is None else float(angular_step_limit)
@@ -113,7 +127,7 @@ def prediction_contract(
     base.update({
         "path": FLOW_V3_PATH,
         "radial_schedule": FLOW_V3_RADIAL_SCHEDULE,
-        "angular_schedule": FLOW_V3_ANGULAR_SCHEDULE,
+        "angular_schedule": schedule,
         "angular_endpoint_slope": slope,
         "cfg_mode": "tangent_only_v1",
         "radial_anchor": "positive_condition",
@@ -153,6 +167,9 @@ def validated_prediction_contract(
         latent_mean=declared.get("latent_mean"),
         latent_centered_second_moment=declared.get(
             "latent_centered_second_moment"
+        ),
+        angular_schedule=declared.get(
+            "angular_schedule", FLOW_V3_ANGULAR_SCHEDULE
         ),
         angular_endpoint_slope=declared.get("angular_endpoint_slope", 2.0),
         radius_floor=declared.get("radius_floor", 1e-8),
@@ -321,6 +338,9 @@ def manifest_template(
         latent_mean=declared.get("latent_mean"),
         latent_centered_second_moment=declared.get(
             "latent_centered_second_moment"
+        ),
+        angular_schedule=declared.get(
+            "angular_schedule", FLOW_V3_ANGULAR_SCHEDULE
         ),
         angular_endpoint_slope=declared.get("angular_endpoint_slope", 2.0),
         radius_floor=declared.get("radius_floor", 1e-8),

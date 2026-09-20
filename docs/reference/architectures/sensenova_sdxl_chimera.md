@@ -243,4 +243,7 @@ bootstrap status are recorded in `docs/guides/MODEL_FACTS.md` and
 endpoint-observable contract is specified separately in
 `docs/guides/SENSENOVA_SDXL_CHIMERA_V2_DESIGN.md`. The implemented format-4
 polar/tangent-CFG contract and its still-pending measured gates live in
-`docs/guides/SENSENOVA_SDXL_CHIMERA_V3_DESIGN.md`.
+`docs/guides/SENSENOVA_SDXL_CHIMERA_V3_DESIGN.md`. Format-4 artifacts select
+either the original terminal-flat cubic angular path or the endpoint-flat,
+late-peaking Beta(3,2) path. The latter takes its exact `-noise` first solver
+step analytically and begins learned conditioning on the following interval.

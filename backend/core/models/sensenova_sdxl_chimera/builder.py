@@ -32,7 +32,7 @@ from .artifact import (
     prediction_contract,
 )
 from .conditioning_bridge import ConditioningBridge
-from .flow import FLOW_V3_PREDICTION
+from .flow import FLOW_V3_ANGULAR_SCHEDULE, FLOW_V3_PREDICTION
 from .unet import build_donor_equal_unet, install_polar_radial_head
 
 
@@ -238,6 +238,9 @@ def build_chimera_v3_warmstart(
         latent_mean=prediction.get("latent_mean"),
         latent_centered_second_moment=prediction.get(
             "latent_centered_second_moment"
+        ),
+        angular_schedule=prediction.get(
+            "angular_schedule", FLOW_V3_ANGULAR_SCHEDULE
         ),
         angular_endpoint_slope=prediction.get("angular_endpoint_slope", 2.0),
         radius_floor=prediction.get("radius_floor", 1e-8),

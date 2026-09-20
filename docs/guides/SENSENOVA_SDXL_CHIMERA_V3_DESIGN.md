@@ -253,6 +253,19 @@ intermediate value requires its own measured artifact contract. The design
 prefers `a = 2` only if its conditional endpoint signal improves equal-NFE
 generation enough to justify the measured variance and training allocation.
 
+An implemented alternative is the confidence-gated Beta(3,2) CDF:
+
+```text
+gamma(s)  = 4s^3 - 3s^4
+gamma'(s) = 12s^2(1-s).
+```
+
+It is recorded as `confidence_gated_beta_3_2_v1`. It satisfies zero angular
+velocity at both endpoints, suppresses the noise-end target to second order,
+and moves the peak angular velocity to `s = 2/3`. At `s = 1/2`, its angular
+progress is `5/16`, rather than `3/4` for the baseline `a = 2` path. The choice
+is artifact-owned; it is not changed by a training YAML or inference option.
+
 Finally, this is a genuinely new interpolation. Defining `rho` by quadrature
 and `n` by a geodesic replaces the interior of `sigma*epsilon + alpha*x_c`;
 it does not merely re-express that Cartesian path. Only its endpoints and the
@@ -423,9 +436,13 @@ to a fixed tangent RMS as it would be at unit radius. The CFG sweep must include
 this region; radial invariance is not evidence that an uncapped angular step is
 accurate.
 
-The exact noise endpoint can no longer skip the U-Net: its radial term is
-analytic, but its conditional tangent posterior is the feature v3 is designed
-to learn. Equal-NFE comparisons with v2 must count this first evaluation.
+The baseline terminal-flat cubic evaluates the U-Net at the exact noise
+endpoint because its conditional tangent target is nonzero. The confidence-
+gated schedule instead has the exact endpoint field `u(0) = -epsilon`; its
+first solver interval bypasses the U-Net, uses `lambda = -rho` and `tau = 0`,
+and records that bypass in CFG diagnostics. This is the same first-order field
+the U-Net would be trained to return there, so the optimization is an NFE
+saving rather than a change in solver semantics.
 
 ## 8. Training and timestep sampling
 
@@ -519,8 +536,8 @@ prediction:
   path: observable_polar_geodesic_v1
   time_direction: zero_noise_to_one_clean
   radial_schedule: cubic_quadrature_v1
-  angular_schedule: terminal_flat_cubic_v1
-  angular_endpoint_slope: 2.0
+  angular_schedule: terminal_flat_cubic_v1  # or confidence_gated_beta_3_2_v1
+  angular_endpoint_slope: 2.0               # forced to 0 for Beta(3,2)
   cfg_mode: tangent_only_v1
   radial_anchor: positive_condition
   integrator: polar_exp_euler_v1

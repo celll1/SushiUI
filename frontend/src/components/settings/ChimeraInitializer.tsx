@@ -13,6 +13,7 @@ export default function ChimeraInitializer() {
   const [flowVersion, setFlowVersion] = useState<"v1" | "v2" | "v3">("v1");
   const [latentMean, setLatentMean] = useState("");
   const [latentMoment, setLatentMoment] = useState("");
+  const [angularSchedule, setAngularSchedule] = useState<"terminal_flat_cubic_v1" | "confidence_gated_beta_3_2_v1">("terminal_flat_cubic_v1");
   const [angularEndpointSlope, setAngularEndpointSlope] = useState(2);
   const [initialization, setInitialization] = useState<"scratch" | "sdxl_transplant">("scratch");
   const [seed, setSeed] = useState(0);
@@ -34,6 +35,7 @@ export default function ChimeraInitializer() {
         flow_version: flowVersion,
         latent_mean: needsCalibration ? mean : null,
         latent_centered_second_moment: needsCalibration ? Number(latentMoment) : null,
+        angular_schedule: angularSchedule,
         angular_endpoint_slope: flowVersion === "v3" ? angularEndpointSlope : 2,
         unet_initialization: initialization,
         initialization_seed: seed,
@@ -101,11 +103,22 @@ export default function ChimeraInitializer() {
               value={latentMoment} onChange={(e) => setLatentMoment(e.target.value)} />
           </label>
           {flowVersion === "v3" && (
-            <label className="block text-xs text-gray-400">Noise-end angular slope
-              <input className={`${fieldClass} mt-1`} type="number" min={0} max={2} step="any"
-                value={angularEndpointSlope}
-                onChange={(e) => setAngularEndpointSlope(Number(e.target.value))} />
-            </label>
+            <>
+              <label className="block text-xs text-gray-400">Angular schedule
+                <select className={`${fieldClass} mt-1`} value={angularSchedule}
+                  onChange={(e) => setAngularSchedule(e.target.value as "terminal_flat_cubic_v1" | "confidence_gated_beta_3_2_v1")}>
+                  <option value="terminal_flat_cubic_v1">Terminal-flat cubic</option>
+                  <option value="confidence_gated_beta_3_2_v1">Confidence-gated Beta(3,2)</option>
+                </select>
+              </label>
+              {angularSchedule === "terminal_flat_cubic_v1" && (
+                <label className="block text-xs text-gray-400">Noise-end angular slope
+                  <input className={`${fieldClass} mt-1`} type="number" min={0} max={2} step="any"
+                    value={angularEndpointSlope}
+                    onChange={(e) => setAngularEndpointSlope(Number(e.target.value))} />
+                </label>
+              )}
+            </>
           )}
         </div>
       )}

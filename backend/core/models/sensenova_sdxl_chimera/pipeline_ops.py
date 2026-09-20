@@ -21,6 +21,7 @@ from .flow import (
     FLOW_V1_PREDICTION,
     FLOW_V2_PREDICTION,
     FLOW_V2_VELOCITY_PREDICTION,
+    FLOW_V3_CONFIDENCE_ANGULAR_SCHEDULE,
     FLOW_V3_PREDICTION,
     endpoint_observable_noising,
     endpoint_observable_preconditioning,
@@ -467,6 +468,84 @@ def _polar_cfg_step(
     cfg_norm: str,
     collect_probe: bool,
 ) -> tuple[torch.Tensor, dict]:
+    analytic_noise_step = (
+        prediction.get("angular_schedule")
+        == FLOW_V3_CONFIDENCE_ANGULAR_SCHEDULE
+        and bool(torch.all(timestep == 0).item())
+    )
+    if analytic_noise_step:
+        _centered, radius, direction = polar_state(
+            sample,
+            timestep,
+            latent_mean=prediction["latent_mean"],
+            radius_floor=prediction["radius_floor"],
+        )
+        radial = -radius
+        tangent = torch.zeros_like(sample)
+        analytic = polar_compose_velocity(
+            sample,
+            radial,
+            tangent,
+            timestep,
+            latent_mean=prediction["latent_mean"],
+            radius_floor=prediction["radius_floor"],
+        )
+        result = polar_exp_euler_step(
+            sample,
+            radial,
+            tangent,
+            timestep,
+            next_timestep,
+            latent_mean=prediction["latent_mean"],
+            radius_floor=prediction["radius_floor"],
+            angular_step_limit=prediction.get("angular_step_limit"),
+        )
+        if not collect_probe:
+            return result.sample, {}
+        recovered = polar_recover_clean(
+            sample,
+            radial,
+            tangent,
+            timestep,
+            latent_mean=prediction["latent_mean"],
+            latent_centered_second_moment=prediction[
+                "latent_centered_second_moment"
+            ],
+            angular_schedule=prediction["angular_schedule"],
+            angular_endpoint_slope=prediction["angular_endpoint_slope"],
+            radius_floor=prediction["radius_floor"],
+        )
+        radial_ratio = result.radius.float() / radius.float().clamp_min(
+            float(prediction["radius_floor"])
+        )
+        return result.sample, {
+            "conditional": analytic,
+            "unconditional": analytic,
+            "guided_raw": analytic,
+            "guided_post": analytic,
+            "prediction_conditional": tangent,
+            "prediction_unconditional": tangent,
+            "prediction_guided_raw": tangent,
+            "prediction_guided_post": tangent,
+            "x0_estimates": (recovered, recovered, recovered),
+            "analytic": analytic,
+            "bypassed_unet": True,
+            "extra_metrics": {
+                "radial_cond": float(radial.float().mean().item()),
+                "radial_uncond": float(radial.float().mean().item()),
+                "radial_anchor": float(radial.float().mean().item()),
+                "radial_cfg_delta": 0.0,
+                "tangent_orthogonality_abs_max": 0.0,
+                "polar_radius_before": float(radius.float().mean().item()),
+                "polar_radius_after": float(result.radius.float().mean().item()),
+                "polar_radius_min_after": float(result.radius.float().min().item()),
+                "radial_exponential_ratio_abs_max": float(
+                    radial_ratio.abs().max().item()
+                ),
+                "angular_displacement_abs_max": 0.0,
+                "angular_cap_scale_min": 1.0,
+            },
+        }
     if not needs_cfg:
         radial_cond, tangent_cond, direction, radius = _unet_polar(
             unet,
@@ -582,6 +661,7 @@ def _polar_cfg_step(
         "latent_centered_second_moment": prediction[
             "latent_centered_second_moment"
         ],
+        "angular_schedule": prediction["angular_schedule"],
         "angular_endpoint_slope": prediction["angular_endpoint_slope"],
         "radius_floor": prediction["radius_floor"],
     }
@@ -610,6 +690,8 @@ def _polar_cfg_step(
         "prediction_guided_raw": tangent_raw,
         "prediction_guided_post": tangent_post,
         "x0_estimates": (x0_cond, x0_uncond, x0_raw),
+        "analytic": None,
+        "bypassed_unet": False,
         "extra_metrics": {
             "radial_cond": float(radial_cond.float().mean().item()),
             "radial_uncond": float(radial_uncond.float().mean().item()),
@@ -734,6 +816,7 @@ def _sample_flow_latents(
                             source_noise,
                             times[index + 1],
                             latent_mean=latent_mean,
+                            angular_schedule=prediction["angular_schedule"],
                             angular_endpoint_slope=prediction[
                                 "angular_endpoint_slope"
                             ],
@@ -772,6 +855,8 @@ def _sample_flow_latents(
                             prediction_guided_post=polar_info[
                                 "prediction_guided_post"
                             ],
+                            analytic=polar_info["analytic"],
+                            bypassed_unet=polar_info["bypassed_unet"],
                             latent_mean=latent_mean,
                             x0_estimates=polar_info["x0_estimates"],
                             extra_metrics=polar_info["extra_metrics"],
@@ -1064,6 +1149,7 @@ def sample_img2img_latents(
             noise,
             times[start_index],
             latent_mean=prediction["latent_mean"],
+            angular_schedule=prediction["angular_schedule"],
             angular_endpoint_slope=prediction["angular_endpoint_slope"],
             radius_floor=prediction["radius_floor"],
             angular_singularity_threshold=prediction[

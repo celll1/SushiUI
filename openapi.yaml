@@ -25887,8 +25887,9 @@ components:
           default: false
           description: >-
             Explicit safety override allowing diffusion training of a scratch
-            U-Net before the conditioning bridge has passed its held-out alignment
-            gate. Never permits an unaligned SDXL transplant.
+            U-Net or Chimera v2 warm-start before the conditioning bridge has
+            passed its held-out alignment gate. Never permits an unaligned SDXL
+            transplant.
         chimera_conditioning_cache:
           type: boolean
           default: true

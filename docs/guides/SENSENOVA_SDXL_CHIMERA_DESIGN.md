@@ -820,7 +820,7 @@ declared in `openapi.yaml`:
 |---|---|---|---|
 | `chimera_training_stage` | `bridge_align`, `unet`, `joint` | `unet` | Active training graph |
 | `chimera_bridge_align_steps` | integer >= 0 | 0 | For an `unet`/`joint` run, bridge-only steps before automatic transition |
-| `chimera_allow_unaligned_scratch` | bool | false | Explicitly permit scratch U-Net diffusion training before bridge alignment |
+| `chimera_allow_unaligned_scratch` | bool | false | Explicitly permit scratch or Chimera v2 warm-start diffusion training before bridge alignment |
 | `chimera_conditioning_cache` | bool | true | Cache frozen bridge outputs during `unet` stage |
 | `chimera_prefix_prefetch` | bool | true | Prefetch frozen raw prefix for live-conditioning stages |
 | `chimera_prefix_prefetch_device` | `auto`, `cpu`, `cuda` | `auto` | Prefix worker execution/storage device |

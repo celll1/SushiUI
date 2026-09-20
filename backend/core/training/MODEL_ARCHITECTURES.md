@@ -385,8 +385,9 @@ target_modules = ["to_q", "to_k", "to_v", "to_out.0"]  # ZImageAttention modules
 Understanding と VAE は全 stage で凍結されます。`bridge_align` は
 `chimera_clip_hidden_weight` と `chimera_clip_pooled_weight` の明示指定が必要です。
 `unet` / `joint` は原則 `bridge_state="aligned"` を要求し、未 alignment の
-scratch artifact だけが `chimera_allow_unaligned_scratch=true` で実験的に
-進められます。`sdxl_transplant` はこの bypass を許可せず、下記 staged
+scratch artifact または Chimera v2 warm-start が
+`chimera_allow_unaligned_scratch=true` で実験的に進められます。
+`sdxl_transplant` はこの bypass を許可せず、下記 staged
 warmup も held-out alignment gate の代替にはなりません。
 
 `chimera_bridge_align_steps=N`（default 0）を `unet` / `joint` と組み合わせると、

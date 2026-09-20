@@ -35,6 +35,11 @@ from core.models.sensenova_sdxl_chimera.prefix import encode_chimera_conditionin
 
 
 STAGES = ("bridge_align", "unet", "joint")
+UNALIGNED_OVERRIDE_INITIALIZATIONS = frozenset({"scratch", "chimera_v2_warmstart"})
+
+
+def unaligned_diffusion_override_allowed(initialization: str, allow: bool) -> bool:
+    return bool(allow) and initialization in UNALIGNED_OVERRIDE_INITIALIZATIONS
 
 
 def configured_training_stage(trainer) -> str:
@@ -218,18 +223,21 @@ def load_components(trainer) -> None:
         allow = bool((getattr(trainer, "config", None) or {}).get(
             "chimera_allow_unaligned_scratch", False
         ))
-        if not aligned and not (initialization == "scratch" and allow):
+        if not aligned and initialization == "sdxl_transplant":
+            raise ValueError("sdxl_transplant diffusion training requires an aligned bridge")
+        if not aligned and not unaligned_diffusion_override_allowed(
+            initialization, allow
+        ):
             raise ValueError(
                 f"Chimera {stage} training requires bridge_state='aligned'; "
-                "an unaligned scratch artifact needs chimera_allow_unaligned_scratch=true"
+                "an unaligned scratch or Chimera v2 warm-start artifact needs "
+                "chimera_allow_unaligned_scratch=true"
             )
-        if initialization == "sdxl_transplant" and not aligned:
-            raise ValueError("sdxl_transplant diffusion training requires an aligned bridge")
-        if not aligned and initialization == "scratch" and allow:
+        if not aligned and unaligned_diffusion_override_allowed(initialization, allow):
             print(
-                f"{trainer.log_prefix} WARNING: training a scratch Chimera U-Net with an "
-                "unaligned bridge by explicit override; conditioning has not passed the "
-                "held-out alignment gate"
+                f"{trainer.log_prefix} WARNING: training a Chimera U-Net initialized as "
+                f"{initialization!r} with an unaligned bridge by explicit override; "
+                "conditioning has not passed the held-out alignment gate"
             )
     if stage == "bridge_align":
         hidden_weight = (getattr(trainer, "config", None) or {}).get(

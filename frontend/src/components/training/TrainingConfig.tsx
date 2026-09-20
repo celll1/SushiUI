@@ -5563,7 +5563,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             <label className="flex items-center gap-2 text-xs text-amber-300">
               <input type="checkbox" checked={params.chimera_allow_unaligned_scratch ?? false}
                 onChange={(e) => updateParam("chimera_allow_unaligned_scratch", e.target.checked)} />
-              Allow unaligned scratch bridge (unsafe override)
+              Allow unaligned native Chimera bridge (unsafe override)
             </label>
             <div className="grid grid-cols-2 gap-2">
               <label className="text-xs text-gray-400">Bridge LR

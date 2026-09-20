@@ -38,6 +38,7 @@ from core.training.ops.sensenova_sdxl_chimera_ops import (
     sync_training_stage,
     train_step,
     training_stage_for_step,
+    unaligned_diffusion_override_allowed,
 )
 from core.training.train_runner import _apply_chimera_training_contract
 from core.models.sensenova_sdxl_chimera.understanding import UnderstandingPrefix
@@ -119,6 +120,17 @@ def _trainer(stage: str):
         chimera_bridge_lr=3e-5,
         learning_rate=1e-4,
     )
+
+
+@pytest.mark.parametrize("initialization", ["scratch", "chimera_v2_warmstart"])
+def test_unaligned_override_accepts_native_chimera_initialization(initialization):
+    assert unaligned_diffusion_override_allowed(initialization, True)
+    assert not unaligned_diffusion_override_allowed(initialization, False)
+
+
+@pytest.mark.parametrize("initialization", ["sdxl_transplant", "unknown"])
+def test_unaligned_override_rejects_non_native_initialization(initialization):
+    assert not unaligned_diffusion_override_allowed(initialization, True)
 
 
 @pytest.mark.parametrize(

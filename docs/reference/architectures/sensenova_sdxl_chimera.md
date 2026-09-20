@@ -167,9 +167,10 @@ unchanged.
 
 Understanding and VAE always stay frozen. `bridge_align` requires explicit loss
 weights because no unmeasured numerical default is accepted. U-Net/joint
-training requires `bridge_state="aligned"`; only a scratch U-Net may bypass
-that rule through `chimera_allow_unaligned_scratch=true`, and a transplanted
-U-Net may never bypass it. Checkpoints are production-loadable Chimera
+training requires `bridge_state="aligned"`; a scratch U-Net or Chimera v2
+warm-start may bypass that rule through
+`chimera_allow_unaligned_scratch=true`, while a transplanted SDXL U-Net may
+never bypass it. Checkpoints are production-loadable Chimera
 directories with stage, step, epoch, metrics, and bridge-state provenance.
 Debug dumps include VAE-decoded noisy, target, and predicted-x0 WebP previews;
 the monitor prefers those over independently normalized latent channels.

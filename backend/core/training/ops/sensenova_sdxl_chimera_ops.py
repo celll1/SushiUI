@@ -17,6 +17,10 @@ from core.models.sensenova_sdxl_chimera.flow import (
     FLOW_V2_PREDICTION,
     FLOW_V2_VELOCITY_PREDICTION,
     FLOW_V3_PREDICTION,
+    FLOW_V4_PREDICTION,
+    destruction_coordinate,
+    destruction_coordinate_polar_flow_target,
+    destruction_coordinate_recover_clean,
     endpoint_observable_noising,
     endpoint_observable_preconditioning,
     endpoint_observable_reconstruct_velocity,
@@ -25,6 +29,7 @@ from core.models.sensenova_sdxl_chimera.flow import (
     endpoint_observable_velocity_target,
     flow_noising,
     flow_velocity_target,
+    gate_conditioning_tensor,
     polar_compose_velocity,
     polar_flow_target,
     polar_recover_clean,
@@ -35,7 +40,9 @@ from core.models.sensenova_sdxl_chimera.prefix import encode_chimera_conditionin
 
 
 STAGES = ("bridge_align", "unet", "joint")
-UNALIGNED_OVERRIDE_INITIALIZATIONS = frozenset({"scratch", "chimera_v2_warmstart"})
+UNALIGNED_OVERRIDE_INITIALIZATIONS = frozenset({
+    "scratch", "chimera_v2_warmstart", "chimera_v3_warmstart"
+})
 
 
 def unaligned_diffusion_override_allowed(initialization: str, allow: bool) -> bool:
@@ -202,6 +209,13 @@ def load_components(trainer) -> None:
         if components["prediction"]["type"] != FLOW_V3_PREDICTION:
             raise ValueError(
                 "Chimera v3 training requires a format-4 polar_tangent_flow artifact"
+            )
+        trainer.chimera_prediction = components["prediction"]
+    elif flow_version == "v4":
+        if components["prediction"]["type"] != FLOW_V4_PREDICTION:
+            raise ValueError(
+                "Chimera v4 training requires a format-5 "
+                "destruction_coordinate_polar_flow artifact"
             )
         trainer.chimera_prediction = components["prediction"]
     else:
@@ -417,23 +431,37 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
     is_direct_v2 = prediction_type == FLOW_V2_VELOCITY_PREDICTION
     is_v2 = is_residual_v2 or is_direct_v2
     is_v3 = prediction_type == FLOW_V3_PREDICTION
+    is_v4 = prediction_type == FLOW_V4_PREDICTION
+    is_polar = is_v3 or is_v4
     polar_target = None
     radial_prediction = None
-    if is_v3:
+    if is_polar:
         latent_mean = prediction_contract["latent_mean"]
         latent_moment = prediction_contract["latent_centered_second_moment"]
-        polar_target = polar_flow_target(
-            latents,
-            noise,
-            timesteps,
-            latent_mean=latent_mean,
-            angular_schedule=prediction_contract["angular_schedule"],
-            angular_endpoint_slope=prediction_contract["angular_endpoint_slope"],
-            radius_floor=prediction_contract["radius_floor"],
-            angular_singularity_threshold=prediction_contract[
-                "angular_singularity_threshold"
-            ],
-        )
+        if is_v4:
+            polar_target = destruction_coordinate_polar_flow_target(
+                latents,
+                noise,
+                timesteps,
+                latent_mean=latent_mean,
+                radius_floor=prediction_contract["radius_floor"],
+                angular_singularity_threshold=prediction_contract[
+                    "angular_singularity_threshold"
+                ],
+            )
+        else:
+            polar_target = polar_flow_target(
+                latents,
+                noise,
+                timesteps,
+                latent_mean=latent_mean,
+                angular_schedule=prediction_contract["angular_schedule"],
+                angular_endpoint_slope=prediction_contract["angular_endpoint_slope"],
+                radius_floor=prediction_contract["radius_floor"],
+                angular_singularity_threshold=prediction_contract[
+                    "angular_singularity_threshold"
+                ],
+            )
         noisy = polar_target.sample
         model_input = polar_target.direction.to(dtype=latents.dtype)
         target = polar_target.tangent_velocity
@@ -464,6 +492,9 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
         velocity_target = target
         model_input = noisy
     pooled = auxiliary["pooled_text_embeds"].to(conditioning)
+    if is_v4:
+        conditioning = gate_conditioning_tensor(conditioning, timesteps, latents)
+        pooled = gate_conditioning_tensor(pooled, timesteps, latents)
     positions = auxiliary["context_positions"].to(device=latents.device)
     context_mask = auxiliary["context_attention_mask"].to(device=latents.device)
     height, width = latents.shape[-2] * 8, latents.shape[-1] * 8
@@ -494,7 +525,7 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
         site = spatial_tap_sites(trainer.unet)[trainer.repa_align_depth][1]
         repa_handle = arm_spatial_tap(trainer._repa_tap_module, site)
     try:
-        if is_v3:
+        if is_polar:
             raw_tangent, radial_prediction = polar_unet_forward(
                 trainer.unet,
                 model_input,
@@ -523,7 +554,7 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
     tangent_loss_per_item = F.mse_loss(
         prediction.float(), target.float(), reduction="none"
     ).flatten(1).mean(1)
-    if is_v3:
+    if is_polar:
         radial_loss_per_item = (
             radial_prediction.float() - radial_target.float()
         ).square()
@@ -537,28 +568,45 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
             prediction_loss_per_item.detach())
     value = float(loss.detach().cpu())
     with torch.no_grad():
-        if is_v3:
+        if is_polar:
+            tangent_velocity = prediction.detach()
+            if is_v4:
+                _coordinate, coordinate_prime = destruction_coordinate(
+                    timesteps, noisy.detach()
+                )
+                tangent_velocity = coordinate_prime * tangent_velocity
             predicted_velocity = polar_compose_velocity(
                 noisy.detach(),
                 radial_prediction.detach(),
-                prediction.detach(),
+                tangent_velocity,
                 timesteps,
                 latent_mean=latent_mean,
                 radius_floor=prediction_contract["radius_floor"],
             )
-            predicted_clean = polar_recover_clean(
-                noisy.detach(),
-                radial_prediction.detach(),
-                prediction.detach(),
-                timesteps,
-                latent_mean=latent_mean,
-                latent_centered_second_moment=latent_moment,
-                angular_schedule=prediction_contract["angular_schedule"],
-                angular_endpoint_slope=prediction_contract[
-                    "angular_endpoint_slope"
-                ],
-                radius_floor=prediction_contract["radius_floor"],
-            )
+            if is_v4:
+                predicted_clean = destruction_coordinate_recover_clean(
+                    noisy.detach(),
+                    radial_prediction.detach(),
+                    prediction.detach(),
+                    timesteps,
+                    latent_mean=latent_mean,
+                    latent_centered_second_moment=latent_moment,
+                    radius_floor=prediction_contract["radius_floor"],
+                )
+            else:
+                predicted_clean = polar_recover_clean(
+                    noisy.detach(),
+                    radial_prediction.detach(),
+                    prediction.detach(),
+                    timesteps,
+                    latent_mean=latent_mean,
+                    latent_centered_second_moment=latent_moment,
+                    angular_schedule=prediction_contract["angular_schedule"],
+                    angular_endpoint_slope=prediction_contract[
+                        "angular_endpoint_slope"
+                    ],
+                    radius_floor=prediction_contract["radius_floor"],
+                )
         elif is_v2:
             if is_residual_v2:
                 predicted_velocity = endpoint_observable_reconstruct_velocity(
@@ -586,42 +634,53 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
             predicted_clean.float(), latents.float()
         ).cpu())
     if hasattr(trainer, "log_extra_metric"):
-        if is_v3:
+        if is_polar:
+            metric_version = "v4" if is_v4 else "v3"
             tangent_inner = (
                 polar_target.direction.float() * prediction.detach().float()
             ).flatten(1).mean(1).abs()
             trainer.log_extra_metric(
-                "chimera_v3_radial_loss",
+                f"chimera_{metric_version}_radial_loss",
                 float(radial_loss_per_item.detach().mean().cpu()),
             )
             trainer.log_extra_metric(
-                "chimera_v3_tangent_loss",
+                f"chimera_{metric_version}_tangent_loss",
                 float(tangent_loss_per_item.detach().mean().cpu()),
             )
             trainer.log_extra_metric(
-                "chimera_v3_tangent_target_second_moment",
+                f"chimera_{metric_version}_tangent_target_second_moment",
                 float(target.detach().float().square().mean().cpu()),
             )
             trainer.log_extra_metric(
-                "chimera_v3_tangent_prediction_rms",
+                f"chimera_{metric_version}_tangent_prediction_rms",
                 float(prediction.detach().float().square().mean().sqrt().cpu()),
             )
             trainer.log_extra_metric(
-                "chimera_v3_tangent_orthogonality_abs_max",
+                f"chimera_{metric_version}_tangent_orthogonality_abs_max",
                 float(tangent_inner.max().cpu()),
             )
             trainer.log_extra_metric(
-                "chimera_v3_radius_mean",
+                f"chimera_{metric_version}_radius_mean",
                 float(polar_target.radius.detach().float().mean().cpu()),
             )
             trainer.log_extra_metric(
-                "chimera_v3_small_angle_count",
+                f"chimera_{metric_version}_small_angle_count",
                 float(polar_target.small_angle_mask.sum().cpu()),
             )
             trainer.log_extra_metric(
-                "chimera_v3_antipodal_count",
+                f"chimera_{metric_version}_antipodal_count",
                 float(polar_target.antipodal_mask.sum().cpu()),
             )
+            if is_v4:
+                coordinate, coordinate_prime = destruction_coordinate(timesteps, latents)
+                trainer.log_extra_metric(
+                    "chimera_v4_destruction_coordinate_mean",
+                    float(coordinate.detach().float().mean().cpu()),
+                )
+                trainer.log_extra_metric(
+                    "chimera_v4_destruction_derivative_mean",
+                    float(coordinate_prime.detach().float().mean().cpu()),
+                )
         elif is_v2:
             analytic, c_skip = endpoint_observable_preconditioning(
                 noisy.detach(),

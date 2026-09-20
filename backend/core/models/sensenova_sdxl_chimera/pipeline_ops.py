@@ -23,11 +23,18 @@ from .flow import (
     FLOW_V2_VELOCITY_PREDICTION,
     FLOW_V3_CONFIDENCE_ANGULAR_SCHEDULE,
     FLOW_V3_PREDICTION,
+    FLOW_V4_PREDICTION,
+    conditioning_reliability,
+    destruction_coordinate,
+    destruction_coordinate_polar_flow_target,
+    destruction_coordinate_recover_clean,
     endpoint_observable_noising,
     endpoint_observable_preconditioning,
     endpoint_observable_recover_clean,
     flow_euler_step,
     flow_noising,
+    gate_conditioning_tensor,
+    mixed_coordinate_polar_exp_euler_step,
     polar_compose_velocity,
     polar_exp_euler_step,
     polar_flow_target,
@@ -231,6 +238,23 @@ def _unet_polar(
         latent_mean=prediction["latent_mean"],
         radius_floor=prediction["radius_floor"],
     )
+    is_v4 = prediction.get("type") == FLOW_V4_PREDICTION
+    encoder_hidden_states = conditioning.encoder_hidden_states.to(
+        device=device, dtype=dtype
+    )
+    pooled_text_embeds = conditioning.pooled_text_embeds.to(
+        device=device, dtype=dtype
+    )
+    reliability_key = None
+    if is_v4:
+        encoder_hidden_states = gate_conditioning_tensor(
+            encoder_hidden_states, timestep, sample
+        )
+        pooled_text_embeds = gate_conditioning_tensor(
+            pooled_text_embeds, timestep, sample
+        )
+        reliability = conditioning_reliability(timestep, sample)
+        reliability_key = tuple(float(value) for value in reliability.flatten().tolist())
     context = ChimeraAttentionContext(
         context_positions=conditioning.context_positions.to(device=device),
         target_height=int(cache_metadata[0]),
@@ -238,7 +262,7 @@ def _unet_polar(
         crop_top=int(cache_metadata[2]),
         crop_left=int(cache_metadata[3]),
         prefix_terminal_t=float(cache_metadata[4]),
-        cache_key=(conditioning.fingerprint, *cache_metadata),
+        cache_key=(conditioning.fingerprint, reliability_key, *cache_metadata),
         key_lengths=conditioning.key_lengths,
     )
     set_chimera_attention_context(unet, context)
@@ -248,14 +272,10 @@ def _unet_polar(
         direction.to(dtype=dtype),
         expanded_timestep,
         log_radius=radius.clamp_min(prediction["radius_floor"]).log(),
-        encoder_hidden_states=conditioning.encoder_hidden_states.to(
-            device=device, dtype=dtype
-        ),
+        encoder_hidden_states=encoder_hidden_states,
         encoder_attention_mask=conditioning.attention_mask.to(device=device),
         added_cond_kwargs={
-            "text_embeds": conditioning.pooled_text_embeds.to(
-                device=device, dtype=dtype
-            ),
+            "text_embeds": pooled_text_embeds,
             "time_ids": time_ids.to(device=device, dtype=dtype),
         },
         return_dict=False,
@@ -473,9 +493,10 @@ def _polar_cfg_step(
     cfg_norm: str,
     collect_probe: bool,
 ) -> tuple[torch.Tensor, dict]:
+    is_v4 = prediction.get("type") == FLOW_V4_PREDICTION
     analytic_noise_step = (
-        prediction.get("angular_schedule")
-        == FLOW_V3_CONFIDENCE_ANGULAR_SCHEDULE
+        (is_v4 or prediction.get("angular_schedule")
+        == FLOW_V3_CONFIDENCE_ANGULAR_SCHEDULE)
         and bool(torch.all(timestep == 0).item())
     )
     if analytic_noise_step:
@@ -495,7 +516,10 @@ def _polar_cfg_step(
             latent_mean=prediction["latent_mean"],
             radius_floor=prediction["radius_floor"],
         )
-        result = polar_exp_euler_step(
+        solver = (
+            mixed_coordinate_polar_exp_euler_step if is_v4 else polar_exp_euler_step
+        )
+        result = solver(
             sample,
             radial,
             tangent,
@@ -507,19 +531,32 @@ def _polar_cfg_step(
         )
         if not collect_probe:
             return result.sample, {}
-        recovered = polar_recover_clean(
-            sample,
-            radial,
-            tangent,
-            timestep,
-            latent_mean=prediction["latent_mean"],
-            latent_centered_second_moment=prediction[
-                "latent_centered_second_moment"
-            ],
-            angular_schedule=prediction["angular_schedule"],
-            angular_endpoint_slope=prediction["angular_endpoint_slope"],
-            radius_floor=prediction["radius_floor"],
-        )
+        if is_v4:
+            recovered = destruction_coordinate_recover_clean(
+                sample,
+                radial,
+                tangent,
+                timestep,
+                latent_mean=prediction["latent_mean"],
+                latent_centered_second_moment=prediction[
+                    "latent_centered_second_moment"
+                ],
+                radius_floor=prediction["radius_floor"],
+            )
+        else:
+            recovered = polar_recover_clean(
+                sample,
+                radial,
+                tangent,
+                timestep,
+                latent_mean=prediction["latent_mean"],
+                latent_centered_second_moment=prediction[
+                    "latent_centered_second_moment"
+                ],
+                angular_schedule=prediction["angular_schedule"],
+                angular_endpoint_slope=prediction["angular_endpoint_slope"],
+                radius_floor=prediction["radius_floor"],
+            )
         radial_ratio = result.radius.float() / radius.float().clamp_min(
             float(prediction["radius_floor"])
         )
@@ -642,7 +679,8 @@ def _polar_cfg_step(
     tangent_raw = polar_tangent_projection(tangent_raw, direction)
     tangent_post = polar_tangent_projection(tangent_post, direction)
     radial_anchor = radial_cond
-    result = polar_exp_euler_step(
+    solver = mixed_coordinate_polar_exp_euler_step if is_v4 else polar_exp_euler_step
+    result = solver(
         sample,
         radial_anchor,
         tangent_post,
@@ -656,10 +694,14 @@ def _polar_cfg_step(
         return result.sample, {}
 
     def full(radial, tangent):
+        tangent_velocity = tangent
+        if is_v4:
+            _coordinate, coordinate_prime = destruction_coordinate(timestep, sample)
+            tangent_velocity = coordinate_prime * tangent
         return polar_compose_velocity(
             sample,
             radial,
-            tangent,
+            tangent_velocity,
             timestep,
             latent_mean=prediction["latent_mean"],
             radius_floor=prediction["radius_floor"],
@@ -670,17 +712,23 @@ def _polar_cfg_step(
         "latent_centered_second_moment": prediction[
             "latent_centered_second_moment"
         ],
-        "angular_schedule": prediction["angular_schedule"],
-        "angular_endpoint_slope": prediction["angular_endpoint_slope"],
         "radius_floor": prediction["radius_floor"],
     }
-    x0_cond = polar_recover_clean(
+    recover_clean = (
+        destruction_coordinate_recover_clean if is_v4 else polar_recover_clean
+    )
+    if not is_v4:
+        clean_kwargs.update({
+            "angular_schedule": prediction["angular_schedule"],
+            "angular_endpoint_slope": prediction["angular_endpoint_slope"],
+        })
+    x0_cond = recover_clean(
         sample, radial_cond, tangent_cond, timestep, **clean_kwargs
     )
-    x0_uncond = polar_recover_clean(
+    x0_uncond = recover_clean(
         sample, radial_uncond, tangent_uncond, timestep, **clean_kwargs
     )
-    x0_raw = polar_recover_clean(
+    x0_raw = recover_clean(
         sample, radial_anchor, tangent_raw, timestep, **clean_kwargs
     )
     radial_ratio = result.radius.float() / radius.float().clamp_min(
@@ -721,6 +769,20 @@ def _polar_cfg_step(
             ),
         },
     }
+    if is_v4:
+        coordinate, _coordinate_prime = destruction_coordinate(timestep, sample)
+        next_coordinate, _next_coordinate_prime = destruction_coordinate(
+            next_timestep, sample
+        )
+        reliability = conditioning_reliability(timestep, sample)
+        info["extra_metrics"].update({
+            "destruction_coordinate": float(coordinate.float().mean().item()),
+            "delta_d": float((next_coordinate - coordinate).float().mean().item()),
+            "conditioning_reliability": float(reliability.float().mean().item()),
+            "conditioned_tangent_delta_rms": float(
+                (tangent_cond - tangent_uncond).float().square().mean().sqrt().item()
+            ),
+        })
     return result.sample, info
 
 
@@ -781,6 +843,8 @@ def _sample_flow_latents(
     is_direct_v2 = prediction_type == FLOW_V2_VELOCITY_PREDICTION
     is_v2 = is_residual_v2 or is_direct_v2
     is_v3 = prediction_type == FLOW_V3_PREDICTION
+    is_v4 = prediction_type == FLOW_V4_PREDICTION
+    is_polar = is_v3 or is_v4
     latent_mean = prediction.get("latent_mean")
     latent_moment = prediction.get("latent_centered_second_moment")
     if cfg_probe_callback is not None and not needs_cfg:
@@ -801,7 +865,7 @@ def _sample_flow_latents(
                     cfg_schedule_power=cfg_schedule_power,
                     denoise_progress=float(times[index].item()),
                 )
-                if is_v3:
+                if is_polar:
                     sample_before = sample
                     sample, polar_info = _polar_cfg_step(
                         unet,
@@ -820,20 +884,32 @@ def _sample_flow_latents(
                         collect_probe=cfg_probe_callback is not None,
                     )
                     if generate_mask is not None:
-                        source_at_next = polar_flow_target(
-                            source_latents,
-                            source_noise,
-                            times[index + 1],
-                            latent_mean=latent_mean,
-                            angular_schedule=prediction["angular_schedule"],
-                            angular_endpoint_slope=prediction[
-                                "angular_endpoint_slope"
-                            ],
-                            radius_floor=prediction["radius_floor"],
-                            angular_singularity_threshold=prediction[
-                                "angular_singularity_threshold"
-                            ],
-                        ).sample
+                        if is_v4:
+                            source_at_next = destruction_coordinate_polar_flow_target(
+                                source_latents,
+                                source_noise,
+                                times[index + 1],
+                                latent_mean=latent_mean,
+                                radius_floor=prediction["radius_floor"],
+                                angular_singularity_threshold=prediction[
+                                    "angular_singularity_threshold"
+                                ],
+                            ).sample
+                        else:
+                            source_at_next = polar_flow_target(
+                                source_latents,
+                                source_noise,
+                                times[index + 1],
+                                latent_mean=latent_mean,
+                                angular_schedule=prediction["angular_schedule"],
+                                angular_endpoint_slope=prediction[
+                                    "angular_endpoint_slope"
+                                ],
+                                radius_floor=prediction["radius_floor"],
+                                angular_singularity_threshold=prediction[
+                                    "angular_singularity_threshold"
+                                ],
+                            ).sample
                         sample = (
                             generate_mask * sample
                             + (1.0 - generate_mask) * source_at_next
@@ -1156,7 +1232,19 @@ def sample_img2img_latents(
         FLOW_V2_VELOCITY_PREDICTION,
     }
     is_v3 = prediction.get("type") == FLOW_V3_PREDICTION
-    if is_v3:
+    is_v4 = prediction.get("type") == FLOW_V4_PREDICTION
+    if is_v4:
+        sample = destruction_coordinate_polar_flow_target(
+            source_latents,
+            noise,
+            times[start_index],
+            latent_mean=prediction["latent_mean"],
+            radius_floor=prediction["radius_floor"],
+            angular_singularity_threshold=prediction[
+                "angular_singularity_threshold"
+            ],
+        ).sample
+    elif is_v3:
         sample = polar_flow_target(
             source_latents,
             noise,

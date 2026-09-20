@@ -3323,7 +3323,11 @@ Paths below are relative to `backend/core/training/`.
 - Prediction formats: format 2 is v1 direct flow velocity; format 3 records the
   v2 endpoint-observable residual or direct-velocity contract; format 4 is v3
   `polar_tangent_flow` and includes an artifact-owned scalar radial head,
-  calibrated latent mean/moment, polar path, and solver constants. Formats are
+  calibrated latent mean/moment, polar path, and solver constants. Format 5 is
+  v4 `destruction_coordinate_polar_flow`: it retains the v3 Beta(3,2) states,
+  predicts tangents per unit destruction coordinate, gates native-prefix and
+  pooled conditioning by clean-alignment energy, and integrates angle with
+  `delta_d` while radius remains in `delta_t`. Formats are
   not relabel- or resume-compatible across prediction versions.
 - Generation: four-channel SDXL-shaped U-Net, `t=0` noise / `t=1` clean time,
   SenseNova three-axis RoPE, SDXL time IDs, sequential or batched CFG, public
@@ -3333,6 +3337,9 @@ Paths below are relative to `backend/core/training/`.
   field, anchors the scalar radial speed to the positive branch, and advances
   radius/direction with exponential polar Euler. Production and training
   previews consume the same prediction contract and sampler controls.
+  v4 preserves that radial/CFG split, but uses mixed-coordinate polar Euler and
+  makes cond/null identical at the noise endpoint without suppressing the
+  context-free U-Net field.
 - Source-image editing: img2img uses deterministic flow SDEdit. Inpaint uses
   RePaint-style latent pinning with white meaning generate and black meaning
   preserve, followed by pixel-space source compositing; spatial outpaint uses
@@ -3357,6 +3364,11 @@ Paths below are relative to `backend/core/training/`.
   limited to `off` or `observe` until measured v3 runs show that it does not
   chase that floor. v3 always starts from a format-4 artifact at global step
   zero; v1/v2 checkpoints and controller state cannot be resumed into it.
+- v4 training: radial MSE remains in `dt` units and projected tangent MSE is in
+  Beta(3,2) destruction-coordinate units, avoiding division by `d'(t)`. It
+  starts at step zero from a format-5 artifact. The supported v3 warm start
+  inherits trunk/bridge/radial/REPA state, resets `conv_out`, and never imports
+  optimizer or adaptive-controller state.
 - Prefix scheduling: live-conditioning stages prefetch the next batch's frozen
   raw hidden/KV/mask/positions by default (depth 1), then run the current bridge
   on the main thread. `auto` uses a CUDA stream when off-device weights plus

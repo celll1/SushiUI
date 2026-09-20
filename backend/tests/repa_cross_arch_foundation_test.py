@@ -160,6 +160,16 @@ def test_non_resume_base_does_not_look_for_a_projector():
     assert BaseTrainer._repa_resume_sidecar_path(trainer) is None
 
 
+def test_step_zero_warmstart_loads_embedded_projector(tmp_path):
+    model_path = tmp_path / "chimera_v4"
+    model_path.mkdir()
+    projector = model_path / "repa_projector.safetensors"
+    projector.touch()
+    trainer = SimpleNamespace(resume_from_checkpoint=None, model_path=str(model_path))
+
+    assert BaseTrainer._repa_resume_sidecar_path(trainer) == str(projector)
+
+
 
 def _shipped_adapters(base):
     return sorted((cls for cls in base.__subclasses__()

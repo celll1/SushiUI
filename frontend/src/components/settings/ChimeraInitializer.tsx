@@ -10,7 +10,7 @@ export default function ChimeraInitializer() {
   const [understandingSource, setUnderstandingSource] = useState("");
   const [sdxlSource, setSdxlSource] = useState("");
   const [chimeraWarmstartSource, setChimeraWarmstartSource] = useState("");
-  const [flowVersion, setFlowVersion] = useState<"v1" | "v2" | "v3">("v1");
+  const [flowVersion, setFlowVersion] = useState<"v1" | "v2" | "v3" | "v4">("v1");
   const [latentMean, setLatentMean] = useState("");
   const [latentMoment, setLatentMoment] = useState("");
   const [angularSchedule, setAngularSchedule] = useState<"terminal_flat_cubic_v1" | "confidence_gated_beta_3_2_v1">("terminal_flat_cubic_v1");
@@ -79,17 +79,18 @@ export default function ChimeraInitializer() {
       <label className="block text-xs text-gray-400">SDXL donor
         <input className={`${fieldClass} mt-1`} value={sdxlSource} onChange={(e) => setSdxlSource(e.target.value)} placeholder="M:\\model\\sdxl\\...safetensors" />
       </label>
-      <label className="block text-xs text-gray-400">v1/v2 Chimera warm-start source (optional, v3 only)
+      <label className="block text-xs text-gray-400">Chimera warm-start source (v1/v2 → v3, v3 → v4)
         <input className={`${fieldClass} mt-1`} value={chimeraWarmstartSource}
           onChange={(e) => setChimeraWarmstartSource(e.target.value)}
           placeholder="M:\\sushiUI\\training\\..._step_029307" />
       </label>
       <label className="block text-xs text-gray-400">Flow contract
         <select className={`${fieldClass} mt-1`} value={flowVersion}
-          onChange={(e) => setFlowVersion(e.target.value as "v1" | "v2" | "v3")}>
+          onChange={(e) => setFlowVersion(e.target.value as "v1" | "v2" | "v3" | "v4")}>
           <option value="v1">v1 direct velocity</option>
           <option value="v2">v2 endpoint-observable residual</option>
           <option value="v3">v3 polar tangent flow</option>
+          <option value="v4">v4 destruction-coordinate tangent flow</option>
         </select>
       </label>
       {flowVersion !== "v1" && (

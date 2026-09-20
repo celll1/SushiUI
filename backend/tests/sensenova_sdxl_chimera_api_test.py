@@ -16,6 +16,7 @@ def test_initializer_openapi_defaults_match_single_source():
     for key, value in CHIMERA_INITIALIZE_DEFAULTS.items():
         assert schema["properties"][key]["default"] == value
     assert "v3" in schema["properties"]["flow_version"]["enum"]
+    assert "v4" in schema["properties"]["flow_version"]["enum"]
     assert "chimera_warmstart_source" in schema["properties"]
     response = spec["components"]["schemas"]["InitializeSenseNovaSDXLChimeraResponse"]
     assert 4 in response["properties"]["format_version"]["enum"]
@@ -26,6 +27,7 @@ def test_training_schema_advertises_v3_without_loose_path_controls():
     spec = yaml.safe_load((REPO / "openapi.yaml").read_text(encoding="utf-8"))
     schema = spec["components"]["schemas"]["TrainingRunCreateRequest"]
     assert "v3" in schema["properties"]["chimera_flow_version"]["enum"]
+    assert "v4" in schema["properties"]["chimera_flow_version"]["enum"]
     assert "chimera_v3_angular_endpoint_slope" not in schema["properties"]
 
 

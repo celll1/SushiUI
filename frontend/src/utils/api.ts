@@ -7656,10 +7656,11 @@ export interface TrainingMetrics {
 
 export const getTrainingMetrics = async (
   runId: number,
-  maxPoints: number = 1000
+  maxPoints: number = 1000,
+  signal?: AbortSignal,
 ): Promise<TrainingMetrics> => {
   const params: any = { max_points: maxPoints };
-  const response = await api.get(`/training/runs/${runId}/metrics_db`, { params });
+  const response = await api.get(`/training/runs/${runId}/metrics_db`, { params, signal });
   return response.data;
 };
 

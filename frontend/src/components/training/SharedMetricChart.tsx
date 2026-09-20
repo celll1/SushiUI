@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef, useId } from "react";
+import { useState, useEffect, useMemo, useRef, useId, useCallback } from "react";
 
 /**
  * Generic multi-series metric chart shared by the image-gen and tagger training
@@ -151,6 +151,21 @@ function medianStepGap(pts: { step: number }[]): number | null {
   if (gaps.length === 0) return null;
   gaps.sort((a, b) => a - b);
   return gaps[Math.floor(gaps.length / 2)];
+}
+
+/** Nearest sample in a step-sorted series. Hover used to scan every point in
+ * every visible series on every pointer event, which saturated the main thread
+ * once long training runs filled several panes. */
+function nearestPointIndex(pts: { step: number }[], target: number): number {
+  let lo = 0;
+  let hi = pts.length - 1;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (pts[mid].step < target) lo = mid + 1;
+    else hi = mid;
+  }
+  if (lo === 0) return 0;
+  return Math.abs(pts[lo].step - target) < Math.abs(pts[lo - 1].step - target) ? lo : lo - 1;
 }
 
 /**
@@ -391,15 +406,17 @@ function useAxisScale(o: {
   const min = isLog && logRange ? Math.log10(logRange.min) : linearRange.min;
   const max = isLog && logRange ? Math.log10(logRange.max) : linearRange.max;
   const span = max - min || 1;
-  const toY = (v: number) =>
-    o.padTop + ((max - (isLog ? Math.log10(Math.max(v, 1e-9)) : v)) / span) * o.chartH;
+  const toY = useCallback((v: number) =>
+    o.padTop + ((max - (isLog ? Math.log10(Math.max(v, 1e-9)) : v)) / span) * o.chartH,
+  [o.padTop, o.chartH, max, isLog, span]);
+  const fromDomain = useCallback((d: number) => (isLog ? Math.pow(10, d) : d), [isLog]);
   const wantZeroLine = policy ? (o.config?.zeroLine ?? policy.kind === "fixed") : false;
   return {
     min, max, span, isLog,
     logAvailable: logRange !== null,
     toY,
     tickValues: [max, min + span * 0.5, min],
-    fromDomain: (d: number) => (isLog ? Math.pow(10, d) : d),
+    fromDomain,
     zeroY: wantZeroLine && !isLog && min < 0 && max > 0 ? toY(0) : null,
   };
 }
@@ -581,10 +598,15 @@ export default function SharedMetricChart({
   const xMin = xRange ? xRange.min : minStepAll;
   const xMax = xRange ? xRange.max : maxStepAll;
   const xSpan = xMax - xMin || 1;
-  const toX = (step: number) => PAD.left + ((step - xMin) / xSpan) * chartW;
-  const pxToStep = (pxInChart: number) => xMin + (pxInChart / chartW) * xSpan;
-
-  const inX = (step: number) => step >= xMin && step <= xMax;
+  const toX = useCallback(
+    (step: number) => PAD.left + ((step - xMin) / xSpan) * chartW,
+    [PAD.left, xMin, xSpan, chartW],
+  );
+  const pxToStep = useCallback(
+    (pxInChart: number) => xMin + (pxInChart / chartW) * xSpan,
+    [xMin, chartW, xSpan],
+  );
+  const inX = useCallback((step: number) => step >= xMin && step <= xMax, [xMin, xMax]);
 
   // Visible (clipped to xRange) points for Y range + tooltip
   const visibleSmoothed = useMemo<Map<string, Pt[]>>(() => {
@@ -672,13 +694,29 @@ export default function SharedMetricChart({
   const toY = leftAxis.toY;
   const toY2 = rightAxis.toY;
 
-  const buildPath = (pts: Pt[], toYFn: (v: number) => number = toY) =>
-    pts
-      .filter((p) => inX(p.step))
-      .map((p, i) => `${i === 0 ? "M" : "L"} ${toX(p.step).toFixed(1)} ${toYFn(p.value).toFixed(1)}`)
-      .join(" ");
-  const buildSessionPaths = (pts: Pt[], toYFn: (v: number) => number = toY) =>
-    splitByResume(pts).map((session) => buildPath(session, toYFn)).filter(Boolean);
+  // Tooltip motion changes local state at pointer frequency. Keep the costly
+  // SVG strings stable until data, zoom, scale, or smoothing actually changes.
+  const curvePaths = useMemo(() => {
+    const pathsFor = (pts: Pt[], toYFn: (v: number) => number) => (
+      splitByResume(pts).map((session) => session
+        .filter((p) => inX(p.step))
+        .map((p, i) => `${i === 0 ? "M" : "L"} ${toX(p.step).toFixed(1)} ${toYFn(p.value).toFixed(1)}`)
+        .join(" "))
+        .filter(Boolean)
+    );
+    const raw = new Map<string, string[]>();
+    const display = new Map<string, string[]>();
+    for (const s of curveSeries) {
+      const rawPts = s.points.map((p) => ({ step: p.step, value: p.value, resumeSeq: p.resume_seq ?? 0 }));
+      const yFn = axisOf(s) === "right" ? toY2 : toY;
+      if (smoothing > 0 && !s.dashed && !s.noSmooth && s.renderMode !== "markers" && axisOf(s) !== "right") {
+        raw.set(s.id, pathsFor(rawPts, yFn));
+      }
+      const shown = smoothing > 0 ? (smoothedSeries.get(s.id) ?? []) : rawPts;
+      display.set(s.id, pathsFor(shown, yFn));
+    }
+    return { raw, display };
+  }, [curveSeries, smoothing, smoothedSeries, inX, toX, toY, toY2]);
 
   // Shared numeric formatting; each axis unwraps its own domain (log10 or
   // identity) via fromDomain before formatting.
@@ -775,11 +813,8 @@ export default function SharedMetricChart({
       const gap = stepGaps.get(s.id) ?? null;
       const tol = Math.max(stepTolerance, gap !== null ? gap / 2 : 0);
       if (targetStep < pts[0].step - tol || targetStep > pts[pts.length - 1].step + tol) continue;
-      let idx = 0, dist = Math.abs(pts[0].step - targetStep);
-      for (let i = 1; i < pts.length; i++) {
-        const d = Math.abs(pts[i].step - targetStep);
-        if (d < dist) { dist = d; idx = i; }
-      }
+      const idx = nearestPointIndex(pts, targetStep);
+      const dist = Math.abs(pts[idx].step - targetStep);
       if (dist > tol) continue;
       // A noSmooth series' "smoothed" points ARE its raw points, so surfacing
       // one would read as "the EMA equals the sample" for exactly the series
@@ -1007,7 +1042,7 @@ export default function SharedMetricChart({
                 enough context for an overlay metric. */}
             <g clipPath={`url(#${clipId})`}>
               {smoothing > 0 && curveSeries.filter((s) => !s.dashed && !s.noSmooth && s.renderMode !== "markers" && axisOf(s) !== "right").flatMap((s) =>
-                buildSessionPaths(s.points.map((p) => ({ step: p.step, value: p.value, resumeSeq: p.resume_seq ?? 0 }))).map((d, i) => (
+                (curvePaths.raw.get(s.id) ?? []).map((d, i) => (
                   <path key={`${s.id}-raw-${i}`} d={d} fill="none" stroke={s.color} strokeWidth={1} opacity={0.22} />
                 ))
               )}
@@ -1022,7 +1057,7 @@ export default function SharedMetricChart({
                   return (
                     <g key={s.id}>
                       {vis.length > 1 && (
-                        <>{buildSessionPaths(pts, yFn).map((d, i) => (
+                        <>{(curvePaths.display.get(s.id) ?? []).map((d, i) => (
                           <path key={i} d={d} fill="none" stroke={s.color} strokeWidth={1}
                             strokeDasharray={s.dashed ? "4 3" : undefined} opacity={0.55} />
                         ))}</>
@@ -1040,7 +1075,7 @@ export default function SharedMetricChart({
                   );
                 }
                 return (
-                  <g key={s.id}>{buildSessionPaths(pts, yFn).map((d, i) => (
+                  <g key={s.id}>{(curvePaths.display.get(s.id) ?? []).map((d, i) => (
                     <path key={i} d={d} fill="none" stroke={s.color} strokeWidth={1.5}
                       strokeDasharray={s.dashed ? "4 3" : undefined} opacity={0.95} />
                   ))}</g>

@@ -418,11 +418,6 @@ def train_step_partitioned_backward(
             global_adapter = getattr(
                 trainer.transformer, "qwen_partition_global_adapter", None
             )
-            target_input_residual = (
-                global_adapter(noisy_grid, region.input)
-                if global_adapter is not None
-                else None
-            )
             image_mask = torch.cat(
                 [
                     prefix_mask,
@@ -446,6 +441,11 @@ def train_step_partitioned_backward(
                 forward_start.record(torch.cuda.current_stream(trainer.device))
 
             def forward():
+                target_input_residual = (
+                    global_adapter(noisy_grid, region.input)
+                    if global_adapter is not None
+                    else None
+                )
                 return trainer.transformer(
                     hidden_states=tile,
                     timestep=sigma,
@@ -489,8 +489,6 @@ def train_step_partitioned_backward(
             logical_loss_tensor = logical_loss_tensor + weighted_loss.detach()
             del tile, tile_target, prediction, target_tile_grid, core_prediction, core_target
             del weighted_loss, scaled_loss, image_mask
-            if target_input_residual is not None:
-                del target_input_residual
     finally:
         if original_checkpoint_blocks is None:
             if hasattr(trainer.transformer, "_training_gradient_checkpointing_blocks"):

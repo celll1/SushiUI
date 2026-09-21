@@ -351,6 +351,15 @@ def test_qwen_partition_global_adapter_is_zero_init_and_uses_remote_content():
     torch.testing.assert_close(clone(grid, box), adapter(grid, box))
 
 
+def test_qwen_partition_global_adapter_accepts_bf16_activations_with_fp32_masters():
+    adapter = QwenPartitionGlobalAdapter(8, 32, rank=4, summary_tokens=3)
+    grid = torch.randn(1, 4, 4, 8, dtype=torch.bfloat16)
+    output = adapter(grid, PartitionBox(0, 0, 2, 4))
+    assert output.dtype == torch.float32
+    output.sum().backward()
+    assert adapter.out.weight.grad is not None
+
+
 def test_qwen_partition_checkpoint_auto_policy_keeps_measured_floor():
     plan = build_fixed_partition_plan(64, 64, count=4, seed=2)
     trainer = SimpleNamespace(

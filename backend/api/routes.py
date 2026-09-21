@@ -18204,7 +18204,7 @@ async def get_training_step_profile(
         log_files = log_files[-1:]
 
     line_pattern = re.compile(r"\[REPA profile (\d+)/(\d+)\] (.+)$")
-    value_pattern = re.compile(r"([a-z_]+)=([0-9.]+)ms")
+    value_pattern = re.compile(r"([a-z_]+)=([0-9.]+)(ms|GiB)")
     sessions = []
     for log_file in log_files:
         samples = []
@@ -18220,8 +18220,11 @@ async def get_training_step_profile(
                 "sample": int(match.group(1)),
                 "limit": int(match.group(2)),
             }
-            for name, milliseconds in value_pattern.findall(match.group(3)):
-                sample[f"{name}_s"] = float(milliseconds) / 1000.0
+            for name, raw_value, unit in value_pattern.findall(match.group(3)):
+                if unit == "GiB":
+                    sample[name] = float(raw_value)
+                else:
+                    sample[f"{name}_s"] = float(raw_value) / 1000.0
             if "forward_backward_s" in sample and "backward_s" in sample:
                 sample["forward_s"] = max(
                     0.0, sample["forward_backward_s"] - sample["backward_s"]

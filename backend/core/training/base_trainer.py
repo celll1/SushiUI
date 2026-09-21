@@ -20812,6 +20812,7 @@ class BaseTrainer(ABC):
                 self._repa_profile_cuda_warned = True
             return
         self._repa_profile_calls += 1
+        torch.cuda.reset_peak_memory_stats(self.device)
         _full_start = torch.cuda.Event(enable_timing=True)
         _full_end = torch.cuda.Event(enable_timing=True)
         _full_start.record(torch.cuda.current_stream(self.device))
@@ -20838,17 +20839,25 @@ class BaseTrainer(ABC):
             start, end = pair
             end.synchronize()
             values[name] = float(start.elapsed_time(end)) / 1000.0
+        values["peak_allocated_gb"] = float(
+            torch.cuda.max_memory_allocated(self.device)
+        ) / (1024.0 ** 3)
+        values["peak_reserved_gb"] = float(
+            torch.cuda.max_memory_reserved(self.device)
+        ) / (1024.0 ** 3)
         for name, value in values.items():
-            self.log_extra_metric(f"repa_profile_{name}_s", value)
+            suffix = "" if name.endswith("_gb") else "_s"
+            self.log_extra_metric(f"repa_profile_{name}{suffix}", value)
         samples = getattr(self, "_repa_profile_samples", None)
         if samples is None:
             samples = self._repa_profile_samples = []
         samples.append(values)
         ordered = ("teacher_pixels", "h2d", "teacher_forward", "projector",
                    "forward_backward", "backward", "loss_item_wait",
-                   "metric_item_wait")
+                   "metric_item_wait", "peak_allocated_gb", "peak_reserved_gb")
         rendered = ", ".join(
-            f"{name}={values[name] * 1000.0:.3f}ms"
+            (f"{name}={values[name]:.3f}GiB" if name.endswith("_gb")
+             else f"{name}={values[name] * 1000.0:.3f}ms")
             for name in ordered if name in values)
         print(f"{self.log_prefix} [REPA profile {len(samples)}/"
               f"{self.repa_profile_steps}] {rendered}")
@@ -20859,7 +20868,9 @@ class BaseTrainer(ABC):
                 for name in ordered if any(name in s for s in samples)
             }
             summary = ", ".join(
-                f"{name}={value * 1000.0:.3f}ms" for name, value in medians.items())
+                (f"{name}={value:.3f}GiB" if name.endswith("_gb")
+                 else f"{name}={value * 1000.0:.3f}ms")
+                for name, value in medians.items())
             print(f"{self.log_prefix} [REPA profile median, n={len(samples)}] {summary}")
 
     def _defer_repa_loss_metric(self, loss: torch.Tensor) -> None:

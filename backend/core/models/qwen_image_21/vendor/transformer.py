@@ -1187,7 +1187,14 @@ class QwenImage21Transformer2DModel(
 
         for index_block, block in enumerate(self.transformer_blocks):
             layer_cache = kv_cache.get_layer(index_block) if kv_cache is not None else None
-            if torch.is_grad_enabled() and self.gradient_checkpointing:
+            checkpoint_blocks = int(getattr(
+                self, "_training_gradient_checkpointing_blocks", len(self.transformer_blocks)
+            ))
+            if (
+                torch.is_grad_enabled()
+                and self.gradient_checkpointing
+                and index_block < checkpoint_blocks
+            ):
                 joint_hidden_states = self._gradient_checkpointing_func(
                     block,
                     joint_hidden_states,

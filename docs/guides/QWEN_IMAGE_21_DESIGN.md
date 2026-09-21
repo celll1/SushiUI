@@ -634,9 +634,14 @@ ConvRot is frozen-base only:
   is present;
 * full parameter and ReLoRA refuse a ConvRot base before model load;
 * TE ConvRot is allowed because TE is frozen and encoding runs under `no_grad`;
-* training disables any W8A8 execution mode not covered by the backward gate;
-* validation sampling uses the same dequant/fused policy as the training
-  forward so previews do not measure a different model.
+* the ConvRot base forward uses its INT8 kernel, while `grad_input` uses one
+  cached BF16 dequantized weight per frozen Linear; LoRA and attention backward
+  remain floating point;
+* the 13.252 GiB cache is non-persistent, cannot be combined with block swap,
+  and is never serialized into the LoRA;
+* validation sampling and generation use the same ConvRot base function;
+* adapter metadata binds this path to an `int8_convrot` generation base, and
+  resume refuses a legacy dequant-forward checkpoint.
 
 The acceptance test includes a real backward through at least one ConvRot base
 layer, finite input gradients, finite adapter gradients, unchanged packed
@@ -824,8 +829,10 @@ unchanged, saved index reloads through the production generation loader.
 ### P7 — acceleration and extended adapters
 
 Open one feature at a time only after its correctness and measurement gate:
-FlexAttention, LoHa/LoKr/DoRA, FBCache, Spectrum, TREAD, BlockSkip, and any
-fused ConvRot training path.
+FlexAttention, LoHa/LoKr/DoRA, FBCache, Spectrum, TREAD, and BlockSkip. The
+Qwen-only frozen-base ConvRot forward/cached-BF16-backward path has passed its
+real-workload speed, memory, resume, and generation-base compatibility gates;
+it does not generalize to other architectures or trainable INT8 weights.
 
 ## 13. Verification matrix
 

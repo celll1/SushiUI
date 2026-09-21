@@ -62,6 +62,16 @@ them. No subjective performance claims.
 > A 20/32 trial reached 49.86 GiB and spilled, so it is not selected. New
 > checkpoints carry a ConvRot-base-forward contract and cannot be applied to
 > Original or resumed into a legacy dequant-forward run.
+>
+> The batch-1 packed-Flash path now passes a dense target-query suffix by view,
+> avoiding its advanced-index copy, `cat`, zero-fill and scatter. At 1536,
+> otherwise matching the 24/32 rank-128 run above, median forward+backward was
+> 5.729 s and backward 4.300 s (3.0% and 3.3% below 5.907/4.446 s), with peak
+> reserved 41.32 GiB. Qwen activation dispatch uses a measured 3.5e-3 GiB/token
+> cold-start floor. A first-bucket 8,892-token offload used 26.57 GiB peak
+> allocated versus about 40.6-41.7 GiB without offload, but took 8.24 s versus
+> about 5.5-6.0 s because saved-tensor copies are synchronous; it is a VRAM
+> fallback, not a throughput optimization.
 
 CFG schedules on image architectures always use noisy-to-clean progress: `cfg_schedule_min`
 is the noisy-start value and `cfg_schedule_max` (or the ordinary CFG scale when omitted)

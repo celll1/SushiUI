@@ -343,6 +343,15 @@ class WorkloadFamilyKeyTest(unittest.TestCase):
             ("audio", 100, 1, 1, 2),
         )
 
+    def test_qwen_sequence_has_an_independent_predictor_family(self):
+        from core.training.base_trainer import BaseTrainer
+        self.assertEqual(
+            BaseTrainer._actdispatch_workload_key(
+                torch.empty(1, 9216, 64), architecture="qwen_image_21"
+            ),
+            ("qwen_image_21", 9216, 1, 1, 1),
+        )
+
     def test_sensenova_text_uses_mean_token_rows_for_serial_examples(self):
         examples = [
             {"input_ids": torch.empty(1, 10, dtype=torch.long)},
@@ -373,6 +382,25 @@ class WorkloadFamilyKeyTest(unittest.TestCase):
         )
         image.record(64, 64, 1, "base", peak_gb=9.0, resident_gb=8.0)
         self.assertNotEqual(image.base_act(64, 64, 1), text.base_act(64, 64, 1))
+
+    def test_architecture_seed_floor_protects_qwen_cold_start(self):
+        from core.training.base_trainer import BaseTrainer
+        owner = SimpleNamespace(
+            arch=SimpleNamespace(
+                name="qwen_image_21", activation_dispatch_seed_floor=3.5e-3
+            ),
+            _activation_dispatchers={},
+            activation_dispatcher=None,
+            activation_dispatch_margin_gb=1.0,
+            activation_dispatch_seed_coef=24.0e-6,
+            activation_dispatch_residual_frac=0.85,
+            activation_dispatch_threshold_mb=4,
+        )
+        disp = BaseTrainer._activation_dispatcher_for_family(
+            owner, "qwen_image_21", 48.0
+        )
+        self.assertEqual(disp.seed_coef, 3.5e-3)
+        self.assertGreater(disp.base_act(1, 9216, 1), 32.0)
 
 
 if __name__ == "__main__":

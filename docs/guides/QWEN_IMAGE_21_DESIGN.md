@@ -654,6 +654,20 @@ installed. Gradient checkpointing is required. The shared block-swap conductor,
 pinned-memory settings, ring size, and activation dispatcher are used; no
 architecture-local clone is introduced.
 
+Qwen's cached latents are `[B, sequence, channels]`, so activation dispatch
+keys the model by image-token sequence length in an architecture-specific
+family rather than sharing ACE-Step's 3-D audio predictor. A measured
+`3.5e-3 GiB/token` cold-start floor prevents the generic image seed from
+underestimating the first long bucket. Reactive recovery attempts saved-tensor
+offload before declaring a batch-1 bucket unfit; the resident BF16 ConvRot
+backward cache is a leaf buffer and is not copied to CPU by that hook.
+
+Activation offload is a capacity fallback, not the fast path. At 1536px,
+rank 128 and checkpointing 24/32 blocks, an offloaded 8,892-token step used
+26.57 GiB peak allocated and 8.24 s for forward+backward. The matching run's
+non-offloaded steps used about 41.6 GiB and 5.96 s. Transfers are synchronous,
+so offload stays opt-in.
+
 Conditioning and latent caches should let steady-state training release TE and
 VAE. Without caches, stage TE, VAE, and DiT sequentially. Full-DiT training is
 expected to need block swap or optimizer-state offload on common GPUs; this is

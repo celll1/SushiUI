@@ -21,6 +21,9 @@ class QwenImage21ArchHandler(ArchHandler):
     wires_sample_step_progress = True
     timestep_convention = "t0"
     velocity_sign = "eps_minus_x0"
+    # 1536px measurements reached 20-29 GiB of step activation for 8.5-9.2k
+    # image tokens; the generic 24e-6 image seed under-predicts this architecture.
+    activation_dispatch_seed_floor = 3.5e-3
 
     def lora_adapter_class(self):
         from core.training.adapters import QwenImage21LoRAAdapter

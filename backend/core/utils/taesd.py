@@ -234,7 +234,7 @@ class TAESDManager:
             self._log_decode_error("TAEF2", e)
             return None
 
-    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, is_anima: bool = False, is_lens: bool = False, is_ideogram4: bool = False, is_minit2i: bool = False, minit2i_vae_type: str = "none", is_krea2: bool = False, image_width: Optional[int] = None, image_height: Optional[int] = None, preview_decoder: str = "matrix", vae_preview_kind: Optional[str] = None, latent_scaling_factor: Optional[float] = None) -> Optional[Image.Image]:
+    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, is_anima: bool = False, is_lens: bool = False, is_ideogram4: bool = False, is_minit2i: bool = False, minit2i_vae_type: str = "none", is_krea2: bool = False, is_qwen_image_21: bool = False, image_width: Optional[int] = None, image_height: Optional[int] = None, preview_decoder: str = "matrix", vae_preview_kind: Optional[str] = None, latent_scaling_factor: Optional[float] = None) -> Optional[Image.Image]:
         """Decode latent to preview image
 
         Args:
@@ -263,7 +263,7 @@ class TAESDManager:
             if vae_preview_kind not in _VAE_PREVIEW_KINDS:
                 return None
             is_zimage_sdxl_vae = is_lens = is_ideogram4 = False
-            is_minit2i = is_krea2 = False
+            is_minit2i = is_krea2 = is_qwen_image_21 = False
             minit2i_vae_type = "none"
             is_sdxl = vae_preview_kind == "taesdxl"
             is_zimage = vae_preview_kind == "taef1"
@@ -314,6 +314,12 @@ class TAESDManager:
         # project the 16 channels to RGB with the same Wan21 factors as Anima.
         if is_krea2:
             return self._decode_krea2_latent_preview(latent, image_width, image_height)
+
+        # Qwen-Image 2.1: unpatched [B, N, 64] latent, distinct from the
+        # 16-channel Qwen-Image/Wan latent used by Anima and Krea 2.
+        if is_qwen_image_21:
+            return self._decode_qwen_image_21_latent_preview(
+                latent, image_width, image_height)
 
         # Anima: 16ch Qwen-Image latent, no compatible TAE; use latent-direct preview
         if is_anima:
@@ -657,6 +663,87 @@ class TAESDManager:
         [-0.0111, -0.0460, -0.0614],
     ]
     _FLUX2_LATENT_RGB_BIAS = [-0.0329, -0.0718, -0.0851]
+
+    # Qwen-Image 2.1 normalised latent -> RGB linear fit (64ch -> 3ch).
+    # This is intentionally a model-space projection: callers should pass the
+    # current predicted x0, before VAE latents_mean/std denormalisation.
+    _QWEN_IMAGE_21_LATENT_RGB_FACTORS = [
+        [-0.0158, -0.0115, -0.0174], [ 0.0030,  0.0120,  0.0027],
+        [ 0.0637,  0.0470, -0.0127], [ 0.0360,  0.0661, -0.0030],
+        [ 0.0159,  0.0181,  0.0082], [ 0.0132,  0.0326,  0.0169],
+        [ 0.0191,  0.0261,  0.0136], [-0.0146, -0.0276, -0.0361],
+        [ 0.0187, -0.0024, -0.0072], [-0.1059, -0.0090,  0.0350],
+        [-0.0195, -0.0226, -0.0138], [-0.0295,  0.0024, -0.0215],
+        [ 0.0191, -0.0393, -0.0001], [-0.0144, -0.0166, -0.0272],
+        [ 0.0389,  0.0430,  0.0445], [-0.0153, -0.0336,  0.0031],
+        [ 0.0339,  0.0122,  0.0220], [-0.0136, -0.0078, -0.0120],
+        [-0.0340, -0.0282, -0.0245], [-0.0133, -0.0176, -0.0133],
+        [ 0.0109, -0.0087,  0.0096], [-0.0010,  0.0044,  0.0016],
+        [ 0.0301,  0.0053,  0.0361], [-0.0281, -0.0205, -0.0032],
+        [-0.0725,  0.0002,  0.0160], [-0.0036,  0.0158,  0.0807],
+        [ 0.0087,  0.0040, -0.0053], [-0.0260,  0.0183, -0.0077],
+        [-0.0039, -0.0035, -0.0107], [-0.0026,  0.0172,  0.0237],
+        [ 0.0088,  0.0078,  0.0078], [-0.0087, -0.0310, -0.0122],
+        [-0.0027,  0.0018,  0.0094], [-0.0064,  0.0292, -0.0256],
+        [ 0.0594,  0.1049,  0.1180], [ 0.0103, -0.0103, -0.0026],
+        [-0.0091,  0.0025, -0.0015], [ 0.0178,  0.0243,  0.0292],
+        [-0.0063, -0.0012,  0.0202], [ 0.0452,  0.0246,  0.0143],
+        [ 0.0149,  0.0270,  0.0052], [ 0.1484,  0.0801,  0.0804],
+        [-0.0120,  0.0040,  0.0010], [ 0.0181,  0.0051, -0.0021],
+        [ 0.0132,  0.0050,  0.0019], [ 0.0291,  0.0020,  0.0092],
+        [ 0.0066, -0.0410, -0.1314], [-0.1153, -0.0629, -0.0802],
+        [ 0.0258,  0.0378,  0.0298], [ 0.0375,  0.1139,  0.0468],
+        [-0.0142, -0.0126, -0.0276], [ 0.0339,  0.0153,  0.0138],
+        [ 0.0346,  0.0211,  0.0267], [ 0.0369, -0.0431, -0.0993],
+        [-0.0052, -0.0092,  0.0056], [-0.0279,  0.0410, -0.0357],
+        [ 0.0036,  0.0017, -0.0083], [-0.0441, -0.0367, -0.0454],
+        [-0.0001, -0.0092, -0.0001], [-0.0222, -0.0183, -0.0051],
+        [ 0.0039,  0.0053, -0.0184], [-0.0094, -0.0075, -0.0143],
+        [-0.0066, -0.0088, -0.0063], [ 0.0220,  0.0074,  0.0100],
+    ]
+    _QWEN_IMAGE_21_LATENT_RGB_BIAS = [-0.1228, -0.1869, -0.3083]
+
+    def _decode_qwen_image_21_latent_preview(
+        self, latent: torch.Tensor, image_width: Optional[int] = None,
+        image_height: Optional[int] = None,
+    ) -> Optional[Image.Image]:
+        """Project Qwen-Image 2.1's unpatched 64-channel latent to RGB."""
+        try:
+            with torch.no_grad():
+                z = latent.detach().cpu().to(torch.float32)
+                if z.ndim == 3:
+                    batch, tokens, channels = z.shape
+                    if channels != 64:
+                        return None
+                    if image_width is not None and image_height is not None:
+                        latent_h = max(1, round(image_height / 16))
+                        latent_w = max(1, round(image_width / 16))
+                        if latent_h * latent_w != tokens:
+                            latent_h, latent_w = self._find_best_factors(tokens)
+                    else:
+                        latent_h, latent_w = self._find_best_factors(tokens)
+                    z = z.transpose(1, 2).reshape(batch, channels, latent_h, latent_w)
+                if z.ndim != 4 or z.shape[1] != 64:
+                    return None
+
+                factors = torch.tensor(
+                    self._QWEN_IMAGE_21_LATENT_RGB_FACTORS, dtype=z.dtype)
+                bias = torch.tensor(
+                    self._QWEN_IMAGE_21_LATENT_RGB_BIAS, dtype=z.dtype)
+                rgb = torch.einsum('bchw,cn->bnhw', z, factors)
+                rgb = rgb + bias.view(1, 3, 1, 1)
+                rgb = (rgb[0].clamp(-1.0, 1.0) + 1.0) / 2.0
+                pixels = (rgb.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+                preview = Image.fromarray(pixels, mode='RGB')
+                target = (
+                    (int(image_width), int(image_height))
+                    if image_width is not None and image_height is not None
+                    else (preview.width * 16, preview.height * 16)
+                )
+                return preview.resize(target, Image.Resampling.BILINEAR)
+        except Exception as e:
+            self._log_decode_error("Qwen-Image 2.1", e)
+            return None
 
     def _decode_anima_latent_preview(self, latent: torch.Tensor) -> Optional[Image.Image]:
         """Latent → RGB preview for Anima 16ch Qwen-Image latents.

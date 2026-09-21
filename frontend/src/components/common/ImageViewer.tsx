@@ -135,13 +135,14 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[100] bg-black bg-opacity-90"
+      className="fixed inset-0 isolate bg-black bg-opacity-90 pointer-events-auto"
+      style={{ zIndex: 2147483647 }}
       onClick={onClose}
       role="dialog"
       aria-modal="true"
       aria-label="Full size media preview"
     >
-      <div className="relative flex h-full w-full items-center justify-center p-4">
+      <div className="relative flex h-full w-full min-h-0 min-w-0 items-center justify-center p-4">
         {/* Previous button */}
         {hasPrev && onNavigate && (
           <button
@@ -262,7 +263,8 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
         <button
           onClick={onClose}
           ref={closeButtonRef}
-          className="absolute top-4 right-4 z-30 text-white text-3xl font-bold bg-black bg-opacity-70 hover:bg-opacity-90 rounded-full w-12 h-12 flex items-center justify-center focus:outline-none focus:ring-2 focus:ring-white"
+          type="button"
+          className="fixed top-4 right-4 z-50 text-white text-3xl font-bold bg-black bg-opacity-70 hover:bg-opacity-90 rounded-full w-12 h-12 flex items-center justify-center focus:outline-none focus:ring-2 focus:ring-white"
           title="Close (Escape)"
           aria-label="Close full-size preview"
         >

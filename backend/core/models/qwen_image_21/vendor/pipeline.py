@@ -178,7 +178,7 @@ class QwenImage21Pipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
     """
 
     model_cpu_offload_seq = "text_encoder->transformer->vae"
-    _callback_tensor_inputs = ["latents", "prompt_embeds"]
+    _callback_tensor_inputs = ["latents", "prompt_embeds", "pred_original_sample"]
 
     def __init__(
         self,
@@ -800,6 +800,13 @@ class QwenImage21Pipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
                         )[0]
                     neg_noise_pred = neg_noise_pred[:, -latents.size(1) :]
                     noise_pred = neg_noise_pred + true_cfg_scale * (noise_pred - neg_noise_pred)
+
+                pred_original_sample = None
+                if callback_on_step_end is not None and "pred_original_sample" in callback_on_step_end_tensor_inputs:
+                    sigma = t.float() / float(self.scheduler.config.num_train_timesteps)
+                    pred_original_sample = (
+                        latents.float() - sigma * noise_pred.float()
+                    ).to(latents.dtype)
 
                 latents_dtype = latents.dtype
                 latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]

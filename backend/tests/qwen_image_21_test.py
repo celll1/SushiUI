@@ -224,6 +224,7 @@ def test_api_defaults_and_capabilities_expose_qwen_controls():
 
 def test_generation_callback_uses_shared_progress_contract():
     latents = torch.randn(1, 4, 8)
+    pred_x0 = torch.randn(1, 4, 8)
     progress_calls = []
     step_calls = []
 
@@ -231,7 +232,10 @@ def test_generation_callback_uses_shared_progress_contract():
         _interrupt = False
 
         def __call__(self, **kwargs):
-            callback_kwargs = {"latents": latents}
+            assert kwargs["callback_on_step_end_tensor_inputs"] == [
+                "latents", "pred_original_sample"]
+            callback_kwargs = {
+                "latents": latents, "pred_original_sample": pred_x0}
             returned = kwargs["callback_on_step_end"](
                 self, 0, torch.tensor(1.0), callback_kwargs
             )
@@ -252,8 +256,8 @@ def test_generation_callback_uses_shared_progress_contract():
 
     image, seed, ancestral_seed = _Harness()._qwen_image_21_run(
         {"prompt": "test", "steps": 2, "seed": 7},
-        progress_callback=lambda step, total, current: progress_calls.append(
-            (step, total, current)
+        progress_callback=lambda step, total, current, metrics, predicted: progress_calls.append(
+            (step, total, current, metrics, predicted)
         ),
         step_callback=lambda step, timestep, current: step_calls.append(
             (step, timestep, current)
@@ -265,8 +269,31 @@ def test_generation_callback_uses_shared_progress_contract():
     assert len(progress_calls) == 1
     assert progress_calls[0][:2] == (0, 2)
     assert progress_calls[0][2] is latents
+    assert progress_calls[0][4] is pred_x0
     assert step_calls[0][0] == 0
     assert step_calls[0][2] is latents
+
+
+def test_qwen_live_preview_routes_to_64_channel_projection():
+    from api.generation_utils import preview_arch_kwargs
+    from core.utils.taesd import TAESDManager
+
+    manager = SimpleNamespace(
+        current_model_info={"type": "qwen_image_21", "latent_channels": 64},
+        minit2i_components=None,
+    )
+    kwargs = preview_arch_kwargs(manager, SimpleNamespace())
+    assert kwargs["is_qwen_image_21"] is True
+    assert kwargs["preview_predicted_x0"] is True
+
+    preview = TAESDManager().decode_latent(
+        torch.zeros(1, 8 * 6, 64),
+        is_qwen_image_21=True,
+        image_width=128,
+        image_height=96,
+    )
+    assert preview is not None
+    assert preview.size == (128, 96)
 
 
 def test_static_openapi_exposes_qwen_model_and_kv_cache():

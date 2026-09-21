@@ -124,8 +124,10 @@ class QwenImage21Mixin:
             if self.cancel_requested:
                 _pipe._interrupt = True
             latents = callback_kwargs.get("latents")
+            pred_original_sample = callback_kwargs.get("pred_original_sample")
             if progress_callback is not None:
-                progress_callback(index, steps, latents)
+                progress_callback(
+                    index, steps, latents, None, pred_original_sample)
             if step_callback is not None:
                 step_callback(index, timestep, latents)
             return callback_kwargs
@@ -137,6 +139,7 @@ class QwenImage21Mixin:
                 negative_prompt=negative_prompt, true_cfg_scale=cfg_scale,
                 height=height, width=width, num_inference_steps=steps,
                 generator=generator, callback_on_step_end=callback,
+                callback_on_step_end_tensor_inputs=["latents", "pred_original_sample"],
                 use_kv_cache=bool(params.get("qwen_image_21_kv_cache", True)),
             ).images[0]
         finally:

@@ -25,6 +25,7 @@ import { PostEditState, NEUTRAL_POST_EDIT, isNeutral, applyPostEdit, buildFilter
 import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 import { queueStudioTransfer } from "../studio/studioTransfer";
 import { useStartup } from "@/contexts/StartupContext";
+import ImageViewer from "../common/ImageViewer";
 
 export default function ImageGrid() {
   const router = useRouter();
@@ -175,9 +176,6 @@ export default function ImageGrid() {
   // UI states
   const [gridColumns, setGridColumns] = useState(6);
   const [showFullSizeImage, setShowFullSizeImage] = useState(false);
-  // Collapsed by default so the post-edit strip never covers the enlarged
-  // image; purely internal UI state for the full-size popup below.
-  const [postEditBarExpanded, setPostEditBarExpanded] = useState(false);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
 
   // Pagination states
@@ -2457,68 +2455,14 @@ export default function ImageGrid() {
             </div>
           </div>
 
-          {/* Full-size image popup */}
+          {/* Use the same body-portal viewer as every generation panel. */}
           {showFullSizeImage && (
-            <div
-              className="fixed inset-0 z-50 bg-black bg-opacity-90 flex items-center justify-center p-4"
-              onClick={() => setShowFullSizeImage(false)}
-            >
-              <div className="relative max-w-full max-h-full">
-                {/* Post-edit toggle: small, unobtrusive, docked with download/close.
-                    A dot indicates a non-neutral edit while collapsed. */}
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setPostEditBarExpanded((prev) => !prev);
-                  }}
-                  className={`absolute top-4 right-36 text-white bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full w-10 h-10 flex items-center justify-center ${
-                    postEditBarExpanded ? "ring-2 ring-blue-500" : ""
-                  }`}
-                  title="Adjust brightness/saturation"
-                >
-                  <SlidersHorizontal className="h-4 w-4" />
-                  {!postEditBarExpanded && !isNeutral(postEdit) && (
-                    <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-blue-500" />
-                  )}
-                </button>
-                {/* Download button */}
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleDownload(selectedImage);
-                  }}
-                  className="absolute top-4 right-20 text-white bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full w-12 h-12 flex items-center justify-center"
-                  title="Download"
-                >
-                  <Download className="h-6 w-6" />
-                </button>
-                {/* Close button */}
-                <button
-                  onClick={() => setShowFullSizeImage(false)}
-                  className="absolute top-4 right-4 text-white text-2xl bg-black bg-opacity-50 rounded-full w-10 h-10 flex items-center justify-center hover:bg-opacity-75"
-                >
-                  ×
-                </button>
-                <img
-                  src={effectiveSelectedSrc ?? `/outputs/${selectedImage.filename}`}
-                  alt="Generated - Full Size"
-                  className="max-w-full max-h-[90vh] object-contain"
-                  style={{ filter: buildFilterString(postEdit) }}
-                  onClick={(e) => e.stopPropagation()}
-                />
-                {/* Post-edit strip: collapsed by default (just the toggle button
-                    above) so it never covers the image; expanding shows one
-                    compact row flush to the bottom edge. */}
-                {postEditBarExpanded && (
-                  <div
-                    className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-70 px-3 py-2"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <PostEditControls value={postEdit} onChange={setPostEdit} />
-                  </div>
-                )}
-              </div>
-            </div>
+            <ImageViewer
+              imageUrl={selectedImageSrc ?? `/outputs/${selectedImage.filename}`}
+              onClose={() => setShowFullSizeImage(false)}
+              postEdit={postEdit}
+              onPostEditChange={setPostEdit}
+            />
           )}
 
           {/* Mobile: Fixed bottom Send Options and Buttons */}

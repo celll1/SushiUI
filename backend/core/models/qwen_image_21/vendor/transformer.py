@@ -584,10 +584,14 @@ class QwenImage21AttnProcessor:
                 cache[cache_key] = (
                     q_indices, k_indices, q_lengths, k_lengths, cu_q, cu_k
                 )
+        dense_single_q = batch == 1 and q_lengths[0] == end - start
+        dense_single_k = batch == 1 and k_lengths[0] == end
         for batch_idx, (q_idx, k_idx) in enumerate(zip(q_indices, k_indices)):
-            q_parts.append(query[batch_idx, q_idx])
-            k_parts.append(key[batch_idx, k_idx])
-            v_parts.append(value[batch_idx, k_idx])
+            if not dense_single_q:
+                q_parts.append(query[batch_idx, q_idx])
+            if not dense_single_k:
+                k_parts.append(key[batch_idx, k_idx])
+                v_parts.append(value[batch_idx, k_idx])
         kernel_dtype = query.dtype
         if kernel_dtype not in (torch.float16, torch.bfloat16) and query.device.type == "cuda":
             if torch.is_autocast_enabled("cuda"):
@@ -598,9 +602,18 @@ class QwenImage21AttnProcessor:
                 raise ValueError(
                     "Qwen-Image 2.1 FlashAttention requires fp16/bf16 Q/K/V or CUDA autocast"
                 )
-        packed_q = torch.cat(q_parts, dim=0).to(kernel_dtype)
-        packed_k = torch.cat(k_parts, dim=0).to(kernel_dtype)
-        packed_v = torch.cat(v_parts, dim=0).to(kernel_dtype)
+        # Training is normally batch 1. Its target-image queries are a dense,
+        # contiguous suffix even when padded text keys require packing. Avoid
+        # advanced-index copies, cat, zero-fill and scatter for that large suffix.
+        packed_q = (
+            query[0, start:end] if dense_single_q else torch.cat(q_parts, dim=0)
+        ).to(kernel_dtype)
+        packed_k = (
+            key[0, :end] if dense_single_k else torch.cat(k_parts, dim=0)
+        ).to(kernel_dtype)
+        packed_v = (
+            value[0, :end] if dense_single_k else torch.cat(v_parts, dim=0)
+        ).to(kernel_dtype)
         packed_out = dispatch_attention_varlen(
             packed_q,
             packed_k,
@@ -614,6 +627,8 @@ class QwenImage21AttnProcessor:
             backend="flash",
             mode=AttentionMode.TRAINING if query.requires_grad else AttentionMode.INFERENCE,
         )
+        if dense_single_q:
+            return packed_out.unsqueeze(0).to(query.dtype)
         output = torch.zeros_like(query[:, start:end])
         offset = 0
         for batch_idx, (q_idx, length) in enumerate(zip(q_indices, q_lengths)):

@@ -93,6 +93,37 @@ def test_packed_segmented_attention_matches_dense_forward_and_backward(monkeypat
         torch.testing.assert_close(actual, expected, atol=1e-10, rtol=1e-8)
 
 
+def test_batch_one_dense_segment_uses_views_without_pack_or_scatter(monkeypatch):
+    seen = {}
+
+    def _capture(q, k, v, *args, **kwargs):
+        seen.update(q=q, k=k, v=v)
+        return q.square()
+
+    monkeypatch.setattr(core.attention, "dispatch_attention_varlen", _capture)
+    real_cat = torch.cat
+
+    def _unexpected_cat(*args, **kwargs):
+        raise AssertionError("dense batch-one segment must not pack with torch.cat")
+
+    monkeypatch.setattr(torch, "cat", _unexpected_cat)
+    query = torch.randn(1, 12, 2, 4, dtype=torch.float64, requires_grad=True)
+    key = torch.randn(1, 12, 2, 4, dtype=torch.float64, requires_grad=True)
+    value = torch.randn(1, 12, 2, 4, dtype=torch.float64, requires_grad=True)
+    key_valid = torch.ones(1, 12, dtype=torch.bool)
+
+    out = QwenImage21AttnProcessor._varlen_segment(
+        query, key, value, key_valid, 3, 12, is_causal=False
+    )
+    assert seen["q"].data_ptr() == query[0, 3].data_ptr()
+    assert seen["k"].data_ptr() == key[0, 0].data_ptr()
+    assert seen["v"].data_ptr() == value[0, 0].data_ptr()
+    torch.testing.assert_close(out, query[:, 3:].square())
+    out.sum().backward()
+    assert query.grad is not None
+    monkeypatch.setattr(torch, "cat", real_cat)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_flash_varlen_kernel_matches_native_segment_backward():
     pytest.importorskip("flash_attn")

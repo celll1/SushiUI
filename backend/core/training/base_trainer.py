@@ -11292,12 +11292,6 @@ class BaseTrainer(ABC):
                 self._oom_recovery_cleanup()
                 if getattr(self, "_adaptive_timestep", None) is not None:
                     self._adaptive_prediction_loss_chunks = []
-                if batch_size <= min_split_batch_size:
-                    # One sample already doesn't fit -> this bucket is un-fittable.
-                    self._batch_was_unfittable = True
-                    print(f"{self.log_prefix} [OOM] batch_size={batch_size} already minimal, SKIPPING BATCH "
-                          f"(bucket won't fit one sample) ({str(e)[:120]})")
-                    return 0.0, 0.0, 0.0, True
                 # OFFLOAD-FIRST rung (mirrors the proactive ordering): before
                 # shrinking the batch, retry the SAME full batch with activation
                 # offload. If the failed attempt already offloaded, retry with a
@@ -11331,6 +11325,13 @@ class BaseTrainer(ABC):
                             self._oom_recovery_cleanup()
                             if getattr(self, "_adaptive_timestep", None) is not None:
                                 self._adaptive_prediction_loss_chunks = []
+                if batch_size <= min_split_batch_size:
+                    # Offload was already attempted above. One sample still does
+                    # not fit, and there is no smaller micro-batch to try.
+                    self._batch_was_unfittable = True
+                    print(f"{self.log_prefix} [OOM] batch_size={batch_size} already minimal, SKIPPING BATCH "
+                          f"(bucket won't fit one sample) ({str(e)[:120]})")
+                    return 0.0, 0.0, 0.0, True
                 if fused_backward_active(self):
                     # Micro-splitting under a fused path is not gradient
                     # accumulation: each chunk's hooks apply their own optimizer
@@ -11403,6 +11404,7 @@ class BaseTrainer(ABC):
     def _actdispatch_workload_key(
         mnt_latents: torch.Tensor,
         sensenova_text_batch: Optional[List[Dict[str, Any]]] = None,
+        architecture: Optional[str] = None,
     ):
         """Return ``(family, h, w, t, batch)`` for the executed objective."""
         if sensenova_text_batch is not None:
@@ -11421,8 +11423,11 @@ class BaseTrainer(ABC):
 
         shape = mnt_latents.shape
         if len(shape) == 3:
-            # ACE-Step uses [B, sequence, channels]. Channels are not spatial work.
-            return "audio", max(1, int(shape[1])), 1, 1, int(shape[0])
+            # ACE-Step and Qwen 2.1 both use [B, sequence, channels]. Keep their
+            # predictors separate: their per-token activation costs differ by
+            # orders of magnitude and each dispatcher calibrates independently.
+            family = "qwen_image_21" if architecture == "qwen_image_21" else "audio"
+            return family, max(1, int(shape[1])), 1, 1, int(shape[0])
         lh, lw, lt, bs = BaseTrainer._actdispatch_latent_key(mnt_latents)
         return ("video" if len(shape) >= 5 else "image"), lh, lw, lt, bs
 
@@ -11436,10 +11441,17 @@ class BaseTrainer(ABC):
         disp = dispatchers.get(family)
         if disp is None:
             from core.memory_management import ActivationDispatcher
+            seed_coef = self.activation_dispatch_seed_coef
+            arch = getattr(self, "arch", None)
+            seed_floor = (
+                float(getattr(arch, "activation_dispatch_seed_floor", 0.0) or 0.0)
+                if family == getattr(arch, "name", None)
+                else 0.0
+            )
             disp = ActivationDispatcher(
                 budget_gb=total_gb,
                 margin_gb=self.activation_dispatch_margin_gb,
-                seed_coef=self.activation_dispatch_seed_coef,
+                seed_coef=max(seed_coef, seed_floor),
                 residual_frac=self.activation_dispatch_residual_frac,
                 threshold_bytes=self.activation_dispatch_threshold_mb * 1024 * 1024,
             )
@@ -11465,7 +11477,10 @@ class BaseTrainer(ABC):
             return None, None
         try:
             family, lh, lw, lt, bs = self._actdispatch_workload_key(
-                mnt_latents, sensenova_text_batch)
+                mnt_latents,
+                sensenova_text_batch,
+                architecture=getattr(getattr(self, "arch", None), "name", None),
+            )
         except Exception:
             return None, None
 
@@ -11517,6 +11532,8 @@ class BaseTrainer(ABC):
             _bkt = f"{lh}tok"
         elif family == "audio":
             _bkt = f"{lh}steps"
+        elif family == "qwen_image_21":
+            _bkt = f"{lh}tok"
         else:
             _bkt = f"{lw}x{lh}" + (f"x{lt}t" if lt > 1 else "")
 
@@ -11626,6 +11643,8 @@ class BaseTrainer(ABC):
                     bkt = f"{lh}tok"
                 elif family == "audio":
                     bkt = f"{lh}steps"
+                elif family == "qwen_image_21":
+                    bkt = f"{lh}tok"
                 else:
                     bkt = f"{lw}x{lh}" + (f"x{lt}t" if lt > 1 else "")
                 cached = disp.base_act(lh, lw, bs, lt=lt)

@@ -412,6 +412,23 @@ def test_zero_updates_so_far_is_still_the_old_safe_batch_skip():
     assert stub._actdispatch_oom is True
 
 
+def test_batch_one_retries_activation_offload_before_declaring_unfittable():
+    def _forward_oom_once(n):
+        if n == 1:
+            raise RuntimeError(OOM)
+        return 1.0, 1.0, 0.0
+
+    stub = _recovery_stub(fused=False, batch=1, on_forward_backward=_forward_oom_once)
+    info = [8, 8, 1, "fast", None, 1.0, {"bytes": 0}, 4 << 20, 1, "image"]
+    stub.activation_dispatcher = object()
+    stub._activation_dispatch_begin = lambda latents: (object(), info)
+    stub._actdispatch_offload_retry_ctx = lambda old_cm, old_info: object()
+
+    assert _recover(stub) == (1.0, 1.0, 0.0, False)
+    assert stub.calls["execute"] == 2
+    assert stub._batch_was_unfittable is False
+
+
 def test_a_completed_iteration_does_not_poison_the_next_ones_forward():
     """MNT > 1 calls the recovery once per iteration. Iteration 1 completes (3
     updates on the ledger); iteration 2's FORWARD then OOMs, which is the most

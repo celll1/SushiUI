@@ -89,8 +89,10 @@ def load_qwen_image_21_components(
     manifest_path = os.path.join(model_path, "manifest.json") if os.path.isdir(model_path) else ""
     if manifest_path and os.path.isfile(manifest_path):
         components = _artifact_components(model_path, torch_dtype, load_text_encoder)
+        components["companion_path"] = os.path.abspath(model_path)
     elif os.path.isdir(model_path):
         components = _source_components(model_path, torch_dtype)
+        components["companion_path"] = os.path.abspath(model_path)
         if not load_text_encoder:
             components["text_encoder"] = None
     elif os.path.isfile(model_path):

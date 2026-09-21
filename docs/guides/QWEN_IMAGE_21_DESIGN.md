@@ -733,14 +733,21 @@ Current first-release status (2026-09-21):
   strength and 0-1000 step ranges drive the shared adapter session; Reference
   Guide blends the target latent; Style Transfer captures and injects
   post-RoPE Q/K/V. A real ControlNet selection is refused before denoising.
-* P5 complete at backward-smoke level: the real ConvRot DiT exposed 128
-  attention targets; rank-4 LoRA produced loss 0.0158 and 256 finite gradient
-  tensors at 256x256. A synthetic save/classify/rebuild numerical round trip
-  passes; real-checkpoint effect and a multi-step optimizer run remain
-  release-follow-up measurements.
-* P6 implemented but not yet run as a full 7.1B optimizer step. The complete
-  DiT is selected, quantized bases are refused, and checkpoint resume is wired
-  through companion metadata.
+* P5 compute/save/resume gate passed on the real ConvRot artifact. A rank-4
+  256x256 run completed steps 1-2 with losses 0.330088/0.293226, wrote a
+  16,826,096-byte adapter plus optimizer/state at each step, resumed from step
+  2, and completed step 3 at loss 0.316250. The earlier single-backward census
+  also found 128 attention targets and 256 finite adapter-gradient tensors.
+  Visible generation effect after reload remains a generation acceptance task.
+* P6 compute/save/resume/load gate passed on the real 7.115B-parameter Original
+  DiT. At 256x256, batch 1, BF16, 24 swapped blocks and host-resident
+  AdamW8bit ring-buffer state, step 1 completed at loss 0.330214; its four-shard
+  14,230,249,472-byte index loaded through the production component loader.
+  Resume restored step 1 and completed step 2 at loss 0.373368. That resumed
+  save exposed two generic checkpoint bugs: Windows retained the path-owned
+  PyTorch writer after ENOSPC, and Qwen chained `companion_path` through a
+  pruneable intermediate checkpoint. The writer is now explicitly scoped and
+  the loader carries the terminal component source; both have regression tests.
 * P7 is deferred. Shared capability data refuses every unimplemented
   acceleration instead of accepting an inert control.
 
@@ -798,12 +805,13 @@ and no seam regression beyond the registered metric.
 
 * arch handler, ops, adapter targets, caches, block swap;
 * BF16 and ConvRot-base paths;
-* t2i and edit objectives;
+* t2i objective;
 * resume and generation round trip.
 
-Gate: finite multi-step real runs for t2i and edit, non-zero target gradients,
-unchanged frozen components, exact adapter resume, and visible generation
-effect after reload.
+Gate: finite multi-step real t2i runs, non-zero target gradients, unchanged
+frozen components, exact adapter resume, and visible generation effect after
+reload. Reference-conditioned edit training remains outside the first-release
+contract in section 9.2.
 
 ### P6 — full-DiT training
 

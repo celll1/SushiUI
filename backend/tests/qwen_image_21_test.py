@@ -461,3 +461,12 @@ def test_full_checkpoint_records_companion_and_loader_replaces_transformer(tmp_p
     loaded = loader.load_qwen_image_21_components(str(checkpoint))
     assert loaded["transformer"] is trained_transformer
     assert loaded["checkpoint_path"] == str(checkpoint)
+    assert loaded["companion_path"] == str(companion.resolve())
+
+    trainer.qwen_image_21_companion_path = str(checkpoint)
+    resumed_checkpoint = QwenImage21FullParameterAdapter(trainer).write_checkpoint(
+        8, 2, tmp_path / "resumed"
+    )
+    resumed = loader.load_qwen_image_21_components(str(resumed_checkpoint))
+    assert resumed["checkpoint_path"] == str(resumed_checkpoint)
+    assert resumed["companion_path"] == str(companion.resolve())

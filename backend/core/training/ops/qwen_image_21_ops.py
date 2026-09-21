@@ -27,7 +27,12 @@ def load_components(trainer) -> None:
     trainer.tokenizer_2 = None
     trainer.t5_tokenizer = None
     trainer.qwen_image_21_pipeline = build_pipeline(components)
-    trainer.qwen_image_21_companion_path = str(trainer.model_path)
+    # A resumed full checkpoint may itself name another checkpoint.  Preserve
+    # the loader's terminal component source so retention cannot break the next
+    # save by deleting an intermediate checkpoint in that chain.
+    trainer.qwen_image_21_companion_path = str(
+        components.get("companion_path", trainer.model_path)
+    )
 
     trainer.vae.requires_grad_(False).eval()
     trainer.text_encoder.requires_grad_(False).eval()

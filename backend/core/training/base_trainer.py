@@ -5682,7 +5682,11 @@ class BaseTrainer(ABC):
         # run 121 was left. os.replace is atomic on both platforms.
         tmp_file = optimizer_file.with_name(optimizer_file.name + ".tmp")
         try:
-            torch.save(payload, tmp_file)
+            # Keep ownership of the stream here.  On Windows, PyTorch's path
+            # writer can retain its handle after an ENOSPC unwind, which makes
+            # cleanup and the guarded retry fail with WinError 32.
+            with tmp_file.open("wb") as optimizer_stream:
+                torch.save(payload, optimizer_stream)
             os.replace(tmp_file, optimizer_file)
         except BaseException:
             if tmp_file.exists():

@@ -348,6 +348,13 @@ def _qwenimage21_prepare_qkv(
         query = apply_rotary_emb_qwen(query, rotary_emb, use_real=False)
         key = apply_rotary_emb_qwen(key, rotary_emb, use_real=False)
 
+    if torch.is_autocast_enabled(hidden_states.device.type):
+        # ConvRot projections can preserve FP32 activations; FlashAttention requires half Q/K/V.
+        attention_dtype = torch.get_autocast_dtype(hidden_states.device.type)
+        query = query.to(attention_dtype)
+        key = key.to(attention_dtype)
+        value = value.to(attention_dtype)
+
     if layer_cache is not None:
         if kv_cache_mode == "extract" and cache_write_slice is not None:
             # `clone()`, not `contiguous()`: at batch size 1 the prefix slice already counts as contiguous

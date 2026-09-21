@@ -102,6 +102,8 @@ def _resolve_activation_dispatch_settings(
     seed_coef: float,
     residual_frac: float,
     threshold_mb: int,
+    transfer_mode: str,
+    pinned_budget_mb: int,
 ) -> Dict[str, Any]:
     """Resolve dispatcher settings for every ``BaseTrainer`` subclass.
 
@@ -119,6 +121,10 @@ def _resolve_activation_dispatch_settings(
             "activation_dispatch_residual_frac", residual_frac)),
         "threshold_mb": int(config.get(
             "activation_dispatch_threshold_mb", threshold_mb)),
+        "transfer_mode": str(config.get(
+            "activation_offload_transfer_mode", transfer_mode)).lower(),
+        "pinned_budget_mb": int(config.get(
+            "activation_offload_pinned_budget_mb", pinned_budget_mb)),
     }
 
 
@@ -2540,6 +2546,12 @@ class BaseTrainer(ABC):
         activation_dispatch_seed_coef: float = _TRAINING_DEFAULTS["activation_dispatch_seed_coef"],
         activation_dispatch_residual_frac: float = _TRAINING_DEFAULTS["activation_dispatch_residual_frac"],
         activation_dispatch_threshold_mb: int = _TRAINING_DEFAULTS["activation_dispatch_threshold_mb"],
+        activation_offload_transfer_mode: str = _TRAINING_DEFAULTS[
+            "activation_offload_transfer_mode"
+        ],
+        activation_offload_pinned_budget_mb: int = _TRAINING_DEFAULTS[
+            "activation_offload_pinned_budget_mb"
+        ],
         # Fused optimizer groups (for any optimizer with Block Swap)
         num_optimizer_groups: int = 0,
         # Optimizer options and hyperparameters.
@@ -2843,6 +2855,8 @@ class BaseTrainer(ABC):
             seed_coef=activation_dispatch_seed_coef,
             residual_frac=activation_dispatch_residual_frac,
             threshold_mb=activation_dispatch_threshold_mb,
+            transfer_mode=activation_offload_transfer_mode,
+            pinned_budget_mb=activation_offload_pinned_budget_mb,
         )
         self.activation_dispatch_enable = _activation_dispatch["enable"]
         self.activation_dispatch_allow_batch_reduction = _activation_dispatch[
@@ -2852,6 +2866,13 @@ class BaseTrainer(ABC):
         self.activation_dispatch_seed_coef = _activation_dispatch["seed_coef"]
         self.activation_dispatch_residual_frac = _activation_dispatch["residual_frac"]
         self.activation_dispatch_threshold_mb = _activation_dispatch["threshold_mb"]
+        self.activation_offload_transfer_mode = _activation_dispatch["transfer_mode"]
+        if self.activation_offload_transfer_mode not in {"sync", "async"}:
+            raise ValueError("activation_offload_transfer_mode must be 'sync' or 'async'")
+        self.activation_offload_pinned_budget_mb = _activation_dispatch["pinned_budget_mb"]
+        if not 64 <= self.activation_offload_pinned_budget_mb <= 16384:
+            raise ValueError("activation_offload_pinned_budget_mb must be between 64 and 16384")
+        self._activation_async_offloader = None
         self.activation_dispatcher = None
         self._activation_dispatchers = {}
         self._actdispatch_allocator_capped = False
@@ -11654,7 +11675,7 @@ class BaseTrainer(ABC):
                 f"(act~{_act_pred_gb:.1f}GB, headroom~{_headroom_gb:.1f}GB, "
                 f"resident~{resident_gb:.1f}GB)",
             )
-        from core.memory_management import offload_activations
+        from core.memory_management import AsyncActivationOffloader, offload_activations
         try:
             torch.cuda.reset_peak_memory_stats()
         except Exception:
@@ -11663,7 +11684,19 @@ class BaseTrainer(ABC):
         # stats["bytes"] by the byte volume it packs to CPU; _activation_dispatch_end
         # feeds it back to record() so the per-bucket offloadable fit is calibrated.
         stats = {"bytes": 0}
-        cm = offload_activations(use_offload, threshold_bytes=step_threshold, stats=stats)
+        if (use_offload and self.activation_offload_transfer_mode == "async"
+                and self._activation_async_offloader is None):
+            self._activation_async_offloader = AsyncActivationOffloader(
+                self.activation_offload_pinned_budget_mb * 1024 * 1024
+            )
+        cm = offload_activations(
+            use_offload,
+            threshold_bytes=step_threshold,
+            stats=stats,
+            transfer_mode=self.activation_offload_transfer_mode,
+            async_engine=self._activation_async_offloader,
+            pinned_budget_bytes=self.activation_offload_pinned_budget_mb * 1024 * 1024,
+        )
         cm.__enter__()
         # Mutable list so the reactive OOM ladder can swap in an offload retry
         # context (new mode/stats) and have dispatch_end record it correctly.
@@ -11764,9 +11797,21 @@ class BaseTrainer(ABC):
             torch.cuda.reset_peak_memory_stats()
         except Exception:
             pass
-        from core.memory_management import offload_activations
+        from core.memory_management import AsyncActivationOffloader, offload_activations
+        if (self.activation_offload_transfer_mode == "async"
+                and self._activation_async_offloader is None):
+            self._activation_async_offloader = AsyncActivationOffloader(
+                self.activation_offload_pinned_budget_mb * 1024 * 1024
+            )
         new_stats = {"bytes": 0}
-        cm = offload_activations(True, threshold_bytes=new_threshold, stats=new_stats)
+        cm = offload_activations(
+            True,
+            threshold_bytes=new_threshold,
+            stats=new_stats,
+            transfer_mode=self.activation_offload_transfer_mode,
+            async_engine=self._activation_async_offloader,
+            pinned_budget_bytes=self.activation_offload_pinned_budget_mb * 1024 * 1024,
+        )
         cm.__enter__()
         info[6] = new_stats
         info[7] = new_threshold

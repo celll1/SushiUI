@@ -15474,6 +15474,14 @@ class TrainingRunCreateRequest(BaseModel):
     activation_dispatch_seed_coef: float = TRAINING_DEFAULTS["activation_dispatch_seed_coef"]
     activation_dispatch_residual_frac: float = TRAINING_DEFAULTS["activation_dispatch_residual_frac"]
     activation_dispatch_threshold_mb: int = TRAINING_DEFAULTS["activation_dispatch_threshold_mb"]
+    activation_offload_transfer_mode: Literal["sync", "async"] = TRAINING_DEFAULTS[
+        "activation_offload_transfer_mode"
+    ]
+    activation_offload_pinned_budget_mb: int = Field(
+        default=TRAINING_DEFAULTS["activation_offload_pinned_budget_mb"],
+        ge=64,
+        le=16384,
+    )
     dit_gradient_checkpointing_blocks: Optional[int] = Field(
         default=TRAINING_DEFAULTS["dit_gradient_checkpointing_blocks"], ge=0
     )

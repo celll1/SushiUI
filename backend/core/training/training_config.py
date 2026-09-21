@@ -459,6 +459,8 @@ def _build_train_section(
             "activation_dispatch_seed_coef",
             "activation_dispatch_residual_frac",
             "activation_dispatch_threshold_mb",
+            "activation_offload_transfer_mode",
+            "activation_offload_pinned_budget_mb",
         ):
             train[key] = p.get(key, _TD[key])
 

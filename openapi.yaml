@@ -24719,6 +24719,55 @@ components:
           default: 4
           description: Minimum saved-tensor size (MB) to offload to CPU
           example: 4
+        qwen_partition_training_enabled:
+          type: boolean
+          default: false
+          description: >-
+            Enable Qwen-Image 2.1 complete-coverage partitioned target training.
+            Every image region contributes to the same logical step, but target
+            tokens in different regions cannot attend to each other.
+        qwen_partition_mode:
+          type: string
+          enum: [fixed]
+          default: fixed
+          description: Partition planner. The first implementation exposes the fixed-count prototype.
+        qwen_partition_fixed_count:
+          type: integer
+          enum: [2, 4]
+          default: 2
+          description: Number of Qwen target regions in fixed mode; boundaries vary deterministically by epoch and item.
+        qwen_partition_halo_tokens:
+          type: integer
+          minimum: 0
+          default: 0
+          description: Even latent-token halo added around each loss core; halo tokens provide context but do not contribute duplicate loss.
+        qwen_partition_split_ratio_min:
+          type: number
+          format: float
+          exclusiveMinimum: 0
+          maximum: 0.5
+          default: 0.35
+        qwen_partition_split_ratio_max:
+          type: number
+          format: float
+          minimum: 0.5
+          exclusiveMaximum: 1
+          default: 0.65
+        qwen_partition_seed:
+          type: integer
+          default: 0
+          description: Deterministic seed for epoch- and item-varying partition boundaries.
+        qwen_partition_gradient_checkpointing_blocks:
+          type: integer
+          nullable: true
+          minimum: 0
+          maximum: 32
+          default: null
+          description: Optional Qwen checkpointed-block count used only during partition region forwards; null scales the full-frame count by the largest-region token ratio with an SM89-measured floor of eight blocks.
+        qwen_partition_profile:
+          type: boolean
+          default: false
+          description: Record synchronized per-region CUDA forward/backward timings for partition validation.
         krea2_lora_scope:
           type: string
           default: "attn,mlp"

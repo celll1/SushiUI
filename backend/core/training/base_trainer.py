@@ -11249,8 +11249,23 @@ class BaseTrainer(ABC):
         from .optimizers.update_census import reset_applied_updates
         reset_applied_updates()
 
+        _dispatch_latents = mnt_latents
+        _qwen_partitioned = False
+        if self.is_qwen_image_21:
+            from core.training.ops import qwen_image_21_ops
+
+            if qwen_image_21_ops.partition_training_enabled(self):
+                _qwen_partitioned = True
+                if lens_latent_shape is None:
+                    raise ValueError("Qwen partitioned training requires latent_h/latent_w")
+                _dispatch_latents = qwen_image_21_ops.partition_dispatch_view(
+                    self,
+                    mnt_latents,
+                    latent_h=int(lens_latent_shape[0]),
+                    latent_w=int(lens_latent_shape[1]),
+                )
         if sensenova_text_batch is None:
-            _disp_cm, _disp_info = self._activation_dispatch_begin(mnt_latents)
+            _disp_cm, _disp_info = self._activation_dispatch_begin(_dispatch_latents)
         else:
             _disp_cm, _disp_info = self._activation_dispatch_begin(
                 mnt_latents, sensenova_text_batch=sensenova_text_batch)
@@ -11329,6 +11344,12 @@ class BaseTrainer(ABC):
                     # Offload was already attempted above. One sample still does
                     # not fit, and there is no smaller micro-batch to try.
                     self._batch_was_unfittable = True
+                    if _qwen_partitioned:
+                        raise RuntimeError(
+                            "Qwen partition plan still exceeds the CUDA memory budget after "
+                            "activation-offload retry; refusing the logical image instead of "
+                            "silently skipping it"
+                        ) from e
                     print(f"{self.log_prefix} [OOM] batch_size={batch_size} already minimal, SKIPPING BATCH "
                           f"(bucket won't fit one sample) ({str(e)[:120]})")
                     return 0.0, 0.0, 0.0, True
@@ -11369,6 +11390,12 @@ class BaseTrainer(ABC):
                         self._oom_recovery_cleanup()
                 # Even micro-batch=1 OOMs -> the bucket can't fit a single sample.
                 self._batch_was_unfittable = True
+                if _qwen_partitioned:
+                    raise RuntimeError(
+                        "Qwen partition plan still exceeds the CUDA memory budget at "
+                        "micro-batch=1; refusing the logical image instead of silently "
+                        "skipping it"
+                    ) from e
                 print(f"{self.log_prefix} [OOM] still out of memory at micro-batch=1, SKIPPING BATCH "
                       f"(bucket won't fit one sample) ({str(e)[:120]})")
                 return 0.0, 0.0, 0.0, True
@@ -11836,6 +11863,18 @@ class BaseTrainer(ABC):
         """
         self._active_mnt_noise = mnt_noise
         self._begin_repa_profile_call(mnt_repa_pixels)
+        if self.is_qwen_image_21:
+            from core.training.ops import qwen_image_21_ops
+
+            if qwen_image_21_ops.partition_training_enabled(self):
+                return self._execute_qwen_partitioned_forward_backward(
+                    mnt_latents=mnt_latents,
+                    mnt_text_embeddings=mnt_text_embeddings,
+                    mnt_attention_mask=mnt_attention_mask,
+                    timesteps=timesteps,
+                    lens_latent_shape=lens_latent_shape,
+                    loss_scale=loss_scale,
+                )
         # Forward pass (architecture-specific)
         if self.is_sensenova:
             from core.training.arch.base_arch import TrainStepContext
@@ -12196,6 +12235,57 @@ class BaseTrainer(ABC):
                 print(f"{self.log_prefix} [debug_latents] VAE decode failed: {debug_error}")
 
         return loss_value, pred_loss_value, recon_loss_value
+
+    def _execute_qwen_partitioned_forward_backward(
+        self,
+        *,
+        mnt_latents: torch.Tensor,
+        mnt_text_embeddings: torch.Tensor,
+        mnt_attention_mask: torch.Tensor,
+        timesteps: torch.Tensor,
+        lens_latent_shape: Optional[Tuple[int, int]],
+        loss_scale: float,
+    ) -> Tuple[float, float, float]:
+        """Qwen-only sequential region backward under one logical step."""
+        if fused_backward_active(self):
+            raise ValueError(
+                "Qwen partitioned training requires a conventional accumulated "
+                "backward; fused per-parameter optimizer hooks are not supported"
+            )
+        if lens_latent_shape is None:
+            raise ValueError("Qwen partitioned training requires latent_h/latent_w")
+        latent_h, latent_w = lens_latent_shape
+        accum = getattr(self, "_grad_accum_steps", 1) or 1
+        backward_scale = float(loss_scale) / float(accum)
+        self._reset_fused_group_counters()
+        applied_before = self._applied_updates_now()
+        try:
+            from core.training.ops import qwen_image_21_ops
+
+            result = qwen_image_21_ops.train_step_partitioned_backward(
+                self,
+                latents=mnt_latents,
+                encoder_features=mnt_text_embeddings,
+                encoder_mask=mnt_attention_mask,
+                timesteps=timesteps,
+                latent_h=int(latent_h),
+                latent_w=int(latent_w),
+                backward_scale=backward_scale,
+            )
+            self._flush_fused_group_partials()
+            events = getattr(self, "_repa_profile_events", None)
+            if events is not None:
+                events["forward_backward"][1].record(torch.cuda.current_stream(self.device))
+        except BaseException as exc:
+            self._note_partial_step_taint(applied_before, exc)
+            raise
+
+        self._flush_deferred_predicted_latent()
+        self._flush_deferred_controlnet_metrics()
+        self._flush_deferred_extra_metrics()
+        repa_wait = self._flush_repa_loss_metric_after_backward()
+        self._finish_repa_profile_call(0.0, repa_wait)
+        return result
 
     def _assert_sensenova_step_seam_residency(self, four_phase) -> None:
         """Which MoT half must be GPU-resident at the optimizer-step seam.
@@ -17519,6 +17609,9 @@ class BaseTrainer(ABC):
                             pass
 
                 for batch_idx, batch in enumerate(tqdm(batches, desc=f"Epoch {epoch+1}/{num_epochs} ({epoch_steps} steps)")):
+                    self._current_batch_position = (
+                        int(batch_idx) + int(getattr(self, "_epoch_batch_offset", 0) or 0)
+                    )
                     if chimera_prefix_prefetcher is not None:
                         chimera_prefix_prefetcher.activate_batch(batch_idx)
                     if self.is_sensenova_sdxl_chimera:

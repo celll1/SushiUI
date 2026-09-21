@@ -7195,6 +7195,15 @@ export interface TrainingRunCreateRequest {
   activation_dispatch_seed_coef?: number;
   activation_dispatch_residual_frac?: number;
   activation_dispatch_threshold_mb?: number;
+  qwen_partition_training_enabled?: boolean;
+  qwen_partition_mode?: "fixed";
+  qwen_partition_fixed_count?: 2 | 4;
+  qwen_partition_halo_tokens?: number;
+  qwen_partition_split_ratio_min?: number;
+  qwen_partition_split_ratio_max?: number;
+  qwen_partition_seed?: number;
+  qwen_partition_gradient_checkpointing_blocks?: number | null;
+  qwen_partition_profile?: boolean;
   multi_noise_timesteps?: number;
   multi_noise_mode?: "independent" | "shared" | "trajectory" | "antithetic";
   stratified_timesteps?: boolean;  // One timestep per equal-probability stratum across the MNT window (default true)

@@ -882,7 +882,11 @@ class QwenImage21Rope(nn.Module):
         return torch.polar(torch.ones_like(freqs), freqs)
 
     def forward(
-        self, img_shapes: list[tuple[int, int, int]], image_pad_mask: torch.Tensor, device: torch.device
+        self,
+        img_shapes: list[tuple[int, int, int]],
+        image_pad_mask: torch.Tensor,
+        device: torch.device,
+        target_spatial_position_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
         self.freqs = [freq.to(device) for freq in self.freqs]
 
@@ -892,7 +896,7 @@ class QwenImage21Rope(nn.Module):
         total_len = image_pad_mask.shape[-1]
         is_image_token = image_pad_mask.tolist()
 
-        for _, height, width in img_shapes:
+        for image_index, (_, height, width) in enumerate(img_shapes):
             block_start = is_image_token.index(True, cursor)
             text_len = block_start - cursor
             frame_index.extend(range(position, position + text_len))
@@ -902,8 +906,18 @@ class QwenImage21Rope(nn.Module):
             frame_index.extend([position] * (height * width))
             position += max(height, width)
 
-            image_height_index.extend([h for h in range(-(height - height // 2), height // 2) for _ in range(width)])
-            image_width_index.extend([w for _ in range(height) for w in range(-(width - width // 2), width // 2)])
+            if image_index == len(img_shapes) - 1 and target_spatial_position_ids is not None:
+                positions = target_spatial_position_ids.to(device="cpu", dtype=torch.long)
+                if positions.shape != (height * width, 2):
+                    raise ValueError(
+                        "target_spatial_position_ids must have shape "
+                        f"({height * width}, 2), got {tuple(positions.shape)}"
+                    )
+                image_height_index.extend(positions[:, 0].tolist())
+                image_width_index.extend(positions[:, 1].tolist())
+            else:
+                image_height_index.extend([h for h in range(-(height - height // 2), height // 2) for _ in range(width)])
+                image_width_index.extend([w for _ in range(height) for w in range(-(width - width // 2), width // 2)])
 
         if cursor < total_len:
             frame_index.extend(range(position, position + total_len - cursor))
@@ -1059,6 +1073,7 @@ class QwenImage21Transformer2DModel(
         img_shapes: list[list[tuple[int, int, int]]],
         img_mask: torch.Tensor,
         encoder_hidden_states_mask: torch.Tensor | None = None,
+        target_spatial_position_ids: torch.Tensor | None = None,
         attention_kwargs: dict[str, Any] | None = None,
         kv_cache: QwenImage21KVCache | None = None,
         kv_cache_mode: str | None = None,
@@ -1080,6 +1095,9 @@ class QwenImage21Transformer2DModel(
             encoder_hidden_states_mask (`torch.Tensor`, *optional*):
                 `(batch_size, text_sequence_length)` bool marking valid text tokens. Padded positions are excluded from
                 attention.
+            target_spatial_position_ids (`torch.Tensor`, *optional*):
+                `(target_image_sequence_length, 2)` full-canvas height/width indices. Partitioned training passes a
+                rectangular subset; ordinary full-frame calls omit it and keep the centered grid.
             kv_cache (`QwenImage21KVCache`, *optional*):
                 Cache container. Pass together with `kv_cache_mode` to enable prefix KV caching.
             kv_cache_mode (`str`, *optional*):
@@ -1129,7 +1147,12 @@ class QwenImage21Transformer2DModel(
         joint_hidden_states = joint_hidden_states.repeat_interleave(repeats, dim=1)
         joint_hidden_states[:, image_pad_mask] = hidden_states
 
-        rotary_emb = self.pos_embed(img_shapes[0], image_pad_mask, device=hidden_states.device)
+        rotary_emb = self.pos_embed(
+            img_shapes[0],
+            image_pad_mask,
+            device=hidden_states.device,
+            target_spatial_position_ids=target_spatial_position_ids,
+        )
         image_ids, target_token_mask = self.build_token_metadata(image_pad_mask, img_shapes[0])
 
         timestep = timestep.to(hidden_states.dtype)

@@ -260,6 +260,27 @@ class LoRATrainer(BaseTrainer):
                         f"does not match this run's {value!r}"
                     )
 
+        if getattr(self, "is_qwen_image_21", False):
+            expected_forward = (
+                "convrot_int8_bf16_backward_v1"
+                if getattr(self, "qwen_convrot_training_forward", "dequant")
+                == "cached_bf16"
+                else ""
+            )
+            actual_forward = str(metadata.get("qwen_base_forward") or "")
+            if expected_forward and actual_forward != expected_forward:
+                raise ValueError(
+                    "This Qwen-Image 2.1 run uses the ConvRot INT8 base forward, "
+                    f"but the resume checkpoint declares {actual_forward or 'no base-forward contract'!r}. "
+                    "Resume it with qwen_convrot_training_forward=dequant, or start "
+                    "a new ConvRot-forward run."
+                )
+            if actual_forward and actual_forward != expected_forward:
+                raise ValueError(
+                    "The Qwen-Image 2.1 resume checkpoint requires the ConvRot "
+                    "INT8 base forward, but this run is configured for dequant."
+                )
+
         checkpoint = load_file(checkpoint_path)
 
         for field in ("lora_rank", "lora_alpha"):

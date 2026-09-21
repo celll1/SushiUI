@@ -51,6 +51,17 @@ them. No subjective performance claims.
 > like-sized observed calls improved about 13% at the light end and 28% at the
 > heavy end. `GET /training/runs/{run_id}/step-profile` returns the per-resume
 > samples and derived forward/backward medians from these direct timers.
+>
+> The ConvRot LoRA base now uses INT8 only for the frozen base forward. Its
+> `grad_input` backward is a BF16 GEMM against a one-time 13.252 GiB
+> non-persistent weight cache; LoRA and FlashAttention backward remain floating
+> point. On the same GPU at 1024, rank 128, batch 1, the matched dequant run's
+> 3.460 s forward+backward median became 2.367 s with all blocks checkpointed,
+> or 2.087 s with the automatic 16/32 policy. At 1536 the automatic 24/32
+> policy measured 5.907 s versus 7.864 s and peaked at 41.53 GiB reserved.
+> A 20/32 trial reached 49.86 GiB and spilled, so it is not selected. New
+> checkpoints carry a ConvRot-base-forward contract and cannot be applied to
+> Original or resumed into a legacy dequant-forward run.
 
 CFG schedules on image architectures always use noisy-to-clean progress: `cfg_schedule_min`
 is the noisy-start value and `cfg_schedule_max` (or the ordinary CFG scale when omitted)

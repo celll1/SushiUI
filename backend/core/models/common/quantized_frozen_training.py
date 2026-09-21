@@ -1,11 +1,12 @@
-"""Frozen-base fused forward for quantized ConvRot Linears in training (CANDIDATE).
+"""Frozen-base fused forward for quantized Linears in training.
 
 Opt-in, default OFF. Implements ``docs/guides/INT8_CONVROT_TRAINING_DESIGN.md``
 sections 2.1-2.3: for a Linear whose quantized weight is FROZEN, run the fused
 inference kernel in forward even under autograd, and compute ``grad_x`` in
-backward from a transiently rebuilt floating weight.
+backward from a floating weight. The generic opt-in path rebuilds that weight;
+Qwen-Image 2.1 LoRA retains a non-persistent BF16 cache for its frozen base.
 
-Two properties are the whole point, and both are structural rather than tuned:
+The generic candidate path has two structural properties:
 
 * the autograd node saves ONLY the resident code/scale buffers, so no
   dequantized ``(out, in)`` weight is retained across the forward; and
@@ -122,6 +123,49 @@ class ConvRotFrozenLinearFn(torch.autograd.Function):
             _CONVROT_DTYPE_CODES[ctx.x_dtype],
         )
         return grad_output.to(ctx.x_dtype) @ weight_dq, None, None, None, None, None
+
+
+class ConvRotCachedBackwardLinearFn(torch.autograd.Function):
+    """ConvRot INT8 forward with a cached floating weight for ``grad_input``."""
+
+    @staticmethod
+    def forward(
+        ctx,
+        x,
+        weight,
+        weight_scale,
+        bias,
+        backward_weight,
+        groupsize,
+        layer_path,
+    ):
+        from comfy_kitchen import int8_linear
+
+        ctx.save_for_backward(backward_weight)
+        ctx.x_dtype = x.dtype
+        ctx.backward_dtype = backward_weight.dtype
+        try:
+            return int8_linear(
+                x,
+                weight,
+                weight_scale,
+                bias=bias,
+                out_dtype=backward_weight.dtype,
+                convrot=True,
+                convrot_groupsize=groupsize,
+            )
+        except Exception as exc:
+            raise _fused_failure(layer_path, "ConvRot INT8", exc) from exc
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        if not ctx.needs_input_grad[0]:
+            return (None,) * 8
+        (backward_weight,) = ctx.saved_tensors
+        grad_input = (
+            grad_output.to(ctx.backward_dtype) @ backward_weight
+        ).to(ctx.x_dtype)
+        return grad_input, None, None, None, None, None, None, None
 
 
 class W4A8FrozenLinearFn(torch.autograd.Function):
@@ -297,6 +341,68 @@ def enable_frozen_training_fused(module: nn.Module, *, label: str = "") -> int:
     return enabled
 
 
+def enable_frozen_training_cached_backward(
+    module: nn.Module,
+    *,
+    dtype: torch.dtype,
+    label: str = "",
+) -> tuple[int, int]:
+    """Use ConvRot INT8 forward and retain one floating weight for backward.
+
+    The cache is a non-persistent buffer: it follows explicit module moves but
+    is neither saved nor treated as the base model's authoritative weight.
+    Returns ``(layer_count, cache_bytes)``.
+    """
+    from core.models.common.convrot_int8_linear import ConvRotInt8Linear
+
+    if dtype not in _SUPPORTED_ACTIVATION_DTYPES:
+        raise ValueError(f"Unsupported ConvRot backward cache dtype: {dtype}")
+    dtype_code = _CONVROT_DTYPE_CODES[dtype]
+    enabled = 0
+    cache_bytes = 0
+    for path, child in module.named_modules():
+        if type(child) is not ConvRotInt8Linear:
+            continue
+        path = path or type(child).__name__
+        violation = _frozen_violation(child)
+        if violation is not None:
+            raise RuntimeError(
+                f"Cannot enable cached ConvRot training on '{path}': {violation}. "
+                "The cached path is only valid for a frozen base weight."
+            )
+        shape_violation = _shape_violation(child)
+        if shape_violation is not None:
+            continue
+        if child.weight.device.type != "cuda":
+            raise RuntimeError(
+                f"Cannot build the ConvRot backward cache for '{path}' on "
+                f"{child.weight.device}; move the transformer to CUDA first."
+            )
+        backward_weight = torch.ops.comfy_kitchen.dequantize_int8_convrot_weight_dtype(
+            child.weight,
+            child.weight_scale.reshape(-1, 1),
+            int(child.convrot_groupsize),
+            dtype_code,
+        )
+        child.register_buffer(
+            "_frozen_training_backward_weight",
+            backward_weight,
+            persistent=False,
+        )
+        child._frozen_training_fused = True
+        child._frozen_training_cached_backward = True
+        child._frozen_training_path = path
+        enabled += 1
+        cache_bytes += backward_weight.numel() * backward_weight.element_size()
+    if label:
+        print(
+            f"[QuantFrozenTraining] {label}: ConvRot INT8 forward with cached "
+            f"{dtype} backward weights on {enabled} layer(s), "
+            f"cache={cache_bytes / 1024**3:.3f} GiB"
+        )
+    return enabled, cache_bytes
+
+
 def maybe_frozen_fused_forward(module: nn.Module, x: torch.Tensor) -> "torch.Tensor | None":
     """Run the fused frozen-base forward, or None to use the dequant path.
 
@@ -313,6 +419,26 @@ def maybe_frozen_fused_forward(module: nn.Module, x: torch.Tensor) -> "torch.Ten
     path = getattr(module, "_frozen_training_path", "") or type(module).__name__
 
     if type(module) is ConvRotInt8Linear:
+        backward_weight = getattr(module, "_frozen_training_backward_weight", None)
+        if getattr(module, "_frozen_training_cached_backward", False):
+            if backward_weight is None:
+                raise RuntimeError(
+                    f"ConvRot backward cache is missing for layer '{path}'"
+                )
+            if backward_weight.device != x.device:
+                raise RuntimeError(
+                    f"ConvRot backward cache for layer '{path}' is "
+                    f"on {backward_weight.device}, but activation is on {x.device}"
+                )
+            return ConvRotCachedBackwardLinearFn.apply(
+                x,
+                module.weight,
+                module.weight_scale,
+                module.bias,
+                backward_weight,
+                int(module.convrot_groupsize),
+                path,
+            )
         return ConvRotFrozenLinearFn.apply(
             x,
             module.weight,

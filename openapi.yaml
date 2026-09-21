@@ -6207,7 +6207,8 @@ paths:
         Reads the direct CUDA-event samples emitted when `repa_profile_steps`
         is nonzero. Profiling is architecture-neutral despite the historical
         parameter name and works when REPA is disabled. Values are seconds;
-        `forward_s` is derived as `forward_backward_s - backward_s`.
+        `forward_s` is derived as `forward_backward_s - backward_s`; profiled
+        calls also report peak allocated and reserved CUDA memory in GiB.
         Sessions are kept separate across resumes.
       parameters:
         - name: run_id

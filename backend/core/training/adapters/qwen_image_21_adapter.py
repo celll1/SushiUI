@@ -65,7 +65,7 @@ class QwenImage21LoRAAdapter(BaseLoRAAdapter):
         })
 
     def checkpoint_metadata(self, lora_layers, step, epoch):
-        return {
+        metadata = {
             "model_type": "qwen_image_21",
             "modelspec.architecture": "qwen_image_21",
             "lora_rank": str(self.lora_rank),
@@ -74,6 +74,13 @@ class QwenImage21LoRAAdapter(BaseLoRAAdapter):
             "epoch": str(epoch),
             "format": "pt",
         }
+        forward = getattr(self.trainer, "qwen_convrot_training_forward", "dequant")
+        if forward == "cached_bf16":
+            metadata.update(
+                qwen_base_variant="int8_convrot",
+                qwen_base_forward="convrot_int8_bf16_backward_v1",
+            )
+        return metadata
 
 
 class QwenImage21FullParameterAdapter(BaseFullParameterAdapter):

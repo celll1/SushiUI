@@ -54,6 +54,21 @@ class QwenImage21Mixin:
 
     def _qwen21_prepare_lora_file(self, file):
         from core.models.qwen_image_21.lora import normalise_lora_state_dict
+        base_forward = str(file.metadata.get("qwen_base_forward") or "")
+        if base_forward:
+            if base_forward != "convrot_int8_bf16_backward_v1":
+                raise ValueError(
+                    f"Qwen-Image 2.1 LoRA '{file.name}' declares unsupported "
+                    f"base forward {base_forward!r}"
+                )
+            components = self.qwen_image_21_components or {}
+            variant = str(components.get("transformer_variant") or "bf16")
+            if variant != "int8_convrot":
+                raise ValueError(
+                    f"Qwen-Image 2.1 LoRA '{file.name}' was trained against the "
+                    "ConvRot INT8 base forward and requires an int8_convrot model; "
+                    f"the loaded transformer is {variant!r}"
+                )
         return normalise_lora_state_dict(file.tensors)
 
     @staticmethod

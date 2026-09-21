@@ -33,13 +33,97 @@ def load_components(trainer) -> None:
     trainer.qwen_image_21_companion_path = str(
         components.get("companion_path", trainer.model_path)
     )
+    trainer.qwen_image_21_transformer_variant = str(
+        components.get("transformer_variant", "bf16")
+    )
 
     trainer.vae.requires_grad_(False).eval()
     trainer.text_encoder.requires_grad_(False).eval()
     trainer.transformer.requires_grad_(False)
+    # ConvRot LoRA uses the packed base for forward and a resident floating
+    # weight for grad_input. Dense bases retain the ordinary autograd path.
+    convrot_training_forward = str(
+        trainer.config.get("qwen_convrot_training_forward", "auto")
+    ).strip().lower()
+    if convrot_training_forward not in {"auto", "dequant", "cached_bf16"}:
+        raise ValueError(
+            "qwen_convrot_training_forward must be 'auto', 'dequant', or "
+            "'cached_bf16', got "
+            f"{convrot_training_forward!r}"
+        )
+    if convrot_training_forward == "auto":
+        convrot_training_forward = (
+            "cached_bf16"
+            if trainer.qwen_image_21_transformer_variant == "int8_convrot"
+            and hasattr(trainer, "lora_rank")
+            and trainer.training_dtype == torch.bfloat16
+            else "dequant"
+        )
+    if (
+        convrot_training_forward == "cached_bf16"
+        and trainer.qwen_image_21_transformer_variant != "int8_convrot"
+    ):
+        raise ValueError(
+            "Qwen-Image 2.1 cached_bf16 training requires an int8_convrot "
+            f"transformer, got {trainer.qwen_image_21_transformer_variant!r}"
+        )
+    if convrot_training_forward == "cached_bf16" and trainer.training_dtype != torch.bfloat16:
+        raise ValueError(
+            "Qwen-Image 2.1 cached_bf16 training requires training_dtype=bf16, "
+            f"got {trainer.training_dtype}"
+        )
+    trainer.qwen_convrot_training_forward = convrot_training_forward
+    trainer.qwen_convrot_fused_layer_count = 0
     if trainer.gradient_checkpointing:
         trainer.transformer.enable_gradient_checkpointing()
+        configured_checkpoint_blocks = trainer.config.get(
+            "qwen_gradient_checkpointing_blocks"
+        )
+        if configured_checkpoint_blocks is None and convrot_training_forward == "cached_bf16":
+            resolutions = trainer.config.get("base_resolutions") or []
+            maximum_resolution = max((int(value) for value in resolutions), default=1536)
+            if maximum_resolution <= 1024:
+                checkpoint_blocks = 16
+            elif maximum_resolution <= 1536:
+                checkpoint_blocks = 24
+            else:
+                checkpoint_blocks = len(trainer.transformer.transformer_blocks)
+        else:
+            checkpoint_blocks = int(
+                configured_checkpoint_blocks
+                if configured_checkpoint_blocks is not None
+                else len(trainer.transformer.transformer_blocks)
+            )
+        if not 0 <= checkpoint_blocks <= len(trainer.transformer.transformer_blocks):
+            raise ValueError(
+                "qwen_gradient_checkpointing_blocks must be between 0 and "
+                f"{len(trainer.transformer.transformer_blocks)}, got {checkpoint_blocks}"
+            )
+        trainer.transformer._training_gradient_checkpointing_blocks = checkpoint_blocks
+        print(
+            f"{trainer.log_prefix} Qwen-Image 2.1 gradient checkpointing: "
+            f"{checkpoint_blocks}/{len(trainer.transformer.transformer_blocks)} blocks"
+            f" ({'explicit' if configured_checkpoint_blocks is not None else 'automatic'})"
+        )
     trainer.transformer.to(trainer.device)
+    if convrot_training_forward == "cached_bf16":
+        if trainer.blocks_to_swap > 0:
+            raise ValueError(
+                "Qwen-Image 2.1 cached ConvRot backward weights cannot be combined "
+                "with block swap"
+            )
+        from core.models.common.quantized_frozen_training import (
+            enable_frozen_training_cached_backward,
+        )
+
+        (
+            trainer.qwen_convrot_fused_layer_count,
+            trainer.qwen_convrot_backward_cache_bytes,
+        ) = enable_frozen_training_cached_backward(
+            trainer.transformer,
+            dtype=trainer.training_dtype,
+            label="Qwen-Image 2.1 training transformer",
+        )
     trainer.layer_offload_conductor = None
     setup_attention_backend(trainer, trainer.attention_backend)
 

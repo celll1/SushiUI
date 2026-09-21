@@ -46,6 +46,7 @@ class ConvRotInt8Linear(Int8Linear):
     # ``quantized_frozen_training.enable_frozen_training_fused``. Deliberately
     # NOT `_force_dequant`/`_allow_int8_mm`/grad mode reused.
     _frozen_training_fused: bool = False
+    _frozen_training_cached_backward: bool = False
     _frozen_training_path: str = ""
 
     def __init__(

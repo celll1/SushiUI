@@ -232,6 +232,37 @@ class TestGradXBitwiseEquality:
             "bitwise assertion above would be vacuous")
 
 
+@CUDA
+class TestCachedFloatingBackward:
+    def test_fp32_residual_is_narrowed_for_forward_and_restored_for_grad_input(self):
+        layer = _convrot_layer(dtype=torch.bfloat16, device="cuda")
+        count, cache_bytes = qft.enable_frozen_training_cached_backward(
+            layer, dtype=torch.bfloat16
+        )
+        assert count == 1
+        assert cache_bytes == OUT * IN * 2
+        assert "_frozen_training_backward_weight" not in layer.state_dict()
+
+        x = torch.randn(4, IN, dtype=torch.float32, device="cuda", requires_grad=True)
+        out = layer(x)
+        assert out.dtype is torch.bfloat16
+        out.float().sum().backward()
+        assert x.grad is not None and x.grad.dtype is torch.float32
+
+    def test_backward_uses_the_cache_without_dequantizing_again(self):
+        layer = _convrot_layer(dtype=torch.bfloat16, device="cuda")
+        qft.enable_frozen_training_cached_backward(layer, dtype=torch.bfloat16)
+        x = torch.randn(4, IN, dtype=torch.bfloat16, device="cuda", requires_grad=True)
+        out = layer(x)
+        with mock.patch.object(
+            torch.ops.comfy_kitchen,
+            "dequantize_int8_convrot_weight_dtype",
+            side_effect=AssertionError("backward dequantized the base weight"),
+        ):
+            out.float().sum().backward()
+        assert x.grad is not None
+
+
 
 @CUDA
 class TestNoFrozenOperandGradient:

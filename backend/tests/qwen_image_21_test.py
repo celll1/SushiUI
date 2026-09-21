@@ -210,6 +210,30 @@ def test_lora_save_classify_and_rebuild_round_trip():
     )
 
 
+def test_convrot_training_metadata_and_generation_base_gate():
+    trainer = SimpleNamespace(
+        qwen_convrot_training_forward="cached_bf16",
+        learning_rate=1e-4,
+        unet_lr=None,
+    )
+    adapter = QwenImage21LoRAAdapter(
+        trainer, lora_rank=2, lora_alpha=2, lora_dtype=torch.float32
+    )
+    metadata = adapter.checkpoint_metadata({}, step=1, epoch=0)
+    assert metadata["qwen_base_variant"] == "int8_convrot"
+    assert metadata["qwen_base_forward"] == "convrot_int8_bf16_backward_v1"
+
+    file = SimpleNamespace(name="trained.safetensors", metadata=metadata, tensors={})
+    compatible = QwenImage21Mixin()
+    compatible.qwen_image_21_components = {"transformer_variant": "int8_convrot"}
+    assert compatible._qwen21_prepare_lora_file(file) == {}
+
+    incompatible = QwenImage21Mixin()
+    incompatible.qwen_image_21_components = {"transformer_variant": "bf16"}
+    with pytest.raises(ValueError, match="requires an int8_convrot model"):
+        incompatible._qwen21_prepare_lora_file(file)
+
+
 def test_api_defaults_and_capabilities_expose_qwen_controls():
     defaults = asyncio.run(get_generation_defaults())
     assert defaults["image_arch_overlays"][MODEL_TYPE] == {

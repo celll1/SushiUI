@@ -30,6 +30,7 @@ import OutpaintTimeline from "./OutpaintTimeline";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import MiniMaxH3ReferenceSelector from "../common/MiniMaxH3ReferenceSelector";
 import H3PromptAssist from "../common/H3PromptAssist";
+import Qwen21PromptUpsample from "../common/Qwen21PromptUpsample";
 import ImageViewer from "../common/ImageViewer";
 import PostEditControls from "../common/PostEditControls";
 import VideoAccelerationControls from "../common/VideoAccelerationControls";
@@ -65,6 +66,7 @@ import {
   VIDEO_BLOCK_SWAP_MAX,
 } from "@/utils/api";
 import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
+import { maybeUpsampleQwen21Prompt } from "@/utils/qwen21PromptUpsample";
 import { resolveBound } from "@/utils/paramBounds";
 import { readGlobalAttentionType } from "@/utils/attentionSettings";
 import { readStoredGenerationDisplaySettings } from "@/utils/generationDisplaySettings";
@@ -1970,6 +1972,20 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
       ? await replaceWildcardsInPrompt(params.negative_prompt || "")
       : "";
 
+    if (!videoMode && !audioMode && modality.modelInfo?.type === "qwen_image_21" && inputImagePreview) {
+      try {
+        const upsampled = await maybeUpsampleQwen21Prompt({
+          prompt: processedPrompt,
+          mode: "i2i",
+          images: [inputImagePreview],
+        });
+        if (upsampled) processedPrompt = upsampled.prompt;
+      } catch (error: any) {
+        alert(error?.message || "Qwen 2.1 prompt upsampling failed");
+        return;
+      }
+    }
+
     if (videoMode && modality.modelInfo?.type === "minimax_h3") {
       try {
         const assisted = await maybeTransformH3PromptForGeneration({
@@ -3085,6 +3101,14 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
             pictures: h3ReferenceImages.length,
             videos: 1 + (bridgeVideoFile ? 1 : 0),
           })}
+        />
+      )}
+      {loadedArchType === "qwen_image_21" && inputImagePreview && (
+        <Qwen21PromptUpsample
+          prompt={params.prompt}
+          mode="i2i"
+          images={[inputImagePreview]}
+          onApply={(prompt) => setParams((previous) => ({ ...previous, prompt }))}
         />
       )}
       <TextareaWithTagSuggestions

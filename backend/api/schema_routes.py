@@ -28,6 +28,7 @@ from api.param_defaults import (
     OUTPAINT_VIDEO_DEFAULTS,
     PARAM_BOUNDS,
     PROMPT_ASSIST_DEFAULTS,
+    QWEN_IMAGE_21_PROMPT_UPSAMPLE_DEFAULTS,
     REF2VID_DEFAULTS,
     STUDIO_RENDER_DEFAULTS,
     TAGGER_TRAINING_DEFAULTS,
@@ -79,6 +80,11 @@ async def get_generation_defaults():
 @router.get("/schema/prompt-assist-defaults")
 async def get_prompt_assist_defaults():
     return PROMPT_ASSIST_DEFAULTS
+
+
+@router.get("/schema/qwen-image-21-prompt-upsample-defaults")
+async def get_qwen_image_21_prompt_upsample_defaults():
+    return QWEN_IMAGE_21_PROMPT_UPSAMPLE_DEFAULTS
 
 
 @router.get("/schema/prompt-assist-music-defaults")

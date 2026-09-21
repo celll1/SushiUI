@@ -44,3 +44,16 @@ VAE swap, and reference-conditioned edit datasets are refused.
 
 See `docs/guides/QWEN_IMAGE_21_DESIGN.md` for exact artifact layout, measured
 smokes, deferred gates, and provenance.
+
+## Prompt upsampling
+
+Generation panels optionally rewrite the prompt before queueing. Text-only
+requests use the T2I enhancer; edit, inpaint, outpaint, and reference-image
+requests use the I2I enhancer with the actual conditioning images. The bundled
+enhancers are on-demand INT8 ConvRot single-file artifacts under
+`prompt_enhancer/t2i` and `prompt_enhancer/i2i`. Only one is CPU-resident at a
+time and it moves to CUDA only for the rewrite.
+
+LM Studio and Ollama are alternative loopback-only engines. They reuse the
+shared local-model discovery and load/unload lifecycle. Returned aspect-ratio
+advice is displayed but never changes the selected generation canvas.

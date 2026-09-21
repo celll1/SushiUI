@@ -5391,6 +5391,57 @@ export const clearPromptAssistCache = async (): Promise<number> => {
   return response.data.deleted;
 };
 
+export type Qwen21PromptUpsampleEngine = "official" | "lm_studio" | "ollama";
+
+export interface Qwen21PromptUpsampleDefaults {
+  enabled: boolean;
+  engine: Qwen21PromptUpsampleEngine;
+  base_url: string;
+  model: string;
+  temperature: number;
+  top_p: number;
+  top_k: number;
+  max_output_tokens: number;
+  context_length: number;
+  timeout_seconds: number;
+}
+
+export interface Qwen21PromptUpsampleSettings extends Qwen21PromptUpsampleDefaults {
+  api_key?: string;
+}
+
+export interface Qwen21PromptUpsampleRequest extends Omit<Qwen21PromptUpsampleSettings, "enabled"> {
+  prompt: string;
+  mode: "t2i" | "i2i";
+  images: string[];
+  force_refresh?: boolean;
+}
+
+export interface Qwen21PromptUpsampleResponse {
+  prompt: string;
+  rewritten_prompt: string;
+  wh_ratio: string;
+  ratio_follow: string;
+  warnings: string[];
+  engine: string;
+  model: string;
+  cached: boolean;
+}
+
+export const getQwen21PromptUpsampleDefaults = async (): Promise<Qwen21PromptUpsampleDefaults> => {
+  const response = await api.get("/schema/qwen-image-21-prompt-upsample-defaults");
+  return response.data;
+};
+
+export const transformQwen21Prompt = async (
+  request: Qwen21PromptUpsampleRequest,
+): Promise<Qwen21PromptUpsampleResponse> => {
+  const response = await api.post("/prompt-assist/qwen-image-21/transform", request, {
+    timeout: Math.max(1000, request.timeout_seconds * 1000 + 5000),
+  });
+  return response.data;
+};
+
 // MiniMax Music 3 Caption Rewriter API
 //
 // Sibling of the MiniMax-H3 prompt assist API above: same provider/model

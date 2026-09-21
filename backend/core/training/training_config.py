@@ -458,6 +458,15 @@ def _build_train_section(
         train["activation_dispatch_residual_frac"] = p.get("activation_dispatch_residual_frac", 0.85)
         train["activation_dispatch_threshold_mb"] = p.get("activation_dispatch_threshold_mb", 4)
 
+    for key in (
+        "qwen_partition_training_enabled", "qwen_partition_mode",
+        "qwen_partition_fixed_count", "qwen_partition_halo_tokens",
+        "qwen_partition_split_ratio_min", "qwen_partition_split_ratio_max",
+        "qwen_partition_seed", "qwen_partition_gradient_checkpointing_blocks",
+        "qwen_partition_profile",
+    ):
+        train[key] = p.get(key, _TD[key])
+
     # Text/Latent encoding
     train["text_encoding_mode"] = p.get("text_encoding_mode", "swap_onthefly")
     train["text_encoding_swap_interval"] = p.get("text_encoding_swap_interval", 256)

@@ -15471,6 +15471,30 @@ class TrainingRunCreateRequest(BaseModel):
     activation_dispatch_seed_coef: float = TRAINING_DEFAULTS["activation_dispatch_seed_coef"]
     activation_dispatch_residual_frac: float = TRAINING_DEFAULTS["activation_dispatch_residual_frac"]
     activation_dispatch_threshold_mb: int = TRAINING_DEFAULTS["activation_dispatch_threshold_mb"]
+    qwen_partition_training_enabled: bool = TRAINING_DEFAULTS["qwen_partition_training_enabled"]
+    qwen_partition_mode: Literal["fixed"] = TRAINING_DEFAULTS["qwen_partition_mode"]
+    qwen_partition_fixed_count: Literal[2, 4] = TRAINING_DEFAULTS["qwen_partition_fixed_count"]
+    qwen_partition_halo_tokens: int = Field(
+        default=TRAINING_DEFAULTS["qwen_partition_halo_tokens"], ge=0
+    )
+    qwen_partition_split_ratio_min: float = Field(
+        default=TRAINING_DEFAULTS["qwen_partition_split_ratio_min"], gt=0, le=0.5
+    )
+    qwen_partition_split_ratio_max: float = Field(
+        default=TRAINING_DEFAULTS["qwen_partition_split_ratio_max"], ge=0.5, lt=1
+    )
+    qwen_partition_seed: int = TRAINING_DEFAULTS["qwen_partition_seed"]
+    qwen_partition_gradient_checkpointing_blocks: Optional[int] = Field(
+        default=TRAINING_DEFAULTS["qwen_partition_gradient_checkpointing_blocks"], ge=0, le=32
+    )
+    qwen_partition_profile: bool = TRAINING_DEFAULTS["qwen_partition_profile"]
+
+    @field_validator("qwen_partition_halo_tokens")
+    @classmethod
+    def _qwen_partition_halo_is_even(cls, value):
+        if value % 2:
+            raise ValueError("qwen_partition_halo_tokens must be even")
+        return value
 
     # Multi Noise-Timestep (MNT) settings
     multi_noise_timesteps: conint(ge=1) = TRAINING_DEFAULTS["multi_noise_timesteps"]

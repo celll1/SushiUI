@@ -144,6 +144,28 @@ EXTRA_METRIC_DEFS = {
     "repa_profile_backward_s": {"label": "Backward (s)", **_DURATION},
     "repa_profile_loss_item_wait_s": {"label": "Loss item wait (s)", **_DURATION},
     "repa_profile_metric_item_wait_s": {"label": "REPA metric item wait (s)", **_DURATION},
+    "qwen_partition_count": {"label": "Qwen regions", **_COUNT},
+    "qwen_partition_largest_tokens": {"label": "Qwen largest region tokens", **_COUNT},
+    "qwen_partition_total_input_tokens": {"label": "Qwen total input tokens", **_COUNT},
+    "qwen_partition_checkpoint_blocks": {"label": "Qwen checkpointed blocks", **_COUNT},
+    "qwen_partition_forward_ms": {
+        "label": "Qwen partition forward (ms)",
+        "family": "duration", "scale_group": "milliseconds", "range": _AUTO_0,
+        "sampling": "periodic",
+    },
+    "qwen_partition_backward_ms": {
+        "label": "Qwen partition backward (ms)",
+        "family": "duration", "scale_group": "milliseconds", "range": _AUTO_0,
+        "sampling": "periodic",
+    },
+    "qwen_partition_wall_ms": {
+        "label": "Qwen partition wall (ms)",
+        "family": "duration", "scale_group": "milliseconds", "range": _AUTO_0,
+        "sampling": "dense",
+    },
+    "qwen_partition_peak_allocated_gb": {
+        "label": "Qwen partition peak VRAM (GiB)", **_DATA_VOLUME_PEAK,
+    },
     # Outpaint ControlNet: MSE over the generate region only (the learning
     # signal that matters for outpaint, isolated from the byte-identical known
     # region which the training masks out).

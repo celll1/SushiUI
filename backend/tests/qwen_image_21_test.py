@@ -26,6 +26,13 @@ from core.training.adapters.qwen_image_21_adapter import (
     QwenImage21FullParameterAdapter,
     QwenImage21LoRAAdapter,
 )
+from core.training.qwen_partition import (
+    PartitionBox,
+    build_fixed_partition_plan,
+    flatten_region,
+    full_canvas_position_ids,
+)
+from core.training.ops import qwen_image_21_ops
 from core.pipeline_backends.qwen_image_21 import QwenImage21Mixin
 from api import routes
 from api.schema_routes import get_arch_capabilities, get_generation_defaults
@@ -149,6 +156,165 @@ def test_tiny_transformer_flow_training_backward():
     loss.backward()
     assert prediction.shape == clean.shape
     assert model.transformer_blocks[0].attn.to_q.weight.grad is not None
+
+
+@pytest.mark.parametrize("count", [2, 4])
+@pytest.mark.parametrize("halo", [0, 2])
+def test_qwen_fixed_partition_covers_full_canvas_and_preserves_global_positions(count, halo):
+    plan = build_fixed_partition_plan(
+        8, 12, count=count, halo=halo, seed=17, epoch=3, occurrence=5
+    )
+    owner = torch.zeros(8, 12, dtype=torch.int32)
+    for region in plan.regions:
+        owner[
+            region.core.top : region.core.bottom,
+            region.core.left : region.core.right,
+        ] += 1
+        positions = full_canvas_position_ids(8, 12, region.input)
+        assert positions.shape == (region.input.tokens, 2)
+        assert region.input.tokens % 4 == 0
+    assert torch.all(owner == 1)
+
+
+def _tiny_partition_loss(model, clean, noise, sigma, text, text_mask, plan, *, backward_each):
+    noisy = (1 - sigma[:, None, None]) * clean + sigma[:, None, None] * noise
+    target = noise - clean
+    noisy_grid = noisy.reshape(1, plan.full_height, plan.full_width, clean.shape[-1])
+    target_grid = target.reshape_as(noisy_grid)
+    total = torch.zeros((), dtype=torch.float32)
+    for region in plan.regions:
+        tile = flatten_region(noisy_grid, region.input)
+        tile_target = flatten_region(target_grid, region.input)
+        tokens = region.input.tokens
+        image_mask = torch.cat(
+            [
+                torch.zeros(1, text.shape[1], dtype=torch.bool),
+                torch.ones(1, tokens // 4, dtype=torch.bool),
+            ],
+            dim=1,
+        )
+        prediction = model(
+            hidden_states=tile,
+            encoder_hidden_states=text,
+            encoder_hidden_states_mask=text_mask,
+            timestep=sigma,
+            img_shapes=[[(1, region.input.height, region.input.width)]],
+            img_mask=image_mask,
+            target_spatial_position_ids=full_canvas_position_ids(
+                plan.full_height, plan.full_width, region.input
+            ),
+            return_dict=False,
+        )[0][:, -tokens:]
+        local = region.core_in_input
+        prediction_grid = prediction.reshape(
+            1, region.input.height, region.input.width, clean.shape[-1]
+        )
+        target_tile_grid = tile_target.reshape_as(prediction_grid)
+        core_prediction = flatten_region(prediction_grid, local)
+        core_target = flatten_region(target_tile_grid, local)
+        weighted = (
+            region.core.tokens / plan.full_tokens
+        ) * torch.nn.functional.mse_loss(core_prediction.float(), core_target.float())
+        if backward_each:
+            weighted.backward()
+            total = total + weighted.detach()
+        else:
+            total = total + weighted
+    if not backward_each:
+        total.backward()
+    return total.detach()
+
+
+def test_qwen_sequential_partition_backward_matches_summed_partition_graph():
+    torch.manual_seed(41)
+    first = QwenImage21Transformer2DModel(
+        in_channels=8,
+        out_channels=8,
+        num_layers=1,
+        attention_head_dim=16,
+        num_attention_heads=2,
+        context_in_dim=32,
+        mlp_ratio=2,
+        axes_dims_rope=(4, 6, 6),
+    )
+    second = QwenImage21Transformer2DModel.from_config(first.config)
+    second.load_state_dict(first.state_dict())
+    clean = torch.randn(1, 16, 8)
+    noise = torch.randn_like(clean)
+    sigma = torch.tensor([0.35])
+    text = torch.randn(1, 3, 32)
+    text_mask = torch.ones(1, 3, dtype=torch.long)
+    plan = build_fixed_partition_plan(4, 4, count=2, seed=9, epoch=2)
+
+    sequential_loss = _tiny_partition_loss(
+        first, clean, noise, sigma, text, text_mask, plan, backward_each=True
+    )
+    summed_loss = _tiny_partition_loss(
+        second, clean, noise, sigma, text, text_mask, plan, backward_each=False
+    )
+    torch.testing.assert_close(sequential_loss, summed_loss, atol=1e-6, rtol=1e-6)
+    for left, right in zip(first.parameters(), second.parameters()):
+        if left.grad is None or right.grad is None:
+            assert left.grad is right.grad is None
+        else:
+            torch.testing.assert_close(left.grad, right.grad, atol=2e-6, rtol=2e-5)
+
+
+def test_qwen_explicit_full_canvas_positions_preserve_full_forward():
+    torch.manual_seed(43)
+    model = QwenImage21Transformer2DModel(
+        in_channels=8,
+        out_channels=8,
+        num_layers=1,
+        attention_head_dim=16,
+        num_attention_heads=2,
+        context_in_dim=32,
+        mlp_ratio=2,
+        axes_dims_rope=(4, 6, 6),
+    ).eval()
+    hidden = torch.randn(1, 16, 8)
+    text = torch.randn(1, 3, 32)
+    text_mask = torch.ones(1, 3, dtype=torch.long)
+    image_mask = torch.cat(
+        [torch.zeros(1, 3, dtype=torch.bool), torch.ones(1, 4, dtype=torch.bool)], dim=1
+    )
+    kwargs = dict(
+        hidden_states=hidden,
+        timestep=torch.tensor([0.4]),
+        encoder_hidden_states=text,
+        encoder_hidden_states_mask=text_mask,
+        img_shapes=[[(1, 4, 4)]],
+        img_mask=image_mask,
+        return_dict=False,
+    )
+    implicit = model(**kwargs)[0]
+    explicit = model(
+        **kwargs,
+        target_spatial_position_ids=full_canvas_position_ids(
+            4, 4, PartitionBox(0, 0, 4, 4)
+        ),
+    )[0]
+    torch.testing.assert_close(implicit, explicit, atol=0, rtol=0)
+
+
+def test_qwen_partition_checkpoint_auto_policy_keeps_measured_floor():
+    plan = build_fixed_partition_plan(64, 64, count=4, seed=2)
+    trainer = SimpleNamespace(
+        config={"qwen_partition_gradient_checkpointing_blocks": None},
+        transformer=SimpleNamespace(transformer_blocks=[object()] * 32),
+    )
+    assert qwen_image_21_ops._resolve_partition_checkpoint_blocks(
+        trainer, plan, 16
+    ) == 8
+    trainer.config["qwen_partition_gradient_checkpointing_blocks"] = 11
+    assert qwen_image_21_ops._resolve_partition_checkpoint_blocks(
+        trainer, plan, 16
+    ) == 11
+
+
+def test_qwen_partition_api_refuses_odd_halo():
+    with pytest.raises(ValueError, match="qwen_partition_halo_tokens must be even"):
+        routes.TrainingRunCreateRequest(qwen_partition_halo_tokens=3)
 
 
 def test_handler_is_concrete_and_tiny_lora_inventory_is_complete():

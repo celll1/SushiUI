@@ -595,3 +595,83 @@ The staged implementation order is:
 6. optional position sidecar, only if global-position metadata is insufficient.
 
 No later stage is implied by the acceptance of an earlier one.
+
+## 15. Prototype implementation and first measurements
+
+The fixed-count prototype is implemented behind an opt-in training flag. It
+includes fixed 2/4-region plans with epoch/item-varying boundaries, optional
+halo, exact full-canvas target RoPE coordinates, area-weighted loss cores,
+sequential region backward, activation-dispatch sizing from the largest input
+region, and per-region checkpoint selection. A failed minimum-size region is a
+run error after the activation-offload retry, not a silently skipped image.
+Adaptive feasibility and elective full/partition mixing remain later stages.
+
+The sequential-backward oracle passes on a one-block CPU model: backward after
+each region matches backward of the summed partition graph for loss and every
+parameter gradient. This validates graph decomposition, not agreement with the
+intentionally different dense-attention objective.
+
+The first real-checkpoint probe used the INT8 ConvRot artifact on an RTX 6000
+Ada, BF16 LoRA rank 128, Flash Attention, batch 1, 128 text tokens, a 64 by 64
+latent grid (4,096 image tokens, corresponding to a 1,024-class square), fixed
+noise/timestep, and two measured iterations after one warmup. It loads only
+the transformer and excludes VAE, text encoder, data loading, optimizer, and
+logging. The retained ConvRot floating grad-input cache was 13.252 GiB.
+
+| Path | Checkpointed blocks | Step | Speedup | Step allocation delta | Delta reduction | Loss delta | Prediction cosine | Prediction relative L2 | Median layer update-action cosine |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| dense full | 16 | 1.990 s | 1.00x | 17.228 GiB | 0% | 0% | 1.000 | 0 | 1.000 |
+| fixed 2, automatic | 10 | 1.848 s | 1.08x | 14.935 GiB | 13.3% | 6.12% | 0.946 | 0.323 | 0.817 |
+| fixed 4, automatic | 8 | 1.843 s | 1.08x | 9.068 GiB | 47.4% | 8.01% | 0.892 | 0.453 | 0.569 |
+
+The measurements establish three constraints for rollout. First, memory
+reduction is substantial and predictable from the largest region, while the
+speed gain at 4,096 tokens is modest. Second, prediction agreement decreases
+with the region count; mixed full-frame exposure is therefore a quality
+requirement for adaptive elective training rather than an optional refinement.
+The update-action probe applies the first-order effective LoRA update
+`dB*A + B*dA` to identical Gaussian validation inputs per target layer. This
+avoids treating raw LoRA-factor gradient cosine as a functional metric: that
+quantity depends on factor basis and scale and is not an acceptance gate.
+Third, disabling checkpointing entirely
+is invalid as an automatic optimization for cached ConvRot: fixed-2 with zero
+checkpointed blocks took 3.812 s and allocated 21.059 GiB during the step,
+worse than dense full on both measures. The automatic policy therefore scales
+the dense checkpoint count by largest-region token ratio but keeps the measured
+eight-block floor; an explicit override remains available for diagnostics.
+
+The reproducible probe is
+`core.training.probes.qwen_partition_training`. Its reported peak step delta
+subtracts persistent model, LoRA, and ConvRot-cache allocation from CUDA peak;
+absolute peak is also reported.
+
+### 15.1 Frozen-base tiling versus a global adapter
+
+Weight-space LoRA rank does not reduce token sequence length. At one Linear,
+the frozen base product may be token-chunked while the LoRA product is computed
+over the full token batch; this is exact. It does not by itself retain global
+attention after a whole transformer is spatially partitioned. Q/K/V LoRA
+projections are token-local, and cross-region content is carried by attention
+against keys and values from the other regions, including the frozen base's
+K/V contribution.
+
+Two follow-up architectures are distinct:
+
+* An equivalence-oriented path chunks token-wise base/LoRA projections and
+  attention queries while every query still attends to full-canvas K/V. It can
+  reduce outer activation residency but not attention FLOPs; Flash Attention
+  already performs the inner attention tiling.
+* A non-equivalent path keeps local partitioned blocks and adds a small
+  trainable token-space global communication adapter, such as a summary-token
+  bottleneck that gathers from all regions and broadcasts back. This can
+  restore some cross-region content in `O(NR)` work. It is not ordinary LoRA
+  merely because its trainable matrices are low rank and needs its own artifact
+  namespace and quality gates.
+
+A position sidecar cannot substitute for that mixer. Exact global RoPE already
+supplies location; a sidecar can identify the full canvas and artificial
+boundary but cannot convey what exists in another region. With a zero-initial
+projection it changes neither prediction nor full-versus-partition agreement
+at insertion time. Its effect must be measured after matched training or a
+short full-teacher distillation, preferably after the global-communication
+question is resolved.

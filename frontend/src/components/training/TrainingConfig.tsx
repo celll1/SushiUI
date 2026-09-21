@@ -861,6 +861,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // one whose packed training sequence carries audio rows), so its control is
   // shown only for it rather than as a knob that silently does nothing.
   const isMiniMaxH3Model = getModelArchitecture(baseModelPath) === "minimax_h3";
+  const isQwenImage21Model = getModelArchitecture(baseModelPath) === "qwen_image_21";
 
   function isSDOrSDXLModel(modelPath: string): boolean {
     const arch = getModelArchitecture(modelPath);
@@ -6096,6 +6097,80 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 </div>
               )}
             </div>
+
+            {isQwenImage21Model && (
+              <div className="pt-2 border-t border-gray-700 space-y-2">
+                <div className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    id="qwen-partition-training"
+                    checked={params.qwen_partition_training_enabled ?? false}
+                    onChange={(e) => updateParam("qwen_partition_training_enabled", e.target.checked)}
+                    className="w-4 h-4"
+                  />
+                  <label htmlFor="qwen-partition-training" className="text-xs text-gray-300 cursor-pointer">
+                    Complete-Coverage Tiled Training (experimental baseline)
+                  </label>
+                </div>
+                <p className="text-xs text-amber-400">
+                  Processes every image region before one optimizer step and lowers peak activation,
+                  but removes target attention between regions. This is not numerically equivalent to a full forward.
+                </p>
+                {params.qwen_partition_training_enabled && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Regions</label>
+                      <select
+                        value={params.qwen_partition_fixed_count ?? 2}
+                        onChange={(e) => updateParam("qwen_partition_fixed_count", parseInt(e.target.value) as 2 | 4)}
+                        className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
+                      >
+                        <option value={2}>2 regions</option>
+                        <option value={4}>4 regions</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Halo (latent tokens)</label>
+                      <input
+                        type="number"
+                        min={0}
+                        step={2}
+                        value={params.qwen_partition_halo_tokens ?? 0}
+                        onChange={(e) => updateParam("qwen_partition_halo_tokens", Math.max(0, parseInt(e.target.value) || 0))}
+                        className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Checkpointed Blocks</label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={32}
+                        placeholder="auto"
+                        value={params.qwen_partition_gradient_checkpointing_blocks ?? ""}
+                        onChange={(e) => updateParam(
+                          "qwen_partition_gradient_checkpointing_blocks",
+                          e.target.value === "" ? null : Math.max(0, Math.min(32, parseInt(e.target.value) || 0))
+                        )}
+                        className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        Empty scales automatically; zero was slower and larger in the SM89 probe.
+                      </p>
+                    </div>
+                    <label className="flex items-center gap-2 self-end pb-1 text-xs text-gray-300 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={params.qwen_partition_profile ?? false}
+                        onChange={(e) => updateParam("qwen_partition_profile", e.target.checked)}
+                        className="w-4 h-4"
+                      />
+                      Synchronized CUDA timing
+                    </label>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Anima-only Phase D memory-optimisation toggles */}
             {isAnimaModel(baseModelPath) && (

@@ -2651,6 +2651,17 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "activation_dispatch_seed_coef": 24.0e-6,
     "activation_dispatch_residual_frac": 0.85,
     "activation_dispatch_threshold_mb": 4,
+    # Qwen-Image 2.1 complete-coverage target partitioning. The first release
+    # exposes the fixed 2/4-region prototype; full-frame remains the default.
+    "qwen_partition_training_enabled": False,
+    "qwen_partition_mode": "fixed",
+    "qwen_partition_fixed_count": 2,
+    "qwen_partition_halo_tokens": 0,
+    "qwen_partition_split_ratio_min": 0.35,
+    "qwen_partition_split_ratio_max": 0.65,
+    "qwen_partition_seed": 0,
+    "qwen_partition_gradient_checkpointing_blocks": None,
+    "qwen_partition_profile": False,
     # TREAD token routing (arXiv 2501.04765) — training-only acceleration.
     # Routes a random subset of tokens through a span of transformer blocks;
     # dropped tokens bypass the span (identity transport) and are restored at

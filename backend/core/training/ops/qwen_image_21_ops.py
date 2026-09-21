@@ -2,10 +2,84 @@
 
 from __future__ import annotations
 
+import math
+import time
 from typing import Optional
 
 import torch
 import torch.nn.functional as F
+
+
+def partition_training_enabled(trainer) -> bool:
+    return bool(trainer.config.get("qwen_partition_training_enabled", False))
+
+
+def _partition_plan(trainer, latent_h: int, latent_w: int):
+    from core.training.qwen_partition import build_fixed_partition_plan
+
+    mode = str(trainer.config.get("qwen_partition_mode", "fixed")).strip().lower()
+    if mode != "fixed":
+        raise ValueError(
+            "The first Qwen partitioned-training implementation supports mode='fixed'; "
+            f"got {mode!r}"
+        )
+    key = (
+        int(getattr(trainer, "_current_epoch", 0)),
+        int(getattr(trainer, "_current_batch_position", 0)),
+        int(latent_h),
+        int(latent_w),
+        int(trainer.config.get("qwen_partition_fixed_count", 2)),
+        int(trainer.config.get("qwen_partition_halo_tokens", 0)),
+        int(trainer.config.get("qwen_partition_seed", 0)),
+    )
+    cached = getattr(trainer, "_qwen_partition_plan_cache", None)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    plan = build_fixed_partition_plan(
+        latent_h,
+        latent_w,
+        count=key[4],
+        halo=key[5],
+        seed=key[6],
+        epoch=key[0],
+        occurrence=key[1],
+        split_ratio_min=float(trainer.config.get("qwen_partition_split_ratio_min", 0.35)),
+        split_ratio_max=float(trainer.config.get("qwen_partition_split_ratio_max", 0.65)),
+    )
+    trainer._qwen_partition_plan_cache = (key, plan)
+    return plan
+
+
+def partition_dispatch_view(trainer, latents: torch.Tensor, *, latent_h: int, latent_w: int):
+    """Shape-only view used so activation dispatch sees the largest region."""
+    if not partition_training_enabled(trainer):
+        return latents
+    plan = _partition_plan(trainer, latent_h, latent_w)
+    return latents[:, : plan.largest_input_tokens]
+
+
+def _resolve_partition_checkpoint_blocks(trainer, plan, original):
+    configured = trainer.config.get("qwen_partition_gradient_checkpointing_blocks")
+    total_blocks = len(trainer.transformer.transformer_blocks)
+    if configured is not None:
+        resolved = int(configured)
+    elif original is None:
+        return None
+    else:
+        original = int(original)
+        if original <= 0:
+            return original
+        ratio = plan.largest_input_tokens / plan.full_tokens
+        # Cached ConvRot becomes slower as well as larger with checkpointing
+        # fully disabled. Eight blocks was the measured floor on SM89.
+        measured_floor = min(8, total_blocks)
+        resolved = min(original, max(measured_floor, math.ceil(original * ratio)))
+    if not 0 <= resolved <= total_blocks:
+        raise ValueError(
+            "qwen_partition_gradient_checkpointing_blocks must be between 0 and "
+            f"{total_blocks}, got {resolved}"
+        )
+    return resolved
 
 
 def load_components(trainer) -> None:
@@ -275,6 +349,160 @@ def train_step(
     prediction = prediction[:, -tokens:]
     loss = F.mse_loss(prediction.float(), target.float())
     return loss, float(loss.detach()), 0.0
+
+
+def train_step_partitioned_backward(
+    trainer,
+    *,
+    latents: torch.Tensor,
+    encoder_features: torch.Tensor,
+    encoder_mask: torch.Tensor,
+    timesteps: torch.Tensor,
+    latent_h: int,
+    latent_w: int,
+    backward_scale: float,
+) -> tuple[float, float, float]:
+    """Run every loss core sequentially and accumulate one logical gradient."""
+    from core.training.mnt import training_noise_like
+    from core.training.qwen_partition import (
+        flatten_region,
+        full_canvas_position_ids,
+    )
+
+    latents = latents.to(trainer.device, trainer.training_dtype)
+    encoder_features = encoder_features.to(trainer.device, trainer.training_dtype)
+    encoder_mask = encoder_mask.to(trainer.device)
+    batch, tokens, channels = latents.shape
+    if tokens != int(latent_h) * int(latent_w):
+        raise ValueError(
+            f"Qwen partition latent grid {latent_h}x{latent_w} does not match {tokens} tokens"
+        )
+    plan = _partition_plan(trainer, int(latent_h), int(latent_w))
+    sigma = timesteps.to(device=trainer.device, dtype=trainer.training_dtype)
+    sigma_view = sigma.view(-1, 1, 1)
+    noise = training_noise_like(trainer, latents)
+    noisy = (1 - sigma_view) * latents + sigma_view * noise
+    target = noise - latents
+    noisy_grid = noisy.reshape(batch, int(latent_h), int(latent_w), channels)
+    target_grid = target.reshape_as(noisy_grid)
+    prefix_mask = torch.zeros(
+        encoder_features.shape[:2], dtype=torch.bool, device=trainer.device
+    )
+
+    original_checkpoint_blocks = getattr(
+        trainer.transformer, "_training_gradient_checkpointing_blocks", None
+    )
+    partition_checkpoint_blocks = _resolve_partition_checkpoint_blocks(
+        trainer, plan, original_checkpoint_blocks
+    )
+    if partition_checkpoint_blocks is not None:
+        trainer.transformer._training_gradient_checkpointing_blocks = partition_checkpoint_blocks
+
+    cuda_timing = latents.is_cuda and bool(
+        trainer.config.get("qwen_partition_profile", False)
+    )
+    forward_ms = 0.0
+    backward_ms = 0.0
+    logical_loss_tensor = torch.zeros((), device=trainer.device, dtype=torch.float32)
+    total_input_tokens = 0
+    wall_start = time.perf_counter()
+    try:
+        for region in plan.regions:
+            input_tokens = region.input.tokens
+            total_input_tokens += input_tokens
+            tile = flatten_region(noisy_grid, region.input)
+            tile_target = flatten_region(target_grid, region.input)
+            image_mask = torch.cat(
+                [
+                    prefix_mask,
+                    torch.ones(
+                        batch,
+                        input_tokens // 4,
+                        dtype=torch.bool,
+                        device=trainer.device,
+                    ),
+                ],
+                dim=1,
+            )
+            positions = full_canvas_position_ids(
+                plan.full_height, plan.full_width, region.input
+            )
+
+            if cuda_timing:
+                forward_start = torch.cuda.Event(enable_timing=True)
+                forward_end = torch.cuda.Event(enable_timing=True)
+                backward_end = torch.cuda.Event(enable_timing=True)
+                forward_start.record(torch.cuda.current_stream(trainer.device))
+
+            def forward():
+                return trainer.transformer(
+                    hidden_states=tile,
+                    timestep=sigma,
+                    encoder_hidden_states=encoder_features,
+                    encoder_hidden_states_mask=encoder_mask,
+                    img_shapes=[[(1, region.input.height, region.input.width)]] * batch,
+                    img_mask=image_mask,
+                    target_spatial_position_ids=positions,
+                    return_dict=False,
+                )[0]
+
+            if trainer.mixed_precision:
+                with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
+                    prediction = forward()
+            else:
+                prediction = forward()
+            prediction = prediction[:, -input_tokens:].reshape(
+                batch, region.input.height, region.input.width, channels
+            )
+            target_tile_grid = tile_target.reshape_as(prediction)
+            local = region.core_in_input
+            core_prediction = flatten_region(prediction, local)
+            core_target = flatten_region(target_tile_grid, local)
+            weighted_loss = (
+                region.core.tokens / plan.full_tokens
+            ) * F.mse_loss(core_prediction.float(), core_target.float())
+
+            if cuda_timing:
+                forward_end.record(torch.cuda.current_stream(trainer.device))
+            scaled_loss = weighted_loss * float(backward_scale)
+            if trainer.use_grad_scaler:
+                trainer.grad_scaler.scale(scaled_loss).backward()
+            else:
+                scaled_loss.backward()
+            if cuda_timing:
+                backward_end.record(torch.cuda.current_stream(trainer.device))
+                backward_end.synchronize()
+                forward_ms += forward_start.elapsed_time(forward_end)
+                backward_ms += forward_end.elapsed_time(backward_end)
+            logical_loss_tensor = logical_loss_tensor + weighted_loss.detach()
+            del tile, tile_target, prediction, target_tile_grid, core_prediction, core_target
+            del weighted_loss, scaled_loss, image_mask
+    finally:
+        if original_checkpoint_blocks is None:
+            if hasattr(trainer.transformer, "_training_gradient_checkpointing_blocks"):
+                delattr(trainer.transformer, "_training_gradient_checkpointing_blocks")
+        else:
+            trainer.transformer._training_gradient_checkpointing_blocks = original_checkpoint_blocks
+
+    logical_loss = float(logical_loss_tensor.item())
+    wall_ms = (time.perf_counter() - wall_start) * 1000.0
+    trainer.log_extra_metric("qwen_partition_count", float(len(plan.regions)))
+    trainer.log_extra_metric("qwen_partition_largest_tokens", float(plan.largest_input_tokens))
+    trainer.log_extra_metric("qwen_partition_total_input_tokens", float(total_input_tokens))
+    if partition_checkpoint_blocks is not None:
+        trainer.log_extra_metric(
+            "qwen_partition_checkpoint_blocks", float(partition_checkpoint_blocks)
+        )
+    if cuda_timing:
+        trainer.log_extra_metric("qwen_partition_forward_ms", float(forward_ms))
+        trainer.log_extra_metric("qwen_partition_backward_ms", float(backward_ms))
+    trainer.log_extra_metric("qwen_partition_wall_ms", float(wall_ms))
+    if latents.is_cuda:
+        trainer.log_extra_metric(
+            "qwen_partition_peak_allocated_gb",
+            float(torch.cuda.max_memory_allocated(trainer.device) / (1024 ** 3)),
+        )
+    return logical_loss, logical_loss, 0.0
 
 
 @torch.no_grad()

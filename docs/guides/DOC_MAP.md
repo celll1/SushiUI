@@ -82,6 +82,7 @@ machine-local working material.
 | [backend/core/docs/ATTENTION_PROCESSORS.md](../../backend/core/docs/ATTENTION_PROCESSORS.md) | Attention backend selection. |
 | [backend/core/memory_management/README.md](../../backend/core/memory_management/README.md) | Block swap and memory-management overview. |
 | [backend/core/memory_management/RING_BUFFER_OPTIMIZER.md](../../backend/core/memory_management/RING_BUFFER_OPTIMIZER.md) | Optimizer-state residency mechanism. |
+| [docs/plans/DIT_PARTITION_MEMORY_EXECUTION_PLAN_2026-09.md](../plans/DIT_PARTITION_MEMORY_EXECUTION_PLAN_2026-09.md) | Separates activation prediction, offload, batch reduction, checkpoint depth, and quantized-base prefetch. |
 | [backend/core/training/optimizers/RINGBUFFER_OPTIMIZERS.md](../../backend/core/training/optimizers/RINGBUFFER_OPTIMIZERS.md) | Ring-buffer optimizer contracts. |
 | [docs/audits/ATTENTION_ARCHITECTURE_RESEARCH_2026-09.md](../audits/ATTENTION_ARCHITECTURE_RESEARCH_2026-09.md) | Attention control-plane audit and dense/sparse acceleration roadmap through 2026-09. |
 | [docs/audits/SOL_ATTN_GPU_VALIDATION_2026-09.md](../audits/SOL_ATTN_GPU_VALIDATION_2026-09.md) | Sol-Attn correctness, synthetic GPU measurements, and remaining full-H3 quality gate. |

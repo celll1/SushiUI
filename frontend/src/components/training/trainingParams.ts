@@ -101,6 +101,7 @@ export const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [
   "activation_dispatch_margin_gb",
   "activation_dispatch_seed_coef", "activation_dispatch_residual_frac",
   "activation_dispatch_threshold_mb",
+  "dit_gradient_checkpointing_blocks", "dit_partition_gradient_checkpointing_blocks",
   "qwen_partition_training_enabled", "qwen_partition_mode",
   "qwen_partition_fixed_count", "qwen_partition_halo_tokens",
   "qwen_partition_split_ratio_min", "qwen_partition_split_ratio_max",

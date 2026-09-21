@@ -57,8 +57,22 @@ def partition_dispatch_view(trainer, latents: torch.Tensor, *, latent_h: int, la
     return latents[:, : plan.largest_input_tokens]
 
 
+def _checkpoint_override(config, canonical: str, legacy: str):
+    """Resolve a canonical DiT control and one Qwen compatibility alias."""
+    canonical_value = config.get(canonical)
+    legacy_value = config.get(legacy)
+    if (canonical_value is not None and legacy_value is not None
+            and int(canonical_value) != int(legacy_value)):
+        raise ValueError(f"{canonical} conflicts with {legacy}")
+    return canonical_value if canonical_value is not None else legacy_value
+
+
 def _resolve_partition_checkpoint_blocks(trainer, plan, original):
-    configured = trainer.config.get("qwen_partition_gradient_checkpointing_blocks")
+    configured = _checkpoint_override(
+        trainer.config,
+        "dit_partition_gradient_checkpointing_blocks",
+        "qwen_partition_gradient_checkpointing_blocks",
+    )
     total_blocks = len(trainer.transformer.transformer_blocks)
     if configured is not None:
         resolved = int(configured)
@@ -70,7 +84,7 @@ def _resolve_partition_checkpoint_blocks(trainer, plan, original):
         resolved = int(original)
     if not 0 <= resolved <= total_blocks:
         raise ValueError(
-            "qwen_partition_gradient_checkpointing_blocks must be between 0 and "
+            "dit_partition_gradient_checkpointing_blocks must be between 0 and "
             f"{total_blocks}, got {resolved}"
         )
     return resolved
@@ -158,8 +172,10 @@ def load_components(trainer) -> None:
     )
     if trainer.gradient_checkpointing:
         trainer.transformer.enable_gradient_checkpointing()
-        configured_checkpoint_blocks = trainer.config.get(
-            "qwen_gradient_checkpointing_blocks"
+        configured_checkpoint_blocks = _checkpoint_override(
+            trainer.config,
+            "dit_gradient_checkpointing_blocks",
+            "qwen_gradient_checkpointing_blocks",
         )
         if configured_checkpoint_blocks is None and convrot_training_forward == "cached_bf16":
             resolutions = trainer.config.get("base_resolutions") or []
@@ -178,7 +194,7 @@ def load_components(trainer) -> None:
             )
         if not 0 <= checkpoint_blocks <= len(trainer.transformer.transformer_blocks):
             raise ValueError(
-                "qwen_gradient_checkpointing_blocks must be between 0 and "
+                "dit_gradient_checkpointing_blocks must be between 0 and "
                 f"{len(trainer.transformer.transformer_blocks)}, got {checkpoint_blocks}"
             )
         trainer.transformer._training_gradient_checkpointing_blocks = checkpoint_blocks

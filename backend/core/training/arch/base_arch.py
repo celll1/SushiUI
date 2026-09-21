@@ -437,6 +437,15 @@ class ArchHandler(ABC):
     #: not just to /8. Overridden to 16 by every patchified DiT handler below.
     pixel_align: int = 8
 
+    #: Number of repeated DiT blocks when this architecture supports selecting
+    #: a checkpointed prefix by count. None means the generic partial-depth
+    #: controls are unsupported and explicit values must be refused.
+    dit_checkpoint_block_count: Optional[int] = None
+
+    #: Whether the architecture implements complete-coverage DiT partition
+    #: training. This is narrower than merely having image tokens.
+    supports_dit_partition_training: bool = False
+
     #: Sequence axis of ONE item's text embedding, i.e. of the ``[1, ...]``
     #: tensor ``encode_caption`` returns, as consumed by the batch-assembly
     #: collation in ``BaseTrainer._collate_text_embeddings``.

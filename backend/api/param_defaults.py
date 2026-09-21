@@ -2654,6 +2654,10 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "activation_dispatch_seed_coef": 24.0e-6,
     "activation_dispatch_residual_frac": 0.85,
     "activation_dispatch_threshold_mb": 4,
+    # Architecture-neutral partial DiT checkpoint controls. Null delegates to
+    # the architecture policy; unsupported architectures reject explicit values.
+    "dit_gradient_checkpointing_blocks": None,
+    "dit_partition_gradient_checkpointing_blocks": None,
     # Qwen-Image 2.1 complete-coverage target partitioning. The first release
     # exposes the fixed 2/4-region prototype; full-frame remains the default.
     "qwen_partition_training_enabled": False,

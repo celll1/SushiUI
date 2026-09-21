@@ -1573,6 +1573,68 @@ def _apply_chimera_training_contract(
     return True
 
 
+def _apply_dit_checkpoint_contract(
+    base_model_path: str, train_config: Dict[str, Any]
+) -> None:
+    """Normalize generic DiT checkpoint controls before loading the model."""
+    from core.model_loader import ModelLoader
+    from core.training.arch import ARCH_REGISTRY
+
+    canonical_partition = train_config.get(
+        "dit_partition_gradient_checkpointing_blocks")
+    legacy_partition = train_config.get(
+        "qwen_partition_gradient_checkpointing_blocks")
+    if (canonical_partition is not None and legacy_partition is not None
+            and int(canonical_partition) != int(legacy_partition)):
+        raise ValueError(
+            "dit_partition_gradient_checkpointing_blocks conflicts with "
+            "qwen_partition_gradient_checkpointing_blocks"
+        )
+    if canonical_partition is None:
+        canonical_partition = legacy_partition
+    train_config["dit_partition_gradient_checkpointing_blocks"] = canonical_partition
+
+    canonical_base = train_config.get("dit_gradient_checkpointing_blocks")
+    legacy_base = train_config.get("qwen_gradient_checkpointing_blocks")
+    if (canonical_base is not None and legacy_base is not None
+            and int(canonical_base) != int(legacy_base)):
+        raise ValueError(
+            "dit_gradient_checkpointing_blocks conflicts with "
+            "qwen_gradient_checkpointing_blocks"
+        )
+    if canonical_base is None:
+        canonical_base = legacy_base
+    train_config["dit_gradient_checkpointing_blocks"] = canonical_base
+
+    partition_enabled = bool(train_config.get("qwen_partition_training_enabled", False))
+    if canonical_base is None and canonical_partition is None and not partition_enabled:
+        return
+    architecture = ModelLoader.detect_model_type(base_model_path)
+    handler = ARCH_REGISTRY.get(architecture)
+    depth = getattr(handler, "dit_checkpoint_block_count", None) if handler else None
+    supports_partition = bool(
+        getattr(handler, "supports_dit_partition_training", False)) if handler else False
+    if canonical_base is not None and depth is None:
+        raise ValueError(
+            f"dit_gradient_checkpointing_blocks is unsupported for {architecture}"
+        )
+    if canonical_partition is not None and not supports_partition:
+        raise ValueError(
+            "dit_partition_gradient_checkpointing_blocks is unsupported for "
+            f"{architecture}"
+        )
+    if partition_enabled and not supports_partition:
+        raise ValueError(
+            f"complete-coverage DiT partition training is unsupported for {architecture}"
+        )
+    for key, value in (
+        ("dit_gradient_checkpointing_blocks", canonical_base),
+        ("dit_partition_gradient_checkpointing_blocks", canonical_partition),
+    ):
+        if value is not None and not 0 <= int(value) <= int(depth):
+            raise ValueError(f"{key} must be between 0 and {depth}, got {value}")
+
+
 def _prepare_training_process_config(
     config: Dict[str, Any], base_model_path: str
 ):
@@ -1581,6 +1643,7 @@ def _prepare_training_process_config(
     train_config = process_config['train']
     network_config = process_config.get('network', {})
     network_type = network_config.get('type', 'lora')
+    _apply_dit_checkpoint_contract(base_model_path, train_config)
     _apply_yue2_training_contract(base_model_path, network_type, train_config)
     is_chimera = _apply_chimera_training_contract(
         base_model_path, network_type, train_config

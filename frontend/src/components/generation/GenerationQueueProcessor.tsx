@@ -936,15 +936,15 @@ export default function GenerationQueueProcessor() {
     } catch (error: any) {
       console.error(`[Queue] ${item.type} generation failed:`, error);
       const cancelled = isCancelledError(error);
+      const message = isGenerationStalledError(error)
+        ? error.message
+        : `Generation failed: ${errorDetail(error)}`;
       busyRef.current = false;
       publishFailure({ panel, itemId: item.id, cancelled });
-      failCurrentItem();
+      // Keep image failures non-modal so a browser dialog cannot capture the
+      // tab's keyboard and pointer input after a backend error.
+      failCurrentItem(message);
       scheduleNext();
-      if (!cancelled) {
-        alert(isGenerationStalledError(error)
-          ? error.message
-          : "Generation failed. Please check console for details.");
-      }
     }
   }, [advanceLoopGroup, appendResult, completeCurrentItem, failCurrentItem,
       publishCompletedResult, publishFailure, scheduleNext, trainingPreviewUrl]);

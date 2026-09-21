@@ -89,6 +89,31 @@ the required compiled path has passed its runtime probe.
 
 ## 3. Source and dependency policy
 
+### 3.1 Implementation provenance
+
+The integration keeps model artifacts and SushiUI source code in separate
+provenance domains:
+
+* **Weights and model configuration.** External model artifacts retain their
+  own license and are user-supplied data under `<MODEL_ROOT>`. They do not
+  contribute source code to SushiUI or change SushiUI's source-code license.
+* **Inference and training code.** Implementation work uses the Apache-2.0
+  diffusers code at the pinned commits identified by this document, existing
+  SushiUI code, and original local work.
+
+The implementation input set is closed and auditable:
+
+1. the Apache-2.0 diffusers PRs/commits pinned here;
+2. the published model weight/config files and processor assets as data;
+3. black-box behavior measured by executing the released weights through the
+   pinned diffusers implementation; and
+4. existing SushiUI code and independently written tests/specifications.
+
+Before implementation starts, record the exact diffusers commit and source-file
+list in `upstream.json`. Review checks code and attribution against that list.
+
+### 3.2 Vendoring and dependency choice
+
 The current environment has Qwen3-VL model/processor classes but does not have
 the Qwen-Image 2.1 diffusers classes. The integration therefore vendors the
 minimum Apache-2.0 implementation from the pinned diffusers commit:
@@ -106,9 +131,9 @@ backend/core/models/qwen_image_21/
   upstream.json
 ```
 
-`upstream.json` records repository, commit, source paths, upstream license,
-and local modifications. The same entries must be added to
-`docs/legal/THIRD_PARTY_PROVENANCE.md` before vendored code is committed.
+`upstream.json` records the Apache-2.0 diffusers repository, commit, source
+paths, upstream license, and local modifications. The same entries must be
+added to `docs/legal/THIRD_PARTY_PROVENANCE.md` before vendored code is committed.
 
 Do not vendor Qwen3-VL from Transformers. Load it through the installed
 Transformers public classes. Do not upgrade all of diffusers to an unreleased
@@ -791,9 +816,10 @@ measurement is recorded in `docs/guides/MODEL_FACTS.md` with its conditions.
 * Upstream training PR #14808 is unmerged and has already changed around device
   placement, masks, validation, and caching. Port the mathematics, not the
   script wholesale.
-* The model license is Qwen Research, while vendored diffusers code is
-  Apache-2.0. Weight redistribution and code redistribution are separate legal
-  questions.
+* Weight use/distribution remains subject to the weight license, while SushiUI
+  implementation code comes only from Apache-2.0 diffusers or original local
+  work. Never blur those provenance domains or treat a weight license as a
+  source-code dependency.
 * The final-RMSNorm hidden-state behavior differs across Transformers versions.
   A seemingly harmless library upgrade can materially alter rendered text.
 * The VAE is RGBA and 64-channel with 16x compression. Reusing older

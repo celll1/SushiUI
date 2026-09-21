@@ -15488,6 +15488,18 @@ class TrainingRunCreateRequest(BaseModel):
         default=TRAINING_DEFAULTS["qwen_partition_gradient_checkpointing_blocks"], ge=0, le=32
     )
     qwen_partition_profile: bool = TRAINING_DEFAULTS["qwen_partition_profile"]
+    qwen_full_kv_query_chunk_tokens: int = Field(
+        default=TRAINING_DEFAULTS["qwen_full_kv_query_chunk_tokens"], ge=0
+    )
+    qwen_partition_global_adapter_enabled: bool = TRAINING_DEFAULTS[
+        "qwen_partition_global_adapter_enabled"
+    ]
+    qwen_partition_global_rank: int = Field(
+        default=TRAINING_DEFAULTS["qwen_partition_global_rank"], ge=1, le=512
+    )
+    qwen_partition_global_tokens: int = Field(
+        default=TRAINING_DEFAULTS["qwen_partition_global_tokens"], ge=1, le=256
+    )
 
     @field_validator("qwen_partition_halo_tokens")
     @classmethod

@@ -528,14 +528,17 @@ class QwenImage21AttnProcessor:
         key: torch.Tensor,
         value: torch.Tensor,
         key_valid: torch.Tensor | None,
-        start: int,
-        end: int,
+        query_start: int,
+        query_end: int,
         *,
-        is_causal: bool,
+        key_end: int | None = None,
+        is_causal: bool = False,
     ) -> torch.Tensor:
         """Run one exact block-causal segment through packed attention."""
         from core.attention import AttentionMode, dispatch_attention_varlen
 
+        if key_end is None:
+            key_end = query_end
         batch = query.shape[0]
         q_parts = []
         k_parts = []
@@ -544,7 +547,7 @@ class QwenImage21AttnProcessor:
         q_lengths = []
         k_lengths = []
         cache = None
-        cache_key = (start, end)
+        cache_key = (query_start, query_end, key_end)
         if key_valid is not None:
             cache = getattr(key_valid, "_qwen_image21_varlen_indices", None)
             if cache is None:
@@ -557,14 +560,14 @@ class QwenImage21AttnProcessor:
             k_indices = []
             for batch_idx in range(batch):
                 if key_valid is None:
-                    q_idx = torch.arange(start, end, device=query.device)
-                    k_idx = torch.arange(0, end, device=query.device)
+                    q_idx = torch.arange(query_start, query_end, device=query.device)
+                    k_idx = torch.arange(0, key_end, device=query.device)
                 else:
                     q_idx = torch.nonzero(
-                        key_valid[batch_idx, start:end], as_tuple=False
-                    ).flatten() + start
+                        key_valid[batch_idx, query_start:query_end], as_tuple=False
+                    ).flatten() + query_start
                     k_idx = torch.nonzero(
-                        key_valid[batch_idx, :end], as_tuple=False
+                        key_valid[batch_idx, :key_end], as_tuple=False
                     ).flatten()
                 q_indices.append(q_idx)
                 k_indices.append(k_idx)
@@ -584,8 +587,8 @@ class QwenImage21AttnProcessor:
                 cache[cache_key] = (
                     q_indices, k_indices, q_lengths, k_lengths, cu_q, cu_k
                 )
-        dense_single_q = batch == 1 and q_lengths[0] == end - start
-        dense_single_k = batch == 1 and k_lengths[0] == end
+        dense_single_q = batch == 1 and q_lengths[0] == query_end - query_start
+        dense_single_k = batch == 1 and k_lengths[0] == key_end
         for batch_idx, (q_idx, k_idx) in enumerate(zip(q_indices, k_indices)):
             if not dense_single_q:
                 q_parts.append(query[batch_idx, q_idx])
@@ -606,13 +609,13 @@ class QwenImage21AttnProcessor:
         # contiguous suffix even when padded text keys require packing. Avoid
         # advanced-index copies, cat, zero-fill and scatter for that large suffix.
         packed_q = (
-            query[0, start:end] if dense_single_q else torch.cat(q_parts, dim=0)
+            query[0, query_start:query_end] if dense_single_q else torch.cat(q_parts, dim=0)
         ).to(kernel_dtype)
         packed_k = (
-            key[0, :end] if dense_single_k else torch.cat(k_parts, dim=0)
+            key[0, :key_end] if dense_single_k else torch.cat(k_parts, dim=0)
         ).to(kernel_dtype)
         packed_v = (
-            value[0, :end] if dense_single_k else torch.cat(v_parts, dim=0)
+            value[0, :key_end] if dense_single_k else torch.cat(v_parts, dim=0)
         ).to(kernel_dtype)
         packed_out = dispatch_attention_varlen(
             packed_q,
@@ -629,11 +632,11 @@ class QwenImage21AttnProcessor:
         )
         if dense_single_q:
             return packed_out.unsqueeze(0).to(query.dtype)
-        output = torch.zeros_like(query[:, start:end])
+        output = torch.zeros_like(query[:, query_start:query_end])
         offset = 0
         for batch_idx, (q_idx, length) in enumerate(zip(q_indices, q_lengths)):
             if length:
-                output[batch_idx, q_idx - start] = packed_out[
+                output[batch_idx, q_idx - query_start] = packed_out[
                     offset : offset + length
                 ].to(output.dtype)
                 offset += length
@@ -693,7 +696,8 @@ class QwenImage21AttnProcessor:
                 if backend == "flash":
                     outputs.append(
                         self._varlen_segment(
-                            query, key, value, key_valid, start, end, is_causal=is_text
+                            query, key, value, key_valid, start, end,
+                            key_end=end, is_causal=is_text
                         )
                     )
                     continue
@@ -721,30 +725,36 @@ class QwenImage21AttnProcessor:
                         parallel_config=self._parallel_config,
                     )
                 )
-            if backend == "flash":
-                outputs.append(
-                    self._varlen_segment(
-                        query,
-                        key,
-                        value,
-                        key_valid,
-                        prefix_len,
-                        query.shape[1],
-                        is_causal=False,
+            target_end = query.shape[1]
+            chunk = int(getattr(self, "_target_query_chunk_tokens", 0) or 0)
+            chunk = target_end - prefix_len if chunk <= 0 else chunk
+            for start in range(prefix_len, target_end, chunk):
+                end = min(target_end, start + chunk)
+                if backend == "flash":
+                    outputs.append(
+                        self._varlen_segment(
+                            query,
+                            key,
+                            value,
+                            key_valid,
+                            start,
+                            end,
+                            key_end=target_end,
+                            is_causal=False,
+                        )
                     )
-                )
-            else:
-                outputs.append(
-                    dispatch_attention_fn(
-                        query[:, prefix_len:],
-                        key,
-                        value,
-                        attn_mask=None if key_valid is None else key_valid[:, None, None, :],
-                        dropout_p=0.0,
-                        backend="native",
-                        parallel_config=self._parallel_config,
+                else:
+                    outputs.append(
+                        dispatch_attention_fn(
+                            query[:, start:end],
+                            key,
+                            value,
+                            attn_mask=None if key_valid is None else key_valid[:, None, None, :],
+                            dropout_p=0.0,
+                            backend="native",
+                            parallel_config=self._parallel_config,
+                        )
                     )
-                )
             hidden_states = torch.cat(outputs, dim=1)
         hidden_states = hidden_states[:, :seq_len_q]
         hidden_states = hidden_states.flatten(2, 3).type_as(query)
@@ -1074,6 +1084,7 @@ class QwenImage21Transformer2DModel(
         img_mask: torch.Tensor,
         encoder_hidden_states_mask: torch.Tensor | None = None,
         target_spatial_position_ids: torch.Tensor | None = None,
+        target_input_residual: torch.Tensor | None = None,
         attention_kwargs: dict[str, Any] | None = None,
         kv_cache: QwenImage21KVCache | None = None,
         kv_cache_mode: str | None = None,
@@ -1129,6 +1140,13 @@ class QwenImage21Transformer2DModel(
             raise ValueError(f"kv_cache_mode is {kv_cache_mode!r} but no kv_cache was passed to hold the prefix.")
 
         hidden_states = self.img_in(hidden_states)
+        if target_input_residual is not None:
+            if target_input_residual.shape != hidden_states.shape:
+                raise ValueError(
+                    "target_input_residual must match projected image states, got "
+                    f"{tuple(target_input_residual.shape)} and {tuple(hidden_states.shape)}"
+                )
+            hidden_states = hidden_states + target_input_residual.to(hidden_states)
         encoder_hidden_states = self.txt_in(encoder_hidden_states)
 
         # Each vision-language image slot stands for 2x2 latent tokens, so expand those positions four-fold and drop

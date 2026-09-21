@@ -28,6 +28,7 @@ from core.training.adapters.qwen_image_21_adapter import (
 )
 from core.training.qwen_partition import (
     PartitionBox,
+    QwenPartitionGlobalAdapter,
     build_fixed_partition_plan,
     flatten_region,
     full_canvas_position_ids,
@@ -297,6 +298,59 @@ def test_qwen_explicit_full_canvas_positions_preserve_full_forward():
     torch.testing.assert_close(implicit, explicit, atol=0, rtol=0)
 
 
+def test_qwen_full_kv_query_chunk_preserves_prediction_and_gradients():
+    torch.manual_seed(47)
+    reference = QwenImage21Transformer2DModel(
+        in_channels=8, out_channels=8, num_layers=1, attention_head_dim=16,
+        num_attention_heads=2, context_in_dim=32, mlp_ratio=2,
+        axes_dims_rope=(4, 6, 6),
+    )
+    chunked = QwenImage21Transformer2DModel.from_config(reference.config)
+    chunked.load_state_dict(reference.state_dict())
+    chunked.transformer_blocks[0].attn.processor._target_query_chunk_tokens = 5
+    hidden = torch.randn(1, 16, 8)
+    text = torch.randn(1, 3, 32)
+    kwargs = dict(
+        hidden_states=hidden,
+        timestep=torch.tensor([0.4]),
+        encoder_hidden_states=text,
+        encoder_hidden_states_mask=torch.ones(1, 3, dtype=torch.long),
+        img_shapes=[[(1, 4, 4)]],
+        img_mask=torch.cat(
+            [torch.zeros(1, 3, dtype=torch.bool), torch.ones(1, 4, dtype=torch.bool)], dim=1
+        ),
+        return_dict=False,
+    )
+    expected = reference(**kwargs)[0]
+    actual = chunked(**kwargs)[0]
+    torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-5)
+    gradient = torch.randn_like(expected)
+    expected.backward(gradient)
+    actual.backward(gradient)
+    for left, right in zip(reference.parameters(), chunked.parameters()):
+        if left.grad is not None:
+            torch.testing.assert_close(right.grad, left.grad, atol=3e-6, rtol=3e-5)
+
+
+def test_qwen_partition_global_adapter_is_zero_init_and_uses_remote_content():
+    torch.manual_seed(53)
+    adapter = QwenPartitionGlobalAdapter(8, 32, rank=4, summary_tokens=3)
+    grid = torch.randn(1, 4, 4, 8)
+    box = PartitionBox(0, 0, 2, 4)
+    initial = adapter(grid, box)
+    torch.testing.assert_close(initial, torch.zeros_like(initial), atol=0, rtol=0)
+    with torch.no_grad():
+        adapter.out.weight.normal_()
+    changed = grid.clone()
+    changed[:, 2:] += 3
+    assert not torch.allclose(adapter(grid, box), adapter(changed, box))
+    adapter(grid, box).square().mean().backward()
+    assert all(parameter.grad is not None for parameter in adapter.parameters())
+    clone = QwenPartitionGlobalAdapter(8, 32, rank=4, summary_tokens=3)
+    clone.load_tensors(adapter.export_tensors())
+    torch.testing.assert_close(clone(grid, box), adapter(grid, box))
+
+
 def test_qwen_partition_checkpoint_auto_policy_keeps_measured_floor():
     plan = build_fixed_partition_plan(64, 64, count=4, seed=2)
     trainer = SimpleNamespace(
@@ -315,6 +369,36 @@ def test_qwen_partition_checkpoint_auto_policy_keeps_measured_floor():
 def test_qwen_partition_api_refuses_odd_halo():
     with pytest.raises(ValueError, match="qwen_partition_halo_tokens must be even"):
         routes.TrainingRunCreateRequest(qwen_partition_halo_tokens=3)
+
+
+def test_qwen_partition_global_adapter_registers_and_exports():
+    model = QwenImage21Transformer2DModel(
+        in_channels=8, out_channels=8, num_layers=1, attention_head_dim=16,
+        num_attention_heads=2, context_in_dim=32, mlp_ratio=2,
+        axes_dims_rope=(4, 6, 6),
+    )
+    trainer = SimpleNamespace(
+        transformer=model,
+        learning_rate=1e-4,
+        unet_lr=None,
+        config={
+            "qwen_partition_training_enabled": True,
+            "qwen_partition_global_adapter_enabled": True,
+            "qwen_partition_global_rank": 4,
+            "qwen_partition_global_tokens": 3,
+        },
+    )
+    adapter = QwenImage21LoRAAdapter(
+        trainer, lora_rank=2, lora_alpha=2, lora_dtype=torch.float32
+    )
+    layers = {}
+    assert adapter.apply_lora_to_unet(layers) == 4
+    assert "qwen_partition_global_adapter" in layers
+    state = adapter.export_state_dict(layers)
+    assert "qwen_partition_global_adapter.summary_queries" in state
+    metadata = adapter.checkpoint_metadata(layers, step=1, epoch=0)
+    assert metadata["qwen_partition_global_adapter"] == "latent_summary_v1"
+    assert metadata["qwen_partition_global_rank"] == "4"
 
 
 def test_handler_is_concrete_and_tiny_lora_inventory_is_complete():

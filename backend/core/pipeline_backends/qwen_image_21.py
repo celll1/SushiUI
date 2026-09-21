@@ -54,6 +54,12 @@ class QwenImage21Mixin:
 
     def _qwen21_prepare_lora_file(self, file):
         from core.models.qwen_image_21.lora import normalise_lora_state_dict
+        if file.metadata.get("qwen_partition_global_adapter"):
+            self._qwen21_lora_warn(
+                f"Qwen-Image 2.1 LoRA '{file.name}' contains a partition-training "
+                "global adapter; full-frame generation uses the ordinary LoRA branches only.",
+                "qwen_partition_global_adapter_ignored",
+            )
         base_forward = str(file.metadata.get("qwen_base_forward") or "")
         if base_forward:
             if base_forward != "convrot_int8_bf16_backward_v1":

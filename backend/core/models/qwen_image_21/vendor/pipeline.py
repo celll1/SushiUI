@@ -485,6 +485,34 @@ class QwenImage21Pipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
 
         return latents, image_latents
 
+    def _prepare_auxiliary_latent(
+        self, image, batch_size, num_channels_latents, height, width,
+        dtype, device, generator, noise_seed,
+    ):
+        """Encode a target-sized guide/style image and draw stable flow noise."""
+        if not isinstance(image, PILImage.Image):
+            image = PILImage.fromarray(image)
+        if image.mode != "RGBA":
+            image = image.convert("RGBA")
+        tensor = self.image_processor.preprocess(
+            image, width=width, height=height).unsqueeze(2)
+        encoded = self._encode_vae_image(
+            tensor.to(device=device, dtype=dtype), generator)
+        if batch_size > encoded.shape[0]:
+            if batch_size % encoded.shape[0] != 0:
+                raise ValueError("Guide image batch cannot be expanded to the prompt batch")
+            encoded = torch.cat(
+                [encoded] * (batch_size // encoded.shape[0]), dim=0)
+        latent_height, latent_width = encoded.shape[3:]
+        clean = self._pack_latents(
+            encoded, batch_size, num_channels_latents,
+            latent_height, latent_width,
+        )
+        noise_generator = torch.Generator(device="cpu").manual_seed(noise_seed)
+        noise = randn_tensor(
+            clean.shape, generator=noise_generator, device=device, dtype=dtype)
+        return clean, noise
+
     @property
     def attention_kwargs(self):
         return self._attention_kwargs
@@ -527,6 +555,10 @@ class QwenImage21Pipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
         callback_on_step_end_tensor_inputs: list[str] = ["latents"],
         output_resolution: int = 1024,
         use_kv_cache: bool = True,
+        reference_guides: list[dict[str, Any]] | None = None,
+        style_transfers: list[dict[str, Any]] | None = None,
+        style_combine_mode: str = "stack",
+        before_step_callback: Callable[[int, int], None] | None = None,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -710,6 +742,41 @@ class QwenImage21Pipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
             latents,
         )
 
+        seed_source = generator[0] if isinstance(generator, list) else generator
+        base_seed = int(seed_source.initial_seed()) if seed_source is not None else 0
+
+        prepared_guides = []
+        for index, guide in enumerate(reference_guides or []):
+            if guide.get("image") is None:
+                continue
+            clean, noise = self._prepare_auxiliary_latent(
+                guide["image"], batch_size * num_images_per_prompt,
+                num_channels_latents, height, width, prompt_embeds.dtype,
+                device, generator, base_seed + 17011 + index,
+            )
+            prepared_guides.append({
+                "clean": clean,
+                "noise": noise,
+                "strength": float(guide.get("strength", 0.4)),
+                "start": float(guide.get("start_step", 0)) / 1000.0,
+                "end": float(guide.get("end_step", 1000)) / 1000.0,
+            })
+
+        prepared_styles = []
+        if style_transfers:
+            from core.inference.reference_style import style_config_from_dict
+
+            for index, style in enumerate(style_transfers):
+                if style.get("image") is None:
+                    continue
+                config = style_config_from_dict(style)
+                clean, noise = self._prepare_auxiliary_latent(
+                    style["image"], batch_size * num_images_per_prompt,
+                    num_channels_latents, height, width, prompt_embeds.dtype,
+                    device, generator, base_seed + 29023 + index,
+                )
+                prepared_styles.append((config, clean, noise))
+
         img_shapes = [
             [
                 *[
@@ -748,7 +815,13 @@ class QwenImage21Pipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
         # Text and condition-image keys and values are step-independent under `causal_condition`, so the first step
         # prefills them and later steps only recompute the target image's tokens.
         num_blocks = len(self.transformer.transformer_blocks)
-        cache_enabled = use_kv_cache and self.transformer.config.causal_condition
+        # Style injection appends reference K/V to the full joint sequence. It
+        # therefore needs the exact full-sequence segmented-SDPA path rather
+        # than the prefix-only cached decode layout.
+        cache_enabled = (
+            use_kv_cache and self.transformer.config.causal_condition
+            and not prepared_styles
+        )
         cond_cache = QwenImage21KVCache(num_blocks) if cache_enabled else None
         neg_cache = QwenImage21KVCache(num_blocks) if cache_enabled and do_true_cfg else None
 
@@ -761,6 +834,9 @@ class QwenImage21Pipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
                     # empty one, so stop the loop instead.
                     break
 
+                if before_step_callback is not None:
+                    before_step_callback(i, num_inference_steps)
+
                 self._current_timestep = t
                 kv_mode = "extract" if (cache_enabled and i == 0) else ("cached" if cache_enabled else None)
 
@@ -769,19 +845,79 @@ class QwenImage21Pipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
                     latent_model_input = torch.cat([input_images_latents, latents], dim=1)
 
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
-                with self.transformer.cache_context("cond"):
-                    noise_pred = self.transformer(
-                        hidden_states=latent_model_input,
-                        timestep=timestep / 1000,
-                        encoder_hidden_states=prompt_embeds,
-                        encoder_hidden_states_mask=prompt_embeds_mask,
-                        img_shapes=img_shapes,
-                        img_mask=image_pad_mask,
-                        attention_kwargs=self.attention_kwargs,
-                        kv_cache=cond_cache,
-                        kv_cache_mode=kv_mode,
-                        return_dict=False,
-                    )[0]
+                active_style_stores = []
+                if prepared_styles:
+                    from core.inference.reference_style import StyleContext
+
+                    sigma_now = float(t.detach().float().cpu()) / float(
+                        self.scheduler.config.num_train_timesteps)
+                    for style_config, style_clean, style_noise in prepared_styles:
+                        if not style_config.is_step_active(i, num_inference_steps):
+                            continue
+                        style_at_t = (
+                            (1.0 - sigma_now) * style_clean
+                            + sigma_now * style_noise
+                        )
+                        style_model_input = style_at_t
+                        if input_images_latents is not None:
+                            style_model_input = torch.cat(
+                                [input_images_latents, style_at_t], dim=1)
+                        capture = StyleContext(
+                            mode="capture", config=style_config,
+                            progress=style_config.step_progress(i, num_inference_steps),
+                        )
+                        self.transformer._style_ctx = capture
+                        try:
+                            self.transformer(
+                                hidden_states=style_model_input,
+                                timestep=timestep / 1000,
+                                encoder_hidden_states=prompt_embeds,
+                                encoder_hidden_states_mask=prompt_embeds_mask,
+                                img_shapes=img_shapes,
+                                img_mask=image_pad_mask,
+                                attention_kwargs=self.attention_kwargs,
+                                return_dict=False,
+                            )
+                        finally:
+                            self.transformer._style_ctx = None
+                        active_style_stores.append((capture.store, style_config))
+
+                inject_context = None
+                if active_style_stores:
+                    from core.inference.reference_style import StyleContext
+
+                    first_config = active_style_stores[0][1]
+                    if len(active_style_stores) == 1:
+                        inject_context = StyleContext(
+                            mode="inject", config=first_config,
+                            store=active_style_stores[0][0],
+                            progress=first_config.step_progress(i, num_inference_steps),
+                        )
+                    else:
+                        inject_context = StyleContext(
+                            mode="inject", config=first_config,
+                            refs=active_style_stores,
+                            combine_mode=style_combine_mode,
+                            progress=first_config.step_progress(i, num_inference_steps),
+                        )
+
+                self.transformer._style_ctx = inject_context
+                try:
+                    with self.transformer.cache_context("cond"):
+                        noise_pred = self.transformer(
+                            hidden_states=latent_model_input,
+                            timestep=timestep / 1000,
+                            encoder_hidden_states=prompt_embeds,
+                            encoder_hidden_states_mask=prompt_embeds_mask,
+                            img_shapes=img_shapes,
+                            img_mask=image_pad_mask,
+                            attention_kwargs=self.attention_kwargs,
+                            kv_cache=cond_cache,
+                            kv_cache_mode=kv_mode,
+                            return_dict=False,
+                        )[0]
+                finally:
+                    self.transformer._style_ctx = None
                 noise_pred = noise_pred[:, -latents.size(1) :]
 
                 if do_true_cfg:
@@ -814,6 +950,27 @@ class QwenImage21Pipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
                     # some platforms (eg. apple mps) misbehave due to a pytorch bug:
                     # https://github.com/pytorch/pytorch/pull/99272
                     latents = latents.to(latents_dtype)
+
+                if prepared_guides:
+                    progress = i / max(num_inference_steps - 1, 1)
+                    next_sigma = (
+                        float(timesteps[i + 1].detach().float().cpu())
+                        / float(self.scheduler.config.num_train_timesteps)
+                        if i + 1 < len(timesteps) else 0.0
+                    )
+                    for guide in prepared_guides:
+                        weight = guide["strength"]
+                        if guide["start"] <= progress <= guide["end"] and weight > 0:
+                            reference_at_t = (
+                                (1.0 - next_sigma) * guide["clean"]
+                                + next_sigma * guide["noise"]
+                            )
+                            latents = (1.0 - weight) * latents + weight * reference_at_t
+                            if pred_original_sample is not None:
+                                pred_original_sample = (
+                                    (1.0 - weight) * pred_original_sample
+                                    + weight * guide["clean"]
+                                )
 
                 if callback_on_step_end is not None:
                     callback_kwargs = {}

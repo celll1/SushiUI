@@ -120,6 +120,36 @@ class QwenImage21Mixin:
         negative_prompt = params.get("negative_prompt") or None
         cfg_scale = float(params.get("cfg_scale", 1.0) or 1.0)
 
+        def _flag(item, name):
+            if isinstance(item, dict):
+                return bool(item.get(name))
+            return bool(getattr(item, name, False))
+
+        requested_controlnets = params.get("controlnets") or []
+        real_controlnets = [
+            item for item in requested_controlnets
+            if not _flag(item, "is_reference_guide")
+            and not _flag(item, "is_style_transfer")
+        ]
+        if real_controlnets:
+            from api.error_handlers import ValidationError
+            raise ValidationError(
+                "ControlNet is not available for Qwen-Image 2.1",
+                detail=(
+                    "Qwen-Image 2.1 has no compatible ControlNet module. Use its native "
+                    "Reference Images, Reference Guide, or Style Transfer conditioning instead."
+                ),
+            )
+
+        reference_guides = [
+            item for item in (params.get("controlnet_images") or [])
+            if item.get("is_reference_guide")
+        ]
+        style_transfers = [
+            item for item in (params.get("style_transfers") or [])
+            if item.get("image") is not None
+        ]
+
         def callback(_pipe, index, timestep, callback_kwargs):
             if self.cancel_requested:
                 _pipe._interrupt = True
@@ -141,6 +171,10 @@ class QwenImage21Mixin:
                 generator=generator, callback_on_step_end=callback,
                 callback_on_step_end_tensor_inputs=["latents", "pred_original_sample"],
                 use_kv_cache=bool(params.get("qwen_image_21_kv_cache", True)),
+                reference_guides=reference_guides,
+                style_transfers=style_transfers,
+                style_combine_mode=str(params.get("style_combine_mode", "stack") or "stack"),
+                before_step_callback=self._qwen21_lora_session.set_step,
             ).images[0]
         finally:
             self._unload_lora_qwen21()

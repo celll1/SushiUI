@@ -55,8 +55,8 @@ SDXL U-Net. In particular:
   after merge/reset, resume, and generation round-trip tests exist for this
   architecture.
 * FBCache, Spectrum, TREAD, BlockSkip, NAG, regional prompting, and style-KV
-  injection are measured or refused independently. A generic UI control is not
-  evidence that the architecture consumes it.
+  injection are measured independently. A generic UI control is not evidence
+  that the architecture consumes it.
 
 ## 2. Upstream facts that constrain the design
 
@@ -452,11 +452,22 @@ image is processed twice: as Qwen3-VL vision context and as a clean VAE latent
 prefix. The target begins as noise; `denoising_strength` does not redefine this
 native path.
 
-The first release exposes native edit only: condition image plus prompt, with
-the target starting from noise. The shared `denoising_strength` field does not
-change this algorithm. SDEdit is not advertised for this architecture because
-no separate, tested flow path exists. A reference list has a hard limit of ten
-including the primary image, and preserves user order.
+The native edit route uses a condition image plus prompt, with the target
+starting from noise. The shared `denoising_strength` field does not change this
+algorithm. SDEdit is not advertised for this architecture because no separate,
+tested flow path exists. A reference list has a hard limit of ten including the
+primary image, and preserves user order.
+
+Reference Guide is separate from native edit conditioning. Its image is encoded
+into a target-sized normalized 64-channel latent, re-noised with one fixed noise
+sample at each flow sigma, and blended into the post-step target over its
+requested 0-1000 step range. Style Transfer is likewise separate: a target-sized
+style latent is re-noised at each active step, a reference forward captures
+post-RMSNorm/post-RoPE target-image Q/K/V, and the conditional forward injects
+those keys and values into the target rows. Style transfer disables condition-
+prefix KV caching for that generation because injected keys extend the full
+joint attention layout; ordinary and Reference Guide runs retain the cache.
+Multi-reference `stack` and `common_concept` use the shared style combiner.
 
 ### 8.4 Inpaint and outpaint
 
@@ -483,9 +494,10 @@ gallery feature in this release.
 ### 8.6 CFG and advanced guidance
 
 First release supports true CFG only. Dynamic CFG and CFG rescale may open
-after tests prove the scheduler-space math. NAG, NegPip, regional prompting,
-and reference-style KV injection remain refused: block-causal attention and
-prefix caching make the SDXL injection sites non-equivalent.
+after tests prove the scheduler-space math. NAG, NegPip, and regional prompting
+remain refused. Reference-style injection uses Qwen's own segmented block-
+causal attention path described in section 8.3 rather than an SDXL injection
+site.
 
 ### 8.7 Attention backends
 
@@ -692,7 +704,9 @@ training panels.
 | inpaint/outpaint | supported | native edit plus protected-pixel composite |
 | RGBA | supported | native four-channel VAE |
 | true CFG | supported | negative prompt + scale > 1 |
-| NAG/NegPip/regional/style-KV | refused | no exact block-causal implementation |
+| Reference Guide | supported | normalized 64-channel flow-latent blend |
+| style-KV | supported | exact segmented-SDPA block-causal path; condition KV cache disabled while active |
+| NAG/NegPip/regional | refused | no exact block-causal implementation |
 | ControlNet generation/training | refused | no compatible released architecture |
 | LoRA | supported | DiT; BF16/ConvRot base; real ConvRot backward passed |
 | full parameter | supported | complete DiT; BF16 only; companion-based resume |
@@ -715,6 +729,10 @@ Current first-release status (2026-09-21):
 * P3/P4 implemented: native edit consumes the primary image plus ordered
   `ref_images` (ten total maximum); inpaint/outpaint use protected-pixel
   compositing. Multi-reference quality and seam metrics remain unmeasured.
+* Generation adapters and reference controls are wired independently: LoRA
+  strength and 0-1000 step ranges drive the shared adapter session; Reference
+  Guide blends the target latent; Style Transfer captures and injects
+  post-RoPE Q/K/V. A real ControlNet selection is refused before denoising.
 * P5 complete at backward-smoke level: the real ConvRot DiT exposed 128
   attention targets; rank-4 LoRA produced loss 0.0158 and 256 finite gradient
   tensors at 256x256. A synthetic save/classify/rebuild numerical round trip

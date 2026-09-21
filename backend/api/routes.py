@@ -842,6 +842,28 @@ def _reject_if_qwen21_too_many_ref_images(ref_image_list: list, *, primary_image
         )
 
 
+def _reject_if_qwen21_controlnet(controlnets_json: str) -> None:
+    """Refuse an actual ControlNet before a generation run/GPU slot opens."""
+    if not getattr(pipeline_manager, "is_qwen_image_21_model", False) or not controlnets_json:
+        return
+    try:
+        entries = json.loads(controlnets_json)
+    except (TypeError, ValueError):
+        return  # The route's normal JSON handling reports malformed input.
+    if any(
+        not entry.get("is_reference_guide")
+        and not entry.get("is_style_transfer")
+        for entry in entries if isinstance(entry, dict)
+    ):
+        raise CustomValidationError(
+            "ControlNet is not available for Qwen-Image 2.1",
+            detail=(
+                "Qwen-Image 2.1 has no compatible ControlNet module. Use its native "
+                "Reference Images, Reference Guide, or Style Transfer conditioning instead."
+            ),
+        )
+
+
 @router.post("/studio/render-jobs", status_code=202, tags=["studio"])
 async def create_studio_render_job(
     manifest: str = Form(..., description="Frame-based Studio render manifest JSON"),
@@ -1295,6 +1317,7 @@ async def generate_txt2img(
     _reject_if_sensenova_unsupported("/generate/txt2img")
     _reject_if_sensenova_too_many_ref_images(ref_images)
     _reject_if_qwen21_too_many_ref_images(ref_images)
+    _reject_if_qwen21_controlnet(controlnets)
     _reject_if_sensenova_ref_placeholders_exceed_refs(prompt, ref_images)
     lora_configs = []
     from api.generation_status import (start_generation, complete_generation, fail_generation,
@@ -2290,6 +2313,7 @@ async def generate_img2img(
     _reject_if_sensenova_unsupported("/generate/img2img")
     _reject_if_sensenova_too_many_ref_images(ref_images)
     _reject_if_qwen21_too_many_ref_images(ref_images, primary_images=1)
+    _reject_if_qwen21_controlnet(controlnets)
     _reject_if_sensenova_ref_placeholders_exceed_refs(prompt, ref_images)
     lora_configs = []
     from api.generation_status import (start_generation, complete_generation, fail_generation,
@@ -7744,6 +7768,7 @@ async def generate_inpaint(
     _reject_if_sensenova_unsupported("/generate/inpaint")
     _reject_if_sensenova_too_many_ref_images(ref_images)
     _reject_if_qwen21_too_many_ref_images(ref_images, primary_images=1)
+    _reject_if_qwen21_controlnet(controlnets)
     _reject_if_sensenova_ref_placeholders_exceed_refs(prompt, ref_images)
     lora_configs = []
     from api.generation_status import (start_generation, complete_generation, fail_generation,
@@ -8391,6 +8416,7 @@ async def generate_outpaint(
     _reject_if_audio_model("/generate/outpaint")
     _reject_if_sensenova_unsupported("/generate/outpaint")
     _reject_if_qwen21_too_many_ref_images(ref_images, primary_images=1)
+    _reject_if_qwen21_controlnet(controlnets)
     lora_configs = []
     from api.generation_status import (start_generation, complete_generation, fail_generation,
                                        get_warnings, error_context, attach_error_context)

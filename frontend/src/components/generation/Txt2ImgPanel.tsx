@@ -716,7 +716,9 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
     ]
   });
   const [isGeneratingTIPO, setIsGeneratingTIPO] = useState(false);
-  const [previewViewerOpen, setPreviewViewerOpen] = useState(false);
+  // Freeze the URL at open time. The live-preview -> final-image transition
+  // can replace/clear generatedImage between the two clicks of a double-click.
+  const [previewViewerImage, setPreviewViewerImage] = useState<string | null>(null);
   const [showAdvancedCFG, setShowAdvancedCFG] = useState(false);
 
   // Native/reference-conditioning image inputs.
@@ -4874,8 +4876,8 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
             <div
               className="w-full aspect-square max-h-[500px] lg:max-h-none bg-gray-800 rounded-lg flex items-center justify-center cursor-pointer"
               onDoubleClick={() => {
-                if (generatedImage) {
-                  setPreviewViewerOpen(true);
+                if (!isGenerating && generatedImage) {
+                  setPreviewViewerImage(generatedImage);
                 }
               }}
             >
@@ -5132,10 +5134,10 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       </div>
 
       {/* Preview Image Viewer */}
-      {previewViewerOpen && generatedImage && (
+      {previewViewerImage && (
         <ImageViewer
-          imageUrl={generatedImage}
-          onClose={() => setPreviewViewerOpen(false)}
+          imageUrl={previewViewerImage}
+          onClose={() => setPreviewViewerImage(null)}
           postEdit={postEdit}
           onPostEditChange={setPostEdit}
         />

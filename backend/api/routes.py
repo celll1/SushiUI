@@ -9201,6 +9201,42 @@ def _expand_minimax_h3_tree(tree_path: str, name_prefix: str, source_dir: str) -
     return result
 
 
+def _expand_qwen_image_21_tree(tree_path: str, name_prefix: str, source_dir: str) -> list:
+    """List prepared Original/ConvRot artifacts under a Qwen 2.1 container."""
+    if not os.path.isdir(tree_path):
+        return []
+    result = []
+    for child_name in sorted(os.listdir(tree_path)):
+        child_path = os.path.join(tree_path, child_name)
+        manifest_path = os.path.join(child_path, "manifest.json")
+        if not os.path.isfile(manifest_path):
+            continue
+        try:
+            with open(manifest_path, encoding="utf-8") as handle:
+                manifest = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if manifest.get("model_type") != "qwen_image_21":
+            continue
+        variant = str(manifest.get("variant") or child_name)
+        total_bytes = 0
+        for component in (manifest.get("components") or {}).values():
+            component_path = os.path.join(child_path, str(component))
+            if os.path.isfile(component_path) and component_path.endswith(".safetensors"):
+                total_bytes += os.path.getsize(component_path)
+        result.append({
+            "name": f"{name_prefix}/{child_name}",
+            "path": child_path,
+            "type": "diffusers",
+            "source_type": "diffusers",
+            "size_gb": round(total_bytes / (1024 ** 3), 2),
+            "source_dir": source_dir,
+            "architecture": "qwen_image_21",
+            "variant": variant,
+        })
+    return result
+
+
 @router.get("/models")
 def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool = False):
     """
@@ -9258,6 +9294,12 @@ def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool = False
         if _h3_dits:
             models.extend(_h3_dits)
             continue
+        _qwen21_variants = _expand_qwen_image_21_tree(
+            models_dir, os.path.basename(os.path.normpath(models_dir)), models_dir
+        )
+        if _qwen21_variants:
+            models.extend(_qwen21_variants)
+            continue
 
         for item in os.listdir(models_dir):
             item_path = os.path.join(models_dir, item)
@@ -9270,6 +9312,15 @@ def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool = False
             architecture = ModelLoader.detect_model_type(item_path)
 
             if os.path.isdir(item_path):
+                # Qwen-Image 2.1 keeps Original and INT8 ConvRot as sibling
+                # manifest directories under one model-family container.
+                qwen21_variants = _expand_qwen_image_21_tree(
+                    item_path, item, models_dir
+                )
+                if qwen21_variants:
+                    models.extend(qwen21_variants)
+                    continue
+
                 # MiniT2I: a repo root / container holds multiple variant dirs
                 # (B/16, L/16) which are separate models — expand each into its own
                 # selectable entry instead of listing the container once.

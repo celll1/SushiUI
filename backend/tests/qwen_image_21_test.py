@@ -24,6 +24,7 @@ from core.training.adapters.qwen_image_21_adapter import (
     QwenImage21FullParameterAdapter,
     QwenImage21LoRAAdapter,
 )
+from api import routes
 from api.schema_routes import get_arch_capabilities, get_generation_defaults
 
 
@@ -47,6 +48,70 @@ def test_manifest_detection(tmp_path):
     assert ModelLoader.detect_model_type(str(tmp_path)) == MODEL_TYPE
     parsed = load_manifest(str(tmp_path))
     assert parsed.transformer.endswith("dit.safetensors")
+
+
+def test_model_selector_expands_prepared_variants(tmp_path):
+    root = tmp_path / "qwen21"
+    for variant in ("original", "int8_convrot"):
+        variant_dir = root / variant
+        variant_dir.mkdir(parents=True)
+        (variant_dir / "dit.safetensors").write_bytes(b"dit")
+        (variant_dir / "te.safetensors").write_bytes(b"te")
+        (variant_dir / "vae.safetensors").write_bytes(b"vae")
+        (variant_dir / "manifest.json").write_text(json.dumps({
+            "model_type": MODEL_TYPE,
+            "format_version": FORMAT_VERSION,
+            "variant": variant,
+            "components": {
+                "transformer": "dit.safetensors",
+                "text_encoder": "te.safetensors",
+                "vae": "vae.safetensors",
+                "processor": "processor",
+                "text_encoder_config": "te.json",
+            },
+        }), encoding="utf-8")
+    entries = routes._expand_qwen_image_21_tree(str(root), "qwen21", str(tmp_path))
+    assert [(entry["name"], entry["architecture"], entry["variant"]) for entry in entries] == [
+        ("qwen21/int8_convrot", MODEL_TYPE, "int8_convrot"),
+        ("qwen21/original", MODEL_TYPE, "original"),
+    ]
+
+
+class _ModelDirectoryDB:
+    def __init__(self, model_dirs):
+        self._record = SimpleNamespace(model_dirs=model_dirs)
+
+    def query(self, *_args, **_kwargs):
+        return SimpleNamespace(first=lambda: self._record)
+
+
+def _scan_models(model_dirs, monkeypatch, tmp_path):
+    monkeypatch.setattr(routes.settings, "models_dir", str(tmp_path / "empty_default"))
+    monkeypatch.setattr(routes, "_models_cache", None)
+    monkeypatch.setattr(routes, "_models_cache_timestamp", None)
+    return routes.get_models(
+        db=_ModelDirectoryDB(model_dirs), force_rescan=True
+    )["models"]
+
+
+def test_model_selector_scans_qwen_parent_and_family_roots(tmp_path, monkeypatch):
+    family_root = tmp_path / "models" / "qwen21"
+    for variant in ("original", "int8_convrot"):
+        variant_dir = family_root / variant
+        variant_dir.mkdir(parents=True)
+        (variant_dir / "dit.safetensors").write_bytes(b"dit")
+        (variant_dir / "manifest.json").write_text(json.dumps({
+            "model_type": MODEL_TYPE,
+            "format_version": FORMAT_VERSION,
+            "variant": variant,
+            "components": {"transformer": "dit.safetensors"},
+        }), encoding="utf-8")
+
+    for configured_dir in (family_root.parent, family_root):
+        entries = _scan_models([str(configured_dir)], monkeypatch, tmp_path)
+        qwen_entries = [entry for entry in entries if entry.get("architecture") == MODEL_TYPE]
+        assert {entry["variant"] for entry in qwen_entries} == {"original", "int8_convrot"}
+        assert all(entry["path"] != str(family_root) for entry in qwen_entries)
 
 
 def test_tiny_transformer_flow_training_backward():

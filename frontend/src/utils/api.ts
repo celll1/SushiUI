@@ -264,6 +264,9 @@ export interface ModelInfo {
   // MiniMax-H3: "fl2va" | "ref2va" for a single checkpoint, "hybrid" for a
   // merged pair. Only a hybrid carries the three provenance fields after it.
   variant?: string | null;
+  // Qwen-Image 2.1 component formats ("bf16" or "int8_convrot").
+  transformer_variant?: string | null;
+  text_encoder_variant?: string | null;
   base_variant?: string | null;
   overlay_variant?: string | null;
   hybrid?: MiniMaxH3HybridProvenance | null;

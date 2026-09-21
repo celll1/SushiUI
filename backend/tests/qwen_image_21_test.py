@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 
 import torch
+import pytest
+from PIL import Image
 from types import SimpleNamespace
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -219,7 +221,20 @@ def test_api_defaults_and_capabilities_expose_qwen_controls():
     capabilities = asyncio.run(get_arch_capabilities())
     unsupported = capabilities["unsupported"][MODEL_TYPE]
     assert "controlnets" in unsupported
+    assert "style_transfer" not in unsupported
     assert "qwen_image_21_kv_cache" not in unsupported
+
+    from api.arch_capabilities import check_arch_capabilities
+    assert check_arch_capabilities({
+        "controlnets": [{"is_reference_guide": True}]
+    }, MODEL_TYPE) == []
+    assert check_arch_capabilities({
+        "controlnets": [{"is_style_transfer": True}]
+    }, MODEL_TYPE) == []
+    warnings = check_arch_capabilities({
+        "controlnets": [{"model_path": "controlnet.safetensors"}]
+    }, MODEL_TYPE)
+    assert any("ControlNet" in warning["message"] for warning in warnings)
 
 
 def test_generation_callback_uses_shared_progress_contract():
@@ -234,6 +249,7 @@ def test_generation_callback_uses_shared_progress_contract():
         def __call__(self, **kwargs):
             assert kwargs["callback_on_step_end_tensor_inputs"] == [
                 "latents", "pred_original_sample"]
+            assert callable(kwargs["before_step_callback"])
             callback_kwargs = {
                 "latents": latents, "pred_original_sample": pred_x0}
             returned = kwargs["callback_on_step_end"](
@@ -272,6 +288,99 @@ def test_generation_callback_uses_shared_progress_contract():
     assert progress_calls[0][4] is pred_x0
     assert step_calls[0][0] == 0
     assert step_calls[0][2] is latents
+
+
+def test_qwen_reference_controls_reach_pipeline_and_real_controlnet_refuses():
+    reference_image = Image.new("RGB", (32, 32), "red")
+    captured = {}
+
+    class _Pipe:
+        def __call__(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(images=[reference_image])
+
+    class _Session:
+        def set_step(self, _step, _total):
+            pass
+
+    class _Harness(QwenImage21Mixin):
+        cancel_requested = False
+        _qwen21_lora_session_instance = _Session()
+
+        def _qwen_image_21_pipe(self):
+            return _Pipe()
+
+        def _load_lora_qwen21(self, _configs):
+            return 0
+
+        def _unload_lora_qwen21(self):
+            return 0
+
+    reference_guide = {
+        "image": reference_image, "strength": 0.4,
+        "start_step": 100, "end_step": 800,
+        "is_reference_guide": True,
+    }
+    style = {"image": reference_image, "ref_k_strength": 0.7}
+    params = {
+        "prompt": "test", "steps": 2, "seed": 8,
+        "controlnets": [{"is_reference_guide": True}, {"is_style_transfer": True}],
+        "controlnet_images": [reference_guide],
+        "style_transfers": [style],
+        "style_combine_mode": "common_concept",
+    }
+    _Harness()._qwen_image_21_run(params)
+    assert captured["reference_guides"] == [reference_guide]
+    assert captured["style_transfers"] == [style]
+    assert captured["style_combine_mode"] == "common_concept"
+
+    with pytest.raises(Exception, match="ControlNet is not available"):
+        _Harness()._qwen_image_21_run({
+            "prompt": "test", "steps": 1, "seed": 9,
+            "controlnets": [{"model_path": "sdxl-controlnet.safetensors"}],
+        })
+
+
+def test_qwen_controlnet_route_preflight_distinguishes_native_entries(monkeypatch):
+    monkeypatch.setattr(routes.pipeline_manager, "is_qwen_image_21_model", True)
+    routes._reject_if_qwen21_controlnet(json.dumps([
+        {"is_reference_guide": True}, {"is_style_transfer": True},
+    ]))
+    with pytest.raises(Exception, match="ControlNet is not available"):
+        routes._reject_if_qwen21_controlnet(json.dumps([
+            {"model_path": "sdxl-controlnet.safetensors"},
+        ]))
+
+
+def test_qwen_segmented_attention_captures_and_injects_style_kv():
+    from core.inference.reference_style import StyleContext, StyleTransferConfig
+    from core.models.qwen_image_21.vendor.transformer import QwenImage21Attention
+
+    torch.manual_seed(123)
+    attention = QwenImage21Attention(dim=16, heads=2, dim_head=8)
+    attention.block_idx = 0
+    hidden = torch.randn(1, 6, 16)
+    segments = [(0, 2, True)]
+    config = StyleTransferConfig(
+        ref_k_strength=0.7, adain_strength=0.0,
+        axes_dims=(2, 2, 4), block_range=(0, 0),
+    )
+
+    capture = StyleContext(mode="capture", config=config)
+    capture.img_start, capture.img_end = 2, 6
+    attention._style_ctx = capture
+    attention(hidden, segments=segments)
+    assert capture.store[0][1].shape[1] == 4
+
+    attention._style_ctx = None
+    baseline = attention(hidden, segments=segments)
+    inject = StyleContext(mode="inject", config=config, store=capture.store)
+    inject.img_start, inject.img_end = 2, 6
+    attention._style_ctx = inject
+    styled = attention(hidden, segments=segments)
+    attention._style_ctx = None
+    assert styled.shape == baseline.shape
+    assert not torch.equal(styled, baseline)
 
 
 def test_qwen_live_preview_routes_to_64_channel_projection():

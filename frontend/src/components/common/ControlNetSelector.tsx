@@ -138,7 +138,8 @@ function ControlNetLayerWeights({ controlnetPath, weights, onChange, disabled, l
 }
 
 export default function ControlNetSelector({ value, onChange, disabled, storageKey, inputImagePreview, hideImageInput, imageInputOverride }: ControlNetSelectorPropsWithStorage) {
-  const { isBackendReady, modelLoaded } = useStartup();
+  const { isBackendReady, modelLoaded, modelInfo } = useStartup();
+  const qwenImage21NativeConditioning = modelInfo?.type === "qwen_image_21";
   const [availableControlNets, setAvailableControlNets] = useState<Array<{ path: string; name: string }>>([]);
   const [editingImageIndex, setEditingImageIndex] = useState<number | null>(null);
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
@@ -1142,16 +1143,25 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
           </div>
         )}
 
+        {qwenImage21NativeConditioning && (
+          <p className="text-xs text-amber-300">
+            Qwen-Image 2.1 has no compatible ControlNet module. Reference Guide and
+            Style Transfer use its 64-channel flow and block-causal attention paths.
+          </p>
+        )}
+
         {/* Add ControlNet / Reference Guide Buttons */}
         <div className="flex gap-2">
-          <Button
-            onClick={addControlNet}
-            disabled={disabled || availableControlNets.length === 0}
-            variant="secondary"
-            className="flex-1"
-          >
-            + Add ControlNet
-          </Button>
+          {!qwenImage21NativeConditioning && (
+            <Button
+              onClick={addControlNet}
+              disabled={disabled || availableControlNets.length === 0}
+              variant="secondary"
+              className="flex-1"
+            >
+              + Add ControlNet
+            </Button>
+          )}
           <Button
             onClick={addReferenceGuide}
             disabled={disabled}

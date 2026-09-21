@@ -243,6 +243,20 @@ ARCHES: Dict[str, _Arch] = {
             "lokr": (_lokr("lora_unet_blocks__0__attn__to_q"), 1),
         },
     ),
+    "qwen_image_21": _Arch(
+        "core.pipeline_backends.qwen_image_21", "QwenImage21Mixin",
+        "_qwen21_lora_session", ("transformer",),
+        {
+            "sd-scripts": (_canonical(
+                "lora_unet_transformer_blocks__0__attn__to_q"), False, 1),
+        },
+        truncated=({**_canonical("lora_unet_transformer_blocks__0__attn__to_q"),
+                    **_half("lora_unet_transformer_blocks__0__attn__to_k")}, 2),
+        variants={
+            "loha": (_loha("lora_unet_transformer_blocks__0__attn__to_q"), 1),
+            "lokr": (_lokr("lora_unet_transformer_blocks__0__attn__to_q"), 1),
+        },
+    ),
     "sensenova": _Arch(
         "core.pipeline_backends.sensenova", "SenseNovaMixin", "_sensenova_lora_session",
         ("transformer",),

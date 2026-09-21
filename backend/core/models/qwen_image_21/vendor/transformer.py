@@ -362,6 +362,50 @@ def _qwenimage21_prepare_qkv(
             key = torch.cat([cached_k, key], dim=1)
             value = torch.cat([cached_v, value], dim=1)
 
+    # Training-free reference-style transfer. Qwen-Image 2.1 runs this only
+    # without prefix KV caching, so query/key/value share the full joint layout
+    # and the target-image slice has the same indices in capture and injection.
+    ctx = getattr(attn, "_style_ctx", None)
+    block_idx = getattr(attn, "block_idx", None)
+    if ctx is not None and block_idx is not None and ctx.active_for_block(block_idx):
+        img_start, img_end = ctx.img_start, ctx.img_end
+        if img_start is not None and img_end is not None:
+            if ctx.mode == "capture":
+                ctx.store[block_idx] = (
+                    query[:, img_start:img_end].detach().clone(),
+                    key[:, img_start:img_end].detach().clone(),
+                    value[:, img_start:img_end].detach().clone(),
+                )
+            elif ctx.refs is not None:
+                from core.inference.reference_style import inject_kv_multi
+
+                block_refs = ctx.collect_block_refs(
+                    block_idx, value[:, img_start:img_end], key.device, key.dtype)
+                if block_refs:
+                    key, value, query = inject_kv_multi(
+                        key, value, query, img_start, img_end,
+                        block_refs, ctx.combine_mode,
+                    )
+            else:
+                ref_qkv = ctx.store.get(block_idx)
+                if ref_qkv is not None:
+                    from core.inference.reference_style import inject_kv, make_ref_value
+
+                    ref_q, ref_k, ref_v = ref_qkv
+                    cfg = ctx.config
+                    if cfg.ref_k_strength != 0.0 or cfg.adain_strength > 0.0:
+                        freq = cfg.get_freq_scale_vector(
+                            key.shape[-1], ctx.progress, key.device, key.dtype)
+                        ref_v = make_ref_value(
+                            value[:, img_start:img_end], ref_v, cfg.value_mode,
+                            cfg.value_adain_strength, cfg.ref_value_mix,
+                        )
+                        key, value, query = inject_kv(
+                            key, value, ref_k, ref_v, img_start, img_end,
+                            cfg.ref_k_strength, freq, cfg.adain_strength,
+                            q=query, ref_q=ref_q,
+                        )
+
     seq_len_q = query.shape[1]
     return query, key, value, seq_len_q
 
@@ -404,6 +448,13 @@ class QwenImage21FlexAttnProcessor:
         query, key, value, seq_len_q = _qwenimage21_prepare_qkv(
             attn, hidden_states, rotary_emb, layer_cache, kv_cache_mode, cache_write_slice
         )
+
+        ctx = getattr(attn, "_style_ctx", None)
+        if ctx is not None and ctx.mode == "inject":
+            raise ValueError(
+                "Qwen-Image 2.1 style transfer requires the exact segmented SDPA processor; "
+                "FlexAttention cannot extend its precompiled block mask with reference keys."
+            )
 
         seq_len_kv = key.shape[1]
         if isinstance(attention_mask, BlockMask):
@@ -487,6 +538,15 @@ class QwenImage21AttnProcessor:
             attn, hidden_states, rotary_emb, layer_cache, kv_cache_mode, cache_write_slice
         )
 
+        if key_valid is not None and key.shape[1] > key_valid.shape[-1]:
+            key_valid = F.pad(key_valid, (0, key.shape[1] - key_valid.shape[-1]), value=True)
+        if (
+            isinstance(attention_mask, torch.Tensor)
+            and key.shape[1] > attention_mask.shape[-1]
+        ):
+            attention_mask = F.pad(
+                attention_mask, (0, key.shape[1] - attention_mask.shape[-1]), value=True)
+
         if segments is None:
             # decode: full attention over [cached prefix, target]
             hidden_states = dispatch_attention_fn(
@@ -559,6 +619,8 @@ class QwenImage21Attention(torch.nn.Module, AttentionModuleMixin):
     # is the faster path once compiled, and the docs show how to opt into it.
     _default_processor_cls = QwenImage21AttnProcessor
     _available_processors = [QwenImage21AttnProcessor, QwenImage21FlexAttnProcessor]
+    _style_ctx = None
+    block_idx = None
 
     def __init__(self, dim: int, heads: int, dim_head: int, eps: float = 1e-6, processor: Any | None = None):
         super().__init__()
@@ -949,6 +1011,20 @@ class QwenImage21Transformer2DModel(
             joint_key_valid[:, text_positions] = encoder_hidden_states_mask.bool()[:, vlm_text_positions]
 
         prefix_len = int((~target_token_mask).sum())
+
+        style_ctx = getattr(self, "_style_ctx", None)
+        if style_ctx is not None:
+            style_ctx.img_start = prefix_len
+            style_ctx.img_end = joint_hidden_states.shape[1]
+            style_ctx.config.axes_dims = tuple(self.config.axes_dims_rope)
+            style_ctx.config.resolve_default_block_range(len(self.transformer_blocks))
+            if style_ctx.refs:
+                for _store, ref_config in style_ctx.refs:
+                    ref_config.axes_dims = tuple(self.config.axes_dims_rope)
+                    ref_config.resolve_default_block_range(len(self.transformer_blocks))
+        for block_index, block in enumerate(self.transformer_blocks):
+            block.attn.block_idx = block_index
+            block.attn._style_ctx = style_ctx
 
         if kv_cache_mode == "cached":
             # decode: only the target image's queries are recomputed. The block-causal mask degenerates to full

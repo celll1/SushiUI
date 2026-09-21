@@ -607,7 +607,6 @@ for _feature, _reason in {
     "use_torch_compile": "the Qwen-Image 2.1 pipeline has no compile lifecycle integration",
     "cfg_schedule": "Qwen-Image 2.1 currently applies a constant true-CFG scale",
     "advanced_cfg": "dynamic thresholding and CFG rescale are not wired into the Qwen-Image 2.1 flow loop",
-    "style_transfer": "Qwen-Image 2.1 uses native image conditioning rather than SushiUI style-KV injection",
     "unet_quantization": "Qwen-Image 2.1 quantization is selected by the prepared Original or INT8 ConvRot artifact",
     "quantized_gemm": "Qwen-Image 2.1 ConvRot checkpoints use their fixed comfy-kitchen execution path",
     "text_encoder_quantization": "Qwen-Image 2.1 text-encoder precision is selected by the prepared artifact",
@@ -2178,12 +2177,19 @@ def _is_user_set(params: Dict[str, Any], key: str,
     val = params.get(key, default)
     if isinstance(val, (list, tuple)):
         if key == "controlnets":
-            # is_style_transfer entries ride the same controlnets[] array and
-            # may be dicts or pydantic models depending on the call site.
+            # Reference Guide and Style Transfer entries ride the same array
+            # but are not ControlNet modules. They have independent execution
+            # paths and must not arm an architecture's ControlNet refusal.
             def _is_real_controlnet(entry: Any) -> bool:
                 if isinstance(entry, dict):
-                    return not entry.get("is_style_transfer")
-                return not getattr(entry, "is_style_transfer", False)
+                    return not (
+                        entry.get("is_style_transfer")
+                        or entry.get("is_reference_guide")
+                    )
+                return not (
+                    getattr(entry, "is_style_transfer", False)
+                    or getattr(entry, "is_reference_guide", False)
+                )
             return any(_is_real_controlnet(e) for e in val)
         # Non-empty list (e.g. loras) counts as user-set.
         return bool(val)

@@ -362,6 +362,50 @@ def vae_decode(trainer, latents, *, latent_h: int, latent_w: int):
     return trainer.vae.decode(latents, return_dict=False)[0][:, :, 0]
 
 
+def _save_debug_latents(
+    trainer, path, *, latents, noisy, target, prediction, timesteps,
+    latent_h, latent_w, loss, captions=None, reference_image_paths=None,
+    partition_count=1,
+):
+    if path is None:
+        return
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        timestep = float(timesteps[0].item())
+
+        def image_grid(packed):
+            first = packed[0:1].detach().to(device="cpu", dtype=torch.float32)
+            return first.transpose(1, 2).reshape(1, first.shape[-1], latent_h, latent_w)
+
+        clean_grid = image_grid(latents)
+        noisy_grid = image_grid(noisy)
+        target_grid = image_grid(target)
+        prediction_grid = image_grid(prediction)
+        data = {
+            "latents": clean_grid,
+            "noisy_latents": noisy_grid,
+            "actual_velocity": target_grid,
+            "predicted_velocity": prediction_grid,
+            "predicted_latent": noisy_grid - timestep * prediction_grid,
+            "timestep": timestep,
+            "loss": float(loss),
+            "batch_size": int(latents.shape[0]),
+            "scheduler_type": "FlowMatching",
+            "model_type": "qwen_image_21",
+            "partition_count": int(partition_count),
+        }
+        if captions:
+            data["caption"] = captions[0]
+            data["all_captions"] = captions
+        if reference_image_paths:
+            first_ref = next((item for item in reference_image_paths if item is not None), None)
+            if first_ref:
+                data["reference_image_path"] = first_ref
+        torch.save(data, path / f"latents_t{timestep:.4f}.pt")
+    except Exception as exc:
+        print(f"{trainer.log_prefix} [debug_latents] save failed: {exc}")
+
+
 def train_step(
     trainer,
     latents: torch.Tensor,
@@ -370,6 +414,9 @@ def train_step(
     timesteps: Optional[torch.Tensor] = None,
     latent_h: Optional[int] = None,
     latent_w: Optional[int] = None,
+    debug_save_path=None,
+    debug_captions=None,
+    debug_reference_image_paths=None,
     **_kwargs,
 ):
     latents = latents.to(trainer.device, trainer.training_dtype)
@@ -416,6 +463,12 @@ def train_step(
         prediction = forward()
     prediction = prediction[:, -tokens:]
     loss = F.mse_loss(prediction.float(), target.float())
+    _save_debug_latents(
+        trainer, debug_save_path, latents=latents, noisy=noisy, target=target,
+        prediction=prediction, timesteps=timesteps, latent_h=latent_h,
+        latent_w=latent_w, loss=loss.detach(), captions=debug_captions,
+        reference_image_paths=debug_reference_image_paths,
+    )
     return loss, float(loss.detach()), 0.0
 
 
@@ -429,6 +482,9 @@ def train_step_partitioned_backward(
     latent_h: int,
     latent_w: int,
     backward_scale: float,
+    debug_save_path=None,
+    debug_captions=None,
+    debug_reference_image_paths=None,
 ) -> tuple[float, float, float]:
     """Run every loss core sequentially and accumulate one logical gradient."""
     from core.training.mnt import training_noise_like
@@ -451,6 +507,10 @@ def train_step_partitioned_backward(
     target = noise - latents
     noisy_grid = noisy.reshape(batch, int(latent_h), int(latent_w), channels)
     target_grid = target.reshape_as(noisy_grid)
+    debug_prediction_grid = (
+        torch.empty((int(latent_h), int(latent_w), channels), dtype=torch.float32)
+        if debug_save_path is not None else None
+    )
     prefix_mask = torch.zeros(
         encoder_features.shape[:2], dtype=torch.bool, device=trainer.device
     )
@@ -533,6 +593,13 @@ def train_step_partitioned_backward(
             local = region.core_in_input
             core_prediction = flatten_region(prediction, local)
             core_target = flatten_region(target_tile_grid, local)
+            if debug_prediction_grid is not None:
+                core = region.core
+                debug_prediction_grid[core.top:core.bottom, core.left:core.right] = (
+                    core_prediction[0].detach().float().reshape(
+                        core.height, core.width, channels
+                    ).cpu()
+                )
             weighted_loss = (
                 region.core.tokens / plan.full_tokens
             ) * F.mse_loss(core_prediction.float(), core_target.float())
@@ -560,6 +627,15 @@ def train_step_partitioned_backward(
             trainer.transformer._training_gradient_checkpointing_blocks = original_checkpoint_blocks
 
     logical_loss = float(logical_loss_tensor.item())
+    if debug_prediction_grid is not None:
+        _save_debug_latents(
+            trainer, debug_save_path, latents=latents, noisy=noisy, target=target,
+            prediction=debug_prediction_grid.reshape(1, tokens, channels),
+            timesteps=timesteps, latent_h=int(latent_h), latent_w=int(latent_w),
+            loss=logical_loss, captions=debug_captions,
+            reference_image_paths=debug_reference_image_paths,
+            partition_count=len(plan.regions),
+        )
     wall_ms = (time.perf_counter() - wall_start) * 1000.0
     trainer.log_extra_metric("qwen_partition_count", float(len(plan.regions)))
     trainer.log_extra_metric("qwen_partition_largest_tokens", float(plan.largest_input_tokens))

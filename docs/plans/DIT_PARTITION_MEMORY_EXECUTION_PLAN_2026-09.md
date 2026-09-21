@@ -116,17 +116,27 @@ the user to turn it off.
 
 When `false`:
 
-* a predicted `escalate` decision executes the original batch with activation
-  offload rather than pre-emptively splitting it;
-* a real CUDA OOM may retry the **same batch** once with the strongest
-  configured activation-offload policy;
+* a predicted `escalate` decision reuses the existing fused-backward ladder:
+  execute the original batch with activation offload and lower the saved-tensor
+  threshold to `max(256 KiB, configured_threshold / 16)` rather than
+  pre-emptively splitting it;
+* a real CUDA OOM may advance the **same batch** by one further threshold rung,
+  dividing the active threshold by 16 down to the existing 64 KiB floor;
 * the retry must not switch to a smaller micro-batch; and
-* if that same-batch retry fails, the run fails loudly rather than silently
-  changing execution batch size.
+* if the most aggressive same-batch rung fails, the strict no-reduction mode
+  fails loudly rather than silently changing execution batch size.
 
 This single control covers both prediction-driven and OOM-recovery splitting.
 Otherwise a user could disable false-positive proactive splitting yet still
 receive a hidden batch change through the reactive path.
+
+This is a generalization of the fused-backward threshold ladder, not a second
+offload-retry implementation. There is one reactive retry in a forward/backward
+call, but the initial proactive execution may already be the lowered 256 KiB
+rung; the reactive retry can therefore reach 64 KiB. An identical retry at the
+64 KiB floor is not attempted. The new strict mode differs from the existing
+legacy fused terminal policy only at exhaustion: strict mode raises, while the
+legacy path may mark the bucket unfittable and skip it.
 
 The following decision table is authoritative:
 
@@ -134,10 +144,12 @@ The following decision table is authoritative:
 |---|---:|---|
 | `fast` | either | Original batch, no offload |
 | `offload` | either | Original batch, activation offload |
-| `escalate` | yes | Largest predicted-safe micro-batch, accumulated to one logical batch |
-| `escalate` | no | Original batch, activation offload; no proactive split |
-| Actual OOM | yes | Existing OOM retry may micro-split |
-| Actual OOM | no | One same-batch strongest-offload retry, then fail |
+| `escalate`, non-fused | yes | Largest predicted-safe micro-batch, accumulated to one logical batch |
+| `escalate`, non-fused | no | Original batch, lowered-threshold activation offload; no proactive split |
+| `escalate`, fused backward | either | Original batch, lowered-threshold activation offload; splitting is always forbidden because hooks can apply updates during each backward |
+| Actual OOM, non-fused | yes | Existing OOM retry may micro-split |
+| Actual OOM, non-fused | no | Advance the same-batch threshold ladder once, then fail at its floor |
+| Actual OOM, fused backward | either | Never micro-split; use the same offload ladder, then the configured terminal policy |
 
 At batch 1 the option cannot reduce the batch in either mode. Diagnostics
 still need to distinguish “no reduction permitted” from “no smaller batch
@@ -306,6 +318,8 @@ bucket, adapter rank, partition plan, checkpoint count, and warmed iterations.
 Record:
 
 * persistent base/cache allocation;
+* ring block count, bytes per populated block, outside-block bytes, and the
+  theoretical full-cache bytes avoided by that ring size;
 * activation peak above that persistent floor;
 * absolute peak allocated and reserved;
 * dequant, wait, forward, backward, and logical-step time;
@@ -389,7 +403,7 @@ candidates, not compatibility claims:
 
 | Architecture group | Initial assessment | Required audit |
 |---|---|---|
-| Flux2 | Strong candidate | Image-token order, global position IDs, condition-prefix direction, prediction reshape |
+| Flux2 | Requires a different approximation | Text and image use bidirectional joint attention, so each region changes the text-stream state; audit a joint-stream objective rather than reusing Qwen's shared-prefix oracle |
 | Z-Image | Candidate | Stream layout, position contract, packed attention mask, training-op ownership |
 | Anima and Lens | Candidate | Joint/dual stream boundary, position IDs, architecture-specific checkpoint offload interaction |
 | Krea2 and Ideogram4 | Candidate | Proprietary tensor layout represented by local implementation, conditioning flow, output-token selection |
@@ -441,7 +455,9 @@ partition resume contract.
 2. Thread it through request parsing, config extraction, frontend types, and
    the memory UI.
 3. Apply it to both predicted escalation and reactive OOM micro-splitting.
-4. Add same-batch offload retry and explicit failure diagnostics.
+4. Generalize the existing fused-backward threshold ladder for strict
+   no-reduction execution and add explicit terminal diagnostics; do not create
+   a parallel retry mechanism.
 5. Test `fast`, `offload`, and `escalate` with reduction on/off, including
    batch 1 and batch greater than 1.
 
@@ -510,4 +526,3 @@ This plan does not:
   or
 * enable partitioning on another architecture solely because it is called a
   DiT.
-

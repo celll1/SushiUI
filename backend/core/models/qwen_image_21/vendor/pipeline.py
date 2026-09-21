@@ -840,9 +840,10 @@ class QwenImage21Pipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
                 self._current_timestep = t
                 kv_mode = "extract" if (cache_enabled and i == 0) else ("cached" if cache_enabled else None)
 
-                latent_model_input = latents
+                # The scheduler may retain FP32 latents; ConvRot attention needs the model input dtype.
+                latent_model_input = latents.to(prompt_embeds.dtype)
                 if input_images_latents is not None:
-                    latent_model_input = torch.cat([input_images_latents, latents], dim=1)
+                    latent_model_input = torch.cat([input_images_latents, latent_model_input], dim=1)
 
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
                 active_style_stores = []

@@ -632,11 +632,13 @@ class SaveOptimizerStatePartialTest(TempDirCase):
         original_save = torch.save
         original_all = bt.all_optimizers
 
-        def truncating_save(payload, path, *args, **kwargs):
-            Path(path).write_bytes(b"partial")
+        def truncating_save(payload, stream, *args, **kwargs):
+            stream.write(b"partial")
             raise RuntimeError(TORCH_SHORT_WRITE)
 
         class _Optimizer:
+            param_groups = []
+
             def state_dict(self):
                 return {"state": {}}
 
@@ -659,13 +661,15 @@ class SaveOptimizerStatePartialTest(TempDirCase):
         target.write_bytes(b"previous state")
 
         class _Optimizer:
+            param_groups = []
+
             def state_dict(self):
                 return {"state": {}}
 
         original_save, original_all = torch.save, bt.all_optimizers
 
-        def truncating_save(payload, path, *args, **kwargs):
-            Path(path).write_bytes(b"partial")
+        def truncating_save(payload, stream, *args, **kwargs):
+            stream.write(b"partial")
             raise RuntimeError(TORCH_SHORT_WRITE)
 
         torch.save = truncating_save

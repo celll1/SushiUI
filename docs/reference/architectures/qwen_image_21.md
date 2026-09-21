@@ -30,17 +30,26 @@ component.
 
 Generation supports txt2img, true CFG, native image editing with up to ten
 ordered images, inpaint/outpaint protected-pixel compositing, ordinary LoRA,
-progress/cancellation, and condition-prefix KV caching. The cache is controlled
-by `qwen_image_21_kv_cache` and defaults on. Attention selection, runtime
-quantization, FBCache, Spectrum, NAG, ControlNet, SDEdit strength, generation
-block swap, keep-hot, and VAE/TE replacement are not claimed; capability data
-marks the shared controls unsupported.
+latent Reference Guide, segmented-attention Style Transfer, progress/
+cancellation, matrix live previews, optional TAE live previews, and condition-
+prefix KV caching. The cache is controlled by `qwen_image_21_kv_cache` and
+defaults on; Style Transfer disables it for that request. Attention selection,
+runtime quantization, FBCache, Spectrum, NAG, ControlNet, SDEdit strength,
+generation block swap, keep-hot, and VAE/TE replacement are not claimed;
+capability data marks the shared controls unsupported.
 
 Training supports DiT LoRA on Original or a frozen INT8 ConvRot base, and full
 DiT fine-tuning on Original only. Qwen3-VL and the VAE remain frozen. The flow
 objective is `xt = (1-sigma)*x0 + sigma*noise`, target `noise-x0`; loss is taken
 only from the target latent tail. ReLoRA, ControlNet, text-encoder training,
 VAE swap, and reference-conditioned edit datasets are refused.
+
+Real 256x256 gates passed for a three-step rank-4 ConvRot LoRA run (including
+checkpoint/optimizer resume) and a two-step Original full-DiT run resumed
+between steps. The full checkpoint is a four-shard 14.23 GB tensor set; its
+step-1 index was reloaded by the production loader as 32 blocks and
+7,115,124,736 parameters. Exact measurements and the disk-space caveat are in
+`MODEL_FACTS.md`.
 
 See `docs/guides/QWEN_IMAGE_21_DESIGN.md` for exact artifact layout, measured
 smokes, deferred gates, and provenance.

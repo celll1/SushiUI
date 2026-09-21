@@ -64,7 +64,7 @@ import { useGenerationPanelProgress, useRestoreImageOnCancel } from "@/hooks/use
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import VramInspector from "../common/VramInspector";
-import { saveTempImage, loadTempImage } from "@/utils/tempImageStorage";
+import { saveTempImage, loadTempImage, tempImageDataUrlToFile } from "@/utils/tempImageStorage";
 import { previewStorageKeys, loadVideoPreview, saveVideoPreview, loadAudioPreview, saveAudioPreview, saveImagePreview, clearVideoPreview, clearAudioPreview, clearImagePreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
 import { sendToPanel, sendImageToImg2Img, sendBase64ImageToInpaint, sendBase64ImageToUpscale, sendBase64ImageToOutpaint, sendVideoToOutpaint, sendVideoToInpaint, sendVideoToReference, sendAudioToOutpaint, sendAudioToImg2Img, fetchUrlToFile } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
@@ -719,7 +719,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
   const [previewViewerOpen, setPreviewViewerOpen] = useState(false);
   const [showAdvancedCFG, setShowAdvancedCFG] = useState(false);
 
-  // FLUX.2 Image Edit / Vision Encoder / SenseNova U1.5: Reference images
+  // Native/reference-conditioning image inputs.
   const [refImages, setRefImages] = useState<File[]>([]);
   const [refImagePreviews, setRefImagePreviews] = useState<string[]>([]);
   const [isRefImageDragging, setIsRefImageDragging] = useState(false);
@@ -727,6 +727,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
   // SENSENOVA_MAX_REFERENCE_IMAGES (backend/core/pipeline_backends/sensenova.py).
   // FLUX.2 has no backend-enforced cap; 10 is this UI's own upload-grid limit.
   const isSenseNovaModel = currentModelInfo?.model_info?.type === "sensenova";
+  const isQwenImage21Model = currentModelInfo?.model_info?.type === "qwen_image_21";
   const maxRefImages = isSenseNovaModel ? 5 : 10;
 
   const [loopGenerationConfig, setLoopGenerationConfig] = useState<LoopGenerationConfig>({
@@ -909,11 +910,13 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
           console.log(`[Txt2Img] Loading ${refRefs.length} reference images from storage`);
 
           const loadedPreviews: string[] = [];
-          for (const ref of refRefs) {
+          const loadedFiles: File[] = [];
+          for (const [index, ref] of refRefs.entries()) {
             try {
               const imageData = await loadTempImage(ref);
               if (imageData) {
                 loadedPreviews.push(imageData);
+                loadedFiles.push(await tempImageDataUrlToFile(imageData, `reference-${index + 1}.png`));
               }
             } catch (error) {
               console.error(`[Txt2Img] Failed to load reference image ${ref}:`, error);
@@ -922,6 +925,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
 
           if (loadedPreviews.length > 0) {
             setRefImagePreviews(loadedPreviews);
+            setRefImages(loadedFiles);
             console.log(`[Txt2Img] Restored ${loadedPreviews.length} reference images`);
           }
         } catch (error) {
@@ -1459,6 +1463,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
     if (!files || files.length === 0) return;
 
     const newFiles = Array.from(files).slice(0, maxRefImages - refImagePreviews.length); // Max total
+    e.target.value = "";
     const newPreviews: string[] = [];
     const newRefs: string[] = [];
 
@@ -3650,12 +3655,14 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
           </>
         )}
 
-        {/* FLUX.2 Image Edit / SenseNova U1.5 / Vision Encoder: Reference Images */}
-        {(currentModelInfo?.model_info?.type === "flux2" || isSenseNovaModel || params.vision_encoder_path) && (
+        {/* Native edit / reference-conditioning images. */}
+        {(currentModelInfo?.model_info?.type === "flux2" || isSenseNovaModel || isQwenImage21Model || params.vision_encoder_path) && (
           <Card
             title={
               currentModelInfo?.model_info?.type === "flux2"
                 ? "FLUX.2 Image Edit (Reference Images)"
+                : isQwenImage21Model
+                ? "Qwen-Image 2.1 (Reference Images)"
                 : isSenseNovaModel
                 ? "SenseNova U1.5 (Reference Images)"
                 : "Vision Encoder (Reference Images)"

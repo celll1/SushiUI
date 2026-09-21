@@ -61,7 +61,7 @@ import { useSmoothProgress } from "@/hooks/useSmoothProgress";
 import { useGenerationPanelProgress, useRestoreImageOnCancel } from "@/hooks/useGenerationPanelProgress";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
-import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
+import { saveTempImage, loadTempImage, deleteTempImageRef, tempImageDataUrlToFile } from "@/utils/tempImageStorage";
 import { previewStorageKeys, loadVideoPreview, saveVideoPreview, loadAudioPreview, saveAudioPreview, saveImagePreview, clearVideoPreview, clearAudioPreview, clearImagePreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
 import { sendToPanel, sendImageToImg2Img, sendImageToInpaint, sendImageToUpscale, sendImageToOutpaint, fetchUrlToFile, sendVideoToOutpaint, sendVideoToInpaint, sendVideoToReference, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
@@ -881,7 +881,7 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
   const [previewViewerOpen, setPreviewViewerOpen] = useState(false);
   const [showAdvancedCFG, setShowAdvancedCFG] = useState(false);
 
-  // FLUX.2 Image Edit / Vision Encoder / SenseNova U1.5: Reference images
+  // Native/reference-conditioning image inputs.
   const [refImages, setRefImages] = useState<File[]>([]);
   const [refImagePreviews, setRefImagePreviews] = useState<string[]>([]);
   const [isRefImageDragging, setIsRefImageDragging] = useState(false);
@@ -889,7 +889,9 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
   // SENSENOVA_MAX_REFERENCE_IMAGES (backend/core/pipeline_backends/sensenova.py).
   // FLUX.2 has no backend-enforced cap; 10 is this UI's own upload-grid limit.
   const isSenseNovaModel = currentModelInfo?.model_info?.type === "sensenova";
-  const maxRefImages = isSenseNovaModel ? 5 : 10;
+  const isQwenImage21Model = currentModelInfo?.model_info?.type === "qwen_image_21";
+  // Qwen accepts ten images total; Img2Img already consumes one primary image.
+  const maxRefImages = isSenseNovaModel ? 5 : isQwenImage21Model ? 9 : 10;
 
   const [loopGenerationConfig, setLoopGenerationConfig] = useState<LoopGenerationConfig>({
     enabled: false,
@@ -1082,21 +1084,28 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
           const refRefs: string[] = JSON.parse(savedRefImageRefs);
           console.log(`[Img2Img] Loading ${refRefs.length} reference images from storage`);
 
-          const restored = await Promise.all(refRefs.map(async (ref) => {
+          const restored = await Promise.all(refRefs.map(async (ref, index) => {
             try {
               const imageData = await loadTempImage(ref);
-              return imageData || null;
+              if (!imageData) return null;
+              return {
+                preview: imageData,
+                file: await tempImageDataUrlToFile(imageData, `reference-${index + 1}.png`),
+              };
             } catch (error) {
               console.error(`[Img2Img] Failed to load reference image ${ref}:`, error);
               return null;
             }
           }));
           if (cancelled) return;
-          const loadedPreviews = restored.filter((value): value is string => value !== null);
+          const loaded = restored.filter(
+            (value): value is { preview: string; file: File } => value !== null,
+          );
 
-          if (loadedPreviews.length > 0) {
-            setRefImagePreviews(loadedPreviews);
-            console.log(`[Img2Img] Restored ${loadedPreviews.length} reference images`);
+          if (loaded.length > 0) {
+            setRefImagePreviews(loaded.map((value) => value.preview));
+            setRefImages(loaded.map((value) => value.file));
+            console.log(`[Img2Img] Restored ${loaded.length} reference images`);
           }
         } catch (error) {
           console.error('[Img2Img] Failed to parse reference images storage:', error);
@@ -2035,6 +2044,7 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
     if (!files || files.length === 0) return;
 
     const newFiles = Array.from(files).slice(0, maxRefImages - refImagePreviews.length); // Max total
+    e.target.value = "";
     const newPreviews: string[] = [];
     const newRefs: string[] = [];
 
@@ -4668,12 +4678,14 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
           </Card>
         )}
 
-        {/* FLUX.2 Image Edit / SenseNova U1.5 / Vision Encoder: Reference Images */}
-        {(currentModelInfo?.model_info?.type === "flux2" || isSenseNovaModel || params.vision_encoder_path) && (
+        {/* Native edit / reference-conditioning images. */}
+        {(currentModelInfo?.model_info?.type === "flux2" || isSenseNovaModel || isQwenImage21Model || params.vision_encoder_path) && (
           <Card
             title={
               currentModelInfo?.model_info?.type === "flux2"
                 ? "FLUX.2 Image Edit (Reference Images)"
+                : isQwenImage21Model
+                ? "Qwen-Image 2.1 (Reference Images)"
                 : isSenseNovaModel
                 ? "SenseNova U1.5 (Reference Images)"
                 : "Vision Encoder (Reference Images)"

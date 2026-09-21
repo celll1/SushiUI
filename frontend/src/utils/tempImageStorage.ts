@@ -57,6 +57,16 @@ export async function loadTempImage(reference: string): Promise<string> {
   return reference;
 }
 
+/** Rebuild an uploadable File from a persisted image data URL. */
+export async function tempImageDataUrlToFile(dataUrl: string, name: string): Promise<File> {
+  const response = await fetch(dataUrl);
+  if (!response.ok) {
+    throw new Error(`Failed to rebuild temporary image: ${response.status}`);
+  }
+  const blob = await response.blob();
+  return new File([blob], name, { type: blob.type || "image/png" });
+}
+
 /**
  * Delete a temp image
  * @param reference - Reference string

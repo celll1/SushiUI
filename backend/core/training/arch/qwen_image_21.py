@@ -35,7 +35,8 @@ class QwenImage21ArchHandler(ArchHandler):
         qwen_image_21_ops.setup_block_swap(trainer)
 
     def setup_attention_backend(self, trainer) -> None:
-        return None
+        from core.training.ops import qwen_image_21_ops
+        qwen_image_21_ops.setup_attention_backend(trainer, trainer.attention_backend)
 
     def depth_blocks(self, trainer):
         return trainer.transformer.transformer_blocks

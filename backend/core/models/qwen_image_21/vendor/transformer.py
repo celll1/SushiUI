@@ -522,6 +522,108 @@ class QwenImage21AttnProcessor:
     _attention_backend = None
     _parallel_config = None
 
+    @staticmethod
+    def _varlen_segment(
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        key_valid: torch.Tensor | None,
+        start: int,
+        end: int,
+        *,
+        is_causal: bool,
+    ) -> torch.Tensor:
+        """Run one exact block-causal segment through packed attention."""
+        from core.attention import AttentionMode, dispatch_attention_varlen
+
+        batch = query.shape[0]
+        q_parts = []
+        k_parts = []
+        v_parts = []
+        q_indices = []
+        q_lengths = []
+        k_lengths = []
+        cache = None
+        cache_key = (start, end)
+        if key_valid is not None:
+            cache = getattr(key_valid, "_qwen_image21_varlen_indices", None)
+            if cache is None:
+                cache = {}
+                key_valid._qwen_image21_varlen_indices = cache
+        cached = cache.get(cache_key) if cache is not None else None
+        if cached is not None:
+            q_indices, k_indices, q_lengths, k_lengths, cu_q, cu_k = cached
+        else:
+            k_indices = []
+            for batch_idx in range(batch):
+                if key_valid is None:
+                    q_idx = torch.arange(start, end, device=query.device)
+                    k_idx = torch.arange(0, end, device=query.device)
+                else:
+                    q_idx = torch.nonzero(
+                        key_valid[batch_idx, start:end], as_tuple=False
+                    ).flatten() + start
+                    k_idx = torch.nonzero(
+                        key_valid[batch_idx, :end], as_tuple=False
+                    ).flatten()
+                q_indices.append(q_idx)
+                k_indices.append(k_idx)
+                q_lengths.append(int(q_idx.numel()))
+                k_lengths.append(int(k_idx.numel()))
+            cu_q = torch.tensor(
+                [0, *torch.tensor(q_lengths).cumsum(0).tolist()],
+                dtype=torch.int32,
+                device=query.device,
+            )
+            cu_k = torch.tensor(
+                [0, *torch.tensor(k_lengths).cumsum(0).tolist()],
+                dtype=torch.int32,
+                device=query.device,
+            )
+            if cache is not None:
+                cache[cache_key] = (
+                    q_indices, k_indices, q_lengths, k_lengths, cu_q, cu_k
+                )
+        for batch_idx, (q_idx, k_idx) in enumerate(zip(q_indices, k_indices)):
+            q_parts.append(query[batch_idx, q_idx])
+            k_parts.append(key[batch_idx, k_idx])
+            v_parts.append(value[batch_idx, k_idx])
+        kernel_dtype = query.dtype
+        if kernel_dtype not in (torch.float16, torch.bfloat16) and query.device.type == "cuda":
+            if torch.is_autocast_enabled("cuda"):
+                kernel_dtype = torch.get_autocast_dtype("cuda")
+            elif value.dtype in (torch.float16, torch.bfloat16):
+                kernel_dtype = value.dtype
+            else:
+                raise ValueError(
+                    "Qwen-Image 2.1 FlashAttention requires fp16/bf16 Q/K/V or CUDA autocast"
+                )
+        packed_q = torch.cat(q_parts, dim=0).to(kernel_dtype)
+        packed_k = torch.cat(k_parts, dim=0).to(kernel_dtype)
+        packed_v = torch.cat(v_parts, dim=0).to(kernel_dtype)
+        packed_out = dispatch_attention_varlen(
+            packed_q,
+            packed_k,
+            packed_v,
+            cu_q,
+            cu_k,
+            max(q_lengths),
+            max(k_lengths),
+            dropout_p=0.0,
+            is_causal=is_causal,
+            backend="flash",
+            mode=AttentionMode.TRAINING if query.requires_grad else AttentionMode.INFERENCE,
+        )
+        output = torch.zeros_like(query[:, start:end])
+        offset = 0
+        for batch_idx, (q_idx, length) in enumerate(zip(q_indices, q_lengths)):
+            if length:
+                output[batch_idx, q_idx - start] = packed_out[
+                    offset : offset + length
+                ].to(output.dtype)
+                offset += length
+        return output
+
     def __call__(
         self,
         attn: "QwenImage21Attention",
@@ -562,9 +664,24 @@ class QwenImage21AttnProcessor:
             # prefill: every segment attends to the keys `[0, end)` (everything before it plus its own block); text
             # segments additionally get a causal triangle over their own keys; padded text keys are dropped.
             # `attention_mask` may hold the flex `BlockMask` of the same structure, which is not used here.
+            from core.attention import normalize_backend
+
+            backend = normalize_backend(self._attention_backend)
+            if backend == "flash" and getattr(attn, "_style_ctx", None) is not None:
+                raise ValueError(
+                    "Qwen-Image 2.1 style transfer requires native attention; "
+                    "the packed FlashAttention path cannot extend segment keys."
+                )
             prefix_len = segments[-1][1] if segments else 0
             outputs = []
             for start, end, is_text in segments:
+                if backend == "flash":
+                    outputs.append(
+                        self._varlen_segment(
+                            query, key, value, key_valid, start, end, is_causal=is_text
+                        )
+                    )
+                    continue
                 seg_mask = None
                 if is_text:
                     seg_len = end - start
@@ -585,21 +702,34 @@ class QwenImage21AttnProcessor:
                         value[:, :end],
                         attn_mask=seg_mask,
                         dropout_p=0.0,
-                        backend=None,
+                        backend="native",
                         parallel_config=self._parallel_config,
                     )
                 )
-            outputs.append(
-                dispatch_attention_fn(
-                    query[:, prefix_len:],
-                    key,
-                    value,
-                    attn_mask=None if key_valid is None else key_valid[:, None, None, :],
-                    dropout_p=0.0,
-                    backend=None,
-                    parallel_config=self._parallel_config,
+            if backend == "flash":
+                outputs.append(
+                    self._varlen_segment(
+                        query,
+                        key,
+                        value,
+                        key_valid,
+                        prefix_len,
+                        query.shape[1],
+                        is_causal=False,
+                    )
                 )
-            )
+            else:
+                outputs.append(
+                    dispatch_attention_fn(
+                        query[:, prefix_len:],
+                        key,
+                        value,
+                        attn_mask=None if key_valid is None else key_valid[:, None, None, :],
+                        dropout_p=0.0,
+                        backend="native",
+                        parallel_config=self._parallel_config,
+                    )
+                )
             hidden_states = torch.cat(outputs, dim=1)
         hidden_states = hidden_states[:, :seq_len_q]
         hidden_states = hidden_states.flatten(2, 3).type_as(query)

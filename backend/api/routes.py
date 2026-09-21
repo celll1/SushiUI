@@ -18183,6 +18183,76 @@ async def get_training_metrics(
         raise HTTPException(status_code=500, detail=f"Failed to read metrics: {str(e)}")
 
 
+@router.get("/training/runs/{run_id}/step-profile")
+async def get_training_step_profile(
+    run_id: int,
+    latest_only: bool = False,
+    db: Session = Depends(get_training_db),
+):
+    """Return direct CUDA-event forward/backward timings, split by resume."""
+    import re
+    import statistics
+    from pathlib import Path
+
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    log_dir = Path(run.output_dir) / "logs"
+    log_files = sorted(log_dir.glob("training_*.log")) if log_dir.exists() else []
+    if latest_only and log_files:
+        log_files = log_files[-1:]
+
+    line_pattern = re.compile(r"\[REPA profile (\d+)/(\d+)\] (.+)$")
+    value_pattern = re.compile(r"([a-z_]+)=([0-9.]+)ms")
+    sessions = []
+    for log_file in log_files:
+        samples = []
+        try:
+            lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            match = line_pattern.search(line)
+            if match is None:
+                continue
+            sample = {
+                "sample": int(match.group(1)),
+                "limit": int(match.group(2)),
+            }
+            for name, milliseconds in value_pattern.findall(match.group(3)):
+                sample[f"{name}_s"] = float(milliseconds) / 1000.0
+            if "forward_backward_s" in sample and "backward_s" in sample:
+                sample["forward_s"] = max(
+                    0.0, sample["forward_backward_s"] - sample["backward_s"]
+                )
+                sample["backward_fraction"] = (
+                    sample["backward_s"] / sample["forward_backward_s"]
+                    if sample["forward_backward_s"] > 0.0
+                    else 0.0
+                )
+            samples.append(sample)
+        if not samples:
+            continue
+        metric_names = sorted(
+            {key for sample in samples for key in sample if key not in {"sample", "limit"}}
+        )
+        medians = {
+            name: statistics.median(
+                sample[name] for sample in samples if name in sample
+            )
+            for name in metric_names
+        }
+        sessions.append(
+            {
+                "log_file": log_file.name,
+                "samples": samples,
+                "median": medians,
+            }
+        )
+    return {"run_id": run_id, "sessions": sessions}
+
+
 @router.get("/training/runs/{run_id}/metrics_db")
 async def get_training_metrics_db(
     run_id: int,

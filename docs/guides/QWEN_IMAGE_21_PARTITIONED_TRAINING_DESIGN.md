@@ -1,11 +1,11 @@
 # Qwen-Image 2.1 partitioned full-frame training design
 
-Status: **fixed-count prototype implemented; adaptive policy and cross-architecture extraction planned**
+Status: **fixed-count prototype and architecture-gated DiT extraction implemented; adaptive policy planned**
 
 Architecture key: `qwen_image_21`
 
-The follow-up execution-policy, bounded-cache, and cross-architecture extraction
-work is planned in
+The execution-policy, bounded-cache, and cross-architecture extraction work is
+recorded in
 [`DIT_PARTITION_MEMORY_EXECUTION_PLAN_2026-09.md`](../plans/DIT_PARTITION_MEMORY_EXECUTION_PLAN_2026-09.md).
 
 This document defines a non-equivalent training acceleration for Qwen-Image

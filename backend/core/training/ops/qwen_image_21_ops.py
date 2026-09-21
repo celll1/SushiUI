@@ -622,17 +622,18 @@ def generate_sample(
     try:
         move_optimizer_state("cpu")
         pipe.enable_model_cpu_offload(device=trainer.device)
-        result = pipe(
-            prompt=prompt,
-            negative_prompt=negative_prompt or None,
-            true_cfg_scale=float(guidance_scale),
-            height=max(32, int(height) // 32 * 32),
-            width=max(32, int(width) // 32 * 32),
-            num_inference_steps=int(num_inference_steps),
-            generator=generator,
-            callback_on_step_end=callback,
-            use_kv_cache=True,
-        )
+        with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
+            result = pipe(
+                prompt=prompt,
+                negative_prompt=negative_prompt or None,
+                true_cfg_scale=float(guidance_scale),
+                height=max(32, int(height) // 32 * 32),
+                width=max(32, int(width) // 32 * 32),
+                num_inference_steps=int(num_inference_steps),
+                generator=generator,
+                callback_on_step_end=callback,
+                use_kv_cache=True,
+            )
         return result.images[0]
     finally:
         for module in (trainer.transformer, trainer.text_encoder, trainer.vae):

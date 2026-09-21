@@ -146,12 +146,12 @@ def _is_bf16_native_base_model(base_model_path: str) -> bool:
     lowered = (base_model_path or "").lower()
     if any(s in lowered for s in ("lens", "ltx", "ace-step", "acestep", "yue2",
                                   "minimax", "minimax_h3", "minimax-h3",
-                                  "sensenova", "sense-nova")):
+                                  "sensenova", "sense-nova", "qwen21", "qwen_image_21")):
         return True
     try:
         from core.model_loader import ModelLoader
         return ModelLoader.detect_model_type(base_model_path) in (
-            "lens", "ltx2", "acestep", "minimax_h3", "sensenova", "yue2")
+            "lens", "ltx2", "acestep", "minimax_h3", "sensenova", "yue2", "qwen_image_21")
     except Exception:
         return False
 

@@ -28,6 +28,7 @@ from core.training.arch.lens import LensArchHandler
 from core.training.arch.ideogram4 import Ideogram4ArchHandler
 from core.training.arch.minit2i import MiniT2IArchHandler
 from core.training.arch.krea2 import Krea2ArchHandler
+from core.training.arch.qwen_image_21 import QwenImage21ArchHandler
 from core.training.arch.flux2 import Flux2ArchHandler
 from core.training.arch.ltx2 import Ltx2ArchHandler
 from core.training.arch.minimax_h3 import MiniMaxH3ArchHandler
@@ -45,6 +46,7 @@ ARCH_REGISTRY: Dict[str, Type[ArchHandler]] = {
     "ideogram4": Ideogram4ArchHandler,
     "minit2i": MiniT2IArchHandler,
     "krea2": Krea2ArchHandler,
+    "qwen_image_21": QwenImage21ArchHandler,
     "flux2": Flux2ArchHandler,
     "ltx2": Ltx2ArchHandler,
     "minimax_h3": MiniMaxH3ArchHandler,
@@ -57,7 +59,7 @@ ARCH_REGISTRY: Dict[str, Type[ArchHandler]] = {
 # R6 invariant: registry keys == _build_cache_namespace arch strings.
 _EXPECTED_ARCH_KEYS = {
     "sd15", "sdxl", "zimage", "anima", "lens",
-    "ideogram4", "minit2i", "krea2", "flux2", "ltx2", "acestep",
+    "ideogram4", "minit2i", "krea2", "qwen_image_21", "flux2", "ltx2", "acestep",
     "minimax_h3", "sensenova", "sensenova_sdxl_chimera", "yue2",
 }
 assert set(ARCH_REGISTRY) == _EXPECTED_ARCH_KEYS, (
@@ -98,6 +100,8 @@ def resolve_arch_name(trainer: Any) -> str:
         return "minit2i"
     if getattr(trainer, "is_krea2", False):
         return "krea2"
+    if getattr(trainer, "is_qwen_image_21", False):
+        return "qwen_image_21"
     if getattr(trainer, "is_sdxl", False):
         return "sdxl"
     return "sd15"

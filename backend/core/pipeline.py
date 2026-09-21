@@ -27,7 +27,7 @@ from core.prompts.processors import PromptEditingProcessor
 from core.inference.schedulers import get_scheduler
 from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
 from core.inference.generation_timing import generation_timer
-from core.pipeline_backends import ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin, AceStepMixin, MiniMaxH3Mixin, MiniMaxMusic3Mixin, SenseNovaMixin, SenseNovaSDXLChimeraMixin, YuE2Mixin
+from core.pipeline_backends import ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, QwenImage21Mixin, LTX2Mixin, AceStepMixin, MiniMaxH3Mixin, MiniMaxMusic3Mixin, SenseNovaMixin, SenseNovaSDXLChimeraMixin, YuE2Mixin
 
 LAST_MODEL_CONFIG_FILE = Path("last_model.json")
 
@@ -42,6 +42,7 @@ ARCH_COMPONENT_SETS = (
     ("ideogram4_components", "Ideogram 4", "is_ideogram4_model"),
     ("minit2i_components", "MiniT2I", "is_minit2i_model"),
     ("krea2_components", "Krea 2", "is_krea2_model"),
+    ("qwen_image_21_components", "Qwen-Image 2.1", "is_qwen_image_21_model"),
     ("ltx2_components", "LTX-2.3", "is_ltx2_model"),
     ("acestep_components", "ACE-Step 1.5", "is_acestep_model"),
     ("minimax_h3_components", "MiniMax-H3", "is_minimax_h3_model"),
@@ -135,7 +136,7 @@ def offload_component_to_cpu(name: str, component, released: List[tuple]) -> int
     return nbytes
 
 
-class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin, AceStepMixin, MiniMaxH3Mixin, MiniMaxMusic3Mixin, SenseNovaMixin, SenseNovaSDXLChimeraMixin, YuE2Mixin):
+class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, QwenImage21Mixin, LTX2Mixin, AceStepMixin, MiniMaxH3Mixin, MiniMaxMusic3Mixin, SenseNovaMixin, SenseNovaSDXLChimeraMixin, YuE2Mixin):
     def __init__(self):
         self.txt2img_pipeline: Optional[StableDiffusionPipeline] = None
         self.img2img_pipeline: Optional[StableDiffusionImg2ImgPipeline] = None
@@ -196,6 +197,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # Krea 2 components (single-stream MMDiT + Qwen3-VL + Qwen-Image VAE). Flow matching.
         self.krea2_components: Optional[Dict[str, Any]] = None
         self.is_krea2_model: bool = False
+
+        self.qwen_image_21_components: Optional[Dict[str, Any]] = None
+        self.is_qwen_image_21_model: bool = False
 
         # LTX-2.3 components (joint audio+video MM-DiT + Gemma-3 + LTX2 VAEs). Video
         # model; flow matching. P1a: loadable/slot-switchable only. Video generation
@@ -300,6 +304,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             return "minit2i"
         if self.is_krea2_model:
             return "krea2"
+        if self.is_qwen_image_21_model:
+            return "qwen_image_21"
         if self.is_ltx2_model:
             return "ltx2"
         if self.is_acestep_model:
@@ -930,6 +936,30 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     self._fold_component_latent_identity(model_result, "krea2"))
                 self._save_last_model(source_type, source, pipeline_type)
                 print("[Pipeline] Krea 2 model loaded successfully")
+                return
+
+            if isinstance(model_result, dict) and model_result.get("type") == "qwen_image_21":
+                print("[Pipeline] Qwen-Image 2.1 model detected")
+                self.qwen_image_21_components = model_result
+                self.is_qwen_image_21_model = True
+                self.current_model = model_id
+                self.current_attention_type = "normal"
+                for comp_name in ("transformer", "text_encoder", "vae"):
+                    comp = model_result.get(comp_name)
+                    if comp is not None and hasattr(comp, "to"):
+                        comp.to("cpu")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                self.current_model_info = {
+                    "source_type": source_type,
+                    "source": source,
+                    "type": "qwen_image_21",
+                    "is_v_prediction": False,
+                    "transformer_variant": model_result.get("transformer_variant", "bf16"),
+                    "text_encoder_variant": model_result.get("text_encoder_variant", "bf16"),
+                }
+                self._save_last_model(source_type, source, pipeline_type)
+                print("[Pipeline] Qwen-Image 2.1 model loaded successfully")
                 return
 
             # Check if LTX-2.3 (joint audio+video MM-DiT). Before the generic Z-Image
@@ -4243,6 +4273,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             return self._generate_txt2img_minit2i(params, progress_callback, step_callback)
         if self.is_krea2_model:
             return self._generate_txt2img_krea2(params, progress_callback, step_callback)
+        if self.is_qwen_image_21_model:
+            return self._generate_txt2img_qwen_image_21(params, progress_callback, step_callback)
 
         # SenseNova-U1.5-8B-MoT (Qwen3-8B-as-flow-matching-denoiser, pixel-space)
         if self.is_sensenova_model:
@@ -4934,6 +4966,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             self.is_zimage_model or self.is_flux2_model or self.is_anima_model
             or self.is_lens_model or self.is_ideogram4_model or self.is_minit2i_model
             or self.is_krea2_model or self.is_ltx2_model or self.is_sensenova_model
+            or self.is_qwen_image_21_model
             or self.is_sensenova_sdxl_chimera_model
         ):
             from api.error_handlers import ValidationError
@@ -4967,6 +5000,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             return self._generate_img2img_minit2i(params, init_image, progress_callback, step_callback)
         if self.is_krea2_model:
             return self._generate_img2img_krea2(params, init_image, progress_callback, step_callback)
+        if self.is_qwen_image_21_model:
+            return self._generate_img2img_qwen_image_21(
+                params, init_image, progress_callback, step_callback
+            )
 
         # SenseNova-U1.5-8B-MoT (SDEdit over the flow-matching denoise loop)
         if self.is_sensenova_model:
@@ -5731,6 +5768,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             return self._generate_inpaint_minit2i(params, init_image, mask_image, progress_callback, step_callback)
         if self.is_krea2_model:
             return self._generate_inpaint_krea2(params, init_image, mask_image, progress_callback, step_callback)
+        if self.is_qwen_image_21_model:
+            return self._generate_inpaint_qwen_image_21(
+                params, init_image, mask_image, progress_callback, step_callback
+            )
 
         # SenseNova-U1.5-8B-MoT (RePaint over the flow-matching denoise loop)
         if self.is_sensenova_model:

@@ -3287,6 +3287,7 @@ class BaseTrainer(ABC):
         self.is_ideogram4 = (model_type == "ideogram4")
         self.is_minit2i = (model_type == "minit2i")
         self.is_krea2 = (model_type == "krea2")
+        self.is_qwen_image_21 = (model_type == "qwen_image_21")
         self.is_ltx2 = (model_type == "ltx2")
         self.is_minimax_h3 = (model_type == "minimax_h3")
         self.is_acestep = (model_type == "acestep")
@@ -3305,7 +3306,7 @@ class BaseTrainer(ABC):
         # base_trainer._vramdiag at its top.)
         from core.training.ops import (
             sd_sdxl_ops, zimage_ops, anima_ops, lens_ops, ideogram4_ops,
-            minit2i_ops, krea2_ops, flux2_ops, ltx2_ops, acestep_ops,
+            minit2i_ops, krea2_ops, qwen_image_21_ops, flux2_ops, ltx2_ops, acestep_ops,
             minimax_h3_ops, sensenova_ops, sensenova_sdxl_chimera_ops, yue2_ops,
         )
         if self.is_yue2:
@@ -3334,6 +3335,8 @@ class BaseTrainer(ABC):
             minit2i_ops.load_components(self)
         elif self.is_krea2:
             krea2_ops.load_components(self)
+        elif self.is_qwen_image_21:
+            qwen_image_21_ops.load_components(self)
         else:
             sd_sdxl_ops.load_components(self)
 
@@ -4369,6 +4372,7 @@ class BaseTrainer(ABC):
         self.is_ideogram4 = (model_type == "ideogram4")
         self.is_minit2i = (model_type == "minit2i")
         self.is_krea2 = (model_type == "krea2")
+        self.is_qwen_image_21 = (model_type == "qwen_image_21")
         self.is_ltx2 = (model_type == "ltx2")
         self.is_minimax_h3 = (model_type == "minimax_h3")
         self.is_acestep = (model_type == "acestep")
@@ -4652,6 +4656,13 @@ class BaseTrainer(ABC):
             from core.training.ops import krea2_ops
             krea2_ops.load_components(self)
             print(f"{self.log_prefix} Krea 2 checkpoint loaded successfully as base model")
+
+        elif self.is_qwen_image_21:
+            print(f"{self.log_prefix} Loading Qwen-Image 2.1 checkpoint as base model: {checkpoint_path}")
+            self.model_path = checkpoint_path
+            from core.training.ops import qwen_image_21_ops
+            qwen_image_21_ops.load_components(self)
+            print(f"{self.log_prefix} Qwen-Image 2.1 checkpoint loaded successfully as base model")
 
         elif self.is_anima:
             # Anima checkpoint resume: the save carries the DiT under `net.`, its
@@ -9736,6 +9747,8 @@ class BaseTrainer(ABC):
             return self.encode_prompt_minit2i(caption, requires_grad=requires_grad)
         elif self.is_krea2:
             return self.encode_prompt_krea2(caption)
+        elif self.is_qwen_image_21:
+            return self.arch.encode_prompt(self, caption)
         elif self.is_anima:
             payload = self.encode_prompt_anima(caption)
             # Return the Qwen3 hidden states as the primary embedding plus the
@@ -10011,7 +10024,7 @@ class BaseTrainer(ABC):
             )
         ):
             return
-        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2 or self.is_acestep or self.is_minimax_h3 or self.is_sensenova:
+        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_qwen_image_21 or self.is_ltx2 or self.is_acestep or self.is_minimax_h3 or self.is_sensenova:
             if self.transformer_original is not None:
                 self.transformer_original.to(self.device)
         else:
@@ -10028,7 +10041,7 @@ class BaseTrainer(ABC):
             )
         ):
             return
-        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2 or self.is_acestep or self.is_minimax_h3 or self.is_sensenova:
+        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_qwen_image_21 or self.is_ltx2 or self.is_acestep or self.is_minimax_h3 or self.is_sensenova:
             if self.transformer_original is not None:
                 self.transformer_original.to("cpu")
         else:
@@ -10081,7 +10094,7 @@ class BaseTrainer(ABC):
         Mirrors the arch dispatch in move_main_model_to_cpu/gpu so the three stay
         consistent. Returns None if the module is not present.
         """
-        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2 or self.is_acestep or self.is_minimax_h3 or self.is_sensenova:
+        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_qwen_image_21 or self.is_ltx2 or self.is_acestep or self.is_minimax_h3 or self.is_sensenova:
             return getattr(self, "transformer_original", None)
         return getattr(self, "unet", None)
 
@@ -11959,6 +11972,20 @@ class BaseTrainer(ABC):
             # mnt_latents: packed [B, N, 64]; mnt_text_embeddings: [B, seq, 12, 2560];
             # mnt_attention_mask: [B, seq]
             # P6c: route via the arch handler; ops/krea2_ops.train_step (verbatim).
+            from core.training.arch.base_arch import TrainStepContext
+            _lh, _lw = lens_latent_shape if lens_latent_shape else (None, None)
+            ctx = TrainStepContext(
+                latents=mnt_latents,
+                encoder_features=mnt_text_embeddings,
+                encoder_mask=mnt_attention_mask,
+                timesteps=timesteps,
+                profile_vram=self.debug_vram,
+                latent_h=_lh,
+                latent_w=_lw,
+                repa_pixels=mnt_repa_pixels,
+            )
+            loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
+        elif self.is_qwen_image_21:
             from core.training.arch.base_arch import TrainStepContext
             _lh, _lw = lens_latent_shape if lens_latent_shape else (None, None)
             ctx = TrainStepContext(
@@ -14720,7 +14747,7 @@ class BaseTrainer(ABC):
                     caption_hash = self._text_cache_key(caption, lyrics)
                     embeds_path = cache_dir / f"{caption_hash}_embeds.pt"
 
-                    if self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2:
+                    if self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_qwen_image_21:
                         auxiliary_path = cache_dir / f"{caption_hash}_mask.pt"
                     elif self.is_ltx2:
                         # LTX-2.3 aux is a dict {audio_text_embedding, mask, fps};
@@ -14780,7 +14807,7 @@ class BaseTrainer(ABC):
                         try:
                             torch.save(embeds_cpu, embeds_path)
 
-                            if (self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2) and auxiliary_cpu is not None:
+                            if (self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_qwen_image_21) and auxiliary_cpu is not None:
                                 mask_path = cache_dir / f"{caption_hash}_mask.pt"
                                 torch.save(auxiliary_cpu, mask_path)
                             elif self.is_ltx2 and auxiliary_cpu is not None:
@@ -14854,7 +14881,7 @@ class BaseTrainer(ABC):
         caption_hash = self._text_cache_key(caption, lyrics)
         embeds_path = cache_dir / f"{caption_hash}_embeds.pt"
 
-        if self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2:
+        if self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_qwen_image_21:
             auxiliary_path = cache_dir / f"{caption_hash}_mask.pt"
         elif self.is_ltx2:
             auxiliary_path = cache_dir / f"{caption_hash}_ltx2aux.pt"
@@ -15547,6 +15574,7 @@ class BaseTrainer(ABC):
                 "lens" if self.is_lens else
                 "ideogram4" if self.is_ideogram4 else
                 "krea2" if self.is_krea2 else
+                "qwen_image_21" if self.is_qwen_image_21 else
                 "_default"
             )
             timestep_sampling_config = dict(
@@ -18045,13 +18073,15 @@ class BaseTrainer(ABC):
                                         print(f"{self.log_prefix}   Expected: [1, 3, {height}, {width}]  Got: {list(latent.shape)}")
                                         print(f"{self.log_prefix}   Regenerating latent...")
                                         latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
-                                elif self.is_krea2:
+                                elif self.is_krea2 or self.is_qwen_image_21:
                                     # Krea 2: packed latent [1, (H//16)*(W//16), C*4];
                                     # C is 16 unless this run swapped its VAE.
                                     expected_seq_len = (height // 16) * (width // 16)
-                                    expected_width = 4 * int(getattr(
+                                    expected_width = int(getattr(
                                         getattr(self, "wiring", None),
-                                        "latent_channels", 0) or 16)
+                                        "latent_channels", 0) or (64 if self.is_qwen_image_21 else 16))
+                                    if self.is_krea2:
+                                        expected_width *= 4
                                     if latent.ndim != 3 or latent.shape[1] != expected_seq_len or latent.shape[2] != expected_width:
                                         print(f"{self.log_prefix} WARNING: Krea 2 latent shape mismatch for {item['image_path']}")
                                         print(f"{self.log_prefix}   Expected: [1, {expected_seq_len}, {expected_width}]  Got: {list(latent.shape)}")
@@ -18600,7 +18630,7 @@ class BaseTrainer(ABC):
                     if _te_recompute_per_mnt:
                         # Placeholders only -- the MNT loop rebuilds aux per iteration.
                         pass
-                    elif self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2:
+                    elif self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_qwen_image_21:
                         attention_mask = self._collate_text_masks(
                             auxiliary_data_list, text_seq_len
                         )
@@ -18924,7 +18954,7 @@ class BaseTrainer(ABC):
                                     mnt_auxiliary_data_list, mnt_text_seq_len
                                 )
                                 mnt_pooled_embeddings = None
-                            elif self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2:
+                            elif self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_qwen_image_21:
                                 # encoder_mask per sample: [L] → stacked to [B, L]
                                 mnt_attention_mask = self._collate_text_masks(
                                     mnt_auxiliary_data_list, mnt_text_seq_len
@@ -19142,7 +19172,7 @@ class BaseTrainer(ABC):
                         # Lens: pass latent spatial dims so train_step_lens can build img_shapes
                         # correctly for non-square resolutions.  width/height from batch loop.
                         batch_lens_latent_shape = None
-                        if (self.is_lens or self.is_ideogram4 or self.is_krea2) and width and height:
+                        if (self.is_lens or self.is_ideogram4 or self.is_krea2 or self.is_qwen_image_21) and width and height:
                             batch_lens_latent_shape = (height // 16, width // 16)
 
                         try:

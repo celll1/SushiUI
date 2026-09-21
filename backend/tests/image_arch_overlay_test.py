@@ -6,9 +6,9 @@ Run with:
 WHY THIS FILE EXISTS
 --------------------
 The entire safety case for the image-defaults overlay mechanism is "pure
-no-op for every non-SenseNova architecture": `steps`/`cfg_scale` used to be
-the shared 20/7.0 for every image route, and only SenseNova now resolves to
-its own upstream operating point (50/4.0). This file pins that claim rather
+no-op for every architecture without an overlay": `steps`/`cfg_scale` used to
+be the shared 20/7.0 for every image route. SenseNova resolves to 50/4.0 and
+Qwen-Image 2.1 resolves to 40/1.0. This file pins that claim rather
 than merely asserting it, mirroring
 `minimax_music3_api_defaults_test.py`'s no-op proof for the audio twin.
 """
@@ -26,6 +26,7 @@ from api.param_defaults import (  # noqa: E402
     GENERATION_DEFAULTS,
     IMAGE_GEN_ARCH_OVERLAYS,
     OUTPAINT_DEFAULTS,
+    QWEN_IMAGE_21_GENERATION_DEFAULTS,
     SENSENOVA_GENERATION_DEFAULTS,
     image_defaults_for_arch,
 )
@@ -36,14 +37,15 @@ from core.model_loader import ModelType  # noqa: E402
 # architecture addition is covered automatically.
 _ALL_ARCHS = get_args(ModelType)
 _NON_IMAGE_ARCHS = {"ltx2", "acestep", "minimax_h3", "minimax_music3"}
-_NON_SENSENOVA_IMAGE_ARCHS = [
-    arch for arch in _ALL_ARCHS if arch not in _NON_IMAGE_ARCHS and arch != "sensenova"
+_BASE_DEFAULT_IMAGE_ARCHS = [
+    arch for arch in _ALL_ARCHS
+    if arch not in _NON_IMAGE_ARCHS and arch not in {"sensenova", "qwen_image_21"}
 ]
 
 
 
-@pytest.mark.parametrize("arch", _NON_SENSENOVA_IMAGE_ARCHS + [None, "", "not_an_arch"])
-def test_non_sensenova_arch_resolves_to_generation_defaults_unchanged(arch):
+@pytest.mark.parametrize("arch", _BASE_DEFAULT_IMAGE_ARCHS + [None, "", "not_an_arch"])
+def test_arch_without_overlay_resolves_to_generation_defaults_unchanged(arch):
     assert image_defaults_for_arch(arch) == GENERATION_DEFAULTS
 
 
@@ -67,8 +69,15 @@ def test_sensenova_overlay_resolves_to_its_own_operating_point():
     assert diff_keys == {"steps", "cfg_scale"}
 
 
-def test_sensenova_is_the_only_overlay_entry_today():
-    assert set(IMAGE_GEN_ARCH_OVERLAYS.keys()) == {"sensenova"}
+def test_qwen_image_21_overlay_resolves_to_its_own_operating_point():
+    resolved = image_defaults_for_arch("qwen_image_21")
+    assert resolved["steps"] == QWEN_IMAGE_21_GENERATION_DEFAULTS["steps"]
+    assert resolved["cfg_scale"] == QWEN_IMAGE_21_GENERATION_DEFAULTS["cfg_scale"]
+    assert resolved["qwen_image_21_kv_cache"] is True
+
+
+def test_all_image_overlay_entries_are_declared():
+    assert set(IMAGE_GEN_ARCH_OVERLAYS) == {"sensenova", "qwen_image_21"}
 
 
 def test_outpaint_base_variant_resolves_the_same_way():

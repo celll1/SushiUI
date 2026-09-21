@@ -238,7 +238,7 @@ export interface MiniMaxH3HybridProvenance {
 export interface ModelInfo {
   source_type: string;
   source: string;
-  type: "sd15" | "sdxl" | "zimage" | "flux2" | "anima" | "lens" | "ideogram4" | "minit2i" | "krea2" | "sensenova" | "sensenova_sdxl_chimera" | "ltx2" | "acestep" | "minimax_h3" | "minimax_music3" | "yue2";
+  type: "sd15" | "sdxl" | "zimage" | "flux2" | "anima" | "lens" | "ideogram4" | "minit2i" | "krea2" | "qwen_image_21" | "sensenova" | "sensenova_sdxl_chimera" | "ltx2" | "acestep" | "minimax_h3" | "minimax_music3" | "yue2";
   is_v_prediction: boolean;
   model_hash: string;
   // Model-list entry fields (from GET /models)
@@ -359,7 +359,7 @@ export interface LoRAConfig {
 // (NOT the currently loaded model). "unknown" is a first-class value.
 export type LoRAArch =
   | "sd15" | "sdxl" | "zimage" | "anima" | "lens" | "ideogram4" | "minit2i"
-  | "krea2" | "flux2" | "ltx2" | "minimax_h3" | "acestep" | "sensenova" | "yue2"
+  | "krea2" | "qwen_image_21" | "flux2" | "ltx2" | "minimax_h3" | "acestep" | "sensenova" | "yue2"
   | "unknown";
 
 // What GET /loras reports per file, detected from the file, never from the
@@ -470,6 +470,7 @@ export interface GenerationParams {
   // SenseNova U1.5 per-layer prefix KV cache CPU streaming; every other
   // architecture ignores it.
   sensenova_kv_cache_streaming?: boolean;
+  qwen_image_21_kv_cache?: boolean;
   sampler?: string;
   schedule_type?: string;
   seed?: number;
@@ -2549,6 +2550,7 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   formData.append("sensenova_mot_phase_eviction", String(paramsWithImages.sensenova_mot_phase_eviction ?? false));
   // SenseNova U1.5 per-layer prefix KV cache CPU streaming; every other architecture ignores it.
   formData.append("sensenova_kv_cache_streaming", String(paramsWithImages.sensenova_kv_cache_streaming ?? false));
+  formData.append("qwen_image_21_kv_cache", String(paramsWithImages.qwen_image_21_kv_cache ?? true));
   formData.append("sampler", paramsWithImages.sampler || "euler");
   formData.append("schedule_type", paramsWithImages.schedule_type || "uniform");
   formData.append("seed", String(paramsWithImages.seed || -1));
@@ -2919,6 +2921,7 @@ export const generateImg2Img = async (
   formData.append("sensenova_mot_phase_eviction", String(paramsWithImages.sensenova_mot_phase_eviction ?? false));
   // SenseNova U1.5 per-layer prefix KV cache CPU streaming; every other architecture ignores it.
   formData.append("sensenova_kv_cache_streaming", String(paramsWithImages.sensenova_kv_cache_streaming ?? false));
+  formData.append("qwen_image_21_kv_cache", String(paramsWithImages.qwen_image_21_kv_cache ?? true));
   formData.append("denoising_strength", String(paramsWithImages.denoising_strength || 0.75));
   formData.append("img2img_fix_steps", String(paramsWithImages.img2img_fix_steps ?? true));
   formData.append("vae_drift_correction", String(paramsWithImages.vae_drift_correction ?? false));
@@ -3847,6 +3850,7 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("sensenova_mot_phase_eviction", String(paramsWithImages.sensenova_mot_phase_eviction ?? false));
   // SenseNova U1.5 per-layer prefix KV cache CPU streaming; every other architecture ignores it.
   formData.append("sensenova_kv_cache_streaming", String(paramsWithImages.sensenova_kv_cache_streaming ?? false));
+  formData.append("qwen_image_21_kv_cache", String(paramsWithImages.qwen_image_21_kv_cache ?? true));
   formData.append("denoising_strength", String(paramsWithImages.denoising_strength || 0.75));
   formData.append("img2img_fix_steps", String(paramsWithImages.img2img_fix_steps ?? true));
   formData.append("vae_drift_correction", String(paramsWithImages.vae_drift_correction ?? false));
@@ -4047,6 +4051,7 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
   formData.append("cfg_scale", String(paramsWithImages.cfg_scale !== undefined ? paramsWithImages.cfg_scale : 7.0));
   formData.append("denoising_strength", String(paramsWithImages.denoising_strength ?? 1.0));
   formData.append("img2img_fix_steps", String(paramsWithImages.img2img_fix_steps ?? true));
+  formData.append("qwen_image_21_kv_cache", String(paramsWithImages.qwen_image_21_kv_cache ?? true));
   formData.append("sampler", paramsWithImages.sampler || "euler");
   formData.append("schedule_type", paramsWithImages.schedule_type || "uniform");
   formData.append("seed", String(paramsWithImages.seed || -1));

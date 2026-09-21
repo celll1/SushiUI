@@ -536,6 +536,7 @@ class GenerationParams(BaseModel):
     # SenseNova U1.5 per-phase KV cache CPU streaming; every other
     # architecture ignores it.
     sensenova_kv_cache_streaming: bool = GENERATION_DEFAULTS["sensenova_kv_cache_streaming"]
+    qwen_image_21_kv_cache: bool = GENERATION_DEFAULTS["qwen_image_21_kv_cache"]
     sampler: str = "euler"
     schedule_type: str = "uniform"
     seed: int = -1
@@ -822,6 +823,17 @@ def _reject_if_sensenova_too_many_ref_images(ref_image_list: list):
         )
 
 
+def _reject_if_qwen21_too_many_ref_images(ref_image_list: list, *, primary_images: int = 0):
+    if not getattr(pipeline_manager, "is_qwen_image_21_model", False):
+        return
+    total = len(ref_image_list) + int(primary_images)
+    if total > 10:
+        raise CustomValidationError(
+            "Qwen-Image 2.1 accepts at most 10 reference images",
+            detail=f"Got {total} including the primary image.",
+        )
+
+
 @router.post("/studio/render-jobs", status_code=202, tags=["studio"])
 async def create_studio_render_job(
     manifest: str = Form(..., description="Frame-based Studio render manifest JSON"),
@@ -949,6 +961,7 @@ _PEAK_VRAM_GB_BY_KIND = {
     "ideogram4": 26.0,  # two 9.3B fp8 transformers (cond + uncond) resident during denoise
     "minit2i": 8.0,    # small pixel-space DiT (B/L ~0.3-1.8GB) + FLAN-T5 staged
     "krea2": 26.0,     # ~12.9B bf16 MMDiT staged on GPU + Qwen3-VL TE + Qwen-Image VAE
+    "qwen_image_21": 24.0,  # 7.1B DiT with sequentially offloaded Qwen3-VL and RGBA VAE
     "ltx2": 40.0,      # ~19B bf16 video MM-DiT + Gemma-3 TE + LTX2 VAEs, cpu-offload staged
     "acestep": 8.0,    # 2B DiT + Oobleck VAE + Qwen3-Embedding-0.6B TE, sequential CPU/GPU staging
     "minimax_music3": 24.0,  # model card: <24GB bf16 w/ auto CPU offload; LM+depth decoder co-resident for the AR stage
@@ -1182,6 +1195,7 @@ async def generate_txt2img(
     cfg_norm: str = Form(GENERATION_DEFAULTS["cfg_norm"]),  # SenseNova/Chimera CFG-overshoot clamp
     sensenova_mot_phase_eviction: bool = Form(GENERATION_DEFAULTS["sensenova_mot_phase_eviction"]),  # SenseNova U1.5 per-phase weight-half CPU eviction; other archs ignore it
     sensenova_kv_cache_streaming: bool = Form(GENERATION_DEFAULTS["sensenova_kv_cache_streaming"]),  # SenseNova U1.5 per-phase KV cache CPU streaming; other archs ignore it
+    qwen_image_21_kv_cache: bool = Form(GENERATION_DEFAULTS["qwen_image_21_kv_cache"]),
     sampler: str = Form("euler"),
     schedule_type: str = Form("uniform"),
     seed: int = Form(-1),
@@ -1272,6 +1286,7 @@ async def generate_txt2img(
     _reject_if_audio_model("/generate/txt2img")
     _reject_if_sensenova_unsupported("/generate/txt2img")
     _reject_if_sensenova_too_many_ref_images(ref_images)
+    _reject_if_qwen21_too_many_ref_images(ref_images)
     _reject_if_sensenova_ref_placeholders_exceed_refs(prompt, ref_images)
     lora_configs = []
     from api.generation_status import (start_generation, complete_generation, fail_generation,
@@ -1410,6 +1425,7 @@ async def generate_txt2img(
             "cfg_norm": cfg_norm,
             "sensenova_mot_phase_eviction": sensenova_mot_phase_eviction,
             "sensenova_kv_cache_streaming": sensenova_kv_cache_streaming,
+            "qwen_image_21_kv_cache": qwen_image_21_kv_cache,
             "sampler": sampler,
             "schedule_type": schedule_type,
             "seed": seed,
@@ -2169,6 +2185,7 @@ async def generate_img2img(
     cfg_norm: str = Form(GENERATION_DEFAULTS["cfg_norm"]),  # SenseNova/Chimera CFG-overshoot clamp
     sensenova_mot_phase_eviction: bool = Form(GENERATION_DEFAULTS["sensenova_mot_phase_eviction"]),  # SenseNova U1.5 per-phase weight-half CPU eviction; other archs ignore it
     sensenova_kv_cache_streaming: bool = Form(GENERATION_DEFAULTS["sensenova_kv_cache_streaming"]),  # SenseNova U1.5 per-phase KV cache CPU streaming; other archs ignore it
+    qwen_image_21_kv_cache: bool = Form(GENERATION_DEFAULTS["qwen_image_21_kv_cache"]),
     denoising_strength: float = Form(0.75),
     img2img_fix_steps: bool = Form(True),
     sampler: str = Form("euler"),
@@ -2264,6 +2281,7 @@ async def generate_img2img(
     _reject_if_audio_model("/generate/img2img")
     _reject_if_sensenova_unsupported("/generate/img2img")
     _reject_if_sensenova_too_many_ref_images(ref_images)
+    _reject_if_qwen21_too_many_ref_images(ref_images, primary_images=1)
     _reject_if_sensenova_ref_placeholders_exceed_refs(prompt, ref_images)
     lora_configs = []
     from api.generation_status import (start_generation, complete_generation, fail_generation,
@@ -2386,7 +2404,6 @@ async def generate_img2img(
                 img_bytes = await ref_img_file.read()
                 ref_image_list.append(Image.open(io.BytesIO(img_bytes)))
             print(f"[FLUX.2 Image Edit] Loaded {len(ref_image_list)} reference image(s)")
-
         # Load Vision Encoder if requested (non-FLUX.2 only)
         is_flux2 = pipeline_manager.current_model_info and pipeline_manager.current_model_info.get("type") == "flux2"
         if vision_encoder_path and not is_flux2:
@@ -2417,6 +2434,7 @@ async def generate_img2img(
             "cfg_norm": cfg_norm,
             "sensenova_mot_phase_eviction": sensenova_mot_phase_eviction,
             "sensenova_kv_cache_streaming": sensenova_kv_cache_streaming,
+            "qwen_image_21_kv_cache": qwen_image_21_kv_cache,
             "denoising_strength": denoising_strength,
             "img2img_fix_steps": img2img_fix_steps,
             "sampler": sampler,
@@ -7600,6 +7618,7 @@ async def generate_inpaint(
     cfg_norm: str = Form(GENERATION_DEFAULTS["cfg_norm"]),  # SenseNova/Chimera CFG-overshoot clamp
     sensenova_mot_phase_eviction: bool = Form(GENERATION_DEFAULTS["sensenova_mot_phase_eviction"]),  # SenseNova U1.5 per-phase weight-half CPU eviction; other archs ignore it
     sensenova_kv_cache_streaming: bool = Form(GENERATION_DEFAULTS["sensenova_kv_cache_streaming"]),  # SenseNova U1.5 per-phase KV cache CPU streaming; other archs ignore it
+    qwen_image_21_kv_cache: bool = Form(GENERATION_DEFAULTS["qwen_image_21_kv_cache"]),
     denoising_strength: float = Form(0.75),
     img2img_fix_steps: bool = Form(True),
     sampler: str = Form("euler"),
@@ -7716,6 +7735,7 @@ async def generate_inpaint(
     _reject_if_audio_model("/generate/inpaint")
     _reject_if_sensenova_unsupported("/generate/inpaint")
     _reject_if_sensenova_too_many_ref_images(ref_images)
+    _reject_if_qwen21_too_many_ref_images(ref_images, primary_images=1)
     _reject_if_sensenova_ref_placeholders_exceed_refs(prompt, ref_images)
     lora_configs = []
     from api.generation_status import (start_generation, complete_generation, fail_generation,
@@ -7850,7 +7870,6 @@ async def generate_inpaint(
                 img_bytes = await ref_img_file.read()
                 ref_image_list.append(Image.open(io.BytesIO(img_bytes)))
             print(f"[FLUX.2 Image Edit] Loaded {len(ref_image_list)} reference image(s)")
-
         # Load Vision Encoder if requested (non-FLUX.2 only)
         is_flux2 = pipeline_manager.current_model_info and pipeline_manager.current_model_info.get("type") == "flux2"
         if vision_encoder_path and not is_flux2:
@@ -7881,6 +7900,7 @@ async def generate_inpaint(
             "cfg_norm": cfg_norm,
             "sensenova_mot_phase_eviction": sensenova_mot_phase_eviction,
             "sensenova_kv_cache_streaming": sensenova_kv_cache_streaming,
+            "qwen_image_21_kv_cache": qwen_image_21_kv_cache,
             "denoising_strength": denoising_strength,
             "img2img_fix_steps": img2img_fix_steps,
             "sampler": sampler,
@@ -8192,6 +8212,7 @@ async def generate_outpaint(
     # below. The openapi schema keeps documenting OUTPAINT_DEFAULTS's base values.
     steps: Optional[int] = Form(None),
     cfg_scale: Optional[float] = Form(None),
+    qwen_image_21_kv_cache: bool = Form(OUTPAINT_DEFAULTS["qwen_image_21_kv_cache"]),
     # KNOWN GAP: this signature has no `cfg_norm`/`timestep_shift`/
     # `img_cfg_scale` Form() params, but openapi.yaml's OutpaintRequest
     # advertises all three via its `allOf` on GenerationParams -- FastAPI
@@ -8361,6 +8382,7 @@ async def generate_outpaint(
     _reject_if_video_model("/generate/outpaint")
     _reject_if_audio_model("/generate/outpaint")
     _reject_if_sensenova_unsupported("/generate/outpaint")
+    _reject_if_qwen21_too_many_ref_images(ref_images, primary_images=1)
     lora_configs = []
     from api.generation_status import (start_generation, complete_generation, fail_generation,
                                        get_warnings, error_context, attach_error_context)
@@ -8536,6 +8558,7 @@ async def generate_outpaint(
             "negative_prompt": negative_prompt,
             "steps": steps,
             "cfg_scale": cfg_scale,
+            "qwen_image_21_kv_cache": qwen_image_21_kv_cache,
             "denoising_strength": denoising_strength,
             "img2img_fix_steps": img2img_fix_steps,
             "sampler": sampler,
@@ -9302,7 +9325,7 @@ def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool = False
                 # Music3's official/ tree uses modular_model_index.json, not
                 # model_index.json, so it fails this check too.
                 is_valid = ModelLoader.is_valid_diffusers_directory(item_path)
-                if not is_valid and architecture not in ("anima", "lens", "krea2", "minimax_music3"):
+                if not is_valid and architecture not in ("anima", "lens", "krea2", "qwen_image_21", "minimax_music3"):
                     continue
                 models.append({
                     "name": item,

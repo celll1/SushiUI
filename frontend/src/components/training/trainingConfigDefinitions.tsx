@@ -13,7 +13,7 @@ import type {
 // which defaults to FP16. Used to decide whether a run will actually have BF16
 // parameters, which is the only thing stochastic rounding can act on.
 export const FORCED_BF16_ARCHITECTURES = new Set([
-  "zimage", "anima", "ideogram4", "minit2i", "krea2", "lens", "ltx2", "acestep",
+  "zimage", "anima", "ideogram4", "minit2i", "krea2", "qwen_image_21", "lens", "ltx2", "acestep",
   // MiniMax-H3: bf16 is not merely its native precision, it is the dtype its
   // weight-only FP8 Linears DEQUANTIZE INTO inside every forward. Left at the
   // non-bf16 default (fp32) the whole 50-block stack runs fp32 and the per-block

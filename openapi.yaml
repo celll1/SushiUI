@@ -166,6 +166,7 @@ paths:
                 _default: { distribution: uniform, min_timestep: 0.0, max_timestep: 1.0 }
                 minit2i: { distribution: logit_normal, mean: -0.8, std: 0.8, min_timestep: 0.0, max_timestep: 1.0 }
                 krea2: { distribution: uniform, min_timestep: 0.0, max_timestep: 1.0 }
+                qwen_image_21: { distribution: uniform, min_timestep: 0.0, max_timestep: 1.0 }
   /schema/bundle-vae-defaults-by-arch:
     get:
       summary: Per-architecture default bundle_vae values
@@ -12869,6 +12870,15 @@ components:
             may be combined or used alone. Ignored (accepted and warned) by
             every other architecture.
           example: false
+        qwen_image_21_kv_cache:
+          type: boolean
+          default: true
+          description: |
+            Qwen-Image 2.1 only. Reuses the condition-token attention keys and
+            values after the first denoising step. Disable for diagnostics or
+            lower host bookkeeping overhead; enabled is the normal fast path.
+            Ignored (accepted and warned) by every other architecture.
+          example: true
         seed:
           type: integer
           default: -1
@@ -20637,7 +20647,7 @@ components:
             scan time (NOT the currently loaded model). `"unknown"` is a
             first-class value for LoRA files whose key structure doesn't match
             any recognized signature -- it is not an error.
-          enum: [sd15, sdxl, zimage, anima, lens, ideogram4, minit2i, krea2,
+          enum: [sd15, sdxl, zimage, anima, lens, ideogram4, minit2i, krea2, qwen_image_21,
                  flux2, ltx2, minimax_h3, acestep, sensenova, unknown]
           example: "sdxl"
         adapter_type:

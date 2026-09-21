@@ -475,8 +475,19 @@ def arch_keys(tmp_path_factory):
 
 
 def test_every_training_architecture_has_a_signature():
-    """classify_lora_keys must cover ARCH_REGISTRY, not a subset of it."""
-    assert set(BUILDERS) == set(ARCH_REGISTRY)
+    """Every LoRA architecture with a unique key signature has a builder."""
+    metadata_only_or_full_only = {"qwen_image_21", "sensenova_sdxl_chimera"}
+    assert set(BUILDERS) == set(ARCH_REGISTRY) - metadata_only_or_full_only
+
+
+def test_qwen_image_21_metadata_disambiguates_krea_shaped_keys(arch_keys):
+    keys = [
+        key.replace("transformer_blocks__0__ff", "transformer_blocks__0__attn")
+        for key in arch_keys["krea2"]
+        if "transformer_blocks__0__attn" in key
+    ]
+    result = classify_lora_keys(keys, {"model_type": "qwen_image_21"})
+    assert result == {"arch": "qwen_image_21", "blocks": ["MMB00"]}
 
 
 @pytest.mark.parametrize("arch", sorted(BUILDERS))

@@ -15,6 +15,7 @@ from .lens_adapter import LensLoRAAdapter, LensFullParameterAdapter
 from .ideogram4_adapter import Ideogram4LoRAAdapter, Ideogram4FullParameterAdapter
 from .minit2i_adapter import MiniT2ILoRAAdapter, MiniT2IFullParameterAdapter
 from .krea2_adapter import Krea2LoRAAdapter, Krea2FullParameterAdapter
+from .qwen_image_21_adapter import QwenImage21LoRAAdapter, QwenImage21FullParameterAdapter
 from .ltx2_adapter import Ltx2LoRAAdapter, Ltx2FullParameterAdapter
 # MiniMax-H3 exports a LoRA adapter ONLY: full fine-tuning is refused for this
 # architecture (design section 7) and the absence of a FullParameterAdapter class
@@ -47,6 +48,8 @@ __all__ = [
     "Ideogram4FullParameterAdapter",
     "Krea2LoRAAdapter",
     "Krea2FullParameterAdapter",
+    "QwenImage21LoRAAdapter",
+    "QwenImage21FullParameterAdapter",
     "Ltx2LoRAAdapter",
     "Ltx2FullParameterAdapter",
     "MiniMaxH3LoRAAdapter",

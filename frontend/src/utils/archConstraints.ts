@@ -359,6 +359,7 @@ const ARCH_DISPLAY_NAMES: Record<string, string> = {
   zimage: "Z-Image",
   flux2: "FLUX.2",
   krea2: "Krea 2",
+  qwen_image_21: "Qwen-Image 2.1",
   lens: "Lens",
   anima: "Anima",
   minit2i: "MiniT2I",

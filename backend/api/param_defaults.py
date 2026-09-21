@@ -236,6 +236,12 @@ SENSENOVA_GENERATION_DEFAULTS: Dict[str, Any] = {
     "style_inject_all_cfg_branches": True,
 }
 
+QWEN_IMAGE_21_GENERATION_DEFAULTS: Dict[str, Any] = {
+    "steps": 40,
+    "cfg_scale": 1.0,
+    "qwen_image_21_kv_cache": True,
+}
+
 # SenseNova visual-understanding generation. This is deliberately separate
 # from GENERATION_DEFAULTS: img2txt is autoregressive text decoding and shares
 # none of the image denoiser's step/CFG/geometry controls.
@@ -285,6 +291,7 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     # SENSENOVA_GENERATION_DEFAULTS above). Every other architecture ignores
     # it (accepted and warned, api/arch_capabilities.py).
     "sensenova_kv_cache_streaming": SENSENOVA_GENERATION_DEFAULTS["sensenova_kv_cache_streaming"],
+    "qwen_image_21_kv_cache": QWEN_IMAGE_21_GENERATION_DEFAULTS["qwen_image_21_kv_cache"],
     "sampler": "euler",
     "schedule_type": "uniform",
     "seed": -1,
@@ -614,6 +621,7 @@ IMAGE_GEN_ARCH_OVERLAYS: Dict[str, Dict[str, Any]] = {
         "steps": SENSENOVA_GENERATION_DEFAULTS["steps"],
         "cfg_scale": SENSENOVA_GENERATION_DEFAULTS["cfg_scale"],
     },
+    "qwen_image_21": dict(QWEN_IMAGE_21_GENERATION_DEFAULTS),
 }
 
 
@@ -625,9 +633,8 @@ def image_defaults_for_arch(arch: Optional[str],
     behind the `image_arch_overlays` block of `/schema/generation-defaults`, so
     the frontend and the backend resolve a per-arch image default the same way.
 
-    An unknown or missing arch returns `base` unchanged (a copy), which is both
-    every non-SenseNova architecture's behaviour and the safe answer for a
-    model whose type has not been resolved yet.
+    An unknown or missing arch returns `base` unchanged (a copy), which is the
+    safe answer for a model whose type has not been resolved yet.
     """
     resolved = dict(base if base is not None else GENERATION_DEFAULTS)
     resolved.update(IMAGE_GEN_ARCH_OVERLAYS.get(arch or "", {}))
@@ -3160,6 +3167,7 @@ TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH: Dict[str, Any] = {
     # Krea 2: uniform sigma sampling; the resolution schedule bias comes from the
     # discrete flow shift (krea2_discrete_flow_shift, applied in train_step_krea2).
     "krea2": {"distribution": "uniform", "min_timestep": 0.0, "max_timestep": 1.0},
+    "qwen_image_21": {"distribution": "uniform", "min_timestep": 0.0, "max_timestep": 1.0},
     # MiniMax-H3: uniform, and REGISTERED rather than left to fall through to
     # "_default", because for this architecture the sampler's output is not a
     # sigma -- it is the PRE-SHIFT uniform draw `u`, which train_step then puts

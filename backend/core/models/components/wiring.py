@@ -101,6 +101,13 @@ KREA2_LATENT_IO = LatentIOSpec(
     config_in_channels_packed=True, config_out_channels_packed=True,
 )
 
+QWEN_IMAGE_21_LATENT_IO = LatentIOSpec(
+    in_module="img_in", out_module="proj_out",
+    in_kind="packed_linear", out_kind="packed_linear",
+    in_channel_order="outer", out_channel_order="outer",
+    pack_elems=1, extra_in_channels=0, in_repeat=1, out_bias=False,
+)
+
 # patch_size=1: the packed axis is C alone, so "outer" and "inner" are the same
 # permutation here and the declaration carries no information.
 LTX2_LATENT_IO = LatentIOSpec(
@@ -252,6 +259,13 @@ KREA2_WIRING = ComponentWiringSpec(
     latent_channels=16, latent_ndim=4, latent_packing="krea_norm",
     vae_scale_factor=8, vae_norm="per_channel",
     latent_io=KREA2_LATENT_IO,
+)
+
+QWEN_IMAGE_21_WIRING = ComponentWiringSpec(
+    te_out_dim=4096, te_pooled_dim=None, te_seq_packing="llm", added_cond=None,
+    latent_channels=64, latent_ndim=4, latent_packing="none",
+    vae_scale_factor=16, vae_norm="per_channel",
+    latent_io=QWEN_IMAGE_21_LATENT_IO,
 )
 
 FLUX2_WIRING = ComponentWiringSpec(

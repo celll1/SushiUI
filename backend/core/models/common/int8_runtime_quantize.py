@@ -461,6 +461,7 @@ ARCH_DISPLAY_NAMES: Dict[str, str] = {
     "yue2": "YuE2",
     "sensenova": "SenseNova U1.5",
     "sensenova_sdxl_chimera": "SenseNova SDXL Chimera",
+    "qwen_image_21": "Qwen-Image 2.1",
 }
 
 

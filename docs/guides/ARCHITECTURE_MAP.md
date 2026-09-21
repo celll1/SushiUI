@@ -1,14 +1,14 @@
 # Architecture Map
 
-The backend drives **16 architectures**: 11 image (SD1.5, SDXL, Z-Image, Flux2,
-Anima, Lens, Krea2, Ideogram4, MiniT2I, SenseNova U1.5,
+The backend drives **17 architectures**: 12 image (SD1.5, SDXL, Z-Image, Flux2,
+Anima, Lens, Krea2, Qwen-Image 2.1, Ideogram4, MiniT2I, SenseNova U1.5,
 SenseNova SDXL Chimera), 2 video that also
 generate audio jointly (LTX-2.3, MiniMax-H3) and 3 audio (ACE-Step 1.5,
 MiniMax Music 3, YuE2). `ModelType` in `backend/core/model_loader.py` is the
 authoritative generation list. `ARCH_REGISTRY` in
 `backend/core/training/arch/__init__.py` is the authoritative
 *training-capable* list (a module-level assertion pins it against the
-trainer's cache-namespace keys) — it has 15 entries; MiniMax Music 3 is
+trainer's cache-namespace keys) — it has 16 entries; MiniMax Music 3 is
 generation-only, while YuE2 exposes ABC-planner LoRA only. See
 `docs/guides/MINIMAX_MUSIC3_DESIGN.md` and the
 `yue2` row in `docs/guides/MODEL_FACTS.md` for those boundaries.

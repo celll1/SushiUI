@@ -377,6 +377,7 @@ export const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   sensenova_noise_scale_gain: 0,
   sensenova_noise_scale_auto: false,
   activation_dispatch_enable: false,
+  activation_dispatch_allow_batch_reduction: true,
   activation_dispatch_margin_gb: 1.0,
   activation_dispatch_seed_coef: 0.000024,
   activation_dispatch_residual_frac: 0.85,

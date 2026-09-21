@@ -24696,6 +24696,17 @@ components:
             would otherwise exceed the VRAM budget. Proactive (no OOM detection),
             so it works on Windows WDDM which silently spills instead of raising.
           example: false
+        activation_dispatch_allow_batch_reduction:
+          type: boolean
+          default: true
+          description: >-
+            Allow predicted escalation and reactive CUDA-OOM recovery to split
+            a logical batch into sequential micro-batches. Disable to keep the
+            execution batch fixed: escalation uses progressively lower
+            activation-offload thresholds and fails if the most aggressive
+            same-batch rung still does not fit. Fused backward never permits
+            splitting regardless of this value.
+          example: true
         activation_dispatch_margin_gb:
           type: number
           format: float
@@ -24763,7 +24774,7 @@ components:
           minimum: 0
           maximum: 32
           default: null
-          description: Optional Qwen checkpointed-block count used only during partition region forwards; null scales the full-frame count by the largest-region token ratio with an SM89-measured floor of eight blocks.
+          description: Optional Qwen checkpointed-block count used only during partition region forwards; null preserves the resolved full-frame checkpoint count.
         qwen_partition_profile:
           type: boolean
           default: false

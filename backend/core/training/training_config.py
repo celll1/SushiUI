@@ -452,11 +452,15 @@ def _build_train_section(
         train["block_swap_ring_size"] = p.get("block_swap_ring_size", 2)
         train["num_optimizer_groups"] = p.get("num_optimizer_groups", 0)
         # Per-bucket activation offload dispatcher
-        train["activation_dispatch_enable"] = p.get("activation_dispatch_enable", False)
-        train["activation_dispatch_margin_gb"] = p.get("activation_dispatch_margin_gb", 1.0)
-        train["activation_dispatch_seed_coef"] = p.get("activation_dispatch_seed_coef", 24.0e-6)
-        train["activation_dispatch_residual_frac"] = p.get("activation_dispatch_residual_frac", 0.85)
-        train["activation_dispatch_threshold_mb"] = p.get("activation_dispatch_threshold_mb", 4)
+        for key in (
+            "activation_dispatch_enable",
+            "activation_dispatch_allow_batch_reduction",
+            "activation_dispatch_margin_gb",
+            "activation_dispatch_seed_coef",
+            "activation_dispatch_residual_frac",
+            "activation_dispatch_threshold_mb",
+        ):
+            train[key] = p.get(key, _TD[key])
 
     for key in (
         "qwen_partition_training_enabled", "qwen_partition_mode",

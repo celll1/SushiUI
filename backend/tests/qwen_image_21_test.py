@@ -375,6 +375,59 @@ def test_qwen_partition_checkpoint_auto_preserves_base_memory_policy():
     ) == 11
 
 
+def test_qwen_checkpoint_controls_prefer_canonical_names_and_reject_conflicts():
+    plan = build_fixed_partition_plan(64, 64, count=2, seed=3)
+    trainer = SimpleNamespace(
+        config={
+            "dit_partition_gradient_checkpointing_blocks": 24,
+            "qwen_partition_gradient_checkpointing_blocks": None,
+        },
+        transformer=SimpleNamespace(transformer_blocks=[object()] * 32),
+    )
+    assert qwen_image_21_ops._resolve_partition_checkpoint_blocks(
+        trainer, plan, 16
+    ) == 24
+    trainer.config["qwen_partition_gradient_checkpointing_blocks"] = 12
+    with pytest.raises(ValueError, match="conflicts"):
+        qwen_image_21_ops._resolve_partition_checkpoint_blocks(trainer, plan, 16)
+
+
+def test_qwen_checkpoint_alias_conflict_is_rejected_by_api():
+    with pytest.raises(ValueError, match="conflicts"):
+        routes.TrainingRunCreateRequest(
+            training_method="lora",
+            base_model_path="unused",
+            dit_partition_gradient_checkpointing_blocks=24,
+            qwen_partition_gradient_checkpointing_blocks=12,
+        )
+
+
+def test_qwen_declares_partial_checkpoint_and_partition_capabilities():
+    from core.training.arch.qwen_image_21 import QwenImage21ArchHandler
+
+    assert QwenImage21ArchHandler.dit_checkpoint_block_count == 32
+    assert QwenImage21ArchHandler.supports_dit_partition_training
+
+
+def test_dit_checkpoint_contract_refuses_unsupported_arch_and_depth(monkeypatch):
+    from core.model_loader import ModelLoader
+    from core.training.train_runner import _apply_dit_checkpoint_contract
+
+    monkeypatch.setattr(ModelLoader, "detect_model_type", lambda _path: "sdxl")
+    with pytest.raises(ValueError, match="unsupported for sdxl"):
+        _apply_dit_checkpoint_contract(
+            "unused", {"dit_gradient_checkpointing_blocks": 1}
+        )
+
+    monkeypatch.setattr(
+        ModelLoader, "detect_model_type", lambda _path: "qwen_image_21"
+    )
+    with pytest.raises(ValueError, match="between 0 and 32"):
+        _apply_dit_checkpoint_contract(
+            "unused", {"dit_gradient_checkpointing_blocks": 33}
+        )
+
+
 def test_qwen_partition_auto_keeps_cached_convrot_backward_weights():
     trainer = SimpleNamespace(
         config={"qwen_partition_training_enabled": True},

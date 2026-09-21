@@ -24730,6 +24730,24 @@ components:
           default: 4
           description: Minimum saved-tensor size (MB) to offload to CPU
           example: 4
+        dit_gradient_checkpointing_blocks:
+          type: integer
+          nullable: true
+          minimum: 0
+          default: null
+          description: >-
+            Optional checkpointed transformer-block count for architectures
+            that declare partial DiT checkpoint support. Null selects the
+            architecture policy; validation against the actual depth occurs
+            before training begins.
+        dit_partition_gradient_checkpointing_blocks:
+          type: integer
+          nullable: true
+          minimum: 0
+          default: null
+          description: >-
+            Optional checkpointed-block count during complete-coverage DiT
+            partition forwards. Null inherits the resolved full-frame count.
         qwen_partition_training_enabled:
           type: boolean
           default: false
@@ -24774,7 +24792,8 @@ components:
           minimum: 0
           maximum: 32
           default: null
-          description: Optional Qwen checkpointed-block count used only during partition region forwards; null preserves the resolved full-frame checkpoint count.
+          deprecated: true
+          description: Deprecated alias for dit_partition_gradient_checkpointing_blocks; conflicting non-null values are rejected.
         qwen_partition_profile:
           type: boolean
           default: false

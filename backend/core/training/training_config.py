@@ -462,11 +462,30 @@ def _build_train_section(
         ):
             train[key] = p.get(key, _TD[key])
 
+    train["dit_gradient_checkpointing_blocks"] = p.get(
+        "dit_gradient_checkpointing_blocks", _TD["dit_gradient_checkpointing_blocks"])
+    canonical_partition_checkpoint = p.get(
+        "dit_partition_gradient_checkpointing_blocks")
+    legacy_partition_checkpoint = p.get(
+        "qwen_partition_gradient_checkpointing_blocks")
+    if (canonical_partition_checkpoint is not None
+            and legacy_partition_checkpoint is not None
+            and int(canonical_partition_checkpoint) != int(legacy_partition_checkpoint)):
+        raise ValueError(
+            "dit_partition_gradient_checkpointing_blocks conflicts with "
+            "qwen_partition_gradient_checkpointing_blocks"
+        )
+    train["dit_partition_gradient_checkpointing_blocks"] = (
+        canonical_partition_checkpoint
+        if canonical_partition_checkpoint is not None
+        else legacy_partition_checkpoint
+    )
+
     for key in (
         "qwen_partition_training_enabled", "qwen_partition_mode",
         "qwen_partition_fixed_count", "qwen_partition_halo_tokens",
         "qwen_partition_split_ratio_min", "qwen_partition_split_ratio_max",
-        "qwen_partition_seed", "qwen_partition_gradient_checkpointing_blocks",
+        "qwen_partition_seed",
         "qwen_partition_profile", "qwen_full_kv_query_chunk_tokens",
         "qwen_partition_global_adapter_enabled", "qwen_partition_global_rank",
         "qwen_partition_global_tokens",

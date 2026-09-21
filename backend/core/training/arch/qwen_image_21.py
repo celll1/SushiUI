@@ -18,6 +18,8 @@ class QwenImage21ArchHandler(ArchHandler):
         quantized_base_reason=QUANTIZED_ADDITIVE_PENDING,
     )
     pixel_align = 32
+    dit_checkpoint_block_count = 32
+    supports_dit_partition_training = True
     wires_sample_step_progress = True
     timestep_convention = "t0"
     velocity_sign = "eps_minus_x0"

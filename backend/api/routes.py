@@ -3,7 +3,7 @@ from fastapi.responses import Response, StreamingResponse, FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 from typing import List, Optional, Dict, Any, Callable, Sequence, Tuple, Literal, get_args
-from pydantic import BaseModel, Field, conint, field_validator
+from pydantic import BaseModel, Field, conint, field_validator, model_validator
 from datetime import datetime
 from pathlib import Path
 import contextvars
@@ -15474,6 +15474,12 @@ class TrainingRunCreateRequest(BaseModel):
     activation_dispatch_seed_coef: float = TRAINING_DEFAULTS["activation_dispatch_seed_coef"]
     activation_dispatch_residual_frac: float = TRAINING_DEFAULTS["activation_dispatch_residual_frac"]
     activation_dispatch_threshold_mb: int = TRAINING_DEFAULTS["activation_dispatch_threshold_mb"]
+    dit_gradient_checkpointing_blocks: Optional[int] = Field(
+        default=TRAINING_DEFAULTS["dit_gradient_checkpointing_blocks"], ge=0
+    )
+    dit_partition_gradient_checkpointing_blocks: Optional[int] = Field(
+        default=TRAINING_DEFAULTS["dit_partition_gradient_checkpointing_blocks"], ge=0
+    )
     qwen_partition_training_enabled: bool = TRAINING_DEFAULTS["qwen_partition_training_enabled"]
     qwen_partition_mode: Literal["fixed"] = TRAINING_DEFAULTS["qwen_partition_mode"]
     qwen_partition_fixed_count: Literal[2, 4] = TRAINING_DEFAULTS["qwen_partition_fixed_count"]
@@ -15503,6 +15509,17 @@ class TrainingRunCreateRequest(BaseModel):
     qwen_partition_global_tokens: int = Field(
         default=TRAINING_DEFAULTS["qwen_partition_global_tokens"], ge=1, le=256
     )
+
+    @model_validator(mode="after")
+    def _checkpoint_aliases_agree(self):
+        canonical = self.dit_partition_gradient_checkpointing_blocks
+        legacy = self.qwen_partition_gradient_checkpointing_blocks
+        if canonical is not None and legacy is not None and canonical != legacy:
+            raise ValueError(
+                "dit_partition_gradient_checkpointing_blocks conflicts with "
+                "qwen_partition_gradient_checkpointing_blocks"
+            )
+        return self
 
     @field_validator("qwen_partition_halo_tokens")
     @classmethod

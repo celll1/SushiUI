@@ -6129,6 +6129,24 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   but removes target attention between regions. This is not numerically equivalent to a full forward.
                 </p>
                 <div>
+                  <label className="block text-xs text-gray-400 mb-1">Full-frame Checkpointed Blocks</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={32}
+                    placeholder="auto"
+                    value={params.dit_gradient_checkpointing_blocks ?? ""}
+                    onChange={(e) => updateParam(
+                      "dit_gradient_checkpointing_blocks",
+                      e.target.value === "" ? null : Math.max(0, Math.min(32, parseInt(e.target.value) || 0))
+                    )}
+                    className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Empty uses the Qwen resolution policy (16/24/32). Lower values trade VRAM for less recomputation only when measured safe.
+                  </p>
+                </div>
+                <div>
                   <label className="block text-xs text-gray-400 mb-1">Full-K/V Query Chunk (tokens)</label>
                   <input
                     type="number"
@@ -6167,17 +6185,20 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       />
                     </div>
                     <div>
-                      <label className="block text-xs text-gray-400 mb-1">Checkpointed Blocks</label>
+                      <label className="block text-xs text-gray-400 mb-1">Partition Checkpointed Blocks</label>
                       <input
                         type="number"
                         min={0}
                         max={32}
                         placeholder="auto"
-                        value={params.qwen_partition_gradient_checkpointing_blocks ?? ""}
-                        onChange={(e) => updateParam(
-                          "qwen_partition_gradient_checkpointing_blocks",
-                          e.target.value === "" ? null : Math.max(0, Math.min(32, parseInt(e.target.value) || 0))
-                        )}
+                    value={params.dit_partition_gradient_checkpointing_blocks ?? params.qwen_partition_gradient_checkpointing_blocks ?? ""}
+                    onChange={(e) => {
+                      updateParam(
+                        "dit_partition_gradient_checkpointing_blocks",
+                        e.target.value === "" ? null : Math.max(0, Math.min(32, parseInt(e.target.value) || 0))
+                      );
+                      updateParam("qwen_partition_gradient_checkpointing_blocks", null);
+                    }}
                         className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
                       />
                       <p className="text-xs text-gray-500 mt-1">

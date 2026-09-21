@@ -74,6 +74,9 @@ CONFIG_CHANNEL_ONLY_KEYS = {
     "ltx2_clip_lengths",
     "ltx2_clip_stride",
     "debug_vram",
+    # Compatibility-only YAML key from the pre-API Qwen checkpoint probe.
+    # New requests write dit_gradient_checkpointing_blocks instead.
+    "qwen_gradient_checkpointing_blocks",
     # train_runner.py reads these off the train section, but the generator
     # emits them one level up, as siblings of "train" inside process[0] --
     # a pre-existing level mismatch, not a diagnostic switch. They read as

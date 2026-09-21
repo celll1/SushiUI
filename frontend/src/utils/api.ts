@@ -7196,6 +7196,8 @@ export interface TrainingRunCreateRequest {
   activation_dispatch_seed_coef?: number;
   activation_dispatch_residual_frac?: number;
   activation_dispatch_threshold_mb?: number;
+  dit_gradient_checkpointing_blocks?: number | null;
+  dit_partition_gradient_checkpointing_blocks?: number | null;
   qwen_partition_training_enabled?: boolean;
   qwen_partition_mode?: "fixed";
   qwen_partition_fixed_count?: 2 | 4;

@@ -12,8 +12,11 @@ This document defines a non-equivalent training acceleration for Qwen-Image
 2.1. It partitions the target image-token block into rectangular regions,
 processes every region within the same logical training item, and accumulates
 their gradients before one optimizer step. Every source-image location remains
-in the loss on every presentation. Only cross-partition target attention is
-removed.
+in the loss on every presentation. In the hard-partition baseline,
+cross-partition target attention is removed. The optional global adapter does
+not restore that dense attention matrix; it adds a separate low-rank
+full-canvas summary-and-broadcast path between the noisy latent and each
+region.
 
 This is not crop training. A crop-training step observes and supervises only a
 subset of the source image. A partitioned step covers the complete source image
@@ -40,6 +43,9 @@ The design must:
 * compose with the Qwen ConvRot frozen-base path, floating-point adapter
   backward, Flash Attention, gradient checkpointing, MNT, and activation
   dispatch;
+* optionally attach a disposable trainable global-summary path that exposes
+  each region to compressed full-canvas content without claiming dense-attention
+  equivalence;
 * reproduce the same partition plan after checkpoint resume; and
 * make halo context optional rather than part of the base contract.
 
@@ -464,6 +470,9 @@ qwen_partition_halo_tokens
 qwen_partition_sigma_adaptive
 qwen_partition_position_sidecar
 qwen_partition_seed
+qwen_partition_global_adapter_enabled
+qwen_partition_global_rank
+qwen_partition_global_tokens
 ```
 
 The UI should expose a simple off/fixed/adaptive selector, fixed count for the
@@ -552,7 +561,9 @@ variants on at least one square, portrait, and landscape bucket. Record:
 * checkpoint recomputation count;
 * dispatcher prediction error;
 * attention backend selected; and
-* ConvRot base/cache residency.
+* ConvRot base/cache residency; and
+* global-adapter enabled state, rank, token count, parameter count, and
+  persistent/step allocation.
 
 Required partitioning passes when it keeps the workload below the configured
 safety ceiling without activation offload. Elective partitioning remains
@@ -571,6 +582,11 @@ optimizer steps, seeds where meaningful, and total supervised pixels. Evaluate:
 * boundary-position error heatmaps over changing epoch plans;
 * full-frame generation with the resulting adapter; and
 * checkpoint/resume continuity.
+
+The comparison matrix includes hard partitioning without the global adapter
+and the matched global-adapter configuration. Improvements from the latter are
+reported as compressed global communication, not as evidence that hard
+partitioning preserved dense cross-region attention.
 
 Quality runs must include datasets where some buckets require partitioning and
 others fit whole, plus an elective policy that sometimes partitions the latter.
@@ -652,9 +668,12 @@ quantity depends on factor basis and scale and is not an acceptance gate.
 Third, disabling checkpointing entirely
 is invalid as an automatic optimization for cached ConvRot: fixed-2 with zero
 checkpointed blocks took 3.812 s and allocated 21.059 GiB during the step,
-worse than dense full on both measures. The automatic policy therefore scales
-the dense checkpoint count by largest-region token ratio but keeps the measured
-eight-block floor; an explicit override remains available for diagnostics.
+worse than dense full on both measures. An earlier automatic policy scaled the
+dense checkpoint count by largest-region token ratio with an eight-block floor;
+Run 153 later showed that reducing 24 blocks to 12--15 could spend the
+partition's VRAM saving and cause WDDM spill. The current automatic policy
+therefore preserves the resolved dense checkpoint count. A lower explicit
+override remains available for diagnostics.
 
 The reproducible probe is
 `core.training.probes.qwen_partition_training`. Its reported peak step delta
@@ -714,6 +733,16 @@ perturb the initial model. The branch has its own
 `qwen_partition_global_adapter.*` checkpoint namespace and metadata; ordinary
 full-frame generation warns and ignores this disposable branch while loading
 the standard LoRA matrices.
+
+This changes the approximation boundary relative to the hard-partition
+baseline. Direct target-target attention edges across regions remain absent,
+but predictions in one region can depend on every noisy-latent region through
+the compressed summaries. The branch therefore must be named in every
+full-versus-partition measurement and cannot be grouped with the baseline as
+if the only information path were local attention. `global_rank` controls the
+summary/query bottleneck width and `global_tokens` controls the number of
+learned full-canvas summaries; both are structural artifact metadata and must
+match on resume.
 
 At rank 64 with 16 summaries the adapter has 275,840 parameters. Against the
 same fixed-2 production probe, it changed the median partition step from

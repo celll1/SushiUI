@@ -6169,7 +6169,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
                       />
                       <p className="text-xs text-gray-500 mt-1">
-                        Empty scales automatically; zero was slower and larger in the SM89 probe.
+                        Empty preserves the resolved full-frame checkpoint count; a lower override can increase peak VRAM. Zero was slower and larger in the SM89 probe.
                       </p>
                     </div>
                     <label className="flex items-center gap-2 self-end pb-1 text-xs text-gray-300 cursor-pointer">

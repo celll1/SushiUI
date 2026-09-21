@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Download, SlidersHorizontal } from "lucide-react";
 import { PostEditState, isNeutral, applyPostEdit, buildFilterString, editedFilename } from "@/utils/postEdit";
 import PostEditControls from "./PostEditControls";
@@ -46,6 +47,8 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
   // Post-edit strip is collapsed by default so it never obscures the image;
   // this is purely internal UI state (not one of the optional postEdit props).
   const [postEditExpanded, setPostEditExpanded] = useState(false);
+  const [mediaFailed, setMediaFailed] = useState(false);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
   const postEditNonNeutral = postEdit ? !isNeutral(postEdit) : false;
 
   // Color-flatten preview: swaps in a processed object URL when flatten>0.
@@ -54,6 +57,19 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
   // path in usePostEditPreview entirely (flatten<=0 there is already a no-op,
   // this just avoids treating a video/audio URL as decodable image data).
   const effectiveImageUrl = usePostEditPreview(kind === "image" ? imageUrl : null, postEdit?.flatten ?? 0);
+
+  useEffect(() => {
+    setMediaFailed(false);
+  }, [effectiveImageUrl, imageUrl, kind]);
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    closeButtonRef.current?.focus();
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, []);
 
   const handleDownload = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -115,12 +131,17 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [onClose, onNavigate, hasPrev, hasNext]);
 
-  return (
+  if (typeof document === "undefined") return null;
+
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 bg-black bg-opacity-90 flex items-center justify-center"
+      className="fixed inset-0 z-[100] bg-black bg-opacity-90"
       onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Full size media preview"
     >
-      <div className="relative max-w-[95vw] max-h-[95vh] flex items-center">
+      <div className="relative flex h-full w-full items-center justify-center p-4">
         {/* Previous button */}
         {hasPrev && onNavigate && (
           <button
@@ -128,7 +149,7 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
               e.stopPropagation();
               onNavigate('prev');
             }}
-            className="absolute left-4 text-white text-4xl font-bold bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full w-14 h-14 flex items-center justify-center z-10"
+            className="absolute left-4 z-20 text-white text-4xl font-bold bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full w-14 h-14 flex items-center justify-center"
             title="Previous (Left Arrow)"
           >
             ‹
@@ -139,11 +160,12 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
           <video
             src={imageUrl}
             poster={posterUrl}
-            className="max-w-full max-h-[95vh] object-contain"
+            className="max-w-full max-h-full object-contain"
             controls
             autoPlay
             playsInline
             onClick={(e) => e.stopPropagation()}
+            onError={() => setMediaFailed(true)}
           />
         ) : kind === "audio" ? (
           <audio
@@ -152,15 +174,28 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
             controls
             autoPlay
             onClick={(e) => e.stopPropagation()}
+            onError={() => setMediaFailed(true)}
           />
         ) : (
           <img
             src={effectiveImageUrl ?? imageUrl}
             alt="Full size preview"
-            className="max-w-full max-h-[95vh] object-contain"
+            className={`max-w-full max-h-full object-contain ${mediaFailed ? "hidden" : ""}`}
             style={postEdit ? { filter: buildFilterString(postEdit) } : undefined}
             onClick={(e) => e.stopPropagation()}
+            onLoad={() => setMediaFailed(false)}
+            onError={() => setMediaFailed(true)}
           />
+        )}
+
+        {mediaFailed && (
+          <div
+            className="rounded-lg bg-gray-900 px-6 py-5 text-center text-sm text-gray-200 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p>The full-size media could not be loaded.</p>
+            <p className="mt-1 text-xs text-gray-400">Close this viewer and refresh the preview.</p>
+          </div>
         )}
 
         {/* Post-edit strip: collapsed by default (just the toggle button below)
@@ -183,7 +218,7 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
               e.stopPropagation();
               onNavigate('next');
             }}
-            className="absolute right-4 text-white text-4xl font-bold bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full w-14 h-14 flex items-center justify-center z-10"
+            className="absolute right-4 z-20 text-white text-4xl font-bold bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full w-14 h-14 flex items-center justify-center"
             title="Next (Right Arrow)"
           >
             ›
@@ -226,12 +261,15 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
         {/* Close button */}
         <button
           onClick={onClose}
-          className="absolute top-4 right-4 text-white text-3xl font-bold bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full w-12 h-12 flex items-center justify-center"
+          ref={closeButtonRef}
+          className="absolute top-4 right-4 z-30 text-white text-3xl font-bold bg-black bg-opacity-70 hover:bg-opacity-90 rounded-full w-12 h-12 flex items-center justify-center focus:outline-none focus:ring-2 focus:ring-white"
           title="Close (Escape)"
+          aria-label="Close full-size preview"
         >
           ×
         </button>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

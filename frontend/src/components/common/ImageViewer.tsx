@@ -7,6 +7,27 @@ import { PostEditState, isNeutral, applyPostEdit, buildFilterString, editedFilen
 import PostEditControls from "./PostEditControls";
 import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 
+const VIEWER_OPEN_EVENT = "sushiui:image-viewer-open";
+let bodyLockCount = 0;
+let bodyOverflowBeforeLock = "";
+
+function acquireBodyScrollLock() {
+  if (bodyLockCount === 0) {
+    bodyOverflowBeforeLock = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+  }
+  bodyLockCount += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    bodyLockCount = Math.max(0, bodyLockCount - 1);
+    if (bodyLockCount === 0) {
+      document.body.style.overflow = bodyOverflowBeforeLock;
+    }
+  };
+}
+
 interface ImageViewerProps {
   // For kind="video"/"audio" this is the browser-playable URL to render (the
   // caller resolves playbackUrl vs. url before passing it in).
@@ -49,6 +70,9 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
   const [postEditExpanded, setPostEditExpanded] = useState(false);
   const [mediaFailed, setMediaFailed] = useState(false);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const instanceIdRef = useRef(Symbol("image-viewer"));
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   const postEditNonNeutral = postEdit ? !isNeutral(postEdit) : false;
 
   // Color-flatten preview: swaps in a processed object URL when flatten>0.
@@ -63,12 +87,19 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
   }, [effectiveImageUrl, imageUrl, kind]);
 
   useEffect(() => {
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
+    const releaseBodyScrollLock = acquireBodyScrollLock();
     closeButtonRef.current?.focus();
-    return () => {
-      document.body.style.overflow = previousOverflow;
+    return releaseBodyScrollLock;
+  }, []);
+
+  useEffect(() => {
+    const instanceId = instanceIdRef.current;
+    const closeSupersededViewer = (event: Event) => {
+      if ((event as CustomEvent<symbol>).detail !== instanceId) onCloseRef.current();
     };
+    window.addEventListener(VIEWER_OPEN_EVENT, closeSupersededViewer);
+    window.dispatchEvent(new CustomEvent(VIEWER_OPEN_EVENT, { detail: instanceId }));
+    return () => window.removeEventListener(VIEWER_OPEN_EVENT, closeSupersededViewer);
   }, []);
 
   const handleDownload = async (e: React.MouseEvent) => {
@@ -133,11 +164,23 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
 
   if (typeof document === "undefined") return null;
 
+  const handleViewerPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    const target = event.target;
+    if (target instanceof Element && target.closest('[data-image-viewer-interactive="true"]')) {
+      return;
+    }
+    // Dismiss in capture phase.  A decoded image can cover almost the entire
+    // viewport; if its paint fails, it must not become an invisible click trap.
+    event.preventDefault();
+    event.stopPropagation();
+    onClose();
+  };
+
   return createPortal(
     <div
-      className="fixed inset-0 isolate bg-black bg-opacity-90 pointer-events-auto"
-      style={{ zIndex: 2147483647 }}
-      onClick={onClose}
+      className="fixed inset-0 isolate overflow-hidden bg-black bg-opacity-90 pointer-events-auto"
+      style={{ zIndex: 2147483647, overscrollBehavior: "contain" }}
+      onPointerDownCapture={handleViewerPointerDown}
       role="dialog"
       aria-modal="true"
       aria-label="Full size media preview"
@@ -146,6 +189,7 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
         {/* Previous button */}
         {hasPrev && onNavigate && (
           <button
+            data-image-viewer-interactive="true"
             onClick={(e) => {
               e.stopPropagation();
               onNavigate('prev');
@@ -159,6 +203,7 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
 
         {kind === "video" ? (
           <video
+            data-image-viewer-interactive="true"
             src={imageUrl}
             poster={posterUrl}
             className="max-w-full max-h-full object-contain"
@@ -170,6 +215,7 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
           />
         ) : kind === "audio" ? (
           <audio
+            data-image-viewer-interactive="true"
             src={imageUrl}
             className="w-[80vw] max-w-xl"
             controls
@@ -183,7 +229,6 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
             alt="Full size preview"
             className={`max-w-full max-h-full object-contain ${mediaFailed ? "hidden" : ""}`}
             style={postEdit ? { filter: buildFilterString(postEdit) } : undefined}
-            onClick={(e) => e.stopPropagation()}
             onLoad={() => setMediaFailed(false)}
             onError={() => setMediaFailed(true)}
           />
@@ -191,6 +236,7 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
 
         {mediaFailed && (
           <div
+            data-image-viewer-interactive="true"
             className="rounded-lg bg-gray-900 px-6 py-5 text-center text-sm text-gray-200 shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
@@ -205,6 +251,7 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
             Image-only (see ImageViewerProps.postEdit doc). */}
         {kind === "image" && postEdit && onPostEditChange && postEditExpanded && (
           <div
+            data-image-viewer-interactive="true"
             className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-70 px-3 py-2"
             onClick={(e) => e.stopPropagation()}
           >
@@ -215,6 +262,7 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
         {/* Next button */}
         {hasNext && onNavigate && (
           <button
+            data-image-viewer-interactive="true"
             onClick={(e) => {
               e.stopPropagation();
               onNavigate('next');
@@ -231,6 +279,7 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
             Image-only. */}
         {kind === "image" && postEdit && onPostEditChange && (
           <button
+            data-image-viewer-interactive="true"
             onClick={(e) => {
               e.stopPropagation();
               setPostEditExpanded((prev) => !prev);
@@ -251,6 +300,7 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
             download endpoint, which is not meaningful for video/audio). */}
         {kind === "image" && showDownload && (
           <button
+            data-image-viewer-interactive="true"
             onClick={handleDownload}
             className="absolute top-4 right-20 text-white bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full w-12 h-12 flex items-center justify-center"
             title="Download"
@@ -261,6 +311,7 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
 
         {/* Close button */}
         <button
+          data-image-viewer-interactive="true"
           onClick={onClose}
           ref={closeButtonRef}
           type="button"

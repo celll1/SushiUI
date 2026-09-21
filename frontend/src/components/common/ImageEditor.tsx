@@ -1653,6 +1653,12 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
   };
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      onClose();
+      return;
+    }
+
     // Pan tool with spacebar
     if (e.code === "Space" && tool !== "pan") {
       e.preventDefault();
@@ -1674,7 +1680,7 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
         redo();
       }
     }
-  }, [undo, redo, tool]);
+  }, [onClose, undo, redo, tool]);
 
   const handleKeyUp = useCallback((e: KeyboardEvent) => {
     // Release pan tool when spacebar is released

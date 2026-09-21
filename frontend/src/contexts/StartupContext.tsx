@@ -31,6 +31,9 @@ export interface ModelInfo {
   // workflows the model can serve -- ref2va is the only one that reads
   // reference rows (/generate/ref2vid).
   variant?: string;
+  // Qwen-Image 2.1 component formats reported by the loaded model.
+  transformer_variant?: string;
+  text_encoder_variant?: string;
   source?: string;
   is_v_prediction?: boolean;
   model_revision?: number;

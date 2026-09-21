@@ -8,6 +8,7 @@ import MiniMaxH3ReferenceBankPanel from "./MiniMaxH3ReferenceBankPanel";
 import { ChevronDown, ChevronUp, Folder } from "lucide-react";
 import { useStartup } from "@/contexts/StartupContext";
 import { getModels, loadModel } from "@/utils/api";
+import { archDisplayName } from "@/utils/archConstraints";
 import type { MiniMaxH3LoadOptions } from "./MiniMaxH3LoadOptions";
 
 interface Model {
@@ -21,7 +22,18 @@ interface Model {
   // `type` (diffusers/safetensors, a file-format label, not an arch) when
   // the registry couldn't classify the arch for some reason.
   architecture?: string;
+  variant?: string;
 }
+
+const variantDisplayName = (
+  architecture: string | undefined,
+  variant: string | undefined
+): string | null => {
+  if (architecture !== "qwen_image_21") return variant || null;
+  if (variant === "original" || variant === "bf16") return "Original";
+  if (variant === "int8_convrot") return "INT8 ConvRot";
+  return variant || null;
+};
 
 interface ModelSelectorProps {
   onModelLoad?: (modelInfo: any) => void;
@@ -95,6 +107,9 @@ export default function ModelSelector({
   }, [modelInfo?.source]);
 
   const currentModel = modelInfo;
+  const activeVariant = currentModel
+    ? variantDisplayName(currentModel.type, currentModel.transformer_variant)
+    : null;
 
   // Loading the model that is ALREADY loaded sends force=true: without it the
   // backend early-returns and the click does nothing at all. That reload is the
@@ -164,6 +179,9 @@ export default function ModelSelector({
     m => selectedSourceDir === "all" || m.source_dir === selectedSourceDir
   );
   const selectedModel = models.find(m => m.path === selectedModelPath);
+  const selectedVariant = selectedModel
+    ? variantDisplayName(archOf(selectedModel), selectedModel.variant)
+    : null;
   const selectedIsMiniMaxH3 = !!selectedModel && archOf(selectedModel) === "minimax_h3";
   // Both terms of the gate are computed in the render that draws the button.
   // The load-time state reaches its host through an effect, so it can still be
@@ -200,7 +218,14 @@ export default function ModelSelector({
               {currentModel.source}
             </p>
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-              <p className="rounded bg-gray-900 px-2 py-0.5 text-[10px] text-gray-400">{currentModel.type || "Unknown"}</p>
+              <p className="rounded bg-gray-900 px-2 py-0.5 text-[10px] text-gray-400">
+                {archDisplayName(currentModel.type) || "Unknown"}
+              </p>
+              {activeVariant && (
+                <p className="rounded bg-gray-900 px-2 py-0.5 text-[10px] text-gray-400">
+                  {activeVariant}
+                </p>
+              )}
               {currentModel.is_v_prediction && (
                 <span className="rounded bg-violet-600/80 px-2 py-0.5 text-[10px] text-white">
                   v-prediction
@@ -253,7 +278,7 @@ export default function ModelSelector({
                   }}
                   options={[
                     { value: "all", label: "All architectures" },
-                    ...uniqueArchitectures.map(arch => ({ value: arch, label: arch }))
+                    ...uniqueArchitectures.map(arch => ({ value: arch, label: archDisplayName(arch) }))
                   ]}
                 />
               )}
@@ -271,7 +296,7 @@ export default function ModelSelector({
                   { value: "", label: "-- Select a model --" },
                   ...filteredModels.map(model => ({
                     value: model.path,
-                    label: `${model.name} (${archOf(model)}${model.size_gb ? ` • ${model.size_gb} GB` : ''})`
+                    label: `${model.name} (${archDisplayName(archOf(model))}${variantDisplayName(archOf(model), model.variant) ? ` • ${variantDisplayName(archOf(model), model.variant)}` : ''}${model.size_gb ? ` • ${model.size_gb} GB` : ''})`
                   }))
                 ]}
               />
@@ -330,7 +355,13 @@ export default function ModelSelector({
                     <div className="grid gap-2 sm:grid-cols-[auto_auto_minmax(0,1fr)_auto] sm:items-center">
                       <div>
                         <span className="text-gray-500">Architecture</span>
-                        <span className="ml-1.5 text-white">{archOf(selectedModel)}</span>
+                        <span className="ml-1.5 text-white">{archDisplayName(archOf(selectedModel))}</span>
+                        {selectedVariant && (
+                          <div className="mt-0.5">
+                            <span className="text-gray-500">Variant</span>
+                            <span className="ml-1.5 text-white">{selectedVariant}</span>
+                          </div>
+                        )}
                       </div>
                       <div>
                         <span className="text-gray-500">Size</span>

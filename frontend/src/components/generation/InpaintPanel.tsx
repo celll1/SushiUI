@@ -1181,7 +1181,8 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
   const [isGeneratingTIPO, setIsGeneratingTIPO] = useState(false);
   const [galleryImages, setGalleryImages] = useState<Array<{ url: string; timestamp: number }>>([]);
   const [maxGalleryImages, setMaxGalleryImages] = useState(30);
-  const [previewViewerOpen, setPreviewViewerOpen] = useState(false);
+  // Keep the open viewer independent of live-preview/final-result replacement.
+  const [previewViewerImage, setPreviewViewerImage] = useState<string | null>(null);
   const [showAdvancedCFG, setShowAdvancedCFG] = useState(false);
 
   // FLUX.2 Image Edit / Vision Encoder / SenseNova U1.5: Reference images
@@ -6585,8 +6586,8 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
               <div
                 className="w-full aspect-square max-h-[500px] lg:max-h-none bg-gray-800 rounded-lg flex items-center justify-center cursor-pointer"
                 onDoubleClick={() => {
-                  if (!isVideo && generatedImage) {
-                    setPreviewViewerOpen(true);
+                  if (!isGenerating && !isVideo && generatedImage) {
+                    setPreviewViewerImage(generatedImage);
                   }
                 }}
               >
@@ -6847,10 +6848,10 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
       <FloatingGallery images={galleryImages} maxImages={maxGalleryImages} />
 
       {/* Preview Image Viewer */}
-      {previewViewerOpen && generatedImage && (
+      {previewViewerImage && (
         <ImageViewer
-          imageUrl={generatedImage}
-          onClose={() => setPreviewViewerOpen(false)}
+          imageUrl={previewViewerImage}
+          onClose={() => setPreviewViewerImage(null)}
           postEdit={postEdit}
           onPostEditChange={setPostEdit}
         />

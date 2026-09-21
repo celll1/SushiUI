@@ -513,7 +513,7 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
   const [generatedImageSeed, setGeneratedImageSeed] = useState<number | null>(null);
   const [generatedImageAncestralSeed, setGeneratedImageAncestralSeed] = useState<number | null>(null);
   // Preview zoom (image result only), mirrors Txt2ImgPanel/Img2ImgPanel/InpaintPanel.
-  const [previewViewerOpen, setPreviewViewerOpen] = useState(false);
+  const [previewViewerImage, setPreviewViewerImage] = useState<string | null>(null);
   // Client-side post-edit (brightness/saturation/flatten) for the current preview image.
   // Never sent to the backend; reset to neutral on each new generated image.
   const [postEdit, setPostEdit] = useState<PostEditState>({ ...NEUTRAL_POST_EDIT });
@@ -4829,8 +4829,8 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
               <div
                 className="w-full aspect-square max-h-[500px] lg:max-h-none bg-gray-800 rounded-lg flex items-center justify-center cursor-pointer"
                 onDoubleClick={() => {
-                  if (!isVideo && !isAudio && generatedImage) {
-                    setPreviewViewerOpen(true);
+                  if (!isGenerating && !isVideo && !isAudio && generatedImage) {
+                    setPreviewViewerImage(generatedImage);
                   }
                 }}
               >
@@ -5059,10 +5059,10 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
       </div>
 
       {/* Preview Image Viewer (image result only) */}
-      {previewViewerOpen && generatedImage && (
+      {previewViewerImage && (
         <ImageViewer
-          imageUrl={generatedImage}
-          onClose={() => setPreviewViewerOpen(false)}
+          imageUrl={previewViewerImage}
+          onClose={() => setPreviewViewerImage(null)}
           postEdit={postEdit}
           onPostEditChange={setPostEdit}
         />

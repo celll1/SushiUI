@@ -878,7 +878,8 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
     ]
   });
   const [isGeneratingTIPO, setIsGeneratingTIPO] = useState(false);
-  const [previewViewerOpen, setPreviewViewerOpen] = useState(false);
+  // Keep the open viewer independent of live-preview/final-result replacement.
+  const [previewViewerImage, setPreviewViewerImage] = useState<string | null>(null);
   const [showAdvancedCFG, setShowAdvancedCFG] = useState(false);
 
   // Native/reference-conditioning image inputs.
@@ -6095,8 +6096,8 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
               <div
                 className="w-full aspect-square max-h-[500px] lg:max-h-none bg-gray-800 rounded-lg flex items-center justify-center cursor-pointer"
                 onDoubleClick={() => {
-                  if (generatedImage) {
-                    setPreviewViewerOpen(true);
+                  if (!isGenerating && generatedImage) {
+                    setPreviewViewerImage(generatedImage);
                   }
                 }}
               >
@@ -6374,10 +6375,10 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
 
 
       {/* Preview Image Viewer */}
-      {previewViewerOpen && generatedImage && (
+      {previewViewerImage && (
         <ImageViewer
-          imageUrl={generatedImage}
-          onClose={() => setPreviewViewerOpen(false)}
+          imageUrl={previewViewerImage}
+          onClose={() => setPreviewViewerImage(null)}
           postEdit={postEdit}
           onPostEditChange={setPostEdit}
         />

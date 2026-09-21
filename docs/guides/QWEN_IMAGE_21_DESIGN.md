@@ -668,6 +668,11 @@ rank 128 and checkpointing 24/32 blocks, an offloaded 8,892-token step used
 non-offloaded steps used about 41.6 GiB and 5.96 s. Transfers are synchronous,
 so offload stays opt-in.
 
+Complete-coverage partitioned target training is proposed separately in
+[`QWEN_IMAGE_21_PARTITIONED_TRAINING_DESIGN.md`](QWEN_IMAGE_21_PARTITIONED_TRAINING_DESIGN.md).
+It is not implemented and does not change this document's current training
+contract.
+
 Conditioning and latent caches should let steady-state training release TE and
 VAE. Without caches, stage TE, VAE, and DiT sequentially. Full-DiT training is
 expected to need block swap or optimizer-state offload on common GPUs; this is

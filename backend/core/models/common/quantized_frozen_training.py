@@ -3,8 +3,8 @@
 Opt-in, default OFF. Implements ``docs/guides/INT8_CONVROT_TRAINING_DESIGN.md``
 sections 2.1-2.3: for a Linear whose quantized weight is FROZEN, run the fused
 inference kernel in forward even under autograd, and compute ``grad_x`` in
-backward from a floating weight. The generic opt-in path rebuilds that weight;
-Qwen-Image 2.1 LoRA retains a non-persistent BF16 cache for its frozen base.
+backward from a floating weight. The transient path rebuilds that weight one
+layer at a time; an optional speed path retains a non-persistent BF16 cache.
 
 The generic candidate path has two structural properties:
 

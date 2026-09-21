@@ -292,6 +292,38 @@ class VideoClipLengthSeparationTest(unittest.TestCase):
             d.predicted_offloadable(self.LH, self.LW, 1, lt=self.LT_LONG), 1.36, places=3)
 
 
+class SequentialOffloadCalibrationTest(unittest.TestCase):
+    def test_qwen_style_dispatch_uses_seed_for_unseen_bucket(self):
+        d = ActivationDispatcher(
+            budget_gb=48.0, seed_coef=5.0e-3, use_cross_bucket_fit=False
+        )
+        d.record(2000, 1, 1, "base", peak_gb=31.0, resident_gb=21.0)
+        d.record(3000, 1, 1, "base", peak_gb=45.0, resident_gb=21.0)
+        self.assertEqual(d.base_act(2400, 1, 1), 12.0)
+        self.assertEqual(d.base_act(5000, 1, 1), 25.0)
+        self.assertEqual(d.base_act(3000, 1, 1), 24.0)
+
+    def test_cumulative_region_traffic_does_not_inflate_base_prediction(self):
+        d = ActivationDispatcher(budget_gb=48.0, seed_coef=5.0e-3)
+        cold = d.base_act(5000, 1, 1)
+        d.record(
+            5000, 1, 1, "offload", peak_gb=30.0, resident_gb=21.0,
+            offloaded_gb=40.0, recover_base_from_offload=False,
+        )
+        self.assertEqual(d.base_act(5000, 1, 1), cold)
+        self.assertEqual(d._samples, [])
+
+    def test_prior_fast_measurement_calibrates_offload_effectiveness_only(self):
+        d = ActivationDispatcher(budget_gb=48.0, seed_coef=5.0e-3)
+        d.record(5000, 1, 1, "base", peak_gb=46.0, resident_gb=21.0)
+        d.record(
+            5000, 1, 1, "offload", peak_gb=30.0, resident_gb=21.0,
+            offloaded_gb=40.0, recover_base_from_offload=False,
+        )
+        self.assertEqual(d.base_act(5000, 1, 1), 25.0)
+        self.assertEqual(d.predicted_offloadable(5000, 1, 1), 16.0)
+
+
 class LatentKeyExtractionTest(unittest.TestCase):
     """``BaseTrainer`` must read the temporal extent off the latent tensor, and
     must read 1 for a 4-D image latent (whose ``shape[-3]`` is the CHANNEL

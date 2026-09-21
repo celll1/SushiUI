@@ -11481,6 +11481,7 @@ class BaseTrainer(ABC):
                 seed_coef=max(seed_coef, seed_floor),
                 residual_frac=self.activation_dispatch_residual_frac,
                 threshold_bytes=self.activation_dispatch_threshold_mb * 1024 * 1024,
+                use_cross_bucket_fit=(family != "qwen_image_21"),
             )
             dispatchers[family] = disp
         # Preserve the historical public/internal handle for callers which inspect
@@ -11607,6 +11608,13 @@ class BaseTrainer(ABC):
                               f"resident~{resident_gb:.1f}GB); offload only")
 
         use_offload = mode in ("offload", "escalate")
+        if mode == "offload":
+            _log_once(
+                (family, lh, lw, lt, bs, "offload"),
+                f"{self.log_prefix} [ActDispatch] bucket {_bkt} bs{bs} -> offload "
+                f"(act~{_act_pred_gb:.1f}GB, headroom~{_headroom_gb:.1f}GB, "
+                f"resident~{resident_gb:.1f}GB)",
+            )
         from core.memory_management import offload_activations
         try:
             torch.cuda.reset_peak_memory_stats()
@@ -11663,7 +11671,8 @@ class BaseTrainer(ABC):
                     executed_bs=(micro_bs if micro_bs is not None else bs),
                     offloaded_gb=offloaded_gb,
                     measured_threshold_bytes=(info[7] if len(info) > 7 else None),
-                    lt=lt)
+                    lt=lt,
+                    recover_base_from_offload=(family != "qwen_image_21"))
             if self.debug_vram:
                 extra = f" micro_bs={micro_bs}" if micro_bs is not None else ""
                 if family == "sensenova_text":

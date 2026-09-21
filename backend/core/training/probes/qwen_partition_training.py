@@ -19,6 +19,7 @@ import torch
 from core.models.qwen_image_21.artifact import load_manifest, load_transformer
 from core.models.common.quantized_frozen_training import (
     enable_frozen_training_cached_backward,
+    enable_frozen_training_fused,
 )
 from core.training.adapters.qwen_image_21_adapter import QwenImage21LoRAAdapter
 from core.training.ops import qwen_image_21_ops
@@ -406,17 +407,23 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     transformer, variant = load_transformer(
         manifest.transformer, manifest.transformer_config, dtype
     )
-    if variant != "int8_convrot":
-        raise ValueError(
-            "The production training probe requires an int8_convrot transformer; "
-            f"got {variant!r}"
-        )
     transformer.requires_grad_(False).train().to(device)
     transformer.enable_gradient_checkpointing()
     transformer._training_gradient_checkpointing_blocks = args.checkpoint_blocks
-    fused_layers, backward_cache_bytes = enable_frozen_training_cached_backward(
-        transformer, dtype=dtype, label="Qwen partition probe"
-    )
+    if variant != "int8_convrot":
+        fused_layers, backward_cache_bytes = 0, 0
+        convrot_policy = "dense_bf16"
+    elif args.convrot_backward == "cached":
+        fused_layers, backward_cache_bytes = enable_frozen_training_cached_backward(
+            transformer, dtype=dtype, label="Qwen partition probe"
+        )
+        convrot_policy = "cached"
+    else:
+        fused_layers = enable_frozen_training_fused(
+            transformer, label="Qwen partition probe"
+        )
+        backward_cache_bytes = 0
+        convrot_policy = "transient"
 
     trainer = _ProbeTrainer(
         transformer=transformer,
@@ -617,7 +624,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             "distillation": distillation,
         },
         "convrot": {
-            "cached_layers": fused_layers,
+            "backward_weight_policy": convrot_policy,
+            "enabled_layers": fused_layers,
             "backward_cache_gb": backward_cache_bytes / GB,
         },
         "checkpoint_blocks": {
@@ -646,6 +654,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", type=Path, default=Path(r"M:\model\qwen21\int8_convrot"))
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--attention", choices=("native", "flash"), default="flash")
+    parser.add_argument(
+        "--convrot-backward", choices=("cached", "transient"), default="cached"
+    )
     parser.add_argument("--query-chunk-tokens", type=int, default=0)
     parser.add_argument("--batch", type=int, default=1)
     parser.add_argument("--latent-height", type=int, default=64)

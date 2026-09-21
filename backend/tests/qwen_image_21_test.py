@@ -360,7 +360,7 @@ def test_qwen_partition_global_adapter_accepts_bf16_activations_with_fp32_master
     assert adapter.out.weight.grad is not None
 
 
-def test_qwen_partition_checkpoint_auto_policy_keeps_measured_floor():
+def test_qwen_partition_checkpoint_auto_preserves_base_memory_policy():
     plan = build_fixed_partition_plan(64, 64, count=4, seed=2)
     trainer = SimpleNamespace(
         config={"qwen_partition_gradient_checkpointing_blocks": None},
@@ -368,11 +368,41 @@ def test_qwen_partition_checkpoint_auto_policy_keeps_measured_floor():
     )
     assert qwen_image_21_ops._resolve_partition_checkpoint_blocks(
         trainer, plan, 16
-    ) == 8
+    ) == 16
     trainer.config["qwen_partition_gradient_checkpointing_blocks"] = 11
     assert qwen_image_21_ops._resolve_partition_checkpoint_blocks(
         trainer, plan, 16
     ) == 11
+
+
+def test_qwen_partition_auto_keeps_cached_convrot_backward_weights():
+    trainer = SimpleNamespace(
+        config={"qwen_partition_training_enabled": True},
+        qwen_image_21_transformer_variant="int8_convrot",
+        lora_rank=128,
+        training_dtype=torch.bfloat16,
+    )
+    assert qwen_image_21_ops._resolve_convrot_training_forward(
+        trainer, "auto"
+    ) == ("cached_bf16", "ConvRot speed policy")
+
+    trainer.config["qwen_partition_training_enabled"] = False
+    assert qwen_image_21_ops._resolve_convrot_training_forward(
+        trainer, "auto"
+    ) == ("cached_bf16", "ConvRot speed policy")
+
+
+def test_qwen_transient_convrot_training_uses_same_artifact_contract():
+    trainer = SimpleNamespace(
+        qwen_convrot_training_forward="transient_bf16",
+        learning_rate=1e-4,
+        unet_lr=None,
+    )
+    adapter = QwenImage21LoRAAdapter(
+        trainer, lora_rank=2, lora_alpha=2, lora_dtype=torch.float32
+    )
+    metadata = adapter.checkpoint_metadata({}, step=1, epoch=0)
+    assert metadata["qwen_base_forward"] == "convrot_int8_bf16_backward_v1"
 
 
 def test_qwen_partition_api_refuses_odd_halo():

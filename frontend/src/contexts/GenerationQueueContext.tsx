@@ -225,6 +225,8 @@ export interface QueueItem {
   // to drift from, or has not finished yet.
   chainLastDriftFrames?: number;
   status: "pending" | "generating" | "completed" | "failed";
+  // Non-modal failure detail shown in the queue.
+  error?: string;
   addedAt: number;
   prompt: string; // For display purposes
   loopGroupId?: string; // ID to group loop steps together
@@ -258,7 +260,7 @@ interface GenerationQueueContextType {
   cancelRelatedItems: (itemId: string) => void;
   startNextInQueue: (allowedTypes?: readonly QueueItem["type"][]) => QueueItem | null;
   completeCurrentItem: () => void;
-  failCurrentItem: () => void;
+  failCurrentItem: (error?: string) => void;
   clearQueue: () => void;
   generateForever: boolean;
   setGenerateForever: (enabled: boolean) => void;
@@ -625,7 +627,7 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
     setProgressSnapshot(null);
   }, []); // Empty deps - uses refs
 
-  const failCurrentItem = useCallback(() => {
+  const failCurrentItem = useCallback((error?: string) => {
     const currentItemValue = currentItemRef.current;
     if (!currentItemValue) return;
 
@@ -633,7 +635,9 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
     // Mark as failed but keep in queue for user to see
     setQueue((prev) =>
       prev.map((item) =>
-        item.id === currentItemValue.id ? { ...item, status: "failed" as const } : item
+        item.id === currentItemValue.id
+          ? { ...item, status: "failed" as const, error }
+          : item
       )
     );
     currentItemRef.current = null;

@@ -256,6 +256,11 @@ export default function GenerationQueue({ currentStep = 0 }: GenerationQueueProp
                 <p className="text-xs text-gray-300 truncate" title={item.prompt}>
                   {item.prompt || "No prompt"}
                 </p>
+                {item.error && (
+                  <p className="mt-1 break-words text-[10px] leading-relaxed text-red-300">
+                    {item.error}
+                  </p>
+                )}
               </div>
               <button
                 onClick={() => removeFromQueue(item.id)}

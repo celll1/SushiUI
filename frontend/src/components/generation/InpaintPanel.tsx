@@ -30,6 +30,7 @@ import GenerationQueue from "../common/GenerationQueue";
 import GenerationLeadGrid from "../common/GenerationLeadGrid";
 import InlineHelp from "../common/InlineHelp";
 import H3PromptAssist from "../common/H3PromptAssist";
+import Qwen21PromptUpsample from "../common/Qwen21PromptUpsample";
 import ResizableColumns, {
   GENERATION_PREVIEW_QUEUE_SPLIT_KEY,
   GENERATION_WORKSPACE_SPLIT_KEY,
@@ -98,6 +99,7 @@ import { useStartup } from "@/contexts/StartupContext";
 import { queueItemBelongsToPanel, useGenerationQueue } from "@/contexts/GenerationQueueContext";
 import SendToStudioButton from "../studio/SendToStudioButton";
 import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
+import { maybeUpsampleQwen21Prompt } from "@/utils/qwen21PromptUpsample";
 
 interface InpaintParams {
   prompt: string;
@@ -3501,6 +3503,20 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
       }
     }
 
+    if (modality.modelInfo?.type === "qwen_image_21") {
+      try {
+        const upsampled = await maybeUpsampleQwen21Prompt({
+          prompt: processedPrompt,
+          mode: "i2i",
+          images: [inputImagePreview],
+        });
+        if (upsampled) processedPrompt = upsampled.prompt;
+      } catch (error: any) {
+        alert(error?.message || "Qwen 2.1 prompt upsampling failed");
+        return;
+      }
+    }
+
     const loopGroupId = loopGenerationConfig.enabled ? `loop_${Date.now()}_${Math.random().toString(36).substr(2, 9)}` : undefined;
     const hasEnabledLoopSteps = loopGenerationConfig.enabled && loopGenerationConfig.steps.some(s => s.enabled);
     // Main step decode directive. Inpaint never supports latent passthrough
@@ -4916,6 +4932,14 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
             videos: h3References.videos.length,
             audios: h3References.audios.length + h3References.videoAudios.filter(Boolean).length,
           })}
+        />
+      )}
+      {loadedArchType === "qwen_image_21" && inputImagePreview && (
+        <Qwen21PromptUpsample
+          prompt={params.prompt}
+          mode="i2i"
+          images={[inputImagePreview]}
+          onApply={(prompt) => setParams((previous) => ({ ...previous, prompt }))}
         />
       )}
       {!isVideo && (

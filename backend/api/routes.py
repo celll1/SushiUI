@@ -61,7 +61,8 @@ from api.param_defaults import (
     VIDEO_GEN_ARCH_OVERLAYS,
     OUTPAINT_AUDIO_ARCH_OVERLAYS,
     IMAGE_GEN_ARCH_OVERLAYS,
-    PROMPT_ASSIST_DEFAULTS, MUSIC_PROMPT_ASSIST_DEFAULTS, MUSIC_LYRICS_ASSIST_DEFAULTS,
+    PROMPT_ASSIST_DEFAULTS, QWEN_IMAGE_21_PROMPT_UPSAMPLE_DEFAULTS,
+    MUSIC_PROMPT_ASSIST_DEFAULTS, MUSIC_LYRICS_ASSIST_DEFAULTS,
     STUDIO_RENDER_DEFAULTS, H3_HYBRID_LOAD_DEFAULTS, CHIMERA_INITIALIZE_DEFAULTS,
     LORA_ITEM_DEFAULTS,
     VIDEO_CHAIN_DEFAULTS,
@@ -120,6 +121,10 @@ from core.extensions.minimax_h3_prompt_assistant import (
     MiniMaxH3PromptAssistant,
     validate_prompt as validate_h3_prompt,
 )
+from core.extensions.qwen_image_21_prompt_upsampler import (
+    QwenImage21PromptUpsampleOptions,
+    QwenImage21PromptUpsampler,
+)
 from core.extensions.minimax_music3_caption_rewriter import (
     MiniMaxMusic3CaptionRewriter,
     MusicCaptionAssistOptions,
@@ -162,6 +167,9 @@ router.include_router(schema_router)
 
 minimax_h3_prompt_assistant = MiniMaxH3PromptAssistant(
     PROMPT_ASSIST_DEFAULTS["cache_max_entries"]
+)
+qwen_image_21_prompt_upsampler = QwenImage21PromptUpsampler(
+    QWEN_IMAGE_21_PROMPT_UPSAMPLE_DEFAULTS["cache_max_entries"]
 )
 minimax_music3_caption_rewriter = MiniMaxMusic3CaptionRewriter(
     MUSIC_PROMPT_ASSIST_DEFAULTS["cache_max_entries"]
@@ -11484,6 +11492,26 @@ class PromptAssistModelRequest(BaseModel):
     )
 
 
+class QwenImage21PromptUpsampleRequest(BaseModel):
+    prompt: str
+    mode: Literal["t2i", "i2i"]
+    engine: Literal["official", "lm_studio", "ollama"] = QWEN_IMAGE_21_PROMPT_UPSAMPLE_DEFAULTS["engine"]
+    base_url: str = QWEN_IMAGE_21_PROMPT_UPSAMPLE_DEFAULTS["base_url"]
+    model: str = QWEN_IMAGE_21_PROMPT_UPSAMPLE_DEFAULTS["model"]
+    api_key: str = Field(
+        QWEN_IMAGE_21_PROMPT_UPSAMPLE_DEFAULTS["api_key"],
+        json_schema_extra={"writeOnly": True},
+    )
+    images: List[str] = Field(default_factory=list, max_length=10)
+    temperature: float = Field(QWEN_IMAGE_21_PROMPT_UPSAMPLE_DEFAULTS["temperature"], ge=0, le=2)
+    top_p: float = Field(QWEN_IMAGE_21_PROMPT_UPSAMPLE_DEFAULTS["top_p"], gt=0, le=1)
+    top_k: int = Field(QWEN_IMAGE_21_PROMPT_UPSAMPLE_DEFAULTS["top_k"], ge=0, le=1000)
+    max_output_tokens: int = Field(QWEN_IMAGE_21_PROMPT_UPSAMPLE_DEFAULTS["max_output_tokens"], ge=128, le=32768)
+    context_length: int = Field(QWEN_IMAGE_21_PROMPT_UPSAMPLE_DEFAULTS["context_length"], ge=1024, le=262144)
+    timeout_seconds: int = Field(QWEN_IMAGE_21_PROMPT_UPSAMPLE_DEFAULTS["timeout_seconds"], ge=10, le=3600)
+    force_refresh: bool = QWEN_IMAGE_21_PROMPT_UPSAMPLE_DEFAULTS["force_refresh"]
+
+
 class PromptAssistTemplateRequest(BaseModel):
     prompt: str
     mode: Literal["t2va", "i2va", "fl2va", "l2va", "ref2va"]
@@ -11579,6 +11607,44 @@ async def transform_h3_prompt(request: PromptAssistTransformRequest):
 @router.post("/prompt-assist/cache/clear", tags=["prompt-assist"])
 async def clear_prompt_assist_cache():
     deleted = await asyncio.to_thread(minimax_h3_prompt_assistant.cache.clear)
+    return {"status": "success", "deleted": deleted}
+
+
+@router.post("/prompt-assist/qwen-image-21/transform", tags=["prompt-assist"])
+async def transform_qwen_image_21_prompt(request: QwenImage21PromptUpsampleRequest):
+    model_info = pipeline_manager.current_model_info or {}
+    if model_info.get("type") != "qwen_image_21" or not model_info.get("source"):
+        raise HTTPException(status_code=400, detail="Load a Qwen-Image 2.1 model first")
+    provider = request.engine if request.engine != "official" else "lm_studio"
+    options = QwenImage21PromptUpsampleOptions(
+        prompt=request.prompt,
+        mode=request.mode,
+        engine=request.engine,
+        base_url=_prompt_assist_base_url(provider, request.base_url),
+        model=request.model,
+        images=request.images,
+        temperature=request.temperature,
+        top_p=request.top_p,
+        top_k=request.top_k,
+        max_output_tokens=request.max_output_tokens,
+        context_length=request.context_length,
+        timeout_seconds=request.timeout_seconds,
+        force_refresh=request.force_refresh,
+    )
+    try:
+        return await asyncio.to_thread(
+            qwen_image_21_prompt_upsampler.transform,
+            options,
+            source=str(model_info["source"]),
+            api_key=request.api_key,
+        )
+    except PromptAssistError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/prompt-assist/qwen-image-21/cache/clear", tags=["prompt-assist"])
+async def clear_qwen_image_21_prompt_cache():
+    deleted = await asyncio.to_thread(qwen_image_21_prompt_upsampler.cache.clear)
     return {"status": "success", "deleted": deleted}
 
 

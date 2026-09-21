@@ -37,6 +37,7 @@ import ResizableColumns, {
   GENERATION_WORKSPACE_SPLIT_KEY,
 } from "../common/ResizableColumns";
 import H3PromptAssist from "../common/H3PromptAssist";
+import Qwen21PromptUpsample from "../common/Qwen21PromptUpsample";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import MiniMaxH3KeyframeTimeline from "../common/MiniMaxH3KeyframeTimeline";
@@ -66,6 +67,7 @@ import { sendToPanel, sendImageToImg2Img, sendImageToInpaint, sendImageToUpscale
 import { useStartup } from "@/contexts/StartupContext";
 import { queueItemBelongsToPanel, useGenerationQueue } from "@/contexts/GenerationQueueContext";
 import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
+import { maybeUpsampleQwen21Prompt } from "@/utils/qwen21PromptUpsample";
 import { readGlobalAttentionType } from "@/utils/attentionSettings";
 import { DEFAULT_ASPECT_RATIO_PRESETS, DEFAULT_FIXED_RESOLUTION_PRESETS, readStoredGenerationDisplaySettings } from "@/utils/generationDisplaySettings";
 
@@ -2439,6 +2441,20 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
       }
     }
 
+    if (!videoMode && !audioMode && modality.modelInfo?.type === "qwen_image_21") {
+      try {
+        const upsampled = await maybeUpsampleQwen21Prompt({
+          prompt: processedPrompt,
+          mode: "i2i",
+          images: [imageBase64, ...refImages],
+        });
+        if (upsampled) processedPrompt = upsampled.prompt;
+      } catch (error: any) {
+        alert(error?.message || "Qwen 2.1 prompt upsampling failed");
+        return;
+      }
+    }
+
     if (videoMode && modality.modelInfo?.type === "minimax_h3") {
       const refMode = modality.modelInfo?.variant === "ref2va" && countMiniMaxH3References(h3References) > 0;
       const promptMode = refMode ? "ref2va" : params.last_frame_image ? "fl2va" : "i2va";
@@ -4234,6 +4250,14 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
             videos: h3References.videos.length,
             audios: h3References.audios.length + h3References.videoAudios.filter(Boolean).length + (inputAudioTrack ? 1 : 0),
           })}
+        />
+      )}
+      {loadedArch === "qwen_image_21" && (inputImage || inputImagePreview) && (
+        <Qwen21PromptUpsample
+          prompt={params.prompt}
+          mode="i2i"
+          images={[inputImage || inputImagePreview!, ...refImages]}
+          onApply={(prompt) => setParams((previous) => ({ ...previous, prompt }))}
         />
       )}
       {!isVideo && <div className="flex flex-wrap items-center gap-1.5 rounded bg-gray-800 px-2 py-1.5">

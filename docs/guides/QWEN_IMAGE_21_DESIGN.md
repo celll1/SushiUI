@@ -175,6 +175,20 @@ The local layout is:
     preprocessor_config.json
     video_preprocessor_config.json
     chat_template.jinja
+  prompt_enhancer/
+    t2i/
+      manifest.json
+      qwen_image_2.1_pe_t2i_int8_convrot.safetensors
+      config.json
+      tokenizer.json
+      system_prompt.txt
+    i2i/
+      manifest.json
+      qwen_image_2.1_pe_i2i_int8_convrot.safetensors
+      config.json
+      tokenizer.json
+      processor_config.json
+      system_prompt.txt
 ```
 
 For the owner's checkout, `<MODEL_ROOT>/qwen21` maps to the requested local
@@ -196,7 +210,26 @@ TE and DiT are separate artifacts by design:
 The VAE remains a third file. It is shared by both precision variants and is
 not quantized.
 
-### 4.1 `manifest.json`
+### 4.1 Prompt-enhancer artifacts
+
+The T2I and I2I prompt enhancers are separate Qwen3.5-VL 9B checkpoints and are
+not part of the generation TE/DiT lifecycle. `subapps/qwen_image_21_pe_convert.py`
+builds each from its source directory as one INT8 ConvRot safetensors plus the
+small processor/config files. Eligible linears use the same validated runtime
+as the main Qwen artifact; unsupported-width linears stay BF16. Source shards
+are temporary conversion inputs and are not retained in the model directory.
+
+`POST /prompt-assist/qwen-image-21/transform` selects the matching artifact by
+mode. The official engine runs locally in-process; LM Studio and Ollama are
+loopback-only alternatives using a selected local multimodal model for I2I.
+Results are cached before model load. The API returns the rewritten prompt plus
+`wh_ratio`/`ratio_follow`; these are advisory and do not mutate width or height.
+
+The UI supports preview-and-apply and an opt-in automatic rewrite on Generate.
+Txt2img switches to I2I mode when reference images exist; img2img, inpaint, and
+outpaint always use I2I mode.
+
+### 4.2 `manifest.json`
 
 Each variant directory is independently selectable. Its manifest contains no
 weights and points to one safetensors file per component:
@@ -222,7 +255,7 @@ weights and points to one safetensors file per component:
 Paths are relative to the manifest directory. DiT and TE variants are paired
 by construction; there is no mixed-variant UI override.
 
-### 4.2 Artifact creation
+### 4.3 Artifact creation
 
 `subapps/qwen_image_21_convert.py` has two modes:
 
@@ -242,7 +275,7 @@ An already-published single-file repack may be imported only after tensor-key,
 shape, dtype, config, and source-revision validation. File names and repository
 labels alone are not a trust boundary.
 
-### 4.3 Safetensors metadata
+### 4.4 Safetensors metadata
 
 Every weight file includes at least:
 
@@ -267,7 +300,7 @@ and fp32 `weight_scale`. The accepted marker contract is exactly the shared
 2-D weights, and valid scale shape. Any unknown marker aborts the header-only
 preflight before the currently loaded model is torn down.
 
-### 4.4 Quantization scope
+### 4.5 Quantization scope
 
 Quantize eligible `nn.Linear` weights in both DiT and TE. Keep the following in
 BF16/FP32 as appropriate:

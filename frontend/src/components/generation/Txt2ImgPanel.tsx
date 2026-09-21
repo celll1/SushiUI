@@ -33,6 +33,7 @@ import GenerationQueue from "../common/GenerationQueue";
 import GenerationLeadGrid from "../common/GenerationLeadGrid";
 import InlineHelp from "../common/InlineHelp";
 import H3PromptAssist from "../common/H3PromptAssist";
+import Qwen21PromptUpsample from "../common/Qwen21PromptUpsample";
 import MusicCaptionAssist from "../common/MusicCaptionAssist";
 import MusicLyricsAssist from "../common/MusicLyricsAssist";
 import SendToStudioButton from "../studio/SendToStudioButton";
@@ -69,6 +70,7 @@ import { sendToPanel, sendImageToImg2Img, sendBase64ImageToInpaint, sendBase64Im
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue, queueItemBelongsToPanel } from "@/contexts/GenerationQueueContext";
 import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
+import { maybeUpsampleQwen21Prompt } from "@/utils/qwen21PromptUpsample";
 import { readGlobalAttentionType } from "@/utils/attentionSettings";
 import { DEFAULT_ASPECT_RATIO_PRESETS, DEFAULT_FIXED_RESOLUTION_PRESETS, readStoredGenerationDisplaySettings } from "@/utils/generationDisplaySettings";
 
@@ -1832,6 +1834,20 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       ? await replaceWildcardsInPrompt(params.negative_prompt)
       : "";
 
+    if (!videoMode && !audioMode && modality.modelInfo?.type === "qwen_image_21") {
+      try {
+        const upsampled = await maybeUpsampleQwen21Prompt({
+          prompt: processedPrompt,
+          mode: refImages.length ? "i2i" : "t2i",
+          images: refImages,
+        });
+        if (upsampled) processedPrompt = upsampled.prompt;
+      } catch (error: any) {
+        alert(error?.message || "Qwen 2.1 prompt upsampling failed");
+        return;
+      }
+    }
+
     if (videoMode && modality.modelInfo?.type === "minimax_h3") {
       const promptMode = modality.modelInfo?.variant === "ref2va" && countMiniMaxH3References(h3References) > 0
         ? "ref2va"
@@ -3447,6 +3463,14 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
             videos: h3References.videos.length,
             audios: h3References.audios.length + h3References.videoAudios.filter(Boolean).length,
           })}
+        />
+      )}
+      {loadedArch === "qwen_image_21" && (
+        <Qwen21PromptUpsample
+          prompt={params.prompt}
+          mode={refImages.length ? "i2i" : "t2i"}
+          images={refImages}
+          onApply={(prompt) => setParams((previous) => ({ ...previous, prompt }))}
         />
       )}
       {!isVideo && <div className="flex flex-wrap items-center gap-1.5 rounded bg-gray-800 px-2 py-1.5">

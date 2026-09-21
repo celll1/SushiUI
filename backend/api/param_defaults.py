@@ -49,6 +49,26 @@ PROMPT_ASSIST_DEFAULTS: Dict[str, Any] = {
 }
 
 # ---------------------------------------------------------------------------
+# Qwen-Image 2.1 prompt upsampler
+# ---------------------------------------------------------------------------
+
+QWEN_IMAGE_21_PROMPT_UPSAMPLE_DEFAULTS: Dict[str, Any] = {
+    "enabled": False,
+    "engine": "official",
+    "base_url": "",
+    "model": "",
+    "api_key": "",
+    "temperature": 0.2,
+    "top_p": 0.95,
+    "top_k": 20,
+    "max_output_tokens": 4096,
+    "context_length": 32768,
+    "timeout_seconds": 600,
+    "force_refresh": False,
+    "cache_max_entries": 256,
+}
+
+# ---------------------------------------------------------------------------
 # MiniMax Music 3 caption rewriter (AI rewrite) — /prompt-assist/music/*
 # ---------------------------------------------------------------------------
 # Sibling of PROMPT_ASSIST_DEFAULTS above, not an extension of it: the two

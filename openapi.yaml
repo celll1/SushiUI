@@ -597,6 +597,19 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+  /schema/qwen-image-21-prompt-upsample-defaults:
+    get:
+      tags: [Schema]
+      summary: Get Qwen-Image 2.1 prompt-upsample defaults
+      operationId: getQwenImage21PromptUpsampleDefaults
+      responses:
+        '200':
+          description: Engine, inference, and cache defaults
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
   /schema/prompt-assist-music-defaults:
     get:
       tags: [Schema]
@@ -4602,6 +4615,44 @@ paths:
                     type: string
                   deleted:
                     type: integer
+
+  /prompt-assist/qwen-image-21/transform:
+    post:
+      tags: [prompt-assist]
+      summary: Upsample a Qwen-Image 2.1 prompt
+      description: Uses the matching bundled T2I/I2I prompt enhancer or a loopback LM Studio/Ollama model.
+      operationId: transformQwenImage21Prompt
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QwenImage21PromptUpsampleRequest'
+      responses:
+        '200':
+          description: Rewritten prompt and optional aspect-ratio recommendation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QwenImage21PromptUpsampleResponse'
+        '400':
+          description: Qwen model not loaded, invalid request, missing artifact, or inference failure
+
+  /prompt-assist/qwen-image-21/cache/clear:
+    post:
+      tags: [prompt-assist]
+      summary: Clear the Qwen-Image 2.1 prompt-upsample cache
+      operationId: clearQwenImage21PromptUpsampleCache
+      responses:
+        '200':
+          description: Cache cleared
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  deleted: { type: integer }
 
   /prompt-assist/music/transform:
     post:
@@ -10748,6 +10799,43 @@ components:
         description:
           type: string
           default: ""
+    QwenImage21PromptUpsampleRequest:
+      type: object
+      required: [prompt, mode]
+      properties:
+        prompt: { type: string }
+        mode: { type: string, enum: [t2i, i2i] }
+        engine: { type: string, enum: [official, lm_studio, ollama], default: official }
+        base_url: { type: string, default: "" }
+        model: { type: string, default: "" }
+        api_key: { type: string, default: "", writeOnly: true }
+        images:
+          type: array
+          maxItems: 10
+          items: { type: string, description: Image data URL }
+          default: []
+        temperature: { type: number, minimum: 0, maximum: 2, default: 0.2 }
+        top_p: { type: number, exclusiveMinimum: 0, maximum: 1, default: 0.95 }
+        top_k: { type: integer, minimum: 0, maximum: 1000, default: 20 }
+        max_output_tokens: { type: integer, minimum: 128, maximum: 32768, default: 4096 }
+        context_length: { type: integer, minimum: 1024, maximum: 262144, default: 32768 }
+        timeout_seconds: { type: integer, minimum: 10, maximum: 3600, default: 600 }
+        force_refresh: { type: boolean, default: false }
+    QwenImage21PromptUpsampleResponse:
+      type: object
+      required: [prompt, rewritten_prompt, wh_ratio, ratio_follow, warnings, engine, model, cached]
+      properties:
+        prompt: { type: string }
+        rewritten_prompt: { type: string }
+        wh_ratio: { type: string }
+        ratio_follow: { type: string }
+        warnings:
+          type: array
+          items: { type: string }
+        engine: { type: string }
+        model: { type: string }
+        cached: { type: boolean }
+        cache_key: { type: string }
     PromptAssistModelRequest:
       type: object
       properties:

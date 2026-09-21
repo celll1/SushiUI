@@ -6129,6 +6129,42 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   but removes target attention between regions. This is not numerically equivalent to a full forward.
                 </p>
                 <div>
+                  <label className="block text-xs text-gray-400 mb-1">ConvRot Training Backward Cache</label>
+                  <select
+                    value={params.qwen_convrot_training_forward ?? "auto"}
+                    onChange={(e) => updateParam("qwen_convrot_training_forward", e.target.value as NonNullable<TrainingRunCreateRequest["qwen_convrot_training_forward"]>)}
+                    className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
+                  >
+                    <option value="auto">Auto (measured full BF16 cache)</option>
+                    <option value="cached_bf16">Full BF16 backward cache</option>
+                    <option value="prefetch_bf16">Bounded block cache + async prefetch</option>
+                    <option value="transient_bf16">Transient per-layer rebuild (diagnostic)</option>
+                    <option value="dequant">Dense dequant forward</option>
+                  </select>
+                </div>
+                {params.qwen_convrot_training_forward === "prefetch_bf16" && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Cache Blocks</label>
+                      <input
+                        type="number" min={1} max={8}
+                        value={params.qwen_convrot_backward_cache_blocks ?? 2}
+                        onChange={(e) => updateParam("qwen_convrot_backward_cache_blocks", Math.max(1, Math.min(8, parseInt(e.target.value) || 2)))}
+                        className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Prefetch Depth</label>
+                      <input
+                        type="number" min={0} max={7}
+                        value={params.qwen_convrot_backward_prefetch_depth ?? 1}
+                        onChange={(e) => updateParam("qwen_convrot_backward_prefetch_depth", Math.max(0, Math.min(7, parseInt(e.target.value) || 0)))}
+                        className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
+                      />
+                    </div>
+                  </div>
+                )}
+                <div>
                   <label className="block text-xs text-gray-400 mb-1">Full-frame Checkpointed Blocks</label>
                   <input
                     type="number"

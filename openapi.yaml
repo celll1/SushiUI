@@ -24821,6 +24821,26 @@ components:
           maximum: 256
           default: 16
           description: Number of learned full-canvas summary tokens exposed to every target region.
+        qwen_convrot_training_forward:
+          type: string
+          enum: [auto, cached_bf16, prefetch_bf16, transient_bf16, dequant]
+          default: auto
+          description: >-
+            Frozen ConvRot base execution policy for Qwen LoRA training. Auto
+            uses the measured two-block BF16 backward ring with one-block
+            asynchronous dequant lookahead.
+        qwen_convrot_backward_cache_blocks:
+          type: integer
+          minimum: 1
+          maximum: 8
+          default: 2
+          description: GPU transformer-block weight slots for prefetch_bf16.
+        qwen_convrot_backward_prefetch_depth:
+          type: integer
+          minimum: 0
+          maximum: 7
+          default: 1
+          description: Number of earlier backward blocks scheduled ahead; must be smaller than cache blocks.
         krea2_lora_scope:
           type: string
           default: "attn,mlp"

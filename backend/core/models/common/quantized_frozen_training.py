@@ -168,6 +168,199 @@ class ConvRotCachedBackwardLinearFn(torch.autograd.Function):
         return grad_input, None, None, None, None, None, None, None
 
 
+class ConvRotPrefetchBackwardLinearFn(torch.autograd.Function):
+    """ConvRot INT8 forward with block-scoped lazy BF16 backward weights."""
+
+    @staticmethod
+    def forward(ctx, x, weight, weight_scale, bias, groupsize, layer_path, cache):
+        from comfy_kitchen import int8_linear
+
+        ctx.x_dtype = x.dtype
+        ctx.backward_dtype = cache.dtype
+        ctx.layer_path = layer_path
+        ctx.cache = cache
+        try:
+            return int8_linear(
+                x,
+                weight,
+                weight_scale,
+                bias=bias,
+                out_dtype=cache.dtype,
+                convrot=True,
+                convrot_groupsize=groupsize,
+            )
+        except Exception as exc:
+            raise _fused_failure(layer_path, "ConvRot INT8", exc) from exc
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        if not ctx.needs_input_grad[0]:
+            return (None,) * 7
+        backward_weight = ctx.cache.acquire(
+            ctx.layer_path, grad_output.device, ctx.backward_dtype
+        )
+        grad_input = grad_output.to(ctx.backward_dtype) @ backward_weight
+        return grad_input.to(ctx.x_dtype), None, None, None, None, None, None
+
+
+class ConvRotBlockPrefetchCache:
+    """Bounded GPU cache for ConvRot BF16 grad-input weights.
+
+    The first backward use in block N materializes N and schedules N-1 on a
+    dedicated CUDA stream. Qwen's backward traverses transformer blocks in
+    reverse order, including checkpoint recomputation, so the N-1 dequant can
+    overlap N's attention/MLP backward. Non-block Linears use a small permanent
+    cache and are reported separately.
+    """
+
+    def __init__(self, module: nn.Module, *, dtype: torch.dtype, cache_blocks: int,
+                 prefetch_depth: int):
+        if cache_blocks < 1:
+            raise ValueError("ConvRot backward cache_blocks must be at least 1")
+        if prefetch_depth < 0 or prefetch_depth >= cache_blocks:
+            raise ValueError(
+                "ConvRot backward prefetch_depth must be >=0 and smaller than cache_blocks"
+            )
+        self.dtype = dtype
+        self.dtype_code = _CONVROT_DTYPE_CODES[dtype]
+        self.cache_blocks = int(cache_blocks)
+        self.prefetch_depth = int(prefetch_depth)
+        self.blocks: dict[int, list[tuple[str, nn.Module]]] = {}
+        self.outside: dict[str, nn.Module] = {}
+        self.weights: dict[str, torch.Tensor] = {}
+        self.resident_blocks: list[int] = []
+        self.events: dict[int, torch.cuda.Event] = {}
+        self.block_bytes: dict[int, int] = {}
+        self.outside_bytes = 0
+        self.dequant_calls = 0
+        self.wait_count = 0
+        self.prefetch_hits = 0
+        self.prefetch_misses = 0
+        self._last_acquired_block = None
+
+        device = None
+        for path, child in module.named_modules():
+            from core.models.common.convrot_int8_linear import ConvRotInt8Linear
+
+            if type(child) is not ConvRotInt8Linear or _shape_violation(child) is not None:
+                continue
+            if child.weight.device.type != "cuda":
+                raise RuntimeError(
+                    f"Cannot build ConvRot prefetch metadata for '{path}' on "
+                    f"{child.weight.device}; move the transformer to CUDA first."
+                )
+            device = child.weight.device
+            parts = path.split(".")
+            block = None
+            if len(parts) >= 2 and parts[0] == "transformer_blocks":
+                try:
+                    block = int(parts[1])
+                except ValueError:
+                    block = None
+            if block is None:
+                self.outside[path] = child
+            else:
+                self.blocks.setdefault(block, []).append((path, child))
+                self.block_bytes[block] = self.block_bytes.get(block, 0) + (
+                    child.out_features * child.in_features
+                    * torch.empty((), dtype=dtype).element_size()
+                )
+        if device is None:
+            raise RuntimeError("No eligible CUDA ConvRot layers found for prefetch cache")
+        self.device = device
+        self.stream = torch.cuda.Stream(device=device)
+
+        # Outside-block projections have no stable reverse block boundary. They
+        # are few and remain resident; the repeating 32-block body is bounded.
+        with torch.cuda.stream(self.stream):
+            for path, child in self.outside.items():
+                value = self._dequant(child)
+                self.weights[path] = value
+                self.outside_bytes += value.numel() * value.element_size()
+        self.outside_ready = torch.cuda.Event()
+        self.outside_ready.record(self.stream)
+
+    def _dequant(self, child: nn.Module) -> torch.Tensor:
+        self.dequant_calls += 1
+        return torch.ops.comfy_kitchen.dequantize_int8_convrot_weight_dtype(
+            child.weight,
+            child.weight_scale.reshape(-1, 1),
+            int(child.convrot_groupsize),
+            self.dtype_code,
+        )
+
+    def _schedule(self, block: int) -> None:
+        if block in self.events or block not in self.blocks:
+            return
+        with torch.cuda.stream(self.stream):
+            for path, child in self.blocks[block]:
+                self.weights[path] = self._dequant(child)
+            event = torch.cuda.Event()
+            event.record(self.stream)
+        self.events[block] = event
+        self.resident_blocks.append(block)
+
+    def _evict_except(self, keep: set[int]) -> None:
+        for block in list(self.resident_blocks):
+            if block in keep:
+                continue
+            for path, _child in self.blocks.get(block, ()):
+                self.weights.pop(path, None)
+            self.events.pop(block, None)
+            self.resident_blocks.remove(block)
+
+    def acquire(self, path: str, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        if device != self.device or dtype != self.dtype:
+            raise RuntimeError(
+                f"ConvRot prefetch cache expects {self.device}/{self.dtype}, got "
+                f"{device}/{dtype} for '{path}'"
+            )
+        current_stream = torch.cuda.current_stream(device)
+        if path in self.outside:
+            current_stream.wait_event(self.outside_ready)
+            weight = self.weights[path]
+            weight.record_stream(current_stream)
+            return weight
+
+        parts = path.split(".")
+        block = int(parts[1])
+        first_in_block = block != self._last_acquired_block
+        if first_in_block:
+            was_scheduled = block in self.events
+            self._schedule(block)
+            current_stream.wait_event(self.events[block])
+            self.wait_count += 1
+            if was_scheduled:
+                self.prefetch_hits += 1
+            else:
+                self.prefetch_misses += 1
+            self._last_acquired_block = block
+            future = {
+                candidate
+                for candidate in range(block - 1, block - 1 - self.prefetch_depth, -1)
+                if candidate in self.blocks
+            }
+            self._evict_except({block, *future})
+            for candidate in sorted(future, reverse=True):
+                self._schedule(candidate)
+            # The configured ring is a hard Python residency bound. CUDA's
+            # allocator may retain freed blocks, which peak metrics report.
+            while len(self.resident_blocks) > self.cache_blocks:
+                victim = self.resident_blocks[0]
+                if victim == block:
+                    break
+                self._evict_except(set(self.resident_blocks[1:]))
+
+        weight = self.weights[path]
+        weight.record_stream(current_stream)
+        return weight
+
+    @property
+    def resident_limit_bytes(self) -> int:
+        largest = sorted(self.block_bytes.values(), reverse=True)[:self.cache_blocks]
+        return self.outside_bytes + sum(largest)
+
+
 class W4A8FrozenLinearFn(torch.autograd.Function):
     """Fused packed-W4A8 forward, dequantized floating ``grad_input`` backward.
 
@@ -403,6 +596,54 @@ def enable_frozen_training_cached_backward(
     return enabled, cache_bytes
 
 
+def enable_frozen_training_prefetch_backward(
+    module: nn.Module,
+    *,
+    dtype: torch.dtype,
+    cache_blocks: int = 2,
+    prefetch_depth: int = 1,
+    label: str = "",
+) -> tuple[int, int, ConvRotBlockPrefetchCache]:
+    """Use INT8 forward with a bounded, asynchronously prefetched BF16 cache."""
+    from core.models.common.convrot_int8_linear import ConvRotInt8Linear
+
+    if dtype not in _SUPPORTED_ACTIVATION_DTYPES:
+        raise ValueError(f"Unsupported ConvRot backward cache dtype: {dtype}")
+    eligible = []
+    for path, child in module.named_modules():
+        if type(child) is not ConvRotInt8Linear:
+            continue
+        path = path or type(child).__name__
+        violation = _frozen_violation(child)
+        if violation is not None:
+            raise RuntimeError(
+                f"Cannot enable prefetched ConvRot training on '{path}': "
+                f"{violation}. The cache is valid only for frozen base weights."
+            )
+        if _shape_violation(child) is None:
+            eligible.append((path, child))
+    cache = ConvRotBlockPrefetchCache(
+        module,
+        dtype=dtype,
+        cache_blocks=cache_blocks,
+        prefetch_depth=prefetch_depth,
+    )
+    for path, child in eligible:
+        child._frozen_training_fused = True
+        child._frozen_training_prefetch_backward = True
+        child._frozen_training_prefetch_cache = cache
+        child._frozen_training_path = path
+    if label:
+        print(
+            f"[QuantFrozenTraining] {label}: ConvRot INT8 forward with "
+            f"{cache_blocks}-block {dtype} backward cache, prefetch_depth="
+            f"{prefetch_depth}, layers={len(eligible)}, resident_limit="
+            f"{cache.resident_limit_bytes / 1024**3:.3f} GiB "
+            f"(outside={cache.outside_bytes / 1024**3:.3f} GiB)"
+        )
+    return len(eligible), cache.resident_limit_bytes, cache
+
+
 def maybe_frozen_fused_forward(module: nn.Module, x: torch.Tensor) -> "torch.Tensor | None":
     """Run the fused frozen-base forward, or None to use the dequant path.
 
@@ -419,6 +660,21 @@ def maybe_frozen_fused_forward(module: nn.Module, x: torch.Tensor) -> "torch.Ten
     path = getattr(module, "_frozen_training_path", "") or type(module).__name__
 
     if type(module) is ConvRotInt8Linear:
+        prefetch_cache = getattr(module, "_frozen_training_prefetch_cache", None)
+        if getattr(module, "_frozen_training_prefetch_backward", False):
+            if prefetch_cache is None:
+                raise RuntimeError(
+                    f"ConvRot backward prefetch cache is missing for layer '{path}'"
+                )
+            return ConvRotPrefetchBackwardLinearFn.apply(
+                x,
+                module.weight,
+                module.weight_scale,
+                module.bias,
+                int(module.convrot_groupsize),
+                path,
+                prefetch_cache,
+            )
         backward_weight = getattr(module, "_frozen_training_backward_weight", None)
         if getattr(module, "_frozen_training_cached_backward", False):
             if backward_weight is None:

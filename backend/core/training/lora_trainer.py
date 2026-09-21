@@ -264,7 +264,7 @@ class LoRATrainer(BaseTrainer):
             expected_forward = (
                 "convrot_int8_bf16_backward_v1"
                 if getattr(self, "qwen_convrot_training_forward", "dequant")
-                in {"transient_bf16", "cached_bf16"}
+                in {"transient_bf16", "cached_bf16", "prefetch_bf16"}
                 else ""
             )
             actual_forward = str(metadata.get("qwen_base_forward") or "")

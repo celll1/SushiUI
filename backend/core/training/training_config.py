@@ -488,7 +488,9 @@ def _build_train_section(
         "qwen_partition_seed",
         "qwen_partition_profile", "qwen_full_kv_query_chunk_tokens",
         "qwen_partition_global_adapter_enabled", "qwen_partition_global_rank",
-        "qwen_partition_global_tokens",
+        "qwen_partition_global_tokens", "qwen_convrot_training_forward",
+        "qwen_convrot_backward_cache_blocks",
+        "qwen_convrot_backward_prefetch_depth",
     ):
         train[key] = p.get(key, _TD[key])
 

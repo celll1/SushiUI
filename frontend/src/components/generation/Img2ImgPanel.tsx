@@ -5981,8 +5981,8 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
               {showForeverMenu && (
                 <>
                   <div
-                    className="fixed inset-0 z-40"
-                    onClick={() => setShowForeverMenu(false)}
+                    className="fixed inset-0 z-40 bg-black/[0.02]"
+                    onPointerDown={() => setShowForeverMenu(false)}
                   />
                   <div
                     className="fixed z-50 bg-gray-800 border border-gray-600 rounded shadow-lg py-1"

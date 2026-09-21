@@ -675,3 +675,36 @@ projection it changes neither prediction nor full-versus-partition agreement
 at insertion time. Its effect must be measured after matched training or a
 short full-teacher distillation, preferably after the global-communication
 question is resolved.
+
+### 15.2 Experimental implementations
+
+Both follow-up paths are implemented as independent, default-off options.
+`qwen_full_kv_query_chunk_tokens` splits only target attention query rows; each
+chunk still sees the complete prefix and target K/V. The native and packed
+Flash paths share this contract. A one-block oracle matches full-forward
+predictions and every parameter gradient. On the production 4,096-token probe,
+a 1,024-query chunk preserved the loss exactly but changed the median dense
+step from 1.999 s to 2.069 s and the step allocation delta from 17.2280 GiB to
+17.2291 GiB. It is therefore a correctness-valid diagnostic, not a recommended
+Flash optimization: the kernel already performs its own query tiling and the
+extra launches cost about 3.5% here.
+
+`qwen_partition_global_adapter_enabled` adds a training-only latent-summary
+adapter to partitioned LoRA training. Full-canvas noisy latent features plus
+normalized coordinates are gathered into learned summary tokens, then
+broadcast through a low-rank query path into each tile immediately after
+`img_in`. Its output projection is zero-initialized, so enabling it does not
+perturb the initial model. The branch has its own
+`qwen_partition_global_adapter.*` checkpoint namespace and metadata; ordinary
+full-frame generation warns and ignores this disposable branch while loading
+the standard LoRA matrices.
+
+At rank 64 with 16 summaries the adapter has 275,840 parameters. Against the
+same fixed-2 production probe, it changed the median partition step from
+1.857 s to 1.877 s (about 1.1% overhead) and the step allocation delta from
+14.9349 GiB to 14.9562 GiB (about 22 MiB). Eight controlled full-teacher
+distillation steps improved stitched prediction cosine from 0.9464 to 0.9588
+and relative L2 from 0.3230 to 0.2852, an 11.7% relative reduction. This proves
+that the path carries useful cross-tile content, but it does not establish
+dataset-level generation quality. Matched full/partition training and
+generation evaluation remain the acceptance gate before making it a default.

@@ -7204,6 +7204,10 @@ export interface TrainingRunCreateRequest {
   qwen_partition_seed?: number;
   qwen_partition_gradient_checkpointing_blocks?: number | null;
   qwen_partition_profile?: boolean;
+  qwen_full_kv_query_chunk_tokens?: number;
+  qwen_partition_global_adapter_enabled?: boolean;
+  qwen_partition_global_rank?: number;
+  qwen_partition_global_tokens?: number;
   multi_noise_timesteps?: number;
   multi_noise_mode?: "independent" | "shared" | "trajectory" | "antithetic";
   stratified_timesteps?: boolean;  // One timestep per equal-probability stratum across the MNT window (default true)

@@ -24768,6 +24768,29 @@ components:
           type: boolean
           default: false
           description: Record synchronized per-region CUDA forward/backward timings for partition validation.
+        qwen_full_kv_query_chunk_tokens:
+          type: integer
+          minimum: 0
+          default: 0
+          description: >-
+            Split target attention queries into chunks while retaining full-canvas keys and values.
+            Zero disables the exact experimental path; FlashAttention may gain no memory because it already tiles internally.
+        qwen_partition_global_adapter_enabled:
+          type: boolean
+          default: false
+          description: Add a trainable low-rank full-canvas summary path to complete-coverage partitioned LoRA training.
+        qwen_partition_global_rank:
+          type: integer
+          minimum: 1
+          maximum: 512
+          default: 64
+          description: Internal channel rank of the Qwen partition global summary adapter.
+        qwen_partition_global_tokens:
+          type: integer
+          minimum: 1
+          maximum: 256
+          default: 16
+          description: Number of learned full-canvas summary tokens exposed to every target region.
         krea2_lora_scope:
           type: string
           default: "attn,mlp"

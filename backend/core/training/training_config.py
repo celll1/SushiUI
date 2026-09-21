@@ -463,7 +463,9 @@ def _build_train_section(
         "qwen_partition_fixed_count", "qwen_partition_halo_tokens",
         "qwen_partition_split_ratio_min", "qwen_partition_split_ratio_max",
         "qwen_partition_seed", "qwen_partition_gradient_checkpointing_blocks",
-        "qwen_partition_profile",
+        "qwen_partition_profile", "qwen_full_kv_query_chunk_tokens",
+        "qwen_partition_global_adapter_enabled", "qwen_partition_global_rank",
+        "qwen_partition_global_tokens",
     ):
         train[key] = p.get(key, _TD[key])
 
@@ -799,6 +801,26 @@ def train_section_key_vocabulary() -> frozenset:
                     and isinstance(sub.slice.value, str)
                 ):
                     keys.add(sub.slice.value)
+                elif (
+                    isinstance(sub, ast.For)
+                    and isinstance(sub.target, ast.Name)
+                    and isinstance(sub.iter, (ast.Tuple, ast.List))
+                    and any(
+                        isinstance(candidate, ast.Subscript)
+                        and isinstance(candidate.ctx, ast.Store)
+                        and isinstance(candidate.value, ast.Name)
+                        and candidate.value.id == "train"
+                        and isinstance(candidate.slice, ast.Name)
+                        and candidate.slice.id == sub.target.id
+                        for statement in sub.body
+                        for candidate in ast.walk(statement)
+                    )
+                ):
+                    keys.update(
+                        item.value
+                        for item in sub.iter.elts
+                        if isinstance(item, ast.Constant) and isinstance(item.value, str)
+                    )
         elif isinstance(node, ast.Dict):
             # generate_vae_config builds its train section as a literal.
             for key, value in zip(node.keys, node.values):

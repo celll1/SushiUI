@@ -44,6 +44,8 @@ def _trainable_parameters(layers: dict[str, torch.nn.Module]):
 def _snapshot_gradients(layers: dict[str, torch.nn.Module]):
     snapshot = {}
     for name, layer in layers.items():
+        if not hasattr(layer, "lora_down"):
+            continue
         snapshot[name] = (
             layer.lora_down.weight.grad.detach().to("cpu", torch.bfloat16),
             layer.lora_up.weight.grad.detach().to("cpu", torch.bfloat16),
@@ -68,6 +70,8 @@ def _functional_update_agreement(
     layer_cosines = []
     layer_relative_l2 = []
     for index, (name, layer) in enumerate(layers.items()):
+        if name not in reference:
+            continue
         ref_down_cpu, ref_up_cpu = reference[name]
         device = layer.lora_down.weight.device
         generator = torch.Generator(device=device).manual_seed(seed + 1009 * index)
@@ -167,6 +171,12 @@ def _prediction_agreement(
             dim=1,
         )
         with torch.autocast(device_type=latents.device.type, dtype=latents.dtype):
+            residual = None
+            global_adapter = getattr(
+                trainer.transformer, "qwen_partition_global_adapter", None
+            )
+            if global_adapter is not None and positions is not None:
+                residual = global_adapter(noisy_grid, active_region.input)
             return trainer.transformer(
                 hidden_states=tile,
                 timestep=sigma,
@@ -175,6 +185,7 @@ def _prediction_agreement(
                 img_shapes=[[(1, height, width)]] * batch,
                 img_mask=image_mask,
                 target_spatial_position_ids=positions,
+                target_input_residual=residual,
                 return_dict=False,
             )[0][:, -tile.shape[1]:]
 
@@ -187,6 +198,7 @@ def _prediction_agreement(
     noisy_grid = noisy.reshape(batch, latent_h, latent_w, channels)
     stitched = torch.empty_like(noisy_grid)
     for region in plan.regions:
+        active_region = region
         tile = flatten_region(noisy_grid, region.input)
         tile_prediction = forward(
             tile,
@@ -216,6 +228,101 @@ def _summarize(values: list[float]) -> dict[str, float]:
 def _zero_grad(parameters: list[torch.nn.Parameter]) -> None:
     for parameter in parameters:
         parameter.grad = None
+
+
+def _distill_global_adapter(
+    trainer: _ProbeTrainer,
+    layers: dict[str, torch.nn.Module],
+    *,
+    steps: int,
+    learning_rate: float,
+    latents: torch.Tensor,
+    encoder_features: torch.Tensor,
+    encoder_mask: torch.Tensor,
+    timesteps: torch.Tensor,
+    latent_h: int,
+    latent_w: int,
+) -> dict[str, object] | None:
+    if steps <= 0:
+        return None
+    from core.training.qwen_partition import flatten_region, full_canvas_position_ids
+
+    adapter = layers["qwen_partition_global_adapter"]
+    ordinary = [layer for name, layer in layers.items() if name != "qwen_partition_global_adapter"]
+    for layer in ordinary:
+        layer.requires_grad_(False)
+    noise = trainer._active_mnt_noise.to(latents)
+    sigma = timesteps.to(latents)
+    noisy = (1 - sigma[:, None, None]) * latents + sigma[:, None, None] * noise
+    batch, tokens, channels = noisy.shape
+    grid = noisy.reshape(batch, latent_h, latent_w, channels)
+    prefix_mask = torch.zeros(
+        encoder_features.shape[:2], dtype=torch.bool, device=latents.device
+    )
+
+    def run_full():
+        image_mask = torch.cat(
+            [prefix_mask, torch.ones(batch, tokens // 4, dtype=torch.bool, device=latents.device)],
+            dim=1,
+        )
+        return trainer.transformer(
+            hidden_states=noisy, timestep=sigma, encoder_hidden_states=encoder_features,
+            encoder_hidden_states_mask=encoder_mask,
+            img_shapes=[[(1, latent_h, latent_w)]] * batch, img_mask=image_mask,
+            return_dict=False,
+        )[0][:, -tokens:]
+
+    with torch.no_grad(), torch.autocast(device_type=latents.device.type, dtype=latents.dtype):
+        teacher = run_full().detach()
+
+    plan = qwen_image_21_ops._partition_plan(trainer, latent_h, latent_w)
+
+    def run_partitioned():
+        stitched = torch.empty_like(grid)
+        for region in plan.regions:
+            tile = flatten_region(grid, region.input)
+            image_mask = torch.cat(
+                [prefix_mask, torch.ones(batch, tile.shape[1] // 4, dtype=torch.bool, device=latents.device)],
+                dim=1,
+            )
+            prediction = trainer.transformer(
+                hidden_states=tile, timestep=sigma, encoder_hidden_states=encoder_features,
+                encoder_hidden_states_mask=encoder_mask,
+                img_shapes=[[(1, region.input.height, region.input.width)]] * batch,
+                img_mask=image_mask,
+                target_spatial_position_ids=full_canvas_position_ids(
+                    latent_h, latent_w, region.input, device=latents.device
+                ),
+                target_input_residual=adapter(grid, region.input),
+                return_dict=False,
+            )[0][:, -tile.shape[1]:].reshape(
+                batch, region.input.height, region.input.width, channels
+            )
+            local = region.core_in_input
+            stitched[:, region.core.top:region.core.bottom, region.core.left:region.core.right] = (
+                prediction[:, local.top:local.bottom, local.left:local.right]
+            )
+        return stitched.reshape(batch, tokens, channels)
+
+    optimizer = torch.optim.AdamW(adapter.parameters(), lr=learning_rate, weight_decay=0)
+    losses = []
+    for _ in range(steps):
+        optimizer.zero_grad(set_to_none=True)
+        with torch.autocast(device_type=latents.device.type, dtype=latents.dtype):
+            prediction = run_partitioned()
+            loss = torch.nn.functional.mse_loss(prediction.float(), teacher.float())
+        loss.backward()
+        optimizer.step()
+        losses.append(float(loss.detach()))
+    for layer in ordinary:
+        layer.requires_grad_(True)
+    return {
+        "steps": steps,
+        "learning_rate": learning_rate,
+        "initial_mse": losses[0],
+        "final_mse": losses[-1],
+        "mse_reduction": 1.0 - losses[-1] / losses[0] if losses[0] else 0.0,
+    }
 
 
 def _run_step(
@@ -318,7 +425,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         mixed_precision=True,
         use_grad_scaler=False,
         config={
-            "qwen_partition_training_enabled": False,
+            "qwen_partition_training_enabled": args.global_adapter,
             "qwen_partition_mode": "fixed",
             "qwen_partition_fixed_count": 2,
             "qwen_partition_halo_tokens": args.halo,
@@ -327,6 +434,10 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             "qwen_partition_seed": args.seed,
             "qwen_partition_gradient_checkpointing_blocks": args.partition_checkpoint_blocks,
             "qwen_partition_profile": True,
+            "qwen_full_kv_query_chunk_tokens": args.query_chunk_tokens,
+            "qwen_partition_global_adapter_enabled": args.global_adapter,
+            "qwen_partition_global_rank": args.global_rank,
+            "qwen_partition_global_tokens": args.global_tokens,
         },
         metrics={},
         log_prefix="[QwenPartitionProbe]",
@@ -369,6 +480,19 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     )
     trainer._active_mnt_noise = torch.randn(
         latents.shape, device=device, dtype=dtype, generator=generator
+    )
+
+    distillation = _distill_global_adapter(
+        trainer,
+        layers,
+        steps=args.global_distill_steps if args.global_adapter else 0,
+        learning_rate=args.global_distill_lr,
+        latents=latents,
+        encoder_features=encoder_features,
+        encoder_mask=encoder_mask,
+        timesteps=timesteps,
+        latent_h=args.latent_height,
+        latent_w=args.latent_width,
     )
 
     modes = ["full", *[str(value) for value in args.partitions]]
@@ -462,6 +586,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         "model": str(args.model),
         "variant": variant,
         "attention": args.attention,
+        "query_chunk_tokens": args.query_chunk_tokens,
         "shape": {
             "batch": args.batch,
             "latent_height": args.latent_height,
@@ -475,6 +600,21 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             "target_layers": len(layers),
             "trainable_parameters": sum(parameter.numel() for parameter in parameters),
             "dtype": str(parameters[0].dtype),
+        },
+        "global_adapter": {
+            "enabled": args.global_adapter,
+            "rank": args.global_rank,
+            "summary_tokens": args.global_tokens,
+            "trainable_parameters": (
+                sum(
+                    parameter.numel()
+                    for parameter in layers.get(
+                        "qwen_partition_global_adapter", []
+                    ).parameters()
+                )
+                if args.global_adapter else 0
+            ),
+            "distillation": distillation,
         },
         "convrot": {
             "cached_layers": fused_layers,
@@ -506,6 +646,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", type=Path, default=Path(r"M:\model\qwen21\int8_convrot"))
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--attention", choices=("native", "flash"), default="flash")
+    parser.add_argument("--query-chunk-tokens", type=int, default=0)
     parser.add_argument("--batch", type=int, default=1)
     parser.add_argument("--latent-height", type=int, default=64)
     parser.add_argument("--latent-width", type=int, default=64)
@@ -521,6 +662,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--partition-checkpoint-blocks", type=int)
     parser.add_argument("--partitions", type=int, nargs="+", choices=(2, 4), default=(2, 4))
     parser.add_argument("--halo", type=int, default=0)
+    parser.add_argument("--global-adapter", action="store_true")
+    parser.add_argument("--global-rank", type=int, default=64)
+    parser.add_argument("--global-tokens", type=int, default=16)
+    parser.add_argument("--global-distill-steps", type=int, default=0)
+    parser.add_argument("--global-distill-lr", type=float, default=1e-2)
     parser.add_argument("--split-ratio-min", type=float, default=0.35)
     parser.add_argument("--split-ratio-max", type=float, default=0.65)
     parser.add_argument("--sigma", type=float, default=0.5)

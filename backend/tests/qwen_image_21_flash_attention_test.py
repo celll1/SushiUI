@@ -86,6 +86,17 @@ def test_packed_segmented_attention_matches_dense_forward_and_backward(monkeypat
     torch.testing.assert_close(cached, dense[:, :3], atol=1e-10, rtol=1e-8)
     assert len(key_valid._qwen_image21_varlen_indices) == 3
 
+    chunk = QwenImage21AttnProcessor._varlen_segment(
+        query, key, value, key_valid, 5, 7, key_end=9, is_causal=False
+    )
+    chunk_reference = torch.nn.functional.scaled_dot_product_attention(
+        query[:, 5:7].transpose(1, 2),
+        key.transpose(1, 2),
+        value.transpose(1, 2),
+        attn_mask=key_valid[:, None, None, :],
+    ).transpose(1, 2)
+    torch.testing.assert_close(chunk, chunk_reference, atol=1e-10, rtol=1e-8)
+
     grad = torch.randn_like(packed)
     packed_grads = torch.autograd.grad(packed, (query, key, value), grad, retain_graph=True)
     dense_grads = torch.autograd.grad(dense, (query, key, value), grad)

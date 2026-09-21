@@ -6116,6 +6116,20 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   Processes every image region before one optimizer step and lowers peak activation,
                   but removes target attention between regions. This is not numerically equivalent to a full forward.
                 </p>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Full-K/V Query Chunk (tokens)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    step={128}
+                    value={params.qwen_full_kv_query_chunk_tokens ?? 0}
+                    onChange={(e) => updateParam("qwen_full_kv_query_chunk_tokens", Math.max(0, parseInt(e.target.value) || 0))}
+                    className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Exact full-canvas attention with chunked query rows. 0 disables it; FlashAttention may already provide the same memory behavior internally.
+                  </p>
+                </div>
                 {params.qwen_partition_training_enabled && (
                   <div className="grid grid-cols-2 gap-2">
                     <div>
@@ -6167,6 +6181,40 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       />
                       Synchronized CUDA timing
                     </label>
+                    <label className="col-span-2 flex items-center gap-2 text-xs text-gray-300 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={params.qwen_partition_global_adapter_enabled ?? false}
+                        onChange={(e) => updateParam("qwen_partition_global_adapter_enabled", e.target.checked)}
+                        className="w-4 h-4"
+                      />
+                      Train low-rank full-canvas summary adapter
+                    </label>
+                    {params.qwen_partition_global_adapter_enabled && (
+                      <>
+                        <div>
+                          <label className="block text-xs text-gray-400 mb-1">Global Rank</label>
+                          <input
+                            type="number" min={1} max={512}
+                            value={params.qwen_partition_global_rank ?? 64}
+                            onChange={(e) => updateParam("qwen_partition_global_rank", Math.max(1, parseInt(e.target.value) || 64))}
+                            className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-400 mb-1">Global Summary Tokens</label>
+                          <input
+                            type="number" min={1} max={256}
+                            value={params.qwen_partition_global_tokens ?? 16}
+                            onChange={(e) => updateParam("qwen_partition_global_tokens", Math.max(1, parseInt(e.target.value) || 16))}
+                            className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
+                          />
+                        </div>
+                        <p className="col-span-2 text-xs text-gray-500">
+                          Carries learned global content into each tile. Saved with the LoRA checkpoint; full-frame generation ignores this training-only branch.
+                        </p>
+                      </>
+                    )}
                   </div>
                 )}
               </div>

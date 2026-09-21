@@ -52,6 +52,30 @@ class QwenImage21LoRAAdapter(BaseLoRAAdapter):
                 setattr(parent, attr, layer)
             self.register_lora_layer(lora_layers, name, layer, LORA_COMPONENT_UNET)
             count += 1
+        config = getattr(self.trainer, "config", {})
+        if bool(config.get("qwen_partition_global_adapter_enabled", False)):
+            if not bool(config.get("qwen_partition_training_enabled", False)):
+                raise ValueError(
+                    "Qwen partition global adapter requires qwen_partition_training_enabled"
+                )
+            from core.training.qwen_partition import QwenPartitionGlobalAdapter
+
+            global_adapter = QwenPartitionGlobalAdapter(
+                int(self.trainer.transformer.config.in_channels),
+                int(self.trainer.transformer.inner_dim),
+                rank=int(config.get("qwen_partition_global_rank", 64)),
+                summary_tokens=int(
+                    config.get("qwen_partition_global_tokens", 16)
+                ),
+                dtype=self.lora_dtype,
+            ).to(next(self.trainer.transformer.parameters()).device)
+            self.trainer.transformer.qwen_partition_global_adapter = global_adapter
+            self.register_lora_layer(
+                lora_layers,
+                "qwen_partition_global_adapter",
+                global_adapter,
+                LORA_COMPONENT_UNET,
+            )
         return count
 
     def apply_lora_to_text_encoders(self, lora_layers: Dict[str, nn.Module]) -> int:
@@ -79,6 +103,17 @@ class QwenImage21LoRAAdapter(BaseLoRAAdapter):
             metadata.update(
                 qwen_base_variant="int8_convrot",
                 qwen_base_forward="convrot_int8_bf16_backward_v1",
+            )
+        global_adapter = getattr(
+            getattr(self.trainer, "transformer", None),
+            "qwen_partition_global_adapter",
+            None,
+        )
+        if global_adapter is not None:
+            metadata.update(
+                qwen_partition_global_adapter="latent_summary_v1",
+                qwen_partition_global_rank=str(global_adapter.rank),
+                qwen_partition_global_tokens=str(global_adapter.summary_tokens),
             )
         return metadata
 

@@ -216,6 +216,9 @@ def setup_attention_backend(trainer, backend: str) -> None:
     for block in trainer.transformer.transformer_blocks:
         processor = block.attn.processor
         processor._attention_backend = resolved
+        processor._target_query_chunk_tokens = int(
+            trainer.config.get("qwen_full_kv_query_chunk_tokens", 0) or 0
+        )
         count += 1
     print(
         f"{trainer.log_prefix} [OK] Qwen-Image 2.1 attention backend='{resolved}' "
@@ -412,6 +415,14 @@ def train_step_partitioned_backward(
             total_input_tokens += input_tokens
             tile = flatten_region(noisy_grid, region.input)
             tile_target = flatten_region(target_grid, region.input)
+            global_adapter = getattr(
+                trainer.transformer, "qwen_partition_global_adapter", None
+            )
+            target_input_residual = (
+                global_adapter(noisy_grid, region.input)
+                if global_adapter is not None
+                else None
+            )
             image_mask = torch.cat(
                 [
                     prefix_mask,
@@ -443,6 +454,7 @@ def train_step_partitioned_backward(
                     img_shapes=[[(1, region.input.height, region.input.width)]] * batch,
                     img_mask=image_mask,
                     target_spatial_position_ids=positions,
+                    target_input_residual=target_input_residual,
                     return_dict=False,
                 )[0]
 
@@ -477,6 +489,8 @@ def train_step_partitioned_backward(
             logical_loss_tensor = logical_loss_tensor + weighted_loss.detach()
             del tile, tile_target, prediction, target_tile_grid, core_prediction, core_target
             del weighted_loss, scaled_loss, image_mask
+            if target_input_residual is not None:
+                del target_input_residual
     finally:
         if original_checkpoint_blocks is None:
             if hasattr(trainer.transformer, "_training_gradient_checkpointing_blocks"):

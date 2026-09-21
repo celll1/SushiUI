@@ -60,7 +60,7 @@ RANK_REQUIRED: Tuple[str, ...] = (ALGORITHM_LORA, ALGORITHM_LOHA)
 #: ``adapter_spec_targets_cheap_test.py`` asserts the two sets are equal.
 KNOWN_ARCHITECTURES = frozenset({
     "sd15", "sdxl", "zimage", "anima", "lens", "ideogram4", "minit2i",
-    "krea2", "flux2", "ltx2", "minimax_h3", "acestep", "sensenova",
+    "krea2", "qwen_image_21", "flux2", "ltx2", "minimax_h3", "acestep", "sensenova",
 })
 
 _METADATA_TRUE = ("true", "1")

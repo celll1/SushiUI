@@ -2662,6 +2662,10 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "qwen_partition_seed": 0,
     "qwen_partition_gradient_checkpointing_blocks": None,
     "qwen_partition_profile": False,
+    "qwen_full_kv_query_chunk_tokens": 0,
+    "qwen_partition_global_adapter_enabled": False,
+    "qwen_partition_global_rank": 64,
+    "qwen_partition_global_tokens": 16,
     # TREAD token routing (arXiv 2501.04765) — training-only acceleration.
     # Routes a random subset of tokens through a span of transformer blocks;
     # dropped tokens bypass the span (identity transport) and are restored at

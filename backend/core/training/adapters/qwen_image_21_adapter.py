@@ -53,19 +53,33 @@ class QwenImage21LoRAAdapter(BaseLoRAAdapter):
             self.register_lora_layer(lora_layers, name, layer, LORA_COMPONENT_UNET)
             count += 1
         config = getattr(self.trainer, "config", {})
-        if bool(config.get("qwen_partition_global_adapter_enabled", False)):
-            if not bool(config.get("qwen_partition_training_enabled", False)):
+        global_enabled = bool(config.get(
+            "dit_partition_global_adapter_enabled",
+            config.get("qwen_partition_global_adapter_enabled", False),
+        ))
+        partition_enabled = bool(config.get(
+            "dit_partition_training_enabled",
+            config.get("qwen_partition_training_enabled", False),
+        ))
+        if global_enabled:
+            if not partition_enabled:
                 raise ValueError(
-                    "Qwen partition global adapter requires qwen_partition_training_enabled"
+                    "Qwen partition global adapter requires dit_partition_training_enabled"
                 )
             from core.training.qwen_partition import QwenPartitionGlobalAdapter
 
             global_adapter = QwenPartitionGlobalAdapter(
                 int(self.trainer.transformer.config.in_channels),
                 int(self.trainer.transformer.inner_dim),
-                rank=int(config.get("qwen_partition_global_rank", 64)),
+                rank=int(config.get(
+                    "dit_partition_global_rank",
+                    config.get("qwen_partition_global_rank", 64),
+                )),
                 summary_tokens=int(
-                    config.get("qwen_partition_global_tokens", 16)
+                    config.get(
+                        "dit_partition_global_tokens",
+                        config.get("qwen_partition_global_tokens", 16),
+                    )
                 ),
                 dtype=self.lora_dtype,
             ).to(next(self.trainer.transformer.parameters()).device)

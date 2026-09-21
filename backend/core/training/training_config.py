@@ -483,14 +483,38 @@ def _build_train_section(
         else legacy_partition_checkpoint
     )
 
+    partition_aliases = {
+        "dit_partition_training_enabled": "qwen_partition_training_enabled",
+        "dit_partition_mode": "qwen_partition_mode",
+        "dit_partition_fixed_count": "qwen_partition_fixed_count",
+        "dit_partition_halo_tokens": "qwen_partition_halo_tokens",
+        "dit_partition_split_ratio_min": "qwen_partition_split_ratio_min",
+        "dit_partition_split_ratio_max": "qwen_partition_split_ratio_max",
+        "dit_partition_seed": "qwen_partition_seed",
+        "dit_partition_profile": "qwen_partition_profile",
+        "dit_partition_global_adapter_enabled": "qwen_partition_global_adapter_enabled",
+        "dit_partition_global_rank": "qwen_partition_global_rank",
+        "dit_partition_global_tokens": "qwen_partition_global_tokens",
+    }
+    for canonical, legacy in partition_aliases.items():
+        if canonical in p:
+            train[canonical] = p[canonical]
+        else:
+            train[canonical] = p.get(legacy, _TD[canonical])
+    # Literal loop keeps the AST-derived editable-config vocabulary aligned
+    # with the alias map above.
     for key in (
-        "qwen_partition_training_enabled", "qwen_partition_mode",
-        "qwen_partition_fixed_count", "qwen_partition_halo_tokens",
-        "qwen_partition_split_ratio_min", "qwen_partition_split_ratio_max",
-        "qwen_partition_seed",
-        "qwen_partition_profile", "qwen_full_kv_query_chunk_tokens",
-        "qwen_partition_global_adapter_enabled", "qwen_partition_global_rank",
-        "qwen_partition_global_tokens", "qwen_convrot_training_forward",
+        "dit_partition_training_enabled", "dit_partition_mode",
+        "dit_partition_fixed_count", "dit_partition_halo_tokens",
+        "dit_partition_split_ratio_min", "dit_partition_split_ratio_max",
+        "dit_partition_seed", "dit_partition_profile",
+        "dit_partition_global_adapter_enabled", "dit_partition_global_rank",
+        "dit_partition_global_tokens",
+    ):
+        train[key] = train[key]
+
+    for key in (
+        "qwen_full_kv_query_chunk_tokens", "qwen_convrot_training_forward",
         "qwen_convrot_backward_cache_blocks",
         "qwen_convrot_backward_prefetch_depth",
     ):

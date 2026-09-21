@@ -517,6 +517,16 @@ their backward use.
 
 ### Phase E: DiT partition extraction
 
+Implemented for the audited boundary. Planner geometry, exact-once core
+coverage, halo expansion, deterministic boundary variation, and row-major
+region flattening now live under `core/training/partition/`. A
+`DiTPartitionAdapter` declares prefix directionality, global-position support,
+and input-token multiple; Qwen supplies the only implementation. Canonical
+`dit_partition_*` API/config/UI fields replace Qwen spellings, while nullable
+deprecated aliases keep old requests and saved runs readable. Capability
+preflight rejects every other architecture before model loading; no candidate
+was enabled by inference.
+
 1. Introduce canonical `dit_partition_*` schema and Qwen aliases.
 2. Extract only the planner, coverage/loss bookkeeping, and diagnostics first.
 3. Implement Qwen's `DiTPartitionAdapter` without changing its math.

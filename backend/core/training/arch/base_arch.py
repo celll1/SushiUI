@@ -446,6 +446,9 @@ class ArchHandler(ABC):
     #: training. This is narrower than merely having image tokens.
     supports_dit_partition_training: bool = False
 
+    def dit_partition_adapter(self):
+        return None
+
     #: Sequence axis of ONE item's text embedding, i.e. of the ``[1, ...]``
     #: tensor ``encode_caption`` returns, as consumed by the batch-assembly
     #: collation in ``BaseTrainer._collate_text_embeddings``.

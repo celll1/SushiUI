@@ -6139,8 +6139,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   <input
                     type="checkbox"
                     id="qwen-partition-training"
-                    checked={params.qwen_partition_training_enabled ?? false}
-                    onChange={(e) => updateParam("qwen_partition_training_enabled", e.target.checked)}
+                    checked={params.dit_partition_training_enabled ?? false}
+                    onChange={(e) => updateParam("dit_partition_training_enabled", e.target.checked)}
                     className="w-4 h-4"
                   />
                   <label htmlFor="qwen-partition-training" className="text-xs text-gray-300 cursor-pointer">
@@ -6158,14 +6158,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     onChange={(e) => updateParam("qwen_convrot_training_forward", e.target.value as NonNullable<TrainingRunCreateRequest["qwen_convrot_training_forward"]>)}
                     className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
                   >
-                    <option value="auto">Auto (measured full BF16 cache)</option>
+                    <option value="auto">Auto (bounded 2-block prefetch)</option>
                     <option value="cached_bf16">Full BF16 backward cache</option>
                     <option value="prefetch_bf16">Bounded block cache + async prefetch</option>
                     <option value="transient_bf16">Transient per-layer rebuild (diagnostic)</option>
                     <option value="dequant">Dense dequant forward</option>
                   </select>
                 </div>
-                {params.qwen_convrot_training_forward === "prefetch_bf16" && (
+                {(params.qwen_convrot_training_forward ?? "auto") === "auto" || params.qwen_convrot_training_forward === "prefetch_bf16" ? (
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label className="block text-xs text-gray-400 mb-1">Cache Blocks</label>
@@ -6186,7 +6186,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       />
                     </div>
                   </div>
-                )}
+                ) : null}
                 <div>
                   <label className="block text-xs text-gray-400 mb-1">Full-frame Checkpointed Blocks</label>
                   <input
@@ -6219,13 +6219,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     Exact full-canvas attention with chunked query rows. 0 disables it; FlashAttention may already provide the same memory behavior internally.
                   </p>
                 </div>
-                {params.qwen_partition_training_enabled && (
+                {params.dit_partition_training_enabled && (
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label className="block text-xs text-gray-400 mb-1">Regions</label>
                       <select
-                        value={params.qwen_partition_fixed_count ?? 2}
-                        onChange={(e) => updateParam("qwen_partition_fixed_count", parseInt(e.target.value) as 2 | 4)}
+                        value={params.dit_partition_fixed_count ?? 2}
+                        onChange={(e) => updateParam("dit_partition_fixed_count", parseInt(e.target.value) as 2 | 4)}
                         className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
                       >
                         <option value={2}>2 regions</option>
@@ -6238,8 +6238,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         type="number"
                         min={0}
                         step={2}
-                        value={params.qwen_partition_halo_tokens ?? 0}
-                        onChange={(e) => updateParam("qwen_partition_halo_tokens", Math.max(0, parseInt(e.target.value) || 0))}
+                        value={params.dit_partition_halo_tokens ?? 0}
+                        onChange={(e) => updateParam("dit_partition_halo_tokens", Math.max(0, parseInt(e.target.value) || 0))}
                         className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
                       />
                     </div>
@@ -6250,14 +6250,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         min={0}
                         max={32}
                         placeholder="auto"
-                    value={params.dit_partition_gradient_checkpointing_blocks ?? params.qwen_partition_gradient_checkpointing_blocks ?? ""}
-                    onChange={(e) => {
-                      updateParam(
-                        "dit_partition_gradient_checkpointing_blocks",
-                        e.target.value === "" ? null : Math.max(0, Math.min(32, parseInt(e.target.value) || 0))
-                      );
-                      updateParam("qwen_partition_gradient_checkpointing_blocks", null);
-                    }}
+                        value={params.dit_partition_gradient_checkpointing_blocks ?? ""}
+                        onChange={(e) => {
+                          updateParam(
+                            "dit_partition_gradient_checkpointing_blocks",
+                            e.target.value === "" ? null : Math.max(0, Math.min(32, parseInt(e.target.value) || 0))
+                          );
+                        }}
                         className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
                       />
                       <p className="text-xs text-gray-500 mt-1">
@@ -6267,8 +6266,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <label className="flex items-center gap-2 self-end pb-1 text-xs text-gray-300 cursor-pointer">
                       <input
                         type="checkbox"
-                        checked={params.qwen_partition_profile ?? false}
-                        onChange={(e) => updateParam("qwen_partition_profile", e.target.checked)}
+                        checked={params.dit_partition_profile ?? false}
+                        onChange={(e) => updateParam("dit_partition_profile", e.target.checked)}
                         className="w-4 h-4"
                       />
                       Synchronized CUDA timing
@@ -6276,20 +6275,20 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <label className="col-span-2 flex items-center gap-2 text-xs text-gray-300 cursor-pointer">
                       <input
                         type="checkbox"
-                        checked={params.qwen_partition_global_adapter_enabled ?? false}
-                        onChange={(e) => updateParam("qwen_partition_global_adapter_enabled", e.target.checked)}
+                        checked={params.dit_partition_global_adapter_enabled ?? false}
+                        onChange={(e) => updateParam("dit_partition_global_adapter_enabled", e.target.checked)}
                         className="w-4 h-4"
                       />
                       Train low-rank full-canvas summary adapter
                     </label>
-                    {params.qwen_partition_global_adapter_enabled && (
+                    {params.dit_partition_global_adapter_enabled && (
                       <>
                         <div>
                           <label className="block text-xs text-gray-400 mb-1">Global Rank</label>
                           <input
                             type="number" min={1} max={512}
-                            value={params.qwen_partition_global_rank ?? 64}
-                            onChange={(e) => updateParam("qwen_partition_global_rank", Math.max(1, parseInt(e.target.value) || 64))}
+                            value={params.dit_partition_global_rank ?? 64}
+                            onChange={(e) => updateParam("dit_partition_global_rank", Math.max(1, parseInt(e.target.value) || 64))}
                             className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
                           />
                         </div>
@@ -6297,8 +6296,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                           <label className="block text-xs text-gray-400 mb-1">Global Summary Tokens</label>
                           <input
                             type="number" min={1} max={256}
-                            value={params.qwen_partition_global_tokens ?? 16}
-                            onChange={(e) => updateParam("qwen_partition_global_tokens", Math.max(1, parseInt(e.target.value) || 16))}
+                            value={params.dit_partition_global_tokens ?? 16}
+                            onChange={(e) => updateParam("dit_partition_global_tokens", Math.max(1, parseInt(e.target.value) || 16))}
                             className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
                           />
                         </div>

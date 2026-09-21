@@ -418,6 +418,10 @@ def test_dit_checkpoint_contract_refuses_unsupported_arch_and_depth(monkeypatch)
         _apply_dit_checkpoint_contract(
             "unused", {"dit_gradient_checkpointing_blocks": 1}
         )
+    with pytest.raises(ValueError, match="partition training is unsupported for sdxl"):
+        _apply_dit_checkpoint_contract(
+            "unused", {"dit_partition_training_enabled": True}
+        )
 
     monkeypatch.setattr(
         ModelLoader, "detect_model_type", lambda _path: "qwen_image_21"
@@ -487,8 +491,31 @@ def test_qwen_prefetch_depth_must_be_smaller_than_cache_blocks():
 
 
 def test_qwen_partition_api_refuses_odd_halo():
-    with pytest.raises(ValueError, match="qwen_partition_halo_tokens must be even"):
+    with pytest.raises(ValueError, match="dit_partition_halo_tokens must be even"):
         routes.TrainingRunCreateRequest(qwen_partition_halo_tokens=3)
+
+
+def test_qwen_partition_legacy_request_populates_canonical_fields():
+    request = routes.TrainingRunCreateRequest(
+        training_method="lora",
+        base_model_path="unused",
+        qwen_partition_training_enabled=True,
+        qwen_partition_fixed_count=4,
+        qwen_partition_global_adapter_enabled=True,
+    )
+    assert request.dit_partition_training_enabled is True
+    assert request.dit_partition_fixed_count == 4
+    assert request.dit_partition_global_adapter_enabled is True
+
+
+def test_qwen_partition_conflicting_aliases_are_rejected():
+    with pytest.raises(ValueError, match="dit_partition_fixed_count conflicts"):
+        routes.TrainingRunCreateRequest(
+            training_method="lora",
+            base_model_path="unused",
+            dit_partition_fixed_count=2,
+            qwen_partition_fixed_count=4,
+        )
 
 
 def test_qwen_partition_global_adapter_registers_and_exports():

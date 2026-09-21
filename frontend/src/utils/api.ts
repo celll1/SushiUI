@@ -7200,6 +7200,17 @@ export interface TrainingRunCreateRequest {
   activation_offload_pinned_budget_mb?: number;
   dit_gradient_checkpointing_blocks?: number | null;
   dit_partition_gradient_checkpointing_blocks?: number | null;
+  dit_partition_training_enabled?: boolean;
+  dit_partition_mode?: "fixed";
+  dit_partition_fixed_count?: 2 | 4;
+  dit_partition_halo_tokens?: number;
+  dit_partition_split_ratio_min?: number;
+  dit_partition_split_ratio_max?: number;
+  dit_partition_seed?: number;
+  dit_partition_profile?: boolean;
+  dit_partition_global_adapter_enabled?: boolean;
+  dit_partition_global_rank?: number;
+  dit_partition_global_tokens?: number;
   qwen_partition_training_enabled?: boolean;
   qwen_partition_mode?: "fixed";
   qwen_partition_fixed_count?: 2 | 4;

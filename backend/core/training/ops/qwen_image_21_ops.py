@@ -10,13 +10,20 @@ import torch.nn.functional as F
 
 
 def partition_training_enabled(trainer) -> bool:
-    return bool(trainer.config.get("qwen_partition_training_enabled", False))
+    return bool(trainer.config.get(
+        "dit_partition_training_enabled",
+        trainer.config.get("qwen_partition_training_enabled", False),
+    ))
+
+
+def _partition_config(config, name: str, default):
+    canonical = f"dit_partition_{name}"
+    legacy = f"qwen_partition_{name}"
+    return config.get(canonical, config.get(legacy, default))
 
 
 def _partition_plan(trainer, latent_h: int, latent_w: int):
-    from core.training.qwen_partition import build_fixed_partition_plan
-
-    mode = str(trainer.config.get("qwen_partition_mode", "fixed")).strip().lower()
+    mode = str(_partition_config(trainer.config, "mode", "fixed")).strip().lower()
     if mode != "fixed":
         raise ValueError(
             "The first Qwen partitioned-training implementation supports mode='fixed'; "
@@ -27,14 +34,17 @@ def _partition_plan(trainer, latent_h: int, latent_w: int):
         int(getattr(trainer, "_current_batch_position", 0)),
         int(latent_h),
         int(latent_w),
-        int(trainer.config.get("qwen_partition_fixed_count", 2)),
-        int(trainer.config.get("qwen_partition_halo_tokens", 0)),
-        int(trainer.config.get("qwen_partition_seed", 0)),
+        int(_partition_config(trainer.config, "fixed_count", 2)),
+        int(_partition_config(trainer.config, "halo_tokens", 0)),
+        int(_partition_config(trainer.config, "seed", 0)),
     )
     cached = getattr(trainer, "_qwen_partition_plan_cache", None)
     if cached is not None and cached[0] == key:
         return cached[1]
-    plan = build_fixed_partition_plan(
+    adapter = trainer.arch.dit_partition_adapter()
+    if adapter is None:
+        raise ValueError("Qwen-Image 2.1 partition adapter is unavailable")
+    plan = adapter.build_fixed_plan(
         latent_h,
         latent_w,
         count=key[4],
@@ -42,8 +52,8 @@ def _partition_plan(trainer, latent_h: int, latent_w: int):
         seed=key[6],
         epoch=key[0],
         occurrence=key[1],
-        split_ratio_min=float(trainer.config.get("qwen_partition_split_ratio_min", 0.35)),
-        split_ratio_max=float(trainer.config.get("qwen_partition_split_ratio_max", 0.65)),
+        split_ratio_min=float(_partition_config(trainer.config, "split_ratio_min", 0.35)),
+        split_ratio_max=float(_partition_config(trainer.config, "split_ratio_max", 0.65)),
     )
     trainer._qwen_partition_plan_cache = (key, plan)
     return plan
@@ -422,10 +432,7 @@ def train_step_partitioned_backward(
 ) -> tuple[float, float, float]:
     """Run every loss core sequentially and accumulate one logical gradient."""
     from core.training.mnt import training_noise_like
-    from core.training.qwen_partition import (
-        flatten_region,
-        full_canvas_position_ids,
-    )
+    from core.training.partition import flatten_region
 
     latents = latents.to(trainer.device, trainer.training_dtype)
     encoder_features = encoder_features.to(trainer.device, trainer.training_dtype)
@@ -436,6 +443,7 @@ def train_step_partitioned_backward(
             f"Qwen partition latent grid {latent_h}x{latent_w} does not match {tokens} tokens"
         )
     plan = _partition_plan(trainer, int(latent_h), int(latent_w))
+    partition_adapter = trainer.arch.dit_partition_adapter()
     sigma = timesteps.to(device=trainer.device, dtype=trainer.training_dtype)
     sigma_view = sigma.view(-1, 1, 1)
     noise = training_noise_like(trainer, latents)
@@ -457,7 +465,7 @@ def train_step_partitioned_backward(
         trainer.transformer._training_gradient_checkpointing_blocks = partition_checkpoint_blocks
 
     cuda_timing = latents.is_cuda and bool(
-        trainer.config.get("qwen_partition_profile", False)
+        _partition_config(trainer.config, "profile", False)
     )
     forward_ms = 0.0
     backward_ms = 0.0
@@ -485,7 +493,7 @@ def train_step_partitioned_backward(
                 ],
                 dim=1,
             )
-            positions = full_canvas_position_ids(
+            positions = partition_adapter.position_ids(
                 plan.full_height, plan.full_width, region.input
             )
 

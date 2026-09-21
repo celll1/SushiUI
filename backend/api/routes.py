@@ -15488,33 +15488,56 @@ class TrainingRunCreateRequest(BaseModel):
     dit_partition_gradient_checkpointing_blocks: Optional[int] = Field(
         default=TRAINING_DEFAULTS["dit_partition_gradient_checkpointing_blocks"], ge=0
     )
-    qwen_partition_training_enabled: bool = TRAINING_DEFAULTS["qwen_partition_training_enabled"]
-    qwen_partition_mode: Literal["fixed"] = TRAINING_DEFAULTS["qwen_partition_mode"]
-    qwen_partition_fixed_count: Literal[2, 4] = TRAINING_DEFAULTS["qwen_partition_fixed_count"]
-    qwen_partition_halo_tokens: int = Field(
+    dit_partition_training_enabled: bool = TRAINING_DEFAULTS["dit_partition_training_enabled"]
+    dit_partition_mode: Literal["fixed"] = TRAINING_DEFAULTS["dit_partition_mode"]
+    dit_partition_fixed_count: Literal[2, 4] = TRAINING_DEFAULTS["dit_partition_fixed_count"]
+    dit_partition_halo_tokens: int = Field(
+        default=TRAINING_DEFAULTS["dit_partition_halo_tokens"], ge=0
+    )
+    dit_partition_split_ratio_min: float = Field(
+        default=TRAINING_DEFAULTS["dit_partition_split_ratio_min"], gt=0, le=0.5
+    )
+    dit_partition_split_ratio_max: float = Field(
+        default=TRAINING_DEFAULTS["dit_partition_split_ratio_max"], ge=0.5, lt=1
+    )
+    dit_partition_seed: int = TRAINING_DEFAULTS["dit_partition_seed"]
+    dit_partition_profile: bool = TRAINING_DEFAULTS["dit_partition_profile"]
+    dit_partition_global_adapter_enabled: bool = TRAINING_DEFAULTS[
+        "dit_partition_global_adapter_enabled"
+    ]
+    dit_partition_global_rank: int = Field(
+        default=TRAINING_DEFAULTS["dit_partition_global_rank"], ge=1, le=512
+    )
+    dit_partition_global_tokens: int = Field(
+        default=TRAINING_DEFAULTS["dit_partition_global_tokens"], ge=1, le=256
+    )
+    qwen_partition_training_enabled: Optional[bool] = TRAINING_DEFAULTS["qwen_partition_training_enabled"]
+    qwen_partition_mode: Optional[Literal["fixed"]] = TRAINING_DEFAULTS["qwen_partition_mode"]
+    qwen_partition_fixed_count: Optional[Literal[2, 4]] = TRAINING_DEFAULTS["qwen_partition_fixed_count"]
+    qwen_partition_halo_tokens: Optional[int] = Field(
         default=TRAINING_DEFAULTS["qwen_partition_halo_tokens"], ge=0
     )
-    qwen_partition_split_ratio_min: float = Field(
+    qwen_partition_split_ratio_min: Optional[float] = Field(
         default=TRAINING_DEFAULTS["qwen_partition_split_ratio_min"], gt=0, le=0.5
     )
-    qwen_partition_split_ratio_max: float = Field(
+    qwen_partition_split_ratio_max: Optional[float] = Field(
         default=TRAINING_DEFAULTS["qwen_partition_split_ratio_max"], ge=0.5, lt=1
     )
-    qwen_partition_seed: int = TRAINING_DEFAULTS["qwen_partition_seed"]
+    qwen_partition_seed: Optional[int] = TRAINING_DEFAULTS["qwen_partition_seed"]
     qwen_partition_gradient_checkpointing_blocks: Optional[int] = Field(
         default=TRAINING_DEFAULTS["qwen_partition_gradient_checkpointing_blocks"], ge=0, le=32
     )
-    qwen_partition_profile: bool = TRAINING_DEFAULTS["qwen_partition_profile"]
+    qwen_partition_profile: Optional[bool] = TRAINING_DEFAULTS["qwen_partition_profile"]
     qwen_full_kv_query_chunk_tokens: int = Field(
         default=TRAINING_DEFAULTS["qwen_full_kv_query_chunk_tokens"], ge=0
     )
-    qwen_partition_global_adapter_enabled: bool = TRAINING_DEFAULTS[
+    qwen_partition_global_adapter_enabled: Optional[bool] = TRAINING_DEFAULTS[
         "qwen_partition_global_adapter_enabled"
     ]
-    qwen_partition_global_rank: int = Field(
+    qwen_partition_global_rank: Optional[int] = Field(
         default=TRAINING_DEFAULTS["qwen_partition_global_rank"], ge=1, le=512
     )
-    qwen_partition_global_tokens: int = Field(
+    qwen_partition_global_tokens: Optional[int] = Field(
         default=TRAINING_DEFAULTS["qwen_partition_global_tokens"], ge=1, le=256
     )
     qwen_convrot_training_forward: Literal[
@@ -15529,6 +15552,30 @@ class TrainingRunCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def _checkpoint_aliases_agree(self):
+        alias_pairs = (
+            ("dit_partition_training_enabled", "qwen_partition_training_enabled"),
+            ("dit_partition_mode", "qwen_partition_mode"),
+            ("dit_partition_fixed_count", "qwen_partition_fixed_count"),
+            ("dit_partition_halo_tokens", "qwen_partition_halo_tokens"),
+            ("dit_partition_split_ratio_min", "qwen_partition_split_ratio_min"),
+            ("dit_partition_split_ratio_max", "qwen_partition_split_ratio_max"),
+            ("dit_partition_seed", "qwen_partition_seed"),
+            ("dit_partition_profile", "qwen_partition_profile"),
+            ("dit_partition_global_adapter_enabled", "qwen_partition_global_adapter_enabled"),
+            ("dit_partition_global_rank", "qwen_partition_global_rank"),
+            ("dit_partition_global_tokens", "qwen_partition_global_tokens"),
+        )
+        explicit = self.model_fields_set
+        for canonical_name, legacy_name in alias_pairs:
+            canonical_set = canonical_name in explicit
+            legacy_set = legacy_name in explicit
+            canonical_value = getattr(self, canonical_name)
+            legacy_value = getattr(self, legacy_name)
+            if (canonical_set and legacy_set and legacy_value is not None
+                    and canonical_value != legacy_value):
+                raise ValueError(f"{canonical_name} conflicts with {legacy_name}")
+            if legacy_set and legacy_value is not None and not canonical_set:
+                setattr(self, canonical_name, legacy_value)
         canonical = self.dit_partition_gradient_checkpointing_blocks
         legacy = self.qwen_partition_gradient_checkpointing_blocks
         if canonical is not None and legacy is not None and canonical != legacy:
@@ -15543,11 +15590,11 @@ class TrainingRunCreateRequest(BaseModel):
             )
         return self
 
-    @field_validator("qwen_partition_halo_tokens")
+    @field_validator("dit_partition_halo_tokens", "qwen_partition_halo_tokens")
     @classmethod
     def _qwen_partition_halo_is_even(cls, value):
-        if value % 2:
-            raise ValueError("qwen_partition_halo_tokens must be even")
+        if value is not None and value % 2:
+            raise ValueError("dit_partition_halo_tokens must be even")
         return value
 
     # Multi Noise-Timestep (MNT) settings

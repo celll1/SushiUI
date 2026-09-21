@@ -27,6 +27,10 @@ class QwenImage21ArchHandler(ArchHandler):
     # image tokens; the generic 24e-6 image seed under-predicts this architecture.
     activation_dispatch_seed_floor = 3.5e-3
 
+    def dit_partition_adapter(self):
+        from core.training.qwen_partition import QwenImage21PartitionAdapter
+        return QwenImage21PartitionAdapter()
+
     def lora_adapter_class(self):
         from core.training.adapters import QwenImage21LoRAAdapter
         return QwenImage21LoRAAdapter

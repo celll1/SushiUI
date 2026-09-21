@@ -453,28 +453,26 @@ boundaries, and mixed full/partitioned exposure are evaluated first.
 
 ## 11. Proposed configuration surface
 
-Names remain provisional until implementation. Defaults will live only in
-`backend/api/param_defaults.py`, and any API fields will be added OpenAPI-first.
+The shipped surface uses architecture-neutral `dit_partition_*` names. Defaults
+live only in `backend/api/param_defaults.py`; deprecated `qwen_partition_*`
+aliases remain read-compatible for saved runs and older API clients.
 
 ```text
-qwen_partition_training_enabled
-qwen_partition_mode                 # off | fixed | adaptive
-qwen_partition_fixed_count          # prototype: typically 2 or 4
-qwen_partition_memory_fraction      # safety ceiling for predicted peak
-qwen_partition_token_fallback       # cold-start fallback, not a side length
-qwen_partition_elective_probability # feasible images may still partition
-qwen_partition_min_core_side
-qwen_partition_max_regions
-qwen_partition_split_ratio_min
-qwen_partition_split_ratio_max
-qwen_partition_halo_tokens
-qwen_partition_sigma_adaptive
-qwen_partition_position_sidecar
-qwen_partition_seed
-qwen_partition_global_adapter_enabled
-qwen_partition_global_rank
-qwen_partition_global_tokens
+dit_partition_training_enabled
+dit_partition_mode                 # fixed in the prototype
+dit_partition_fixed_count          # prototype: 2 or 4
+dit_partition_split_ratio_min
+dit_partition_split_ratio_max
+dit_partition_halo_tokens
+dit_partition_seed
+dit_partition_global_adapter_enabled
+dit_partition_global_rank
+dit_partition_global_tokens
+dit_partition_gradient_checkpointing_blocks
 ```
+
+Adaptive budget, elective probability, sigma adaptation, and position sidecar
+remain designed follow-ups rather than accepted configuration fields.
 
 The UI should expose a simple off/fixed/adaptive selector, fixed count for the
 prototype, elective probability, halo, and an advanced memory safety control.

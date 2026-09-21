@@ -24762,9 +24762,63 @@ components:
           description: >-
             Optional checkpointed-block count during complete-coverage DiT
             partition forwards. Null inherits the resolved full-frame count.
-        qwen_partition_training_enabled:
+        dit_partition_training_enabled:
           type: boolean
           default: false
+          description: >-
+            Enable architecture-gated complete-coverage DiT partition training.
+            Unsupported attention topologies are refused before model loading.
+        dit_partition_mode:
+          type: string
+          enum: [fixed]
+          default: fixed
+        dit_partition_fixed_count:
+          type: integer
+          enum: [2, 4]
+          default: 2
+          description: Number of target regions; boundaries vary deterministically by epoch and item.
+        dit_partition_halo_tokens:
+          type: integer
+          minimum: 0
+          default: 0
+          description: Even latent-token halo around each non-overlapping loss core.
+        dit_partition_split_ratio_min:
+          type: number
+          format: float
+          exclusiveMinimum: 0
+          maximum: 0.5
+          default: 0.35
+        dit_partition_split_ratio_max:
+          type: number
+          format: float
+          minimum: 0.5
+          exclusiveMaximum: 1
+          default: 0.65
+        dit_partition_seed:
+          type: integer
+          default: 0
+        dit_partition_profile:
+          type: boolean
+          default: false
+        dit_partition_global_adapter_enabled:
+          type: boolean
+          default: false
+          description: Enable the architecture adapter's trainable full-canvas summary path when supported.
+        dit_partition_global_rank:
+          type: integer
+          minimum: 1
+          maximum: 512
+          default: 64
+        dit_partition_global_tokens:
+          type: integer
+          minimum: 1
+          maximum: 256
+          default: 16
+        qwen_partition_training_enabled:
+          type: boolean
+          nullable: true
+          default: null
+          deprecated: true
           description: >-
             Enable Qwen-Image 2.1 complete-coverage partitioned target training.
             Every image region contributes to the same logical step, but target
@@ -24772,33 +24826,45 @@ components:
         qwen_partition_mode:
           type: string
           enum: [fixed]
-          default: fixed
+          nullable: true
+          default: null
+          deprecated: true
           description: Partition planner. The first implementation exposes the fixed-count prototype.
         qwen_partition_fixed_count:
           type: integer
           enum: [2, 4]
-          default: 2
+          nullable: true
+          default: null
+          deprecated: true
           description: Number of Qwen target regions in fixed mode; boundaries vary deterministically by epoch and item.
         qwen_partition_halo_tokens:
           type: integer
           minimum: 0
-          default: 0
+          nullable: true
+          default: null
+          deprecated: true
           description: Even latent-token halo added around each loss core; halo tokens provide context but do not contribute duplicate loss.
         qwen_partition_split_ratio_min:
           type: number
           format: float
+          nullable: true
           exclusiveMinimum: 0
           maximum: 0.5
-          default: 0.35
+          default: null
+          deprecated: true
         qwen_partition_split_ratio_max:
           type: number
           format: float
+          nullable: true
           minimum: 0.5
           exclusiveMaximum: 1
-          default: 0.65
+          default: null
+          deprecated: true
         qwen_partition_seed:
           type: integer
-          default: 0
+          nullable: true
+          default: null
+          deprecated: true
           description: Deterministic seed for epoch- and item-varying partition boundaries.
         qwen_partition_gradient_checkpointing_blocks:
           type: integer
@@ -24810,7 +24876,9 @@ components:
           description: Deprecated alias for dit_partition_gradient_checkpointing_blocks; conflicting non-null values are rejected.
         qwen_partition_profile:
           type: boolean
-          default: false
+          nullable: true
+          default: null
+          deprecated: true
           description: Record synchronized per-region CUDA forward/backward timings for partition validation.
         qwen_full_kv_query_chunk_tokens:
           type: integer
@@ -24821,19 +24889,25 @@ components:
             Zero disables the exact experimental path; FlashAttention may gain no memory because it already tiles internally.
         qwen_partition_global_adapter_enabled:
           type: boolean
-          default: false
+          nullable: true
+          default: null
+          deprecated: true
           description: Add a trainable low-rank full-canvas summary path to complete-coverage partitioned LoRA training.
         qwen_partition_global_rank:
           type: integer
           minimum: 1
           maximum: 512
-          default: 64
+          nullable: true
+          default: null
+          deprecated: true
           description: Internal channel rank of the Qwen partition global summary adapter.
         qwen_partition_global_tokens:
           type: integer
           minimum: 1
           maximum: 256
-          default: 16
+          nullable: true
+          default: null
+          deprecated: true
           description: Number of learned full-canvas summary tokens exposed to every target region.
         qwen_convrot_training_forward:
           type: string

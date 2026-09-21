@@ -23,6 +23,7 @@ from core.models.common.quantized_frozen_training import (
     enable_frozen_training_prefetch_backward,
 )
 from core.training.adapters.qwen_image_21_adapter import QwenImage21LoRAAdapter
+from core.training.arch.qwen_image_21 import QwenImage21ArchHandler
 from core.training.ops import qwen_image_21_ops
 
 
@@ -441,6 +442,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         prefetch_cache = None
 
     trainer = _ProbeTrainer(
+        arch=QwenImage21ArchHandler(),
         transformer=transformer,
         device=device,
         training_dtype=dtype,

@@ -1606,7 +1606,10 @@ def _apply_dit_checkpoint_contract(
         canonical_base = legacy_base
     train_config["dit_gradient_checkpointing_blocks"] = canonical_base
 
-    partition_enabled = bool(train_config.get("qwen_partition_training_enabled", False))
+    partition_enabled = bool(train_config.get(
+        "dit_partition_training_enabled",
+        train_config.get("qwen_partition_training_enabled", False),
+    ))
     if canonical_base is None and canonical_partition is None and not partition_enabled:
         return
     architecture = ModelLoader.detect_model_type(base_model_path)

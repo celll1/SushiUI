@@ -160,7 +160,8 @@ def process_controlnet_configs(
 # Flow-matching DiTs: x_t is mostly noise mid-denoising, while pred_x0 shows the
 # model's current clean-image estimate from the very first step.
 _PRED_X0_PREVIEW_ARCHS = frozenset({
-    "anima", "zimage", "flux2", "lens", "ideogram4", "minit2i", "krea2", "sensenova",
+    "anima", "zimage", "flux2", "lens", "ideogram4", "minit2i", "krea2",
+    "qwen_image_21", "sensenova",
 })
 
 
@@ -254,6 +255,7 @@ def preview_arch_kwargs(
             if is_minit2i else "none"
         ),
         "is_krea2": model_type == "krea2",
+        "is_qwen_image_21": model_type == "qwen_image_21",
         "preview_predicted_x0": preview_predicted_x0 or model_type in _PRED_X0_PREVIEW_ARCHS,
     }
 
@@ -271,6 +273,7 @@ def create_progress_callback_factory(
     is_minit2i: bool = False,
     minit2i_vae_type: str = "none",
     is_krea2: bool = False,
+    is_qwen_image_21: bool = False,
     vae_preview_kind: Optional[str] = None,
     latent_scaling_factor: Optional[float] = None,
     img2img_fix_steps: Optional[bool] = None,
@@ -371,6 +374,7 @@ def create_progress_callback_factory(
                     is_minit2i=is_minit2i,
                     minit2i_vae_type=minit2i_vae_type,
                     is_krea2=is_krea2,
+                    is_qwen_image_21=is_qwen_image_21,
                     image_width=image_width,
                     image_height=image_height,
                     preview_decoder=preview_decoder,

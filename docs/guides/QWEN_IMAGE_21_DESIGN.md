@@ -438,6 +438,13 @@ prompt prefix, and run the flow Euler loop. The first step uses prefill mode and
 extracts per-layer prefix K/V; later steps forward only the target with cached
 prefix K/V. Progress and preview callbacks observe actual scheduler steps.
 
+Live preview uses the flow model's current clean estimate
+`pred_x0 = x_t - sigma * velocity`, not the noisy post-step latent. The
+unpatched `[B,N,64]` tensor is reshaped to `[B,64,H/16,W/16]`, projected by a
+fixed 64-to-RGB matrix, and enlarged for the existing JPEG WebSocket payload.
+This path does not run or move the 1.35 GB VAE during denoising. The preview is
+RGB-only; native alpha remains available in the final RGBA decode.
+
 ### 8.3 Native image editing and references
 
 The native edit path is the primary `img2img` implementation. Every condition

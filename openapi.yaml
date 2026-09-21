@@ -6199,6 +6199,55 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/step-profile:
+    get:
+      tags: [training]
+      summary: Get direct forward and backward timing diagnostics
+      description: |
+        Reads the direct CUDA-event samples emitted when `repa_profile_steps`
+        is nonzero. Profiling is architecture-neutral despite the historical
+        parameter name and works when REPA is disabled. Values are seconds;
+        `forward_s` is derived as `forward_backward_s - backward_s`.
+        Sessions are kept separate across resumes.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: {type: integer}
+        - name: latest_only
+          in: query
+          required: false
+          schema: {type: boolean, default: false}
+      responses:
+        '200':
+          description: Direct timing samples and per-session medians
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [run_id, sessions]
+                properties:
+                  run_id: {type: integer}
+                  sessions:
+                    type: array
+                    items:
+                      type: object
+                      required: [log_file, samples, median]
+                      properties:
+                        log_file: {type: string}
+                        samples:
+                          type: array
+                          items:
+                            type: object
+                            additionalProperties: {type: number}
+                        median:
+                          type: object
+                          additionalProperties: {type: number}
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
   /training/runs/{run_id}/metrics_db:
     get:
       tags: [training]

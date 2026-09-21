@@ -10,7 +10,7 @@ _BACKEND = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _BACKEND not in sys.path:
     sys.path.insert(0, _BACKEND)
 
-from core.training.ops import acestep_ops, ltx2_ops
+from core.training.ops import acestep_ops, ltx2_ops, qwen_image_21_ops
 
 
 class _DiffusersTransformer:
@@ -64,3 +64,22 @@ def test_acestep_vendor_supports_transformers_dynamic_backend_api():
     from core.models.acestep.vendor import AceStepConditionGenerationModel
 
     assert AceStepConditionGenerationModel._can_set_attn_implementation()
+
+
+@pytest.mark.parametrize("backend", ["native", "flash"])
+def test_qwen_image_21_training_backend_reaches_segmented_processors(backend):
+    processors = [SimpleNamespace(_attention_backend=None) for _ in range(3)]
+    transformer = SimpleNamespace(
+        transformer_blocks=[
+            SimpleNamespace(attn=SimpleNamespace(processor=processor))
+            for processor in processors
+        ]
+    )
+    qwen_image_21_ops.setup_attention_backend(_trainer(transformer), backend)
+    assert [processor._attention_backend for processor in processors] == [backend] * 3
+
+
+def test_qwen_image_21_refuses_backend_without_exact_segmented_path():
+    transformer = SimpleNamespace(transformer_blocks=[])
+    with pytest.raises(ValueError, match="supported backends are 'native' and 'flash'"):
+        qwen_image_21_ops.setup_attention_backend(_trainer(transformer), "tq")

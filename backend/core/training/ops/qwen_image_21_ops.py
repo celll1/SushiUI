@@ -41,6 +41,28 @@ def load_components(trainer) -> None:
         trainer.transformer.enable_gradient_checkpointing()
     trainer.transformer.to(trainer.device)
     trainer.layer_offload_conductor = None
+    setup_attention_backend(trainer, trainer.attention_backend)
+
+
+def setup_attention_backend(trainer, backend: str) -> None:
+    """Install Qwen 2.1's exact segmented native or packed Flash path."""
+    if trainer.transformer is None:
+        return
+    resolved = trainer._resolve_training_backend(backend)
+    if resolved not in {"native", "flash"}:
+        raise ValueError(
+            f"Qwen-Image 2.1 training cannot dispatch attention backend {resolved!r}; "
+            "supported backends are 'native' and 'flash'"
+        )
+    count = 0
+    for block in trainer.transformer.transformer_blocks:
+        processor = block.attn.processor
+        processor._attention_backend = resolved
+        count += 1
+    print(
+        f"{trainer.log_prefix} [OK] Qwen-Image 2.1 attention backend='{resolved}' "
+        f"({count} segmented processors)"
+    )
 
 
 def setup_block_swap(trainer) -> None:

@@ -11967,6 +11967,9 @@ class BaseTrainer(ABC):
                     timesteps=timesteps,
                     lens_latent_shape=lens_latent_shape,
                     loss_scale=loss_scale,
+                    debug_save_path=debug_save_path,
+                    debug_captions=batch_captions,
+                    debug_reference_image_paths=batch_reference_paths,
                 )
         # Forward pass (architecture-specific)
         if self.is_sensenova:
@@ -12152,6 +12155,9 @@ class BaseTrainer(ABC):
                 latent_h=_lh,
                 latent_w=_lw,
                 repa_pixels=mnt_repa_pixels,
+                debug_save_path=debug_save_path,
+                debug_captions=batch_captions if debug_save_path else None,
+                debug_reference_image_paths=batch_reference_paths if debug_save_path else None,
             )
             loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
         elif self.is_minit2i:
@@ -12338,6 +12344,9 @@ class BaseTrainer(ABC):
         timesteps: torch.Tensor,
         lens_latent_shape: Optional[Tuple[int, int]],
         loss_scale: float,
+        debug_save_path: Optional[Path] = None,
+        debug_captions: Optional[List[str]] = None,
+        debug_reference_image_paths: Optional[List[Optional[str]]] = None,
     ) -> Tuple[float, float, float]:
         """Qwen-only sequential region backward under one logical step."""
         if fused_backward_active(self):
@@ -12364,6 +12373,9 @@ class BaseTrainer(ABC):
                 latent_h=int(latent_h),
                 latent_w=int(latent_w),
                 backward_scale=backward_scale,
+                debug_save_path=debug_save_path,
+                debug_captions=debug_captions,
+                debug_reference_image_paths=debug_reference_image_paths,
             )
             self._flush_fused_group_partials()
             events = getattr(self, "_repa_profile_events", None)

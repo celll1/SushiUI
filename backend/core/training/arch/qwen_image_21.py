@@ -76,6 +76,9 @@ class QwenImage21ArchHandler(ArchHandler):
             latent_w=ctx.latent_w,
             profile_vram=ctx.profile_vram,
             repa_pixels=ctx.repa_pixels,
+            debug_save_path=ctx.debug_save_path,
+            debug_captions=ctx.debug_captions,
+            debug_reference_image_paths=ctx.debug_reference_image_paths,
         )
 
     def sample(self, trainer, sample_ctx: SampleContext):

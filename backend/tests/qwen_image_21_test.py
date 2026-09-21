@@ -39,6 +39,60 @@ from api import routes
 from api.schema_routes import get_arch_capabilities, get_generation_defaults
 
 
+class _DebugTransformer(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.scale = torch.nn.Parameter(torch.tensor(0.5))
+        self.transformer_blocks = torch.nn.ModuleList([torch.nn.Identity()])
+
+    def forward(self, *, hidden_states, **_kwargs):
+        return (hidden_states * self.scale,)
+
+
+@pytest.mark.parametrize("partitioned", [False, True])
+def test_qwen_debug_latents_save_full_canvas(tmp_path, partitioned):
+    height, width, channels = 4, 8, 4
+    clean = torch.arange(height * width * channels, dtype=torch.float32).reshape(
+        1, height * width, channels
+    ) / 100
+    noise = torch.ones_like(clean)
+    sigma = torch.tensor([0.25])
+    transformer = _DebugTransformer()
+    trainer = SimpleNamespace(
+        device=torch.device("cpu"), training_dtype=torch.float32,
+        mixed_precision=False, use_grad_scaler=False, transformer=transformer,
+        arch=QwenImage21ArchHandler(), config={"dit_partition_fixed_count": 2},
+        _active_mnt_noise=noise, log_prefix="[test]",
+        log_extra_metric=lambda *_args: None,
+    )
+    debug_path = tmp_path / "step_000200"
+    inputs = dict(
+        latents=clean, encoder_features=torch.zeros(1, 2, channels),
+        encoder_mask=torch.ones(1, 2), timesteps=sigma,
+        latent_h=height, latent_w=width, debug_save_path=debug_path,
+        debug_captions=["caption"],
+    )
+    if partitioned:
+        qwen_image_21_ops.train_step_partitioned_backward(
+            trainer, **inputs, backward_scale=1.0
+        )
+    else:
+        qwen_image_21_ops.train_step(trainer, **inputs)
+
+    saved = torch.load(next(debug_path.glob("latents_t*.pt")), weights_only=False)
+    noisy = (1 - sigma) * clean + sigma * noise
+    expected_prediction = noisy * transformer.scale.detach()
+    as_grid = lambda packed: packed.transpose(1, 2).reshape(1, channels, height, width)
+    torch.testing.assert_close(saved["latents"], as_grid(clean))
+    torch.testing.assert_close(saved["noisy_latents"], as_grid(noisy))
+    torch.testing.assert_close(saved["predicted_velocity"], as_grid(expected_prediction))
+    torch.testing.assert_close(
+        saved["predicted_latent"], as_grid(noisy - sigma * expected_prediction)
+    )
+    assert saved["partition_count"] == (2 if partitioned else 1)
+    assert saved["caption"] == "caption"
+
+
 def test_manifest_detection(tmp_path):
     (tmp_path / "processor").mkdir()
     (tmp_path / "scheduler").mkdir()

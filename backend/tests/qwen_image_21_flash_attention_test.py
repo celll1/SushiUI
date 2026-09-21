@@ -13,7 +13,38 @@ if _BACKEND not in sys.path:
 import core.attention
 from core.attention import AttentionMode
 from core.attention.dispatch import dispatch_attention_varlen as _dispatch_varlen
-from core.models.qwen_image_21.vendor.transformer import QwenImage21AttnProcessor
+from core.models.qwen_image_21.vendor.transformer import (
+    QwenImage21AttnProcessor,
+    QwenImage21KVLayerCache,
+    _qwenimage21_prepare_qkv,
+)
+
+
+def test_qkv_and_prefix_cache_follow_autocast_dtype():
+    class FloatProjection(torch.nn.Module):
+        def forward(self, x):
+            return x.float()
+
+    class Attention:
+        heads = 2
+        to_q = FloatProjection()
+        to_k = FloatProjection()
+        to_v = FloatProjection()
+        norm_q = torch.nn.Identity()
+        norm_k = torch.nn.Identity()
+
+    cache = QwenImage21KVLayerCache()
+    inputs = torch.ones(1, 4, 8, dtype=torch.bfloat16)
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        query, key, value, _ = _qwenimage21_prepare_qkv(
+            Attention(), inputs, None, cache, "extract", slice(0, 2)
+        )
+        assert {query.dtype, key.dtype, value.dtype} == {torch.bfloat16}
+        assert {tensor.dtype for tensor in cache.get()} == {torch.bfloat16}
+        query, key, value, _ = _qwenimage21_prepare_qkv(
+            Attention(), inputs[:, 2:], None, cache, "cached", None
+        )
+        assert {query.dtype, key.dtype, value.dtype} == {torch.bfloat16}
 
 
 def _native_varlen(*args, **kwargs):

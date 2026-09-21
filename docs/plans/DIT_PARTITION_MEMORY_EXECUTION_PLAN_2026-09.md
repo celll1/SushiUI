@@ -1,6 +1,6 @@
 # DiT partition training and memory-execution plan
 
-Status: **planned; implementation not started by this document**
+Status: **implemented; async activation transfer remains opt-in pending an architecture-level performance gate**
 
 This plan separates four controls that are currently easy to conflate:
 

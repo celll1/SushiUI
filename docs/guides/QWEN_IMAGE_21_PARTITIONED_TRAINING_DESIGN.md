@@ -76,7 +76,8 @@ scaling is applied once to the assembled objective, not once per region.
 
 For distributed training, all but the last region of a logical item use the
 equivalent of `no_sync`; otherwise partition count would multiply gradient
-communication.
+communication. Distributed Qwen training is outside the first implementation;
+this is a future compatibility requirement, not an initial execution path.
 
 ## 3. Expected resource behavior
 
@@ -93,9 +94,20 @@ close: a 60:40 split has a squared-token ratio of `0.60^2 + 0.40^2 = 0.52`.
 
 This is not an end-to-end speedup bound. Across all regions, the model still
 processes approximately `N` target tokens through projections and MLPs, and it
-repeats the text prefix. Kernel launch overhead also rises. Conversely, shorter
-sequences can require fewer checkpointed blocks and less recomputation, so the
-measured benefit can exceed the attention-only share of the original profile.
+repeats the text prefix. Kernel launch overhead also rises. With target length
+near 9,216, hidden width 4,096, and SwiGLU ratio 3, a block-level FLOP model
+places the reducible target-target attention matmuls at roughly one quarter to
+three tenths of the total before prefix work and runtime overhead. It therefore
+predicts only about 13--15% whole-block work removal for two balanced regions
+and about 19--23% for four. These are orientation numbers, not performance
+claims. Target-prefix attention, repeated prefix projections, launch overhead,
+and non-transformer work reduce the realized fraction.
+
+Shorter sequences can require fewer checkpointed blocks and less
+recomputation, producing an additional measured gain. Its size depends on the
+checkpoint policy and is not assigned a design-time percentage. The primary
+guaranteed benefit of this design is lower peak activation residency; speed is
+a secondary benefit that must pass the logical-image throughput gate.
 
 Peak trainable activation residency follows the largest region rather than the
 sum of all regions because each region is forwarded, backpropagated, and
@@ -131,9 +143,11 @@ with equal target-token and prefix counts are expected to be close until a
 measurement shows otherwise.
 
 The planner asks the shared activation dispatcher for predicted peak bytes and
-applies a safety margin. A target-token ceiling may exist as a deterministic
-fallback before sufficient measurements exist, but it is not expressed as a
-fixed image width or height and does not supersede a valid measured profile.
+applies a safety margin. It reads an immutable planning-profile snapshot made
+before the first data step, not the dispatcher's continuously updated live
+profile. A target-token ceiling may exist as a deterministic fallback before
+sufficient measurements exist, but it is not expressed as a fixed image width
+or height and does not supersede a valid measured snapshot.
 
 There are two independent reasons to partition:
 
@@ -170,12 +184,22 @@ predicted expanded-input workload until every region is feasible.
 
 Candidate cuts:
 
-* are aligned to the Qwen 2 by 2 image-slot contract;
+* produce every transformer input rectangle with
+  `input_height * input_width` divisible by four;
 * normally follow the current rectangle's longer side;
 * may choose the other axis when it gives a better plan;
 * stay within configurable balance bounds, initially proposed as 35:65 to
   65:35; and
 * obey a minimum core side and a maximum region count.
+
+The divisibility rule is a token-count contract. The current transformer
+allocates `target_tokens // 4` image slots and expands each slot four times in
+row-major token order; it does not require each slot to represent a spatially
+aligned 2 by 2 square. Making both input dimensions even is a simple sufficient
+prototype rule but is not the architectural definition. A planner that admits
+odd dimensions must still prove the input-area divisibility condition. With
+zero halo the core is the input and follows the same rule; with halo, the
+expanded input must satisfy it even if the smaller loss core does not.
 
 Candidate plans are ranked lexicographically:
 
@@ -186,14 +210,24 @@ Candidate plans are ranked lexicographically:
 5. boundaries close to the same image's recent deterministic plans are
    penalized.
 
-The last rule distributes attention boundaries over epochs. It must not make
-resume depend on an uncheckpointed history cache; any history used by the cost
-is derived from the run seed, item identity, and epoch or is saved in training
-state.
+The last rule distributes attention boundaries over epochs. The first
+implementation derives prior-boundary penalties from the run seed, item
+identity, and epoch and has no mutable history cache.
 
 If no plan satisfies the safety constraint before the maximum region count or
 minimum side is reached, the item is refused with its predicted workload and
-planner limits. The trainer must not silently drop regions or resize the image.
+planner limits. Refusal means the run fails before the logical step: it is not
+an item-level skip. It does not advance global step, optimizer, scheduler,
+logical-sample count, epoch position in persisted state, MNT order, or dataset
+repeat accounting. The failure record identifies the item, shape, frozen
+profile, attempted plans, and limiting constraint. Resuming the last checkpoint
+must encounter the same item and failure unless the user starts an explicit
+policy migration with safer limits. The trainer must not silently drop regions,
+resize the image, or substitute activation offload without reporting it.
+
+Static preflight evaluates every known latent bucket before model execution.
+Per-item planning remains authoritative because valid prefix length and other
+live workload fields may differ within a bucket.
 
 ### 5.3 Plan variability
 
@@ -207,6 +241,7 @@ dataset repeat/occurrence index
 latent shape
 planner policy version
 optional sigma band
+planning-profile snapshot identity
 ```
 
 Consequently, the same image may be full-frame in one epoch, split into two in
@@ -224,6 +259,28 @@ This policy gives full-frame examples to the adapter while ensuring that
 images which require partitioning are not the only source of partitioned
 attention. That avoids coupling partition behavior exclusively to the largest
 or most square dataset buckets.
+
+### 5.4 Resume and profile snapshot
+
+The planner's feasibility input is frozen after device, attention backend,
+base variant, dtype, and checkpoint policy have been resolved and before the
+first dataset item is planned. The snapshot contains the dispatch prediction
+coefficients or fallback ceiling, safety margin, workload-family version, and
+the resolved execution facts that affect the prediction. It is saved in the
+training state and copied into every checkpoint.
+
+Live dispatcher observations may tune activation handling and populate
+diagnostics, but they do not change partition plans in the current run. They
+may seed the next run or an explicit policy migration. Resume reloads the saved
+snapshot rather than taking a fresh live profile. A changed device class,
+attention backend, dtype, base mode, or incompatible predictor version refuses
+resume unless an explicit replan migration is requested and recorded.
+
+Existing reactive recovery may try activation offload for the already chosen
+plan because that does not change loss geometry. If recovery still cannot run
+the region, the run fails. The first implementation does not silently create a
+new partition after OOM; doing so would make the objective depend on runtime
+history and break deterministic resume.
 
 ## 6. Optional halo
 
@@ -279,8 +336,11 @@ The logical step is:
 
 ```text
 load/cache full latent and conditioning
-sample logical timestep and full noise
+if sigma-adaptive: sample the logical timestep exactly once
 build deterministic partition plan
+fail before the logical step if no plan is safe
+if timestep is not yet sampled: sample it exactly once
+sample full-image noise exactly once
 for each region:
     dispatch using the halo-expanded region workload
     slice noisy latent and target
@@ -302,6 +362,15 @@ The implementation must integrate with:
   adapter backward in the existing floating path.
 * **Flash Attention.** Continue to use the validated Qwen attention backend for
   each shorter sequence.
+* **Prefix execution.** Recompute the differentiable prefix for every region in
+  the first implementation. The existing generation prefix K/V cache is not a
+  training optimization: detaching cached K/V removes adapter gradients that
+  reach the prefix through target attention and breaks the gradient oracle.
+  Reusing one prefix graph without detaching would require retaining it across
+  region backwards or a separate accumulated prefix-backward design, reducing
+  the memory benefit. A future differentiable cache is admitted only after it
+  matches the recompute path's adapter gradients; detached prefix caching is
+  not an accepted acceleration for this feature.
 * **Latent and conditioning caches.** Cache the full latent and conditioning;
   do not create persistent per-plan tile caches.
 * **MNT.** Every MNT objective covers every loss core. A base implementation
@@ -387,8 +456,9 @@ Planner internals such as measured profile coefficients are diagnostics, not
 user-authored tuning fields.
 
 The checkpoint identity records the complete policy, policy version, seed,
-and any position-sidecar declaration. Resume refuses a changed policy unless a
-future explicit migration contract defines how the change is applied.
+immutable planning-profile snapshot, and any position-sidecar declaration.
+Resume refuses a changed policy or incompatible execution identity unless an
+explicit migration contract defines and records how replanning is applied.
 
 ## 12. Diagnostics
 
@@ -397,6 +467,7 @@ Logical-step metrics must distinguish image progress from region substeps:
 ```text
 partition_reason                    # none | required | elective | fixed
 partition_count
+planning_profile_snapshot_id
 full_target_tokens
 largest_input_tokens
 total_input_tokens                  # includes halo overlap
@@ -426,7 +497,11 @@ second, but it must not label that number as samples per second.
   side exceeds a square preset.
 * Elective draws make a feasible image alternate reproducibly between full and
   partitioned presentations across epochs.
+* Online dispatcher measurements do not alter plans after the immutable
+  planning-profile snapshot has been created.
 * Save/resume reconstructs the same reason, count, boxes, order, and halo.
+* An unplannable item fails the run without advancing logical training state,
+  and resume encounters the same failure.
 * Full-frame mode remains numerically unchanged when metadata is absent.
 
 ### 13.2 Gradient oracle
@@ -443,6 +518,10 @@ per-region execution:
 * area-weighted total loss;
 * every adapter gradient; and
 * optimizer result after one logical step.
+
+The initial oracle uses differentiable prefix recomputation for every region.
+A future prefix reuse path must pass the same gradient comparison. A detached
+generation-style K/V cache is expected to fail it and is deliberately excluded.
 
 This gate tests the partition engine itself. It does not compare partitioned
 attention with dense full-frame attention, which is intentionally different.
@@ -493,7 +572,9 @@ attention.
 Repeated prefix work and multiple backward calls can offset attention savings
 on smaller images. Variable region counts also make logical-step duration
 variable. Persistent model and ConvRot cache memory set a floor below which
-partitioning cannot reduce residency.
+partitioning cannot reduce residency. Peak-memory reduction is the primary
+motivation; throughput improvement is workload-dependent and remains a
+measured acceptance gate.
 
 Training-time patch methods provide useful evidence that full-size exposure,
 variable patch sizes, and position information matter, but they do not

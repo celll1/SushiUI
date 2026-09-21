@@ -111,6 +111,7 @@ class ActivationDispatcher:
         seed_coef: float = 24.0e-6,
         residual_frac: float = 0.85,
         threshold_bytes: int = 4 * 1024 * 1024,
+        use_cross_bucket_fit: bool = True,
     ):
         """
         Args:
@@ -133,6 +134,7 @@ class ActivationDispatcher:
         self.seed_coef = seed_coef
         self.residual_frac = residual_frac
         self.threshold_bytes = threshold_bytes
+        self.use_cross_bucket_fit = bool(use_cross_bucket_fit)
         # (lh, lw, lt, bs) -> measured base (non-offloaded) activation in GB. PRIMARY
         # predictor: exact per-bucket measurement (cannot run away globally).
         # `lt` (latent temporal extent, 1 for image archs) is part of the key because
@@ -218,6 +220,8 @@ class ActivationDispatcher:
         cached = self._act_cache.get(self._bucket(lh, lw, bs, lt))
         if cached is not None:
             return cached
+        if not self.use_cross_bucket_fit:
+            return bs * self.seed_coef * self._volume(lh, lw, lt)
         a, b = self._fit_2term(self._samples, self.seed_coef)
         return bs * (a + b * self._volume(lh, lw, lt))
 
@@ -233,6 +237,8 @@ class ActivationDispatcher:
         cached = self._offload_cache.get(self._bucket(lh, lw, bs, lt))
         if cached is not None:
             return cached
+        if not self.use_cross_bucket_fit:
+            return self.base_act(lh, lw, bs, lt) * max(0.0, 1.0 - self.residual_frac)
         if len(self._offload_samples) < 2:
             return self.base_act(lh, lw, bs, lt) * max(0.0, 1.0 - self.residual_frac)
         # Seed slope 0: until the samples have volume spread, the fit degenerates to
@@ -279,7 +285,8 @@ class ActivationDispatcher:
     def record(self, lh: int, lw: int, bs: int, mode: str, peak_gb: float,
                resident_gb: float, executed_bs: int = None,
                offloaded_gb: float = None,
-               measured_threshold_bytes: int = None, lt: int = 1) -> None:
+               measured_threshold_bytes: int = None, lt: int = 1,
+               recover_base_from_offload: bool = True) -> None:
         """Cache the measured base activation and offloadable volume for this bucket.
 
         The GPU-resident activation is ``peak - resident_at_dispatch``. ``mode`` is
@@ -311,6 +318,11 @@ class ActivationDispatcher:
         It multiplies the regression variable and joins the cache key, so a
         measurement taken on one clip length never answers for another.
 
+        ``recover_base_from_offload=False`` serves sequential region backward,
+        where packed bytes are cumulative traffic rather than simultaneous
+        activation. Such a step can measure offload effectiveness only when a
+        prior non-offloaded measurement established that exact bucket's base.
+
         For a micro-split step the peak reflects ``executed_bs`` samples, so scale
         up to the full ``bs`` (activation is ~linear in batch) -- this lets a split
         bucket learn it actually fits and stop splitting next time.
@@ -321,6 +333,20 @@ class ActivationDispatcher:
         if act <= 0 or eb <= 0 or volume <= 0:
             return
         if mode == "offload":
+            if not recover_base_from_offload:
+                # Sequential region backward accumulates transfer bytes across
+                # regions although only one region is live. Do not reinterpret
+                # that cumulative traffic as a simultaneous base footprint.
+                key = self._bucket(lh, lw, bs, lt)
+                known_base = self._act_cache.get(key)
+                if known_base is not None:
+                    resident_full = act * (bs / eb)
+                    observed = max(0.0, known_base - resident_full)
+                    self._offload_cache[key] = observed
+                    self._offload_samples.append((volume, observed / bs))
+                    if len(self._offload_samples) > 128:
+                        self._offload_samples.pop(0)
+                return
             if offloaded_gb is not None and offloaded_gb >= 0:
                 # Base cost = per-chunk resident activation + this chunk's share of
                 # the whole-step packed volume (offloaded_gb covers all bs samples).

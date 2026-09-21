@@ -8,17 +8,28 @@ This document records the shipped boundary and completed measurements.
   quantized modules.
 - Qwen-Image 2.1 LoRA on its ConvRot artifact runs the frozen base forward with
   the ConvRot INT8 kernel. Its custom autograd node computes only `grad_input`
-  from a one-time BF16 weight cache; adapter parameters and FlashAttention use
-  their ordinary floating-point backward paths.
+  in BF16; adapter parameters and FlashAttention use their ordinary floating-
+  point backward paths. Training caches the BF16 base weights for speed; the
+  activation dispatcher accounts for this 13.252 GiB resident floor and
+  offloads only buckets whose remaining activations do not fit.
 - Other architectures do not inherit that policy. Their opt-in fused path
   remains experimental unless their own gate says otherwise.
 - Trainable INT8 ConvRot base weights are refused. Full-parameter training must
   not silently treat quantized weights as ordinary trainable tensors.
-- The Qwen cache is non-persistent and never enters the LoRA artifact. A new
+- Any Qwen cache is non-persistent and never enters the LoRA artifact. A new
   adapter records `qwen_base_forward=convrot_int8_bf16_backward_v1`; generation
   refuses that adapter on a dense base, and resume refuses legacy/dequant and
   ConvRot-forward runs from being mixed.
 - Cached Qwen training currently refuses block swap.
+
+The `auto` policy selects the measured full BF16 cache. Explicit `cached_bf16`,
+`transient_bf16`, and legacy `dequant` modes remain diagnostic overrides.
+Transient reconstruction reduced the measured partition peak by about 10 GiB,
+but changed a 3.06 s transformer step to 6.61 s, so it is not an automatic
+fallback. A future bounded cache requires asynchronous prefetch before it can
+replace the resident cache without repeating this regression. Cached and
+transient modes share the same artifact base-function contract because their
+forward and floating grad-input equations are the same.
 
 ## Measurement result
 
@@ -46,6 +57,15 @@ to 27 s, so it is rejected as an automatic setting. The automatic policy is
 Matched-seed losses stayed aligned across the old and new paths: step 1 was
 0.294225 versus 0.294230 and step 8 was 0.205992 versus 0.205953. This is a
 plumbing/numerical smoke gate, not a long-run quality equivalence claim.
+
+A matched 60x104-latent partition probe (rank 128, two regions, 24/32
+checkpointed blocks, global adapter enabled) measured INT8 ConvRot plus the
+13.252 GiB BF16 cache at 3.334 s and 28.14 GiB peak. The dense BF16 base measured
+4.561 s and 21.47 GiB: 6.67 GiB lighter but 37% slower. The cached path is thus
+a speed policy, not a memory optimization. Dense BF16 remains the capacity
+baseline. A bounded BF16 ring cache with asynchronous dequant prefetch remains
+an open candidate between these endpoints; synchronous per-layer rebuild is
+not an acceptable substitute.
 
 ## Authoritative gates
 

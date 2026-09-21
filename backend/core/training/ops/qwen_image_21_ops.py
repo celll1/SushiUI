@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import time
 from typing import Optional
 
@@ -66,20 +65,32 @@ def _resolve_partition_checkpoint_blocks(trainer, plan, original):
     elif original is None:
         return None
     else:
-        original = int(original)
-        if original <= 0:
-            return original
-        ratio = plan.largest_input_tokens / plan.full_tokens
-        # Cached ConvRot becomes slower as well as larger with checkpointing
-        # fully disabled. Eight blocks was the measured floor on SM89.
-        measured_floor = min(8, total_blocks)
-        resolved = min(original, max(measured_floor, math.ceil(original * ratio)))
+        # Partitioning is a memory feature. Automatically spending its savings
+        # by checkpointing fewer blocks caused Run 153 to spill on WDDM.
+        resolved = int(original)
     if not 0 <= resolved <= total_blocks:
         raise ValueError(
             "qwen_partition_gradient_checkpointing_blocks must be between 0 and "
             f"{total_blocks}, got {resolved}"
         )
     return resolved
+
+
+def _resolve_convrot_training_forward(trainer, requested: str) -> tuple[str, str]:
+    """Resolve the Qwen ConvRot LoRA path without defeating partition memory savings."""
+    allowed = {"auto", "dequant", "transient_bf16", "cached_bf16"}
+    if requested not in allowed:
+        raise ValueError(
+            "qwen_convrot_training_forward must be 'auto', 'dequant', "
+            f"'transient_bf16', or 'cached_bf16', got {requested!r}"
+        )
+    if requested != "auto":
+        return requested, "explicit"
+    if trainer.qwen_image_21_transformer_variant != "int8_convrot":
+        return "dequant", "dense transformer"
+    if not hasattr(trainer, "lora_rank") or trainer.training_dtype != torch.bfloat16:
+        return "dequant", "unsupported training contract"
+    return "cached_bf16", "ConvRot speed policy"
 
 
 def load_components(trainer) -> None:
@@ -114,40 +125,37 @@ def load_components(trainer) -> None:
     trainer.vae.requires_grad_(False).eval()
     trainer.text_encoder.requires_grad_(False).eval()
     trainer.transformer.requires_grad_(False)
-    # ConvRot LoRA uses the packed base for forward and a resident floating
-    # weight for grad_input. Dense bases retain the ordinary autograd path.
-    convrot_training_forward = str(
+    # Both ConvRot modes keep the base forward INT8. The measured default keeps
+    # BF16 grad-input weights resident; transient rebuild is diagnostic-only.
+    requested_convrot_training_forward = str(
         trainer.config.get("qwen_convrot_training_forward", "auto")
     ).strip().lower()
-    if convrot_training_forward not in {"auto", "dequant", "cached_bf16"}:
-        raise ValueError(
-            "qwen_convrot_training_forward must be 'auto', 'dequant', or "
-            "'cached_bf16', got "
-            f"{convrot_training_forward!r}"
-        )
-    if convrot_training_forward == "auto":
-        convrot_training_forward = (
-            "cached_bf16"
-            if trainer.qwen_image_21_transformer_variant == "int8_convrot"
-            and hasattr(trainer, "lora_rank")
-            and trainer.training_dtype == torch.bfloat16
-            else "dequant"
-        )
+    convrot_training_forward, convrot_resolution_reason = (
+        _resolve_convrot_training_forward(trainer, requested_convrot_training_forward)
+    )
     if (
-        convrot_training_forward == "cached_bf16"
+        convrot_training_forward in {"transient_bf16", "cached_bf16"}
         and trainer.qwen_image_21_transformer_variant != "int8_convrot"
     ):
         raise ValueError(
-            "Qwen-Image 2.1 cached_bf16 training requires an int8_convrot "
+            "Qwen-Image 2.1 ConvRot INT8 training requires an int8_convrot "
             f"transformer, got {trainer.qwen_image_21_transformer_variant!r}"
         )
-    if convrot_training_forward == "cached_bf16" and trainer.training_dtype != torch.bfloat16:
+    if (
+        convrot_training_forward in {"transient_bf16", "cached_bf16"}
+        and trainer.training_dtype != torch.bfloat16
+    ):
         raise ValueError(
-            "Qwen-Image 2.1 cached_bf16 training requires training_dtype=bf16, "
+            "Qwen-Image 2.1 ConvRot INT8 training requires training_dtype=bf16, "
             f"got {trainer.training_dtype}"
         )
     trainer.qwen_convrot_training_forward = convrot_training_forward
     trainer.qwen_convrot_fused_layer_count = 0
+    trainer.qwen_convrot_backward_cache_bytes = 0
+    print(
+        f"{trainer.log_prefix} Qwen-Image 2.1 ConvRot training forward: "
+        f"{convrot_training_forward} ({convrot_resolution_reason})"
+    )
     if trainer.gradient_checkpointing:
         trainer.transformer.enable_gradient_checkpointing()
         configured_checkpoint_blocks = trainer.config.get(
@@ -180,7 +188,16 @@ def load_components(trainer) -> None:
             f" ({'explicit' if configured_checkpoint_blocks is not None else 'automatic'})"
         )
     trainer.transformer.to(trainer.device)
-    if convrot_training_forward == "cached_bf16":
+    if convrot_training_forward == "transient_bf16":
+        from core.models.common.quantized_frozen_training import (
+            enable_frozen_training_fused,
+        )
+
+        trainer.qwen_convrot_fused_layer_count = enable_frozen_training_fused(
+            trainer.transformer,
+            label="Qwen-Image 2.1 training transformer",
+        )
+    elif convrot_training_forward == "cached_bf16":
         if trainer.blocks_to_swap > 0:
             raise ValueError(
                 "Qwen-Image 2.1 cached ConvRot backward weights cannot be combined "

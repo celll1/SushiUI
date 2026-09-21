@@ -354,12 +354,24 @@ perform the logical optimizer/scheduler/scaler update
 The implementation must integrate with:
 
 * **Gradient checkpointing.** Select the checkpoint count from the actual
-  region workload. A partitioned step must not retain the full-frame automatic
-  count merely because the cached latent is full size.
+  region workload without automatically reducing the base count. Run 153 showed
+  that scaling 24 checkpointed blocks down to 12-15 spent the partition's VRAM
+  savings and caused WDDM spill. The automatic path therefore preserves the
+  base count; a lower explicit override is a measured speed tradeoff.
 * **Activation offload.** Remain a capacity fallback per region. Partitioning
-  should first try the non-offloaded fast path.
+  should first try the non-offloaded fast path. The retired policy changed the
+  checkpointed-block count with region shape, demonstrating that Qwen's
+  activation cost was not a stable linear function of tokens across those
+  buckets. Dispatch therefore uses a conservative per-token cold estimate plus
+  exact same-bucket measurements, not the generic cross-bucket regression.
+  Sequential-region cumulative CPU transfer bytes must not be interpreted as
+  simultaneous base activation.
 * **ConvRot.** Keep frozen base forward in INT8 ConvRot and base grad-input plus
-  adapter backward in the existing floating path.
+  adapter backward in the existing floating path. The measured automatic path
+  retains its 13.252 GiB BF16 grad-input cache and includes that floor in the
+  dispatcher's live headroom. Rebuilding each layer reduced peak memory but more
+  than doubled transformer step time; a bounded cache is admitted only with
+  asynchronous prefetch rather than synchronous per-layer reconstruction.
 * **Flash Attention.** Continue to use the validated Qwen attention backend for
   each shorter sequence.
 * **Prefix execution.** Recompute the differentiable prefix for every region in

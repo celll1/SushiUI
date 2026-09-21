@@ -254,6 +254,10 @@ class QwenPartitionGlobalAdapter(nn.Module):
     def forward(self, full_grid: torch.Tensor, box: PartitionBox) -> torch.Tensor:
         full = self._features(full_grid)
         local = self._features(full_grid, box)
+        if not torch.is_autocast_enabled(full.device.type):
+            parameter_dtype = self.key.weight.dtype
+            full = full.to(parameter_dtype)
+            local = local.to(parameter_dtype)
         keys = self.key(full)
         values = self.value(full)
         scale = self.rank**-0.5

@@ -141,6 +141,7 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     # SenseNova U1.5's per-layer prefix KV cache CPU streaming. No other
     # architecture has an equivalent knob at the API layer.
     "sensenova_kv_cache_streaming": ["sensenova_kv_cache_streaming"],
+    "qwen_image_21_kv_cache": ["qwen_image_21_kv_cache"],
     # Per-block CPU offload swap count. Enable-gated (see the file-header
     # convention above): the image routes (txt2img/img2img/inpaint/outpaint)
     # carry a separate `enable_block_swap` flag and only consult
@@ -192,6 +193,7 @@ FEATURE_LABELS: Dict[str, str] = {
     "cfg_norm": "cfg_norm (SenseNova/Chimera CFG-overshoot clamp)",
     "sensenova_mot_phase_eviction": "sensenova_mot_phase_eviction (SenseNova U1.5 per-phase weight-half CPU eviction)",
     "sensenova_kv_cache_streaming": "sensenova_kv_cache_streaming (SenseNova U1.5 per-layer prefix KV cache CPU streaming)",
+    "qwen_image_21_kv_cache": "qwen_image_21_kv_cache (Qwen-Image 2.1 condition KV cache)",
     "block_swap": "enable_block_swap/blocks_to_swap (per-block CPU offload)",
     "vae_tiling": "vae_tiling (VAE decode tiling)",
     "block_swap_pinned_memory": "use_pinned_memory (block-swap pinned-memory staging)",
@@ -203,7 +205,7 @@ FEATURE_LABELS: Dict[str, str] = {
 # ARCH_UNSUPPORTED[arch][feature] = short factual reason the feature has no
 # effect on that architecture.
 # ---------------------------------------------------------------------------
-_DIT_ARCHS = ["zimage", "flux2", "ideogram4", "lens", "minit2i", "anima", "krea2", "ltx2", "acestep",
+_DIT_ARCHS = ["zimage", "flux2", "ideogram4", "lens", "minit2i", "anima", "krea2", "qwen_image_21", "ltx2", "acestep",
               "minimax_h3", "minimax_music3", "sensenova", "yue2"]
 # Both Spectrum and FBCache are wired for every image DiT arch through the
 # same shared pattern (spectrum_params=params -> build_output_forecaster() /
@@ -214,8 +216,8 @@ _DIT_ARCHS = ["zimage", "flux2", "ideogram4", "lens", "minit2i", "anima", "krea2
 # core/pipeline_backends/ltx2.py). Only krea2, acestep and minimax_music3
 # have no such codepath at all. MiniMax-H3 implements paired video/audio
 # final-output forecasting and guarded whole-state FBCache.
-_SPECTRUM_UNSUPPORTED = ["krea2", "acestep", "minimax_music3", "sensenova"]
-_FBCACHE_UNSUPPORTED = ["krea2", "acestep", "minimax_music3", "sensenova"]
+_SPECTRUM_UNSUPPORTED = ["krea2", "qwen_image_21", "acestep", "minimax_music3", "sensenova"]
+_FBCACHE_UNSUPPORTED = ["krea2", "qwen_image_21", "acestep", "minimax_music3", "sensenova"]
 
 ARCH_UNSUPPORTED: Dict[str, Dict[str, str]] = {}
 
@@ -248,7 +250,7 @@ TRAINING_METHODS = ("lora", "relora", "full_finetune", "controlnet")
 # `_EXPECTED_ARCH_KEYS`.
 TRAINING_DECLARED_ARCHS = frozenset({
     "sd15", "sdxl", "zimage", "anima", "lens", "ideogram4", "minit2i",
-    "krea2", "flux2", "ltx2", "minimax_h3", "acestep", "sensenova",
+    "krea2", "qwen_image_21", "flux2", "ltx2", "minimax_h3", "acestep", "sensenova",
     "sensenova_sdxl_chimera", "yue2",
 })
 
@@ -597,6 +599,30 @@ for _a in _FBCACHE_UNSUPPORTED:
 # NAG, ControlNet: not supported by Krea 2.
 _add("krea2", "nag", "Normalized Attention Guidance is not implemented for Krea 2")
 _add("krea2", "controlnets", "ControlNet is not supported for Krea 2")
+_add("qwen_image_21", "nag", "Normalized Attention Guidance is not implemented for Qwen-Image 2.1")
+_add("qwen_image_21", "controlnets", "ControlNet is not supported for Qwen-Image 2.1")
+_add("qwen_image_21", "attention_type", "Qwen-Image 2.1 selects its exact block-causal attention processor internally")
+_add("qwen_image_21", "attention_impl", "Qwen-Image 2.1 selects its exact block-causal attention processor internally")
+for _feature, _reason in {
+    "use_torch_compile": "the Qwen-Image 2.1 pipeline has no compile lifecycle integration",
+    "cfg_schedule": "Qwen-Image 2.1 currently applies a constant true-CFG scale",
+    "advanced_cfg": "dynamic thresholding and CFG rescale are not wired into the Qwen-Image 2.1 flow loop",
+    "style_transfer": "Qwen-Image 2.1 uses native image conditioning rather than SushiUI style-KV injection",
+    "unet_quantization": "Qwen-Image 2.1 quantization is selected by the prepared Original or INT8 ConvRot artifact",
+    "quantized_gemm": "Qwen-Image 2.1 ConvRot checkpoints use their fixed comfy-kitchen execution path",
+    "text_encoder_quantization": "Qwen-Image 2.1 text-encoder precision is selected by the prepared artifact",
+    "cpu_text_encoding": "Qwen-Image 2.1 component offload owns text-encoder placement",
+    "vae_drift_correction": "VAE drift correction is not wired into the Qwen-Image 2.1 native-edit path",
+    "flatten_in_loop": "in-loop flattening is not wired into the Qwen-Image 2.1 flow loop",
+    "te_override": "Qwen-Image 2.1 requires the processor and Qwen3-VL component paired by its manifest",
+    "vae_override": "Qwen-Image 2.1 requires its 64-channel RGBA VAE",
+    "block_swap": "generation block swap is not implemented; component CPU offload is used instead",
+    "vae_tiling": "Qwen-Image 2.1 VAE tiling is not exposed by the generation backend",
+    "block_swap_pinned_memory": "generation block swap is not implemented for Qwen-Image 2.1",
+    "block_swap_h2d_only": "generation block swap is not implemented for Qwen-Image 2.1",
+    "block_swap_ring_size": "generation block swap is not implemented for Qwen-Image 2.1",
+}.items():
+    _add("qwen_image_21", _feature, _reason)
 
 # LTX-2.3 is a video model with its own flow-matching sampler; the image-oriented
 # guidance/conditioning features do not apply.
@@ -866,6 +892,10 @@ for _a in [a for a in _ALL_ARCHS if a != "sensenova"]:
     _add(_a, "sensenova_kv_cache_streaming",
          "sensenova_kv_cache_streaming is a SenseNova U1.5-specific per-layer prefix KV cache CPU streaming parameter; this architecture does not consult it")
 
+for _a in [a for a in _ALL_ARCHS if a != "qwen_image_21"]:
+    _add(_a, "qwen_image_21_kv_cache",
+         "qwen_image_21_kv_cache is specific to Qwen-Image 2.1 condition-token attention; this architecture does not consult it")
+
 # Every generation architecture now has a block-offload consumer. The original
 # DiT wrappers share FrozenSequentialTransferEngine; SD, Krea, ACE-Step and
 # MiniMax Music use FrozenModuleOffloadConductor, while SenseNova uses its
@@ -1093,6 +1123,9 @@ _add_training_unsupported(
 _add_training_unsupported(
     "yue2", "relora",
     "YuE2 Phase A supports ordinary LoRA only; merging into its ConvRot INT8 base is not implemented")
+_add_training_unsupported(
+    "qwen_image_21", "relora",
+    "Qwen-Image 2.1 ReLoRA merging is not implemented; use LoRA or full_finetune")
 
 # ControlNet training implements SD1.5 and SDXL adapters only
 # (adapters/controlnet_sd15_adapter.py, adapters/controlnet_sdxl_adapter.py; the
@@ -1164,6 +1197,7 @@ for _a, _why in [
     ("lens", "LensLoRAAdapter/LensFullParameterAdapter keep the GPT-OSS text encoder frozen"),
     ("ideogram4", "Ideogram4LoRAAdapter injects no text-encoder LoRA and the full-parameter adapter never unfreezes the Qwen3-VL encoder"),
     ("krea2", "Krea2FullParameterAdapter rejects train_text_encoder outright and Krea2LoRAAdapter injects no text-encoder LoRA (Qwen3-VL policy)"),
+    ("qwen_image_21", "Qwen-Image 2.1 keeps Qwen3-VL frozen for both LoRA and full-parameter training"),
     ("ltx2", "Ltx2LoRAAdapter/Ltx2FullParameterAdapter keep the Gemma-3 text encoder and its connectors frozen"),
     ("acestep", "AceStepLoRAAdapter/AceStepFullParameterAdapter keep the Qwen3-Embedding-0.6B text encoder frozen"),
     ("minimax_h3", "the Qwen3-VL conditioner is read one decoder layer at a time off a memory-mapped 48 GiB file precisely so it never becomes resident; there is no configuration in which its weights and the DiT's are both on the GPU"),

@@ -77,16 +77,16 @@ _MODEL_COMPONENT_DIR_NAMES = {
 }
 
 
-def classify_lora_keys(keys) -> Dict[str, Any]:
+def classify_lora_keys(keys, metadata=None) -> Dict[str, Any]:
     """Single source of truth for LoRA architecture + block-structure detection
     from a safetensors key list. Reused by both ``LoRAManager._is_valid_lora_file``
     (arch tag at scan time) and ``LoRAManager.get_lora_layers`` (block list for
     the UI) -- do not add a second signature table elsewhere; extend HERE.
 
-    Returns ``{"arch": str, "blocks": List[str]}``. ``arch`` is one of the 14
+    Returns ``{"arch": str, "blocks": List[str]}``. ``arch`` is one of the 15
     ``core.training.arch.ARCH_REGISTRY`` keys -- "sd15", "sdxl", "zimage",
-    "anima", "lens", "ideogram4", "minit2i", "krea2", "flux2", "ltx2",
-    "minimax_h3", "acestep", "sensenova", "yue2" -- or "unknown" ("unknown" is a
+    "anima", "lens", "ideogram4", "minit2i", "krea2", "qwen_image_21",
+    "flux2", "ltx2", "minimax_h3", "acestep", "sensenova", "yue2" -- or "unknown" ("unknown" is a
     first-class value, not an error).
 
     ORDERING RULE: each architecture's signature is ANCHORED on the key prefix
@@ -107,6 +107,19 @@ def classify_lora_keys(keys) -> Dict[str, Any]:
         if not blocks:
             blocks.add("BASE")
         return {"arch": arch, "blocks": _sort_lora_blocks(blocks)}
+
+    # Qwen-Image 2.1 intentionally targets the same main-block attention
+    # leaves as Krea 2, so its trainer metadata is the only unambiguous tag.
+    declared_arch = str((metadata or {}).get("model_type", "")).strip().lower()
+    if declared_arch == "qwen_image_21" and any(
+        key.startswith("lora_unet_transformer_blocks__") and "__attn__" in key
+        for key in keys
+    ):
+        for key in keys:
+            match = re.search(r'lora_unet_transformer_blocks__(\d+)__attn__', key)
+            if match:
+                blocks.add(f"MMB{int(match.group(1)):02d}")
+        return classified("qwen_image_21")
 
     # --- SenseNova-U1.5-8B-MoT (LoRA over either MoT half) -----------------
     # Keys are plain module paths (sensenova_adapter.py:49-53):
@@ -970,7 +983,7 @@ class LoRAManager:
                 metadata = f.metadata() or {}
                 header = {k: _HeaderTensor(_header_shape(f, k), k, f)
                           for k in keys}
-                classification = classify_lora_keys(keys)
+                classification = classify_lora_keys(keys, metadata)
                 arch = classification.get("arch", "unknown")
                 adapter = detect_adapter_fields(header, metadata, arch)
         except Exception as e:

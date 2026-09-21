@@ -33,6 +33,7 @@ from .adapters import (
     LensFullParameterAdapter,
     MiniT2IFullParameterAdapter,
     Krea2FullParameterAdapter,
+    QwenImage21FullParameterAdapter,
     Ltx2FullParameterAdapter,
     AceStepFullParameterAdapter,
     SenseNovaFullParameterAdapter,
@@ -209,6 +210,9 @@ class FullParameterTrainer(BaseTrainer):
         elif self.is_krea2:
             self.adapter = Krea2FullParameterAdapter(self)
             print(f"{self.log_prefix} Using Krea2FullParameterAdapter")
+        elif self.is_qwen_image_21:
+            self.adapter = QwenImage21FullParameterAdapter(self)
+            print(f"{self.log_prefix} Using QwenImage21FullParameterAdapter")
         elif self.is_ltx2:
             self.adapter = Ltx2FullParameterAdapter(self)
             print(f"{self.log_prefix} Using Ltx2FullParameterAdapter")

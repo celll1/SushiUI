@@ -1,0 +1,83 @@
+"""Qwen-Image 2.1 training architecture handler."""
+
+from core.training.arch.base_arch import (
+    ArchHandler, SampleContext, TrainStepContext, PHASE2_PENDING,
+    QUANTIZED_ADDITIVE_PENDING, declare_adapter_capability,
+)
+from core.training.components.wiring import QWEN_IMAGE_21_WIRING
+
+
+class QwenImage21ArchHandler(ArchHandler):
+    name = "qwen_image_21"
+    wiring = QWEN_IMAGE_21_WIRING
+    adapter_capability = declare_adapter_capability(
+        "qwen_image_21",
+        additive_family=True,
+        initial_dora="deferred",
+        additive_reason=PHASE2_PENDING,
+        quantized_base_reason=QUANTIZED_ADDITIVE_PENDING,
+    )
+    pixel_align = 32
+    wires_sample_step_progress = True
+    timestep_convention = "t0"
+    velocity_sign = "eps_minus_x0"
+
+    def lora_adapter_class(self):
+        from core.training.adapters import QwenImage21LoRAAdapter
+        return QwenImage21LoRAAdapter
+
+    def load_components(self, trainer):
+        from core.training.ops import qwen_image_21_ops
+        qwen_image_21_ops.load_components(trainer)
+
+    def setup_block_swap(self, trainer):
+        from core.training.ops import qwen_image_21_ops
+        qwen_image_21_ops.setup_block_swap(trainer)
+
+    def setup_attention_backend(self, trainer) -> None:
+        return None
+
+    def depth_blocks(self, trainer):
+        return trainer.transformer.transformer_blocks
+
+    def encode_prompt(self, trainer, prompt, *, requires_grad=False):
+        from core.training.ops import qwen_image_21_ops
+        return qwen_image_21_ops.encode_prompt(trainer, prompt)
+
+    def vae_encode(self, trainer, image_tensor, **kwargs):
+        from core.training.ops import qwen_image_21_ops
+        return qwen_image_21_ops.vae_encode(trainer, image_tensor, **kwargs)
+
+    def vae_decode(self, trainer, latents, *, latent_h, latent_w):
+        from core.training.ops import qwen_image_21_ops
+        return qwen_image_21_ops.vae_decode(
+            trainer, latents, latent_h=latent_h, latent_w=latent_w
+        )
+
+    def train_step(self, trainer, ctx: TrainStepContext):
+        from core.training.ops import qwen_image_21_ops
+        return qwen_image_21_ops.train_step(
+            trainer,
+            latents=ctx.latents,
+            encoder_features=ctx.encoder_features,
+            encoder_mask=ctx.encoder_mask,
+            timesteps=ctx.timesteps,
+            latent_h=ctx.latent_h,
+            latent_w=ctx.latent_w,
+            profile_vram=ctx.profile_vram,
+            repa_pixels=ctx.repa_pixels,
+        )
+
+    def sample(self, trainer, sample_ctx: SampleContext):
+        from core.training.ops import qwen_image_21_ops
+        return qwen_image_21_ops.generate_sample(
+            trainer,
+            prompt=sample_ctx.prompt,
+            height=sample_ctx.height,
+            width=sample_ctx.width,
+            num_inference_steps=sample_ctx.num_inference_steps,
+            guidance_scale=sample_ctx.guidance_scale,
+            seed=sample_ctx.seed,
+            negative_prompt=sample_ctx.negative_prompt,
+            step_progress_callback=sample_ctx.step_progress_callback,
+        )

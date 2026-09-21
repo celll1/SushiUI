@@ -1412,7 +1412,8 @@ def resolve_image_defaults(params: Dict[str, Any], provided_keys, arch: Optional
     The image counterpart of `resolve_video_defaults` above -- same contract,
     same reason (`GENERATION_DEFAULTS` serves every image architecture, so
     SenseNova needs its own `steps`/`cfg_scale`,
-    `param_defaults.IMAGE_GEN_ARCH_OVERLAYS`). Every image route is a
+    and Qwen-Image 2.1 has its own 40/1.0 operating point in
+    `param_defaults.IMAGE_GEN_ARCH_OVERLAYS`. Every image route is a
     multipart `Form()` endpoint, so `provided_keys` is always the `Form(None)`-
     sentinel-derived set (there is no Pydantic `model_fields_set` here).
 

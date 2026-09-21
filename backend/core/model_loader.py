@@ -8,7 +8,7 @@ from safetensors.torch import load_file
 from pathlib import Path
 
 ModelSource = Literal["safetensors", "diffusers", "huggingface", "gguf"]
-ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens", "ideogram4", "minit2i", "krea2", "ltx2", "acestep", "minimax_h3", "minimax_music3", "sensenova", "sensenova_sdxl_chimera", "yue2"]
+ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens", "ideogram4", "minit2i", "krea2", "qwen_image_21", "ltx2", "acestep", "minimax_h3", "minimax_music3", "sensenova", "sensenova_sdxl_chimera", "yue2"]
 
 class ModelLoader:
     """Handles loading models from various sources"""
@@ -145,7 +145,7 @@ class ModelLoader:
             # default noise_process by architecture family (ddpm for SD/SDXL).
             if "modelspec.prediction_type" in metadata:
                 pred_target = str(metadata["modelspec.prediction_type"]).strip().lower()
-                default_np = "flow" if model_type in ("zimage", "flux2", "minit2i", "krea2", "anima", "lens", "ltx2", "minimax_h3", "minimax_music3", "sensenova", "sensenova_sdxl_chimera") else "ddpm"
+                default_np = "flow" if model_type in ("zimage", "flux2", "minit2i", "krea2", "qwen_image_21", "anima", "lens", "ltx2", "minimax_h3", "minimax_music3", "sensenova", "sensenova_sdxl_chimera") else "ddpm"
                 print(f"[ModelLoader] Detected prediction_type from ModelSpec metadata: {pred_target}")
                 return {
                     "noise_process": metadata.get("modelspec.noise_process", default_np),
@@ -210,6 +210,12 @@ class ModelLoader:
                     "noise_process": "flow",
                     "prediction_target": "velocity",
                     "source": "inferred"
+                }
+            elif model_type == "qwen_image_21":
+                return {
+                    "noise_process": "flow",
+                    "prediction_target": "velocity",
+                    "source": "inferred",
                 }
             elif model_type == "ltx2":
                 # LTX-2.3 video model: flow matching (FlowMatchEuler) with velocity prediction.
@@ -600,7 +606,7 @@ class ModelLoader:
             return "sd15"
         if mt in ("zimage", "z-image"):
             return "zimage"
-        if mt in ("minit2i", "krea2", "anima", "lens", "ideogram4", "sensenova", "sensenova_sdxl_chimera"):
+        if mt in ("minit2i", "krea2", "qwen_image_21", "anima", "lens", "ideogram4", "sensenova", "sensenova_sdxl_chimera"):
             return mt
         if mt == "siglip2_vision_encoder":
             return "vision_encoder"
@@ -641,6 +647,22 @@ class ModelLoader:
         # Chimera is a directory artifact with its own completion manifest.
         # Match it before every broad diffusers/SDXL directory heuristic.
         if os.path.isdir(model_path):
+            qwen_manifest = os.path.join(model_path, "manifest.json")
+            if os.path.isfile(qwen_manifest):
+                try:
+                    with open(qwen_manifest, encoding="utf-8") as handle:
+                        if json.load(handle).get("model_type") == "qwen_image_21":
+                            return "qwen_image_21"
+                except Exception:
+                    pass
+            qwen_index = os.path.join(model_path, "model_index.json")
+            if os.path.isfile(qwen_index):
+                try:
+                    with open(qwen_index, encoding="utf-8") as handle:
+                        if json.load(handle).get("_class_name") == "QwenImage21Pipeline":
+                            return "qwen_image_21"
+                except Exception:
+                    pass
             manifest_path = os.path.join(model_path, "chimera.json")
             if os.path.isfile(manifest_path):
                 try:
@@ -2734,6 +2756,10 @@ class ModelLoader:
             print(f"[ModelLoader] Loading as Krea 2 (diffusers directory)")
             return ModelLoader.load_krea2_from_path(model_path, torch.bfloat16)
 
+        if model_type == "qwen_image_21":
+            print("[ModelLoader] Loading as Qwen-Image 2.1")
+            return ModelLoader.load_qwen_image_21_from_path(model_path, torch.bfloat16)
+
         # LTX-2.3 diffusers directory (joint audio+video MM-DiT + Gemma-3 + LTX2 VAEs)
         if model_type == "ltx2":
             print(f"[ModelLoader] Loading as LTX-2.3 (diffusers directory)")
@@ -3177,6 +3203,16 @@ class ModelLoader:
         """
         from core.models.krea2.krea2_loader import load_krea2_components
         return load_krea2_components(model_path=path, torch_dtype=torch_dtype)
+
+    @staticmethod
+    def load_qwen_image_21_from_path(
+        path: str,
+        torch_dtype: torch.dtype = torch.bfloat16,
+    ) -> dict:
+        """Load Qwen-Image 2.1 from its source tree or split SushiUI artifact."""
+        from core.models.qwen_image_21.loader import load_qwen_image_21_components
+
+        return load_qwen_image_21_components(path, torch_dtype=torch_dtype)
 
     @staticmethod
     def load_sensenova_from_path(

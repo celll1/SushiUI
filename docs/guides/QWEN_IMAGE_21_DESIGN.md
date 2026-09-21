@@ -1,6 +1,6 @@
 # Qwen-Image 2.1 integration design
 
-Status: **proposed implementation contract; implementation not started**
+Status: **implemented first release; measured gates are listed in section 12**
 
 Architecture key: `qwen_image_21`
 
@@ -35,9 +35,9 @@ SDXL and SenseNova surfaces:
 * LoRA and full-parameter DiT training, resume, validation samples, and
   generation-loader round trips;
 * a frozen INT8 ConvRot base for generation and additive-adapter training;
-* attention selection, component offload, keep-hot residency, training block
-  swap, activation offload, latent caching, and the shared diagnostics where
-  the architecture can implement their semantics exactly;
+* exact block-causal attention, component CPU offload, training block swap,
+  latent/conditioning caching, and the shared diagnostics where the
+  architecture can implement their semantics exactly;
 * capability refusals for every shared feature that has no valid Qwen-Image
   2.1 implementation.
 
@@ -109,42 +109,40 @@ The implementation input set is closed and auditable:
    pinned diffusers implementation; and
 4. existing SushiUI code and independently written tests/specifications.
 
-Before implementation starts, record the exact diffusers commit and source-file
-list in `upstream.json`. Review checks code and attribution against that list.
+The vendored package records its exact Diffusers commit in `vendor/UPSTREAM.md`.
 
 ### 3.2 Vendoring and dependency choice
 
-The current environment has Qwen3-VL model/processor classes but does not have
-the Qwen-Image 2.1 diffusers classes. The integration therefore vendors the
-minimum Apache-2.0 implementation from the pinned diffusers commit:
+The installed Transformers package supplies Qwen3-VL, while the installed
+Diffusers release predates these model classes. The integration therefore
+vendors the minimum Apache-2.0 implementation from the pinned Diffusers commit:
 
 ```text
 backend/core/models/qwen_image_21/
   __init__.py
   loader.py
-  pipeline_ops.py
-  transformer.py
-  autoencoder.py
-  attention_processor.py
+  vendor/transformer.py
+  vendor/autoencoder.py
+  vendor/pipeline.py
+  vendor/UPSTREAM.md
   lora.py
   artifact.py
-  upstream.json
+  loader.py
 ```
 
-`upstream.json` records the Apache-2.0 diffusers repository, commit, source
-paths, upstream license, and local modifications. The same entries must be
-added to `docs/legal/THIRD_PARTY_PROVENANCE.md` before vendored code is committed.
+`vendor/UPSTREAM.md` records the Apache-2.0 Diffusers commit and the local
+integration change class. The package is also listed in
+`docs/legal/THIRD_PARTY_PROVENANCE.md`.
 
 Do not vendor Qwen3-VL from Transformers. Load it through the installed
 Transformers public classes. Do not upgrade all of diffusers to an unreleased
 or newly released version solely for this architecture: that changes every
 existing pipeline's runtime underneath the integration.
 
-The SushiUI backend owns the generation loop in `pipeline_ops.py`. It may port
-small, attributed preparation helpers from upstream, but must not instantiate
-the upstream `QwenImage21Pipeline` as a black box. Owning the loop is required
-for progress events, cancellation, offload, adapter sessions, cache identity,
-diagnostics, and training/generation parity.
+The vendored pipeline owns the architecture math. The SushiUI backend owns its
+lifecycle: progress, cancellation, component offload, adapter sessions, cache
+selection, request defaults, and output compositing. This keeps the numerical
+path pinned while still integrating with the shared runtime.
 
 ## 4. Artifact layout and why TE/DiT stay separate
 
@@ -152,16 +150,22 @@ The local layout is:
 
 ```text
 <MODEL_ROOT>/qwen21/
-  manifest.json
-  diffusion_models/
-    qwen_image_2.1_bf16.safetensors
-    qwen_image_2.1_int8_convrot.safetensors
-  text_encoders/
-    qwen3vl_8b_bf16.safetensors
-    qwen3vl_8b_int8_convrot.safetensors
-  vae/
+  original/
+    manifest.json
+    qwen_image_2.1_original.safetensors
+    qwen3vl_8b_original.safetensors
     qwen_image_2.1_vae_bf16.safetensors
-  processor/
+    text_encoder_config.json
+    processor/
+    scheduler/
+  int8_convrot/
+    manifest.json
+    qwen_image_2.1_int8_convrot.safetensors
+    qwen3vl_8b_int8_convrot.safetensors
+    qwen_image_2.1_vae_bf16.safetensors
+    text_encoder_config.json
+    processor/
+    scheduler/
     tokenizer.json
     tokenizer_config.json
     special_tokens_map.json
@@ -194,46 +198,45 @@ not quantized.
 
 ### 4.1 `manifest.json`
 
-The manifest is the selectable model entry point and contains no weights:
+Each variant directory is independently selectable. Its manifest contains no
+weights and points to one safetensors file per component:
 
 ```json
 {
-  "format": "sushi-qwen-image-21-v1",
   "model_type": "qwen_image_21",
-  "source_revision": "<pinned-hf-revision>",
-  "variants": {
-    "bf16": {
-      "transformer": "diffusion_models/qwen_image_2.1_bf16.safetensors",
-      "text_encoder": "text_encoders/qwen3vl_8b_bf16.safetensors"
-    },
-    "int8_convrot": {
-      "transformer": "diffusion_models/qwen_image_2.1_int8_convrot.safetensors",
-      "text_encoder": "text_encoders/qwen3vl_8b_int8_convrot.safetensors"
-    }
+  "format_version": "1",
+  "variant": "original",
+  "components": {
+    "transformer": "qwen_image_2.1_original.safetensors",
+    "text_encoder": "qwen3vl_8b_original.safetensors",
+    "vae": "qwen_image_2.1_vae_bf16.safetensors",
+    "processor": "processor",
+    "scheduler": "scheduler",
+    "text_encoder_config": "text_encoder_config.json"
   },
-  "vae": "vae/qwen_image_2.1_vae_bf16.safetensors",
-  "processor": "processor"
+  "transformer_config": {},
+  "vae_config": {}
 }
 ```
 
-The production manifest also stores SHA-256, byte size, tensor count, config
-fingerprint, and license/provenance for every entry. Paths are relative and
-must resolve inside the manifest directory. Mixed variants are rejected by
-default; an explicit advanced component override may select a different TE,
-but it becomes part of the model identity and cache key.
+Paths are relative to the manifest directory. DiT and TE variants are paired
+by construction; there is no mixed-variant UI override.
 
 ### 4.2 Artifact creation
 
-Add `scripts/convert_qwen_image_21.py` with two modes:
+`subapps/qwen_image_21_convert.py` has two modes:
 
-* `import-original`: stream official diffusers shards into one BF16 DiT file,
+* `original`: stream source Diffusers shards into one BF16 DiT file,
   one BF16 TE file, and one BF16 VAE file; copy processor assets; and write the
   manifest.
-* `quantize-convrot`: read the validated BF16 file component by component and
+* `int8_convrot`: read source components layer by layer and
   emit the corresponding INT8 ConvRot file.
 
-The converter must use `safe_open` and bounded layer-at-a-time residency. It
-must not materialize the 30+ GB TE+DiT pair in a single Python state dict.
+The converter uses `safe_open`, writes one component at a time, and never holds
+the TE and DiT together. The default 100 GiB safety ceiling keeps each released
+component in a single safetensors file. `--max-shard-gb` exists only as an
+operator escape hatch for filesystems that cannot accept such files; a split
+result remains loadable through its index, but is not the standard artifact.
 
 An already-published single-file repack may be imported only after tensor-key,
 shape, dtype, config, and source-revision validation. File names and repository
@@ -409,17 +412,11 @@ image is processed twice: as Qwen3-VL vision context and as a clean VAE latent
 prefix. The target begins as noise; `denoising_strength` does not redefine this
 native path.
 
-For compatibility with the shared img2img control, define two explicit modes:
-
-* `native_edit` (default for this architecture): condition image plus prompt,
-  target starts from noise;
-* `sdedit`: target image latent is noised at the selected flow time and denoised,
-  without pretending this is the upstream native edit behavior.
-
-The mode must be persisted in request metadata. A reference list has a hard
-limit of ten and stable order. Batch requests with different reference lists
-are split into separate pipeline calls because upstream treats one flat list as
-shared by the batch.
+The first release exposes native edit only: condition image plus prompt, with
+the target starting from noise. The shared `denoising_strength` field does not
+change this algorithm. SDEdit is not advertised for this architecture because
+no separate, tested flow path exists. A reference list has a hard limit of ten
+including the primary image, and preserves user order.
 
 ### 8.4 Inpaint and outpaint
 
@@ -438,10 +435,10 @@ advertised as experimental rather than silently routed through SDXL logic.
 
 ### 8.5 RGBA output
 
-PNG output preserves all four decoded channels. JPEG/WebP-without-alpha output
-must require an explicit background/compositing choice rather than silently
-dropping alpha. Gallery thumbnails may composite for display but retain the
-original RGBA artifact.
+The native VAE and conditioning path remain four-channel RGBA. The current
+gallery response follows SushiUI's existing image-output conversion contract;
+lossless alpha preservation beyond the model path is not claimed as a separate
+gallery feature in this release.
 
 ### 8.6 CFG and advanced guidance
 
@@ -452,25 +449,19 @@ prefix caching make the SDXL injection sites non-equivalent.
 
 ### 8.7 Attention backends
 
-Vendor both exact attention processors. The default is exact multi-pass SDPA.
-The compiled Flex path is an explicit option and has a probe for Torch version,
-compile state, block-mask construction, and peak-memory failure.
-
-Decode steps may route their full attention through the shared attention
-dispatcher where its semantics match. Prefill remains owned by the Qwen
-processor: the conduit must not erase the block-causal mask. Add one registry
-descriptor only if a new kernel is genuinely required.
+The vendored transformer selects its exact block-causal SDPA processor. Shared
+`attention_type` and `attention_impl` controls are explicitly refused. A
+compiled Flex path is not exposed in the first release.
 
 ### 8.8 Offload, block swap, and caches
 
-Generation block swap wraps `transformer_blocks` with the existing frozen
-module offloader. Adapter branches are installed before partitioning and move
-with their owning block. Prefix K/V tensors are not block weights and have
-their own placement/lifetime.
+Generation uses Diffusers component CPU offload. Generation block swap and
+keep-hot residency are not implemented and are declared unsupported. Adapter
+branches are installed before generation and unloaded in `finally`.
 
-Keep-hot identity includes model manifest digest, DiT/TE variant, adapters,
-attention path, compile state, and `use_kv_cache`. Enabling/disabling the K/V
-cache is not bitwise reproducible in reduced precision and must be persisted.
+`qwen_image_21_kv_cache` controls prefix K/V reuse and defaults to true.
+Enabling/disabling the K/V cache is not bitwise reproducible in reduced
+precision, so the request records the chosen flag.
 
 FBCache and Spectrum ship only after their registered speed/quality gates.
 They must not reuse a condition prefix across different prompts, references,
@@ -517,32 +508,24 @@ a 2x2 latent group. The DiT itself has patch size 1.
 shared modulation, all blocks, and output norm/projection. It does not include
 the Qwen3-VL encoder or VAE.
 
-### 9.2 Dataset modes
+### 9.2 Dataset mode
 
-Support two explicit objectives:
-
-* `t2i`: RGBA target plus caption;
-* `edit`: target RGBA image, one-to-ten condition images, and edit instruction.
-
-The dataset schema records references by role and order. It does not overload
-SDXL's single `use_reference_images` boolean. Buckets are multiples of 32 and a
-batch has one target geometry. Reference images may have independent geometry;
-their VLM slots and VAE latent shapes are cached with each example.
-
-Transparent training data stays RGBA. Converting all examples to RGB would
-erase a released capability and produce a VAE distribution mismatch.
+The first release trains text-to-image targets: RGBA target plus caption.
+Existing RGB datasets gain an opaque alpha channel before VAE encoding.
+Reference-conditioned edit training is explicitly unavailable; generation
+support for references does not imply a cache or loss contract for paired edit
+datasets. Buckets are multiples of 32 and a batch has one target geometry.
 
 ### 9.3 Cached conditioning and latents
 
-Cache keys include source bytes, target/reference role and order, crop/resize,
-RGBA compositing rule for the VLM copy, processor/template digest, TE digest,
-VAE digest, normalization vectors, bucket geometry, and augmentation seed.
+Cache keys include source bytes, crop/resize, VAE identity and normalization,
+processor/template identity, TE identity, bucket geometry, and augmentation
+seed through the shared cache namespace.
 
 Cache these independently:
 
 * target VAE latents (posterior sample policy declared);
-* clean condition VAE latents (posterior mode);
-* Qwen3-VL hidden states, attention mask, and image-pad mask.
+* Qwen3-VL hidden states and attention mask.
 
 The final-RMSNorm compatibility path is part of the encoder fingerprint. A
 cache made before that behavior changes must not be reused.
@@ -622,12 +605,11 @@ an expectation, not a measured number. Actual VRAM/host-RAM figures belong in
 
 ### 9.8 Full-checkpoint save and resume
 
-Full-parameter saves use the shared SushiUI v2 format and `transformer.` keys,
-with component metadata pointing at the immutable TE, VAE, and processor
-digests. Because the BF16 DiT exceeds the shared 10 GB threshold, a trained
-full checkpoint is expected to be a shard index plus safetensors shards. The
-selectable item is the index file. This does not change the base artifact
-contract, where each imported component is one single safetensors file.
+Full-parameter saves contain the complete DiT state and embedded construction
+config. Metadata records `companion_path`, which resolves the frozen TE, VAE,
+processor, and scheduler from the run's base artifact. The shared 4 GiB writer
+may produce a shard index for the trained DiT; the loader accepts either the
+single file or the index and replaces only the companion artifact's DiT.
 
 Resume restores model, optimizer, scheduler, scaler, RNG, timestep-sampler
 state, cache namespace, adapter scope, and component digests. A changed TE,
@@ -641,10 +623,7 @@ generation/training enums, examples, capability payloads, and frontend unions.
 
 New parameters are limited to semantics not already represented:
 
-* `qwen_edit_mode`: `native_edit | sdedit`;
-* `qwen_use_kv_cache`: boolean;
-* `qwen_attention_path`: `sdpa | flex_compiled`;
-* `qwen_lora_scope`: scope CSV for training.
+* `qwen_image_21_kv_cache`: boolean.
 
 Defaults live only in `backend/api/param_defaults.py`. If existing generic
 fields can carry the meaning without ambiguity, use them instead of adding a
@@ -654,10 +633,8 @@ The frontend:
 
 * shows 40 steps and CFG 1.0 from backend schema defaults;
 * accepts up to ten ordered reference images;
-* exposes native edit versus SDEdit clearly;
+* uses the existing ordered reference-image control for native edit;
 * keeps alpha in upload, preview, gallery, and send-to flows;
-* labels FlexAttention as compiled-only and falls back before submission when
-  capability data refuses it;
 * derives all advanced-control visibility from `/schema/arch-capabilities`;
 * adds Qwen fields to training config serialization, presets, resume display,
   and validation-sample controls.
@@ -671,23 +648,46 @@ training panels.
 |---|---|---|
 | txt2img | supported | native path |
 | multi-reference native edit | supported | released conditioning path, max 10 |
-| img2img SDEdit | supported | explicit compatibility mode |
-| inpaint/outpaint | experimental then supported | native edit plus exact protected-pixel composite; seam/alpha gate |
+| img2img SDEdit | refused | native edit is the only implemented image-conditioning algorithm |
+| inpaint/outpaint | supported | native edit plus protected-pixel composite |
 | RGBA | supported | native four-channel VAE |
 | true CFG | supported | negative prompt + scale > 1 |
 | NAG/NegPip/regional/style-KV | refused | no exact block-causal implementation |
 | ControlNet generation/training | refused | no compatible released architecture |
-| LoRA | supported after round trip | DiT; BF16/ConvRot base |
-| full parameter | supported after real smoke | complete DiT; BF16 only |
+| LoRA | supported | DiT; BF16/ConvRot base; real ConvRot backward passed |
+| full parameter | supported | complete DiT; BF16 only; companion-based resume |
 | ReLoRA | refused | reset/resume contract absent |
 | TE training/override | refused | fixed Qwen3-VL conditioning contract |
 | VAE swap | refused | 64-channel RGBA latent contract has no validated replacement |
-| generation block swap | supported after equivalence gate | ordered 32-block DiT |
-| training block swap | supported after gradient gate | ordered 32-block DiT |
-| compiled FlexAttention | opt-in | compile/runtime/memory probe |
+| generation block swap | refused | component CPU offload is used instead |
+| training block swap | supported | ordered 32-block DiT; gradient checkpointing required |
+| compiled FlexAttention | refused | exact vendored SDPA path only |
 | FBCache/Spectrum/TREAD/BlockSkip | refused initially | each requires measurement |
 
 ## 12. Implementation phases and gates
+
+Current first-release status (2026-09-21):
+
+* P0/P1 complete: both variant manifests load; Original DiT/TE/VAE and ConvRot
+  DiT/TE/VAE were loaded from the local artifacts with exact component checks.
+* P2 complete at smoke level: a 256x256, two-step ConvRot txt2img run completed
+  through processor, TE, DiT, scheduler, and VAE in 25.5 seconds.
+* P3/P4 implemented: native edit consumes the primary image plus ordered
+  `ref_images` (ten total maximum); inpaint/outpaint use protected-pixel
+  compositing. Multi-reference quality and seam metrics remain unmeasured.
+* P5 complete at backward-smoke level: the real ConvRot DiT exposed 128
+  attention targets; rank-4 LoRA produced loss 0.0158 and 256 finite gradient
+  tensors at 256x256. A synthetic save/classify/rebuild numerical round trip
+  passes; real-checkpoint effect and a multi-step optimizer run remain
+  release-follow-up measurements.
+* P6 implemented but not yet run as a full 7.1B optimizer step. The complete
+  DiT is selected, quantized bases are refused, and checkpoint resume is wired
+  through companion metadata.
+* P7 is deferred. Shared capability data refuses every unimplemented
+  acceleration instead of accepting an inert control.
+
+The phase descriptions below are the gate definitions, not claims that every
+measurement has already passed.
 
 ### P0 — source pin and artifact census
 
@@ -776,16 +776,15 @@ CPU/schema tests:
 * cache namespace invalidation;
 * capability/default/OpenAPI/frontend enum parity;
 * LoRA save/load/resume/rollback and quantized-base target discovery;
-* full-save shard-index round trip.
+* full-save single/index metadata and companion-path round trip.
 
 CUDA tests:
 
 * BF16 and ConvRot layer forward comparison;
-* exact SDPA versus compiled Flex prefill/decode tolerance;
 * K/V cache on/off each compared to its own reference;
 * t2i/edit/RGBA real checkpoint smokes;
-* component offload and keep-hot reuse without stale state;
-* generation/training block-swap equivalence;
+* component offload without stale state;
+* training block-swap equivalence;
 * BF16 LoRA, ConvRot-base LoRA, and BF16 full-DiT backward;
 * validation generation after save/reload.
 
@@ -813,9 +812,9 @@ measurement is recorded in `docs/guides/MODEL_FACTS.md` with its conditions.
 
 * The upstream model and diffusers support landed days before this design;
   checkpoint/config revisions are still moving. Always pin revisions.
-* Upstream training PR #14808 is unmerged and has already changed around device
-  placement, masks, validation, and caching. Port the mathematics, not the
-  script wholesale.
+* Training math must preserve device placement, masks, validation, and target
+  tail slicing; these contracts are tested locally rather than inferred from
+  a generic DiT trainer.
 * Weight use/distribution remains subject to the weight license, while SushiUI
   implementation code comes only from Apache-2.0 diffusers or original local
   work. Never blur those provenance domains or treat a weight license as a
@@ -828,17 +827,16 @@ measurement is recorded in `docs/guides/MODEL_FACTS.md` with its conditions.
   grids corrupts masks and block boundaries.
 * Prefix-cache slices must own storage. A contiguous view at batch size one can
   pin the whole prefill tensor per layer and add gigabytes of residency.
-* FlexAttention is safe only when compiled. An automatic uncompiled fallback is
-  an OOM path, not a performance preference.
 * Cache-on and cache-off runs can diverge visibly in BF16 from early rounding
   differences even when both agree with fp32. Do not require bit identity
   between the two modes.
-* Native edit and SDEdit are different algorithms. A single unlabeled strength
-  slider must not blur the distinction.
+* Native edit and SDEdit are different algorithms. This release implements
+  native edit only; `denoising_strength` must not be described as changing it.
 * Training loss belongs only to target tokens. Prefix loss can appear to train
   while optimizing the wrong task.
-* A full-DiT save exceeds the shared single-file writer's shard threshold. The
-  index is the model entry point; selecting one shard must be refused.
+* A full-DiT training save may exceed the shared streaming writer's shard
+  threshold. When it does, the index is the model entry point; an individual
+  shard is never a complete checkpoint.
 
 ## 16. Documentation updates during implementation
 

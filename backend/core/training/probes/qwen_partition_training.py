@@ -20,6 +20,7 @@ from core.models.qwen_image_21.artifact import load_manifest, load_transformer
 from core.models.common.quantized_frozen_training import (
     enable_frozen_training_cached_backward,
     enable_frozen_training_fused,
+    enable_frozen_training_prefetch_backward,
 )
 from core.training.adapters.qwen_image_21_adapter import QwenImage21LoRAAdapter
 from core.training.ops import qwen_image_21_ops
@@ -413,17 +414,31 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     if variant != "int8_convrot":
         fused_layers, backward_cache_bytes = 0, 0
         convrot_policy = "dense_bf16"
+        prefetch_cache = None
     elif args.convrot_backward == "cached":
         fused_layers, backward_cache_bytes = enable_frozen_training_cached_backward(
             transformer, dtype=dtype, label="Qwen partition probe"
         )
         convrot_policy = "cached"
+        prefetch_cache = None
+    elif args.convrot_backward == "prefetch":
+        fused_layers, backward_cache_bytes, prefetch_cache = (
+            enable_frozen_training_prefetch_backward(
+                transformer,
+                dtype=dtype,
+                cache_blocks=args.convrot_cache_blocks,
+                prefetch_depth=args.convrot_prefetch_depth,
+                label="Qwen partition probe",
+            )
+        )
+        convrot_policy = "prefetch"
     else:
         fused_layers = enable_frozen_training_fused(
             transformer, label="Qwen partition probe"
         )
         backward_cache_bytes = 0
         convrot_policy = "transient"
+        prefetch_cache = None
 
     trainer = _ProbeTrainer(
         transformer=transformer,
@@ -627,6 +642,18 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             "backward_weight_policy": convrot_policy,
             "enabled_layers": fused_layers,
             "backward_cache_gb": backward_cache_bytes / GB,
+            "cache_blocks": args.convrot_cache_blocks if prefetch_cache else None,
+            "prefetch_depth": args.convrot_prefetch_depth if prefetch_cache else None,
+            "outside_cache_gb": (
+                prefetch_cache.outside_bytes / GB if prefetch_cache else 0.0
+            ),
+            "block_cache_bytes": (
+                prefetch_cache.block_bytes if prefetch_cache else {}
+            ),
+            "dequant_calls": prefetch_cache.dequant_calls if prefetch_cache else 0,
+            "prefetch_hits": prefetch_cache.prefetch_hits if prefetch_cache else 0,
+            "prefetch_misses": prefetch_cache.prefetch_misses if prefetch_cache else 0,
+            "wait_count": prefetch_cache.wait_count if prefetch_cache else 0,
         },
         "checkpoint_blocks": {
             "full": args.checkpoint_blocks,
@@ -655,8 +682,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--attention", choices=("native", "flash"), default="flash")
     parser.add_argument(
-        "--convrot-backward", choices=("cached", "transient"), default="cached"
+        "--convrot-backward", choices=("cached", "prefetch", "transient"), default="cached"
     )
+    parser.add_argument("--convrot-cache-blocks", type=int, default=2)
+    parser.add_argument("--convrot-prefetch-depth", type=int, default=1)
     parser.add_argument("--query-chunk-tokens", type=int, default=0)
     parser.add_argument("--batch", type=int, default=1)
     parser.add_argument("--latent-height", type=int, default=64)

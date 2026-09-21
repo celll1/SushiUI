@@ -9,9 +9,9 @@ This document records the shipped boundary and completed measurements.
 - Qwen-Image 2.1 LoRA on its ConvRot artifact runs the frozen base forward with
   the ConvRot INT8 kernel. Its custom autograd node computes only `grad_input`
   in BF16; adapter parameters and FlashAttention use their ordinary floating-
-  point backward paths. Training caches the BF16 base weights for speed; the
-  activation dispatcher accounts for this 13.252 GiB resident floor and
-  offloads only buckets whose remaining activations do not fit.
+  point backward paths. The automatic policy reconstructs a bounded two-block
+  BF16 backward ring on a CUDA prefetch stream. The dispatcher accounts for
+  the resolved ring limit rather than the former 13.252 GiB full-cache floor.
 - Other architectures do not inherit that policy. Their opt-in fused path
   remains experimental unless their own gate says otherwise.
 - Trainable INT8 ConvRot base weights are refused. Full-parameter training must
@@ -22,14 +22,14 @@ This document records the shipped boundary and completed measurements.
   ConvRot-forward runs from being mixed.
 - Cached Qwen training currently refuses block swap.
 
-The `auto` policy selects the measured full BF16 cache. Explicit `cached_bf16`,
+The `auto` policy selects the measured `prefetch_bf16` path with two resident
+transformer blocks and one block of lookahead. Explicit `cached_bf16`,
 `transient_bf16`, and legacy `dequant` modes remain diagnostic overrides.
 Transient reconstruction reduced the measured partition peak by about 10 GiB,
 but changed a 3.06 s transformer step to 6.61 s, so it is not an automatic
-fallback. A future bounded cache requires asynchronous prefetch before it can
-replace the resident cache without repeating this regression. Cached and
-transient modes share the same artifact base-function contract because their
-forward and floating grad-input equations are the same.
+fallback. Cached, prefetch, and transient modes share the same artifact
+base-function contract because their forward and floating grad-input equations
+are the same.
 
 ## Measurement result
 
@@ -62,10 +62,15 @@ A matched 60x104-latent partition probe (rank 128, two regions, 24/32
 checkpointed blocks, global adapter enabled) measured INT8 ConvRot plus the
 13.252 GiB BF16 cache at 3.334 s and 28.14 GiB peak. The dense BF16 base measured
 4.561 s and 21.47 GiB: 6.67 GiB lighter but 37% slower. The cached path is thus
-a speed policy, not a memory optimization. Dense BF16 remains the capacity
-baseline. A bounded BF16 ring cache with asynchronous dequant prefetch remains
-an open candidate between these endpoints; synchronous per-layer rebuild is
-not an acceptable substitute.
+a speed policy, not a memory optimization. On the same model and workload, a
+two-block ring with one-block asynchronous dequant lookahead measured 3.263 s
+and 15.76 GiB for the partitioned step. That is 3.1% slower and 12.39 GiB lower
+than the matched full-cache run; its 1.065 GiB reported resident limit consists
+of two 416 MiB transformer blocks plus 0.252 GiB outside-block weights. Full and
+prefetch losses and prediction metrics were identical in the probe, and the
+small CUDA oracle matched output and input gradient bitwise. This passes the
+bounded-cache gate and makes prefetch the automatic policy. Synchronous
+per-layer rebuild remains an unacceptable substitute.
 
 ## Authoritative gates
 

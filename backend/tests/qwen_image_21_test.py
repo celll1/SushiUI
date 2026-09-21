@@ -428,7 +428,7 @@ def test_dit_checkpoint_contract_refuses_unsupported_arch_and_depth(monkeypatch)
         )
 
 
-def test_qwen_partition_auto_keeps_cached_convrot_backward_weights():
+def test_qwen_auto_uses_measured_bounded_convrot_backward_cache():
     trainer = SimpleNamespace(
         config={"qwen_partition_training_enabled": True},
         qwen_image_21_transformer_variant="int8_convrot",
@@ -437,12 +437,15 @@ def test_qwen_partition_auto_keeps_cached_convrot_backward_weights():
     )
     assert qwen_image_21_ops._resolve_convrot_training_forward(
         trainer, "auto"
-    ) == ("cached_bf16", "ConvRot speed policy")
+    ) == ("prefetch_bf16", "measured bounded-cache policy")
+    assert qwen_image_21_ops._resolve_convrot_training_forward(
+        trainer, "prefetch_bf16"
+    ) == ("prefetch_bf16", "explicit")
 
     trainer.config["qwen_partition_training_enabled"] = False
     assert qwen_image_21_ops._resolve_convrot_training_forward(
         trainer, "auto"
-    ) == ("cached_bf16", "ConvRot speed policy")
+    ) == ("prefetch_bf16", "measured bounded-cache policy")
 
 
 def test_qwen_transient_convrot_training_uses_same_artifact_contract():
@@ -456,6 +459,31 @@ def test_qwen_transient_convrot_training_uses_same_artifact_contract():
     )
     metadata = adapter.checkpoint_metadata({}, step=1, epoch=0)
     assert metadata["qwen_base_forward"] == "convrot_int8_bf16_backward_v1"
+
+
+def test_qwen_prefetch_convrot_training_uses_same_artifact_contract():
+    trainer = SimpleNamespace(
+        qwen_convrot_training_forward="prefetch_bf16",
+        learning_rate=1e-4,
+        unet_lr=None,
+        transformer=None,
+    )
+    adapter = QwenImage21LoRAAdapter(
+        trainer, lora_rank=2, lora_alpha=2, lora_dtype=torch.float32
+    )
+    metadata = adapter.checkpoint_metadata({}, step=1, epoch=0)
+    assert metadata["qwen_base_forward"] == "convrot_int8_bf16_backward_v1"
+
+
+def test_qwen_prefetch_depth_must_be_smaller_than_cache_blocks():
+    with pytest.raises(ValueError, match="smaller than"):
+        routes.TrainingRunCreateRequest(
+            training_method="lora",
+            base_model_path="unused",
+            qwen_convrot_training_forward="prefetch_bf16",
+            qwen_convrot_backward_cache_blocks=2,
+            qwen_convrot_backward_prefetch_depth=2,
+        )
 
 
 def test_qwen_partition_api_refuses_odd_halo():

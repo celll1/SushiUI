@@ -15509,6 +15509,15 @@ class TrainingRunCreateRequest(BaseModel):
     qwen_partition_global_tokens: int = Field(
         default=TRAINING_DEFAULTS["qwen_partition_global_tokens"], ge=1, le=256
     )
+    qwen_convrot_training_forward: Literal[
+        "auto", "cached_bf16", "prefetch_bf16", "transient_bf16", "dequant"
+    ] = TRAINING_DEFAULTS["qwen_convrot_training_forward"]
+    qwen_convrot_backward_cache_blocks: int = Field(
+        default=TRAINING_DEFAULTS["qwen_convrot_backward_cache_blocks"], ge=1, le=8
+    )
+    qwen_convrot_backward_prefetch_depth: int = Field(
+        default=TRAINING_DEFAULTS["qwen_convrot_backward_prefetch_depth"], ge=0, le=7
+    )
 
     @model_validator(mode="after")
     def _checkpoint_aliases_agree(self):
@@ -15518,6 +15527,11 @@ class TrainingRunCreateRequest(BaseModel):
             raise ValueError(
                 "dit_partition_gradient_checkpointing_blocks conflicts with "
                 "qwen_partition_gradient_checkpointing_blocks"
+            )
+        if self.qwen_convrot_backward_prefetch_depth >= self.qwen_convrot_backward_cache_blocks:
+            raise ValueError(
+                "qwen_convrot_backward_prefetch_depth must be smaller than "
+                "qwen_convrot_backward_cache_blocks"
             )
         return self
 

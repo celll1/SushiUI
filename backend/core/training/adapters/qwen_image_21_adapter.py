@@ -99,7 +99,7 @@ class QwenImage21LoRAAdapter(BaseLoRAAdapter):
             "format": "pt",
         }
         forward = getattr(self.trainer, "qwen_convrot_training_forward", "dequant")
-        if forward in {"transient_bf16", "cached_bf16"}:
+        if forward in {"transient_bf16", "cached_bf16", "prefetch_bf16"}:
             metadata.update(
                 qwen_base_variant="int8_convrot",
                 qwen_base_forward="convrot_int8_bf16_backward_v1",

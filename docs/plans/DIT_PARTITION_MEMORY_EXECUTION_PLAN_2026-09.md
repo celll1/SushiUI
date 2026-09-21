@@ -276,15 +276,15 @@ These remain Qwen/ConvRot-specific because they describe a particular
 quantized kernel and backward contract:
 
 ```text
-qwen_convrot_backward_cache_mode: auto | full | prefetch | transient
+qwen_convrot_training_forward: auto | cached_bf16 | prefetch_bf16 | transient_bf16 | dequant
 qwen_convrot_backward_cache_blocks: integer     # bounded resident block slots
 qwen_convrot_backward_prefetch_depth: integer   # scheduled blocks ahead
 ```
 
-`auto` continues to resolve to the measured full cache until the prefetch gate
-passes. The prototype is selected explicitly. A byte budget may replace the
-block count internally, but the resolved block count and bytes must both be
-reported.
+The prototype is selected explicitly until the prefetch gate passes. It then
+becomes `auto`; the full cache remains an explicit comparison/diagnostic mode.
+A byte budget may replace the block count internally, but the resolved block
+count and bytes must both be reported.
 
 ### 4.2 Execution design
 
@@ -472,12 +472,21 @@ partition resume contract.
 
 ### Phase C: bounded ConvRot prefetch prototype
 
+Completed. The two-block/one-lookahead ring passed its gate on the matched
+60x104 latent probe: 3.263 s and 15.76 GiB versus 3.165 s and 28.14 GiB for the
+full cache in that measurement pair. The 3.1% time cost bought 12.39 GiB lower
+absolute peak and remained faster than the 4.561 s dense-BF16 baseline. The
+reported resident limit was 1.065 GiB (two 416 MiB blocks plus 0.252 GiB of
+outside-block weights). Loss and prediction metrics were identical; the small
+CUDA oracle was bitwise-equal for output and input gradient. `auto` therefore
+selects the bounded prefetch path.
+
 1. Inventory ConvRot linears by transformer block and outside-block ownership.
 2. Add block-boundary scheduling hooks without changing full-cache behavior.
 3. Implement a one-slot synchronous bounded ring as a lifetime oracle.
 4. Add a dedicated asynchronous prefetch stream and events.
 5. Benchmark depths 1 and 2 before admitting deeper prefetch.
-6. Keep `auto` on full cache until the acceptance gate passes.
+6. Move `auto` from full cache to prefetch only after the acceptance gate.
 
 ### Phase D: asynchronous generic activation offload
 

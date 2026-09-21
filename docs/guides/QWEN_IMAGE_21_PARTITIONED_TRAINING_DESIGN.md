@@ -378,10 +378,11 @@ The implementation must integrate with:
   simultaneous base activation.
 * **ConvRot.** Keep frozen base forward in INT8 ConvRot and base grad-input plus
   adapter backward in the existing floating path. The measured automatic path
-  retains its 13.252 GiB BF16 grad-input cache and includes that floor in the
-  dispatcher's live headroom. Rebuilding each layer reduced peak memory but more
-  than doubled transformer step time; a bounded cache is admitted only with
-  asynchronous prefetch rather than synchronous per-layer reconstruction.
+  uses a two-block BF16 ring with one-block asynchronous dequant lookahead and
+  includes its resolved 1.065 GiB resident limit in dispatcher headroom. The
+  former full cache remains an explicit diagnostic mode. Rebuilding each layer
+  synchronously reduced peak memory but more than doubled transformer step
+  time, so it is not an automatic fallback.
 * **Flash Attention.** Continue to use the validated Qwen attention backend for
   each shorter sequence.
 * **Prefix execution.** Recompute the differentiable prefix for every region in
@@ -648,7 +649,9 @@ Ada, BF16 LoRA rank 128, Flash Attention, batch 1, 128 text tokens, a 64 by 64
 latent grid (4,096 image tokens, corresponding to a 1,024-class square), fixed
 noise/timestep, and two measured iterations after one warmup. It loads only
 the transformer and excludes VAE, text encoder, data loading, optimizer, and
-logging. The retained ConvRot floating grad-input cache was 13.252 GiB.
+logging. This historical probe used the full ConvRot floating grad-input cache,
+which retained 13.252 GiB; the later bounded-prefetch gate is recorded in
+`INT8_CONVROT_TRAINING_DESIGN.md`.
 
 | Path | Checkpointed blocks | Step | Speedup | Step allocation delta | Delta reduction | Loss delta | Prediction cosine | Prediction relative L2 | Median layer update-action cosine |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|

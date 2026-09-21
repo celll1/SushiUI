@@ -263,6 +263,73 @@ class TestCachedFloatingBackward:
         assert x.grad is not None
 
 
+class _PrefetchBlock(nn.Module):
+    def __init__(self, seed: int):
+        super().__init__()
+        torch.manual_seed(seed)
+        weight = torch.randn(IN, IN, dtype=torch.float32)
+        qdata, scale = quantize_int8_convrot_weight(weight, 256)
+        self.linear = ConvRotInt8Linear(
+            IN, IN, bias=False, compute_dtype=torch.bfloat16,
+            convrot_groupsize=256, marker_numel=MARKER_NUMEL, device="cuda",
+        )
+        self.linear.weight = qdata.cuda()
+        self.linear.weight_scale = scale.reshape(-1).cuda()
+
+    def forward(self, x):
+        return x + self.linear(x)
+
+
+class _PrefetchModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.transformer_blocks = nn.ModuleList(
+            [_PrefetchBlock(seed) for seed in range(4)]
+        )
+        self.proj_out = _PrefetchBlock(99).linear
+
+    def forward(self, x):
+        for block in self.transformer_blocks:
+            x = block(x)
+        return self.proj_out(x)
+
+
+@CUDA
+class TestPrefetchedFloatingBackward:
+    def test_bounded_block_cache_matches_full_cache(self):
+        full = _PrefetchModel()
+        bounded = _PrefetchModel()
+        bounded.load_state_dict(full.state_dict())
+        qft.enable_frozen_training_cached_backward(full, dtype=torch.bfloat16)
+        count, limit, cache = qft.enable_frozen_training_prefetch_backward(
+            bounded, dtype=torch.bfloat16, cache_blocks=2, prefetch_depth=1
+        )
+        assert count == 5
+        assert limit == (3 * IN * IN * 2)  # two block slots + proj_out
+        assert not any("frozen_training" in key for key in bounded.state_dict())
+
+        x_full = torch.randn(
+            3, IN, device="cuda", dtype=torch.bfloat16, requires_grad=True
+        )
+        x_bounded = x_full.detach().clone().requires_grad_(True)
+        out_full = full(x_full)
+        out_bounded = bounded(x_bounded)
+        torch.testing.assert_close(out_bounded, out_full, atol=0, rtol=0)
+        out_full.float().square().mean().backward()
+        out_bounded.float().square().mean().backward()
+        torch.testing.assert_close(x_bounded.grad, x_full.grad, atol=0, rtol=0)
+        assert len(cache.resident_blocks) <= 2
+        assert cache.prefetch_hits >= 3
+        assert cache.outside_bytes == IN * IN * 2
+
+    def test_prefetch_depth_must_fit_inside_ring(self):
+        model = _PrefetchModel()
+        with pytest.raises(ValueError, match="smaller than cache_blocks"):
+            qft.enable_frozen_training_prefetch_backward(
+                model, dtype=torch.bfloat16, cache_blocks=1, prefetch_depth=1
+            )
+
+
 
 @CUDA
 class TestNoFrozenOperandGradient:

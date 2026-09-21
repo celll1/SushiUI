@@ -382,6 +382,8 @@ export const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   activation_dispatch_seed_coef: 0.000024,
   activation_dispatch_residual_frac: 0.85,
   activation_dispatch_threshold_mb: 4,
+  activation_offload_transfer_mode: "sync",
+  activation_offload_pinned_budget_mb: 2048,
   dit_gradient_checkpointing_blocks: null,
   dit_partition_gradient_checkpointing_blocks: null,
   qwen_partition_training_enabled: false,

@@ -43,18 +43,125 @@ machine-local PoC work log is not a runtime dependency.
 """
 
 import contextlib
+from dataclasses import dataclass
+from typing import Optional
 
 import torch
 
 _GB = 1024 ** 3
 
 
+@dataclass
+class _AsyncSavedTensor:
+    cpu: torch.Tensor
+    device: torch.device
+    d2h_ready: torch.cuda.Event
+
+
+class AsyncActivationOffloader:
+    """Bounded pinned arena and CUDA streams for saved activations.
+
+    The arena is retained across steps but reset only after both transfer
+    streams synchronize. If a step exceeds the fixed arena, later tensors use
+    the synchronous pageable path instead of growing pinned host residency.
+    """
+
+    def __init__(self, budget_bytes: int):
+        if budget_bytes <= 0:
+            raise ValueError("activation offload pinned budget must be positive")
+        self.budget_bytes = int(budget_bytes)
+        self._arena: Optional[torch.Tensor] = None
+        self._offset = 0
+        self._device: Optional[torch.device] = None
+        self._d2h_stream = None
+        self._h2d_stream = None
+        self._active = False
+        self.allocation_failure: Optional[str] = None
+
+    def begin(self) -> None:
+        if self._active:
+            raise RuntimeError("async activation offloader context is already active")
+        self._active = True
+        self._offset = 0
+
+    def _ensure_runtime(self, device: torch.device) -> bool:
+        if self.allocation_failure is not None:
+            return False
+        if self._device is not None and device != self._device:
+            raise RuntimeError(
+                f"async activation offloader is bound to {self._device}, got {device}"
+            )
+        if self._arena is None:
+            try:
+                self._arena = torch.empty(
+                    self.budget_bytes, dtype=torch.uint8, device="cpu", pin_memory=True
+                )
+            except RuntimeError as exc:
+                self.allocation_failure = str(exc)
+                return False
+            self._device = torch.device(device)
+            self._d2h_stream = torch.cuda.Stream(device=device)
+            self._h2d_stream = torch.cuda.Stream(device=device)
+        return True
+
+    def pack(self, tensor: torch.Tensor) -> Optional[_AsyncSavedTensor]:
+        if not self._active or not self._ensure_runtime(tensor.device):
+            return None
+        nbytes = tensor.numel() * tensor.element_size()
+        alignment = max(256, tensor.element_size())
+        offset = (self._offset + alignment - 1) // alignment * alignment
+        if offset + nbytes > self.budget_bytes:
+            return None
+        raw = self._arena.narrow(0, offset, nbytes)
+        cpu = raw.view(tensor.dtype).view(tensor.shape)
+        producer_done = torch.cuda.current_stream(tensor.device).record_event()
+        with torch.cuda.stream(self._d2h_stream):
+            self._d2h_stream.wait_event(producer_done)
+            cpu.copy_(tensor, non_blocking=True)
+            ready = self._d2h_stream.record_event()
+        tensor.record_stream(self._d2h_stream)
+        self._offset = offset + nbytes
+        return _AsyncSavedTensor(cpu=cpu, device=tensor.device, d2h_ready=ready)
+
+    def unpack(self, saved: _AsyncSavedTensor) -> torch.Tensor:
+        current = torch.cuda.current_stream(saved.device)
+        with torch.cuda.stream(self._h2d_stream):
+            self._h2d_stream.wait_event(saved.d2h_ready)
+            restored = torch.empty(
+                saved.cpu.shape, dtype=saved.cpu.dtype, device=saved.device
+            )
+            restored.copy_(saved.cpu, non_blocking=True)
+            ready = self._h2d_stream.record_event()
+        current.wait_event(ready)
+        restored.record_stream(current)
+        return restored
+
+    def end(self) -> None:
+        if not self._active:
+            return
+        if self._d2h_stream is not None:
+            self._d2h_stream.synchronize()
+        if self._h2d_stream is not None:
+            self._h2d_stream.synchronize()
+        self._offset = 0
+        self._active = False
+
+    @property
+    def arena_bytes(self) -> int:
+        return 0 if self._arena is None else self._arena.numel()
+
+
 @contextlib.contextmanager
 def offload_activations(enabled: bool, threshold_bytes: int = 4 * 1024 * 1024,
-                        use_pinned: bool = False, stats: dict = None):
+                        use_pinned: bool = False, stats: dict = None,
+                        transfer_mode: str = "sync",
+                        async_engine: Optional[AsyncActivationOffloader] = None,
+                        pinned_budget_bytes: int = 2 * _GB):
     """Offload large saved activations to CPU during forward, restore in backward.
-    Synchronous (blocking) copies -- value-exact, so training results are unchanged.
-    ``enabled=False`` is a no-op (zero overhead).
+
+    ``sync`` uses blocking pageable copies. ``async`` uses a fixed pinned arena,
+    dedicated D2H/H2D streams and events; exhaustion falls back to ``sync``.
+    Both preserve tensor values. ``enabled=False`` is a no-op (zero overhead).
 
     Must wrap BOTH the forward and the backward pass: ``saved_tensors_hooks``
     packs on save (forward) and unpacks on use (backward).
@@ -68,8 +175,8 @@ def offload_activations(enabled: bool, threshold_bytes: int = 4 * 1024 * 1024,
     pinned cache accumulates one block set per shape and "shared GPU memory" grows
     monotonically and never shrinks for small batches -- risking a host-RAM crash.
     Pageable CPU tensors are freed back to the normal allocator and do not accumulate
-    as shared GPU memory. Pinning only pays off with async (non_blocking=True) DMA on
-    a dedicated stream, which is a separate follow-up; re-enable use_pinned there.
+    as shared GPU memory. Async mode instead retains one fixed-shape pinned byte arena,
+    so bucket-shape variation cannot grow pinned residency beyond its configured cap.
 
     ``stats`` (optional): a dict whose ``"bytes"`` key is incremented by the byte
     volume actually packed to CPU. This is the MEASURED offloadable volume for this
@@ -79,22 +186,48 @@ def offload_activations(enabled: bool, threshold_bytes: int = 4 * 1024 * 1024,
     if not enabled:
         yield
         return
+    if transfer_mode not in {"sync", "async"}:
+        raise ValueError("activation offload transfer_mode must be 'sync' or 'async'")
+    if transfer_mode == "async":
+        engine = async_engine or AsyncActivationOffloader(pinned_budget_bytes)
+        engine.begin()
+    else:
+        engine = None
 
     def pack(t: torch.Tensor):
         if (t.is_cuda and t.is_floating_point() and not t.is_leaf
                 and t.numel() * t.element_size() >= threshold_bytes):
+            if engine is not None:
+                saved = engine.pack(t)
+                if saved is not None:
+                    if stats is not None:
+                        stats["bytes"] = stats.get("bytes", 0) + t.numel() * t.element_size()
+                        stats["async_bytes"] = stats.get("async_bytes", 0) + (
+                            t.numel() * t.element_size()
+                        )
+                    return ("async_cpu", saved)
             cpu = torch.empty(t.shape, dtype=t.dtype, device="cpu", pin_memory=use_pinned)
             cpu.copy_(t, non_blocking=False)
             if stats is not None:
                 stats["bytes"] = stats.get("bytes", 0) + t.numel() * t.element_size()
+                if engine is not None:
+                    stats["sync_fallback_bytes"] = stats.get(
+                        "sync_fallback_bytes", 0
+                    ) + t.numel() * t.element_size()
             return ("cpu", cpu, t.device)
         return ("gpu", t)
 
     def unpack(p):
+        if p[0] == "async_cpu":
+            return engine.unpack(p[1])
         return p[1].to(p[2], non_blocking=False) if p[0] == "cpu" else p[1]
 
-    with torch.autograd.graph.saved_tensors_hooks(pack, unpack):
-        yield
+    try:
+        with torch.autograd.graph.saved_tensors_hooks(pack, unpack):
+            yield
+    finally:
+        if engine is not None:
+            engine.end()
 
 
 class ActivationDispatcher:

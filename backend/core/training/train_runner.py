@@ -4253,6 +4253,8 @@ def main():
                 activation_dispatch_seed_coef=train_config.get('activation_dispatch_seed_coef', 24.0e-6),
                 activation_dispatch_residual_frac=train_config.get('activation_dispatch_residual_frac', 0.85),
                 activation_dispatch_threshold_mb=train_config.get('activation_dispatch_threshold_mb', 4),
+                activation_offload_transfer_mode=train_config.get('activation_offload_transfer_mode', 'sync'),
+                activation_offload_pinned_budget_mb=train_config.get('activation_offload_pinned_budget_mb', 2048),
                 num_optimizer_groups=train_config.get('num_optimizer_groups', 0),
                 # Optimizer options and hyperparameters
                 optimizer_cautious=optimizer_cautious,

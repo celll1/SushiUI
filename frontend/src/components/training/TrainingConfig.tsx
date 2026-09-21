@@ -6090,6 +6090,29 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   <p className="text-xs text-gray-500">
                     Disable to keep the execution batch fixed. The dispatcher widens activation offload instead and fails if the same batch still cannot fit. Fused backward never permits splitting.
                   </p>
+                  <label className="block text-xs text-gray-300">Activation Transfer</label>
+                  <select
+                    value={params.activation_offload_transfer_mode ?? "sync"}
+                    onChange={(e) => updateParam("activation_offload_transfer_mode", e.target.value as "sync" | "async")}
+                    className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+                  >
+                    <option value="sync">Synchronous pageable (stable)</option>
+                    <option value="async">Asynchronous bounded pinned arena</option>
+                  </select>
+                  <p className="text-xs text-gray-500">
+                    Async overlaps device-to-host saves with compute. Restores wait on CUDA events; tensors beyond the fixed pinned budget fall back to synchronous pageable copies.
+                  </p>
+                  {(params.activation_offload_transfer_mode ?? "sync") === "async" && (
+                    <div>
+                      <label className="block text-xs text-gray-300 mb-1">Pinned Arena Budget (MB)</label>
+                      <input
+                        type="number" min={64} max={16384} step={64}
+                        value={params.activation_offload_pinned_budget_mb ?? 2048}
+                        onChange={(e) => updateParam("activation_offload_pinned_budget_mb", Math.max(64, Math.min(16384, parseInt(e.target.value) || 2048)))}
+                        className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+                      />
+                    </div>
+                  )}
                   <label htmlFor="activation-dispatch-margin" className="block text-xs text-gray-300 mb-1">
                     VRAM Safety Margin (GB)
                   </label>

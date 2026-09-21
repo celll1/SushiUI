@@ -7196,6 +7196,8 @@ export interface TrainingRunCreateRequest {
   activation_dispatch_seed_coef?: number;
   activation_dispatch_residual_frac?: number;
   activation_dispatch_threshold_mb?: number;
+  activation_offload_transfer_mode?: "sync" | "async";
+  activation_offload_pinned_budget_mb?: number;
   dit_gradient_checkpointing_blocks?: number | null;
   dit_partition_gradient_checkpointing_blocks?: number | null;
   qwen_partition_training_enabled?: boolean;

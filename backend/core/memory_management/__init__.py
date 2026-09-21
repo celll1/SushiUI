@@ -15,7 +15,11 @@ from .frozen_module_offload_conductor import (
     FrozenBranchedLayerOffloadConductor,
     FrozenModuleOffloadConductor,
 )
-from .activation_dispatcher import ActivationDispatcher, offload_activations
+from .activation_dispatcher import (
+    ActivationDispatcher,
+    AsyncActivationOffloader,
+    offload_activations,
+)
 
 __all__ = [
     # Block offloading (existing, production-ready)
@@ -33,5 +37,6 @@ __all__ = [
     "BranchedLayerOffloadConductor",
     # Proactive per-bucket activation offload dispatcher
     "ActivationDispatcher",
+    "AsyncActivationOffloader",
     "offload_activations",
 ]

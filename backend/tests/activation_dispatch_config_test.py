@@ -23,6 +23,8 @@ def _fallbacks():
         "seed_coef": 24.0e-6,
         "residual_frac": 0.85,
         "threshold_mb": 4,
+        "transfer_mode": "sync",
+        "pinned_budget_mb": 2048,
     }
 
 
@@ -34,6 +36,8 @@ def test_run_config_overrides_constructor_fallbacks_for_adapter_trainers():
         "activation_dispatch_seed_coef": 0.125,
         "activation_dispatch_residual_frac": 0.6,
         "activation_dispatch_threshold_mb": 9,
+        "activation_offload_transfer_mode": "async",
+        "activation_offload_pinned_budget_mb": 1024,
     }, **_fallbacks())
 
     assert resolved == {
@@ -43,6 +47,8 @@ def test_run_config_overrides_constructor_fallbacks_for_adapter_trainers():
         "seed_coef": 0.125,
         "residual_frac": 0.6,
         "threshold_mb": 9,
+        "transfer_mode": "async",
+        "pinned_budget_mb": 1024,
     }
 
 
@@ -54,6 +60,8 @@ def test_direct_callers_retain_explicit_constructor_values():
         "seed_coef": 0.25,
         "residual_frac": 0.5,
         "threshold_mb": 7,
+        "transfer_mode": "async",
+        "pinned_budget_mb": 512,
     }) == {
         "enable": True,
         "allow_batch_reduction": False,
@@ -61,6 +69,8 @@ def test_direct_callers_retain_explicit_constructor_values():
         "seed_coef": 0.25,
         "residual_frac": 0.5,
         "threshold_mb": 7,
+        "transfer_mode": "async",
+        "pinned_budget_mb": 512,
     }
 
 

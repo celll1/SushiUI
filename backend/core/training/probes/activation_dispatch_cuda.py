@@ -30,7 +30,11 @@ BACKEND_ROOT = REPO_ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from core.memory_management import ActivationDispatcher, offload_activations
+from core.memory_management import (
+    ActivationDispatcher,
+    AsyncActivationOffloader,
+    offload_activations,
+)
 
 try:
     import psutil
@@ -100,6 +104,8 @@ def _run_once(
     value: torch.Tensor,
     enabled: bool,
     capture: bool,
+    transfer_mode: str,
+    async_engine: AsyncActivationOffloader | None,
 ) -> dict:
     model.zero_grad(set_to_none=True)
     value.grad = None
@@ -112,6 +118,8 @@ def _run_once(
         enabled,
         threshold_bytes=THRESHOLD_BYTES,
         stats=stats,
+        transfer_mode=transfer_mode,
+        async_engine=async_engine,
     ):
         loss = model(value)
         loss.backward()
@@ -125,6 +133,8 @@ def _run_once(
             for p in model.parameters()
         ),
         "offloaded_bytes": int(stats["bytes"]),
+        "async_offloaded_bytes": int(stats.get("async_bytes", 0)),
+        "sync_fallback_bytes": int(stats.get("sync_fallback_bytes", 0)),
         "peak_allocated_gib": torch.cuda.max_memory_allocated() / GIB,
         "peak_reserved_gib": torch.cuda.max_memory_reserved() / GIB,
         "host_rss_before_gib": rss_before,
@@ -149,15 +159,27 @@ def _run_arm(
     enabled: bool,
     warmup: int,
     steps: int,
+    transfer_mode: str,
+    pinned_budget_bytes: int,
 ) -> tuple[dict, dict]:
     input_width = shape[-1] if len(shape) == 3 else shape[1]
     model = SavedActivationWorkload(input_width).cuda().to(torch.bfloat16)
     model.load_state_dict(state)
     value = source.cuda().to(torch.bfloat16).requires_grad_(True)
-    captured = _run_once(model, value, enabled, capture=True)
+    engine = (
+        AsyncActivationOffloader(pinned_budget_bytes)
+        if enabled and transfer_mode == "async" else None
+    )
+    captured = _run_once(
+        model, value, enabled, capture=True,
+        transfer_mode=transfer_mode, async_engine=engine,
+    )
     samples = []
     for index in range(warmup + steps):
-        result = _run_once(model, value, enabled, capture=False)
+        result = _run_once(
+            model, value, enabled, capture=False,
+            transfer_mode=transfer_mode, async_engine=engine,
+        )
         if index >= warmup:
             samples.append(result["elapsed_ms"])
     timing = {
@@ -206,7 +228,8 @@ def _without_tensors(result: dict) -> dict:
     }
 
 
-def run_scenario(name: str, shape: Tuple[int, ...], warmup: int, steps: int) -> dict:
+def run_scenario(name: str, shape: Tuple[int, ...], warmup: int, steps: int,
+                 transfer_mode: str, pinned_budget_bytes: int) -> dict:
     torch.manual_seed(20260910)
     input_width = shape[-1] if len(shape) == 3 else shape[1]
     template = SavedActivationWorkload(input_width).to(torch.bfloat16)
@@ -218,7 +241,8 @@ def run_scenario(name: str, shape: Tuple[int, ...], warmup: int, steps: int) -> 
     timings = {}
     for enabled in (False, True):
         captured[enabled], timings[enabled] = _run_arm(
-            shape, state, source, enabled, warmup, steps
+            shape, state, source, enabled, warmup, steps,
+            transfer_mode, pinned_budget_bytes,
         )
 
     off = captured[False]
@@ -257,6 +281,7 @@ def run_scenario(name: str, shape: Tuple[int, ...], warmup: int, steps: int) -> 
     result = {
         "name": name,
         "shape": shape,
+        "transfer_mode": transfer_mode,
         "off": _without_tensors(off),
         "on": _without_tensors(on),
         "comparison": comparison,
@@ -284,6 +309,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--steps", type=int, default=7)
+    parser.add_argument("--transfer-mode", choices=("sync", "async"), default="sync")
+    parser.add_argument("--pinned-budget-mb", type=int, default=512)
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
     if args.warmup < 0 or args.steps < 1:
@@ -308,10 +335,15 @@ def main() -> int:
         "total_gib": total / GIB,
         "allocator_fraction": MEMORY_FRACTION,
         "threshold_bytes": THRESHOLD_BYTES,
+        "transfer_mode": args.transfer_mode,
+        "pinned_budget_mb": args.pinned_budget_mb,
         "warmup": args.warmup,
         "steps": args.steps,
         "scenarios": [
-            run_scenario(name, shape, args.warmup, args.steps)
+            run_scenario(
+                name, shape, args.warmup, args.steps, args.transfer_mode,
+                args.pinned_budget_mb * 1024 * 1024,
+            )
             for name, shape in SCENARIOS.items()
         ],
     }

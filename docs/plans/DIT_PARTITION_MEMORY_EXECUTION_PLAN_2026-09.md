@@ -490,6 +490,22 @@ selects the bounded prefetch path.
 
 ### Phase D: asynchronous generic activation offload
 
+Implemented behind the explicit `async` transfer mode; `sync` remains the
+default. The implementation retains one fixed-size pinned byte arena across
+steps, uses separate D2H and H2D streams with producer/ready events, records the
+source on the D2H stream, and synchronizes both streams before arena reuse.
+When a step exhausts the arena, remaining tensors use the synchronous pageable
+path and report `sync_fallback_bytes`; pinned residency never grows with bucket
+shape. CUDA value/gradient, arena-exhaustion, and exception-reuse tests pass.
+The mode remains experimental until an architecture-level offload-bound timing
+shows a benefit; the mechanism gate alone does not justify changing the default.
+On the RTX 6000 Ada mechanism probe, async reduced median offloaded-step time
+from 4.25 to 3.09 ms for the audio-shaped case, 17.76 to 8.81 ms for the
+image-shaped case, and 19.58 to 8.68 ms for the video-shaped case. Loss matched
+exactly and gradients stayed within the existing BF16 gate. These synthetic
+results justify keeping the selectable implementation, but not making it the
+default for real architectures.
+
 1. Implement the bounded pinned-host arena and transfer engine.
 2. Prove teardown/OOM/cancellation behavior.
 3. Measure real overlap on offload-bound image and video workloads.

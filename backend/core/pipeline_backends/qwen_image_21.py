@@ -123,10 +123,11 @@ class QwenImage21Mixin:
         def callback(_pipe, index, timestep, callback_kwargs):
             if self.cancel_requested:
                 _pipe._interrupt = True
+            latents = callback_kwargs.get("latents")
             if progress_callback is not None:
-                progress_callback(index + 1, steps)
+                progress_callback(index, steps, latents)
             if step_callback is not None:
-                step_callback(index, timestep, callback_kwargs.get("latents"))
+                step_callback(index, timestep, latents)
             return callback_kwargs
 
         self._load_lora_qwen21(params.get("loras") or [])

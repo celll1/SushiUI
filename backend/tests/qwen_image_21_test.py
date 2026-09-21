@@ -24,6 +24,7 @@ from core.training.adapters.qwen_image_21_adapter import (
     QwenImage21FullParameterAdapter,
     QwenImage21LoRAAdapter,
 )
+from core.pipeline_backends.qwen_image_21 import QwenImage21Mixin
 from api import routes
 from api.schema_routes import get_arch_capabilities, get_generation_defaults
 
@@ -219,6 +220,53 @@ def test_api_defaults_and_capabilities_expose_qwen_controls():
     unsupported = capabilities["unsupported"][MODEL_TYPE]
     assert "controlnets" in unsupported
     assert "qwen_image_21_kv_cache" not in unsupported
+
+
+def test_generation_callback_uses_shared_progress_contract():
+    latents = torch.randn(1, 4, 8)
+    progress_calls = []
+    step_calls = []
+
+    class _Pipe:
+        _interrupt = False
+
+        def __call__(self, **kwargs):
+            callback_kwargs = {"latents": latents}
+            returned = kwargs["callback_on_step_end"](
+                self, 0, torch.tensor(1.0), callback_kwargs
+            )
+            assert returned is callback_kwargs
+            return SimpleNamespace(images=[object()])
+
+    class _Harness(QwenImage21Mixin):
+        cancel_requested = False
+
+        def _qwen_image_21_pipe(self):
+            return _Pipe()
+
+        def _load_lora_qwen21(self, _configs):
+            return 0
+
+        def _unload_lora_qwen21(self):
+            return 0
+
+    image, seed, ancestral_seed = _Harness()._qwen_image_21_run(
+        {"prompt": "test", "steps": 2, "seed": 7},
+        progress_callback=lambda step, total, current: progress_calls.append(
+            (step, total, current)
+        ),
+        step_callback=lambda step, timestep, current: step_calls.append(
+            (step, timestep, current)
+        ),
+    )
+
+    assert image is not None
+    assert seed == ancestral_seed == 7
+    assert len(progress_calls) == 1
+    assert progress_calls[0][:2] == (0, 2)
+    assert progress_calls[0][2] is latents
+    assert step_calls[0][0] == 0
+    assert step_calls[0][2] is latents
 
 
 def test_static_openapi_exposes_qwen_model_and_kv_cache():

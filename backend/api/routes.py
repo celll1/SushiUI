@@ -15467,6 +15467,9 @@ class TrainingRunCreateRequest(BaseModel):
 
     # Per-bucket activation offload dispatcher (proactive, OOM-detection-free)
     activation_dispatch_enable: bool = TRAINING_DEFAULTS["activation_dispatch_enable"]
+    activation_dispatch_allow_batch_reduction: bool = TRAINING_DEFAULTS[
+        "activation_dispatch_allow_batch_reduction"
+    ]
     activation_dispatch_margin_gb: float = TRAINING_DEFAULTS["activation_dispatch_margin_gb"]
     activation_dispatch_seed_coef: float = TRAINING_DEFAULTS["activation_dispatch_seed_coef"]
     activation_dispatch_residual_frac: float = TRAINING_DEFAULTS["activation_dispatch_residual_frac"]

@@ -6077,7 +6077,19 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 (no OOM detection). Off by default.
               </p>
               {activationDispatchEnable && (
-                <div className="mt-2">
+                <div className="mt-2 space-y-2">
+                  <label className="flex items-center gap-2 text-xs text-gray-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={params.activation_dispatch_allow_batch_reduction ?? true}
+                      onChange={(e) => updateParam("activation_dispatch_allow_batch_reduction", e.target.checked)}
+                      className="w-4 h-4"
+                    />
+                    Allow micro-batch reduction on predicted/actual overflow
+                  </label>
+                  <p className="text-xs text-gray-500">
+                    Disable to keep the execution batch fixed. The dispatcher widens activation offload instead and fails if the same batch still cannot fit. Fused backward never permits splitting.
+                  </p>
                   <label htmlFor="activation-dispatch-margin" className="block text-xs text-gray-300 mb-1">
                     VRAM Safety Margin (GB)
                   </label>

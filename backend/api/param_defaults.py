@@ -2647,6 +2647,9 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # activations to CPU only where it fits the VRAM budget. Proactive (no OOM
     # detection), so it works on Windows WDDM which spills instead of raising.
     "activation_dispatch_enable": False,
+    # Permit the dispatcher/OOM ladder to execute a logical batch as smaller
+    # micro-batches. Disable when the execution batch must remain fixed.
+    "activation_dispatch_allow_batch_reduction": True,
     "activation_dispatch_margin_gb": 1.0,
     "activation_dispatch_seed_coef": 24.0e-6,
     "activation_dispatch_residual_frac": 0.85,

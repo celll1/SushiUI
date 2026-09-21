@@ -97,6 +97,7 @@ def _resolve_activation_dispatch_settings(
     train_config: Optional[Mapping[str, Any]],
     *,
     enable: bool,
+    allow_batch_reduction: bool,
     margin_gb: float,
     seed_coef: float,
     residual_frac: float,
@@ -110,6 +111,8 @@ def _resolve_activation_dispatch_settings(
     config = train_config or {}
     return {
         "enable": bool(config.get("activation_dispatch_enable", enable)),
+        "allow_batch_reduction": bool(config.get(
+            "activation_dispatch_allow_batch_reduction", allow_batch_reduction)),
         "margin_gb": float(config.get("activation_dispatch_margin_gb", margin_gb)),
         "seed_coef": float(config.get("activation_dispatch_seed_coef", seed_coef)),
         "residual_frac": float(config.get(
@@ -1539,6 +1542,19 @@ def fused_backward_active(trainer) -> bool:
         getattr(trainer, "fused_optimizer_groups", None) is not None
 
 
+def activation_dispatch_batch_reduction_enabled(trainer) -> bool:
+    """Whether policy permits micro-batching; fused backward still cannot use it."""
+    return bool(getattr(trainer, "activation_dispatch_allow_batch_reduction", True))
+
+
+def activation_dispatch_can_microbatch(trainer) -> bool:
+    """Whether this execution path may safely split one logical batch."""
+    return (
+        activation_dispatch_batch_reduction_enabled(trainer)
+        and not fused_backward_active(trainer)
+    )
+
+
 def resident_fused_backward_eligible(trainer, optimizer_type: str) -> bool:
     """Whether a resident full fine-tune can use per-parameter updates."""
     from core.training.ops.training_method import is_full_finetune
@@ -2517,6 +2533,9 @@ class BaseTrainer(ABC):
         use_pinned_memory: bool = False,
         # Per-bucket activation offload dispatcher (proactive, OOM-detection-free)
         activation_dispatch_enable: bool = _TRAINING_DEFAULTS["activation_dispatch_enable"],
+        activation_dispatch_allow_batch_reduction: bool = _TRAINING_DEFAULTS[
+            "activation_dispatch_allow_batch_reduction"
+        ],
         activation_dispatch_margin_gb: float = _TRAINING_DEFAULTS["activation_dispatch_margin_gb"],
         activation_dispatch_seed_coef: float = _TRAINING_DEFAULTS["activation_dispatch_seed_coef"],
         activation_dispatch_residual_frac: float = _TRAINING_DEFAULTS["activation_dispatch_residual_frac"],
@@ -2819,12 +2838,16 @@ class BaseTrainer(ABC):
         _activation_dispatch = _resolve_activation_dispatch_settings(
             _tc,
             enable=activation_dispatch_enable,
+            allow_batch_reduction=activation_dispatch_allow_batch_reduction,
             margin_gb=activation_dispatch_margin_gb,
             seed_coef=activation_dispatch_seed_coef,
             residual_frac=activation_dispatch_residual_frac,
             threshold_mb=activation_dispatch_threshold_mb,
         )
         self.activation_dispatch_enable = _activation_dispatch["enable"]
+        self.activation_dispatch_allow_batch_reduction = _activation_dispatch[
+            "allow_batch_reduction"
+        ]
         self.activation_dispatch_margin_gb = _activation_dispatch["margin_gb"]
         self.activation_dispatch_seed_coef = _activation_dispatch["seed_coef"]
         self.activation_dispatch_residual_frac = _activation_dispatch["residual_frac"]
@@ -11340,6 +11363,17 @@ class BaseTrainer(ABC):
                             self._oom_recovery_cleanup()
                             if getattr(self, "_adaptive_timestep", None) is not None:
                                 self._adaptive_prediction_loss_chunks = []
+                if not activation_dispatch_batch_reduction_enabled(self):
+                    # The user chose a fixed execution batch. The existing
+                    # offload-first ladder above is still value-exact, but a
+                    # micro-split would violate that explicit execution policy.
+                    self._batch_was_unfittable = True
+                    raise RuntimeError(
+                        f"Batch {batch_size} still exceeds the CUDA memory budget after "
+                        "the strongest same-batch activation-offload retry; "
+                        "activation_dispatch_allow_batch_reduction=false refuses "
+                        "micro-batch splitting"
+                    ) from e
                 if batch_size <= min_split_batch_size:
                     # Offload was already attempted above. One sample still does
                     # not fit, and there is no smaller micro-batch to try.
@@ -11579,7 +11613,7 @@ class BaseTrainer(ABC):
         micro_bs = None
         step_threshold = disp.threshold_bytes
         if mode == "escalate":
-            if fused_backward_active(self):
+            if not activation_dispatch_can_microbatch(self):
                 # Fused backward cannot micro-split (per-param updates fire during
                 # backward -- fused optimizer GROUPS step from their hooks too, so
                 # they are covered by the same rule), so the escalate ladder
@@ -11589,9 +11623,14 @@ class BaseTrainer(ABC):
                 # tensors to CPU is the correct lever before declaring the bucket
                 # un-fittable rather than silently spilling.
                 step_threshold = max(256 * 1024, disp.threshold_bytes // 16)
-                _log_once((family, lh, lw, lt, bs, "fused"),
+                reason = (
+                    "fused backward"
+                    if fused_backward_active(self)
+                    else "activation_dispatch_allow_batch_reduction=false"
+                )
+                _log_once((family, lh, lw, lt, bs, "fixed_batch", reason),
                           f"{self.log_prefix} [ActDispatch] bucket {_bkt} bs{bs} won't fit; "
-                          f"micro-batch split disabled under fused backward (Block Swap); "
+                          f"micro-batch split disabled by {reason}; "
                           f"offload with lowered threshold={step_threshold // 1024}KB")
             else:
                 planned = disp.plan_micro_bs(lh, lw, bs, headroom_gb, lt=lt)

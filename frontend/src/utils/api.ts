@@ -7191,6 +7191,7 @@ export interface TrainingRunCreateRequest {
   // Full-parameter save: embed the VAE into the single-file checkpoint (default off).
   bundle_vae?: boolean;
   activation_dispatch_enable?: boolean;
+  activation_dispatch_allow_batch_reduction?: boolean;
   activation_dispatch_margin_gb?: number;
   activation_dispatch_seed_coef?: number;
   activation_dispatch_residual_frac?: number;

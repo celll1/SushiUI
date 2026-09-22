@@ -348,6 +348,15 @@ class OptimizerRetentionTest(TempDirCase):
 
         self.assertEqual(steps_on_disk(self.dir, "_optimizer.pt"), [29332])
 
+    def test_lower_step_save_preserves_complete_future_resume_optimizer(self):
+        trainer = FakeTrainer(self.dir)
+        write_set(self.dir, trainer.run_name, 1327)
+        write_set(self.dir, trainer.run_name, 8)
+
+        bt.BaseTrainer._cleanup_old_optimizer_states(trainer, 1, current_step=8)
+
+        self.assertEqual(steps_on_disk(self.dir, "_optimizer.pt"), [8, 1327])
+
     def test_a_periodic_save_never_prunes_its_own_optimizer_state(self):
         trainer = FakeTrainer(self.dir)
         patch_free(self, 10 * GIB)

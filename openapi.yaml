@@ -25044,11 +25044,12 @@ components:
           default: false
           example: true
           description: >-
-            Qwen-only. With cfg_uncond_drop_rate=q_max, draw an empty-caption
-            training item with probability q_max*(1-p(sigma)), where p(sigma)
-            is this run's guidance-loss probability schedule. Requires a
-            positive Qwen guidance weight and a positive CFG-null drop rate.
-            For MNT>1, cfg_uncond_drop_per_mnt must be true.
+            Qwen-only. First select guided loss with probability p(sigma), then
+            apply cfg_uncond_drop_rate=q_max only among ordinary-MSE choices.
+            The marginal empty-caption probability is
+            (1-p(sigma))*q_max. Requires stochastic loss selection, a positive
+            Qwen guidance weight, and a positive CFG-null drop rate. For MNT>1,
+            cfg_uncond_drop_per_mnt must be true.
         qwen_guidance_loss_scale:
           type: number
           format: float

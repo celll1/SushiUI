@@ -6164,7 +6164,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   <label className="block text-xs text-gray-400">Loss selection
                     <select
                       value={params.qwen_guidance_loss_mix_mode ?? (trainingDefaults?.qwen_guidance_loss_mix_mode as string | undefined) ?? ""}
-                      onChange={(e) => updateParam("qwen_guidance_loss_mix_mode", e.target.value as "stochastic" | "blend")}
+                      onChange={(e) => {
+                        const mode = e.target.value as "stochastic" | "blend";
+                        updateParam("qwen_guidance_loss_mix_mode", mode);
+                        if (mode === "blend") updateParam("qwen_cfg_null_sigma_schedule", false);
+                      }}
                       className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200">
                       <option value="stochastic">Stochastic per image (default)</option>
                       <option value="blend">Weighted blend (legacy runs)</option>
@@ -6174,11 +6178,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <input type="checkbox"
                       checked={params.qwen_cfg_null_sigma_schedule ?? (trainingDefaults?.qwen_cfg_null_sigma_schedule as boolean | undefined) ?? false}
                       onChange={(e) => updateParam("qwen_cfg_null_sigma_schedule", e.target.checked)}
+                      disabled={(params.qwen_guidance_loss_mix_mode ?? trainingDefaults?.qwen_guidance_loss_mix_mode) !== "stochastic"}
                       className="w-3.5 h-3.5" />
-                    Reduce CFG-null drop at high σ: q(σ) = drop rate × (1 − guided probability)
+                    Apply CFG-null drop only to ordinary-MSE selections
                   </label>
                   <p className="text-xs text-gray-500">
-                    Requires a positive CFG unconditional drop rate and guidance weight.
+                    Marginal null rate is drop rate × (1 − guided probability).
+                    Requires stochastic selection, a positive CFG unconditional drop rate, and guidance weight.
                     For MNT &gt; 1, draw the CFG-null label per timestep.
                   </p>
                   <div className="grid grid-cols-3 gap-2">

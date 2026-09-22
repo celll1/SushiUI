@@ -244,19 +244,28 @@ def test_qwen_stochastic_uncond_keeps_transformer_output_dtype(partitioned):
     assert trainer.transformer.scale.grad is not None
 
 
-def test_qwen_sigma_null_drop_uses_complement_of_guidance_probability(monkeypatch):
-    monkeypatch.setattr(torch, "rand_like", lambda value: value.new_tensor([0.05, 0.05, 0.05]))
+def test_qwen_sigma_null_drop_is_nested_under_ordinary_selection(monkeypatch):
+    monkeypatch.setattr(torch, "rand_like", lambda value: value.new_tensor([0.1, 0.28, 0.5]))
     config = {
         "qwen_guidance_loss_weight": 0.25,
-        "qwen_guidance_loss_weight_schedule": "high_noise_smoothstep",
-        "qwen_guidance_loss_high_noise_weight": 1.0,
-        "qwen_guidance_loss_ramp_start": 0.5,
-        "qwen_guidance_loss_ramp_end": 0.8,
+        "qwen_guidance_loss_weight_schedule": "constant",
     }
-    mask = qwen_image_21_ops.sigma_null_drop_mask(
-        config, torch.tensor([0.2, 0.65, 1.0]), 0.1
+    null_mask, draw = qwen_image_21_ops.sigma_null_drop_mask(
+        config, torch.tensor([0.2, 0.2, 0.2]), 0.1
     )
-    assert mask.tolist() == [True, False, False]
+    assert null_mask.tolist() == [False, True, False]
+
+    condition = (
+        None, None, torch.ones(3, dtype=torch.bool), 0.25, 3.0, "sigma",
+    )
+    trainer = SimpleNamespace(
+        config={"qwen_guidance_loss_mix_mode": "stochastic"},
+        _qwen_guidance_draw=draw,
+    )
+    _, guided = qwen_image_21_ops._guidance_selection(
+        trainer, torch.tensor([0.2, 0.2, 0.2]), condition
+    )
+    assert guided.tolist() == [True, False, False]
 
 
 def test_qwen_sigma_null_replaces_only_selected_caption_rows():
@@ -432,6 +441,17 @@ def test_qwen_hybrid_and_debug_view_survive_config_generation():
     ):
         assert train[key] == expected
         assert key in train_section_key_vocabulary()
+
+
+def test_qwen_sigma_null_schedule_rejects_blend_mode():
+    with pytest.raises(ValueError, match="requires stochastic guidance loss selection"):
+        routes.TrainingRunCreateRequest(
+            base_model_path="unused",
+            training_method="lora",
+            qwen_guidance_loss_weight=0.25,
+            qwen_guidance_loss_mix_mode="blend",
+            qwen_cfg_null_sigma_schedule=True,
+        )
 
 
 def test_qwen_pixel_debug_decodes_after_forward(tmp_path):

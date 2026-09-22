@@ -15588,6 +15588,13 @@ class TrainingRunCreateRequest(BaseModel):
             and self.qwen_guidance_loss_high_noise_weight < self.qwen_guidance_loss_weight
         ):
             raise ValueError("Qwen high-noise guidance weight must be at least the low-noise weight")
+        if (
+            self.qwen_cfg_null_sigma_schedule
+            and self.qwen_guidance_loss_mix_mode != "stochastic"
+        ):
+            raise ValueError(
+                "Qwen sigma-dependent CFG-null drop requires stochastic guidance loss selection"
+            )
         return self
 
     @model_validator(mode="after")

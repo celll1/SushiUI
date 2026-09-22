@@ -11319,16 +11319,22 @@ class BaseTrainer(ABC):
         # All _execute_forward_backward args in one dict, so the micro-batch helper
         # (used by both the proactive escalate decision and the reactive OOM retry)
         # can slice them uniformly.
+        qwen_guidance_draw = (
+            getattr(self, "_qwen_guidance_draw_for_step", None)
+            if self.is_qwen_image_21 else None
+        )
+        if (
+            qwen_guidance_draw is None
+            and self.is_qwen_image_21
+            and self.config.get("qwen_guidance_loss_mix_mode", "blend") == "stochastic"
+            and float(self.config.get(
+                "qwen_guidance_loss_weight", _TRAINING_DEFAULTS["qwen_guidance_loss_weight"]
+            ) or 0.0) > 0
+        ):
+            qwen_guidance_draw = torch.rand(batch_size, device=timesteps.device)
         _batch = dict(
             mnt_latents=mnt_latents, mnt_noise=mnt_noise,
-            qwen_guidance_draw=(
-                torch.rand(batch_size, device=timesteps.device)
-                if self.is_qwen_image_21
-                and self.config.get("qwen_guidance_loss_mix_mode", "blend") == "stochastic"
-                and float(self.config.get(
-                    "qwen_guidance_loss_weight", _TRAINING_DEFAULTS["qwen_guidance_loss_weight"]
-                ) or 0.0) > 0 else None
-            ),
+            qwen_guidance_draw=qwen_guidance_draw,
             mnt_text_embeddings=mnt_text_embeddings,
             mnt_attention_mask=mnt_attention_mask, mnt_pooled_embeddings=mnt_pooled_embeddings,
             timesteps=timesteps, debug_save_path=debug_save_path,
@@ -15923,6 +15929,12 @@ class BaseTrainer(ABC):
                     "Qwen sigma-dependent CFG-null drop requires Qwen training, "
                     "positive guidance loss weight, and positive cfg_uncond_drop_rate"
                 )
+            if self.config.get(
+                "qwen_guidance_loss_mix_mode", _TRAINING_DEFAULTS["qwen_guidance_loss_mix_mode"]
+            ) != "stochastic":
+                raise ValueError(
+                    "Qwen sigma-dependent CFG-null drop requires stochastic guidance loss selection"
+                )
             if multi_noise_timesteps > 1 and not self.config.get(
                 "cfg_uncond_drop_per_mnt", _TRAINING_DEFAULTS["cfg_uncond_drop_per_mnt"]
             ):
@@ -19224,9 +19236,10 @@ class BaseTrainer(ABC):
                         else:
                             timesteps = timestep_sampler.sample(batch_size, self.device)
 
+                        self._qwen_guidance_draw_for_step = None
                         if self._qwen_sigma_null_enabled:
                             from core.training.ops.qwen_image_21_ops import sigma_null_drop_mask
-                            mnt_cfg_drop_mask = sigma_null_drop_mask(
+                            mnt_cfg_drop_mask, self._qwen_guidance_draw_for_step = sigma_null_drop_mask(
                                 self.config, timesteps, float(_cfg_null_rate)
                             )
 

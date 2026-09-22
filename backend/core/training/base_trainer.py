@@ -12308,6 +12308,8 @@ class BaseTrainer(ABC):
             if self.is_sensenova_sdxl_chimera and hasattr(
                     self, "_pending_chimera_debug_previews"):
                 delattr(self, "_pending_chimera_debug_previews")
+            if self.is_qwen_image_21 and hasattr(self, "_pending_qwen_debug_previews"):
+                delattr(self, "_pending_qwen_debug_previews")
             self._note_partial_step_taint(_applied_before, _exc)
             raise
 
@@ -12340,6 +12342,13 @@ class BaseTrainer(ABC):
                 from core.training.ops.sensenova_sdxl_chimera_ops import (
                     flush_pending_debug_previews,
                 )
+
+                flush_pending_debug_previews(self)
+            except Exception as debug_error:
+                print(f"{self.log_prefix} [debug_latents] VAE decode failed: {debug_error}")
+        elif self.is_qwen_image_21:
+            try:
+                from core.training.ops.qwen_image_21_ops import flush_pending_debug_previews
 
                 flush_pending_debug_previews(self)
             except Exception as debug_error:
@@ -12396,9 +12405,15 @@ class BaseTrainer(ABC):
             if events is not None:
                 events["forward_backward"][1].record(torch.cuda.current_stream(self.device))
         except BaseException as exc:
+            if hasattr(self, "_pending_qwen_debug_previews"):
+                delattr(self, "_pending_qwen_debug_previews")
             self._note_partial_step_taint(applied_before, exc)
             raise
 
+        try:
+            qwen_image_21_ops.flush_pending_debug_previews(self)
+        except Exception as debug_error:
+            print(f"{self.log_prefix} [debug_latents] VAE decode failed: {debug_error}")
         self._flush_deferred_predicted_latent()
         self._flush_deferred_controlnet_metrics()
         self._flush_deferred_extra_metrics()

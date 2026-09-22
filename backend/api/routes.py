@@ -15125,6 +15125,9 @@ class TrainingRunCreateRequest(BaseModel):
     # Debug
     debug_latents: bool = False
     debug_latents_every: int = Field(default=TRAINING_DEFAULTS["debug_latents_every"], ge=0)
+    qwen_debug_latent_view: Literal["latent", "pixel"] = TRAINING_DEFAULTS[
+        "qwen_debug_latent_view"
+    ]
 
     # Convergence Diagnostics (Phase 1)
     convergence_diagnostics_enable: bool = TRAINING_DEFAULTS["convergence_diagnostics_enable"]

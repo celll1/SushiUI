@@ -25246,6 +25246,14 @@ components:
           minimum: 0
           default: 50
           description: Debug-latent dump interval in steps. 0 = never dump.
+        qwen_debug_latent_view:
+          type: string
+          enum: [latent, pixel]
+          default: latent
+          description: >-
+            Qwen-Image 2.1 debug comparison mode. Pixel additionally decodes
+            target, noisy and predicted-clean latents to WebP after backward;
+            latent keeps the existing false-color tensor display only.
         convergence_diagnostics_enable:
           type: 'boolean'
           default: false

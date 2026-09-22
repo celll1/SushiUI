@@ -8120,6 +8120,20 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </p>
             </div>
           )}
+          {debugLatents && isQwenImage21Model && (
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Qwen Debug Comparison</label>
+              <select
+                value={params.qwen_debug_latent_view ?? (trainingDefaults?.qwen_debug_latent_view as string | undefined) ?? ""}
+                onChange={(e) => updateParam("qwen_debug_latent_view", e.target.value as "latent" | "pixel")}
+                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm"
+              >
+                <option value="latent">Latent channels (no VAE decode)</option>
+                <option value="pixel">Decoded pixels (target / noisy / predicted)</option>
+              </select>
+              <p className="text-xs text-gray-500 mt-1">Pixel previews decode after backward and briefly stage the VAE on the training device.</p>
+            </div>
+          )}
         </div>
 
         {/* Parameter Change Tracking */}

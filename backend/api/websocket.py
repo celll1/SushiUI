@@ -121,6 +121,7 @@ class ConnectionManager:
         level: str,
         message: str,
         code: str = None,
+        resources: list = None,
     ):
         """Broadcast one structured notice from a training run.
 
@@ -137,6 +138,8 @@ class ConnectionManager:
         }
         if code:
             data["code"] = code
+        if resources:
+            data["resources"] = resources
         self.message_queue.put(data)
         self._notify_sender()
 

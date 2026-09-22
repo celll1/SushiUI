@@ -207,8 +207,13 @@ def _batch_context(batch: Optional[Sequence]) -> Optional[List[Dict[str, Any]]]:
         if not isinstance(item, dict):
             continue
         caption = item.get("caption") or ""
+        source_path = item.get("image_path") or item.get("video_path")
+        caption_path = None
+        if source_path and "://" not in str(source_path):
+            caption_path = str(Path(source_path).with_suffix(".txt"))
         out.append({
-            "path": item.get("image_path") or item.get("video_path"),
+            "path": source_path,
+            "caption_path": caption_path,
             "width": item.get("width") or item.get("bucket_width"),
             "height": item.get("height") or item.get("bucket_height"),
             "caption": caption[:_CAPTION_CHARS],

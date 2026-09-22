@@ -158,7 +158,19 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
 
   // JSON rather than a delimiter: no separator can collide with message text.
   const noticeKey = (n: TrainingLogEvent) =>
-    JSON.stringify([n.level, n.code ?? null, n.message]);
+    JSON.stringify([n.level, n.code ?? null, n.message, n.resources ?? null]);
+
+  const localFileHref = (path: string) => {
+    const normalized = path.replace(/\\/g, "/");
+    if (normalized.startsWith("//")) {
+      return `file://${normalized.slice(2).split("/").map(encodeURIComponent).join("/")}`;
+    }
+    const parts = normalized.split("/");
+    if (/^[A-Za-z]:$/.test(parts[0])) {
+      return `file:///${parts.map((part, index) => index === 0 ? part : encodeURIComponent(part)).join("/")}`;
+    }
+    return `file://${parts.map(encodeURIComponent).join("/")}`;
+  };
 
   const mergeNotices = (incoming: TrainingLogEvent[]) => {
     setNotices((prev) => {
@@ -214,7 +226,12 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
   useEffect(() => {
     const handler = (ev: TrainingLogMessage) => {
       if (Number(ev.run_id) !== Number(currentRun.id)) return;
-      mergeNotices([{ level: ev.level, code: ev.code ?? null, message: ev.message }]);
+      mergeNotices([{
+        level: ev.level,
+        code: ev.code ?? null,
+        message: ev.message,
+        resources: ev.resources,
+      }]);
     };
     wsClient.subscribeToTrainingLog(handler);
     return () => wsClient.unsubscribeFromTrainingLog(handler);
@@ -1112,6 +1129,30 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                         {n.code && <span className="font-mono text-gray-500">{n.code}</span>}
                       </div>
                       <p className="mt-1 whitespace-pre-wrap text-gray-300">{n.message}</p>
+                      {!!n.resources?.length && (
+                        <ul className="mt-1.5 space-y-1">
+                          {n.resources.map((resource, resourceIndex) => (
+                            <li key={`${resource.kind}-${resourceIndex}`} className="flex min-w-0 items-center gap-2">
+                              <a
+                                href={localFileHref(resource.path)}
+                                target="_blank"
+                                rel="noreferrer"
+                                title={resource.path}
+                                className="min-w-0 break-all font-mono text-blue-300 underline hover:text-blue-200"
+                              >
+                                {resource.label}: {resource.path}
+                              </a>
+                              <button
+                                type="button"
+                                onClick={() => navigator.clipboard.writeText(resource.path)}
+                                className="flex-shrink-0 rounded border border-gray-600 px-1.5 py-0.5 text-gray-300 hover:bg-gray-700"
+                              >
+                                Copy
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
                     </li>
                   ))}
                 </ul>

@@ -9011,6 +9011,22 @@ class BaseTrainer(ABC):
         # run and refuses the rest. As a warning it would close that list part way
         # through a long run and every later notice -- from any subsystem -- would
         # be silently dropped from the run record.
+        resources = []
+        for index, item in enumerate(record.get("batch") or []):
+            image_path = item.get("path")
+            caption_path = item.get("caption_path")
+            if image_path:
+                resources.append({
+                    "kind": "image",
+                    "label": f"Batch {index + 1} image",
+                    "path": image_path,
+                })
+            if caption_path:
+                resources.append({
+                    "kind": "caption",
+                    "label": f"Batch {index + 1} caption",
+                    "path": caption_path,
+                })
         emit_training_event(
             "info",
             f"gradient spike at step {step}: {measured}.{detail} The batch behind "
@@ -9020,6 +9036,7 @@ class BaseTrainer(ABC):
                f"file but not repeated here." if suppressed else ""),
             code="grad_spike",
             prefix=self.log_prefix,
+            resources=resources,
         )
 
     def _warn_grad_clipping_ignored_under_fused(self, max_grad_norm: float) -> None:

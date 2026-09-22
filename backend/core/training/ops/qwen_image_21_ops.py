@@ -52,8 +52,13 @@ def _guidance_mix_weight(sigma, low_weight, kind, high, start, end):
 def sigma_null_drop_mask(config, sigma, max_rate):
     low = float(config.get("qwen_guidance_loss_weight", TRAINING_DEFAULTS["qwen_guidance_loss_weight"]))
     kind, high, start, end = resolve_guidance_weight_schedule(config, low)
-    probability = max_rate * (1 - _guidance_mix_weight(sigma.detach().float().cpu(), low, kind, high, start, end))
-    return torch.rand_like(probability) < probability
+    guided_probability = _guidance_mix_weight(
+        sigma.detach().float().cpu(), low, kind, high, start, end
+    )
+    draw = torch.rand_like(guided_probability)
+    null_ceiling = guided_probability + (1 - guided_probability) * max_rate
+    null_mask = (draw >= guided_probability) & (draw < null_ceiling)
+    return null_mask, draw
 
 
 def apply_sigma_null_condition(features, mask, drop_mask, blank_encoding):

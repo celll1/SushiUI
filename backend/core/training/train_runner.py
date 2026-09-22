@@ -1661,6 +1661,16 @@ def _prepare_training_process_config(
         _assert_training_scope_is_nonempty(network_type, train_config)
     _assert_adapter_algebra_contract(network_type, network_config,
                                      base_model_path, train_config)
+    from api.param_defaults import TRAINING_DEFAULTS
+    from core.models.qwen_image_21.branch_lora import validate_cond_base_config
+    from core.training.training_config import _detect_arch
+    validate_cond_base_config(
+        mode=train_config.get("qwen_lora_branch_mode", TRAINING_DEFAULTS["qwen_lora_branch_mode"]),
+        arch=_detect_arch(base_model_path), method=network_type,
+        algorithm=network_config.get("adapter_algorithm") or "lora",
+        weight_decompose=bool(network_config.get("weight_decompose", False)),
+        drop_rate=train_config.get("cfg_uncond_drop_rate"),
+    )
     _apply_reference_training_contract(base_model_path, train_config)
     _preflight_vae_swap(train_config, base_model_path, network_type)
     _apply_sensenova_training_contract(
@@ -1695,7 +1705,9 @@ def _preflight_cfg_null_caption_conflict(
     Warnings are left to the trainer, which emits them on the training-events
     channel from this same data.
     """
-    from api.cfg_null_resolver import DATASET_CAPTION_CONFIGS_KEY, resolve_and_check
+    from api.cfg_null_resolver import (
+        DATASET_CAPTION_CONFIGS_KEY, find_caption_dropout_conflicts, resolve_and_check,
+    )
     from api.error_handlers import ValidationError
     from core.training.training_config import _detect_arch
 
@@ -1709,11 +1721,21 @@ def _preflight_cfg_null_caption_conflict(
             (dataset.name or dataset.path, dataset.caption_processing))
     train_config[DATASET_CAPTION_CONFIGS_KEY] = caption_configs
     try:
-        resolve_and_check(train_config, arch=_detect_arch(base_model_path),
-                          dataset_caption_configs=caption_configs)
+        resolution = resolve_and_check(train_config, arch=_detect_arch(base_model_path),
+                                       dataset_caption_configs=caption_configs)
     except ValidationError as exc:
         raise ValueError(f"{exc.message}: {exc.detail}" if exc.detail
                          else exc.message)
+    from api.param_defaults import TRAINING_DEFAULTS
+    from core.models.qwen_image_21.branch_lora import validate_cond_base_config
+    if train_config.get("qwen_lora_branch_mode", TRAINING_DEFAULTS["qwen_lora_branch_mode"]) != "shared":
+        validate_cond_base_config(
+            mode=train_config["qwen_lora_branch_mode"],
+            arch=_detect_arch(base_model_path), method="lora", algorithm="lora",
+            weight_decompose=False, drop_rate=resolution.rate,
+            caption_dropout_sources=find_caption_dropout_conflicts(
+                train_config, caption_configs),
+        )
 
 
 def _preflight_minimax_h3_caption_contract(

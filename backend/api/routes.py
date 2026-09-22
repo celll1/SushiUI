@@ -15553,6 +15553,9 @@ class TrainingRunCreateRequest(BaseModel):
     qwen_convrot_backward_prefetch_depth: int = Field(
         default=TRAINING_DEFAULTS["qwen_convrot_backward_prefetch_depth"], ge=0, le=7
     )
+    qwen_lora_branch_mode: Literal["shared", "cond_base_v1"] = TRAINING_DEFAULTS[
+        "qwen_lora_branch_mode"
+    ]
     qwen_guidance_loss_weight: float = Field(
         default=TRAINING_DEFAULTS["qwen_guidance_loss_weight"], ge=0, le=1
     )
@@ -15781,8 +15784,9 @@ def _check_cfg_null_params(request: "TrainingRunCreateRequest",
     the YAML value is resolved again by the config generator from the same
     inputs, so the two cannot disagree.
     """
-    from api.cfg_null_resolver import resolve_and_check
+    from api.cfg_null_resolver import find_caption_dropout_conflicts, resolve_and_check
     from api.error_handlers import ValidationError
+    from core.models.qwen_image_21.branch_lora import validate_cond_base_config
     from core.training.training_config import _detect_arch
 
     params = request.model_dump()
@@ -15799,6 +15803,19 @@ def _check_cfg_null_params(request: "TrainingRunCreateRequest",
         raise HTTPException(status_code=400,
                             detail=f"{exc.message}: {exc.detail}" if exc.detail
                             else exc.message)
+    try:
+        validate_cond_base_config(
+            mode=request.qwen_lora_branch_mode,
+            arch=_detect_arch(request.base_model_path),
+            method=request.training_method,
+            algorithm=request.adapter_algorithm,
+            weight_decompose=request.weight_decompose,
+            drop_rate=resolution.rate,
+            caption_dropout_sources=find_caption_dropout_conflicts(
+                params, caption_configs),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     for warning in resolution.warnings:
         print(f"[Training] WARNING: {warning}")
 

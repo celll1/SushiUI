@@ -1,6 +1,6 @@
 # Qwen-Image 2.1 CFG branch evaluation plan
 
-Status: planned verification; no branch-separated adapter has shipped.
+Status: split-mode code implemented; a fresh 580-step run and comparison are pending.
 See [QWEN_IMAGE_21_BRANCH_LORA_DESIGN.md](QWEN_IMAGE_21_BRANCH_LORA_DESIGN.md)
 for the proposed training/inference contract and
 [QWEN_IMAGE_21_GUIDANCE_LOSS.md](QWEN_IMAGE_21_GUIDANCE_LOSS.md) for the

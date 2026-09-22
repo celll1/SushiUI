@@ -16,10 +16,14 @@ from core.model_loader import ModelLoader
 from core.models.qwen_image_21.artifact import FORMAT_VERSION, MODEL_TYPE, load_manifest
 from core.models.qwen_image_21.vendor import QwenImage21Transformer2DModel
 from core.models.qwen_image_21.lora import (
+    build_cond_lora_branch,
     build_lora_branch,
+    declared_branch_count,
     iter_lora_slots,
+    normalise_cond_lora_state_dict,
     normalise_lora_state_dict,
 )
+from core.models.qwen_image_21.branch_lora import qwen_lora_role, validate_cond_base_config
 from core.extensions.lora_manager import classify_lora_keys
 from core.training.arch.qwen_image_21 import QwenImage21ArchHandler
 from core.training.adapters.qwen_image_21_adapter import (
@@ -878,6 +882,61 @@ def test_lora_save_classify_and_rebuild_round_trip():
     torch.testing.assert_close(
         rebuilt.reference_delta(x), trained_branch.reference_delta(x), rtol=0, atol=0
     )
+
+
+def test_qwen_cond_base_lora_round_trip_and_negative_is_exact_base():
+    model = QwenImage21Transformer2DModel(
+        in_channels=8, out_channels=8, num_layers=1, attention_head_dim=16,
+        num_attention_heads=2, context_in_dim=32, mlp_ratio=2,
+        axes_dims_rope=(4, 6, 6),
+    )
+    trainer = SimpleNamespace(
+        transformer=model, learning_rate=1e-4, unet_lr=None,
+        config={"qwen_lora_branch_mode": "cond_base_v1", "cfg_uncond_drop_rate": 0.0},
+    )
+    adapter = QwenImage21LoRAAdapter(trainer, 2, 4, torch.float32)
+    layers = {}
+    assert adapter.apply_lora_to_unet(layers) == 4
+    stem, trained = next(iter(layers.items()))
+    assert stem.startswith("lora_cond_unet_")
+    with torch.no_grad():
+        trained.lora_down.weight.fill_(0.25)
+        trained.lora_up.weight.fill_(0.5)
+    state = adapter.export_state_dict(layers)
+    metadata = adapter.checkpoint_metadata(layers, step=1, epoch=0)
+    assert metadata["qwen_lora_branch_mode"] == "cond_base_v1"
+    assert declared_branch_count(state) == 4
+    assert classify_lora_keys(state, metadata)["arch"] == MODEL_TYPE
+    file = SimpleNamespace(name="split.safetensors", metadata=metadata, tensors=state)
+    loader = QwenImage21Mixin()
+    loader.qwen_image_21_components = {"transformer_variant": "bf16"}
+    grouped = loader._qwen21_prepare_lora_file(file)
+    assert grouped.keys() == normalise_cond_lora_state_dict(state).keys()
+    path = stem.removeprefix("lora_cond_unet_").replace("__", ".")
+    base = torch.nn.Linear(
+        trained.original_module.in_features,
+        trained.original_module.out_features, bias=False,
+    )
+    rebuilt = build_cond_lora_branch(base, grouped[path], path)
+    x = torch.randn(2, base.in_features)
+    with qwen_lora_role("base"):
+        torch.testing.assert_close(rebuilt(x), base(x), rtol=0, atol=0)
+    with qwen_lora_role("cond"):
+        assert not torch.equal(rebuilt(x), base(x))
+
+
+def test_qwen_cond_base_rejects_unconditional_training_and_caption_dropout():
+    with pytest.raises(ValueError, match="cfg_uncond_drop_rate=0"):
+        validate_cond_base_config(
+            mode="cond_base_v1", arch=MODEL_TYPE, method="lora",
+            algorithm="lora", weight_decompose=False, drop_rate=0.1,
+        )
+    with pytest.raises(ValueError, match="whole-caption dropout"):
+        validate_cond_base_config(
+            mode="cond_base_v1", arch=MODEL_TYPE, method="lora",
+            algorithm="lora", weight_decompose=False, drop_rate=0.0,
+            caption_dropout_sources=["dataset: caption_dropout_rate=0.1"],
+        )
 
 
 def test_convrot_training_metadata_and_generation_base_gate():

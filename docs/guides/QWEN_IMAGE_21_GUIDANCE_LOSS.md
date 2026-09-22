@@ -75,6 +75,25 @@ sigma=1 is fully guided in either mode. The schedule is experimental: the initia
 high-noise rollout may remain compositionally constrained even if CFG 1 is
 stable. `qwen_guidance_loss_weight=0` still disables the extra forward.
 
+## Sigma-dependent CFG-null drop
+
+`qwen_cfg_null_sigma_schedule` is off by default. When enabled with a positive
+`cfg_uncond_drop_rate=q_max`, its per-image null-label probability is
+`q(sigma)=q_max*(1-p(sigma))`, where `p` is the guidance probability/weight
+schedule above. A null-labeled image receives ordinary flow MSE under the
+inference empty-prompt condition and is ineligible for guided loss. A
+non-null image follows the configured stochastic or blend objective. Thus
+the effective guided selection probability in stochastic mode is
+`(1-q(sigma))*p(sigma)`, not `p(sigma)` unconditionally.
+
+Qwen's caption embeddings are normally built before sigma is drawn. In this
+mode the conditional encoding is retained, then selected rows are replaced
+with the cached empty-prompt embedding and mask after the timestep draw.
+The null mask is drawn once per MNT iteration, before OOM recovery, and is
+reused by every retry and micro-batch slice. MNT>1 requires
+`cfg_uncond_drop_per_mnt=true`. The positive guidance weight requirement also
+ensures the frozen text encoder's empty-prompt encoding is available.
+
 ## Validation gate
 
 Unit tests assert the exact mixed loss and gradient for full/partitioned

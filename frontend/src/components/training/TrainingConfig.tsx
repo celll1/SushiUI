@@ -6170,6 +6170,17 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       <option value="blend">Weighted blend (legacy runs)</option>
                     </select>
                   </label>
+                  <label className="flex items-center gap-2 text-xs text-gray-300">
+                    <input type="checkbox"
+                      checked={params.qwen_cfg_null_sigma_schedule ?? (trainingDefaults?.qwen_cfg_null_sigma_schedule as boolean | undefined) ?? false}
+                      onChange={(e) => updateParam("qwen_cfg_null_sigma_schedule", e.target.checked)}
+                      className="w-3.5 h-3.5" />
+                    Reduce CFG-null drop at high σ: q(σ) = drop rate × (1 − guided probability)
+                  </label>
+                  <p className="text-xs text-gray-500">
+                    Requires a positive CFG unconditional drop rate and guidance weight.
+                    For MNT &gt; 1, draw the CFG-null label per timestep.
+                  </p>
                   <div className="grid grid-cols-3 gap-2">
                     <label className="text-xs text-gray-400">Low-σ guided probability / weight
                       <input type="number" min={0} max={1} step={0.05}

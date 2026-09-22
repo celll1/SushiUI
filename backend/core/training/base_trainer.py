@@ -15914,6 +15914,19 @@ class BaseTrainer(ABC):
         _guidance_weight = float(self.config.get(
             "qwen_guidance_loss_weight", _TRAINING_DEFAULTS["qwen_guidance_loss_weight"]
         ) or 0.0)
+        self._qwen_sigma_null_enabled = bool(self.config.get(
+            "qwen_cfg_null_sigma_schedule", _TRAINING_DEFAULTS["qwen_cfg_null_sigma_schedule"]
+        ))
+        if self._qwen_sigma_null_enabled:
+            if not self.is_qwen_image_21 or _guidance_weight <= 0 or not _cfg_null_rate:
+                raise ValueError(
+                    "Qwen sigma-dependent CFG-null drop requires Qwen training, "
+                    "positive guidance loss weight, and positive cfg_uncond_drop_rate"
+                )
+            if multi_noise_timesteps > 1 and not self.config.get(
+                "cfg_uncond_drop_per_mnt", _TRAINING_DEFAULTS["cfg_uncond_drop_per_mnt"]
+            ):
+                raise ValueError("Qwen sigma-dependent CFG-null drop requires cfg_uncond_drop_per_mnt=true with MNT > 1")
         if not 0 <= _guidance_weight <= 1:
             raise ValueError("qwen_guidance_loss_weight must be between 0 and 1")
         if _guidance_weight:
@@ -15945,6 +15958,7 @@ class BaseTrainer(ABC):
                   f"weight_schedule={_weight_schedule}")
         if _cfg_null_rate:
             if (self.arch.cfg_null_stage == "caption" and multi_noise_timesteps > 1
+                    and not self._qwen_sigma_null_enabled
                     and self.config.get("cfg_uncond_drop_per_mnt", _TRAINING_DEFAULTS["cfg_uncond_drop_per_mnt"])):
                 raise ValueError(
                     "cfg_uncond_drop_rate with empty-caption conditioning and MNT > 1 "
@@ -18274,7 +18288,7 @@ class BaseTrainer(ABC):
                     # Collated architectures are unaffected: still one draw per
                     # batch, still reused by every MNT transform.
                     cfg_drop_mask = (
-                        None if _sensenova_text_batch_active
+                        None if (_sensenova_text_batch_active or self._qwen_sigma_null_enabled)
                         else self.sample_cfg_drop_mask(len(batch))
                     )
                     # Drop any per-item loss the previous batch parked but never
@@ -19210,6 +19224,12 @@ class BaseTrainer(ABC):
                         else:
                             timesteps = timestep_sampler.sample(batch_size, self.device)
 
+                        if self._qwen_sigma_null_enabled:
+                            from core.training.ops.qwen_image_21_ops import sigma_null_drop_mask
+                            mnt_cfg_drop_mask = sigma_null_drop_mask(
+                                self.config, timesteps, float(_cfg_null_rate)
+                            )
+
                         if not _sensenova_text_batch_active:
                             self._log_timestep_draw_metrics(timesteps)
 
@@ -19392,6 +19412,13 @@ class BaseTrainer(ABC):
                                 else:
                                     mnt_attention_mask = attention_mask.detach() if attention_mask is not None else None
                                 mnt_pooled_embeddings = pooled_embeddings.detach() if pooled_embeddings is not None else None
+
+                        if self._qwen_sigma_null_enabled:
+                            from core.training.ops.qwen_image_21_ops import apply_sigma_null_condition
+                            mnt_text_embeddings, mnt_attention_mask = apply_sigma_null_condition(
+                                mnt_text_embeddings, mnt_attention_mask,
+                                mnt_cfg_drop_mask, self._qwen_guidance_blank_encoding,
+                            )
 
                         # === Vision Encoder: per-item encoding (SD1.5/SDXL only) ===
                         # Each batch item is conditioned on its own reference image only.

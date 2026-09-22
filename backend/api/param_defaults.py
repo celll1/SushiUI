@@ -2690,6 +2690,7 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "qwen_convrot_backward_prefetch_depth": 1,
     "qwen_guidance_loss_weight": 0.0,
     "qwen_guidance_loss_mix_mode": "stochastic",
+    "qwen_cfg_null_sigma_schedule": False,
     "qwen_guidance_loss_scale": 3.0,
     "qwen_guidance_loss_schedule": "sigma",
     "qwen_guidance_loss_weight_schedule": "constant",

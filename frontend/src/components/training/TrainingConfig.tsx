@@ -3429,7 +3429,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
             <div>
               <label className="block text-xs text-gray-400 mb-1">
-                Fused Per-Parameter Grad Clip
+                Per-Parameter Grad Clip
               </label>
               <input
                 type="number"
@@ -3441,13 +3441,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
               <p className="text-xs text-gray-500 mt-1">
-                0 disables. Under the fused backward pass Max Grad Norm cannot apply —
-                the global norm is not known until every parameter has already been
-                updated. This bounds each parameter&apos;s gradient at N × that
-                parameter&apos;s own running scale, which IS known when its hook fires.
-                A different quantity from the global norm, so the two are separate
-                settings. The running scales are not saved with the checkpoint, so
-                a resume re-learns them and the warmup below applies again.
+                0 disables. Bounds each parameter&apos;s gradient at N × its own
+                running scale. On ordinary optimizer steps this runs before Max
+                Grad Norm; on fused backward steps Max Grad Norm cannot apply.
+                Running scales are relearned after a resume.
               </p>
               {(params.fused_grad_clip_factor ?? 0) > 0 && (
                 <div className="mt-2">
@@ -3470,6 +3467,22 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   </p>
                 </div>
               )}
+            </div>
+
+            <div>
+              <label className="flex items-center gap-2 text-xs text-gray-400">
+                <input
+                  type="checkbox"
+                  checked={params.per_parameter_grad_probe ?? false}
+                  onChange={(e) => updateParam("per_parameter_grad_probe", e.target.checked)}
+                />
+                Probe per-parameter gradient spikes
+              </label>
+              <p className="text-xs text-gray-500 mt-1">
+                Logs the top pre-clip parameter norms and relative spikes with
+                timestep on global spike steps and every 10 steps in a separate
+                file. With clip factor 0 this observes without clipping.
+              </p>
             </div>
 
             <div>
@@ -5467,6 +5480,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <option value="v4">v4 destruction-coordinate tangent flow</option>
               </select>
             </div>
+
             {(params.chimera_flow_version ?? "auto") === "v2" && (
               <div className="grid grid-cols-2 gap-2">
                 <label className="col-span-2 text-xs text-gray-400">v2 parameterization

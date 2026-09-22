@@ -2300,13 +2300,11 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # two runs can still be given the same order by pinning the drawn value.
     "seed": -1,
     "max_grad_norm": 1.0,
-    # Per-parameter outlier clip for the fused backward pass, where
-    # max_grad_norm's global norm is not knowable in time (see
-    # optimizers/fused_grad_clip.py). 0 = off. A positive value bounds each
-    # parameter's gradient at that multiple of the parameter's OWN running
-    # scale; it is not a global-norm clip and does not replace max_grad_norm on
-    # the non-fused path.
+    # Per-parameter outlier clip on fused and ordinary optimizer paths.
+    # On ordinary steps it runs before the independent global-norm clip.
     "fused_grad_clip_factor": 0.0,
+    # Capture top pre-clip parameter norms and ratios on global spike steps.
+    "per_parameter_grad_probe": False,
     # Updates a parameter must contribute before its running scale is treated as
     # known. Below this the clip would be measuring noise.
     "fused_grad_clip_warmup_steps": 200,

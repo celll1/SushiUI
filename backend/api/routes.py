@@ -14967,6 +14967,7 @@ class TrainingRunCreateRequest(BaseModel):
     fused_grad_clip_factor: float = Field(
         default=TRAINING_DEFAULTS["fused_grad_clip_factor"], ge=0
     )
+    per_parameter_grad_probe: bool = TRAINING_DEFAULTS["per_parameter_grad_probe"]
     fused_grad_clip_warmup_steps: int = Field(
         default=TRAINING_DEFAULTS["fused_grad_clip_warmup_steps"], ge=1
     )

@@ -1,4 +1,4 @@
-"""Per-parameter outlier clipping for the fused backward pass.
+"""Per-parameter outlier clipping for fused and ordinary optimizer steps.
 
 ``max_grad_norm`` is a GLOBAL norm: it needs every gradient in hand before it can
 scale any of them. The fused backward pass applies each parameter's update as
@@ -8,8 +8,8 @@ time and the trainer sets ``max_grad_norm=0.0`` there -- no clipping at all.
 What IS knowable inside the hook is the parameter's own complete gradient. This
 clips against that parameter's own running scale rather than an absolute number
 the operator would have to guess, because the failure it addresses is relative:
-a gradient thousands of times the usual one. It is not a global-norm clip and
-does not replace ``max_grad_norm`` on the non-fused path.
+a gradient thousands of times the usual one. On ordinary steps it precedes
+the independent global-norm clip.
 
 It matters for a sign-based optimizer too. Lion's step size is already bounded
 by the learning rate, but its MOMENTUM is not: ``m <- b2*m + (1-b2)*g`` at
@@ -52,12 +52,13 @@ class FusedGradClipper:
     """
 
     def __init__(self, factor: float, warmup_steps: int,
-                 decay: float = _SCALE_DECAY):
-        if not factor > 0:
+                 decay: float = _SCALE_DECAY, monitor_only: bool = False):
+        if not factor > 0 and not monitor_only:
             raise ValueError(
                 f"a fused gradient clip needs a positive factor, got {factor!r} "
                 f"(0 means the feature is off and no clipper is built)")
         self.factor = float(factor)
+        self.monitor_only = bool(monitor_only)
         # The running scales live only in this process: they are not written to
         # the checkpoint, so every resume re-learns them and the first
         # `warmup_steps` updates of each parameter after a restart are unclipped.
@@ -74,6 +75,7 @@ class FusedGradClipper:
         self._clipped: Optional[torch.Tensor] = None
         self._worst_ratio: Optional[torch.Tensor] = None
         self._worst_index: Optional[torch.Tensor] = None
+        self._observed: List[tuple] = []
 
     def reset_scales(self) -> None:
         """Forget every running scale, restarting warmup for all parameters.
@@ -146,8 +148,15 @@ class FusedGradClipper:
             scale = norm.detach().clone()
             self._scale[key] = scale
             self._seen[key] = 1
+            self._observed.append((self._slot(param), norm.detach(),
+                                   torch.ones_like(norm)))
             return
         seen = self._seen[key] = self._seen.get(key, 0) + 1
+        ratio = norm / scale.clamp_min(_EPS)
+        self._observed.append((self._slot(param), norm.detach(), ratio.detach()))
+        if self.monitor_only:
+            scale.mul_(self.decay).add_(norm, alpha=1.0 - self.decay)
+            return
         if seen <= self.warmup_steps:
             # Still learning what "usual" is for this parameter. Clipping
             # against a scale built from a handful of gradients would be
@@ -181,28 +190,43 @@ class FusedGradClipper:
         contribution = previous.sub_(norm).mul_(was_clipped).add_(norm)
         scale.mul_(self.decay).add_(contribution, alpha=1.0 - self.decay)
 
-    def take_step_summary(self) -> Optional[Dict[str, object]]:
-        """What this step clipped, and reset. One host sync, or none.
+    def take_step_summary(self, *, include_topk: bool = False) -> Optional[Dict[str, object]]:
+        """What this step clipped or observed, then reset.
 
         Returns None when nothing was clipped, which is the case on every step
         of a healthy run.
         """
+        observations = self._observed
+        self._observed = []
+        topk = None
+        if include_topk and observations:
+            values = torch.stack([torch.stack((norm, ratio))
+                                  for _, norm, ratio in observations]).float().cpu().tolist()
+            rows = [dict(parameter=self._names[index], norm=pair[0], ratio=pair[1])
+                    for (index, _, _), pair in zip(observations, values)]
+            topk = {
+                "by_norm": sorted(rows, key=lambda row: row["norm"], reverse=True)[:5],
+                "by_ratio": sorted(rows, key=lambda row: row["ratio"], reverse=True)[:5],
+            }
         if self._clipped is None:
-            return None
+            return {"pre_clip_top_parameters": topk} if topk is not None else None
         counters = torch.stack([self._clipped, self._worst_ratio, self._worst_index])
         self._clipped = None
         self._worst_ratio = None
         self._worst_index = None
         clipped, worst_ratio, worst_index = counters.tolist()
         if clipped <= 0:
-            return None
+            return {"pre_clip_top_parameters": topk} if topk is not None else None
         index = int(worst_index)
-        return {
+        result = {
             "clipped_parameters": int(clipped),
             "worst_ratio": float(worst_ratio),
             "worst_parameter": (self._names[index]
                                 if 0 <= index < len(self._names) else None),
         }
+        if topk is not None:
+            result["pre_clip_top_parameters"] = topk
+        return result
 
 
 def attach_fused_grad_clipper(optimizer, clipper: Optional[FusedGradClipper]) -> None:

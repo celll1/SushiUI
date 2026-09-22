@@ -1,8 +1,6 @@
 # Qwen-Image 2.1 branch-separated LoRA design
 
-Status: `cond_base_v1` implemented as an opt-in first prototype. Its first
-580-step run confirmed exact base-negative routing but failed the image-quality
-gate; it must not become a default. The existing shared-LoRA guidance-target
+Status: proposed; not implemented. The existing shared-LoRA guidance-target
 objective is documented in [QWEN_IMAGE_21_GUIDANCE_LOSS.md](QWEN_IMAGE_21_GUIDANCE_LOSS.md).
 The measurement sequence and acceptance gates are in
 [QWEN_IMAGE_21_BRANCH_LORA_EVALUATION.md](QWEN_IMAGE_21_BRANCH_LORA_EVALUATION.md).
@@ -16,14 +14,6 @@ zero `cfg_uncond_drop_rate` removes explicit null-caption training; it does
 **not** freeze the shared LoRA's null response. The proposed mode separates
 the adapter deltas by CFG role while retaining one frozen Qwen base. It is an
 opt-in Qwen experiment, not a reinterpretation of existing LoRA files.
-
-The first artifact contains `lora_cond_unet_*` tensors and
-`qwen_lora_branch_mode=cond_base_v1`, `qwen_lora_uncond=base` metadata. There is
-no trainable `U` namespace yet: both empty and nonempty negative CFG forwards
-route through the frozen base. Ordinary `lora_unet_*` files keep shared behavior.
-The role is request-local, and the negative forward has its own KV-cache
-context. Mixed shared and split LoRAs do not provide an exact base negative
-branch; the first evaluation uses one split LoRA only.
 
 Let `B(x, sigma, p)` be the frozen base prediction for prompt `p` at a fixed
 noisy latent, `C` the conditional adapter delta, and `U` the empty-prompt

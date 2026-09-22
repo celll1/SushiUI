@@ -9,11 +9,6 @@ import torch
 import torch.nn.functional as F
 
 from api.param_defaults import TRAINING_DEFAULTS
-from core.models.qwen_image_21.branch_lora import BRANCH_MODE_COND_BASE, qwen_lora_role
-
-
-def _cond_base_mode(trainer) -> bool:
-    return trainer.config.get("qwen_lora_branch_mode", "shared") == BRANCH_MODE_COND_BASE
 
 
 def partition_training_enabled(trainer) -> bool:
@@ -545,33 +540,30 @@ def train_step(
     guidance = _guidance_condition(
         trainer, batch, cfg_drop_mask, trainer.device, trainer.training_dtype
     )
-    if _cond_base_mode(trainer) and cfg_drop_mask is not None and bool(cfg_drop_mask.any()):
-        raise ValueError("Qwen cond/base mode does not train unconditional-drop items")
 
-    def forward(features, mask, *, reference=False):
+    def forward(features, mask):
         image_mask = torch.cat([
             torch.zeros(features.shape[:2], dtype=torch.bool, device=trainer.device),
             torch.ones(batch, tokens // 4, dtype=torch.bool, device=trainer.device),
         ], dim=1)
-        with qwen_lora_role("base" if reference and _cond_base_mode(trainer) else "cond"):
-            return trainer.transformer(
-                hidden_states=noisy,
-                timestep=sigma,
-                encoder_hidden_states=features,
-                encoder_hidden_states_mask=mask,
-                img_shapes=shapes,
-                img_mask=image_mask,
-                return_dict=False,
-            )[0]
+        return trainer.transformer(
+            hidden_states=noisy,
+            timestep=sigma,
+            encoder_hidden_states=features,
+            encoder_hidden_states_mask=mask,
+            img_shapes=shapes,
+            img_mask=image_mask,
+            return_dict=False,
+        )[0]
 
     uncond_prediction = None
     if guidance is not None:
         with torch.no_grad():
             if trainer.mixed_precision:
                 with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
-                    uncond_prediction = forward(guidance[0], guidance[1], reference=True)[:, -tokens:]
+                    uncond_prediction = forward(guidance[0], guidance[1])[:, -tokens:]
             else:
-                uncond_prediction = forward(guidance[0], guidance[1], reference=True)[:, -tokens:]
+                uncond_prediction = forward(guidance[0], guidance[1])[:, -tokens:]
     if trainer.mixed_precision:
         with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
             prediction = forward(encoder_features, encoder_mask)
@@ -641,9 +633,6 @@ def train_step_partitioned_backward(
     guidance = _guidance_condition(
         trainer, batch, cfg_drop_mask, trainer.device, trainer.training_dtype
     )
-    split_mode = _cond_base_mode(trainer)
-    if split_mode and cfg_drop_mask is not None and bool(cfg_drop_mask.any()):
-        raise ValueError("Qwen cond/base mode does not train unconditional-drop items")
     debug_prediction_grid = (
         torch.empty((int(latent_h), int(latent_w), channels), dtype=torch.float32)
         if debug_save_path is not None else None
@@ -690,37 +679,36 @@ def train_step_partitioned_backward(
                 backward_end = torch.cuda.Event(enable_timing=True)
                 forward_start.record(torch.cuda.current_stream(trainer.device))
 
-            def forward(features, mask, *, reference=False):
+            def forward(features, mask):
                 image_mask = torch.cat([
                     torch.zeros(features.shape[:2], dtype=torch.bool, device=trainer.device),
                     torch.ones(batch, input_tokens // 4, dtype=torch.bool, device=trainer.device),
                 ], dim=1)
                 target_input_residual = (
                     global_adapter(noisy_grid, region.input)
-                    if global_adapter is not None and not (split_mode and reference)
+                    if global_adapter is not None
                     else None
                 )
-                with qwen_lora_role("base" if reference and split_mode else "cond"):
-                    return trainer.transformer(
-                        hidden_states=tile,
-                        timestep=sigma,
-                        encoder_hidden_states=features,
-                        encoder_hidden_states_mask=mask,
-                        img_shapes=[[(1, region.input.height, region.input.width)]] * batch,
-                        img_mask=image_mask,
-                        target_spatial_position_ids=positions,
-                        target_input_residual=target_input_residual,
-                        return_dict=False,
-                    )[0]
+                return trainer.transformer(
+                    hidden_states=tile,
+                    timestep=sigma,
+                    encoder_hidden_states=features,
+                    encoder_hidden_states_mask=mask,
+                    img_shapes=[[(1, region.input.height, region.input.width)]] * batch,
+                    img_mask=image_mask,
+                    target_spatial_position_ids=positions,
+                    target_input_residual=target_input_residual,
+                    return_dict=False,
+                )[0]
 
             uncond_prediction = None
             if guidance is not None:
                 with torch.no_grad():
                     if trainer.mixed_precision:
                         with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
-                            uncond_prediction = forward(guidance[0], guidance[1], reference=True)
+                            uncond_prediction = forward(guidance[0], guidance[1])
                     else:
-                        uncond_prediction = forward(guidance[0], guidance[1], reference=True)
+                        uncond_prediction = forward(guidance[0], guidance[1])
                 uncond_prediction = uncond_prediction[:, -input_tokens:].reshape(
                     batch, region.input.height, region.input.width, channels
                 )

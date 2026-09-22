@@ -519,7 +519,6 @@ def _build_train_section(
         "qwen_full_kv_query_chunk_tokens", "qwen_convrot_training_forward",
         "qwen_convrot_backward_cache_blocks",
         "qwen_convrot_backward_prefetch_depth",
-        "qwen_lora_branch_mode",
         "qwen_guidance_loss_weight", "qwen_guidance_loss_scale",
         "qwen_guidance_loss_schedule",
     ):

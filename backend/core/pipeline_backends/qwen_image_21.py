@@ -53,9 +53,7 @@ class QwenImage21Mixin:
         return session
 
     def _qwen21_prepare_lora_file(self, file):
-        from core.models.qwen_image_21.lora import (
-            normalise_cond_lora_state_dict, normalise_lora_state_dict,
-        )
+        from core.models.qwen_image_21.lora import normalise_lora_state_dict
         if file.metadata.get("qwen_partition_global_adapter"):
             self._qwen21_lora_warn(
                 f"Qwen-Image 2.1 LoRA '{file.name}' contains a partition-training "
@@ -77,15 +75,6 @@ class QwenImage21Mixin:
                     "ConvRot INT8 base forward and requires an int8_convrot model; "
                     f"the loaded transformer is {variant!r}"
                 )
-        branch_mode = str(file.metadata.get("qwen_lora_branch_mode") or "shared")
-        if branch_mode == "cond_base_v1":
-            if file.metadata.get("qwen_lora_uncond") != "base":
-                raise ValueError("Qwen cond/base LoRA requires a base negative-branch contract")
-            return normalise_cond_lora_state_dict(file.tensors)
-        if branch_mode != "shared" or any(
-            key.startswith("lora_cond_unet_") for key in file.tensors
-        ):
-            raise ValueError(f"Unsupported Qwen LoRA branch mode {branch_mode!r}")
         return normalise_lora_state_dict(file.tensors)
 
     @staticmethod
@@ -97,16 +86,11 @@ class QwenImage21Mixin:
 
     def _qwen21_build_lora_branch(self, request):
         from core.adapters import PreparedBranch, SHAPE_MISMATCH
-        from core.models.qwen_image_21.lora import build_cond_lora_branch, build_lora_branch
+        from core.models.qwen_image_21.lora import build_lora_branch
         group = request.prepared.get(request.module_path)
         if group is None:
             return None
-        build = (
-            build_cond_lora_branch
-            if request.file.metadata.get("qwen_lora_branch_mode") == "cond_base_v1"
-            else build_lora_branch
-        )
-        branch = build(request.base, group, request.module_path)
+        branch = build_lora_branch(request.base, group, request.module_path)
         return branch if branch is SHAPE_MISMATCH else PreparedBranch(branch, request.file.strength)
 
     def _qwen21_lora_components(self):

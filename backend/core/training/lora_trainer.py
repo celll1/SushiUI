@@ -261,13 +261,6 @@ class LoRATrainer(BaseTrainer):
                     )
 
         if getattr(self, "is_qwen_image_21", False):
-            expected_branch_mode = str(self.config.get("qwen_lora_branch_mode", "shared"))
-            actual_branch_mode = str(metadata.get("qwen_lora_branch_mode") or "shared")
-            if actual_branch_mode != expected_branch_mode:
-                raise ValueError(
-                    f"Qwen LoRA checkpoint branch mode {actual_branch_mode!r} "
-                    f"does not match this run's {expected_branch_mode!r}"
-                )
             expected_forward = (
                 "convrot_int8_bf16_backward_v1"
                 if getattr(self, "qwen_convrot_training_forward", "dequant")

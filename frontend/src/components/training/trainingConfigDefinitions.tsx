@@ -165,6 +165,7 @@ export const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   gradient_accumulation_steps: 1,
   max_grad_norm: 1.0,
   fused_grad_clip_factor: 0,
+  per_parameter_grad_probe: false,
   fused_grad_clip_warmup_steps: 200,
   grad_spike_log_factor: 8.0,
   learning_rate: 1e-5,

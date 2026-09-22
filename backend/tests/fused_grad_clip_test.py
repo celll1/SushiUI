@@ -53,6 +53,65 @@ def test_an_ordinary_gradient_passes_through_untouched():
     assert clipper.take_step_summary() is None
 
 
+def test_monitor_only_records_preclip_top_parameters_without_changing_gradients():
+    clipper = FusedGradClipper(factor=0, warmup_steps=2, monitor_only=True)
+    small = _param(1.0)
+    large = _param(2.0)
+    clipper.name_parameters({id(small): "small", id(large): "large"})
+    clipper.clip(small)
+    clipper.clip(large)
+    assert clipper.take_step_summary() is None
+    small.grad.fill_(100.0)
+    large.grad.fill_(3.0)
+    clipper.clip(small)
+    clipper.clip(large)
+    summary = clipper.take_step_summary(include_topk=True)
+    assert summary["pre_clip_top_parameters"]["by_norm"][0]["parameter"] == "small"
+    assert summary["pre_clip_top_parameters"]["by_ratio"][0]["parameter"] == "small"
+    assert _norm(small) == pytest.approx(100.0 * 8 ** 0.5)
+    assert clipper.take_step_summary(include_topk=True) is None
+
+
+def test_adaptive_clip_retains_raw_norm_in_spike_diagnostics():
+    clipper = FusedGradClipper(factor=2, warmup_steps=1)
+    param = _param(1.0)
+    clipper.name_parameters({id(param): "lora.A"})
+    clipper.clip(param)
+    clipper.take_step_summary()
+    param.grad.fill_(100.0)
+    clipper.clip(param)
+    summary = clipper.take_step_summary(include_topk=True)
+    assert summary["clipped_parameters"] == 1
+    row = summary["pre_clip_top_parameters"]["by_norm"][0]
+    assert row["parameter"] == "lora.A"
+    assert row["norm"] == pytest.approx(100.0 * 8 ** 0.5)
+    assert _norm(param) == pytest.approx(2.0 * 8 ** 0.5)
+
+
+def test_nonfused_path_clips_every_optimizer_group_before_global_clip(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 9))
+    monkeypatch.setattr(torch.cuda, "_lazy_init", lambda *a, **k: None)
+    monkeypatch.setattr(torch._C, "_cuda_init", lambda *a, **k: None)
+    from core.training.base_trainer import BaseTrainer
+
+    first = _param(1.0)
+    second = _param(1.0)
+    optimizer = torch.optim.AdamW([{"params": [first]}, {"params": [second]}])
+    clipper = FusedGradClipper(factor=2, warmup_steps=1)
+    trainer = SimpleNamespace(optimizer=optimizer, _fused_grad_clipper=clipper)
+    for _ in range(2):
+        BaseTrainer._clip_nonfused_parameters(trainer)
+        clipper.take_step_summary()
+    first.grad.fill_(100.0)
+    second.grad.fill_(100.0)
+    BaseTrainer._clip_nonfused_parameters(trainer)
+    assert _norm(first) == pytest.approx(2.0 * 8 ** 0.5)
+    assert _norm(second) == pytest.approx(2.0 * 8 ** 0.5)
+    summary = clipper.take_step_summary()
+    assert summary["clipped_parameters"] == 2
+
+
 def test_the_run127_spike_is_bounded_to_the_parameters_own_scale():
     """A gradient 4,500x the usual is cut to factor x the running scale."""
     clipper = FusedGradClipper(factor=8.0, warmup_steps=20)
@@ -224,6 +283,31 @@ def test_a_spike_records_the_batch_that_produced_it(tmp_path):
 
     written = [json.loads(line) for line in log.path.read_text(encoding="utf-8").splitlines()]
     assert len(written) == 1 and written[0]["step"] == 12355
+
+
+def test_probe_top_parameters_are_not_reported_as_clipped(tmp_path):
+    log = GradSpikeLog(tmp_path, factor=8.0, min_history=1)
+    log.observe(1.0, step=1)
+    top = {"by_norm": [{"parameter": "lora.A", "norm": 10.0, "ratio": 10.0}],
+           "by_ratio": [{"parameter": "lora.A", "norm": 10.0, "ratio": 10.0}]}
+    record = log.observe(10.0, step=2, timesteps=torch.tensor([0.9]),
+                         clip_summary={"pre_clip_top_parameters": top})
+    assert record["pre_clip_top_parameters"] == top
+    assert record["timesteps"] == pytest.approx([0.9])
+    assert "clip" not in record
+
+
+def test_periodic_probe_has_separate_file_and_sigma(tmp_path):
+    log = GradSpikeLog(tmp_path, factor=8.0)
+    top = {"by_norm": [{"parameter": "lora.B", "norm": 2.0, "ratio": 3.0}],
+           "by_ratio": [{"parameter": "lora.B", "norm": 2.0, "ratio": 3.0}]}
+    log.record_probe(step=10, grad_norm=2.0,
+                     timesteps=torch.tensor([0.95]), top=top)
+    record = json.loads(log.probe_path.read_text(encoding="utf-8"))
+    assert record["step"] == 10
+    assert record["timesteps"] == pytest.approx([0.95])
+    assert record["pre_clip_top_parameters"] == top
+    assert not log.path.exists()
 
 
 def test_the_baseline_is_a_median_so_a_burst_cannot_hide_its_successors(tmp_path):

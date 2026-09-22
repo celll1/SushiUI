@@ -1280,12 +1280,11 @@ def _fused_clip_remedy(trainer) -> str:
 _GRAD_SPIKE_WARN_INTERVAL = 500
 
 
-def setup_fused_grad_clip(trainer, optimizers):
-    """Arm the per-parameter outlier clip on every fused path, if it is on.
+def setup_fused_grad_clip(trainer, optimizers, *, monitor_only=False):
+    """Arm per-parameter outlier tracking on the selected optimizer path.
 
-    Sits beside ``setup_fused_grad_norm`` because it has the same reach problem:
-    the hooks are registered in four places and only the optimizer is in scope in
-    all of them.
+    Fused hooks find the clipper through the optimizer; ordinary steps use the
+    same instance before their global-norm clip.
     """
     from api.param_defaults import TRAINING_DEFAULTS
     from core.training.optimizers.fused_grad_clip import (
@@ -1298,7 +1297,8 @@ def setup_fused_grad_clip(trainer, optimizers):
     if factor is None:
         factor = TRAINING_DEFAULTS["fused_grad_clip_factor"]
     factor = float(factor or 0.0)
-    if factor <= 0:
+    monitor_only = monitor_only and factor <= 0
+    if factor <= 0 and not monitor_only:
         trainer._fused_grad_clipper = None
         for optimizer in optimizers:
             attach_fused_grad_clipper(optimizer, None)
@@ -1308,7 +1308,8 @@ def setup_fused_grad_clip(trainer, optimizers):
         warmup = TRAINING_DEFAULTS["fused_grad_clip_warmup_steps"]
     clipper = getattr(trainer, "_fused_grad_clipper", None)
     if clipper is None:
-        clipper = FusedGradClipper(factor=factor, warmup_steps=int(warmup))
+        clipper = FusedGradClipper(factor=factor, warmup_steps=int(warmup),
+                                  monitor_only=monitor_only)
         trainer._fused_grad_clipper = clipper
         # Named so a clipped step can say WHICH parameter spiked. The map is the
         # EMA shadow's, which already walks this trainer's modules.
@@ -1320,9 +1321,13 @@ def setup_fused_grad_clip(trainer, optimizers):
                   f"reported by index")
     for optimizer in optimizers:
         attach_fused_grad_clipper(optimizer, clipper)
-    print(f"{trainer.log_prefix} Fused per-parameter gradient clip: "
-          f"{clipper.factor:g}x each parameter's own running scale, after "
-          f"{clipper.warmup_steps} update(s) of warmup")
+    if monitor_only:
+        print(f"{trainer.log_prefix} Per-parameter gradient probe enabled; "
+              "no adaptive clipping")
+    else:
+        print(f"{trainer.log_prefix} Per-parameter gradient clip: "
+              f"{clipper.factor:g}x each parameter's own running scale, after "
+              f"{clipper.warmup_steps} update(s) of warmup")
     return clipper
 
 
@@ -8787,6 +8792,12 @@ class BaseTrainer(ABC):
         self._record_configured_group_lrs(requested_group_lrs)
         self._report_effective_component_lrs(requested_group_lrs)
 
+        if not self.use_fused_backward and self.fused_optimizer_groups is None:
+            from api.param_defaults import TRAINING_DEFAULTS
+            probe = bool(self.config.get("per_parameter_grad_probe",
+                                         TRAINING_DEFAULTS["per_parameter_grad_probe"]))
+            setup_fused_grad_clip(self, [self.optimizer], monitor_only=probe)
+
         # Conductor observers must be registered after every fused optimizer
         # hook: a cleared gradient then proves the corresponding update ran.
         conductors = getattr(self, "_layer_offload_conductors", lambda: ())()
@@ -8883,14 +8894,17 @@ class BaseTrainer(ABC):
             )
         return module
 
-    def _warn_fused_clip_ignored(self) -> None:
-        """Say once that ``fused_grad_clip_factor`` does nothing on this run.
+    def _clip_nonfused_parameters(self) -> None:
+        """Observe raw accumulated gradients before the global-norm clip."""
+        clipper = getattr(self, "_fused_grad_clipper", None)
+        if clipper is None:
+            return
+        for group in self.optimizer.param_groups:
+            for param in group["params"]:
+                clipper.clip(param, self.optimizer)
 
-        The clip is armed from the two fused setups only. A run with a plain
-        optimizer, no Block Swap and no optimizer groups never reaches them, and
-        the setting would otherwise be accepted and silently dropped -- the same
-        failure the sibling notices exist for.
-        """
+    def _warn_fused_clip_ignored(self) -> None:
+        """Report an optimizer path that failed to arm the requested clip."""
         from api.param_defaults import TRAINING_DEFAULTS
 
         config = getattr(self, "config", None) or {}
@@ -8903,10 +8917,8 @@ class BaseTrainer(ABC):
             return
         emit_training_warning(
             f"fused_grad_clip_factor={float(factor):g} is IGNORED on this run: it "
-            f"clips inside the fused backward pass's per-parameter hooks, and "
-            f"this run has none (no Block Swap, no optimizer groups, and an "
-            f"optimizer that steps normally). max_grad_norm is what clips here, "
-            f"and it applies the global norm this setting cannot see.",
+            f"no per-parameter clip was attached to the active optimizer path. "
+            f"max_grad_norm, where applicable, is a separate global clip.",
             code="fused_grad_clip_ignored",
             prefix=self.log_prefix,
         )
@@ -8943,11 +8955,22 @@ class BaseTrainer(ABC):
             # Drained every step a clipper exists: the counters are per step, and
             # leaving them to a log that may be off would accumulate one running
             # total for the whole run and report it as a single step's.
-            summary = clipper.take_step_summary() if clipper is not None else None
-            if summary is not None:
+            baseline = log.baseline() if log is not None and log.enabled else None
+            spike = (baseline is not None and baseline > 0 and grad_norm is not None
+                     and float(grad_norm) > baseline * log.factor)
+            probe_sample = (clipper is not None and clipper.monitor_only
+                            and step % 10 == 0)
+            summary = (clipper.take_step_summary(include_topk=spike or probe_sample)
+                       if clipper is not None else None)
+            if summary is not None and summary.get("clipped_parameters", 0):
                 self._clipped_steps = getattr(self, "_clipped_steps", 0) + 1
             if log is None or not log.enabled:
                 return
+            if probe_sample and summary is not None:
+                top = summary.get("pre_clip_top_parameters")
+                if top:
+                    log.record_probe(step=step, grad_norm=grad_norm,
+                                     timesteps=timesteps, top=top)
             record = log.observe(
                 grad_norm, step=step, epoch=epoch, loss=loss,
                 learning_rate=learning_rate, batch=batch, timesteps=timesteps,
@@ -19995,6 +20018,7 @@ class BaseTrainer(ABC):
                                     # GradScaler flow
                                     self.grad_scaler.unscale_(self.optimizer)
                                     grad_norm_total, grad_norm_te, grad_norm_te1, grad_norm_te2, grad_norm_unet, grad_norm_ve = self._calculate_grad_norms()
+                                    self._clip_nonfused_parameters()
                                     if max_grad_norm > 0:
                                         torch.nn.utils.clip_grad_norm_(self.optimizer.param_groups[0]['params'], max_grad_norm)
                                     # A GradScaler step on non-finite gradients
@@ -20010,6 +20034,7 @@ class BaseTrainer(ABC):
                                 else:
                                     # Normal flow without GradScaler
                                     grad_norm_total, grad_norm_te, grad_norm_te1, grad_norm_te2, grad_norm_unet, grad_norm_ve = self._calculate_grad_norms()
+                                    self._clip_nonfused_parameters()
                                     if max_grad_norm > 0:
                                         torch.nn.utils.clip_grad_norm_(self.optimizer.param_groups[0]['params'], max_grad_norm)
                                     self.optimizer.step()

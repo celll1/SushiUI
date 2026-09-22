@@ -41,6 +41,7 @@ _CAPTION_CHARS = 400
 #: step is broken in a way the first few hundred records already document, and
 #: an unbounded JSONL beside a 33 GB checkpoint set helps nobody.
 _MAX_RECORDS = 500
+_MAX_PROBE_RECORDS = 500
 
 
 class GradSpikeLog:
@@ -54,11 +55,35 @@ class GradSpikeLog:
         self.min_history = int(min_history)
         self.log_prefix = log_prefix
         self.path = Path(output_dir) / "grad_spikes.jsonl"
+        self.probe_path = Path(output_dir) / "per_parameter_grad_probe.jsonl"
         self._history: deque = deque(maxlen=self.window)
         self.spikes_recorded = 0
         self.max_records = int(max_records)
         self._write_failed = False
         self._capped = False
+        self._probe_records = 0
+        self._probe_write_failed = False
+
+    def record_probe(self, *, step: int, grad_norm: Optional[float],
+                     timesteps: Any, top: Dict[str, Any]) -> None:
+        """Sample top raw parameter gradients without classifying a spike."""
+        if self._probe_records >= _MAX_PROBE_RECORDS:
+            return
+        self._probe_records += 1
+        record = {
+            "step": int(step),
+            "grad_norm": _finite(grad_norm),
+            "timesteps": _timesteps(timesteps),
+            "pre_clip_top_parameters": top,
+        }
+        try:
+            with open(self.probe_path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception as exc:
+            if not self._probe_write_failed:
+                self._probe_write_failed = True
+                print(f"{self.log_prefix} per-parameter probe write failed "
+                      f"({type(exc).__name__}: {exc})")
 
     @property
     def enabled(self) -> bool:
@@ -112,7 +137,12 @@ class GradSpikeLog:
             "batch": _batch_context(batch),
         }
         if clip_summary:
-            record["clip"] = dict(clip_summary)
+            top = clip_summary.get("pre_clip_top_parameters")
+            if top:
+                record["pre_clip_top_parameters"] = top
+            if clipped:
+                record["clip"] = {key: value for key, value in clip_summary.items()
+                                  if key != "pre_clip_top_parameters"}
         self.spikes_recorded += 1
         self._write(record)
         return record

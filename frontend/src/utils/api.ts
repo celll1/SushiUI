@@ -6956,6 +6956,7 @@ export interface TrainingRunCreateRequest {
   gradient_accumulation_steps?: number;
   max_grad_norm?: number;
   fused_grad_clip_factor?: number;
+  per_parameter_grad_probe?: boolean;
   fused_grad_clip_warmup_steps?: number;
   grad_spike_log_factor?: number;
   learning_rate?: number;

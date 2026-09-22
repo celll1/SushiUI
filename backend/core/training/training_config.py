@@ -208,6 +208,8 @@ def _build_train_section(
         "max_grad_norm": p.get("max_grad_norm", 1.0),
         "fused_grad_clip_factor": p.get("fused_grad_clip_factor",
                                         _TD["fused_grad_clip_factor"]),
+        "per_parameter_grad_probe": p.get("per_parameter_grad_probe",
+                                          _TD["per_parameter_grad_probe"]),
         "fused_grad_clip_warmup_steps": p.get("fused_grad_clip_warmup_steps",
                                               _TD["fused_grad_clip_warmup_steps"]),
         "grad_spike_log_factor": p.get("grad_spike_log_factor",

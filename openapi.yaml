@@ -25115,7 +25115,7 @@ components:
           minimum: 0
           default: 0
           description: |
-            Per-parameter gradient clip for the FUSED backward pass. `0` disables it.
+            Per-parameter gradient clip for fused and ordinary optimizer paths. `0` disables it.
 
             `max_grad_norm` is a global norm: it needs every gradient in hand
             before it can choose a scale. The fused backward pass (a
@@ -25130,16 +25130,15 @@ components:
             which on a clipped step is fed the PRE-spike scale rather than the
             threshold, so a sustained burst leaves the bar where it was instead of
             walking it up behind itself. It is a different quantity from the
-            global norm and does not replace `max_grad_norm` on the non-fused
-            path.
+            global norm. On the non-fused path it runs before `max_grad_norm`,
+            which remains an independent global safety bound.
 
             The running scales are not written to the checkpoint, so a resume
             re-learns them and the first `fused_grad_clip_warmup_steps` updates
             of each parameter after a restart are unclipped.
 
             Costs roughly 25 tensor operations per trained parameter per step, of
-            which one or two read the whole gradient. Ignored on the non-fused
-            path, which is reported once as `fused_grad_clip_ignored`.
+            which one or two read the whole gradient.
 
             Relative to the parameter's own history because the absolute
             per-parameter scale is not observable from the UI, and because the
@@ -25150,6 +25149,18 @@ components:
             The gradient norm charted for the step is the one the backward pass
             produced, not the clipped value, so a spike stays visible.
           example: 8.0
+        per_parameter_grad_probe:
+          type: 'boolean'
+          default: false
+          description: |
+            Observe each trainable parameter's pre-clip gradient norm and running
+            scale. With clip factor 0 this does not clip. On a global gradient spike, record
+            the five largest norms and ratios in `grad_spikes.jsonl` together
+            with the sampled timestep (sigma for Qwen-Image 2.1). Applies to
+            ordinary optimizer steps; use before enabling adaptive clipping.
+            Every 10 steps it also writes a sample to
+            `per_parameter_grad_probe.jsonl` (up to 500 records per process).
+            This adds per-parameter reductions and is off by default.
         fused_grad_clip_warmup_steps:
           type: 'integer'
           minimum: 1

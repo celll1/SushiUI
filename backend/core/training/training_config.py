@@ -517,6 +517,8 @@ def _build_train_section(
         "qwen_full_kv_query_chunk_tokens", "qwen_convrot_training_forward",
         "qwen_convrot_backward_cache_blocks",
         "qwen_convrot_backward_prefetch_depth",
+        "qwen_guidance_loss_weight", "qwen_guidance_loss_scale",
+        "qwen_guidance_loss_schedule",
     ):
         train[key] = p.get(key, _TD[key])
 
@@ -745,6 +747,8 @@ def _build_train_section(
 
     train["debug_latents"] = p.get("debug_latents", False)
     train["debug_latents_every"] = p.get("debug_latents_every", 50)
+    train["qwen_debug_latent_view"] = p.get(
+        "qwen_debug_latent_view", TRAINING_DEFAULTS["qwen_debug_latent_view"])
     train["convergence_diagnostics_enable"] = bool(
         p.get("convergence_diagnostics_enable", TRAINING_DEFAULTS["convergence_diagnostics_enable"]))
     train["convergence_diagnostics_interval"] = int(

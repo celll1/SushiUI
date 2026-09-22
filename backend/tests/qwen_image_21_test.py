@@ -176,6 +176,28 @@ def test_qwen_reconstruction_loss_is_reported_and_weighted(partitioned):
     assert float(total) == pytest.approx(0.8 * float(pred) + 0.2 * float(recon))
 
 
+def test_qwen_hybrid_and_debug_view_survive_config_generation():
+    from core.training.training_config import _build_train_section, train_section_key_vocabulary
+
+    request = routes.TrainingRunCreateRequest(
+        base_model_path="unused", training_method="lora",
+        qwen_guidance_loss_weight=0.25, qwen_guidance_loss_scale=3.0,
+        qwen_guidance_loss_schedule="sigma", qwen_debug_latent_view="pixel",
+    )
+    train = _build_train_section(
+        request.model_dump(), total_steps=20, epochs=None,
+        train_unet=True, train_text_encoder=False, arch="qwen_image_21",
+    )
+    for key, expected in (
+        ("qwen_guidance_loss_weight", 0.25),
+        ("qwen_guidance_loss_scale", 3.0),
+        ("qwen_guidance_loss_schedule", "sigma"),
+        ("qwen_debug_latent_view", "pixel"),
+    ):
+        assert train[key] == expected
+        assert key in train_section_key_vocabulary()
+
+
 def test_qwen_pixel_debug_decodes_after_forward(tmp_path):
     class VAE(torch.nn.Module):
         def __init__(self):

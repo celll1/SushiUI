@@ -652,7 +652,7 @@ def train_step(
                     selected_uncond = forward(guidance[0][indices], guidance[1][indices], indices)[:, -tokens:]
             else:
                 selected_uncond = forward(guidance[0][indices], guidance[1][indices], indices)[:, -tokens:]
-        uncond_prediction = torch.zeros_like(noisy)
+        uncond_prediction = selected_uncond.new_zeros(noisy.shape)
         uncond_prediction[indices] = selected_uncond
     if trainer.mixed_precision:
         with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
@@ -809,7 +809,7 @@ def train_step_partitioned_backward(
                             selected_uncond = forward(guidance[0][indices], guidance[1][indices], indices)
                     else:
                         selected_uncond = forward(guidance[0][indices], guidance[1][indices], indices)
-                uncond_prediction = torch.zeros_like(tile)
+                uncond_prediction = selected_uncond.new_zeros(tile.shape)
                 uncond_prediction[indices] = selected_uncond[:, -input_tokens:]
                 uncond_prediction = uncond_prediction.reshape(
                     batch, region.input.height, region.input.width, channels

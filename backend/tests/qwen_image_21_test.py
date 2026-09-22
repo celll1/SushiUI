@@ -209,6 +209,41 @@ def test_qwen_stochastic_selection_reuses_recovery_draw(monkeypatch):
     assert first.tolist() == second.tolist() == [True, False]
 
 
+@pytest.mark.parametrize("partitioned", [False, True])
+def test_qwen_stochastic_uncond_keeps_transformer_output_dtype(partitioned):
+    class FloatOutputTransformer(_GuidanceTransformer):
+        def forward(self, **kwargs):
+            return (super().forward(**kwargs)[0].float(),)
+
+    trainer = SimpleNamespace(
+        device=torch.device("cpu"), training_dtype=torch.bfloat16,
+        mixed_precision=False, use_grad_scaler=False,
+        transformer=FloatOutputTransformer(), arch=QwenImage21ArchHandler(),
+        config={"dit_partition_fixed_count": 2,
+                "qwen_guidance_loss_weight": 1.0,
+                "qwen_guidance_loss_mix_mode": "stochastic"},
+        _active_mnt_noise=torch.ones(1, 32, 4, dtype=torch.bfloat16),
+        _qwen_guidance_blank_encoding=(torch.zeros(1, 3, 4), torch.ones(3, dtype=torch.bool)),
+        log_extra_metric=lambda *_args: None,
+    )
+    inputs = dict(
+        latents=torch.zeros(1, 32, 4, dtype=torch.bfloat16),
+        encoder_features=torch.ones(1, 2, 4, dtype=torch.bfloat16),
+        encoder_mask=torch.ones(1, 2, dtype=torch.bool),
+        timesteps=torch.tensor([0.5]), latent_h=4, latent_w=8,
+    )
+    if partitioned:
+        loss, _, _ = qwen_image_21_ops.train_step_partitioned_backward(
+            trainer, **inputs, backward_scale=1.0
+        )
+    else:
+        value, _, _ = qwen_image_21_ops.train_step(trainer, **inputs)
+        value.backward()
+        loss = float(value.detach())
+    assert torch.isfinite(torch.tensor(loss))
+    assert trainer.transformer.scale.grad is not None
+
+
 def test_qwen_sigma_null_drop_uses_complement_of_guidance_probability(monkeypatch):
     monkeypatch.setattr(torch, "rand_like", lambda value: value.new_tensor([0.05, 0.05, 0.05]))
     config = {

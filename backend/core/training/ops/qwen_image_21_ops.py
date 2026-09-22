@@ -8,6 +8,8 @@ from typing import Optional
 import torch
 import torch.nn.functional as F
 
+from api.param_defaults import TRAINING_DEFAULTS
+
 
 def partition_training_enabled(trainer) -> bool:
     return bool(trainer.config.get(
@@ -17,8 +19,6 @@ def partition_training_enabled(trainer) -> bool:
 
 
 def _guidance_condition(trainer, batch: int, cfg_drop_mask, device, dtype):
-    from api.param_defaults import TRAINING_DEFAULTS
-
     weight = float(trainer.config.get(
         "qwen_guidance_loss_weight", TRAINING_DEFAULTS["qwen_guidance_loss_weight"]
     ) or 0.0)
@@ -411,7 +411,7 @@ def vae_decode(trainer, latents, *, latent_h: int, latent_w: int):
 
 def _save_debug_latents(
     trainer, path, *, latents, noisy, target, prediction, timesteps,
-    latent_h, latent_w, loss, captions=None, reference_image_paths=None,
+    latent_h, latent_w, loss, recon_loss, captions=None, reference_image_paths=None,
     partition_count=1,
 ):
     if path is None:
@@ -436,6 +436,7 @@ def _save_debug_latents(
             "predicted_latent": noisy_grid - timestep * prediction_grid,
             "timestep": timestep,
             "loss": float(loss),
+            "recon_loss": float(recon_loss),
             "batch_size": int(latents.shape[0]),
             "scheduler_type": "FlowMatching",
             "model_type": "qwen_image_21",
@@ -449,8 +450,57 @@ def _save_debug_latents(
             if first_ref:
                 data["reference_image_path"] = first_ref
         torch.save(data, path / f"latents_t{timestep:.4f}.pt")
+        if trainer.config.get(
+            "qwen_debug_latent_view", TRAINING_DEFAULTS["qwen_debug_latent_view"]
+        ) == "pixel":
+            trainer._pending_qwen_debug_previews = {
+                "path": path,
+                "timestep": timestep,
+                "latent_h": latent_h,
+                "latent_w": latent_w,
+                "previews": (
+                    ("target", clean_grid),
+                    ("noisy", noisy_grid),
+                    ("pred_x0", data["predicted_latent"]),
+                ),
+            }
     except Exception as exc:
         print(f"{trainer.log_prefix} [debug_latents] save failed: {exc}")
+
+
+def flush_pending_debug_previews(trainer) -> None:
+    pending = getattr(trainer, "_pending_qwen_debug_previews", None)
+    if pending is None:
+        return
+    delattr(trainer, "_pending_qwen_debug_previews")
+    vae = trainer.vae
+    parameter = next(vae.parameters())
+    original_device, original_dtype = parameter.device, parameter.dtype
+    decode_device = torch.device(trainer.device)
+    was_training = vae.training
+    try:
+        if decode_device.type == "cuda":
+            torch.cuda.empty_cache()
+        vae.to(device=decode_device, dtype=trainer.vae_dtype).eval()
+        with torch.inference_mode():
+            for name, grid in pending["previews"]:
+                packed = grid.flatten(2).transpose(1, 2)
+                decoded = vae_decode(
+                    trainer, packed,
+                    latent_h=pending["latent_h"], latent_w=pending["latent_w"],
+                )
+                image = trainer.qwen_image_21_pipeline.image_processor.postprocess(
+                    decoded, output_type="pil"
+                )[0].convert("RGB")
+                image.save(
+                    pending["path"] / f"decode_t{pending['timestep']:.4f}_{name}.webp",
+                    "WEBP", quality=80, method=4,
+                )
+                del decoded, image
+    finally:
+        vae.to(device=original_device, dtype=original_dtype).train(was_training)
+        if decode_device.type == "cuda":
+            torch.cuda.empty_cache()
 
 
 def train_step(
@@ -521,20 +571,26 @@ def train_step(
         prediction = forward(encoder_features, encoder_mask)
     prediction = prediction[:, -tokens:]
     if guidance is None:
-        loss = F.mse_loss(prediction.float(), target.float())
+        pred_loss = F.mse_loss(prediction.float(), target.float())
     else:
-        loss, normal_loss, guided_loss = _guidance_loss(
+        pred_loss, normal_loss, guided_loss = _guidance_loss(
             prediction, target, uncond_prediction, sigma, guidance
         )
         trainer.log_extra_metric("qwen_guidance_loss_normal", float(normal_loss))
         trainer.log_extra_metric("qwen_guidance_loss_guided", float(guided_loss))
+    recon_weight = float(getattr(trainer, "reconstruction_loss_weight", 0.0) or 0.0)
+    with torch.set_grad_enabled(recon_weight > 0):
+        predicted_clean = noisy.float() - sigma.float().view(-1, 1, 1) * prediction.float()
+        recon_loss = F.mse_loss(predicted_clean, latents.float())
+    loss = (1 - recon_weight) * pred_loss + recon_weight * recon_loss
     _save_debug_latents(
         trainer, debug_save_path, latents=latents, noisy=noisy, target=target,
         prediction=prediction, timesteps=timesteps, latent_h=latent_h,
-        latent_w=latent_w, loss=loss.detach(), captions=debug_captions,
+        latent_w=latent_w, loss=loss.detach(), recon_loss=recon_loss.detach(),
+        captions=debug_captions,
         reference_image_paths=debug_reference_image_paths,
     )
-    return loss, float(loss.detach()), 0.0
+    return loss, pred_loss.detach(), recon_loss.detach()
 
 
 def train_step_partitioned_backward(
@@ -572,6 +628,7 @@ def train_step_partitioned_backward(
     noisy = (1 - sigma_view) * latents + sigma_view * noise
     target = noise - latents
     noisy_grid = noisy.reshape(batch, int(latent_h), int(latent_w), channels)
+    clean_grid = latents.reshape_as(noisy_grid)
     target_grid = target.reshape_as(noisy_grid)
     guidance = _guidance_condition(
         trainer, batch, cfg_drop_mask, trainer.device, trainer.training_dtype
@@ -596,6 +653,9 @@ def train_step_partitioned_backward(
     forward_ms = 0.0
     backward_ms = 0.0
     logical_loss_tensor = torch.zeros((), device=trainer.device, dtype=torch.float32)
+    pred_loss_tensor = torch.zeros_like(logical_loss_tensor)
+    recon_loss_tensor = torch.zeros_like(logical_loss_tensor)
+    recon_weight = float(getattr(trainer, "reconstruction_loss_weight", 0.0) or 0.0)
     normal_loss_total = 0.0
     guided_loss_total = 0.0
     total_input_tokens = 0
@@ -682,7 +742,14 @@ def train_step_partitioned_backward(
                 normal_loss_total += core_fraction * normal_loss
                 guided_loss_total += core_fraction * guided_loss
                 del core_uncond, uncond_prediction
-            weighted_loss = core_fraction * core_loss
+            core_noisy = flatten_region(noisy_grid, region.core)
+            core_clean = flatten_region(clean_grid, region.core)
+            with torch.set_grad_enabled(recon_weight > 0):
+                core_predicted_clean = core_noisy.float() - sigma.float().view(-1, 1, 1) * core_prediction.float()
+                core_recon_loss = F.mse_loss(core_predicted_clean, core_clean.float())
+            weighted_pred_loss = core_fraction * core_loss
+            weighted_recon_loss = core_fraction * core_recon_loss
+            weighted_loss = (1 - recon_weight) * weighted_pred_loss + recon_weight * weighted_recon_loss
 
             if cuda_timing:
                 forward_end.record(torch.cuda.current_stream(trainer.device))
@@ -697,8 +764,11 @@ def train_step_partitioned_backward(
                 forward_ms += forward_start.elapsed_time(forward_end)
                 backward_ms += forward_end.elapsed_time(backward_end)
             logical_loss_tensor = logical_loss_tensor + weighted_loss.detach()
+            pred_loss_tensor = pred_loss_tensor + weighted_pred_loss.detach()
+            recon_loss_tensor = recon_loss_tensor + weighted_recon_loss.detach()
             del tile, tile_target, prediction, target_tile_grid, core_prediction, core_target
-            del weighted_loss, scaled_loss, core_loss
+            del weighted_loss, weighted_pred_loss, weighted_recon_loss, scaled_loss, core_loss
+            del core_noisy, core_clean, core_predicted_clean, core_recon_loss
     finally:
         if original_checkpoint_blocks is None:
             if hasattr(trainer.transformer, "_training_gradient_checkpointing_blocks"):
@@ -707,6 +777,8 @@ def train_step_partitioned_backward(
             trainer.transformer._training_gradient_checkpointing_blocks = original_checkpoint_blocks
 
     logical_loss = float(logical_loss_tensor.item())
+    pred_loss_value = float(pred_loss_tensor.item())
+    recon_loss_value = float(recon_loss_tensor.item())
     if guidance is not None:
         trainer.log_extra_metric("qwen_guidance_loss_normal", float(normal_loss_total))
         trainer.log_extra_metric("qwen_guidance_loss_guided", float(guided_loss_total))
@@ -715,7 +787,7 @@ def train_step_partitioned_backward(
             trainer, debug_save_path, latents=latents, noisy=noisy, target=target,
             prediction=debug_prediction_grid.reshape(1, tokens, channels),
             timesteps=timesteps, latent_h=int(latent_h), latent_w=int(latent_w),
-            loss=logical_loss, captions=debug_captions,
+            loss=logical_loss, recon_loss=recon_loss_value, captions=debug_captions,
             reference_image_paths=debug_reference_image_paths,
             partition_count=len(plan.regions),
         )
@@ -736,7 +808,7 @@ def train_step_partitioned_backward(
             "qwen_partition_peak_allocated_gb",
             float(torch.cuda.max_memory_allocated(trainer.device) / (1024 ** 3)),
         )
-    return logical_loss, logical_loss, 0.0
+    return logical_loss, pred_loss_value, recon_loss_value
 
 
 @torch.no_grad()

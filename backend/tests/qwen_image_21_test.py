@@ -148,6 +148,75 @@ def test_qwen_guidance_sigma_schedule_returns_to_ordinary_at_clean_end():
     assert float(guided) == pytest.approx(float(normal))
 
 
+@pytest.mark.parametrize("partitioned", [False, True])
+def test_qwen_reconstruction_loss_is_reported_and_weighted(partitioned):
+    transformer = _DebugTransformer()
+    trainer = SimpleNamespace(
+        device=torch.device("cpu"), training_dtype=torch.float32,
+        mixed_precision=False, use_grad_scaler=False, transformer=transformer,
+        arch=QwenImage21ArchHandler(), config={"dit_partition_fixed_count": 2},
+        reconstruction_loss_weight=0.2,
+        _active_mnt_noise=torch.ones(1, 32, 4),
+        log_extra_metric=lambda *_args: None,
+    )
+    inputs = dict(
+        latents=torch.zeros(1, 32, 4),
+        encoder_features=torch.zeros(1, 2, 4),
+        encoder_mask=torch.ones(1, 2, dtype=torch.bool),
+        timesteps=torch.tensor([0.5]), latent_h=4, latent_w=8,
+    )
+    if partitioned:
+        total, pred, recon = qwen_image_21_ops.train_step_partitioned_backward(
+            trainer, **inputs, backward_scale=1.0
+        )
+    else:
+        total, pred, recon = qwen_image_21_ops.train_step(trainer, **inputs)
+    assert float(pred) == pytest.approx(0.5625)
+    assert float(recon) == pytest.approx(0.140625)
+    assert float(total) == pytest.approx(0.8 * float(pred) + 0.2 * float(recon))
+
+
+def test_qwen_pixel_debug_decodes_after_forward(tmp_path):
+    class VAE(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.zeros(1))
+            self.config = SimpleNamespace(latents_mean=[0] * 4, latents_std=[1] * 4)
+
+        def decode(self, latents, return_dict=False):
+            return (latents[:, :3],)
+
+    class Processor:
+        def postprocess(self, image, output_type):
+            assert output_type == "pil"
+            return [Image.new("RGB", (8, 4), "pink")]
+
+    trainer = SimpleNamespace(
+        device=torch.device("cpu"), training_dtype=torch.float32,
+        vae_dtype=torch.float32, mixed_precision=False,
+        transformer=_DebugTransformer(), vae=VAE(),
+        qwen_image_21_pipeline=SimpleNamespace(image_processor=Processor()),
+        config={"qwen_debug_latent_view": "pixel"},
+        _active_mnt_noise=torch.ones(1, 32, 4),
+        log_extra_metric=lambda *_args: None,
+    )
+    qwen_image_21_ops.train_step(
+        trainer, latents=torch.zeros(1, 32, 4),
+        encoder_features=torch.zeros(1, 2, 4),
+        encoder_mask=torch.ones(1, 2, dtype=torch.bool),
+        timesteps=torch.tensor([0.5]), latent_h=4, latent_w=8,
+        debug_save_path=tmp_path,
+    )
+    assert list(tmp_path.glob("decode_*.webp")) == []
+    qwen_image_21_ops.flush_pending_debug_previews(trainer)
+    assert sorted(p.name for p in tmp_path.glob("decode_*.webp")) == [
+        "decode_t0.5000_noisy.webp", "decode_t0.5000_pred_x0.webp",
+        "decode_t0.5000_target.webp",
+    ]
+    saved = torch.load(next(tmp_path.glob("latents_t*.pt")), weights_only=False)
+    assert saved["recon_loss"] > 0
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
 @pytest.mark.parametrize("partitioned", [False, True])
 def test_qwen_guidance_loss_bf16_cuda_smoke(partitioned):

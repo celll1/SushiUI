@@ -600,6 +600,15 @@ The model predicts over condition plus target tokens. Loss and reconstructed
 latent use only the target tail. Any prefix token in the loss is a correctness
 failure.
 
+The trainer now reports `recon_loss = MSE(xt - sigma * predicted_velocity, x0)`
+on both full-frame and complete-coverage partitioned steps. Its existing
+`reconstruction_loss_weight` mixes this with the prediction objective; weight
+zero still reports the reconstruction metric without altering gradients.
+`qwen_debug_latent_view=latent` preserves tensor-channel previews. The opt-in
+`pixel` view additionally VAE-decodes target, noisy, and predicted-clean
+latents after backward, so debug previews do not retain a VAE next to step
+activations. The raw `.pt` data remains available in both modes.
+
 ### 9.5 LoRA topology and adapter files
 
 Initial LoRA target scope is attention projections:
@@ -668,10 +677,10 @@ rank 128 and checkpointing 24/32 blocks, an offloaded 8,892-token step used
 non-offloaded steps used about 41.6 GiB and 5.96 s. Transfers are synchronous,
 so offload stays opt-in.
 
-Complete-coverage partitioned target training is proposed separately in
+Complete-coverage partitioned target training is specified separately in
 [`QWEN_IMAGE_21_PARTITIONED_TRAINING_DESIGN.md`](QWEN_IMAGE_21_PARTITIONED_TRAINING_DESIGN.md).
-It is not implemented and does not change this document's current training
-contract.
+Its fixed 2/4-region prototype is implemented; partition core losses are
+area-weighted, including the reconstruction diagnostic and optional objective.
 
 Conditioning and latent caches should let steady-state training release TE and
 VAE. Without caches, stage TE, VAE, and DiT sequentially. Full-DiT training is

@@ -7024,6 +7024,7 @@ export interface TrainingRunCreateRequest {
   sensenova_sample_cfg_norm?: "none" | "global";
   debug_latents?: boolean;
   debug_latents_every?: number;
+  qwen_debug_latent_view?: "latent" | "pixel";
   convergence_diagnostics_enable?: boolean;
   convergence_diagnostics_interval?: number;
   crop_decode_loss_enable?: boolean;

@@ -45,6 +45,8 @@ from core.training.training_file_rpc import (
 
 REQUEST_PREFIX = ".sample_request_"
 RESULT_PREFIX = ".sample_result_"
+LIVE_CONFIG_FILENAME = ".sample_live_config.json"
+LIVE_APPLIED_FILENAME = ".sample_live_applied.json"
 
 # N queued requests would mean N full generations back to back with training
 # stalled, so the queue is capped rather than unbounded.
@@ -87,6 +89,24 @@ def request_path(output_dir: str | Path, request_id: str) -> Path:
 
 def result_path(output_dir: str | Path, request_id: str) -> Path:
     return _request_path(output_dir, RESULT_PREFIX, request_id)
+
+
+def read_live_config(output_dir: str | Path, run_id: int) -> Optional[Dict[str, Any]]:
+    record = _read_json(Path(output_dir) / LIVE_CONFIG_FILENAME)
+    return record if record is not None and record.get("run_id") == run_id else None
+
+
+def write_live_config(output_dir: str | Path, record: Dict[str, Any]) -> None:
+    _atomic_write_json(Path(output_dir) / LIVE_CONFIG_FILENAME, record)
+
+
+def read_live_applied(output_dir: str | Path, run_id: int) -> Optional[Dict[str, Any]]:
+    record = _read_json(Path(output_dir) / LIVE_APPLIED_FILENAME)
+    return record if record is not None and record.get("run_id") == run_id else None
+
+
+def write_live_applied(output_dir: str | Path, record: Dict[str, Any]) -> None:
+    _atomic_write_json(Path(output_dir) / LIVE_APPLIED_FILENAME, record)
 
 
 def list_pending_requests(output_dir: str | Path,

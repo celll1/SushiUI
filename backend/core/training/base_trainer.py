@@ -13682,6 +13682,7 @@ class BaseTrainer(ABC):
             metadata.add_text("condition_image_path", condition_image_path)
         if reference_image_path:
             metadata.add_text("reference_image_path", reference_image_path)
+        metadata.add_text("sample_settings_revision", str(getattr(self, "_live_sample_revision", 0)))
         sample_path.parent.mkdir(parents=True, exist_ok=True)
         sample.save(sample_path, pnginfo=metadata)
 
@@ -20174,6 +20175,35 @@ class BaseTrainer(ABC):
                         # Clear CUDA cache after checkpoint save to free temporary buffers
                         torch.cuda.empty_cache()
 
+                    # Adopt sample-only edits before deciding the next scheduled sample.
+                    live_sample = sample_rpc.read_live_config(self.output_dir, self.run_id)
+                    if (live_sample is not None and int(live_sample.get("revision", 0))
+                            > int(getattr(self, "_live_sample_revision", 0))):
+                        try:
+                            values = live_sample["config"]
+                            next_every = normalize_interval(int(values["sample_every"]))
+                            next_prompts = [dict(prompt) for prompt in values["prompts"]]
+                            next_width = int(values["width"])
+                            next_height = int(values["height"])
+                            next_steps = int(values["sample_steps"])
+                            next_guidance = float(values["guidance_scale"])
+                            next_seed = int(values["seed"])
+                            next_revision = int(live_sample["revision"])
+                            sample_every_n_steps = next_every
+                            self._sample_prompts = next_prompts
+                            sample_width, sample_height = next_width, next_height
+                            sample_steps = next_steps
+                            sample_guidance_scale, sample_seed = next_guidance, next_seed
+                            sample_rpc.write_live_applied(self.output_dir, {
+                                "run_id": self.run_id,
+                                "revision": next_revision,
+                                "step": global_step,
+                                "applied_at": time.time(),
+                            })
+                            self._live_sample_revision = next_revision
+                        except (KeyError, TypeError, ValueError, OSError) as exc:
+                            print(f"{self.log_prefix} WARNING: live sample settings rejected: {exc}")
+
                     # Generate sample
                     # Also generate at step 0 to verify base model output
                     # With MNT > 1, check if any step in the batch's MNT range contains a sample interval
@@ -20401,14 +20431,17 @@ class BaseTrainer(ABC):
                                 # Free sample-related tensors
                                 del sample, image_tensor
                         except Exception as sample_err:
-                            # A scheduled sample has always been allowed to abort the run;
-                            # an on-demand one must not, or a button press could kill a
-                            # multi-hour run.
-                            if on_demand_id is None:
+                            # A live sample edit must not end an otherwise healthy run.
+                            if on_demand_id is None and not getattr(self, "_live_sample_revision", 0):
                                 raise
                             on_demand_error = f"{type(sample_err).__name__}: {sample_err}"
-                            print(f"{self.log_prefix} WARNING: on-demand sample {on_demand_id} "
+                            print(f"{self.log_prefix} WARNING: sample {on_demand_id or sample_step} "
                                   f"failed: {on_demand_error}")
+                            if on_demand_id is None:
+                                emit_training_warning(
+                                    f"Live-configured sample at step {sample_step} failed: {on_demand_error}",
+                                    code="live_sample_failed", prefix=self.log_prefix,
+                                )
                         finally:
                             # In a finally: claim_next_request already unlinked the request, so a
                             # raise here would otherwise leave it neither pending nor resulted.

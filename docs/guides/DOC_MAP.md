@@ -60,6 +60,7 @@ machine-local working material.
 | [docs/decisions/TRAINING_RUN_STORAGE_V2.md](../decisions/TRAINING_RUN_STORAGE_V2.md) | Central catalogue and per-run database contract. |
 | [docs/guides/INT8_CONVROT_TRAINING_DESIGN.md](INT8_CONVROT_TRAINING_DESIGN.md) | INT8 ConvRot investigation and measurements. |
 | [docs/guides/LR_SCHEDULER_DESIGN.md](LR_SCHEDULER_DESIGN.md) | Learning-rate schedule controls and measured limits. |
+| [docs/guides/TRAINING_LIVE_SAMPLE_SETTINGS.md](TRAINING_LIVE_SAMPLE_SETTINGS.md) | Training Monitor sample settings that apply to future images during a live run. |
 | [docs/guides/TRAINING_DIAGNOSTICS_AND_AUXILIARY_LOSSES.md](TRAINING_DIAGNOSTICS_AND_AUXILIARY_LOSSES.md) | Shipped diagnostics and auxiliary losses. |
 | [docs/guides/TIMESTEP_DISTRIBUTION_MORPH_DESIGN.md](TIMESTEP_DISTRIBUTION_MORPH_DESIGN.md) | Morphing the timestep distribution across a resume: design and where it lives. |
 | [docs/guides/ADAPTIVE_TIMESTEP_DESIGN.md](ADAPTIVE_TIMESTEP_DESIGN.md) | Metric-driven flow-timestep adaptation: log-SNR bins, safety bounds, resume state, and support boundary. |

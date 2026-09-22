@@ -15,6 +15,7 @@ import { densityOf, morphDensity } from "@/utils/timestepDistribution";
 import LrScheduleRetargetPanel from "./LrScheduleRetargetPanel";
 import LrScheduleTriggerPanel from "./LrScheduleTriggerPanel";
 import ImageViewer from "../common/ImageViewer";
+import LiveSampleSettings from "./LiveSampleSettings";
 
 interface TrainingMonitorProps {
   run: TrainingRun;
@@ -1407,6 +1408,13 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
           <div className="flex-1 lg:overflow-y-auto p-3 sm:p-4 space-y-2.5 sm:space-y-3">
             {viewMode === "samples" ? (
               <>
+                {hasSampleImages && (
+                  <LiveSampleSettings
+                    runId={currentRun.id}
+                    isRunning={currentRun.status === "running"}
+                    disabledReason={samplesUnsupportedReason}
+                  />
+                )}
                 {hasSampleImages && (
                   <div className="space-y-1.5 rounded border border-gray-700 bg-gray-800/60 p-2">
                     <button

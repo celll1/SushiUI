@@ -112,13 +112,11 @@ def classify_lora_keys(keys, metadata=None) -> Dict[str, Any]:
     # leaves as Krea 2, so its trainer metadata is the only unambiguous tag.
     declared_arch = str((metadata or {}).get("model_type", "")).strip().lower()
     if declared_arch == "qwen_image_21" and any(
-        key.startswith(("lora_unet_transformer_blocks__",
-                        "lora_cond_unet_transformer_blocks__")) and "__attn__" in key
+        key.startswith("lora_unet_transformer_blocks__") and "__attn__" in key
         for key in keys
     ):
         for key in keys:
-            match = re.search(
-                r'lora_(?:cond_)?unet_transformer_blocks__(\d+)__attn__', key)
+            match = re.search(r'lora_unet_transformer_blocks__(\d+)__attn__', key)
             if match:
                 blocks.add(f"MMB{int(match.group(1)):02d}")
         return classified("qwen_image_21")

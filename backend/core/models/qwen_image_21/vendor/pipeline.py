@@ -31,7 +31,6 @@ from diffusers.utils.torch_utils import randn_tensor
 
 from .autoencoder import AutoencoderKLQwenImage21
 from .transformer import QwenImage21KVCache, QwenImage21Transformer2DModel
-from core.models.qwen_image_21.branch_lora import qwen_lora_role
 
 
 if is_torch_xla_available():
@@ -923,7 +922,7 @@ class QwenImage21Pipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
                 noise_pred = noise_pred[:, -latents.size(1) :]
 
                 if do_true_cfg:
-                    with self.transformer.cache_context("uncond"), qwen_lora_role("base"):
+                    with self.transformer.cache_context("uncond"):
                         neg_noise_pred = self.transformer(
                             hidden_states=latent_model_input,
                             timestep=timestep / 1000,

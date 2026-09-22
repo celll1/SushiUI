@@ -25019,15 +25019,6 @@ components:
           maximum: 7
           default: 1
           description: Number of earlier backward blocks scheduled ahead; must be smaller than cache blocks.
-        qwen_lora_branch_mode:
-          type: string
-          enum: [shared, cond_base_v1]
-          default: shared
-          example: cond_base_v1
-          description: >-
-            Qwen-Image 2.1 LoRA only. cond_base_v1 stores a conditional-only
-            LoRA namespace; the detached empty-prompt reference and CFG negative
-            forward use the unchanged base. Requires cfg_uncond_drop_rate=0.
         qwen_guidance_loss_weight:
           type: number
           format: float

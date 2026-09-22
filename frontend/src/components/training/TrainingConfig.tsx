@@ -6154,27 +6154,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
             {isQwenImage21Model && (
               <div className="pt-2 border-t border-gray-700 space-y-2">
-                <label className="block text-xs text-gray-400">LoRA CFG branch weights
-                  <select
-                    value={params.qwen_lora_branch_mode ?? (trainingDefaults?.qwen_lora_branch_mode as string | undefined) ?? ""}
-                    onChange={(e) => updateParam("qwen_lora_branch_mode", e.target.value as "shared" | "cond_base_v1")}
-                    className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
-                  >
-                    <option value="shared">Shared LoRA on positive and negative</option>
-                    <option value="cond_base_v1">Separate conditional LoRA; base negative (experimental)</option>
-                  </select>
-                </label>
-                {params.qwen_lora_branch_mode === "cond_base_v1" && (
-                  <p className="text-xs text-amber-400">
-                    Requires unconditional drop rate 0. The conditional LoRA cannot alter the empty or negative CFG branch.
-                  </p>
-                )}
                 <div className="rounded border border-amber-800/50 bg-amber-950/20 p-2 space-y-2">
                   <div className="text-xs text-amber-300">Guidance-target loss (experimental)</div>
                   <p className="text-xs text-gray-400">
                     Mix ordinary flow loss with an extrapolated target based on a no-gradient
                     empty-prompt prediction. This adds one transformer forward per image or tile.
-                    Shared mode can train the null response with CFG-null dropout; conditional-only mode fixes the negative response to base.
+                    Keep CFG-null dropout enabled to train the unconditional branch separately.
                   </p>
                   <div className="grid grid-cols-3 gap-2">
                     <label className="text-xs text-gray-400">Mix weight

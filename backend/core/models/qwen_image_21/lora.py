@@ -2,41 +2,11 @@
 
 from core.models.krea2.krea2_lora import (
     build_lora_branch,
-    declared_branch_count as _declared_branch_count,
+    declared_branch_count,
     detect_lora_format,
     flatten_to_key,
     normalise_lora_state_dict,
 )
-
-
-def _cond_as_shared_keys(raw):
-    return {
-        key.replace("lora_cond_unet_", "lora_unet_", 1): value
-        for key, value in raw.items() if key.startswith("lora_cond_unet_")
-    }
-
-
-def declared_branch_count(raw):
-    return _declared_branch_count(raw) + _declared_branch_count(_cond_as_shared_keys(raw))
-
-
-def normalise_cond_lora_state_dict(raw):
-    if any(key.startswith("lora_unet_") or key.startswith("lora_uncond_unet_") for key in raw):
-        raise ValueError("Qwen cond/base checkpoint contains shared or uncond LoRA tensors")
-    mapped = _cond_as_shared_keys(raw)
-    if not mapped:
-        raise ValueError("Qwen cond/base checkpoint has no conditional LoRA tensors")
-    return normalise_lora_state_dict(mapped)
-
-
-def build_cond_lora_branch(base, group, module_path):
-    from core.adapters import build_adapter_branch, lora_branch_dtype
-    from core.models.qwen_image_21.branch_lora import QwenCondLoRALinearLayer
-
-    return build_adapter_branch(
-        base, group, layer_cls=QwenCondLoRALinearLayer,
-        lora_dtype=lora_branch_dtype(base), lora_name=module_path,
-    )
 
 
 def iter_lora_slots(transformer):
@@ -60,11 +30,9 @@ def iter_lora_slots(transformer):
 
 __all__ = [
     "build_lora_branch",
-    "build_cond_lora_branch",
     "declared_branch_count",
     "detect_lora_format",
     "flatten_to_key",
     "iter_lora_slots",
     "normalise_lora_state_dict",
-    "normalise_cond_lora_state_dict",
 ]

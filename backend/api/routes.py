@@ -17449,6 +17449,7 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
                     level=event.get("level", "info"),
                     message=event.get("message", ""),
                     code=event.get("code"),
+                    resources=event.get("resources"),
                 )
             except Exception as e:
                 print(f"[Training {run_id}] Failed to broadcast notice: {e}")

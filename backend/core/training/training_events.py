@@ -31,6 +31,9 @@ TRAINING_EVENT_LEVELS = ("info", "warning", "error")
 # ~1.2 KB (the fused gradient-accumulation one).
 MAX_EVENT_MESSAGE_CHARS = 2000
 MAX_EVENT_CODE_CHARS = 64
+MAX_EVENT_RESOURCES = 16
+MAX_EVENT_RESOURCE_LABEL_CHARS = 128
+MAX_EVENT_RESOURCE_PATH_CHARS = 2048
 
 # Per-run cap on what survives on the run row. Notices are "say once" by
 # construction, so this is a guard against a pathological emitter, not a
@@ -45,12 +48,32 @@ def _clamp(text: Any, limit: int) -> str:
     return s if len(s) <= limit else s[: limit - 1] + "…"
 
 
+def _resources(value: Any) -> List[Dict[str, str]]:
+    """Bound local-file links carried by a structured notice."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    result: List[Dict[str, str]] = []
+    for item in value[:MAX_EVENT_RESOURCES]:
+        if not isinstance(item, dict):
+            continue
+        path = item.get("path")
+        if not isinstance(path, str) or not path:
+            continue
+        result.append({
+            "kind": _clamp(item.get("kind") or "file", 32),
+            "label": _clamp(item.get("label") or "File", MAX_EVENT_RESOURCE_LABEL_CHARS),
+            "path": _clamp(path, MAX_EVENT_RESOURCE_PATH_CHARS),
+        })
+    return result
+
+
 def emit_training_event(
     level: str,
     message: str,
     code: Optional[str] = None,
     prefix: str = "",
     console: bool = True,
+    resources: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """Print the human line and the machine line. Returns the event emitted.
 
@@ -67,6 +90,9 @@ def emit_training_event(
         print(f"{head}{_CONSOLE_TAG[level]}{message}", flush=True)
 
     event = {"level": level, "code": code, "message": message}
+    bounded_resources = _resources(resources)
+    if bounded_resources:
+        event["resources"] = bounded_resources
     # json.dumps escapes newlines, so this is always exactly one line.
     print(f"{TRAINING_EVENT_SENTINEL} {json.dumps(event, ensure_ascii=False)}", flush=True)
     return event
@@ -116,11 +142,15 @@ def split_training_event(line: str) -> tuple:
         level = "info"
     code = payload.get("code")
     code = _clamp(code, MAX_EVENT_CODE_CHARS) if isinstance(code, str) and code else None
-    return prefix, {
+    event = {
         "level": level,
         "code": code,
         "message": _clamp(message, MAX_EVENT_MESSAGE_CHARS),
     }
+    resources = _resources(payload.get("resources"))
+    if resources:
+        event["resources"] = resources
+    return prefix, event
 
 
 def parse_training_event(line: str) -> Optional[Dict[str, Any]]:
@@ -150,6 +180,9 @@ def merge_run_warnings(
         "code": event.get("code"),
         "message": event["message"],
     }
+    resources = _resources(event.get("resources"))
+    if resources:
+        entry["resources"] = resources
     if entry in current:
         return None
     if len(current) >= limit:

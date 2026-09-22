@@ -6816,6 +6816,13 @@ export interface TrainingLogEvent {
   level: "info" | "warning" | "error";
   code?: string | null;
   message: string;
+  resources?: TrainingLogResource[];
+}
+
+export interface TrainingLogResource {
+  kind: "image" | "caption" | "file" | string;
+  label: string;
+  path: string;
 }
 
 export interface TrainingRun {

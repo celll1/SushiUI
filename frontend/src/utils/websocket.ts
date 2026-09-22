@@ -54,6 +54,7 @@ export interface TrainingLogMessage {
   level: "info" | "warning" | "error";
   message: string;
   code?: string;
+  resources?: Array<{ kind: string; label: string; path: string }>;
 }
 
 export interface FpFnScatterData {

@@ -277,6 +277,7 @@ def test_a_spike_records_the_batch_that_produced_it(tmp_path):
     assert record is not None
     assert record["ratio"] == pytest.approx(17334.53 / 3.8, rel=1e-3)
     assert record["batch"][0]["path"] == "M:/data/offender.png"
+    assert record["batch"][0]["caption_path"] == "M:\\data\\offender.txt"
     assert record["batch"][0]["caption"] == "the caption"
     assert record["batch"][0]["width"] == 1216
     assert record["timesteps"] == pytest.approx([0.83, 0.21], rel=1e-3)

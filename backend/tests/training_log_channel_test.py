@@ -364,10 +364,18 @@ class FloodBoundTest(unittest.TestCase):
 class ParsingTest(unittest.TestCase):
     def test_round_trip(self):
         lines = capture(emit_training_event, "error", "boom", code="e1",
-                        prefix="[X]")
+                        prefix="[X]", resources=[{
+                            "kind": "image", "label": "Batch 1 image",
+                            "path": "M:\\dataset\\sample.png",
+                        }])
         events = [e for e in (parse_training_event(l) for l in lines) if e]
-        self.assertEqual(events,
-                         [{"level": "error", "code": "e1", "message": "boom"}])
+        self.assertEqual(events, [{
+            "level": "error", "code": "e1", "message": "boom",
+            "resources": [{
+                "kind": "image", "label": "Batch 1 image",
+                "path": "M:\\dataset\\sample.png",
+            }],
+        }])
 
     def test_a_malformed_sentinel_line_is_ordinary_output(self):
         for bad in (f"{TRAINING_EVENT_SENTINEL} not json",
@@ -497,6 +505,14 @@ class ExistingMessageTypesUnaffectedTest(unittest.TestCase):
         m = self._manager()
         m.send_training_log(run_id=1, level="info", message="m")
         self.assertNotIn("code", self._drain(m)[0])
+
+    def test_a_training_log_forwards_local_resources(self):
+        m = self._manager()
+        resources = [{"kind": "caption", "label": "Batch 1 caption",
+                      "path": "M:\\dataset\\sample.txt"}]
+        m.send_training_log(run_id=1, level="info", message="spike",
+                            code="grad_spike", resources=resources)
+        self.assertEqual(self._drain(m)[0]["resources"], resources)
 
 
 # --------------------------------------------------------------------------

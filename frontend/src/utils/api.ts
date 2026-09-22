@@ -7232,6 +7232,10 @@ export interface TrainingRunCreateRequest {
   qwen_guidance_loss_weight?: number;
   qwen_guidance_loss_scale?: number;
   qwen_guidance_loss_schedule?: "constant" | "sigma";
+  qwen_guidance_loss_weight_schedule?: "constant" | "high_noise_smoothstep";
+  qwen_guidance_loss_high_noise_weight?: number;
+  qwen_guidance_loss_ramp_start?: number;
+  qwen_guidance_loss_ramp_end?: number;
   multi_noise_timesteps?: number;
   multi_noise_mode?: "independent" | "shared" | "trajectory" | "antithetic";
   stratified_timesteps?: boolean;  // One timestep per equal-probability stratum across the MNT window (default true)

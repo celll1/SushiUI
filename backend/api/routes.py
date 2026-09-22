@@ -15562,6 +15562,29 @@ class TrainingRunCreateRequest(BaseModel):
     qwen_guidance_loss_schedule: Literal["constant", "sigma"] = TRAINING_DEFAULTS[
         "qwen_guidance_loss_schedule"
     ]
+    qwen_guidance_loss_weight_schedule: Literal[
+        "constant", "high_noise_smoothstep"
+    ] = TRAINING_DEFAULTS["qwen_guidance_loss_weight_schedule"]
+    qwen_guidance_loss_high_noise_weight: float = Field(
+        default=TRAINING_DEFAULTS["qwen_guidance_loss_high_noise_weight"], ge=0, le=1
+    )
+    qwen_guidance_loss_ramp_start: float = Field(
+        default=TRAINING_DEFAULTS["qwen_guidance_loss_ramp_start"], ge=0, le=1
+    )
+    qwen_guidance_loss_ramp_end: float = Field(
+        default=TRAINING_DEFAULTS["qwen_guidance_loss_ramp_end"], ge=0, le=1
+    )
+
+    @model_validator(mode="after")
+    def _qwen_guidance_ramp_valid(self):
+        if self.qwen_guidance_loss_ramp_start >= self.qwen_guidance_loss_ramp_end:
+            raise ValueError("Qwen guidance ramp start must be below ramp end")
+        if (
+            self.qwen_guidance_loss_weight_schedule == "high_noise_smoothstep"
+            and self.qwen_guidance_loss_high_noise_weight < self.qwen_guidance_loss_weight
+        ):
+            raise ValueError("Qwen high-noise guidance weight must be at least the low-noise weight")
+        return self
 
     @model_validator(mode="after")
     def _checkpoint_aliases_agree(self):

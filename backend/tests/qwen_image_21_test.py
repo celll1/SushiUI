@@ -101,6 +101,7 @@ def test_qwen_guidance_loss_mixes_targets_and_detaches_null_forward(partitioned)
     assert loss_value == pytest.approx(0.75 * expected_normal + 0.25 * expected_guided)
     assert metrics["qwen_guidance_loss_normal"] == pytest.approx(expected_normal)
     assert metrics["qwen_guidance_loss_guided"] == pytest.approx(expected_guided)
+    assert metrics["qwen_guidance_loss_mix_weight"] == pytest.approx(0.25)
     # The no-gradient null prediction is a fixed target, not a second gradient path.
     expected_grad = 0.75 * 2 * (conditional - 1.0) * 0.5 + 0.25 * 2 * (conditional - guided_target) * 0.5
     assert float(transformer.scale.grad) == pytest.approx(expected_grad)
@@ -127,13 +128,76 @@ def test_qwen_guidance_loss_skips_cfg_null_items():
     assert metrics == {}
 
 
+@pytest.mark.parametrize("partitioned", [False, True])
+@pytest.mark.parametrize("sigma, weight", [(0.2, 0.25), (0.5, 0.25), (0.65, 0.625),
+                                            (0.8, 1.0), (1.0, 1.0)])
+def test_qwen_high_noise_mix_schedule_matches_full_and_partitioned_gradients(partitioned, sigma, weight):
+    transformer = _GuidanceTransformer()
+    metrics = {}
+    trainer = SimpleNamespace(
+        device=torch.device("cpu"), training_dtype=torch.float32,
+        mixed_precision=False, use_grad_scaler=False, transformer=transformer,
+        arch=QwenImage21ArchHandler(),
+        config={
+            "dit_partition_fixed_count": 2,
+            "qwen_guidance_loss_weight": 0.25,
+            "qwen_guidance_loss_scale": 3.0,
+            "qwen_guidance_loss_schedule": "sigma",
+            "qwen_guidance_loss_weight_schedule": "high_noise_smoothstep",
+            "qwen_guidance_loss_high_noise_weight": 1.0,
+            "qwen_guidance_loss_ramp_start": 0.5,
+            "qwen_guidance_loss_ramp_end": 0.8,
+        },
+        _active_mnt_noise=torch.ones(1, 32, 4),
+        _qwen_guidance_blank_encoding=(torch.zeros(1, 3, 4), torch.ones(3, dtype=torch.bool)),
+        log_extra_metric=lambda key, value: metrics.__setitem__(key, value),
+    )
+    inputs = dict(
+        latents=torch.zeros(1, 32, 4), encoder_features=torch.ones(1, 2, 4),
+        encoder_mask=torch.ones(1, 2, dtype=torch.bool),
+        timesteps=torch.tensor([sigma]), latent_h=4, latent_w=8,
+    )
+    if partitioned:
+        loss_value, _, _ = qwen_image_21_ops.train_step_partitioned_backward(
+            trainer, **inputs, backward_scale=1.0
+        )
+    else:
+        loss, _, _ = qwen_image_21_ops.train_step(trainer, **inputs)
+        loss_value = float(loss.detach())
+        loss.backward()
+    conditional = 1.0 + 0.5 * sigma
+    unconditional = 0.5 * sigma
+    target = 1.0
+    guided = unconditional + (1 + 2 * sigma) * (target - unconditional)
+    expected_loss = (1 - weight) * (conditional - target) ** 2 + weight * (conditional - guided) ** 2
+    expected_grad = 2 * sigma * ((1 - weight) * (conditional - target) + weight * (conditional - guided))
+    assert loss_value == pytest.approx(expected_loss, abs=2e-6)
+    assert float(transformer.scale.grad) == pytest.approx(expected_grad, abs=2e-6)
+    assert metrics["qwen_guidance_loss_mix_weight"] == pytest.approx(weight, abs=1e-6)
+
+
 def test_qwen_guidance_api_defaults_match_contract():
     from api.param_defaults import TRAINING_DEFAULTS
 
     fields = routes.TrainingRunCreateRequest.model_fields
     for name in ("qwen_guidance_loss_weight", "qwen_guidance_loss_scale",
-                 "qwen_guidance_loss_schedule"):
+                 "qwen_guidance_loss_schedule", "qwen_guidance_loss_weight_schedule",
+                 "qwen_guidance_loss_high_noise_weight", "qwen_guidance_loss_ramp_start",
+                 "qwen_guidance_loss_ramp_end"):
         assert fields[name].default == TRAINING_DEFAULTS[name]
+
+
+@pytest.mark.parametrize("overrides", [
+    {"qwen_guidance_loss_ramp_start": 0.8, "qwen_guidance_loss_ramp_end": 0.8},
+    {"qwen_guidance_loss_weight": 0.5,
+     "qwen_guidance_loss_weight_schedule": "high_noise_smoothstep",
+     "qwen_guidance_loss_high_noise_weight": 0.25},
+])
+def test_qwen_guidance_ramp_rejects_invalid_configuration(overrides):
+    with pytest.raises(ValueError):
+        routes.TrainingRunCreateRequest(
+            base_model_path="unused", training_method="lora", **overrides
+        )
 
 
 def test_qwen_guidance_sigma_schedule_returns_to_ordinary_at_clean_end():
@@ -183,6 +247,9 @@ def test_qwen_hybrid_and_debug_view_survive_config_generation():
         base_model_path="unused", training_method="lora",
         qwen_guidance_loss_weight=0.25, qwen_guidance_loss_scale=3.0,
         qwen_guidance_loss_schedule="sigma", qwen_debug_latent_view="pixel",
+        qwen_guidance_loss_weight_schedule="high_noise_smoothstep",
+        qwen_guidance_loss_high_noise_weight=1.0,
+        qwen_guidance_loss_ramp_start=0.5, qwen_guidance_loss_ramp_end=0.8,
     )
     train = _build_train_section(
         request.model_dump(), total_steps=20, epochs=None,
@@ -192,6 +259,10 @@ def test_qwen_hybrid_and_debug_view_survive_config_generation():
         ("qwen_guidance_loss_weight", 0.25),
         ("qwen_guidance_loss_scale", 3.0),
         ("qwen_guidance_loss_schedule", "sigma"),
+        ("qwen_guidance_loss_weight_schedule", "high_noise_smoothstep"),
+        ("qwen_guidance_loss_high_noise_weight", 1.0),
+        ("qwen_guidance_loss_ramp_start", 0.5),
+        ("qwen_guidance_loss_ramp_end", 0.8),
         ("qwen_debug_latent_view", "pixel"),
     ):
         assert train[key] == expected

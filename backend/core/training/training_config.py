@@ -521,6 +521,8 @@ def _build_train_section(
         "qwen_convrot_backward_prefetch_depth",
         "qwen_guidance_loss_weight", "qwen_guidance_loss_scale",
         "qwen_guidance_loss_schedule",
+        "qwen_guidance_loss_weight_schedule", "qwen_guidance_loss_high_noise_weight",
+        "qwen_guidance_loss_ramp_start", "qwen_guidance_loss_ramp_end",
     ):
         train[key] = p.get(key, _TD[key])
 

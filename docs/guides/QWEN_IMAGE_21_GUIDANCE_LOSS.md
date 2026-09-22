@@ -46,6 +46,18 @@ unchanged at weight 0. The feature is Qwen-only and requires its frozen text
 encoder. It works with both full-canvas and complete-coverage partitioned
 training; null-drop labels are passed through OOM micro-batch slicing.
 
+An opt-in `qwen_guidance_loss_weight_schedule=high_noise_smoothstep` changes
+the mix fraction per logical image, not the guidance-target scale. The existing
+`qwen_guidance_loss_weight` is the low-noise fraction; the fraction transitions
+to `qwen_guidance_loss_high_noise_weight` between
+`qwen_guidance_loss_ramp_start` and `qwen_guidance_loss_ramp_end` using
+`t²(3−2t)` with clamped normalized sigma `t`. Defaults are `constant`, 1.0,
+0.5, and 0.8, so no existing run changes. With low=0.25 and high=1.0,
+sigma≤0.5 matches Run 156's mix while sigma≥0.8 matches Run 158's guidance-only
+mix; sigma=1 is fully guided. The schedule is experimental: the initial
+high-noise rollout may remain compositionally constrained even if CFG 1 is
+stable. `qwen_guidance_loss_weight=0` still disables the extra forward.
+
 ## Validation gate
 
 Unit tests assert the exact mixed loss and gradient for full/partitioned

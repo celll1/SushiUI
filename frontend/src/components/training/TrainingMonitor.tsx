@@ -275,10 +275,11 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
   // backend returns steps ascending and only ever appends, so an index stays
   // pointing at the same image across the 5s reload.
   const sampleImages = useMemo(
-    () => samples.flatMap((s, stepIndex) => s.images.map((img) => ({ path: img.path, stepIndex }))),
+    () => samples.flatMap((s, stepIndex) => s.images.map((img) => ({ path: img.path, previewPath: img.preview_path, stepIndex }))),
     [samples]
   );
   const viewerImage = viewerIndex === null ? undefined : sampleImages[viewerIndex];
+  const viewerStepIndex = viewerImage?.stepIndex;
 
   const navigateSample = useCallback((direction: "prev" | "next") => {
     setViewerIndex((prev) => {
@@ -337,11 +338,11 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
 
   // Keep the step slider on whatever the enlarged view is showing.
   useEffect(() => {
-    if (viewerImage) {
-      setSelectedStepIndex(viewerImage.stepIndex);
-      commitSamplePreview(viewerImage.stepIndex);
+    if (viewerStepIndex !== undefined) {
+      setSelectedStepIndex(viewerStepIndex);
+      commitSamplePreview(viewerStepIndex);
     }
-  }, [viewerImage, commitSamplePreview]);
+  }, [viewerStepIndex, commitSamplePreview]);
 
   // One tick for both: the image itself is observed through the samples
   // listing, the queue call only reports what is pending / what failed.
@@ -350,6 +351,11 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
       const data = await getTrainingSamples(
         currentRun.id, latestSampleStepRef.current, signal);
       setSamples((previous) => {
+        if (data.samples.every((incoming) => {
+          const existing = previous.find((entry) => entry.step === incoming.step);
+          return existing && incoming.images.every((image) =>
+            existing.images.some((old) => old.path === image.path));
+        })) return previous;
         const byStep = new Map(previous.map((entry) => [entry.step, entry]));
         for (const incoming of data.samples) {
           const existing = byStep.get(incoming.step);
@@ -1835,6 +1841,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
       {viewerImage && viewerIndex !== null && (
         <ImageViewer
           imageUrl={viewerImage.path}
+          previewUrl={sizedPreviewUrl(viewerImage.previewPath, 512)}
           onClose={() => setViewerIndex(null)}
           onNavigate={navigateSample}
           hasPrev={viewerIndex > 0}

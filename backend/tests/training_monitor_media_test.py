@@ -20,6 +20,7 @@ cached_image_preview = _MEDIA.cached_image_preview
 debug_image_urls = _MEDIA.debug_image_urls
 file_fingerprint = _MEDIA.file_fingerprint
 find_debug_latent_file = _MEDIA.find_debug_latent_file
+publish_sample_png = _MEDIA.publish_sample_png
 PreviewSize = _MEDIA.PreviewSize
 
 _REPO = Path(__file__).parents[2]
@@ -39,6 +40,43 @@ def test_sample_preview_is_sized_versioned_and_reused(tmp_path: Path):
         assert image.format == "WEBP"
         assert max(image.size) == 256
     assert preview.stat().st_size < source.stat().st_size
+
+
+def test_sample_png_appears_only_after_encoding(tmp_path: Path):
+    from PIL import PngImagePlugin
+
+    target = tmp_path / "step_000100_sample_0.png"
+    info = PngImagePlugin.PngInfo()
+    info.add_text("prompt", "test prompt")
+
+    class ObservedImage:
+        def save(self, pending, **kwargs):
+            assert not target.exists()
+            assert pending.suffix == ".tmp"
+            assert kwargs["format"] == "PNG"
+            Image.new("RGB", (8, 8), "red").save(pending, **kwargs)
+            assert not target.exists()
+
+    publish_sample_png(ObservedImage(), target, info)
+    assert list(tmp_path.iterdir()) == [target]
+    with Image.open(target) as image:
+        assert image.text["prompt"] == "test prompt"
+
+
+def test_failed_sample_png_keeps_previous_complete_file(tmp_path: Path):
+    target = tmp_path / "step_000100_sample_0.png"
+    Image.new("RGB", (8, 8), "blue").save(target)
+
+    class FailedImage:
+        def save(self, pending, **kwargs):
+            pending.write_bytes(b"partial PNG")
+            raise OSError("encoder failed")
+
+    with pytest.raises(OSError, match="encoder failed"):
+        publish_sample_png(FailedImage(), target, None)
+    assert list(tmp_path.iterdir()) == [target]
+    with Image.open(target) as image:
+        assert image.getpixel((0, 0)) == (0, 0, 255)
 
 
 def test_debug_manifest_lists_individual_images_and_renders_only_requested_kind(

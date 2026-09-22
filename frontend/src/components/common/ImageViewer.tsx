@@ -32,6 +32,9 @@ interface ImageViewerProps {
   // For kind="video"/"audio" this is the browser-playable URL to render (the
   // caller resolves playbackUrl vs. url before passing it in).
   imageUrl: string;
+  // A small already-cached image keeps the overlay responsive while the
+  // original decodes. Training samples supply this; other callers may omit it.
+  previewUrl?: string;
   // Defaults to "image" so every existing caller (which omits this prop) keeps
   // today's <img>-only behavior unchanged.
   kind?: "image" | "video" | "audio";
@@ -64,11 +67,13 @@ const isTextEntry = (target: EventTarget | null) =>
   target instanceof HTMLTextAreaElement ||
   (target instanceof HTMLInputElement && target.type !== "range");
 
-export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClose, onNavigate, hasPrev, hasNext, postEdit, onPostEditChange, showDownload = true }: ImageViewerProps) {
+export default function ImageViewer({ imageUrl, previewUrl, kind = "image", posterUrl, onClose, onNavigate, hasPrev, hasNext, postEdit, onPostEditChange, showDownload = true }: ImageViewerProps) {
   // Post-edit strip is collapsed by default so it never obscures the image;
   // this is purely internal UI state (not one of the optional postEdit props).
   const [postEditExpanded, setPostEditExpanded] = useState(false);
   const [mediaFailed, setMediaFailed] = useState(false);
+  const [decodedFullUrl, setDecodedFullUrl] = useState<string | null>(null);
+  const [fullDecodeFailed, setFullDecodeFailed] = useState(false);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const instanceIdRef = useRef(Symbol("image-viewer"));
   const onCloseRef = useRef(onClose);
@@ -80,7 +85,28 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
   // Only meaningful for images; passing null for video/audio skips the fetch
   // path in usePostEditPreview entirely (flatten<=0 there is already a no-op,
   // this just avoids treating a video/audio URL as decodable image data).
-  const effectiveImageUrl = usePostEditPreview(kind === "image" ? imageUrl : null, postEdit?.flatten ?? 0);
+  const displayedImageUrl = previewUrl && decodedFullUrl !== imageUrl ? previewUrl : imageUrl;
+  const effectiveImageUrl = usePostEditPreview(kind === "image" ? displayedImageUrl : null, postEdit?.flatten ?? 0);
+
+  useEffect(() => {
+    if (kind !== "image" || !previewUrl) return;
+    let cancelled = false;
+    const original = new window.Image();
+    original.decoding = "async";
+    original.src = imageUrl;
+    original.decode().then(() => {
+      if (!cancelled) {
+        setDecodedFullUrl(imageUrl);
+        setFullDecodeFailed(false);
+      }
+    }).catch(() => {
+      if (!cancelled) setFullDecodeFailed(true);
+    });
+    return () => {
+      cancelled = true;
+      original.removeAttribute("src");
+    };
+  }, [imageUrl, kind, previewUrl]);
 
   useEffect(() => {
     setMediaFailed(false);
@@ -227,6 +253,7 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
           <img
             src={effectiveImageUrl ?? imageUrl}
             alt="Full size preview"
+            decoding="async"
             className={`max-w-full max-h-full object-contain ${mediaFailed ? "hidden" : ""}`}
             style={postEdit ? { filter: buildFilterString(postEdit) } : undefined}
             onLoad={() => setMediaFailed(false)}
@@ -242,6 +269,12 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
           >
             <p>The full-size media could not be loaded.</p>
             <p className="mt-1 text-xs text-gray-400">Close this viewer and refresh the preview.</p>
+          </div>
+        )}
+
+        {fullDecodeFailed && previewUrl && !mediaFailed && (
+          <div className="absolute bottom-4 rounded bg-black/75 px-3 py-1 text-xs text-white">
+            Full-size image unavailable; showing preview.
           </div>
         )}
 

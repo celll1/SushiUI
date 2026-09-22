@@ -54,6 +54,17 @@ def file_fingerprint(path: Path) -> str:
     return f"{stat.st_mtime_ns:x}-{stat.st_size:x}"
 
 
+def publish_sample_png(image: Any, path: Path, pnginfo: Any) -> None:
+    """Expose a training sample only after its PNG encoder has finished."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pending = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        image.save(pending, format="PNG", pnginfo=pnginfo)
+        os.replace(pending, path)
+    finally:
+        pending.unlink(missing_ok=True)
+
+
 def preview_etag(*parts: object) -> str:
     digest = hashlib.sha256("\0".join(map(str, parts)).encode("utf-8")).hexdigest()
     return f'"{digest[:32]}"'

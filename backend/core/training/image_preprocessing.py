@@ -8,6 +8,7 @@ from PIL import Image
 
 
 TRANSPARENT_WEBP_PREPROCESSING_VERSION = "alpha-white-v1"
+QWEN_RGBA_PREPROCESSING_VERSION = "source-rgba-v1"
 
 
 def flatten_to_rgb(
@@ -22,6 +23,11 @@ def flatten_to_rgb(
     rgba = image.convert("RGBA")
     canvas = Image.new("RGBA", rgba.size, (*background, 255))
     return Image.alpha_composite(canvas, rgba).convert("RGB")
+
+
+def prepare_training_image(image: Image.Image, *, preserve_alpha: bool = False) -> Image.Image:
+    """Keep source alpha for an RGBA VAE; composite for RGB-only models."""
+    return image.convert("RGBA") if preserve_alpha else flatten_to_rgb(image)
 
 
 def crop_window_in_original(

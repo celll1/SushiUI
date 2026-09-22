@@ -10274,7 +10274,11 @@ class BaseTrainer(ABC):
         Returns:
             Latent tensor
         """
-        image = flatten_to_rgb(image)
+        from core.training.image_preprocessing import prepare_training_image
+
+        image = prepare_training_image(
+            image, preserve_alpha=getattr(self, "is_qwen_image_21", False)
+        )
 
         # Determine target dimensions
         if target_width is not None and target_height is not None:
@@ -13925,6 +13929,9 @@ class BaseTrainer(ABC):
         namespace = self._build_cache_namespace()
         vae_hash, vae_family = self._run_vae_identity()
         vae_namespace = vae_cache_namespace(vae_hash)
+        if self.is_qwen_image_21:
+            from core.training.image_preprocessing import QWEN_RGBA_PREPROCESSING_VERSION
+            vae_namespace += f"__{QWEN_RGBA_PREPROCESSING_VERSION}"
         family_note = "" if vae_family is None else f" (family={vae_family})"
         print(f"{self.log_prefix} Using global latent cache directory: {base_cache_dir}")
         print(f"{self.log_prefix} Latent cache namespace (arch identity): {namespace}")

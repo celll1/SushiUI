@@ -7229,6 +7229,7 @@ export interface TrainingRunCreateRequest {
   qwen_convrot_training_forward?: "auto" | "cached_bf16" | "prefetch_bf16" | "transient_bf16" | "dequant";
   qwen_convrot_backward_cache_blocks?: number;
   qwen_convrot_backward_prefetch_depth?: number;
+  qwen_lora_branch_mode?: "shared" | "cond_base_v1";
   qwen_guidance_loss_weight?: number;
   qwen_guidance_loss_scale?: number;
   qwen_guidance_loss_schedule?: "constant" | "sigma";

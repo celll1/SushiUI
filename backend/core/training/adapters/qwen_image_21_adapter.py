@@ -38,6 +38,23 @@ def _targets(transformer):
 
 
 class QwenImage21LoRAAdapter(BaseLoRAAdapter):
+    def __init__(self, trainer, lora_rank, lora_alpha, lora_dtype=torch.float32):
+        super().__init__(trainer, lora_rank, lora_alpha, lora_dtype)
+        from core.models.qwen_image_21.branch_lora import (
+            BRANCH_MODE_COND_BASE, BRANCH_MODE_SHARED, QwenCondLoRALinearLayer,
+        )
+
+        self.branch_mode = str(getattr(trainer, "config", {}).get(
+            "qwen_lora_branch_mode", BRANCH_MODE_SHARED))
+        if self.branch_mode not in {BRANCH_MODE_SHARED, BRANCH_MODE_COND_BASE}:
+            raise ValueError(f"Unknown Qwen LoRA branch mode {self.branch_mode!r}")
+        if self.branch_mode == BRANCH_MODE_COND_BASE:
+            if not self.adapter_spec.is_ordinary_lora:
+                raise ValueError("Qwen cond/base branch separation requires ordinary LoRA")
+            if float(getattr(trainer, "config", {}).get("cfg_uncond_drop_rate") or 0):
+                raise ValueError("Qwen cond/base branch separation requires cfg_uncond_drop_rate=0")
+            self.LORA_LAYER_CLS = QwenCondLoRALinearLayer
+
     def apply_lora_to_unet(self, lora_layers: Dict[str, nn.Module]) -> int:
         count = 0
         for path, parent, attr, current in _targets(self.trainer.transformer):
@@ -45,6 +62,8 @@ class QwenImage21LoRAAdapter(BaseLoRAAdapter):
                 continue
             from core.models.qwen_image_21.lora import flatten_to_key
             name = flatten_to_key(path)
+            if self.branch_mode == "cond_base_v1":
+                name = name.replace("lora_unet_", "lora_cond_unet_", 1)
             layer = self.build_branch(current, name)
             if isinstance(attr, int):
                 parent[attr] = layer
@@ -112,6 +131,11 @@ class QwenImage21LoRAAdapter(BaseLoRAAdapter):
             "epoch": str(epoch),
             "format": "pt",
         }
+        if self.branch_mode == "cond_base_v1":
+            metadata.update(
+                qwen_lora_branch_mode="cond_base_v1",
+                qwen_lora_uncond="base",
+            )
         forward = getattr(self.trainer, "qwen_convrot_training_forward", "dequant")
         if forward in {"transient_bf16", "cached_bf16", "prefetch_bf16"}:
             metadata.update(

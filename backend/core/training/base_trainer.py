@@ -11980,6 +11980,7 @@ class BaseTrainer(ABC):
                     debug_save_path=debug_save_path,
                     debug_captions=batch_captions,
                     debug_reference_image_paths=batch_reference_paths,
+                    cfg_drop_mask=cfg_drop_mask,
                 )
         # Forward pass (architecture-specific)
         if self.is_sensenova:
@@ -12164,6 +12165,7 @@ class BaseTrainer(ABC):
                 profile_vram=self.debug_vram,
                 latent_h=_lh,
                 latent_w=_lw,
+                cfg_drop_mask=cfg_drop_mask,
                 repa_pixels=mnt_repa_pixels,
                 debug_save_path=debug_save_path,
                 debug_captions=batch_captions if debug_save_path else None,
@@ -12357,6 +12359,7 @@ class BaseTrainer(ABC):
         debug_save_path: Optional[Path] = None,
         debug_captions: Optional[List[str]] = None,
         debug_reference_image_paths: Optional[List[Optional[str]]] = None,
+        cfg_drop_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[float, float, float]:
         """Qwen-only sequential region backward under one logical step."""
         if fused_backward_active(self):
@@ -12386,6 +12389,7 @@ class BaseTrainer(ABC):
                 debug_save_path=debug_save_path,
                 debug_captions=debug_captions,
                 debug_reference_image_paths=debug_reference_image_paths,
+                cfg_drop_mask=cfg_drop_mask,
             )
             self._flush_fused_group_partials()
             events = getattr(self, "_repa_profile_events", None)
@@ -15837,6 +15841,31 @@ class BaseTrainer(ABC):
         # not at the first draw inside the loop.
         _cfg_null_rate = self.cfg_null_drop_rate()
         self._cfg_null_blank_encoding = None
+        self._qwen_guidance_blank_encoding = None
+        _guidance_weight = float(self.config.get(
+            "qwen_guidance_loss_weight", _TRAINING_DEFAULTS["qwen_guidance_loss_weight"]
+        ) or 0.0)
+        if not 0 <= _guidance_weight <= 1:
+            raise ValueError("qwen_guidance_loss_weight must be between 0 and 1")
+        if _guidance_weight:
+            if not self.is_qwen_image_21:
+                raise ValueError("qwen_guidance_loss_weight requires Qwen-Image 2.1 training")
+            if text_encoder_trainable:
+                raise ValueError("Qwen guidance loss requires a frozen text encoder")
+            _guidance_scale = float(self.config.get(
+                "qwen_guidance_loss_scale", _TRAINING_DEFAULTS["qwen_guidance_loss_scale"]
+            ))
+            _guidance_schedule = str(self.config.get(
+                "qwen_guidance_loss_schedule", _TRAINING_DEFAULTS["qwen_guidance_loss_schedule"]
+            ))
+            if not 1 <= _guidance_scale <= 10 or _guidance_schedule not in {"constant", "sigma"}:
+                raise ValueError("Qwen guidance loss requires scale in [1, 10] and schedule constant/sigma")
+            blank_emb, blank_mask = self.encode_caption("")
+            self._qwen_guidance_blank_encoding = (
+                blank_emb.detach().cpu(), blank_mask.detach().cpu()
+            )
+            print(f"{self.log_prefix} Qwen guidance loss: weight={_guidance_weight}, "
+                  f"scale={_guidance_scale}, schedule={_guidance_schedule}")
         if _cfg_null_rate:
             if (self.arch.cfg_null_stage == "caption" and multi_noise_timesteps > 1
                     and self.config.get("cfg_uncond_drop_per_mnt", _TRAINING_DEFAULTS["cfg_uncond_drop_per_mnt"])):

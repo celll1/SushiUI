@@ -7227,6 +7227,9 @@ export interface TrainingRunCreateRequest {
   qwen_convrot_training_forward?: "auto" | "cached_bf16" | "prefetch_bf16" | "transient_bf16" | "dequant";
   qwen_convrot_backward_cache_blocks?: number;
   qwen_convrot_backward_prefetch_depth?: number;
+  qwen_guidance_loss_weight?: number;
+  qwen_guidance_loss_scale?: number;
+  qwen_guidance_loss_schedule?: "constant" | "sigma";
   multi_noise_timesteps?: number;
   multi_noise_mode?: "independent" | "shared" | "trajectory" | "antithetic";
   stratified_timesteps?: boolean;  // One timestep per equal-probability stratum across the MNT window (default true)

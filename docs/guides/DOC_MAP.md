@@ -38,6 +38,7 @@ machine-local working material.
 | [docs/guides/MINIMAX_H3_HYBRID_LOADER_DESIGN.md](MINIMAX_H3_HYBRID_LOADER_DESIGN.md) | Current MiniMax-H3 hybrid-loader contract. |
 | [docs/guides/MINIMAX_MUSIC3_DESIGN.md](MINIMAX_MUSIC3_DESIGN.md) | Current MiniMax Music 3 integration and refusal boundary. |
 | [docs/guides/QWEN_IMAGE_21_DESIGN.md](QWEN_IMAGE_21_DESIGN.md) | Qwen-Image 2.1 artifacts, generation/editing, training, quantization, and implementation gates. |
+| [docs/guides/QWEN_IMAGE_21_GUIDANCE_LOSS.md](QWEN_IMAGE_21_GUIDANCE_LOSS.md) | Experimental mixed ordinary/guidance-target Qwen training objective and validation gate. |
 | [docs/guides/QWEN_IMAGE_21_PARTITIONED_TRAINING_DESIGN.md](QWEN_IMAGE_21_PARTITIONED_TRAINING_DESIGN.md) | Proposed complete-coverage partitioned training for Qwen-Image 2.1, including adaptive feasibility, optional halo, and validation gates. |
 | [docs/reference/architectures/sensenova_sdxl_chimera.md](../reference/architectures/sensenova_sdxl_chimera.md) | Implemented Chimera component, tensor, generation, training, and constraint reference. |
 | [docs/guides/SENSENOVA_SDXL_CHIMERA_DESIGN.md](SENSENOVA_SDXL_CHIMERA_DESIGN.md) | Chimera architecture contract, bootstrap workflow, and remaining measured acceptance gates. |

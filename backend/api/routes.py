@@ -15549,6 +15549,15 @@ class TrainingRunCreateRequest(BaseModel):
     qwen_convrot_backward_prefetch_depth: int = Field(
         default=TRAINING_DEFAULTS["qwen_convrot_backward_prefetch_depth"], ge=0, le=7
     )
+    qwen_guidance_loss_weight: float = Field(
+        default=TRAINING_DEFAULTS["qwen_guidance_loss_weight"], ge=0, le=1
+    )
+    qwen_guidance_loss_scale: float = Field(
+        default=TRAINING_DEFAULTS["qwen_guidance_loss_scale"], ge=1, le=10
+    )
+    qwen_guidance_loss_schedule: Literal["constant", "sigma"] = TRAINING_DEFAULTS[
+        "qwen_guidance_loss_schedule"
+    ]
 
     @model_validator(mode="after")
     def _checkpoint_aliases_agree(self):

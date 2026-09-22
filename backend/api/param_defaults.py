@@ -2689,6 +2689,9 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "qwen_convrot_training_forward": "auto",
     "qwen_convrot_backward_cache_blocks": 2,
     "qwen_convrot_backward_prefetch_depth": 1,
+    "qwen_guidance_loss_weight": 0.0,
+    "qwen_guidance_loss_scale": 3.0,
+    "qwen_guidance_loss_schedule": "sigma",
     # TREAD token routing (arXiv 2501.04765) — training-only acceleration.
     # Routes a random subset of tokens through a span of transformer blocks;
     # dropped tokens bypass the span (identity transport) and are restored at

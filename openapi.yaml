@@ -24930,6 +24930,34 @@ components:
           maximum: 7
           default: 1
           description: Number of earlier backward blocks scheduled ahead; must be smaller than cache blocks.
+        qwen_guidance_loss_weight:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          default: 0.0
+          example: 0.25
+          description: >-
+            Qwen-Image 2.1 only. Mix fraction of guidance-target MSE with
+            ordinary flow MSE for conditional items. Zero disables the extra
+            no-gradient empty-prompt transformer forward. CFG-null items
+            always retain ordinary MSE. Experimental; not CFG distillation.
+        qwen_guidance_loss_scale:
+          type: number
+          format: float
+          minimum: 1
+          maximum: 10
+          default: 3.0
+          example: 3.0
+          description: Extrapolation factor from current empty-prompt velocity toward the ordinary flow target.
+        qwen_guidance_loss_schedule:
+          type: string
+          enum: [constant, sigma]
+          default: sigma
+          example: sigma
+          description: >-
+            Sigma schedule uses effective scale 1 + (scale - 1) * sigma,
+            avoiding full extrapolation at nearly clean timesteps.
         krea2_lora_scope:
           type: string
           default: "attn,mlp"

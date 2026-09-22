@@ -6669,11 +6669,10 @@ class BaseTrainer(ABC):
         matters more than the space.
 
         ``current_step`` is the step this run just wrote (or is about to), and
-        its sidecar is protected unconditionally. Everything else is ranked
-        among the entries at or below it: a HIGHER-step leftover -- run 121's
-        truncated stump, or the tail of a run resumed from an earlier
-        checkpoint -- is neither "the newest" nor allowed to consume the keep
-        budget, or the prune would delete the good state and retain the stump.
+        its sidecar is protected unconditionally. Higher-step complete bundles
+        are preserved across a rewind; otherwise an accidental lower-step save
+        can destroy the only optimizer state for the intended resume target.
+        Higher-step stumps without a state sidecar still get pruned.
         """
         if not max_optimizer_saves_to_keep or max_optimizer_saves_to_keep <= 0:
             return
@@ -6703,6 +6702,16 @@ class BaseTrainer(ABC):
             self.output_dir,
             exclude_substr=("vision_encoder", EMA_ENTRY_MARKER, QUARANTINE_ENTRY_MARKER),
         )
+        if cutoff is not None:
+            for entry in entries:
+                step = _checkpoint_step_from_name(entry.name)
+                if step is None or step <= cutoff:
+                    continue
+                aux_base = _checkpoint_aux_base(entry)
+                if (entry.parent / f"{aux_base}_state.json").is_file() and (
+                    entry.parent / f"{aux_base}_optimizer.pt"
+                ).is_file():
+                    protected.add(step)
         entry_steps = [
             step for step in (_checkpoint_step_from_name(p.name) or 0 for p in entries)
             if at_or_below(step)

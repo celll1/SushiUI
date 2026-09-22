@@ -13715,8 +13715,8 @@ class BaseTrainer(ABC):
         if reference_image_path:
             metadata.add_text("reference_image_path", reference_image_path)
         metadata.add_text("sample_settings_revision", str(getattr(self, "_live_sample_revision", 0)))
-        sample_path.parent.mkdir(parents=True, exist_ok=True)
-        sample.save(sample_path, pnginfo=metadata)
+        from api.training_media import publish_sample_png
+        publish_sample_png(sample, sample_path, metadata)
 
     def _run_step0_sample_if_due(
         self,

@@ -49,6 +49,33 @@ def _guidance_mix_weight(sigma, low_weight, kind, high, start, end):
     return low_weight + (high - low_weight) * t.square() * (3 - 2 * t)
 
 
+def sigma_null_drop_mask(config, sigma, max_rate):
+    low = float(config.get("qwen_guidance_loss_weight", TRAINING_DEFAULTS["qwen_guidance_loss_weight"]))
+    kind, high, start, end = resolve_guidance_weight_schedule(config, low)
+    probability = max_rate * (1 - _guidance_mix_weight(sigma.detach().float().cpu(), low, kind, high, start, end))
+    return torch.rand_like(probability) < probability
+
+
+def apply_sigma_null_condition(features, mask, drop_mask, blank_encoding):
+    if not bool(drop_mask.any()):
+        return features, mask
+    blank_features, blank_mask = blank_encoding
+    blank_features = blank_features.to(device=features.device, dtype=features.dtype)
+    blank_mask = blank_mask.to(device=mask.device, dtype=mask.dtype).reshape(-1)
+    length = max(features.shape[1], blank_features.shape[1])
+    if features.shape[1] < length:
+        features = F.pad(features, (0, 0, 0, length - features.shape[1]))
+        mask = F.pad(mask, (0, length - mask.shape[1]))
+    features = features.clone()
+    mask = mask.clone()
+    selected = drop_mask.to(device=features.device, dtype=torch.bool)
+    features[selected] = 0
+    features[selected, :blank_features.shape[1]] = blank_features.expand(int(selected.sum()), -1, -1)
+    mask[selected] = False
+    mask[selected, :blank_mask.shape[0]] = blank_mask
+    return features, mask
+
+
 def _guidance_mix_for_condition(sigma, condition):
     _, _, eligible, weight, _, _, *weight_schedule = condition
     kind, high, start, end = weight_schedule or ("constant", weight, 0.5, 0.8)

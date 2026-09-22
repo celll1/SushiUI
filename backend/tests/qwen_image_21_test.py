@@ -209,6 +209,36 @@ def test_qwen_stochastic_selection_reuses_recovery_draw(monkeypatch):
     assert first.tolist() == second.tolist() == [True, False]
 
 
+def test_qwen_sigma_null_drop_uses_complement_of_guidance_probability(monkeypatch):
+    monkeypatch.setattr(torch, "rand_like", lambda value: value.new_tensor([0.05, 0.05, 0.05]))
+    config = {
+        "qwen_guidance_loss_weight": 0.25,
+        "qwen_guidance_loss_weight_schedule": "high_noise_smoothstep",
+        "qwen_guidance_loss_high_noise_weight": 1.0,
+        "qwen_guidance_loss_ramp_start": 0.5,
+        "qwen_guidance_loss_ramp_end": 0.8,
+    }
+    mask = qwen_image_21_ops.sigma_null_drop_mask(
+        config, torch.tensor([0.2, 0.65, 1.0]), 0.1
+    )
+    assert mask.tolist() == [True, False, False]
+
+
+def test_qwen_sigma_null_replaces_only_selected_caption_rows():
+    features = torch.arange(24, dtype=torch.float32).reshape(3, 2, 4)
+    mask = torch.ones(3, 2, dtype=torch.bool)
+    blank = (torch.full((1, 3, 4), 7.0), torch.tensor([True, True, False]))
+    replaced, replaced_mask = qwen_image_21_ops.apply_sigma_null_condition(
+        features, mask, torch.tensor([False, True, False]), blank
+    )
+    assert replaced.shape == (3, 3, 4)
+    assert torch.equal(replaced[1], blank[0][0])
+    assert replaced_mask[1].tolist() == [True, True, False]
+    assert torch.equal(replaced[0, :2], features[0])
+    assert torch.equal(replaced[2, :2], features[2])
+    assert features.shape == (3, 2, 4)
+
+
 @pytest.mark.parametrize("partitioned", [False, True])
 @pytest.mark.parametrize("sigma, weight", [(0.2, 0.25), (0.5, 0.25), (0.65, 0.625),
                                             (0.8, 1.0), (1.0, 1.0)])
@@ -262,7 +292,8 @@ def test_qwen_guidance_api_defaults_match_contract():
     from api.param_defaults import TRAINING_DEFAULTS
 
     fields = routes.TrainingRunCreateRequest.model_fields
-    for name in ("qwen_guidance_loss_weight", "qwen_guidance_loss_mix_mode", "qwen_guidance_loss_scale",
+    for name in ("qwen_guidance_loss_weight", "qwen_guidance_loss_mix_mode",
+                 "qwen_cfg_null_sigma_schedule", "qwen_guidance_loss_scale",
                  "qwen_guidance_loss_schedule", "qwen_guidance_loss_weight_schedule",
                  "qwen_guidance_loss_high_noise_weight", "qwen_guidance_loss_ramp_start",
                  "qwen_guidance_loss_ramp_end"):
@@ -343,6 +374,7 @@ def test_qwen_hybrid_and_debug_view_survive_config_generation():
     request = routes.TrainingRunCreateRequest(
         base_model_path="unused", training_method="lora",
         qwen_guidance_loss_weight=0.25, qwen_guidance_loss_scale=3.0,
+        qwen_cfg_null_sigma_schedule=True,
         qwen_guidance_loss_schedule="sigma", qwen_debug_latent_view="pixel",
         qwen_guidance_loss_weight_schedule="high_noise_smoothstep",
         qwen_guidance_loss_high_noise_weight=1.0,
@@ -354,6 +386,7 @@ def test_qwen_hybrid_and_debug_view_survive_config_generation():
     )
     for key, expected in (
         ("qwen_guidance_loss_weight", 0.25),
+        ("qwen_cfg_null_sigma_schedule", True),
         ("qwen_guidance_loss_scale", 3.0),
         ("qwen_guidance_loss_schedule", "sigma"),
         ("qwen_guidance_loss_weight_schedule", "high_noise_smoothstep"),

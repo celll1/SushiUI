@@ -25039,6 +25039,16 @@ components:
           description: >-
             Choose guided or ordinary loss independently per logical image,
             or blend both losses as in earlier Qwen training runs.
+        qwen_cfg_null_sigma_schedule:
+          type: boolean
+          default: false
+          example: true
+          description: >-
+            Qwen-only. With cfg_uncond_drop_rate=q_max, draw an empty-caption
+            training item with probability q_max*(1-p(sigma)), where p(sigma)
+            is this run's guidance-loss probability schedule. Requires a
+            positive Qwen guidance weight and a positive CFG-null drop rate.
+            For MNT>1, cfg_uncond_drop_per_mnt must be true.
         qwen_guidance_loss_scale:
           type: number
           format: float

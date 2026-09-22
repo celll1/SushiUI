@@ -15559,6 +15559,7 @@ class TrainingRunCreateRequest(BaseModel):
     qwen_guidance_loss_mix_mode: Literal["stochastic", "blend"] = TRAINING_DEFAULTS[
         "qwen_guidance_loss_mix_mode"
     ]
+    qwen_cfg_null_sigma_schedule: bool = TRAINING_DEFAULTS["qwen_cfg_null_sigma_schedule"]
     qwen_guidance_loss_scale: float = Field(
         default=TRAINING_DEFAULTS["qwen_guidance_loss_scale"], ge=1, le=10
     )

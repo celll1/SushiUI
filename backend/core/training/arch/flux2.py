@@ -17,6 +17,7 @@ from core.training.components.wiring import FLUX2_WIRING
 
 
 class Flux2ArchHandler(ArchHandler):
+    cfg_null_stage = "caption"
     name = "flux2"
     wiring = FLUX2_WIRING
     adapter_capability = declare_adapter_capability(

@@ -9735,12 +9735,9 @@ class BaseTrainer(ABC):
         Args:
             caption: The item's caption text.
             requires_grad: Whether to keep a gradient-carrying graph (trainable TE).
-            cfg_null: Encode the architecture's INFERENCE CFG uncond condition
-                instead of ``caption``. Only an ``cfg_null_stage == "encode"``
-                architecture can honour it -- a collated one builds its null by
-                rewriting the batch afterwards -- and every other handler's
-                ``encode_prompt_cfg_null`` refuses, so a mis-routed True is an
-                error rather than a silently conditional item.
+            cfg_null: Encode the architecture's inference CFG null condition.
+                The caption stage encodes an empty caption; the encode stage
+                delegates to its handler. Collated nulls are built later.
             reference_image_paths: SenseNova ONLY -- the item's reference image
                 paths, spliced into the prompt prefix as understanding-tower
                 tokens (``ops/sensenova_ops.encode_prompt``). Every other arch
@@ -9762,6 +9759,9 @@ class BaseTrainer(ABC):
             - ACE-Step: (text_hidden_states, aux_dict) where aux dict has
               {text_attention_mask, lyric_hidden_states, lyric_attention_mask}
         """
+        if cfg_null and self.arch.cfg_null_stage == "caption":
+            caption = ""
+            cfg_null = False
         if cfg_null:
             # THE call site of the encode-stage hook, the counterpart of
             # ArchHandler.apply_cfg_null_step for the collated stage. The
@@ -10844,6 +10844,16 @@ class BaseTrainer(ABC):
             emit_training_warning(warning, code="cfg_uncond_drop_rate",
                                   prefix=self.log_prefix)
         rate = resolution.rate
+        if rate and arch_name == "flux2" and bool(getattr(self, "is_distilled", False)):
+            raise ValueError("cfg_uncond_drop_rate requires a non-distilled FLUX.2 checkpoint")
+        if rate and arch_name == "krea2" and bool(getattr(self, "krea2_is_distilled", False)):
+            raise ValueError("cfg_uncond_drop_rate requires a non-distilled Krea2 checkpoint")
+        if rate and arch_name == "zimage":
+            source_name = str(getattr(self, "model_path", "")).lower()
+            transformer = getattr(self, "transformer_original", None)
+            if ("turbo" in source_name
+                    or bool(getattr(getattr(transformer, "config", None), "is_distilled", False))):
+                raise ValueError("cfg_uncond_drop_rate requires a non-distilled Z-Image checkpoint")
         if rate and getattr(arch, "cfg_null_stage", None) is None:
             # The resolver only refuses an EXPLICIT rate on a stageless
             # architecture. A per-arch default could still resolve nonzero here
@@ -14938,6 +14948,9 @@ class BaseTrainer(ABC):
                 unique_pairs.add((caption, lyrics))
                 if caption and len(caption_samples) < 3:
                     caption_samples.append(caption)
+            if (getattr(self, "_cfg_null_drop_rate_resolved", None)
+                    and self.arch.cfg_null_stage == "caption"):
+                unique_pairs.add(("", ""))
             dataset_captions[dataset.unique_id] = unique_pairs
             total_captions += len(unique_pairs)
             _pair_note = " (caption+lyrics pairs)" if self.is_acestep else ""
@@ -15823,7 +15836,15 @@ class BaseTrainer(ABC):
         # Resolve (and refuse) the aligned CFG null rate before the first batch,
         # not at the first draw inside the loop.
         _cfg_null_rate = self.cfg_null_drop_rate()
+        self._cfg_null_blank_encoding = None
         if _cfg_null_rate:
+            if (self.arch.cfg_null_stage == "caption" and multi_noise_timesteps > 1
+                    and self.config.get("cfg_uncond_drop_per_mnt", _TRAINING_DEFAULTS["cfg_uncond_drop_per_mnt"])):
+                raise ValueError(
+                    "cfg_uncond_drop_rate with empty-caption conditioning and MNT > 1 "
+                    "requires cfg_uncond_drop_per_mnt=false so the encoded label "
+                    "is unchanged across the MNT window"
+                )
             print(f"{self.log_prefix} CFG unconditional drop rate: {_cfg_null_rate} "
                   f"(stage: {self.arch.cfg_null_stage})")
 
@@ -17351,6 +17372,11 @@ class BaseTrainer(ABC):
                     # Make sure the TE lives on CPU before the worker reads it.
                     if self.text_encoder is not None:
                         self.text_encoder.to("cpu").eval().requires_grad_(False)
+                    if (_cfg_null_rate and self.arch.cfg_null_stage == "caption"
+                            and getattr(self, "_cfg_null_blank_encoding", None) is None):
+                        blank_emb, blank_aux = self.encode_caption("")
+                        self._cfg_null_blank_encoding = (
+                            blank_emb.detach().cpu(), self._aux_to_cpu(blank_aux))
                     te_prefetcher = CpuTextEncoderPrefetcher(
                         encode_batch_fn=lambda caps, lyr=None: self.encode_captions_batched(
                             caps, requires_grad=False, lyrics=lyr
@@ -17412,6 +17438,11 @@ class BaseTrainer(ABC):
                     self.move_text_encoder_to_gpu()
                     # Move main model to CPU to free VRAM
                     self.move_main_model_to_cpu()
+                    if (_cfg_null_rate and self.arch.cfg_null_stage == "caption"
+                            and getattr(self, "_cfg_null_blank_encoding", None) is None):
+                        blank_emb, blank_aux = self.encode_caption("")
+                        self._cfg_null_blank_encoding = (
+                            blank_emb.detach().cpu(), self._aux_to_cpu(blank_aux))
 
                     # Encode captions for first interval
                     # Use batches (which have bucket info) instead of all_items
@@ -18446,6 +18477,14 @@ class BaseTrainer(ABC):
                                 )
                                 item["caption"] = caption
 
+                        caption_is_cfg_null = (
+                            self.arch.cfg_null_stage == "caption"
+                            and cfg_drop_mask is not None
+                            and bool(cfg_drop_mask[item_index])
+                        )
+                        if caption_is_cfg_null:
+                            caption = ""
+
                         if self.is_sensenova:
                             # References enter through the PROMPT PREFIX, not
                             # through encode_image: sensenova_ops owns their loading
@@ -18473,8 +18512,12 @@ class BaseTrainer(ABC):
                             # cpu_prefetch's daemon worker fills swap_buffer ahead of
                             # time via te_prefetcher.next(); swap_onthefly refills it
                             # synchronously in a separate branch above.
-                            if image_path in swap_buffer:
-                                embeddings_cpu, auxiliary_cpu, buffer_caption = swap_buffer[image_path]
+                            if image_path in swap_buffer or caption_is_cfg_null:
+                                if caption_is_cfg_null:
+                                    embeddings_cpu, auxiliary_cpu = self._cfg_null_blank_encoding
+                                    buffer_caption = ""
+                                else:
+                                    embeddings_cpu, auxiliary_cpu, buffer_caption = swap_buffer[image_path]
                                 # Transfer to GPU
                                 embeddings = embeddings_cpu.to(self.device, non_blocking=True)
                                 auxiliary = self._aux_to_device(auxiliary_cpu)
@@ -19153,7 +19196,11 @@ class BaseTrainer(ABC):
                             # `caption`-only (no per-item lyrics) here is therefore never a lyrics gap.
                             mnt_text_embeddings_list = []
                             mnt_auxiliary_data_list = []
-                            for caption in batch_captions:
+                            for item_index, caption in enumerate(batch_captions):
+                                if (self.arch.cfg_null_stage == "caption"
+                                        and mnt_cfg_drop_mask is not None
+                                        and bool(mnt_cfg_drop_mask[item_index])):
+                                    caption = ""
                                 embeddings, auxiliary = self.encode_caption(caption, requires_grad=True)
                                 mnt_text_embeddings_list.append(embeddings)
                                 mnt_auxiliary_data_list.append(auxiliary)

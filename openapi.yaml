@@ -12221,15 +12221,16 @@ components:
             * `"collated"` — the null is a rewrite of already-encoded, batched
               conditioning.
             * `"encode"` — the null has to be built while encoding the item.
+            * `"caption"` — inference uses the ordinary empty-caption encoding.
           additionalProperties:
             type: string
             nullable: true
-            enum: [null, 'collated', 'encode']
+            enum: [null, 'collated', 'encode', 'caption']
           example:
             minit2i: 'collated'
             lens: 'collated'
             sensenova: 'encode'
-            sdxl: null
+            sdxl: 'caption'
         cfg_uncond_drop_defaults:
           type: object
           description: |
@@ -25391,9 +25392,17 @@ components:
           description: >-
             Per-sample probability of training an item against the SAME null
             condition the architecture's inference CFG uncond branch builds.
+            For shared-model CFG architectures whose inference null is an
+            empty text prompt, the empty prompt is selected before encoding;
+            frozen text encoders reuse its cached encoding. FLUX.2 and Krea2
+            accept this only for non-distilled checkpoints. Architectures
+            with a separate unconditional transformer or no inference CFG
+            branch do not use this dropout and reject an explicit value.
             Distinct from dataset caption_dropout_rate and
-            danbooru_aug_caption_dropout_rate, which drop the caption text: an
-            empty caption is still encoded as a conditional forward.
+            danbooru_aug_caption_dropout_rate in probability, validation and
+            CFG-null metrics. For empty-caption architectures the encoded
+            conditioning is the same; architectures with a dedicated null
+            condition use their own stage-specific construction.
             Tri-state — null = not supplied (resolve the per-architecture
             default from GET /schema/arch-capabilities ->
             cfg_uncond_drop_defaults), 0 = explicitly disabled. An explicit
@@ -25417,6 +25426,8 @@ components:
             behaviour). Has no effect when cfg_uncond_drop_rate resolves to 0,
             when multi_noise_timesteps is 1, or on SenseNova's four-phase
             shared-window route, which keeps the window's one label and warns.
+            For empty-caption CFG architectures, a nonzero drop rate with
+            multi_noise_timesteps > 1 currently requires this field to be false.
         minit2i_lr_factor:
           type: 'number'
           minimum: 0

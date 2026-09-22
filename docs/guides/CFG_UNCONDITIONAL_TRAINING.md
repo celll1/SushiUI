@@ -275,20 +275,22 @@ $$
 
 | Architecture | 推論時の CFG | fine-tuning 時の無条件学習 | この文書の理論の適用 |
 |---|---|---|---|
-| SD1.5 | 共有 U-Net の2枝 | caption dropout の空 caption | text-only では標準例。ControlNet 等の保持条件があれば、その条件付き周辺分布になる |
-| SDXL | 共有 U-Net を positive / negative embedding で2回評価 | dataset の caption dropout で同じ U-Net に空 caption を提示 | 標準的な適用例。ただし size/crop 条件を残した条件付き周辺分布であり、非空 negative prompt は無条件分布ではない |
-| Z-Image | 共有 flow transformer の2枝 | caption dropout の空 caption | 学習・推論の空文字 encode が一致する標準的な flow CFG |
-| FLUX.2 | base は2枝、distilled は guidance vector の1枝 | caption dropout。ただし reference と guidance 条件は保持 | base には適用。distilled には「CFG 枝の学習」としては非適用 |
-| Anima | 共有 flow transformer の2枝 | caption dropout の空 caption | Qwen/T5 条件を同時に落とす標準的な flow CFG |
+| SD1.5 | 共有 U-Net の2枝 | `cfg_uncond_drop_rate` で空 caption を encode | text-only では標準例。ControlNet 等の保持条件があれば、その条件付き周辺分布になる |
+| SDXL | 共有 U-Net を positive / negative embedding で2回評価 | `cfg_uncond_drop_rate` で空 caption を encode | size/crop 条件は保持。非空 negative prompt は無条件分布ではない |
+| Z-Image | 共有 flow transformer の2枝 | 非蒸留 checkpoint で `cfg_uncond_drop_rate` を利用 | 学習・推論の空文字 encode が一致する標準的な flow CFG |
+| FLUX.2 | base は2枝、distilled は guidance vector の1枝 | base で `cfg_uncond_drop_rate` を利用 | reference と guidance 条件は保持。distilled には非適用 |
+| Anima | 共有 flow transformer の2枝 | `cfg_uncond_drop_rate` で空 caption を encode | Qwen/T5 条件を同時に落とす標準的な flow CFG |
 | Lens | 共有 flow transformer の2枝 | 専用 `cfg_uncond_drop_rate` が選択 row を zero feature / all-false mask へ書き換える（既定 0.0） | 専用 rewrite が推論の空 negative 経路と一致。caption dropout は空 user message を chat template で encode するため別物 |
-| Krea2 | base は2枝、distilled/turbo は1枝 | caption dropout の空 caption | base には適用。distilled/turbo には非適用 |
+| Krea2 | base は2枝、distilled/turbo は1枝 | base で `cfg_uncond_drop_rate` を利用 | distilled/turbo には非適用 |
+| Qwen-Image 2.1 | 共有 block-causal transformer の2枝 | `cfg_uncond_drop_rate` が空 caption の encoding を選ぶ（既定 0.0） | 通常のflow targetをnull条件にも回帰する。contrastive lossではない |
 | MiniT2I | 共有 x0 predictor の2枝 | 専用 `cfg_uncond_drop_rate`（旧 `minit2i_label_drop_rate`）が text mask をゼロ化 | 専用 label drop が推論 pure-uncond と一致。一般 caption dropout とは区別する |
 | SenseNova U1.5 | 同じ generation decoder を cond / uncond prefix KV cache で評価 | 専用 `cfg_uncond_drop_rate` が item を encode する時点で推論 uncond query の prefix を作る（既定 0.0）。caption dropout は training cond prefix に空文字を入れるだけで別物 | 専用 encode-stage null が推論 uncond の query 文字列と prefix 長（image token の t 座標）に一致。既定 `cfg_norm="global"` は別途考慮。reference-conditioned run では非ゼロ rate を拒否 |
-| LTX-2.3 | 共有 joint video/audio transformer の2枝 | caption dropout の空 caption | text null は整合するが、現行 loss は video のみ。audio の null field は直接学習しない |
+| LTX-2.3 | 共有 joint video/audio transformer の2枝 | `cfg_uncond_drop_rate` で空 caption を encode | text null は整合するが、現行 loss は video のみ。audio の null field は直接学習しない |
 | MiniMax-H3 | なし。guidance-distilled の1 forward | なし。空 prompt は拒否 | 現行モデルには非適用。caption dropout を有効にしても CFG 枝は学習されず、空 caption になった項目は encode 時に失敗する |
 | ACE-Step 1.5 | なし。turbo / guidance-distilled の1枝 | 現行 trainer は vendor の training-only CFG dropout を迂回 | 非適用。空 caption は missing-caption 条件の学習であり、learned null 条件でも CFG 枝でもない |
 | MiniMax Music 3 | AR logit CFG と flow velocity CFG | training 非対応 | 推論機構はあるが現行 repo では無条件 fine-tuning を監査・実行できない |
-| Ideogram 4 | separate conditional / unconditional transformer | 同一 batch の全項目で両 transformer を同時学習 | separate-branch 版として適用。caption-dropout の標本数議論は非適用 |
+| Ideogram 4 | separate conditional / unconditional transformer | 同一 batch の全項目で両 transformer を同時学習 | separate-branch 版として適用。`cfg_uncond_drop_rate` による標本選択は不要 |
+| SenseNova SDXL Chimera | 共有 U-Net の2枝 | `cfg_uncond_drop_rate` で空 caption の prefix を encode | 両枝で同一 bridge を利用 |
 
 ### 7.2 SDXL
 
@@ -520,8 +522,10 @@ chart 上の16点連続（2 window 分）として観測された。
 同じである。`cfg_uncond_drop_per_mnt` が変えるのは、window 内で label が連続する相関の有無だけ
 であって、null 側が特定の timestep や画像へ偏るということではない。
 
-この設定は `cfg_null_stage` を宣言する全 architecture に共通して効く（collated: Lens §7.10、
-MiniT2I §7.12 / encode: SenseNova、本節）。`ArchHandler.apply_cfg_null_step` /
+この設定の再抽選は collated stage（Lens §7.10、MiniT2I §7.12）と
+encode stage（SenseNova、本節）に適用する。空caption stageでは、現状MNT>1のとき
+`cfg_uncond_drop_per_mnt=False`を要求し、window内でencode済みの条件を変更しない。
+`ArchHandler.apply_cfg_null_step` /
 `apply_cfg_null_collated` が受け取る `drop_mask` は、`mnt_index == 0` の draw か、それ以降で
 再抽選された **この forward 自身の label** であり、他の MNT iteration と共有されているとは
 仮定しない。SenseNova の `_sensenova_mnt_conditioning`（§7.3.3）も同じ規約で `mnt_cfg_drop_mask`
@@ -785,6 +789,14 @@ states を選ぶ condition dropout が必要になる。
 - 最適な $\lambda$、LoRA rank、guidance scale。
 
 ## 10. 実装監査箇所
+
+2026-09-22の配線では、SD1.5、SDXL、Z-Image、Anima、FLUX.2 base、Krea2 base、
+Qwen-Image 2.1、LTX-2.3、SenseNova SDXL Chimeraが`caption` stageを宣言する。
+各項目のCFG-null drawで推論側と同じ空captionを選び、通常のモデル別encodeと
+cache/swap経路を通す。既定率は0.0で、自動的には学習分布を変更しない。
+蒸留FLUX.2/Krea2 checkpointおよびZ-Image Turboは非ゼロ率を拒否する。
+Ideogram 4は別transformerのunconditional lossを既に持つためこのdrop率は適用しない。
+これは通常のnull条件回帰であり、guidance/contrastive targetを合成する処理ではない。
 
 - `backend/core/training/base_trainer.py`: `sample_cfg_drop_mask` が assembled batch ごとに1回 label を引き、`cfg_drop_mask_for_mnt`（§7.3.6）が `cfg_uncond_drop_per_mnt` に従って MNT iteration ごとにそれを共有するか再抽選するかを決める。`cfg_null_stage` を宣言する全 architecture に共通。
 - `backend/core/training/ops/sd_sdxl_ops.py`: 共有 U-Net に processed-caption embedding と SDXL `time_ids` を渡す。

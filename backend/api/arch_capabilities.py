@@ -1451,8 +1451,8 @@ for _a in sorted(TRAINING_DECLARED_ARCHS
 # ---------------------------------------------------------------------------
 # Which stage an architecture's training path can construct its INFERENCE CFG
 # uncond condition at: None (it cannot), "collated" (rewrite already-encoded,
-# batched conditioning) or "encode" (build the inference-equivalent prefix while
-# encoding the item, because the token sequence itself differs).
+# batched conditioning), "encode" (build a distinct prefix), or "caption"
+# (encode an ordinary empty caption through the same prompt path).
 #
 # A restatement of `core.training.arch.base_arch.ArchHandler.cfg_null_stage`,
 # for the same reason TRAINING_DECLARED_ARCHS restates ARCH_REGISTRY: this
@@ -1462,6 +1462,12 @@ for _a in sorted(TRAINING_DECLARED_ARCHS
 # An architecture is enabled by its HANDLER declaring a stage, with this mirror
 # and the unsupported entries below following it.
 _CFG_NULL_STAGES: Dict[str, str] = {
+    # These shared-model CFG branches encode an empty caption through the same
+    # prompt path as a nonempty one. Distilled variants are refused at run start.
+    **{arch: "caption" for arch in (
+        "sd15", "sdxl", "zimage", "anima", "flux2", "krea2",
+        "qwen_image_21", "ltx2",
+    )},
     # MiniT2I's inference uncond branch is `u_text=text, u_mask=zeros_like(mask)`
     # and MMJiT.forward replaces every masked text row with the learned
     # mask_token, so the aligned null is a rewrite of the collated text MASK
@@ -1482,7 +1488,7 @@ _CFG_NULL_STAGES: Dict[str, str] = {
     # to be built while encoding the item
     # (core/models/sensenova/sensenova_pipeline_ops.py::encode_prompt).
     "sensenova": "encode",
-    "sensenova_sdxl_chimera": "encode",
+    "sensenova_sdxl_chimera": "caption",
 }
 CFG_NULL_STAGE_BY_ARCH: Dict[str, Optional[str]] = {
     arch: _CFG_NULL_STAGES.get(arch) for arch in sorted(TRAINING_DECLARED_ARCHS)
@@ -1597,7 +1603,7 @@ assert set(CFG_NULL_STAGE_BY_ARCH) == set(TRAINING_DECLARED_ARCHS), (
     "TRAINING_FEATURE_UNSUPPORTED, i.e. a control the UI offers and the route "
     "refuses")
 for _arch, _stage in CFG_NULL_STAGE_BY_ARCH.items():
-    assert _stage in (None, "collated", "encode"), (
+    assert _stage in (None, "collated", "encode", "caption"), (
         f"CFG_NULL_STAGE_BY_ARCH[{_arch}] = {_stage!r} is not a stage")
     assert (_stage is None) == (
         "cfg_uncond_drop" in TRAINING_FEATURE_UNSUPPORTED.get(_arch, {})), (

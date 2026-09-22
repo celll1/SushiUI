@@ -20,7 +20,7 @@ class SenseNovaSDXLChimeraArchHandler(ArchHandler):
     pixel_align = 8
     timestep_convention = "t1"
     velocity_sign = "x0_minus_eps"
-    cfg_null_stage = "encode"
+    cfg_null_stage = "caption"
     consumes_reconstruction_loss_weight = False
     consumes_crop_decode_loss = False
     supplies_predicted_latent = False

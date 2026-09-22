@@ -16,6 +16,7 @@ from core.training.components.wiring import SDXL_WIRING
 
 
 class SDXLArchHandler(ArchHandler):
+    cfg_null_stage = "caption"
     name = "sdxl"
     wiring = SDXL_WIRING
     # SD_UNET_LATENT_IO spells its paths "unet.conv_in"/"unet.conv_out",

@@ -138,8 +138,8 @@ class QwenImage21Mixin:
         steps = int(params.get("steps", 40) or 40)
         width = _aligned(params.get("width", 1024) or 1024)
         height = _aligned(params.get("height", 1024) or 1024)
-        negative_prompt = params.get("negative_prompt") or None
         cfg_scale = float(params.get("cfg_scale", 1.0) or 1.0)
+        negative_prompt = (params.get("negative_prompt") or "") if cfg_scale > 1 else None
 
         def _flag(item, name):
             if isinstance(item, dict):

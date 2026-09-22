@@ -80,7 +80,7 @@ def test_omitted_resolves_the_per_architecture_default():
 
 
 def test_omitted_on_an_arch_with_no_default_resolves_nothing():
-    resolution = resolve_cfg_uncond_drop_rate(_params(explicit=[]), arch="sdxl")
+    resolution = resolve_cfg_uncond_drop_rate(_params(explicit=[]), arch="ideogram4")
     assert resolution.rate is None
     assert resolution.warnings == []
 
@@ -90,7 +90,7 @@ def test_a_null_value_in_model_fields_set_is_not_explicit():
     untouched optional control arrives as an explicit null, and reading that as
     intent would refuse every run on an architecture with no stage."""
     params = _params(explicit=[CFG_KEY, LEGACY_KEY])
-    resolution = resolve_cfg_uncond_drop_rate(params, arch="sdxl")
+    resolution = resolve_cfg_uncond_drop_rate(params, arch="ideogram4")
     assert resolution.rate is None
     assert resolution.source == "arch_default"
 
@@ -123,7 +123,7 @@ def test_legacy_only_on_another_arch_resolves_that_archs_default():
     """The key was only ever wired for MiniT2I. Elsewhere it has always been
     accepted and ignored; refusing it now would break configs that carry it."""
     params = _params(explicit=[LEGACY_KEY], **{LEGACY_KEY: 0.3})
-    resolution = resolve_cfg_uncond_drop_rate(params, arch="sdxl")
+    resolution = resolve_cfg_uncond_drop_rate(params, arch="ideogram4")
     assert resolution.rate is None
     assert resolution.source == "arch_default"
 
@@ -162,7 +162,7 @@ def test_the_legacy_key_is_validated_too(collated_arch):
 def test_unsupported_architecture_refuses_an_explicit_rate():
     params = _params(explicit=[CFG_KEY], **{CFG_KEY: 0.1})
     with pytest.raises(ValidationError) as exc:
-        resolve_cfg_uncond_drop_rate(params, arch="sdxl")
+        resolve_cfg_uncond_drop_rate(params, arch="ideogram4")
     assert "not supported" in exc.value.message
 
 
@@ -170,7 +170,7 @@ def test_unsupported_architecture_refuses_an_explicit_zero():
     """Explicitly required by the strategy: 0.0 must not be silently ignored."""
     params = _params(explicit=[CFG_KEY], **{CFG_KEY: 0.0})
     with pytest.raises(ValidationError):
-        resolve_cfg_uncond_drop_rate(params, arch="sdxl")
+        resolve_cfg_uncond_drop_rate(params, arch="ideogram4")
 
 
 def test_unknown_architecture_refuses_an_explicit_rate():
@@ -274,15 +274,17 @@ def test_the_stage_mirror_matches_the_arch_handlers():
 
 
 def test_only_the_delivered_architectures_declare_a_stage():
-    """Items 3, 4 and 5 route MiniT2I, Lens and SenseNova through the resolver;
-    no other architecture may read as enabled."""
+    """Every shared-model CFG arch has a stage; separate/no-CFG arches do not."""
     declared = {arch: stage for arch, stage in CFG_NULL_STAGE_BY_ARCH.items()
                 if stage is not None}
     assert declared == {
+        **{arch: "caption" for arch in (
+            "sd15", "sdxl", "zimage", "anima", "flux2", "krea2",
+            "qwen_image_21", "ltx2", "sensenova_sdxl_chimera",
+        )},
         "minit2i": "collated",
         "lens": "collated",
         "sensenova": "encode",
-        "sensenova_sdxl_chimera": "encode",
     }
 
 
@@ -308,7 +310,8 @@ def test_the_base_handler_hooks_reject():
         if handler_cls.cfg_null_stage != "collated":
             with pytest.raises(NotImplementedError):
                 handler.apply_cfg_null_collated(None, None, None, None)
-        if handler_cls.cfg_null_stage != "encode":
+        if (handler_cls.cfg_null_stage != "encode"
+                and arch != "sensenova_sdxl_chimera"):
             with pytest.raises(NotImplementedError):
                 handler.encode_prompt_cfg_null(None, "a prompt")
 
@@ -325,6 +328,8 @@ def test_a_declared_stage_is_backed_by_an_override():
     for arch, handler_cls in ARCH_REGISTRY.items():
         stage = handler_cls.cfg_null_stage
         if stage is None:
+            continue
+        if stage == "caption":
             continue
         assert stage in hooks, f"{arch} declares unknown stage {stage!r}"
         hook = hooks[stage]
@@ -366,7 +371,13 @@ def test_defaults_are_the_single_source_of_truth():
     assert TRAINING_DEFAULTS[CFG_KEY] is None
     assert TRAINING_DEFAULTS[LEGACY_KEY] is None
     assert CFG_UNCOND_DROP_DEFAULTS_BY_ARCH == {
-        "minit2i": 0.1, "lens": 0.0, "sensenova": 0.0}
+        **{arch: 0.0 for arch in (
+            "sd15", "sdxl", "zimage", "anima", "flux2", "krea2",
+            "qwen_image_21", "ltx2", "lens", "sensenova",
+            "sensenova_sdxl_chimera",
+        )},
+        "minit2i": 0.1,
+    }
 
 
 def test_no_literal_default_survives_outside_param_defaults():
@@ -409,7 +420,7 @@ def test_the_yaml_carries_the_supplied_value_not_the_resolved_one(collated_arch)
 
 def test_the_yaml_builder_refuses_what_the_route_refuses():
     with pytest.raises(ValidationError):
-        _train_section("sdxl", **{CFG_KEY: 0.2, "_explicit_fields": [CFG_KEY]})
+        _train_section("ideogram4", **{CFG_KEY: 0.2, "_explicit_fields": [CFG_KEY]})
 
 
 def test_the_yaml_carries_the_supplied_legacy_value_not_the_resolved_one():

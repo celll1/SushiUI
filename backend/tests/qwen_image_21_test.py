@@ -59,7 +59,7 @@ class _GuidanceTransformer(torch.nn.Module):
                 encoder_hidden_states_mask, img_mask, **_kwargs):
         assert img_mask.shape[1] == encoder_hidden_states.shape[1] + hidden_states.shape[1] // 4
         assert encoder_hidden_states_mask.shape[1] == encoder_hidden_states.shape[1]
-        return (hidden_states * self.scale + encoder_hidden_states.mean(),)
+        return (hidden_states * self.scale + encoder_hidden_states.mean(dim=(1, 2), keepdim=True),)
 
 
 @pytest.mark.parametrize("partitioned", [False, True])
@@ -73,7 +73,8 @@ def test_qwen_guidance_loss_mixes_targets_and_detaches_null_forward(partitioned)
         mixed_precision=False, use_grad_scaler=False, transformer=transformer,
         arch=QwenImage21ArchHandler(),
         config={"dit_partition_fixed_count": 2, "qwen_guidance_loss_weight": 0.25,
-                "qwen_guidance_loss_scale": 3.0, "qwen_guidance_loss_schedule": "sigma"},
+                "qwen_guidance_loss_scale": 3.0, "qwen_guidance_loss_schedule": "sigma",
+                "qwen_guidance_loss_mix_mode": "blend"},
         _active_mnt_noise=noise,
         _qwen_guidance_blank_encoding=(torch.zeros(1, 3, 4), torch.ones(3, dtype=torch.bool)),
         log_extra_metric=lambda key, value: metrics.__setitem__(key, value),
@@ -129,6 +130,86 @@ def test_qwen_guidance_loss_skips_cfg_null_items():
 
 
 @pytest.mark.parametrize("partitioned", [False, True])
+def test_qwen_stochastic_selection_is_per_image_and_fixed_across_tiles(monkeypatch, partitioned):
+    class CountingTransformer(_GuidanceTransformer):
+        def __init__(self):
+            super().__init__()
+            self.forward_batches = []
+
+        def forward(self, **kwargs):
+            self.forward_batches.append(kwargs["hidden_states"].shape[0])
+            return super().forward(**kwargs)
+
+    monkeypatch.setattr(torch, "rand_like", lambda value: value.new_tensor([0.1, 0.9, 0.1]))
+    transformer = CountingTransformer()
+    metrics = {}
+    trainer = SimpleNamespace(
+        device=torch.device("cpu"), training_dtype=torch.float32,
+        mixed_precision=False, use_grad_scaler=False, transformer=transformer,
+        arch=QwenImage21ArchHandler(),
+        config={"dit_partition_fixed_count": 2, "qwen_guidance_loss_weight": 0.5,
+                "qwen_guidance_loss_scale": 3.0, "qwen_guidance_loss_schedule": "sigma",
+                "qwen_guidance_loss_mix_mode": "stochastic"},
+        _active_mnt_noise=torch.ones(3, 32, 4),
+        _qwen_guidance_blank_encoding=(torch.zeros(1, 3, 4), torch.ones(3, dtype=torch.bool)),
+        log_extra_metric=lambda key, value: metrics.__setitem__(key, value),
+    )
+    inputs = dict(
+        latents=torch.zeros(3, 32, 4), encoder_features=torch.ones(3, 2, 4),
+        encoder_mask=torch.ones(3, 2, dtype=torch.bool),
+        timesteps=torch.full((3,), 0.5), latent_h=4, latent_w=8,
+        cfg_drop_mask=torch.tensor([False, False, True]),
+    )
+    if partitioned:
+        loss_value, _, _ = qwen_image_21_ops.train_step_partitioned_backward(
+            trainer, **inputs, backward_scale=1.0
+        )
+    else:
+        loss, _, _ = qwen_image_21_ops.train_step(trainer, **inputs)
+        loss_value = float(loss.detach())
+        loss.backward()
+    guided_target = 0.25 + 2.0 * (1.0 - 0.25)
+    expected = ((1.25 - guided_target) ** 2 + (1.25 - 1.0) ** 2 +
+                (1.25 - 1.0) ** 2) / 3
+    assert loss_value == pytest.approx(expected)
+    assert float(transformer.scale.grad) == pytest.approx(
+        (2 * (1.25 - guided_target) + 4 * (1.25 - 1.0)) * 0.5 / 3,
+        abs=1e-7,
+    )
+    assert transformer.forward_batches == ([1, 3] * 2 if partitioned else [1, 3])
+    assert metrics["qwen_guidance_loss_mix_weight"] == pytest.approx(1 / 3)
+    assert metrics["qwen_guidance_loss_selected_fraction"] == pytest.approx(1 / 3)
+
+
+def test_qwen_stochastic_probability_follows_sigma_schedule(monkeypatch):
+    monkeypatch.setattr(torch, "rand_like", lambda value: value.new_tensor([0.3, 0.6, 0.99]))
+    trainer = SimpleNamespace(config={"qwen_guidance_loss_mix_mode": "stochastic"})
+    condition = (None, None, torch.tensor([True, True, True]),
+                 0.25, 3.0, "sigma", "high_noise_smoothstep", 1.0, 0.5, 0.8)
+    selection, guided = qwen_image_21_ops._guidance_selection(
+        trainer, torch.tensor([0.2, 0.65, 1.0]), condition
+    )
+    assert guided.tolist() == [False, True, True]
+    assert selection.tolist() == [0.0, 1.0, 1.0]
+
+
+def test_qwen_stochastic_selection_reuses_recovery_draw(monkeypatch):
+    monkeypatch.setattr(torch, "rand_like", lambda _value: pytest.fail("redrew loss choice"))
+    condition = (None, None, torch.tensor([True, True]), 0.5, 3.0, "sigma")
+    trainer = SimpleNamespace(
+        config={"qwen_guidance_loss_mix_mode": "stochastic"},
+        _qwen_guidance_draw=torch.tensor([0.2, 0.8]),
+    )
+    first = qwen_image_21_ops._guidance_selection(
+        trainer, torch.tensor([0.5, 0.5]), condition
+    )[1]
+    second = qwen_image_21_ops._guidance_selection(
+        trainer, torch.tensor([0.5, 0.5]), condition
+    )[1]
+    assert first.tolist() == second.tolist() == [True, False]
+
+
+@pytest.mark.parametrize("partitioned", [False, True])
 @pytest.mark.parametrize("sigma, weight", [(0.2, 0.25), (0.5, 0.25), (0.65, 0.625),
                                             (0.8, 1.0), (1.0, 1.0)])
 def test_qwen_high_noise_mix_schedule_matches_full_and_partitioned_gradients(partitioned, sigma, weight):
@@ -141,6 +222,7 @@ def test_qwen_high_noise_mix_schedule_matches_full_and_partitioned_gradients(par
         config={
             "dit_partition_fixed_count": 2,
             "qwen_guidance_loss_weight": 0.25,
+            "qwen_guidance_loss_mix_mode": "blend",
             "qwen_guidance_loss_scale": 3.0,
             "qwen_guidance_loss_schedule": "sigma",
             "qwen_guidance_loss_weight_schedule": "high_noise_smoothstep",
@@ -180,11 +262,26 @@ def test_qwen_guidance_api_defaults_match_contract():
     from api.param_defaults import TRAINING_DEFAULTS
 
     fields = routes.TrainingRunCreateRequest.model_fields
-    for name in ("qwen_guidance_loss_weight", "qwen_guidance_loss_scale",
+    for name in ("qwen_guidance_loss_weight", "qwen_guidance_loss_mix_mode", "qwen_guidance_loss_scale",
                  "qwen_guidance_loss_schedule", "qwen_guidance_loss_weight_schedule",
                  "qwen_guidance_loss_high_noise_weight", "qwen_guidance_loss_ramp_start",
                  "qwen_guidance_loss_ramp_end"):
         assert fields[name].default == TRAINING_DEFAULTS[name]
+
+
+def test_qwen_legacy_guidance_config_keeps_blend_on_resume_and_edit():
+    from api.routes import _extract_request_params_from_yaml
+
+    params = _extract_request_params_from_yaml(
+        {"train": {"qwen_guidance_loss_weight": 0.25}}, "lora"
+    )
+    assert params["qwen_guidance_loss_mix_mode"] == "blend"
+    condition = (None, None, torch.tensor([True]), 0.25, 3.0, "sigma")
+    selection, guided = qwen_image_21_ops._guidance_selection(
+        SimpleNamespace(config={}), torch.tensor([0.5]), condition
+    )
+    assert selection.tolist() == [0.25]
+    assert guided.tolist() == [True]
 
 
 @pytest.mark.parametrize("overrides", [

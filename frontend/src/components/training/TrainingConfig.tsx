@@ -6157,12 +6157,21 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <div className="rounded border border-amber-800/50 bg-amber-950/20 p-2 space-y-2">
                   <div className="text-xs text-amber-300">Guidance-target loss (experimental)</div>
                   <p className="text-xs text-gray-400">
-                    Mix ordinary flow loss with an extrapolated target based on a no-gradient
-                    empty-prompt prediction. This adds one transformer forward per image or tile.
+                    Select ordinary or guided loss per image, or use the legacy weighted blend.
+                    Guided items need an extra no-gradient empty-prompt forward per image or tile.
                     The empty-prompt branch shares LoRA weights even when CFG-null dropout is zero.
                   </p>
+                  <label className="block text-xs text-gray-400">Loss selection
+                    <select
+                      value={params.qwen_guidance_loss_mix_mode ?? (trainingDefaults?.qwen_guidance_loss_mix_mode as string | undefined) ?? ""}
+                      onChange={(e) => updateParam("qwen_guidance_loss_mix_mode", e.target.value as "stochastic" | "blend")}
+                      className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200">
+                      <option value="stochastic">Stochastic per image (default)</option>
+                      <option value="blend">Weighted blend (legacy runs)</option>
+                    </select>
+                  </label>
                   <div className="grid grid-cols-3 gap-2">
-                    <label className="text-xs text-gray-400">Low-σ mix weight
+                    <label className="text-xs text-gray-400">Low-σ guided probability / weight
                       <input type="number" min={0} max={1} step={0.05}
                         value={params.qwen_guidance_loss_weight ?? (trainingDefaults?.qwen_guidance_loss_weight as number | undefined) ?? ""}
                         onChange={(e) => updateParam("qwen_guidance_loss_weight", e.target.value === "" ? (undefined as any) : parseFloat(e.target.value))}
@@ -6185,7 +6194,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     </label>
                   </div>
                   <div className="grid grid-cols-4 gap-2">
-                    <label className="text-xs text-gray-400">Mix schedule
+                    <label className="text-xs text-gray-400">Probability / weight schedule
                       <select
                         value={params.qwen_guidance_loss_weight_schedule ?? (trainingDefaults?.qwen_guidance_loss_weight_schedule as string | undefined) ?? ""}
                         onChange={(e) => updateParam("qwen_guidance_loss_weight_schedule", e.target.value as "constant" | "high_noise_smoothstep")}

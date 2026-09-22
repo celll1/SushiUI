@@ -11200,6 +11200,10 @@ class BaseTrainer(ABC):
             l, p, r = self._execute_forward_backward(
                 mnt_latents=leaves["mnt_latents"],
                 mnt_noise=(b["mnt_noise"][lo:hi] if b.get("mnt_noise") is not None else None),
+                qwen_guidance_draw=(
+                    b["qwen_guidance_draw"][lo:hi]
+                    if b.get("qwen_guidance_draw") is not None else None
+                ),
                 mnt_text_embeddings=leaves["mnt_text_embeddings"],
                 mnt_attention_mask=self._slice_aux(b["mnt_attention_mask"], lo, hi),
                 mnt_pooled_embeddings=leaves["mnt_pooled_embeddings"],
@@ -11317,6 +11321,14 @@ class BaseTrainer(ABC):
         # can slice them uniformly.
         _batch = dict(
             mnt_latents=mnt_latents, mnt_noise=mnt_noise,
+            qwen_guidance_draw=(
+                torch.rand(batch_size, device=timesteps.device)
+                if self.is_qwen_image_21
+                and self.config.get("qwen_guidance_loss_mix_mode", "blend") == "stochastic"
+                and float(self.config.get(
+                    "qwen_guidance_loss_weight", _TRAINING_DEFAULTS["qwen_guidance_loss_weight"]
+                ) or 0.0) > 0 else None
+            ),
             mnt_text_embeddings=mnt_text_embeddings,
             mnt_attention_mask=mnt_attention_mask, mnt_pooled_embeddings=mnt_pooled_embeddings,
             timesteps=timesteps, debug_save_path=debug_save_path,
@@ -11987,6 +11999,7 @@ class BaseTrainer(ABC):
         cfg_drop_mask: Optional[torch.Tensor] = None,
         loss_scale: float = 1.0,
         mnt_noise: Optional[torch.Tensor] = None,
+        qwen_guidance_draw: Optional[torch.Tensor] = None,
     ) -> Tuple[float, float, float]:
         """
         Execute forward pass (train_step_xxx) and backward pass for a batch.
@@ -12001,6 +12014,7 @@ class BaseTrainer(ABC):
         The returned loss VALUE stays unscaled (per-chunk mean) for reporting.
         """
         self._active_mnt_noise = mnt_noise
+        self._qwen_guidance_draw = qwen_guidance_draw
         self._begin_repa_profile_call(mnt_repa_pixels)
         if self.is_qwen_image_21:
             from core.training.ops import qwen_image_21_ops
@@ -15905,6 +15919,11 @@ class BaseTrainer(ABC):
         if _guidance_weight:
             if not self.is_qwen_image_21:
                 raise ValueError("qwen_guidance_loss_weight requires Qwen-Image 2.1 training")
+            _guidance_mode = str(self.config.get(
+                "qwen_guidance_loss_mix_mode", "blend"
+            ))
+            if _guidance_mode not in {"stochastic", "blend"}:
+                raise ValueError("Qwen guidance loss mix mode must be stochastic or blend")
             if text_encoder_trainable:
                 raise ValueError("Qwen guidance loss requires a frozen text encoder")
             _guidance_scale = float(self.config.get(
@@ -15921,7 +15940,7 @@ class BaseTrainer(ABC):
             self._qwen_guidance_blank_encoding = (
                 blank_emb.detach().cpu(), blank_mask.detach().cpu()
             )
-            print(f"{self.log_prefix} Qwen guidance loss: weight={_guidance_weight}, "
+            print(f"{self.log_prefix} Qwen guidance loss: mode={_guidance_mode}, weight={_guidance_weight}, "
                   f"scale={_guidance_scale}, schedule={_guidance_schedule}, "
                   f"weight_schedule={_weight_schedule}")
         if _cfg_null_rate:

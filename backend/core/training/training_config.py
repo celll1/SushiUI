@@ -519,7 +519,7 @@ def _build_train_section(
         "qwen_full_kv_query_chunk_tokens", "qwen_convrot_training_forward",
         "qwen_convrot_backward_cache_blocks",
         "qwen_convrot_backward_prefetch_depth",
-        "qwen_guidance_loss_weight", "qwen_guidance_loss_scale",
+        "qwen_guidance_loss_weight", "qwen_guidance_loss_mix_mode", "qwen_guidance_loss_scale",
         "qwen_guidance_loss_schedule",
         "qwen_guidance_loss_weight_schedule", "qwen_guidance_loss_high_noise_weight",
         "qwen_guidance_loss_ramp_start", "qwen_guidance_loss_ramp_end",

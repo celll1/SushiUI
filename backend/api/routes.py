@@ -15556,6 +15556,9 @@ class TrainingRunCreateRequest(BaseModel):
     qwen_guidance_loss_weight: float = Field(
         default=TRAINING_DEFAULTS["qwen_guidance_loss_weight"], ge=0, le=1
     )
+    qwen_guidance_loss_mix_mode: Literal["stochastic", "blend"] = TRAINING_DEFAULTS[
+        "qwen_guidance_loss_mix_mode"
+    ]
     qwen_guidance_loss_scale: float = Field(
         default=TRAINING_DEFAULTS["qwen_guidance_loss_scale"], ge=1, le=10
     )
@@ -16516,6 +16519,9 @@ def _extract_request_params_from_yaml(process_config: dict, job: str) -> Dict[st
         else:
             # Default: look up in train section with same name
             value = train.get(field_name, default)
+
+        if field_name == "qwen_guidance_loss_mix_mode" and field_name not in train:
+            value = "blend"
 
         # An explicit `key:` with no value reads as null, which a non-nullable
         # field rejects. Treat it as the absent key it is written like.

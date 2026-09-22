@@ -13,9 +13,25 @@ giving `u = stopgrad(model(x_sigma, sigma, ""))`. The conditional prediction is
 
 The effective scale is `g = scale` for `constant`, or
 `g = 1 + (scale - 1)*sigma` for `sigma`. Define the guidance target
-`v_g = u + g*(v-u)`. For a conditional item, train
+`v_g = u + g*(v-u)`. For a conditional item, define
 
-`L = (1-weight)*MSE(c,v) + weight*MSE(c,v_g)`.
+`L_normal = MSE(c,v)` and `L_guided = MSE(c,v_g)`.
+
+The default `qwen_guidance_loss_mix_mode=stochastic` draws one Bernoulli choice
+per logical image, with guided probability given by the configured weight
+schedule at that image's sigma. The selected loss applies to every tile of
+that image. Images in the same batch can choose different losses; the batch
+loss is the mean of the individually selected losses. A batch draws once before
+its first forward and reuses that draw across activation-offload retries and
+micro-batch splits. The `blend` mode retains
+the earlier objective, `L = (1-weight)*L_normal + weight*L_guided`.
+
+At fixed parameters, stochastic selection has the same expected gradient as
+blend, but higher gradient variance; it is an experiment in optimizer
+trajectory, not a guarantee of learning two separately expressible fields.
+Existing saved YAML without this key is interpreted as `blend` when resumed
+or opened for editing, preserving its prior guidance-loss behavior. New run
+requests materialize the `stochastic` API default into their saved config.
 
 An item drawn for `cfg_uncond_drop_rate` instead receives only ordinary MSE
 under its empty-prompt condition. It does not receive the guidance target.
@@ -29,9 +45,9 @@ and higher CFG are required before adopting it for a production run.
 ## Execution and costs
 
 The empty-prompt text encoding is computed once per run by the frozen Qwen
-text encoder and held on CPU. Each logical step moves that small conditioning
-to the device and adds one no-gradient transformer forward for each image or
-region. It uses exactly the conditional branch's noisy latent, sigma, global
+text encoder and held on CPU. Guided-selected images (or images with positive
+blend weight) use one no-gradient transformer forward per region. It uses
+exactly the conditional branch's noisy latent, sigma, global
 position IDs, and optional partition-global adapter; each branch constructs
 its own prefix-length-dependent image mask. Partition loss still covers every
 non-overlapping core exactly once and accumulates one optimizer step. The
@@ -47,14 +63,15 @@ encoder. It works with both full-canvas and complete-coverage partitioned
 training; null-drop labels are passed through OOM micro-batch slicing.
 
 An opt-in `qwen_guidance_loss_weight_schedule=high_noise_smoothstep` changes
-the mix fraction per logical image, not the guidance-target scale. The existing
-`qwen_guidance_loss_weight` is the low-noise fraction; the fraction transitions
+the guided probability (or blend fraction) per logical image, not the
+guidance-target scale. The existing `qwen_guidance_loss_weight` is its
+low-noise value; it transitions
 to `qwen_guidance_loss_high_noise_weight` between
 `qwen_guidance_loss_ramp_start` and `qwen_guidance_loss_ramp_end` using
 `t²(3−2t)` with clamped normalized sigma `t`. Defaults are `constant`, 1.0,
-0.5, and 0.8, so no existing run changes. With low=0.25 and high=1.0,
-sigma≤0.5 matches Run 156's mix while sigma≥0.8 matches Run 158's guidance-only
-mix; sigma=1 is fully guided. The schedule is experimental: the initial
+0.5, and 0.8. In blend mode, low=0.25 and high=1.0 reproduces Run 156's mix
+below sigma 0.5 and Run 158's guidance-only objective above sigma 0.8;
+sigma=1 is fully guided in either mode. The schedule is experimental: the initial
 high-noise rollout may remain compositionally constrained even if CFG 1 is
 stable. `qwen_guidance_loss_weight=0` still disables the extra forward.
 

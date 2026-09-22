@@ -25027,10 +25027,18 @@ components:
           default: 0.0
           example: 0.25
           description: >-
-            Qwen-Image 2.1 only. Mix fraction of guidance-target MSE with
-            ordinary flow MSE for conditional items. Zero disables the extra
-            no-gradient empty-prompt transformer forward. CFG-null items
-            always retain ordinary MSE. Experimental; not CFG distillation.
+            Qwen-Image 2.1 only. Probability of selecting guidance-target MSE
+            in stochastic mode, or guided-loss fraction in blend mode, for
+            conditional items. Zero disables the extra empty-prompt forward.
+            CFG-null items always retain ordinary MSE. Experimental.
+        qwen_guidance_loss_mix_mode:
+          type: string
+          enum: [stochastic, blend]
+          default: stochastic
+          example: stochastic
+          description: >-
+            Choose guided or ordinary loss independently per logical image,
+            or blend both losses as in earlier Qwen training runs.
         qwen_guidance_loss_scale:
           type: number
           format: float
@@ -25053,8 +25061,8 @@ components:
           default: constant
           example: high_noise_smoothstep
           description: >-
-            Qwen-only mix-weight schedule. Constant preserves the existing mix
-            weight; high_noise_smoothstep transitions from that weight at low
+            Qwen-only guidance probability/weight schedule. Constant keeps the
+            low-noise value; high_noise_smoothstep transitions from it at low
             sigma to qwen_guidance_loss_high_noise_weight at high sigma.
         qwen_guidance_loss_high_noise_weight:
           type: number
@@ -25063,7 +25071,7 @@ components:
           maximum: 1
           default: 1.0
           example: 1.0
-          description: Guided-loss fraction at and above the high-noise ramp end.
+          description: Guided-loss probability or blend fraction at and above the high-noise ramp end.
         qwen_guidance_loss_ramp_start:
           type: number
           format: float
@@ -25071,7 +25079,7 @@ components:
           maximum: 1
           default: 0.5
           example: 0.5
-          description: Sigma below which the configured mix weight applies unchanged.
+          description: Sigma below which the configured low-noise probability/weight applies unchanged.
         qwen_guidance_loss_ramp_end:
           type: number
           format: float
@@ -25079,7 +25087,7 @@ components:
           maximum: 1
           default: 0.8
           example: 0.8
-          description: Sigma at or above which the high-noise mix weight applies.
+          description: Sigma at or above which the high-noise probability/weight applies.
         krea2_lora_scope:
           type: string
           default: "attn,mlp"

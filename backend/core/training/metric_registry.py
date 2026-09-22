@@ -168,6 +168,8 @@ EXTRA_METRIC_DEFS = {
     },
     "qwen_guidance_loss_normal": {"label": "Qwen ordinary loss", "color": "#38bdf8", **_LOSS},
     "qwen_guidance_loss_guided": {"label": "Qwen guided loss", "color": "#fb923c", **_LOSS},
+    "qwen_guidance_loss_mix_weight": {"label": "Qwen guided probability", "color": "#a78bfa", **_UNIT_DIAG},
+    "qwen_guidance_loss_selected_fraction": {"label": "Qwen guided selected", "color": "#e879f9", **_UNIT_DIAG},
     # Outpaint ControlNet: MSE over the generate region only (the learning
     # signal that matters for outpaint, isolated from the byte-identical known
     # region which the training masks out).

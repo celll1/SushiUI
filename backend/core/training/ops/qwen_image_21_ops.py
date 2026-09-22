@@ -16,6 +16,53 @@ def partition_training_enabled(trainer) -> bool:
     ))
 
 
+def _guidance_condition(trainer, batch: int, cfg_drop_mask, device, dtype):
+    from api.param_defaults import TRAINING_DEFAULTS
+
+    weight = float(trainer.config.get(
+        "qwen_guidance_loss_weight", TRAINING_DEFAULTS["qwen_guidance_loss_weight"]
+    ) or 0.0)
+    if not 0 <= weight <= 1:
+        raise ValueError("qwen_guidance_loss_weight must be between 0 and 1")
+    eligible = torch.ones(batch, dtype=torch.bool, device=device)
+    if cfg_drop_mask is not None:
+        eligible &= ~cfg_drop_mask.to(device=device, dtype=torch.bool)
+    if weight == 0 or not bool(eligible.any()):
+        return None
+    scale = float(trainer.config.get(
+        "qwen_guidance_loss_scale", TRAINING_DEFAULTS["qwen_guidance_loss_scale"]
+    ))
+    schedule = str(trainer.config.get(
+        "qwen_guidance_loss_schedule", TRAINING_DEFAULTS["qwen_guidance_loss_schedule"]
+    ))
+    if not 1 <= scale <= 10 or schedule not in {"constant", "sigma"}:
+        raise ValueError("Qwen guidance loss requires scale in [1, 10] and schedule constant/sigma")
+    blank = getattr(trainer, "_qwen_guidance_blank_encoding", None)
+    if blank is None:
+        raise RuntimeError("Qwen guidance loss requires a cached empty-prompt encoding")
+    features, mask = blank
+    return (
+        features.to(device=device, dtype=dtype).expand(batch, -1, -1),
+        mask.to(device=device).expand(batch, -1) if mask.ndim == 2 else mask.to(device=device).unsqueeze(0).expand(batch, -1),
+        eligible, weight, scale, schedule,
+    )
+
+
+def _guidance_loss(prediction, target, uncond_prediction, sigma, condition):
+    _, _, eligible, weight, scale, schedule = condition
+    guide_scale = scale if schedule == "constant" else 1 + (scale - 1) * sigma.float()
+    while isinstance(guide_scale, torch.Tensor) and guide_scale.ndim < target.ndim:
+        guide_scale = guide_scale.unsqueeze(-1)
+    guided_target = uncond_prediction.float() + guide_scale * (
+        target.float() - uncond_prediction.float()
+    )
+    normal = (prediction.float() - target.float()).square().flatten(1).mean(1)
+    guided = (prediction.float() - guided_target).square().flatten(1).mean(1)
+    mix = weight * eligible.to(dtype=normal.dtype)
+    loss = ((1 - mix) * normal + mix * guided).mean()
+    return loss, normal.mean().detach(), guided[eligible].mean().detach()
+
+
 def _partition_config(config, name: str, default):
     canonical = f"dit_partition_{name}"
     legacy = f"qwen_partition_{name}"
@@ -417,6 +464,7 @@ def train_step(
     debug_save_path=None,
     debug_captions=None,
     debug_reference_image_paths=None,
+    cfg_drop_mask=None,
     **_kwargs,
 ):
     latents = latents.to(trainer.device, trainer.training_dtype)
@@ -437,32 +485,49 @@ def train_step(
     noise = training_noise_like(trainer, latents)
     noisy = (1 - sigma_view) * latents + sigma_view * noise
     target = noise - latents
-    prefix_mask = torch.zeros(
-        encoder_features.shape[:2], dtype=torch.bool, device=trainer.device
-    )
-    image_mask = torch.cat(
-        [prefix_mask, torch.ones(batch, tokens // 4, dtype=torch.bool, device=trainer.device)], dim=1
-    )
     shapes = [[(1, int(latent_h), int(latent_w))]] * batch
 
-    def forward():
+    guidance = _guidance_condition(
+        trainer, batch, cfg_drop_mask, trainer.device, trainer.training_dtype
+    )
+
+    def forward(features, mask):
+        image_mask = torch.cat([
+            torch.zeros(features.shape[:2], dtype=torch.bool, device=trainer.device),
+            torch.ones(batch, tokens // 4, dtype=torch.bool, device=trainer.device),
+        ], dim=1)
         return trainer.transformer(
             hidden_states=noisy,
             timestep=sigma,
-            encoder_hidden_states=encoder_features,
-            encoder_hidden_states_mask=encoder_mask,
+            encoder_hidden_states=features,
+            encoder_hidden_states_mask=mask,
             img_shapes=shapes,
             img_mask=image_mask,
             return_dict=False,
         )[0]
 
+    uncond_prediction = None
+    if guidance is not None:
+        with torch.no_grad():
+            if trainer.mixed_precision:
+                with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
+                    uncond_prediction = forward(guidance[0], guidance[1])[:, -tokens:]
+            else:
+                uncond_prediction = forward(guidance[0], guidance[1])[:, -tokens:]
     if trainer.mixed_precision:
         with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
-            prediction = forward()
+            prediction = forward(encoder_features, encoder_mask)
     else:
-        prediction = forward()
+        prediction = forward(encoder_features, encoder_mask)
     prediction = prediction[:, -tokens:]
-    loss = F.mse_loss(prediction.float(), target.float())
+    if guidance is None:
+        loss = F.mse_loss(prediction.float(), target.float())
+    else:
+        loss, normal_loss, guided_loss = _guidance_loss(
+            prediction, target, uncond_prediction, sigma, guidance
+        )
+        trainer.log_extra_metric("qwen_guidance_loss_normal", float(normal_loss))
+        trainer.log_extra_metric("qwen_guidance_loss_guided", float(guided_loss))
     _save_debug_latents(
         trainer, debug_save_path, latents=latents, noisy=noisy, target=target,
         prediction=prediction, timesteps=timesteps, latent_h=latent_h,
@@ -485,6 +550,7 @@ def train_step_partitioned_backward(
     debug_save_path=None,
     debug_captions=None,
     debug_reference_image_paths=None,
+    cfg_drop_mask=None,
 ) -> tuple[float, float, float]:
     """Run every loss core sequentially and accumulate one logical gradient."""
     from core.training.mnt import training_noise_like
@@ -507,12 +573,12 @@ def train_step_partitioned_backward(
     target = noise - latents
     noisy_grid = noisy.reshape(batch, int(latent_h), int(latent_w), channels)
     target_grid = target.reshape_as(noisy_grid)
+    guidance = _guidance_condition(
+        trainer, batch, cfg_drop_mask, trainer.device, trainer.training_dtype
+    )
     debug_prediction_grid = (
         torch.empty((int(latent_h), int(latent_w), channels), dtype=torch.float32)
         if debug_save_path is not None else None
-    )
-    prefix_mask = torch.zeros(
-        encoder_features.shape[:2], dtype=torch.bool, device=trainer.device
     )
 
     original_checkpoint_blocks = getattr(
@@ -530,6 +596,8 @@ def train_step_partitioned_backward(
     forward_ms = 0.0
     backward_ms = 0.0
     logical_loss_tensor = torch.zeros((), device=trainer.device, dtype=torch.float32)
+    normal_loss_total = 0.0
+    guided_loss_total = 0.0
     total_input_tokens = 0
     wall_start = time.perf_counter()
     try:
@@ -541,18 +609,6 @@ def train_step_partitioned_backward(
             global_adapter = getattr(
                 trainer.transformer, "qwen_partition_global_adapter", None
             )
-            image_mask = torch.cat(
-                [
-                    prefix_mask,
-                    torch.ones(
-                        batch,
-                        input_tokens // 4,
-                        dtype=torch.bool,
-                        device=trainer.device,
-                    ),
-                ],
-                dim=1,
-            )
             positions = partition_adapter.position_ids(
                 plan.full_height, plan.full_width, region.input
             )
@@ -563,7 +619,11 @@ def train_step_partitioned_backward(
                 backward_end = torch.cuda.Event(enable_timing=True)
                 forward_start.record(torch.cuda.current_stream(trainer.device))
 
-            def forward():
+            def forward(features, mask):
+                image_mask = torch.cat([
+                    torch.zeros(features.shape[:2], dtype=torch.bool, device=trainer.device),
+                    torch.ones(batch, input_tokens // 4, dtype=torch.bool, device=trainer.device),
+                ], dim=1)
                 target_input_residual = (
                     global_adapter(noisy_grid, region.input)
                     if global_adapter is not None
@@ -572,8 +632,8 @@ def train_step_partitioned_backward(
                 return trainer.transformer(
                     hidden_states=tile,
                     timestep=sigma,
-                    encoder_hidden_states=encoder_features,
-                    encoder_hidden_states_mask=encoder_mask,
+                    encoder_hidden_states=features,
+                    encoder_hidden_states_mask=mask,
                     img_shapes=[[(1, region.input.height, region.input.width)]] * batch,
                     img_mask=image_mask,
                     target_spatial_position_ids=positions,
@@ -581,11 +641,22 @@ def train_step_partitioned_backward(
                     return_dict=False,
                 )[0]
 
+            uncond_prediction = None
+            if guidance is not None:
+                with torch.no_grad():
+                    if trainer.mixed_precision:
+                        with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
+                            uncond_prediction = forward(guidance[0], guidance[1])
+                    else:
+                        uncond_prediction = forward(guidance[0], guidance[1])
+                uncond_prediction = uncond_prediction[:, -input_tokens:].reshape(
+                    batch, region.input.height, region.input.width, channels
+                )
             if trainer.mixed_precision:
                 with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
-                    prediction = forward()
+                    prediction = forward(encoder_features, encoder_mask)
             else:
-                prediction = forward()
+                prediction = forward(encoder_features, encoder_mask)
             prediction = prediction[:, -input_tokens:].reshape(
                 batch, region.input.height, region.input.width, channels
             )
@@ -600,9 +671,18 @@ def train_step_partitioned_backward(
                         core.height, core.width, channels
                     ).cpu()
                 )
-            weighted_loss = (
-                region.core.tokens / plan.full_tokens
-            ) * F.mse_loss(core_prediction.float(), core_target.float())
+            core_fraction = region.core.tokens / plan.full_tokens
+            if guidance is None:
+                core_loss = F.mse_loss(core_prediction.float(), core_target.float())
+            else:
+                core_uncond = flatten_region(uncond_prediction, local)
+                core_loss, normal_loss, guided_loss = _guidance_loss(
+                    core_prediction, core_target, core_uncond, sigma, guidance
+                )
+                normal_loss_total += core_fraction * normal_loss
+                guided_loss_total += core_fraction * guided_loss
+                del core_uncond, uncond_prediction
+            weighted_loss = core_fraction * core_loss
 
             if cuda_timing:
                 forward_end.record(torch.cuda.current_stream(trainer.device))
@@ -618,7 +698,7 @@ def train_step_partitioned_backward(
                 backward_ms += forward_end.elapsed_time(backward_end)
             logical_loss_tensor = logical_loss_tensor + weighted_loss.detach()
             del tile, tile_target, prediction, target_tile_grid, core_prediction, core_target
-            del weighted_loss, scaled_loss, image_mask
+            del weighted_loss, scaled_loss, core_loss
     finally:
         if original_checkpoint_blocks is None:
             if hasattr(trainer.transformer, "_training_gradient_checkpointing_blocks"):
@@ -627,6 +707,9 @@ def train_step_partitioned_backward(
             trainer.transformer._training_gradient_checkpointing_blocks = original_checkpoint_blocks
 
     logical_loss = float(logical_loss_tensor.item())
+    if guidance is not None:
+        trainer.log_extra_metric("qwen_guidance_loss_normal", float(normal_loss_total))
+        trainer.log_extra_metric("qwen_guidance_loss_guided", float(guided_loss_total))
     if debug_prediction_grid is not None:
         _save_debug_latents(
             trainer, debug_save_path, latents=latents, noisy=noisy, target=target,

@@ -166,6 +166,8 @@ EXTRA_METRIC_DEFS = {
     "qwen_partition_peak_allocated_gb": {
         "label": "Qwen partition peak VRAM (GiB)", **_DATA_VOLUME_PEAK,
     },
+    "qwen_guidance_loss_normal": {"label": "Qwen ordinary loss", "color": "#38bdf8", **_LOSS},
+    "qwen_guidance_loss_guided": {"label": "Qwen guided loss", "color": "#fb923c", **_LOSS},
     # Outpaint ControlNet: MSE over the generate region only (the learning
     # signal that matters for outpaint, isolated from the byte-identical known
     # region which the training masks out).

@@ -75,6 +75,7 @@ class QwenImage21ArchHandler(ArchHandler):
             timesteps=ctx.timesteps,
             latent_h=ctx.latent_h,
             latent_w=ctx.latent_w,
+            cfg_drop_mask=ctx.cfg_drop_mask,
             profile_vram=ctx.profile_vram,
             repa_pixels=ctx.repa_pixels,
             debug_save_path=ctx.debug_save_path,

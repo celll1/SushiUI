@@ -6140,6 +6140,37 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
             {isQwenImage21Model && (
               <div className="pt-2 border-t border-gray-700 space-y-2">
+                <div className="rounded border border-amber-800/50 bg-amber-950/20 p-2 space-y-2">
+                  <div className="text-xs text-amber-300">Guidance-target loss (experimental)</div>
+                  <p className="text-xs text-gray-400">
+                    Mix ordinary flow loss with an extrapolated target based on a no-gradient
+                    empty-prompt prediction. This adds one transformer forward per image or tile.
+                    Keep CFG-null dropout enabled to train the unconditional branch separately.
+                  </p>
+                  <div className="grid grid-cols-3 gap-2">
+                    <label className="text-xs text-gray-400">Mix weight
+                      <input type="number" min={0} max={1} step={0.05}
+                        value={params.qwen_guidance_loss_weight ?? (trainingDefaults?.qwen_guidance_loss_weight as number | undefined) ?? ""}
+                        onChange={(e) => updateParam("qwen_guidance_loss_weight", e.target.value === "" ? (undefined as any) : parseFloat(e.target.value))}
+                        className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200" />
+                    </label>
+                    <label className="text-xs text-gray-400">Target CFG
+                      <input type="number" min={1} max={10} step={0.25}
+                        value={params.qwen_guidance_loss_scale ?? (trainingDefaults?.qwen_guidance_loss_scale as number | undefined) ?? ""}
+                        onChange={(e) => updateParam("qwen_guidance_loss_scale", e.target.value === "" ? (undefined as any) : parseFloat(e.target.value))}
+                        className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200" />
+                    </label>
+                    <label className="text-xs text-gray-400">Schedule
+                      <select
+                        value={params.qwen_guidance_loss_schedule ?? (trainingDefaults?.qwen_guidance_loss_schedule as string | undefined) ?? ""}
+                        onChange={(e) => updateParam("qwen_guidance_loss_schedule", e.target.value as "constant" | "sigma")}
+                        className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200">
+                        <option value="sigma">Sigma tapered</option>
+                        <option value="constant">Constant</option>
+                      </select>
+                    </label>
+                  </div>
+                </div>
                 <div className="flex items-center space-x-2">
                   <input
                     type="checkbox"

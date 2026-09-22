@@ -1,7 +1,8 @@
 # Qwen-Image 2.1 branch-separated LoRA design
 
-Status: `cond_base_v1` implemented as an opt-in first prototype; the measured
-580-step training and image comparison remain pending. The existing shared-LoRA guidance-target
+Status: `cond_base_v1` implemented as an opt-in first prototype. Its first
+580-step run confirmed exact base-negative routing but failed the image-quality
+gate; it must not become a default. The existing shared-LoRA guidance-target
 objective is documented in [QWEN_IMAGE_21_GUIDANCE_LOSS.md](QWEN_IMAGE_21_GUIDANCE_LOSS.md).
 The measurement sequence and acceptance gates are in
 [QWEN_IMAGE_21_BRANCH_LORA_EVALUATION.md](QWEN_IMAGE_21_BRANCH_LORA_EVALUATION.md).

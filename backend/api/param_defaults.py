@@ -2691,6 +2691,10 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "qwen_guidance_loss_weight": 0.0,
     "qwen_guidance_loss_scale": 3.0,
     "qwen_guidance_loss_schedule": "sigma",
+    "qwen_guidance_loss_weight_schedule": "constant",
+    "qwen_guidance_loss_high_noise_weight": 1.0,
+    "qwen_guidance_loss_ramp_start": 0.5,
+    "qwen_guidance_loss_ramp_end": 0.8,
     # TREAD token routing (arXiv 2501.04765) — training-only acceleration.
     # Routes a random subset of tokens through a span of transformer blocks;
     # dropped tokens bypass the span (identity transport) and are restored at

@@ -6159,10 +6159,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   <p className="text-xs text-gray-400">
                     Mix ordinary flow loss with an extrapolated target based on a no-gradient
                     empty-prompt prediction. This adds one transformer forward per image or tile.
-                    Keep CFG-null dropout enabled to train the unconditional branch separately.
+                    The empty-prompt branch shares LoRA weights even when CFG-null dropout is zero.
                   </p>
                   <div className="grid grid-cols-3 gap-2">
-                    <label className="text-xs text-gray-400">Mix weight
+                    <label className="text-xs text-gray-400">Low-σ mix weight
                       <input type="number" min={0} max={1} step={0.05}
                         value={params.qwen_guidance_loss_weight ?? (trainingDefaults?.qwen_guidance_loss_weight as number | undefined) ?? ""}
                         onChange={(e) => updateParam("qwen_guidance_loss_weight", e.target.value === "" ? (undefined as any) : parseFloat(e.target.value))}
@@ -6183,6 +6183,37 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         <option value="constant">Constant</option>
                       </select>
                     </label>
+                  </div>
+                  <div className="grid grid-cols-4 gap-2">
+                    <label className="text-xs text-gray-400">Mix schedule
+                      <select
+                        value={params.qwen_guidance_loss_weight_schedule ?? (trainingDefaults?.qwen_guidance_loss_weight_schedule as string | undefined) ?? ""}
+                        onChange={(e) => updateParam("qwen_guidance_loss_weight_schedule", e.target.value as "constant" | "high_noise_smoothstep")}
+                        className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200">
+                        <option value="constant">Constant</option>
+                        <option value="high_noise_smoothstep">High-noise ramp</option>
+                      </select>
+                    </label>
+                    {(params.qwen_guidance_loss_weight_schedule ?? trainingDefaults?.qwen_guidance_loss_weight_schedule) === "high_noise_smoothstep" && (<>
+                      <label className="text-xs text-gray-400">High-σ weight
+                        <input type="number" min={0} max={1} step={0.05}
+                          value={params.qwen_guidance_loss_high_noise_weight ?? (trainingDefaults?.qwen_guidance_loss_high_noise_weight as number | undefined) ?? ""}
+                          onChange={(e) => updateParam("qwen_guidance_loss_high_noise_weight", e.target.value === "" ? (undefined as any) : parseFloat(e.target.value))}
+                          className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200" />
+                      </label>
+                      <label className="text-xs text-gray-400">Ramp starts at σ
+                        <input type="number" min={0} max={1} step={0.05}
+                          value={params.qwen_guidance_loss_ramp_start ?? (trainingDefaults?.qwen_guidance_loss_ramp_start as number | undefined) ?? ""}
+                          onChange={(e) => updateParam("qwen_guidance_loss_ramp_start", e.target.value === "" ? (undefined as any) : parseFloat(e.target.value))}
+                          className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200" />
+                      </label>
+                      <label className="text-xs text-gray-400">Ramp ends at σ
+                        <input type="number" min={0} max={1} step={0.05}
+                          value={params.qwen_guidance_loss_ramp_end ?? (trainingDefaults?.qwen_guidance_loss_ramp_end as number | undefined) ?? ""}
+                          onChange={(e) => updateParam("qwen_guidance_loss_ramp_end", e.target.value === "" ? (undefined as any) : parseFloat(e.target.value))}
+                          className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200" />
+                      </label>
+                    </>)}
                   </div>
                 </div>
                 <div className="flex items-center space-x-2">

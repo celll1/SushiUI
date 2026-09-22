@@ -15915,12 +15915,15 @@ class BaseTrainer(ABC):
             ))
             if not 1 <= _guidance_scale <= 10 or _guidance_schedule not in {"constant", "sigma"}:
                 raise ValueError("Qwen guidance loss requires scale in [1, 10] and schedule constant/sigma")
+            from core.training.ops.qwen_image_21_ops import resolve_guidance_weight_schedule
+            _weight_schedule = resolve_guidance_weight_schedule(self.config, _guidance_weight)
             blank_emb, blank_mask = self.encode_caption("")
             self._qwen_guidance_blank_encoding = (
                 blank_emb.detach().cpu(), blank_mask.detach().cpu()
             )
             print(f"{self.log_prefix} Qwen guidance loss: weight={_guidance_weight}, "
-                  f"scale={_guidance_scale}, schedule={_guidance_schedule}")
+                  f"scale={_guidance_scale}, schedule={_guidance_schedule}, "
+                  f"weight_schedule={_weight_schedule}")
         if _cfg_null_rate:
             if (self.arch.cfg_null_stage == "caption" and multi_noise_timesteps > 1
                     and self.config.get("cfg_uncond_drop_per_mnt", _TRAINING_DEFAULTS["cfg_uncond_drop_per_mnt"])):

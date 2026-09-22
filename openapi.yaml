@@ -25047,6 +25047,39 @@ components:
           description: >-
             Sigma schedule uses effective scale 1 + (scale - 1) * sigma,
             avoiding full extrapolation at nearly clean timesteps.
+        qwen_guidance_loss_weight_schedule:
+          type: string
+          enum: [constant, high_noise_smoothstep]
+          default: constant
+          example: high_noise_smoothstep
+          description: >-
+            Qwen-only mix-weight schedule. Constant preserves the existing mix
+            weight; high_noise_smoothstep transitions from that weight at low
+            sigma to qwen_guidance_loss_high_noise_weight at high sigma.
+        qwen_guidance_loss_high_noise_weight:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          default: 1.0
+          example: 1.0
+          description: Guided-loss fraction at and above the high-noise ramp end.
+        qwen_guidance_loss_ramp_start:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          default: 0.5
+          example: 0.5
+          description: Sigma below which the configured mix weight applies unchanged.
+        qwen_guidance_loss_ramp_end:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          default: 0.8
+          example: 0.8
+          description: Sigma at or above which the high-noise mix weight applies.
         krea2_lora_scope:
           type: string
           default: "attn,mlp"

@@ -18777,6 +18777,142 @@ def _training_cfg_probe_support(run: "TrainingRun") -> tuple[Optional[str], Opti
     return arch, None
 
 
+class TrainingLiveSampleConfigUpdate(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    expected_revision: int = Field(ge=0)
+    sample_every: int = Field(ge=0)
+    prompts: List[Dict[str, str]] = Field(min_length=1, max_length=20)
+    width: int = Field(ge=1, le=8192)
+    height: int = Field(ge=1, le=8192)
+    sample_steps: int = Field(ge=1, le=500)
+    guidance_scale: float = Field(ge=0, le=100)
+    seed: int = Field(ge=-1)
+
+    @model_validator(mode="after")
+    def _check_prompts(self):
+        for prompt in self.prompts:
+            if not prompt.get("positive", "").strip():
+                raise ValueError("Each sample prompt needs non-empty positive text")
+            if set(prompt) - {"positive", "negative", "condition_image_path", "reference_image_path"}:
+                raise ValueError("Unknown sample prompt field")
+        return self
+
+
+_LIVE_SAMPLE_KEYS = (
+    "sample_every", "prompts", "width", "height", "sample_steps",
+    "guidance_scale", "seed",
+)
+
+
+def _live_sample_section(run):
+    import yaml
+
+    document = yaml.safe_load(run.config_yaml or "") or {}
+    root = document.get("config") or document
+    processes = root.get("process")
+    if not isinstance(processes, list) or not processes or not isinstance(processes[0], dict):
+        raise ValueError("Training run has no process configuration")
+    process = processes[0]
+    section = process.setdefault("sample", {})
+    if not isinstance(section, dict):
+        raise ValueError("Training run has no sample configuration")
+    fallback = {
+        "sample_every": TRAINING_DEFAULTS["sample_every"],
+        "prompts": TRAINING_DEFAULTS["sample_prompts"],
+        "width": TRAINING_DEFAULTS["sample_width"],
+        "height": TRAINING_DEFAULTS["sample_height"],
+        "sample_steps": TRAINING_DEFAULTS["sample_steps"],
+        "guidance_scale": TRAINING_DEFAULTS["sample_cfg_scale"],
+        "seed": TRAINING_DEFAULTS["sample_seed"],
+    }
+    config = {
+        key: section.get(key, fallback[key]) for key in _LIVE_SAMPLE_KEYS
+    }
+    config["prompts"] = [
+        {"negative": "", **prompt} for prompt in config["prompts"]
+    ]
+    return document, section, config
+
+
+def _live_sample_status(run):
+    from core.training import training_sample_rpc as rpc
+
+    _, _, config = _live_sample_section(run)
+    desired = rpc.read_live_config(run.output_dir, run.id)
+    applied = rpc.read_live_applied(run.output_dir, run.id)
+    desired_revision = int(desired.get("revision", 0)) if desired else 0
+    applied_revision = int(applied["revision"]) if applied else None
+    proc = training_process_manager.processes.get(int(run.id))
+    running = bool(proc is not None and proc.is_running)
+    return {
+        "run_id": run.id,
+        "is_running": running,
+        "config": config,
+        "desired_revision": desired_revision,
+        "applied_revision": applied_revision,
+        "applied_step": applied.get("step") if applied else None,
+        "pending": running and desired_revision > 0 and applied_revision != desired_revision,
+    }
+
+
+@router.get("/training/runs/{run_id}/sample-config")
+async def get_live_training_sample_config(
+    run_id: int, db: Session = Depends(get_training_db),
+):
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+    return _live_sample_status(run)
+
+
+@router.put("/training/runs/{run_id}/sample-config")
+async def update_live_training_sample_config(
+    run_id: int, request: TrainingLiveSampleConfigUpdate,
+    db: Session = Depends(get_training_db),
+):
+    from core.training import training_sample_rpc as rpc
+    import yaml
+
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+    _, unsupported = _training_sample_support(run)
+    if unsupported:
+        raise HTTPException(status_code=400, detail=unsupported)
+    proc = training_process_manager.processes.get(int(run_id))
+    if proc is None or not proc.is_running:
+        raise HTTPException(status_code=409, detail="Training run is not executing")
+    desired = rpc.read_live_config(run.output_dir, run_id)
+    revision = int(desired.get("revision", 0)) if desired else 0
+    if request.expected_revision != revision:
+        raise HTTPException(status_code=409, detail="Sample settings changed; reload before saving")
+
+    document, section, _ = _live_sample_section(run)
+    values = request.model_dump(exclude={"expected_revision"})
+    section.update(values)
+    new_yaml = yaml.safe_dump(document, sort_keys=False, allow_unicode=True)
+    config_path = Path(run.output_dir) / f"{run.run_name}_config.yaml"
+    original_yaml = run.config_yaml
+    temporary_path = config_path.with_suffix(".yaml.tmp")
+    try:
+        temporary_path.write_text(new_yaml, encoding="utf-8")
+        os.replace(temporary_path, config_path)
+        run.config_yaml = new_yaml
+        db.commit()
+        rpc.write_live_config(run.output_dir, {
+            "run_id": run_id, "revision": revision + 1,
+            "config": values, "updated_at": time.time(),
+        })
+    except Exception as exc:
+        db.rollback()
+        run.config_yaml = original_yaml
+        db.commit()
+        config_path.write_text(original_yaml, encoding="utf-8")
+        raise HTTPException(status_code=500, detail=f"Could not save sample settings: {exc}")
+    return _live_sample_status(run)
+
+
 @router.post("/training/runs/{run_id}/sample", status_code=202)
 async def queue_training_sample(
     run_id: int,

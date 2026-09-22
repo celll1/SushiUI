@@ -216,7 +216,8 @@ def test_on_demand_filename_does_not_collide_with_a_scheduled_one():
 
 def _read_api_pattern():
     """The regex the samples listing endpoint actually compiles."""
-    match = re.search(r'pattern = re\.compile\(r"([^"]+)"\)', ROUTES_SRC)
+    listing = ROUTES_SRC[ROUTES_SRC.index("async def get_training_samples("):]
+    match = re.search(r'pattern = re\.compile\(r"([^"]+)"\)', listing)
     assert match, "samples listing pattern not found"
     return re.compile(match.group(1))
 
@@ -392,18 +393,17 @@ def test_other_architectures_carry_no_such_note(arch):
     assert rpc.blank_on_failure_note(arch) is None
 
 
-def test_an_on_demand_failure_does_not_kill_the_run_but_a_scheduled_one_still_does():
-    """The job body is wrapped: a scheduled sample re-raises (unchanged
-    behaviour), an on-demand one is recorded and training continues. There is no
-    enclosing try between this block and the batch loop, so without the wrapper
-    a button press could abort a multi-hour run."""
+def test_sample_failure_only_ends_the_run_for_original_scheduled_settings():
+    """On-demand and live-edited samples are nonfatal; the original scheduled
+    path keeps its fail-fast contract."""
     idx = BASE_TRAINER_SRC.index("for job_idx, (sample_step, on_demand_request) in enumerate(sample_jobs):")
     block = BASE_TRAINER_SRC[idx:BASE_TRAINER_SRC.index(
         "# Note: Progress callback is now called per-MNT-iteration", idx)]
     assert "try:" in block and "except Exception as sample_err:" in block
-    assert "if on_demand_id is None:\n" in block
+    guard = 'if on_demand_id is None and not getattr(self, "_live_sample_revision", 0):'
+    assert guard in block
     raise_idx = block.index("                                raise\n")
-    assert block.index("if on_demand_id is None:") < raise_idx
+    assert block.index(guard) < raise_idx
     # Every generating call sits inside the wrapper.
     for call in ("self._dispatch_sample(", "self._save_sample_with_metadata(",
                  "self.writer.add_image("):

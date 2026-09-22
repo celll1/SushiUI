@@ -7839,6 +7839,42 @@ export interface TrainingSampleQueueResponse {
   results: TrainingSampleResult[];
 }
 
+export interface TrainingLiveSampleConfig {
+  sample_every: number;
+  prompts: SamplePrompt[];
+  width: number;
+  height: number;
+  sample_steps: number;
+  guidance_scale: number;
+  seed: number;
+}
+
+export interface TrainingLiveSampleConfigStatus {
+  run_id: number;
+  is_running: boolean;
+  config: TrainingLiveSampleConfig;
+  desired_revision: number;
+  applied_revision: number | null;
+  applied_step: number | null;
+  pending: boolean;
+}
+
+export const getTrainingLiveSampleConfig = async (
+  runId: number
+): Promise<TrainingLiveSampleConfigStatus> => {
+  const response = await api.get(`/training/runs/${runId}/sample-config`);
+  return response.data;
+};
+
+export const updateTrainingLiveSampleConfig = async (
+  runId: number, config: TrainingLiveSampleConfig, expectedRevision: number
+): Promise<TrainingLiveSampleConfigStatus> => {
+  const response = await api.put(`/training/runs/${runId}/sample-config`, {
+    ...config, expected_revision: expectedRevision,
+  });
+  return response.data;
+};
+
 // Ask a running trainer to render a sample now. Fire and forget: the 202 means
 // the request was queued, not that an image exists. The trainer claims it at
 // the end of the batch it is in, at the same point scheduled sampling happens.

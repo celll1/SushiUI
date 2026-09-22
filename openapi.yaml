@@ -6556,6 +6556,53 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/sample-config:
+    get:
+      tags: [training]
+      summary: Read editable sample settings and their live application state
+      description: The configured values are durable; a pending revision has not yet been adopted by the trainer.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: {type: integer}
+      responses:
+        '200':
+          description: Sample settings and application state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TrainingLiveSampleConfigStatus'}
+        '404':
+          description: Training run not found
+    put:
+      tags: [training]
+      summary: Change future samples of a running training run
+      description: |
+        Replaces the editable sample subset without changing training parameters.
+        The trainer adopts the revision before its next scheduled or on-demand
+        sample; an in-flight sample and the already-produced step-0 image stay
+        unchanged. The supplied revision must match the current desired revision.
+        Other architecture-specific sample settings remain unchanged.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: {type: integer}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TrainingLiveSampleConfigUpdate'}
+      responses:
+        '200':
+          description: Saved; trainer application may still be pending
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TrainingLiveSampleConfigStatus'}
+        '404':
+          description: Training run not found
+        '409':
+          description: Run is not executing or the revision is stale
   /training/runs/{run_id}/timestep-distribution:
     get:
       tags: [training]
@@ -21920,6 +21967,48 @@ components:
           description: Human-readable text, the same text the trainer wrote to its console.
           example: "max_grad_norm=1.0 is IGNORED under the fused backward pass. ..."
 
+    TrainingLiveSamplePrompt:
+      type: object
+      required: [positive]
+      additionalProperties: false
+      properties:
+        positive: {type: string, minLength: 1}
+        negative: {type: string}
+        condition_image_path: {type: string}
+        reference_image_path: {type: string}
+    TrainingLiveSampleConfig:
+      type: object
+      required: [sample_every, prompts, width, height, sample_steps, guidance_scale, seed]
+      properties:
+        sample_every: {type: integer, minimum: 0}
+        prompts:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items: {$ref: '#/components/schemas/TrainingLiveSamplePrompt'}
+        width: {type: integer, minimum: 1, maximum: 8192}
+        height: {type: integer, minimum: 1, maximum: 8192}
+        sample_steps: {type: integer, minimum: 1, maximum: 500}
+        guidance_scale: {type: number, minimum: 0, maximum: 100}
+        seed: {type: integer, minimum: -1}
+    TrainingLiveSampleConfigUpdate:
+      allOf:
+        - $ref: '#/components/schemas/TrainingLiveSampleConfig'
+        - type: object
+          required: [expected_revision]
+          properties:
+            expected_revision: {type: integer, minimum: 0}
+    TrainingLiveSampleConfigStatus:
+      type: object
+      required: [run_id, is_running, config, desired_revision, applied_revision, pending]
+      properties:
+        run_id: {type: integer}
+        is_running: {type: boolean}
+        config: {$ref: '#/components/schemas/TrainingLiveSampleConfig'}
+        desired_revision: {type: integer}
+        applied_revision: {type: integer, nullable: true}
+        applied_step: {type: integer, nullable: true}
+        pending: {type: boolean}
     TrainingSampleRequestAccepted:
       type: object
       description: |

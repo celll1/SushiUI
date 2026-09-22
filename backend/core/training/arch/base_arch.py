@@ -600,9 +600,11 @@ class ArchHandler(ABC):
     #:   ``"encode"``    the null has to be built while encoding the item,
     #:                   because the inference baseline differs in the token
     #:                   sequence itself (``encode_prompt_cfg_null``).
+    #:   ``"caption"``   inference null is the ordinary empty-caption encode;
+    #:                   BaseTrainer routes it through ``encode_caption("")``.
     #:
     #: This is a capability declaration, not the implementation: a handler that
-    #: sets it must also override the hook its stage names.
+    #: sets a collated/encode stage must also override its named hook.
     cfg_null_stage: Optional[str] = None
 
     #: Whether this handler's ``generate_sample`` actually forwards

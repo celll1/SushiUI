@@ -16,6 +16,7 @@ from core.training.components.wiring import SD15_WIRING
 
 
 class SD15ArchHandler(ArchHandler):
+    cfg_null_stage = "caption"
     name = "sd15"
     wiring = SD15_WIRING
     # SD_UNET_LATENT_IO spells its paths "unet.conv_in"/"unet.conv_out",

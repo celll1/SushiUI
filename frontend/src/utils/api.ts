@@ -1896,12 +1896,12 @@ export interface ArchCapabilities {
   // disappearing.
   arch_display_names?: Record<string, string>;
   // arch -> at which stage the TRAINER can build that architecture's inference
-  // CFG uncond condition: null (it cannot), "collated" or "encode". Mirrors
+  // CFG uncond condition: null (it cannot), "caption", "collated" or "encode". Mirrors
   // ArchHandler.cfg_null_stage. null is why an explicit cfg_uncond_drop_rate --
   // 0.0 included -- is a 400 there; the reason to show lives in
   // training_feature_unsupported[arch].cfg_uncond_drop. Optional so an older
   // backend without the key still type-checks.
-  cfg_null_stage?: Record<string, "collated" | "encode" | null>;
+  cfg_null_stage?: Record<string, "caption" | "collated" | "encode" | null>;
   // arch -> what an OMITTED cfg_uncond_drop_rate resolves to there. Absent
   // arch = the mechanism is not in play for it. Read this instead of keeping a
   // copy of the number in the form.

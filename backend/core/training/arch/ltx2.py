@@ -17,6 +17,7 @@ from core.training.components.wiring import LTX2_TEMPORAL, LTX2_WIRING
 
 
 class Ltx2ArchHandler(ArchHandler):
+    cfg_null_stage = "caption"
 
     # Its forward installs these on the inner module (ops/ltx2_ops.py).
     consumes_block_loop_features = True

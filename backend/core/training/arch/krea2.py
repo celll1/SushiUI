@@ -16,6 +16,7 @@ from core.training.components.wiring import KREA2_WIRING
 
 
 class Krea2ArchHandler(ArchHandler):
+    cfg_null_stage = "caption"
     name = "krea2"
     wiring = KREA2_WIRING
     adapter_capability = declare_adapter_capability(

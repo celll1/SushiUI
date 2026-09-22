@@ -17,6 +17,7 @@ from core.training.components.wiring import ANIMA_WIRING
 
 
 class AnimaArchHandler(ArchHandler):
+    cfg_null_stage = "caption"
 
     # Its forward installs these on the inner module (ops/anima_ops.py).
     consumes_block_loop_features = True

@@ -701,7 +701,7 @@ def generate_sample(
         with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
             result = pipe(
                 prompt=prompt,
-                negative_prompt=negative_prompt or None,
+                negative_prompt=(negative_prompt or "") if guidance_scale > 1 else None,
                 true_cfg_scale=float(guidance_scale),
                 height=max(32, int(height) // 32 * 32),
                 width=max(32, int(width) // 32 * 32),

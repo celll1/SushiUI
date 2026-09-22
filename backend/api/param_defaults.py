@@ -3308,9 +3308,18 @@ BUNDLE_VAE_DEFAULTS_BY_ARCH: Dict[str, bool] = {
 # Adding an architecture here is not what enables the feature for it — the
 # handler's `cfg_null_stage` is (core/training/arch/base_arch.py).
 CFG_UNCOND_DROP_DEFAULTS_BY_ARCH: Dict[str, float] = {
+    "sd15": 0.0,
+    "sdxl": 0.0,
+    "zimage": 0.0,
+    "anima": 0.0,
+    "flux2": 0.0,
+    "krea2": 0.0,
+    "qwen_image_21": 0.0,
+    "ltx2": 0.0,
     "minit2i": 0.1,
     "lens": 0.0,
     "sensenova": 0.0,
+    "sensenova_sdxl_chimera": 0.0,
 }
 
 

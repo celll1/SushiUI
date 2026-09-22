@@ -5364,8 +5364,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   null condition this architecture&apos;s inference CFG uncond
                   branch builds. Leave empty for the architecture default
                   ({cfgUncondDropDefaultRate ?? "none"}); 0 disables it.
-                  Different from the dataset&apos;s caption dropout, which
-                  encodes an empty caption; a run that sets both is refused.
+                  On models whose CFG null is an empty caption, this uses the
+                  same encoding as caption dropout but keeps its own run-level
+                  probability and metrics. On other models it builds the
+                  architecture-specific null. A run that sets both is refused.
                   A nonzero rate is also refused together with reference
                   images: the null trained here is the text-only one, while a
                   reference-conditioned generation blends against the
@@ -5386,6 +5388,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   Only applies when multi_noise_timesteps &gt; 1. With this off, one draw
                   covers the whole multi-noise-timestep window for an item instead of each
                   iteration drawing its own.
+                  For empty-caption CFG models with multi_noise_timesteps &gt; 1,
+                  turn this off; that combination cannot change an already
+                  encoded caption within the window.
                 </p>
               </div>
             )}

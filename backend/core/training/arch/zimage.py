@@ -16,6 +16,7 @@ from core.training.components.wiring import ZIMAGE_WIRING
 
 
 class ZImageArchHandler(ArchHandler):
+    cfg_null_stage = "caption"
     name = "zimage"
     wiring = ZIMAGE_WIRING
     adapter_capability = declare_adapter_capability(

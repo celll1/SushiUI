@@ -104,7 +104,7 @@ def test_the_rate_is_resolved_once_per_run():
 
 def test_a_stageless_architecture_draws_no_mask():
     class _NoStage:
-        name = "sdxl"
+        name = "ideogram4"
         cfg_null_stage = None
 
     trainer = _StubTrainer(_config(**{LEGACY_KEY: 0.5}), arch=_NoStage())

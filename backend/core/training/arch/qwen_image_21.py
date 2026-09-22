@@ -8,6 +8,7 @@ from core.training.components.wiring import QWEN_IMAGE_21_WIRING
 
 
 class QwenImage21ArchHandler(ArchHandler):
+    cfg_null_stage = "caption"
     name = "qwen_image_21"
     wiring = QWEN_IMAGE_21_WIRING
     adapter_capability = declare_adapter_capability(

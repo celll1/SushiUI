@@ -210,7 +210,9 @@ def _batch_context(batch: Optional[Sequence]) -> Optional[List[Dict[str, Any]]]:
         source_path = item.get("image_path") or item.get("video_path")
         caption_path = None
         if source_path and "://" not in str(source_path):
-            caption_path = str(Path(source_path).with_suffix(".txt"))
+            sidecar = Path(source_path).with_suffix(".txt")
+            if sidecar.is_file():
+                caption_path = str(sidecar)
         out.append({
             "path": source_path,
             "caption_path": caption_path,

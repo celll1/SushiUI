@@ -16,7 +16,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from core.training.grad_spike_log import GradSpikeLog  # noqa: E402
+from core.training.grad_spike_log import GradSpikeLog, _batch_context  # noqa: E402
 from core.training.optimizers.fused_grad_clip import (  # noqa: E402
     FusedGradClipper,
     apply_fused_grad_clip,
@@ -264,20 +264,28 @@ def test_an_ordinary_step_writes_nothing(tmp_path):
     assert not log.path.exists()
 
 
+def test_batch_context_omits_missing_caption_sidecar(tmp_path):
+    image_path = tmp_path / "without_sidecar.png"
+    assert _batch_context(_batch(str(image_path)))[0]["caption_path"] is None
+
+
 def test_a_spike_records_the_batch_that_produced_it(tmp_path):
     log = GradSpikeLog(tmp_path, factor=8.0, min_history=10, window=50)
+    image_path = tmp_path / "offender.png"
+    sidecar_path = tmp_path / "offender.txt"
+    sidecar_path.write_text("the caption", encoding="utf-8")
     for step in range(40):
         log.observe(3.8, step=step, batch=_batch("ordinary.png"))
 
     record = log.observe(
         17334.53, step=12355, epoch=0, loss=15.639, learning_rate=7.187e-06,
-        batch=_batch("M:/data/offender.png", caption="the caption"),
+        batch=_batch(str(image_path), caption="the caption"),
         timesteps=torch.tensor([0.83, 0.21]))
 
     assert record is not None
     assert record["ratio"] == pytest.approx(17334.53 / 3.8, rel=1e-3)
-    assert record["batch"][0]["path"] == "M:/data/offender.png"
-    assert record["batch"][0]["caption_path"] == "M:\\data\\offender.txt"
+    assert record["batch"][0]["path"] == str(image_path)
+    assert record["batch"][0]["caption_path"] == str(sidecar_path)
     assert record["batch"][0]["caption"] == "the caption"
     assert record["batch"][0]["width"] == 1216
     assert record["timesteps"] == pytest.approx([0.83, 0.21], rel=1e-3)

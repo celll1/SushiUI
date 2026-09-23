@@ -15,6 +15,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.optim.lr_scheduler import LambdaLR
+from transformers import Siglip2VisionModel
 
 from core.tagger.siglip2_tagger_model import _is_hf_repo_or_url, _load_vision_encoder
 from core.tagger.tagger_offload import TaggerTrainerHandle
@@ -22,16 +23,16 @@ from core.tagger.tagger_offload import TaggerTrainerHandle
 
 from .style_artifacts import (
     ARTIFACT_FORMAT, ARTIFACT_FORMAT_VERSION, OPTIMIZER_SUFFIX, SNAPSHOT_SUFFIX, architecture_metadata,
-    artifact_path, find_resume_checkpoint, load_training_weights, prune_step_bundles, resumable_bundle_files,
-    save_bundle,
+    artifact_path, find_resume_checkpoint, load_training_weights, prune_step_bundles, recover_staged_bundles,
+    resumable_bundle_files, save_bundle,
 )
 from .style_dataset import VAL_ARTIST, VAL_IMAGE, SplitParams, StyleIndex, build_style_index, confound_scores, gather_csr
 from .style_eval import Csr, RetrievalSummary, retrieve
 from .style_ingest import IngestStats, StyleDatasetConfig, StyleIngest, build_label_resolver, parse_dataset_configs
 from .style_labels import LabelStats, StyleLabelResolver
-from .style_loader import EvalBatchKeys, StyleImageDataset, TrainBatchKeys, make_loader
+from .style_loader import EvalBatchKeys, StyleImageDataset, SwitchableBatchKeys, TrainBatchKeys, make_loader
 from .style_loss import positive_weights, weighted_supcon_loss
-from .style_model import LoRASpec, StyleEncoder, build_style_encoder, lora_dropout_entropy
+from .style_model import LoRASpec, StyleEncoder, build_style_encoder, check_attn_implementation, lora_dropout_entropy
 from .style_resume import ResumeKey, SplitSnapshot, plan_resume, start_snapshot
 from .style_sampler import StyleBatchSampler
 from .style_views import ViewParams, artist_mask_ratios
@@ -82,7 +83,7 @@ def _optional_int(v: Any) -> bool:
 # Every key is required: defaults live in param_defaults (STYLE_TRAINING_DEFAULTS), not here.
 _CHECKS: dict[str, Callable[[Any], bool]] = {
     "dataset_configs": lambda v: isinstance(v, (list, tuple)) and bool(v),
-    "vision_encoder_path": _is_str,
+    "vision_encoder_path": lambda v: isinstance(v, str),  # empty: the published weights of vision_encoder_repo
     "vision_encoder_repo": _is_str,
     "training_method": _choice("full", "lora"),
     "lora_rank": _int(1),
@@ -139,6 +140,17 @@ _IDENTITY_KEYS = ("training_method", "vision_encoder_path", "vision_encoder_repo
 _LORA_IDENTITY_KEYS = ("lora_rank", "lora_alpha")
 # Fixed at run start (optimizer param groups, scheduler lambda, total_steps); a resume keeps the saved values.
 _SCHEDULE_KEYS = ("learning_rate", "head_lr_multiplier", "weight_decay", "warmup_steps", "min_lr_ratio", "epochs")
+# A resume refuses a change of these (SplitParamsMismatch).
+_SPLIT_KEYS = ("style_val_artist_ratio", "style_val_image_ratio", "style_min_images_per_artist", "style_split_seed")
+
+
+def resume_identity_keys(training_method: str) -> tuple[str, ...]:
+    return _IDENTITY_KEYS + (_LORA_IDENTITY_KEYS if training_method == "lora" else ())
+
+
+def resume_refusing_keys(training_method: str) -> tuple[str, ...]:
+    """Config keys a resume refuses to change: the model identity and the split parameters."""
+    return resume_identity_keys(training_method) + _SPLIT_KEYS
 
 
 @dataclass(frozen=True)
@@ -209,16 +221,35 @@ class StyleTrainingConfig:
         values["dataset_configs"] = parse_dataset_configs(values["dataset_configs"])
         for name in ("style_signature_tags", "style_non_copyright_tags", "style_feature_layers"):
             values[name] = tuple(values[name])
+        # Cross-field checks the model / sampler build would otherwise only make once the run has loaded data.
         if values["style_mask_ratio_min"] > values["style_mask_ratio_max"]:
             raise StyleConfigError("style_mask_ratio_min must not exceed style_mask_ratio_max")
+        if values["style_token_dim"] % values["style_pool_heads"]:
+            raise StyleConfigError(f"style_token_dim {values['style_token_dim']} is not divisible by "
+                                   f"style_pool_heads {values['style_pool_heads']}")
+        if values["style_images_per_artist"] > values["style_min_images_per_artist"]:
+            raise StyleConfigError(f"style_images_per_artist ({values['style_images_per_artist']}) must not exceed "
+                                   f"style_min_images_per_artist ({values['style_min_images_per_artist']})")
+        if len(set(values["style_feature_layers"])) != len(values["style_feature_layers"]):
+            raise StyleConfigError(f"style_feature_layers {list(values['style_feature_layers'])} repeats a layer")
+        try:
+            check_attn_implementation(values["attn_implementation"], Siglip2VisionModel)
+        except ValueError as exc:
+            raise StyleConfigError(str(exc)) from exc
         return cls(**values)
+
+    def encoder_source(self) -> str:
+        """Where the initial encoder weights come from; an empty vision_encoder_path means the repo's release."""
+        return self.vision_encoder_path.strip() or self.vision_encoder_repo
 
     def schedule(self) -> dict:
         return {k: getattr(self, k) for k in _SCHEDULE_KEYS}
 
     def identity(self) -> dict:
-        keys = _IDENTITY_KEYS + (_LORA_IDENTITY_KEYS if self.training_method == "lora" else ())
-        return {k: list(v) if isinstance(v, tuple) else v for k, v in ((k, getattr(self, k)) for k in keys)}
+        """The effective source stands for vision_encoder_path, so "" and the repo id name the same weights."""
+        values = {k: getattr(self, k) for k in resume_identity_keys(self.training_method)}
+        values["vision_encoder_path"] = self.encoder_source()
+        return {k: list(v) if isinstance(v, tuple) else v for k, v in values.items()}
 
 
 @dataclass(frozen=True)
@@ -304,14 +335,15 @@ class StyleData:
     dataset: StyleImageDataset
     ingest_stats: IngestStats
     label_stats: LabelStats
-    skipped_examples: tuple[str, ...]
+    skipped_examples: dict[int, tuple[str, ...]]  # dataset_id -> examples
+    duplicate_examples: tuple[str, ...]
 
 
 def prepare_style_data(cfg: StyleTrainingConfig, env: StyleEnvironment, processor, pinned_keys: np.ndarray,
                        progress: Optional[Callable[[int, int, str], None]] = None) -> StyleData:
     session = env.open_datasets_session()
     try:
-        ingest = StyleIngest(session, cfg.dataset_configs, env.build_label_resolver(cfg), progress)
+        ingest = StyleIngest(session, cfg.dataset_configs, env.build_label_resolver(cfg), progress, pinned_keys)
         split = SplitParams.create(cfg.style_val_artist_ratio, cfg.style_val_image_ratio,
                                    cfg.style_min_images_per_artist, cfg.style_split_seed)
         index = build_style_index(ingest.records(), split, pinned_keys)
@@ -325,7 +357,8 @@ def prepare_style_data(cfg: StyleTrainingConfig, env: StyleEnvironment, processo
     dataset = StyleImageDataset(ingest.paths.take(index.item_ids), ratios[index.item_artist], processor,
                                 cfg.style_max_num_patches)
     return StyleData(index, sampler, views, dataset, ingest.stats, ingest.resolver.stats,
-                     tuple(ingest.skipped_examples))
+                     {d: tuple(examples) for d, examples in ingest.skipped_examples.items()},
+                     tuple(ingest.duplicate_examples))
 
 
 def eval_rows(index: StyleIndex, split_code: int, max_items: int, seed: int) -> np.ndarray:
@@ -386,6 +419,8 @@ class StyleTrainer:
         self._stop_event = threading.Event()
         self._optimizer_steps_completed = 0
         self._batches_entered = 0
+        self._loader: Optional[torch.utils.data.DataLoader] = None
+        self._loader_keys: Optional[SwitchableBatchKeys] = None
         self._coordinator_handle = StyleTrainerHandle(
             run_id=run_id, output_dir=output_dir, pause_event=threading.Event(), resumed_event=threading.Event(),
             restored_event=threading.Event(), device_index=self.cfg.gpu_index, optimizer_name=self.cfg.optimizer)
@@ -417,7 +452,7 @@ class StyleTrainer:
     def _build_model(self, processor, device: torch.device) -> StyleEncoder:
         cfg = self.cfg
         lora = LoRASpec(cfg.lora_rank, cfg.lora_alpha, cfg.lora_dropout) if cfg.training_method == "lora" else None
-        model = build_style_encoder(cfg.vision_encoder_path, cfg.vision_encoder_repo, cfg.attn_implementation,
+        model = build_style_encoder(cfg.encoder_source(), cfg.vision_encoder_repo, cfg.attn_implementation,
                                     cfg.style_feature_layers, cfg.style_token_dim, cfg.style_pool_heads,
                                     cfg.style_projector_hidden_dim, cfg.style_embed_dim, cfg.training_method, lora,
                                     load_vision_encoder=self.env.load_vision_encoder)
@@ -438,8 +473,11 @@ class StyleTrainer:
         print(f"[StyleTraining] Pinned to train: {index.pinned_items:,} sampled items; "
               f"{index.forced_train_artists:,} artists ({index.forced_train_items:,} items) whose name now hashes "
               f"to held-out stay on the train side")
-        for example in data.skipped_examples:
-            print(f"[StyleTraining]   skipped {example}")
+        for dataset_id, examples in data.skipped_examples.items():
+            for example in examples:
+                print(f"[StyleTraining]   dataset {dataset_id}: skipped {example}")
+        for example in data.duplicate_examples:
+            print(f"[StyleTraining]   duplicate image dropped: {example}")
         print(f"[StyleTraining] Index {data.index.index_hash[:12]}: epoch = {data.sampler.epoch_length:,} steps")
         self._emit("dataset_stats", stats)
 
@@ -510,7 +548,7 @@ class StyleTrainer:
             "format": ARTIFACT_FORMAT, "format_version": ARTIFACT_FORMAT_VERSION,
             "architecture": architecture_metadata(model),
             "base_model": {"repo_id": _public_source(cfg.vision_encoder_repo),
-                           "source": _public_source(cfg.vision_encoder_path)},
+                           "source": _public_source(cfg.encoder_source())},
             "attn_implementation": cfg.attn_implementation,
             "style_feature_layers": list(cfg.style_feature_layers), "style_embed_dim": cfg.style_embed_dim,
             "style_max_num_patches": cfg.style_max_num_patches, "preprocessing": preprocessing,
@@ -527,11 +565,10 @@ class StyleTrainer:
     # -------------------------------------------------------------- evaluation
 
     def _embed(self, model, data: StyleData, rows: np.ndarray, masked: bool, device) -> tuple:
-        loader = make_loader(data.dataset, EvalBatchKeys(rows, data.index.item_keys, self.cfg.style_seed,
-                                                         self.cfg.style_val_batch_size), self.cfg.num_workers)
+        keys = EvalBatchKeys(rows, data.index.item_keys, self.cfg.style_seed, self.cfg.style_val_batch_size)
         kept, global_views, masked_views = [], [], []
-        with torch.no_grad():
-            for batch in loader:
+        with torch.no_grad(), self._loader_keys.serving(keys):
+            for batch in self._loader:
                 if batch is None:
                     continue
                 pv = batch.pixel_values.to(device)
@@ -593,10 +630,24 @@ class StyleTrainer:
 
     # -------------------------------------------------------------------- run
 
+    def _stopped_during_setup(self, phase: str, resume) -> dict:
+        print(f"[StyleTrainer] Stop requested {phase}; no step was trained and no checkpoint written")
+        saved = resume[1] if resume is not None else {}
+        return {"stopped": True, "global_step": int(saved.get("global_step", 0)),
+                "total_steps": saved.get("total_steps"), "best": saved.get("best")}
+
     def run(self) -> dict:
         cfg = self.cfg
-        device = self.env.resolve_device(cfg.gpu_index)
         self._emit("phase", {"phase": "initializing", "message": "Preparing style training..."})
+        recovered, refused, discarded = recover_staged_bundles(self.output_dir)
+        for name in recovered:
+            print(f"[StyleTraining] Finished the interrupted save of checkpoint {name}")
+        if discarded:
+            print(f"[StyleTraining] Deleted {len(discarded)} file(s) of a save interrupted while staging")
+        if refused:
+            raise ValueError(
+                f"{self.output_dir} holds interrupted checkpoint saves {refused} whose staged files are incomplete; "
+                f"restore the missing files or remove that bundle's files before resuming.")
         resume = find_resume_checkpoint(self.output_dir)
         saved_snapshot = None
         if resume is None:
@@ -620,6 +671,8 @@ class StyleTrainer:
             cfg, self.env, processor, saved_snapshot.keys if saved_snapshot is not None else np.zeros(0, np.int64),
             lambda done, total, msg: self._emit("dataset_progress", {"step": done, "total": total, "message": msg}))
         self._log_data(data)
+        if self._stop_requested:
+            return self._stopped_during_setup("after loading the datasets", resume)
 
         best, last_eval_epoch, pending_eval = None, None, None
         if resume is not None:
@@ -647,6 +700,9 @@ class StyleTrainer:
         resume_key = ResumeKey.of(data.sampler, data.views)
 
         self._emit("phase", {"phase": "initializing", "message": "Building model..."})
+        if self._stop_requested:
+            return self._stopped_during_setup("before the model was built", resume)
+        device = self.env.resolve_device(cfg.gpu_index)  # the first GPU touch
         with torch.random.fork_rng(devices=[]):  # seeded pooling/projector/LoRA init
             torch.manual_seed(cfg.style_seed)
             model = self._build_model(processor, device)
@@ -665,6 +721,8 @@ class StyleTrainer:
                 raise ValueError(f"scheduler position {scheduler.last_epoch} != global step {global_step}")
         print(f"[StyleTrainer] {sum(p.numel() for p in trainable):,} trainable parameters, {total_steps:,} total steps, "
               f"device={device}, amp={cfg.mixed_precision if device.type == 'cuda' else 'off'}")
+        if self._stop_requested:  # before the loader spawns its workers
+            return self._stopped_during_setup("before training started", resume)
 
         from core.gpu_coordinator import gpu_coordinator
         self._coordinator_handle.attach(model, optimizer, None)
@@ -674,6 +732,7 @@ class StyleTrainer:
                               epoch, step, global_step, total_steps, best, schedule, last_eval_epoch, pending_eval,
                               resume is not None)
         finally:
+            self._loader = self._loader_keys = None  # ends the persistent workers with the run
             gpu_coordinator.unregister_trainer(self._coordinator_handle)
             self._coordinator_handle.detach()
 
@@ -720,14 +779,16 @@ class StyleTrainer:
                         "index_hash": last_eval["index_hash"]}
                 save("best", False, (eval_epoch, step))
 
+        batch_keys = TrainBatchKeys(sampler, cfg.style_seed, epoch, step, step)
+        self._loader_keys = SwitchableBatchKeys(batch_keys)
+        self._loader = loader = make_loader(data.dataset, self._loader_keys, cfg.num_workers, persistent=True)
+
         if pending_eval is not None:
             print(f"[StyleTrainer] Running epoch {pending_eval}'s evaluation, which the interrupted run skipped")
             evaluate(pending_eval)
 
         consecutive_skips = 0
         epoch_loss, epoch_steps = 0.0, 0
-        batch_keys = TrainBatchKeys(sampler, cfg.style_seed, epoch, step, step)
-        loader = make_loader(data.dataset, batch_keys, cfg.num_workers, persistent=True)
         print(f"[StyleTrainer] === Phase: training === ({global_step}/{total_steps} steps done)")
         self._emit("phase", {"phase": "training", "message": "Training started"})
         while global_step < total_steps and not self._stop_requested:
@@ -756,7 +817,7 @@ class StyleTrainer:
                         epoch_steps += 1
                         if global_step % cfg.log_every_n_steps == 0:
                             self._emit("step", {"step": global_step, "epoch": epoch, "step_in_epoch": step,
-                                                "progress": global_step / total_steps,
+                                                "total_steps": total_steps, "progress": global_step / total_steps,
                                                 "index_hash": data.index.index_hash, **result})
                         if cfg.save_every_n_steps > 0 and global_step % cfg.save_every_n_steps == 0:
                             save(f"step_{global_step:06d}", True, (epoch, step))

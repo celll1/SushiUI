@@ -113,3 +113,99 @@ def test_a_dataset_without_usable_items_is_refused_by_name(tmp_path):
     add_item(factory, empty, tmp_path / "empty" / "gone.png", [("tags", None, "artist_one", True)], write=False)
     with pytest.raises(ValueError, match=rf"dataset {empty} yielded no usable item.*missing image"):
         _ingest(factory, [{"dataset_id": good}, {"dataset_id": empty}])
+
+
+def test_a_refused_dataset_reports_only_its_own_skipped_items(tmp_path):
+    factory = session_factory(tmp_path / "datasets.db")
+    good, empty = add_dataset(factory, "good", tmp_path / "good"), add_dataset(factory, "empty", tmp_path / "empty")
+    add_item(factory, good, tmp_path / "good" / "x.png", [("tags", None, "artist_one", True)])
+    add_item(factory, good, tmp_path / "good" / "good_gone.png", [("tags", None, "artist_one", True)], write=False)
+    add_item(factory, empty, tmp_path / "empty" / "empty_gone.png", [("tags", None, "artist_one", True)],
+             write=False)
+    with pytest.raises(ValueError, match=f"dataset {empty} yielded no usable item") as refusal:
+        _ingest(factory, [{"dataset_id": good}, {"dataset_id": empty}])
+    assert "empty_gone.png" in str(refusal.value) and "good_gone.png" not in str(refusal.value)
+
+
+def _nested(tmp_path):
+    """Dataset `outer` (lower id) has a root containing dataset `inner`'s root; one image is in both."""
+    factory = session_factory(tmp_path / "datasets.db")
+    outer_root = tmp_path / "library"
+    inner_root = outer_root / "artist_pack"
+    outer = add_dataset(factory, "outer", outer_root)
+    inner = add_dataset(factory, "inner", inner_root)
+    shared = inner_root / "a.png"
+    kept = add_item(factory, outer, shared, [("tags", None, "artist_one, cp_show", True)])
+    dropped = add_item(factory, inner, shared, [("tags", None, "artist_one", True)], write=False)
+    only_inner = add_item(factory, inner, inner_root / "b.png", [("tags", None, "artist_one", True)])
+    return factory, outer, inner, kept, dropped, only_inner, shared
+
+
+def test_an_image_under_nested_dataset_roots_is_kept_once_from_the_lowest_dataset(tmp_path):
+    factory, outer, inner, kept, dropped, only_inner, shared = _nested(tmp_path)
+    ingest, records = _ingest(factory, [{"dataset_id": inner}, {"dataset_id": outer}])  # config order is irrelevant
+    assert set(records) == {kept, only_inner}
+    assert records[kept][0] == stable_item_key(outer, "artist_pack/a.png")
+    assert ingest.stats.items_duplicate_path == 1 and ingest.stats.records == 2
+    (example,) = ingest.duplicate_examples
+    assert f"item {dropped} of dataset {inner}" in example and f"is item {kept} of dataset {outer}" in example
+    index = build_style_index(list(records_iter(records)), SPLIT, np.zeros(0, dtype=np.int64))
+    assert sorted(index.item_ids.tolist()) == sorted([kept, only_inner])
+
+
+def records_iter(records):
+    for item_id, (key, labels) in records.items():
+        yield item_id, key, labels
+
+
+def test_a_dataset_holding_only_duplicates_is_not_refused(tmp_path):
+    factory, outer, inner, kept, dropped, only_inner, shared = _nested(tmp_path)
+    with factory() as session:
+        from database.models import DatasetItem
+        session.query(DatasetItem).filter(DatasetItem.id == only_inner).delete()
+        session.commit()
+    ingest, records = _ingest(factory, [{"dataset_id": outer}, {"dataset_id": inner}])
+    assert set(records) == {kept} and ingest.stats.items_duplicate_path == 1
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="case and separator folding are Windows path semantics")
+def test_duplicate_detection_folds_case_and_separators_on_windows(tmp_path):
+    factory, outer, inner, kept, dropped, only_inner, shared = _nested(tmp_path)
+    with factory() as session:
+        from database.models import DatasetItem
+        item = session.get(DatasetItem, dropped)
+        item.image_path = str(shared).upper().replace("\\", "/")
+        session.commit()
+    ingest, records = _ingest(factory, [{"dataset_id": outer}, {"dataset_id": inner}])
+    assert dropped not in records and ingest.stats.items_duplicate_path == 1
+
+
+def test_a_path_hash_collision_keeps_both_items(tmp_path, monkeypatch):
+    import core.style_encoder.style_ingest as ingest_module
+    monkeypatch.setattr(ingest_module, "_path_hash", lambda normalized: 7)
+    factory, outer, inner, kept, dropped, only_inner, shared = _nested(tmp_path)
+    ingest, records = _ingest(factory, [{"dataset_id": outer}, {"dataset_id": inner}])
+    assert set(records) == {kept, only_inner} and ingest.stats.items_duplicate_path == 1
+
+
+def test_the_pinned_copy_is_kept_and_among_pinned_copies_the_lowest_dataset(tmp_path):
+    factory, outer, inner, kept, dropped, only_inner, shared = _nested(tmp_path)
+    outer_key, inner_key = stable_item_key(outer, "artist_pack/a.png"), stable_item_key(inner, "a.png")
+    configs = parse_dataset_configs([{"dataset_id": outer}, {"dataset_id": inner}])
+    for pins, winner in (([inner_key], dropped), ([outer_key, inner_key], kept), ([], kept)):
+        with factory() as session:
+            ingest = StyleIngest(session, configs, label_resolver(), pinned_keys=np.array(pins, dtype=np.int64))
+            records = {item_id: key for item_id, key, _ in ingest.records()}
+        assert set(records) == {winner, only_inner} and ingest.stats.items_duplicate_path == 1, pins
+
+
+def test_a_pinned_copy_without_a_selected_caption_does_not_own_the_path(tmp_path):
+    factory, outer, inner, kept, dropped, only_inner, shared = _nested(tmp_path)
+    inner_key = stable_item_key(inner, "a.png")
+    configs = parse_dataset_configs([{"dataset_id": outer, "caption_types": ["tags"]},
+                                     {"dataset_id": inner, "caption_types": ["booru"]}])
+    add_item(factory, inner, tmp_path / "library" / "artist_pack" / "c.png", [("booru", None, "artist_one", True)])
+    with factory() as session:
+        ingest = StyleIngest(session, configs, label_resolver(), pinned_keys=np.array([inner_key], dtype=np.int64))
+        records = {item_id for item_id, _, _ in ingest.records()}
+    assert kept in records and dropped not in records  # the outer copy is not dropped for an unusable owner

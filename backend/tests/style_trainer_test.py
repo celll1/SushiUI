@@ -383,3 +383,309 @@ def test_encoder_dropout_is_refused():
     vision.encoder.layers[0].mlp.fc1 = torch.nn.Sequential(vision.encoder.layers[0].mlp.fc1, torch.nn.Dropout(0.2))
     with pytest.raises(ValueError, match=r"encoder\.layers\.0\.mlp\.fc1\.1"):
         StyleEncoder(vision, (1, -2), 8, 2, 12, 6, "lora", LoRASpec(2, 2.0, 0.0))
+
+
+class _Kill(BaseException):
+    """A process kill: nothing after it runs, not even cleanup."""
+
+
+def _killable_file_ops(monkeypatch, kill_at):
+    """Every file mutation of a bundle save or recovery counts as one operation; from operation `kill_at`
+    on, every one raises _Kill. Returns the running count."""
+    import json
+    import core.tagger.siglip2_tagger_model as siglip
+    ops = {"n": 0}
+
+    def wrap(fn):
+        def op(*args, **kwargs):
+            if kill_at is not None and ops["n"] >= kill_at:
+                raise _Kill()
+            ops["n"] += 1
+            return fn(*args, **kwargs)
+        return op
+
+    for owner, name in ((os, "replace"), (os, "remove"), (torch, "save"), (np, "savez_compressed"),
+                        (json, "dump"), (siglip, "_save_file_raw")):
+        monkeypatch.setattr(owner, name, wrap(getattr(owner, name)))
+    return ops
+
+
+def _versioned_bundle(model, out, step, mode):
+    from core.style_encoder.style_resume import SplitSnapshot
+    state = {"global_step": step, "model": {"training_method": mode}}
+    snapshot = SplitSnapshot(np.arange(step, dtype=np.int64))
+    save_bundle(model, str(out), "latest", {"global_step": step}, (state, {"marker": step}, snapshot))
+
+
+def _assert_consistent_bundle(out, models):
+    """The resumable bundle found is complete and every file comes from the same save as its state."""
+    import json
+    from core.style_encoder.style_resume import SplitSnapshot
+    found = find_resume_checkpoint(str(out))
+    assert found is not None
+    name, state = found
+    step = state["global_step"]
+    assert json.loads((out / f"{name}_metadata.json").read_text(encoding="utf-8"))["global_step"] == step
+    assert torch.load(out / f"{name}_optimizer.pt", weights_only=True)["marker"] == step
+    assert SplitSnapshot.load(out / f"{name}_split_snapshot.npz").keys.tolist() == list(range(step))
+    saved = load_file(str(out / f"{name}{ENCODER_SUFFIX}"))
+    expected = distributable_state_dict(models[step])
+    assert saved.keys() == expected.keys() and all(torch.equal(saved[k], expected[k]) for k in saved)
+    return step
+
+
+@pytest.mark.parametrize("mode", ["full", "lora"])
+def test_a_kill_at_any_file_operation_of_a_save_leaves_one_consistent_resumable_bundle(tmp_path, monkeypatch,
+                                                                                      mode):
+    from core.style_encoder.style_artifacts import recover_staged_bundles
+    old = _lora_encoder() if mode == "lora" else StyleEncoder(tiny_vision(), (1, -2), 8, 2, 12, 6, "full", None)
+    new = _lora_encoder() if mode == "lora" else StyleEncoder(tiny_vision(), (1, -2), 8, 2, 12, 6, "full", None)
+    with torch.no_grad():
+        for p in new.parameters():
+            p.add_(1.0)
+    models = {1: old, 2: new}
+
+    with monkeypatch.context() as m:
+        counter = _killable_file_ops(m, None)
+        _versioned_bundle(new, tmp_path / "count", 2, mode)
+    save_ops = counter["n"]
+    assert save_ops >= 12
+
+    outcomes = []
+    for kill_at in range(save_ops + 1):
+        for recovery_kill in (None, 0, 1, 2, 3, 4, 5, 6):
+            out = tmp_path / f"k{kill_at}_{recovery_kill}"
+            _versioned_bundle(old, out, 1, mode)
+            with monkeypatch.context() as m:
+                _killable_file_ops(m, kill_at)
+                try:
+                    _versioned_bundle(new, out, 2, mode)
+                except _Kill:
+                    pass
+            if recovery_kill is not None:
+                with monkeypatch.context() as m:
+                    _killable_file_ops(m, recovery_kill)
+                    try:
+                        recover_staged_bundles(str(out))
+                    except _Kill:
+                        pass
+            _, refused, _ = recover_staged_bundles(str(out))
+            assert refused == []
+            step = _assert_consistent_bundle(out, models)
+            assert not any(".staged" in f for f in os.listdir(out))
+            outcomes.append((kill_at, step))
+    by_kill = {}
+    for kill_at, step in outcomes:
+        by_kill.setdefault(kill_at, set()).add(step)
+    assert all(len(steps) == 1 for steps in by_kill.values())
+    steps = [by_kill[k].pop() for k in range(save_ops + 1)]
+    # The old bundle survives until the state is staged; from then on the new one is finished.
+    assert steps[0] == 1 and steps[-1] == 2 and steps == sorted(steps)
+
+
+def test_an_interrupted_save_missing_a_staged_file_is_refused(tmp_path, monkeypatch):
+    factory, ids, _ = build_corpus(tmp_path)
+    cfg, out = config(ids), tmp_path / "out"
+    model = StyleEncoder(tiny_vision(), (1, -2), 8, 2, 12, 6, "full", None)
+    _versioned_bundle(model, out, 1, "full")
+    with monkeypatch.context() as m:
+        _killable_file_ops(m, 10)  # after the state is staged, before anything is moved into place
+        with pytest.raises(_Kill):
+            _versioned_bundle(model, out, 2, "full")
+    assert (out / "latest_state.json.staged").is_file()
+    (out / "latest_optimizer.pt.staged").unlink()
+    (out / "latest_optimizer.pt").unlink()
+    with pytest.raises(ValueError, match=r"interrupted checkpoint saves \['latest'\]"):
+        _run(factory, out, cfg)
+    assert (out / "latest_state.json.staged").is_file()
+
+
+@pytest.mark.parametrize("workers", [0, 1])
+def test_one_persistent_loader_serves_training_and_every_evaluation(tmp_path, monkeypatch, workers):
+    import core.style_encoder.style_trainer as trainer_module
+    from torch.utils.data import dataloader
+    factory, ids, _ = build_corpus(tmp_path)
+    loaders, worker_sets = [], []
+    real_make, real_iter = trainer_module.make_loader, dataloader._MultiProcessingDataLoaderIter.__init__
+    monkeypatch.setattr(trainer_module, "make_loader", lambda *a, **k: loaders.append(1) or real_make(*a, **k))
+    monkeypatch.setattr(dataloader._MultiProcessingDataLoaderIter, "__init__",
+                        lambda self, *a, **k: worker_sets.append(1) or real_iter(self, *a, **k))
+    result, rec = _run(factory, tmp_path / "out", config(ids, epochs=2, num_workers=workers))
+    assert len(rec.of("validation")) == 2 and len(loaders) == 1 and len(worker_sets) == min(workers, 1)
+    if workers:
+        _, serial = _run(factory, tmp_path / "serial", config(ids, epochs=2, num_workers=0))
+        assert rec.losses() == serial.losses()
+        assert rec.of("validation") == serial.of("validation")
+
+
+def test_an_empty_encoder_path_loads_the_repo_release_and_records_it(tmp_path):
+    import dataclasses
+    import json
+    factory, ids, _ = build_corpus(tmp_path)
+    loads = []
+
+    def loader(source, repo_id=None, attn_implementation="sdpa"):
+        loads.append((source, repo_id))
+        return tiny_vision(source, repo_id, attn_implementation)
+
+    env = dataclasses.replace(environment(factory), load_vision_encoder=loader)
+    repo = "google/siglip2-so400m-patch16-naflex"
+    recorder = _Recorder()
+    run_style_training("run", config(ids, vision_encoder_path="", vision_encoder_repo=repo), str(tmp_path / "out"),
+                       recorder, recorder.holder, env)
+    assert loads == [(repo, repo)]
+    metadata = json.loads((tmp_path / "out" / "latest_metadata.json").read_text(encoding="utf-8"))
+    assert metadata["base_model"] == {"repo_id": repo, "source": repo}
+
+
+def _add_broad_dataset_over(factory, root, dataset_id=0):
+    """A dataset with a lower id whose root contains every existing dataset: one copy of each item."""
+    from database.models import Dataset, DatasetCaption, DatasetItem
+    with factory() as session:
+        session.add(Dataset(id=dataset_id, name="broad", path=str(root)))
+        items = session.query(DatasetItem).all()
+        for item in items:
+            copy = DatasetItem(dataset_id=dataset_id, base_name=item.base_name, image_path=item.image_path)
+            session.add(copy)
+            session.flush()
+            for caption in session.query(DatasetCaption).filter(DatasetCaption.item_id == item.id).all():
+                session.add(DatasetCaption(item_id=copy.id, caption_type=caption.caption_type,
+                                           content=caption.content, tag_data=caption.tag_data,
+                                           is_tags_format=caption.is_tags_format))
+        session.commit()
+        return len(items)
+
+
+def test_a_lower_id_dataset_over_trained_files_keeps_the_trained_copies_on_the_train_side(tmp_path):
+    from core.style_encoder.style_dataset import TRAIN
+    from core.style_encoder.style_resume import SplitSnapshot
+    from core.style_encoder.style_trainer import prepare_style_data
+    from style_training_fixture import image_processor
+    factory, ids, _ = build_corpus(tmp_path)
+    out = tmp_path / "out"
+    _run(factory, out, config(ids, epochs=2), stop_at=3)
+    trained = SplitSnapshot.load(out / "latest_split_snapshot.npz").keys
+    assert trained.size
+
+    copies = _add_broad_dataset_over(factory, tmp_path)
+    widened = StyleTrainingConfig.from_dict(config([0, *ids], epochs=2))
+    pinned = prepare_style_data(widened, environment(factory), image_processor(), trained)
+    assert pinned.ingest_stats.items_duplicate_path == copies
+    keys = pinned.index.item_keys
+    order = np.argsort(keys)
+    rows = order[np.minimum(np.searchsorted(keys[order], trained), keys.size - 1)]
+    assert np.array_equal(keys[rows], trained)  # every trained copy survives under its key
+    assert (pinned.index.item_split[rows] == TRAIN).all()
+    fresh = prepare_style_data(widened, environment(factory), image_processor(), np.zeros(0, dtype=np.int64))
+    assert not np.isin(trained, fresh.index.item_keys).any()  # without pins the lower-id copies win
+
+    resumed, rec = _run(factory, out, config([0, *ids], epochs=2))
+    assert rec.of("resume")[0]["resumed_from_step"] == 3 and resumed["global_step"] == resumed["total_steps"]
+
+
+@pytest.mark.parametrize("first,second", [("", "google/siglip2-base-patch16-naflex"),
+                                          ("google/siglip2-base-patch16-naflex", "")])
+def test_an_empty_encoder_path_and_the_repo_id_are_the_same_resume_identity(tmp_path, first, second):
+    factory, ids, _ = build_corpus(tmp_path)
+    repo = "google/siglip2-base-patch16-naflex"
+    out = tmp_path / "out"
+    _run(factory, out, config(ids, epochs=2, vision_encoder_path=first, vision_encoder_repo=repo), stop_at=2)
+    resumed, rec = _run(factory, out, config(ids, epochs=2, vision_encoder_path=second, vision_encoder_repo=repo))
+    assert rec.of("resume")[0]["resumed_from_step"] == 2 and resumed["global_step"] == resumed["total_steps"]
+
+
+def _best_bundle(model, out, step, mode):
+    save_bundle(model, str(out), "best", {"global_step": step, "training_method": mode})
+
+
+@pytest.mark.parametrize("mode", ["full", "lora"])
+def test_a_kill_at_any_file_operation_of_a_best_save_leaves_a_consistent_best(tmp_path, monkeypatch, mode):
+    import json
+    from core.style_encoder.style_artifacts import LORA_SUFFIX, lora_state_dict, recover_staged_bundles
+    make = (lambda: _lora_encoder()) if mode == "lora" else \
+        (lambda: StyleEncoder(tiny_vision(), (1, -2), 8, 2, 12, 6, "full", None))
+    old, new = make(), make()
+    with torch.no_grad():
+        for p in new.parameters():
+            p.add_(1.0)
+    models = {1: old, 2: new}
+    with monkeypatch.context() as m:
+        counter = _killable_file_ops(m, None)
+        _best_bundle(new, tmp_path / "count", 2, mode)
+    save_ops = counter["n"]
+    steps = []
+    for kill_at in range(save_ops + 1):
+        for recovery_kill in (None, 0, 1, 2, 3):
+            out = tmp_path / f"k{kill_at}_{recovery_kill}"
+            _best_bundle(old, out, 1, mode)
+            with monkeypatch.context() as m:
+                _killable_file_ops(m, kill_at)
+                try:
+                    _best_bundle(new, out, 2, mode)
+                except _Kill:
+                    pass
+            if recovery_kill is not None:
+                with monkeypatch.context() as m:
+                    _killable_file_ops(m, recovery_kill)
+                    try:
+                        recover_staged_bundles(str(out))
+                    except _Kill:
+                        pass
+            _, refused, _ = recover_staged_bundles(str(out))
+            assert refused == [] and not any(".staged" in f for f in os.listdir(out))
+            step = json.loads((out / "best_metadata.json").read_text(encoding="utf-8"))["global_step"]
+            saved = load_file(str(out / f"best{ENCODER_SUFFIX}"))
+            expected = distributable_state_dict(models[step])
+            assert saved.keys() == expected.keys() and all(torch.equal(saved[k], expected[k]) for k in saved)
+            if mode == "lora":
+                adapter, expected_adapter = load_file(str(out / f"best{LORA_SUFFIX}")), lora_state_dict(models[step])
+                assert all(torch.equal(adapter[k], expected_adapter[k]) for k in expected_adapter)
+            if recovery_kill is None:
+                steps.append(step)
+    # The old best survives until the metadata is staged; from then on the new one is finished.
+    assert steps[0] == 1 and steps[-1] == 2 and steps == sorted(steps)
+
+
+class _SetupStopper(_Recorder):
+    def __init__(self, when):
+        super().__init__()
+        self.when = when
+
+    def __call__(self, run_id, event, data):
+        super().__call__(run_id, event, data)
+        if self.when(event, data):
+            self.holder[0].stop()
+
+
+@pytest.mark.parametrize("when", [lambda e, d: e == "dataset_stats",
+                                  lambda e, d: e == "phase" and d.get("message") == "Building model..."])
+def test_a_stop_during_setup_ends_the_run_before_the_gpu_is_touched(tmp_path, when):
+    import dataclasses
+    factory, ids, _ = build_corpus(tmp_path)
+    devices = []
+    env = dataclasses.replace(environment(factory), resolve_device=lambda g: devices.append(g) or torch.device("cpu"))
+    recorder = _SetupStopper(when)
+    result = run_style_training("run", config(ids), str(tmp_path / "out"), recorder, recorder.holder, env)
+    assert result["stopped"] and result["global_step"] == 0 and devices == []
+    assert os.listdir(tmp_path / "out") == [] and not recorder.of("step")
+
+
+def test_a_stop_after_the_model_is_built_ends_the_run_before_the_loader_starts(tmp_path, monkeypatch):
+    import core.style_encoder.style_trainer as trainer_module
+    factory, ids, _ = build_corpus(tmp_path)
+    real_build, loaders = StyleTrainer._build_optimizer, []
+
+    def build_then_stop(self, *args):
+        built = real_build(self, *args)
+        self.stop()
+        return built
+
+    monkeypatch.setattr(StyleTrainer, "_build_optimizer", build_then_stop)
+    monkeypatch.setattr(trainer_module, "make_loader", lambda *a, **k: loaders.append(1))
+    result, rec = _run(factory, tmp_path / "out", config(ids))
+    assert result["stopped"] and loaders == [] and not rec.of("step")
+
+
+def test_a_feature_layer_out_of_range_names_the_layer_count():
+    with pytest.raises(ValueError, match=r"this encoder has 3 layers, so entries must lie in \[-4, 3\]"):
+        StyleEncoder(tiny_vision(), (9,), 8, 2, 12, 6, "full", None)

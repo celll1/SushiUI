@@ -53,7 +53,8 @@ def init_db():
         GeneratedImage, StudioRenderJob, UserSettings,  # Gallery
         Dataset, DatasetItem, DatasetCaption, TagDictionary,  # Datasets
         TrainingRun, TrainingCheckpoint, TrainingSample,  # Training
-        TaggerTrainingRun, TaggerTrainingMetrics  # Tagger Training
+        TaggerTrainingRun, TaggerTrainingMetrics,  # Tagger Training
+        StyleTrainingRun, StyleTrainingMetrics,  # Style Training
     )
     from .auto_migrate import auto_migrate_all_databases
     import uuid

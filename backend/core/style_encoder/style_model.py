@@ -54,7 +54,9 @@ def resolve_feature_layers(feature_layers: Sequence[int], num_layers: int) -> tu
     resolved = []
     for layer in feature_layers:
         if isinstance(layer, bool) or not isinstance(layer, int) or not -(num_layers + 1) <= layer <= num_layers:
-            raise ValueError(f"style_feature_layers entry {layer!r} out of range for {num_layers} encoder layers")
+            raise ValueError(f"style_feature_layers entry {layer!r} is out of range: this encoder has {num_layers} "
+                             f"layers, so entries must lie in [{-(num_layers + 1)}, {num_layers}] "
+                             f"(0 = embeddings, i = output of layer i)")
         resolved.append(layer % (num_layers + 1))
     if len(set(resolved)) != len(resolved):
         raise ValueError(f"style_feature_layers {list(feature_layers)} name the same layer twice")

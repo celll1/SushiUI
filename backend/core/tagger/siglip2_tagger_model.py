@@ -436,7 +436,7 @@ class SigLIP2TaggerModel(nn.Module):
         if self.is_naflex:
             out = self.vision_encoder(
                 pixel_values=pixel_values,
-                attention_mask=pixel_attention_mask,
+                pixel_attention_mask=pixel_attention_mask,
                 spatial_shapes=spatial_shapes,
             )
         else:
@@ -611,7 +611,7 @@ class SigLIP2TaggerLoRAModel(nn.Module):
         if self.is_naflex:
             out = self.vision_encoder(
                 pixel_values=pixel_values,
-                attention_mask=pixel_attention_mask,
+                pixel_attention_mask=pixel_attention_mask,
                 spatial_shapes=spatial_shapes,
             )
         else:

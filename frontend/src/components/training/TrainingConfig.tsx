@@ -913,6 +913,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         (isQwenImage21Model || isAnimaModel(baseModelPath)) ? params.train_adapter : null,
       adapter_lr: (trainingMethod === "lora" || trainingMethod === "full_finetune") &&
         (isQwenImage21Model || isAnimaModel(baseModelPath)) ? params.adapter_lr : null,
+      full_finetune_dequantize_int8_base: isQwenImage21Model && trainingMethod === "full_finetune"
+        ? params.full_finetune_dequantize_int8_base : false,
+      training_export_format: isQwenImage21Model && trainingMethod === "full_finetune"
+        ? params.training_export_format : "none",
       train_text_encoder: textEncoderTrainingUnsupported ? false : params.train_text_encoder,
       qwen_guidance_loss_weight: isQwenImage21Model ? params.qwen_guidance_loss_weight : 0,
       qwen_cfg_null_sigma_schedule: isQwenImage21Model &&
@@ -4470,6 +4474,33 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   This is the bridge inside the denoiser, not the text encoder or LoRA algorithm.
                   Qwen LoRA defaults to frozen; Qwen full fine-tune and Anima retain their established adapter policy.
                 </p>
+              </div>
+            )}
+
+            {isQwenImage21Model && trainingMethod === "full_finetune" && (
+              <label className="mb-3 flex items-start gap-2 text-xs text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={params.full_finetune_dequantize_int8_base ?? false}
+                  onChange={(e) => updateParam("full_finetune_dequantize_int8_base", e.target.checked)}
+                  className="mt-0.5 h-4 w-4"
+                />
+                <span>Allow one-time INT8 ConvRot dequantization for full fine-tuning. The starting weights remain lossy; training uses floating weights.</span>
+              </label>
+            )}
+
+            {isQwenImage21Model && trainingMethod === "full_finetune" && (
+              <div className="mb-3">
+                <label className="block text-xs text-gray-400 mb-1">Inference export after normal completion</label>
+                <select
+                  value={params.training_export_format ?? "none"}
+                  onChange={(e) => updateParam("training_export_format", e.target.value as "none" | "int8_convrot")}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
+                >
+                  <option value="none">None</option>
+                  <option value="int8_convrot">INT8 ConvRot</option>
+                </select>
+                <p className="text-xs text-gray-500 mt-1">The floating checkpoint remains available for exact resume. No periodic INT8 export is made.</p>
               </div>
             )}
 

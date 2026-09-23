@@ -4582,9 +4582,18 @@ def main():
 
             print("[TrainRunner] Training completed successfully!")
 
-            run.status = "completed"
-            run.completed_at = datetime.utcnow()
-            training_db.commit()
+            training_db.refresh(run)
+            if run.status not in {"stopped", "failed"}:
+                run.status = "completed"
+                run.completed_at = datetime.utcnow()
+                training_db.commit()
+                if train_config.get("training_export_format") == "int8_convrot":
+                    try:
+                        from api.training_export_job import export_run
+
+                        export_run(run.id, run.run_name, run.output_dir)
+                    except Exception as exc:
+                        print(f"[TrainRunner] INT8 ConvRot export failed; floating checkpoint retained: {exc}")
 
         elif network_type == 'controlnet':
             print("[TrainRunner] Training method: ControlNet")

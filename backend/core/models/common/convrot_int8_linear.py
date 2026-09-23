@@ -188,6 +188,32 @@ def swap_linears_to_convrot_int8(
     return swapped
 
 
+def materialize_convrot_linears(module: torch.nn.Module, dtype: torch.dtype) -> int:
+    """Replace ConvRot children with floating Linears, releasing packed weights."""
+    from comfy_kitchen.backends.eager.quantization import dequantize_int8_convrot_weight
+
+    converted = 0
+    for name, child in list(module.named_children()):
+        if not isinstance(child, ConvRotInt8Linear):
+            converted += materialize_convrot_linears(child, dtype)
+            continue
+        if child.weight.device.type != "cpu":
+            raise ValueError("ConvRot materialization requires CPU-resident weights")
+        weight = dequantize_int8_convrot_weight(
+            child.weight, child.weight_scale.reshape(-1, 1), child.convrot_groupsize
+        ).to(dtype=dtype).contiguous()
+        replacement = torch.nn.Linear(
+            child.in_features, child.out_features,
+            bias=child.bias is not None, device="meta",
+        )
+        replacement.weight = torch.nn.Parameter(weight)
+        if child.bias is not None:
+            replacement.bias = torch.nn.Parameter(child.bias.detach().to(dtype=dtype).clone())
+        setattr(module, name, replacement)
+        converted += 1
+    return converted
+
+
 def describe_gemm_path(module: torch.nn.Module) -> str:
     """Opaque generation-metadata label for a loaded ConvRot INT8 module.
 

@@ -39,13 +39,23 @@ generation block swap, keep-hot, and VAE/TE replacement are not claimed;
 capability data marks the shared controls unsupported.
 
 Training supports DiT LoRA on Original or a frozen INT8 ConvRot base, and full
-DiT fine-tuning on Original only. `train_adapter: true` adds LoRA to both
+DiT fine-tuning on an Original DiT with a frozen Original or INT8 ConvRot TE.
+The split manifest selects those components independently; the mixed mode
+reuses the existing Original DiT and INT8 TE files without dequantizing or
+duplicating the DiT weights.
+`train_adapter: true` adds LoRA to both
 `txt_in` Linear layers; `adapter_lr` gives those branches an independent
 optimizer group. The default LoRA inventory remains 128 attention projections.
 Full fine-tuning includes the complete `txt_in` by default and can freeze it
-with `train_adapter: false`. Qwen3-VL and the VAE remain frozen. The flow
+with `train_adapter: false`. Qwen3-VL may be trained independently with
+`train_text_encoder` and `text_encoder_lr`; the VAE remains frozen. Explicit
+`full_finetune_dequantize_int8_base` materializes ConvRot components on the
+trainable backward path once into floating weights, discarding packed copies.
+Training checkpoints remain floating and resumable; optional INT8 ConvRot
+inference export occurs on normal completion or by explicit request after a
+stopped run. The flow
 objective is `xt = (1-sigma)*x0 + sigma*noise`, target `noise-x0`; loss is taken
-only from the target latent tail. ReLoRA, ControlNet, text-encoder training,
+only from the target latent tail. ReLoRA, ControlNet, TE LoRA,
 VAE swap, and reference-conditioned edit datasets are refused.
 
 For new runs, an omitted guidance-loss weight resolves to 1.0 (100% guided

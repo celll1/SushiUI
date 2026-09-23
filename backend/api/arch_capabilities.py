@@ -1196,13 +1196,17 @@ for _a, _why in [
     ("lens", "LensLoRAAdapter/LensFullParameterAdapter keep the GPT-OSS text encoder frozen"),
     ("ideogram4", "Ideogram4LoRAAdapter injects no text-encoder LoRA and the full-parameter adapter never unfreezes the Qwen3-VL encoder"),
     ("krea2", "Krea2FullParameterAdapter rejects train_text_encoder outright and Krea2LoRAAdapter injects no text-encoder LoRA (Qwen3-VL policy)"),
-    ("qwen_image_21", "Qwen-Image 2.1 keeps Qwen3-VL frozen for both LoRA and full-parameter training"),
     ("ltx2", "Ltx2LoRAAdapter/Ltx2FullParameterAdapter keep the Gemma-3 text encoder and its connectors frozen"),
     ("acestep", "AceStepLoRAAdapter/AceStepFullParameterAdapter keep the Qwen3-Embedding-0.6B text encoder frozen"),
     ("minimax_h3", "the Qwen3-VL conditioner is read one decoder layer at a time off a memory-mapped 48 GiB file precisely so it never becomes resident; there is no configuration in which its weights and the DiT's are both on the GPU"),
     ("yue2", "YuE2 trains the embedded AR score planner; it has no separate trainable text encoder"),
 ]:
     _add_training_feature_unsupported(_a, "text_encoder_training", _why)
+_add_training_feature_unsupported(
+    "qwen_image_21", "text_encoder_training",
+    "Qwen-Image 2.1 text-encoder training requires full-parameter training; LoRA targets the DiT and optional txt_in only",
+    methods=["lora", "relora"],
+)
 _add_training_feature_unsupported(
     "zimage", "text_encoder_training",
     "ZImageLoRAAdapter injects no text-encoder LoRA (the Qwen3 encoder stays frozen); full fine-tuning does train it",

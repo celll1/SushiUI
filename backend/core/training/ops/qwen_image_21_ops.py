@@ -281,6 +281,9 @@ def load_components(trainer) -> None:
     trainer.qwen_image_21_transformer_variant = str(
         components.get("transformer_variant", "bf16")
     )
+    trainer.qwen_image_21_text_encoder_variant = str(
+        components.get("text_encoder_variant", "bf16")
+    )
 
     trainer.vae.requires_grad_(False).eval()
     trainer.text_encoder.requires_grad_(False).eval()
@@ -351,7 +354,12 @@ def load_components(trainer) -> None:
             f"{checkpoint_blocks}/{len(trainer.transformer.transformer_blocks)} blocks"
             f" ({'explicit' if configured_checkpoint_blocks is not None else 'automatic'})"
         )
-    trainer.transformer.to(trainer.device)
+    defer_full_dequant = bool(
+        getattr(trainer, "trains_base_weights", False)
+        and trainer.config.get("full_finetune_dequantize_int8_base", False)
+    )
+    if not defer_full_dequant:
+        trainer.transformer.to(trainer.device)
     if convrot_training_forward == "transient_bf16":
         from core.models.common.quantized_frozen_training import (
             enable_frozen_training_fused,
@@ -448,13 +456,15 @@ def setup_block_swap(trainer) -> None:
     trainer.layer_offload_conductor.register_hooks()
 
 
-def encode_prompt(trainer, prompt: str):
+def encode_prompt(trainer, prompt: str, *, requires_grad: bool = False):
     pipe = trainer.qwen_image_21_pipeline
     te_device = next(trainer.text_encoder.parameters()).device
-    with torch.no_grad():
+    with torch.set_grad_enabled(requires_grad):
         embeds, mask, _ = pipe.encode_prompt(prompt=prompt, device=te_device)
     if mask is None:
         mask = torch.ones(embeds.shape[:2], dtype=torch.bool, device=embeds.device)
+    if requires_grad:
+        return embeds, mask[0]
     return embeds.detach().cpu(), mask[0].detach().cpu()
 
 
@@ -762,7 +772,7 @@ def train_step_partitioned_backward(
     total_input_tokens = 0
     wall_start = time.perf_counter()
     try:
-        for region in plan.regions:
+        for region_index, region in enumerate(plan.regions):
             input_tokens = region.input.tokens
             total_input_tokens += input_tokens
             tile = flatten_region(noisy_grid, region.input)
@@ -861,10 +871,12 @@ def train_step_partitioned_backward(
             if cuda_timing:
                 forward_end.record(torch.cuda.current_stream(trainer.device))
             scaled_loss = weighted_loss * float(backward_scale)
+            retain_encoder_graph = bool(encoder_features.grad_fn is not None and
+                                        region_index + 1 < len(plan.regions))
             if trainer.use_grad_scaler:
-                trainer.grad_scaler.scale(scaled_loss).backward()
+                trainer.grad_scaler.scale(scaled_loss).backward(retain_graph=retain_encoder_graph)
             else:
-                scaled_loss.backward()
+                scaled_loss.backward(retain_graph=retain_encoder_graph)
             if cuda_timing:
                 backward_end.record(torch.cuda.current_stream(trainer.device))
                 backward_end.synchronize()

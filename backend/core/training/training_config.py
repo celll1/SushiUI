@@ -338,6 +338,10 @@ def _build_train_section(
     # Component learning rates
     train["train_adapter"] = p.get("train_adapter", _TD["train_adapter"])
     train["adapter_lr"] = p.get("adapter_lr", _TD["adapter_lr"])
+    if p.get("full_finetune_dequantize_int8_base", _TD["full_finetune_dequantize_int8_base"]):
+        train["full_finetune_dequantize_int8_base"] = True
+    if p.get("training_export_format", _TD["training_export_format"]) != "none":
+        train["training_export_format"] = p["training_export_format"]
     if component_lr_always_emit:
         # LoRA-style: always emit with fallback to learning_rate
         train["unet_lr"] = p.get("unet_lr") if p.get("unet_lr") is not None else lr

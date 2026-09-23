@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 
 from core.adapters import is_adapter_covered
-from core.models.common.convrot_int8_linear import ConvRotInt8Linear
+from core.models.common.convrot_int8_linear import ConvRotInt8Linear, materialize_convrot_linears
 from core.models.common.quantized_export import DEFAULT_EXPORT_SHARD_BYTES, ShardWriter
 from core.models.qwen_image_21.artifact import artifact_metadata
 
@@ -160,16 +160,35 @@ class QwenImage21LoRAAdapter(BaseLoRAAdapter):
 
 class QwenImage21FullParameterAdapter(BaseFullParameterAdapter):
     def prepare_models_for_training(self):
+        train_te = bool(getattr(self.trainer, "train_text_encoder", False))
+        if bool(self.trainer.config.get("full_finetune_dequantize_int8_base", False)):
+            dtype = self.trainer.weight_dtype
+            dit_count = materialize_convrot_linears(self.trainer.transformer, dtype)
+            te_count = (
+                materialize_convrot_linears(self.trainer.text_encoder, dtype)
+                if train_te else 0
+            )
+            self.trainer.qwen_full_dequantized_from_int8 = bool(dit_count or te_count)
+            if dit_count:
+                self.trainer.qwen_image_21_transformer_variant = "bf16"
+            if te_count:
+                self.trainer.qwen_image_21_text_encoder_variant = "bf16"
+            self.trainer.transformer.to(self.trainer.device)
         reject_quantized_base(self.trainer.transformer, model_label="Qwen-Image 2.1")
-        if bool(getattr(self.trainer, "train_text_encoder", False)):
-            raise ValueError("Qwen-Image 2.1 text-encoder training is not supported")
+        if train_te:
+            reject_quantized_base(
+                self.trainer.text_encoder, model_label="Qwen-Image 2.1 text encoder"
+            )
         train_dit = bool(getattr(self.trainer, "train_unet", True))
         adapter_choice = self.trainer.config.get("train_adapter")
         self.trainer.transformer.requires_grad_(train_dit).train()
         self.trainer.transformer.txt_in.requires_grad_(
             train_dit if adapter_choice is None else bool(adapter_choice)
         )
-        self.trainer.text_encoder.requires_grad_(False).eval()
+        self.trainer.text_encoder.requires_grad_(train_te)
+        self.trainer.text_encoder.train(train_te)
+        if train_te and bool(getattr(self.trainer, "gradient_checkpointing", False)):
+            self.trainer.text_encoder.gradient_checkpointing_enable()
         self.trainer.vae.requires_grad_(False).eval()
 
     def arch_param_groups(self):
@@ -177,13 +196,14 @@ class QwenImage21FullParameterAdapter(BaseFullParameterAdapter):
         adapter_lr = self.trainer.config.get("adapter_lr")
         if adapter_lr is None:
             params = [p for p in self.trainer.transformer.parameters() if p.requires_grad]
-            return [{
+            groups = [{
                 "params": params,
                 "lr": resolve_component_lr(
                     self.trainer, "unet_lr", label="Qwen-Image 2.1 transformer"
                 ),
                 "name": "unet", "component": "unet",
-            }]
+            }] if params else []
+            return self._with_text_encoder_group(groups)
         projection = self.trainer.transformer.txt_in
         adapter_ids = {id(p) for p in projection.parameters() if p.requires_grad}
         base_params = [p for p in self.trainer.transformer.parameters()
@@ -201,6 +221,18 @@ class QwenImage21FullParameterAdapter(BaseFullParameterAdapter):
                 "lr": float(adapter_lr),
                 "name": "adapter", "component": "adapter",
             })
+        return self._with_text_encoder_group(groups)
+
+    def _with_text_encoder_group(self, groups):
+        te_params = [p for p in self.trainer.text_encoder.parameters() if p.requires_grad]
+        if te_params:
+            groups.append({
+                "params": te_params,
+                "lr": resolve_component_lr(
+                    self.trainer, "text_encoder_lr", label="Qwen-Image 2.1 text encoder"
+                ),
+                "name": "text_encoder_1", "component": "text_encoder_1",
+            })
         return groups
 
     def write_checkpoint(self, step: int, epoch: int, output_path: Path):
@@ -210,15 +242,29 @@ class QwenImage21FullParameterAdapter(BaseFullParameterAdapter):
         elif output_path.suffix != ".safetensors":
             output_path = Path(str(output_path) + ".safetensors")
         config = dict(self.trainer.transformer.config)
-        metadata = artifact_metadata("transformer", config)
+        train_te = bool(getattr(self.trainer, "train_text_encoder", False))
+        metadata = artifact_metadata(
+            "training_bundle" if train_te else "transformer", config
+        )
         companion_path = str(getattr(
             self.trainer, "qwen_image_21_companion_path", self.trainer.model_path
         ))
         metadata.update(step=str(step), epoch=str(epoch), companion_path=companion_path)
+        if bool(getattr(self.trainer, "qwen_full_dequantized_from_int8", False)):
+            metadata["full_finetune_initialization"] = "dequantized_int8_convrot"
         writer = ShardWriter(str(output_path), metadata, DEFAULT_EXPORT_SHARD_BYTES)
         try:
             for key, tensor in self.trainer.transformer.state_dict().items():
-                writer.add(key, tensor.detach().cpu().contiguous())
+                writer.add(
+                    f"transformer.{key}" if train_te else key,
+                    tensor.detach().cpu().contiguous(),
+                )
+            if train_te:
+                for key, tensor in self.trainer.text_encoder.state_dict().items():
+                    writer.add(
+                        f"text_encoder.{key}",
+                        tensor.detach().to("cpu", copy=True).contiguous(),
+                    )
             result = writer.close()
         except BaseException:
             writer.abort()

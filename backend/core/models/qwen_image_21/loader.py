@@ -7,11 +7,14 @@ import os
 
 import torch
 
-from .artifact import load_manifest, load_text_encoder, load_transformer, load_vae
+from .artifact import load_manifest, load_text_encoder, load_transformer as load_transformer_artifact, load_vae
 from .vendor import AutoencoderKLQwenImage21, QwenImage21Pipeline, QwenImage21Transformer2DModel
 
 
-def _source_components(model_path: str, dtype: torch.dtype) -> dict:
+def _source_components(
+    model_path: str, dtype: torch.dtype, *, load_transformer_component: bool = True,
+    load_text_encoder_component: bool = True,
+) -> dict:
     from diffusers import FlowMatchEulerDiscreteScheduler
     from transformers import Qwen3VLForConditionalGeneration, Qwen3VLProcessor
 
@@ -21,10 +24,10 @@ def _source_components(model_path: str, dtype: torch.dtype) -> dict:
         raise ValueError(f"{model_path}: missing Qwen-Image 2.1 subfolder(s): {', '.join(missing)}")
     transformer = QwenImage21Transformer2DModel.from_pretrained(
         model_path, subfolder="transformer", torch_dtype=dtype, low_cpu_mem_usage=True
-    ).eval()
+    ).eval() if load_transformer_component else None
     text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(
         model_path, subfolder="text_encoder", torch_dtype=dtype, low_cpu_mem_usage=True
-    ).eval()
+    ).eval() if load_text_encoder_component else None
     vae = AutoencoderKLQwenImage21.from_pretrained(
         model_path, subfolder="vae", torch_dtype=dtype, low_cpu_mem_usage=True
     ).eval()
@@ -46,13 +49,17 @@ def _source_components(model_path: str, dtype: torch.dtype) -> dict:
     }
 
 
-def _artifact_components(model_path: str, dtype: torch.dtype, load_text_encoder_component: bool) -> dict:
+def _artifact_components(
+    model_path: str, dtype: torch.dtype, load_text_encoder_component: bool,
+    load_transformer_component: bool = True,
+) -> dict:
     from diffusers import FlowMatchEulerDiscreteScheduler
     from transformers import Qwen3VLProcessor
 
     manifest = load_manifest(model_path)
-    transformer, transformer_variant = load_transformer(
-        manifest.transformer, manifest.transformer_config, dtype
+    transformer, transformer_variant = (
+        load_transformer_artifact(manifest.transformer, manifest.transformer_config, dtype)
+        if load_transformer_component else (None, None)
     )
     text_encoder = None
     text_encoder_variant = None
@@ -84,17 +91,22 @@ def load_qwen_image_21_components(
     torch_dtype: torch.dtype = torch.bfloat16,
     *,
     load_text_encoder: bool = True,
+    load_transformer: bool = True,
 ) -> dict:
     """Return CPU-resident components consumed by ``PipelineManager`` and trainers."""
     manifest_path = os.path.join(model_path, "manifest.json") if os.path.isdir(model_path) else ""
     if manifest_path and os.path.isfile(manifest_path):
-        components = _artifact_components(model_path, torch_dtype, load_text_encoder)
+        components = _artifact_components(
+            model_path, torch_dtype, load_text_encoder, load_transformer
+        )
         components["companion_path"] = os.path.abspath(model_path)
     elif os.path.isdir(model_path):
-        components = _source_components(model_path, torch_dtype)
+        components = _source_components(
+            model_path, torch_dtype,
+            load_transformer_component=load_transformer,
+            load_text_encoder_component=load_text_encoder,
+        )
         components["companion_path"] = os.path.abspath(model_path)
-        if not load_text_encoder:
-            components["text_encoder"] = None
     elif os.path.isfile(model_path):
         from core.models.common.single_file_format import is_index_path
         if is_index_path(model_path):
@@ -104,18 +116,60 @@ def load_qwen_image_21_components(
             from safetensors import safe_open
             with safe_open(model_path, framework="pt", device="cpu") as handle:
                 metadata = handle.metadata() or {}
-        if metadata.get("model_type") != "qwen_image_21" or metadata.get("component") != "transformer":
-            raise ValueError(f"{model_path}: not a Qwen-Image 2.1 transformer checkpoint")
+        component = metadata.get("component")
+        if metadata.get("model_type") != "qwen_image_21" or component not in {
+            "transformer", "training_bundle"
+        }:
+            raise ValueError(f"{model_path}: not a Qwen-Image 2.1 training checkpoint")
         companion_path = metadata.get("companion_path")
         if not companion_path or os.path.abspath(companion_path) == os.path.abspath(model_path):
             raise ValueError(
                 f"{model_path}: training checkpoint has no usable companion_path for TE/VAE/processor"
             )
         components = load_qwen_image_21_components(
-            companion_path, torch_dtype=torch_dtype, load_text_encoder=load_text_encoder
+            companion_path, torch_dtype=torch_dtype,
+            load_text_encoder=load_text_encoder if component == "transformer" else False,
+            load_transformer=component == "transformer",
         )
         config = json.loads(metadata.get("config") or "{}")
-        transformer, variant = load_transformer(model_path, config, torch_dtype)
+        if component == "training_bundle":
+            from accelerate import init_empty_weights
+            from transformers import Qwen3VLConfig, Qwen3VLForConditionalGeneration
+            from core.models.common.single_file_format import read_state_dict
+            from .artifact import _finish_load
+
+            state, _ = read_state_dict(model_path)
+            transformer_state = {
+                key[len("transformer."):]: value for key, value in state.items()
+                if key.startswith("transformer.")
+            }
+            te_state = {
+                key[len("text_encoder."):]: value for key, value in state.items()
+                if key.startswith("text_encoder.")
+            }
+            if not transformer_state or not te_state or len(transformer_state) + len(te_state) != len(state):
+                raise ValueError(f"{model_path}: incomplete Qwen-Image 2.1 training bundle")
+            with init_empty_weights():
+                transformer = QwenImage21Transformer2DModel(**config)
+            transformer = _finish_load(transformer, transformer_state, "Qwen-Image 2.1 transformer")
+            transformer.to(dtype=torch_dtype)
+            if load_text_encoder:
+                te_config_path = (
+                    components["manifest"].text_encoder_config
+                    if components.get("manifest") is not None else
+                    os.path.join(companion_path, "text_encoder", "config.json")
+                )
+                with init_empty_weights():
+                    text_encoder = Qwen3VLForConditionalGeneration(
+                        Qwen3VLConfig.from_json_file(te_config_path)
+                    )
+                components["text_encoder"] = _finish_load(
+                    text_encoder, te_state, "Qwen-Image 2.1 text encoder"
+                ).to(dtype=torch_dtype)
+                components["text_encoder_variant"] = "bf16"
+            variant = "bf16"
+        else:
+            transformer, variant = load_transformer_artifact(model_path, config, torch_dtype)
         components["transformer"] = transformer
         components["transformer_variant"] = variant
         components["checkpoint_path"] = model_path

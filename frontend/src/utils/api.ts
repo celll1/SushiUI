@@ -6826,7 +6826,7 @@ export interface TrainingRun {
   training_method: "lora" | "relora" | "full_finetune" | "controlnet" | "vae_decoder";
   base_model_path: string;
   config_yaml?: string;
-  status: "pending" | "running" | "paused" | "completed" | "failed" | "starting";
+  status: "pending" | "running" | "paused" | "stopped" | "completed" | "failed" | "starting";
   progress: number;
   current_step: number;
   total_steps: number;
@@ -7059,6 +7059,8 @@ export interface TrainingRunCreateRequest {
   unet_lr?: number | null;
   train_adapter?: boolean | null;
   adapter_lr?: number | null;
+  full_finetune_dequantize_int8_base?: boolean;
+  training_export_format?: "none" | "int8_convrot";
   text_encoder_lr?: number | null;
   text_encoder_1_lr?: number | null;
   text_encoder_2_lr?: number | null;
@@ -7623,6 +7625,19 @@ export const stopTrainingRun = async (id: number): Promise<{ message: string; ru
   const response = await api.post(`/training/runs/${id}/stop`);
   return response.data;
 };
+
+export interface TrainingExportStatus {
+  state: "idle" | "queued" | "running" | "completed" | "failed" | "unknown";
+  source?: string;
+  path?: string;
+  error?: string;
+}
+
+export const getTrainingExportStatus = async (id: number): Promise<TrainingExportStatus> =>
+  (await api.get(`/training/runs/${id}/export`)).data;
+
+export const startTrainingExport = async (id: number, overwrite = false): Promise<TrainingExportStatus> =>
+  (await api.post(`/training/runs/${id}/export`, { format: "int8_convrot", overwrite })).data;
 
 /** Skip the dataset currently being rescanned during a LoRA/Full-FT run's
  *  pre-flight. Pass the dataset_id of the in-progress rescan so a stale skip

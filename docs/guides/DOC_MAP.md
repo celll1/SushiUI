@@ -61,6 +61,7 @@ machine-local working material.
 | [docs/guides/TAGGER.md](TAGGER.md) | Legacy WD and trainable SigLIP2 tagger ownership, safety, and resume contracts. |
 | [docs/decisions/TRAINING_RUN_STORAGE_V2.md](../decisions/TRAINING_RUN_STORAGE_V2.md) | Central catalogue and per-run database contract. |
 | [docs/guides/INT8_CONVROT_TRAINING_DESIGN.md](INT8_CONVROT_TRAINING_DESIGN.md) | INT8 ConvRot investigation and measurements. |
+| [docs/guides/FULL_PARAMETER_CHECKPOINT_EXPORT_DESIGN.md](FULL_PARAMETER_CHECKPOINT_EXPORT_DESIGN.md) | Architecture-neutral separation of exact training checkpoints and optional quantized inference exports. |
 | [docs/guides/LR_SCHEDULER_DESIGN.md](LR_SCHEDULER_DESIGN.md) | Learning-rate schedule controls and measured limits. |
 | [docs/guides/TRAINING_LIVE_SAMPLE_SETTINGS.md](TRAINING_LIVE_SAMPLE_SETTINGS.md) | Training Monitor sample settings that apply to future images during a live run. |
 | [docs/guides/TRAINING_DIAGNOSTICS_AND_AUXILIARY_LOSSES.md](TRAINING_DIAGNOSTICS_AND_AUXILIARY_LOSSES.md) | Shipped diagnostics and auxiliary losses. |

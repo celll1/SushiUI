@@ -1,6 +1,6 @@
 # Style embedding encoder 設計書
 
-Status: 設計・未実装（2026-09-23。外部監査の指摘 4 件を §4・§5・§9・§10・§14 に反映）
+Status: 実装中（Phase 1）。2026-09-23 の外部監査の指摘 4 件を §4・§5・§9・§10・§14 に反映済み
 
 ## 1. 目的と要件
 
@@ -30,9 +30,11 @@ SigLIP2 tagger は、run の設定（`excluded_categories: ["Artist"]`）で art
 
 ```
 backend/core/style_encoder/          # 新規パッケージ（既存に同名なし）
+  style_labels.py       # caption → 作者・作品・キャラ（§5 の判定規則）
   style_model.py        # encoder + masked pooling + projector
-  style_dataset.py      # 作者インデックス、分割、view 生成
+  style_dataset.py      # 作者インデックス、分割、交絡度、view 生成
   style_sampler.py      # P×K / 同じ作品 batch の sampler
+  style_resume.py       # resume の判定（§9）
   style_loss.py         # 重み付き SupCon、nHSIC
   style_trainer.py      # 学習ループ（共通基盤を import して使う）
   style_eval.py         # 検索評価
@@ -75,9 +77,15 @@ SigLIP2 の encoder の attention は、mask された位置を key から除外
   2. `category` が無い、または `Unknown` / `__lookup__` の場合は、`get_tag_group_manager().get_tag_group()` で判定する。
   - 既存の `_parse_caption_tags`（`tag_vocabulary.py`）は、`category` が無い要素を `General` として返す。このため、style 側ではこの関数の戻り値をそのまま使わず、「明示あり」と「無し」を区別して読む。
   - 1 と 2 の結果が食い違った場合は 1 を採用し、件数をログに出す。
+  - **例外**: 明示された値が `General` で、manager が別のカテゴリ（None 以外）を返した場合は、manager の値を採用する。`backend/api/batch_operations.py` の tag_data backfill は、taglist に無いタグに一律 `General` を書き込むため、明示された `General` と backfill の既定値を区別できないからである。この件数は、食い違いとは別に数える。
   - Character / Copyright / Rating など、作者以外の内容タグの判定にも同じ規則を使う。
   - 同じ方針は `CONCEPT_BATCH_ORDER_DESIGN_2026-09.md` の Artist 抽出でも採られている。
-- **別名**: artist の別名は、既存の `TagAliasResolver` で正規の名前にまとめる。
+- **別名とカンマ入りタグ**: tagger の語彙構築（`tag_vocabulary.py`）と同じ順序で処理する。
+  1. 既存の `CommaTagResolver` で、カンマで分割された断片を元のタグに結合する。結合されたタグは、`category_of()` の結果を確定したカテゴリとして扱う。
+  2. `TagAliasResolver` で正規の名前に変換してから、カテゴリを調べる。正規の名前で見つからなければ、元の名前でも調べる。
+  3. 作者・キャラ・作品のいずれの集合にも、正規の名前を入れる。
+
+  manager（`get_tag_group`）は別名を解決しない。そのため、別名解決の前にカテゴリを調べると、taglist に旧名が無い作者（taglist の作者を指す別名のほとんど）を取りこぼす。
 - **作者ラベル**: artist タグがちょうど1つの item だけを使う。
 - **除外件数のログ**: 学習開始時に次の件数を出す。
   - 共作（作者が2人以上）
@@ -85,7 +93,7 @@ SigLIP2 の encoder の attention は、mask された位置を key から除外
   - 判定の出どころ別の作者タグ数（`tag_data` の明示 / manager）
   - 判定の食い違い
   - どちらでも判定できなかったタグ
-- **学習対象の作者**: 画像が `style_min_images_per_artist`（初期値 4）枚以上ある作者。
+- **学習対象の作者**: 検証用の画像を除いた学習用の画像が `style_min_images_per_artist`（初期値 4）枚以上ある作者。これにより K ≤ `style_min_images_per_artist` であれば必ず K 枚を選べる。
 - **インデックス**（学習開始時に一度構築）:
   - artist → items
   - copyright → artist → items
@@ -95,7 +103,7 @@ SigLIP2 の encoder の attention は、mask された位置を key から除外
   3M 規模に対応するため、Python の dict of list ではなく numpy の CSR 配列で持つ。規模は item 数に対して O(n)。
 - **分割**:
   - **学習に出さない作者（主な評価用）**: 正規化した artist 名のハッシュで決める（`style_val_artist_ratio`、初期値 0.05）。データが増えても既存の作者の所属が変わらない。
-  - **学習済み作者の、学習に使わない画像（参考値）**: `style_val_image_ratio`。ほぼ同じ画像が学習側と検証側にまたがる可能性があるため、この値は参考扱いとする。
+  - **学習済み作者の、学習に使わない画像（参考値）**: `style_val_image_ratio`。§9 の安定した item キー（(dataset_id, 相対画像パス) 由来）のハッシュで決める。DB の id は再利用されるので使わない。ほぼ同じ画像が学習側と検証側にまたがる可能性があるため、この値は参考扱いとする。
 - **dataset drift の検査と rescan**: tagger と同じ仕組みを使う。
 
 ## 6. サンプリング
@@ -119,6 +127,8 @@ SigLIP2 の encoder の attention は、mask された位置を key から除外
 - **作品との交絡度 s_a** = c_a · e_a
   - c_a（作品の集中度）: その作者の画像のうち、最も多い作品が占める割合
   - e_a（作品の独占度）: その作品の画像のうち、その作者が占める割合
+  - 集計対象は、インデックスに入った全画像（学習用と検証用の画像の両方）。作品が複数付いた画像は、それぞれの作品に数える。どの画像にも作品が付いていない作者は s_a = 0。
+  - 最も多い作品が複数あるときは、作品名の辞書順で最初のものを使う。
 - **スケールについて**: 切り抜きと違い、2つの view の間で縮尺が一致する。画面全体の解像度はパッチ数の上限（`style_max_num_patches`）で決まる。
   - tagger のデフォルトである 256 パッチでは、大きな画像ほど強く縮小され、線幅などの細部が失われる可能性がある。
   - 上限値は Phase 0 で測って決める。
@@ -179,18 +189,26 @@ L_i = − Σ_{j∈P(i)} (w_ij / Σ_{k∈P(i)} w_ik) · log( exp(s_ij/τ) / Σ_{a
 - **GPU 共有の offload**: 凍結した tagger も、退避と復帰の対象に含める。
 - **resume**: 次の値を state に保存する。
   - 重み、optimizer、scheduler、`global_step`、`total_steps`
-  - epoch 番号と epoch 内の step 位置
-  - sampler の RNG 状態
-  - **インデックスのハッシュ**: 学習対象の item ID、その作者 ID、train / val の所属から計算する
+  - epoch 番号と epoch 内の step 位置。batch は (seed, epoch, step) の純関数なので、RNG の状態そのものは保存しない。epoch の最後の step の後で保存した場合は、(epoch+1, 0) として扱う
+  - **インデックスのハッシュ**: インデックスに入った全 item（検証用を含む）の ID、作者名、作品・キャラの集合、train / val の所属から計算する。入力の順序に依存しない。配列と名前はそれぞれ長さを前置して符号化する
   - **分割パラメータ**: `style_val_artist_ratio`、`style_val_image_ratio`、`style_min_images_per_artist`、分割 seed、作者名の正規化の版
+  - **学習に使った item の snapshot**（`.npz`）: 学習用で、かつその時点で学習対象の作者に属していた item の集合。resume のたびに OR で合成し、縮小しない（削除された item も残す）。
+    - キーは `DatasetItem.id` ではなく、(dataset_id, 正規化した相対画像パス) から作る安定した 64bit キー。SQLite は削除後に最大の id を再利用するため。
+    - 別名表、カンマ結合の表、`normalize_tag` が更新されると、作者名が変わって作者の所属が移ることがある。実際の別名表では、作者の別名の約 4.7% が「学習側に振り分けられる名前」を「検証側に振り分けられる名前」に変える。そこで、snapshot にある item を1つでも持つ作者は、**名前のハッシュに関係なく学習側に固定する**（pin）。これにより、学習に使った画像が検証に混ざることを防ぎつつ、表の更新で resume が止まらない。固定した作者数と item 数はログに出す。
+    - **限界**:
+      - 固定は (dataset_id, 相対画像パス) で決まる item キーに付く。データセットの登録し直し（dataset_id が変わる）やファイルの移動・改名をすると、キーが変わって固定が外れ、学習に使った画像が検証に入り得る。run の途中ではこれらの操作をしない。
+      - 学習に使った画像がすべてデータから削除され、その後に作者名が検証側の名前へ変わった場合、その作者の残りの画像（学習には未使用）は検証用に移る。
+      - 同じ (dataset, 相対パス) を持つ item が2つあると、インデックスの構築は拒否される。Phase 2 の学習ループは、衝突した item を示すこと。
+  - **sampler パラメータ**: P、K、`style_same_copyright_batch_ratio`、`style_artist_sampling_power`、sampler の seed、sampler のアルゴリズムの版、numpy のバージョン（完全一致。NEP 19 により、numpy の乱数列はリリース間で同一性が保証されないため）
 
   resume 時は、次の3通りで扱いを決める。
 
   | 状況 | 扱い |
   |---|---|
-  | ハッシュが一致 | 保存した epoch 内の位置と RNG 状態から、そのまま続行する |
-  | ハッシュが不一致（データの追加・削除）で、分割パラメータは一致 | **epoch の境界から再開する**。中断した epoch は終わったものとして扱う。次の epoch の先頭から、新しいインデックスで sampler を作り直す。sampler の RNG は (seed, epoch 番号) から決める。重み、optimizer、scheduler、`global_step`、`total_steps` はそのまま引き継ぐ |
+  | ハッシュと sampler パラメータがどちらも一致 | 保存した epoch 内の位置から、そのまま続行する |
+  | ハッシュ（データの追加・削除）または sampler パラメータが不一致で、分割パラメータは一致 | **epoch の境界から再開する**。中断した epoch は終わったものとして扱う。次の epoch の先頭から、新しいインデックスで sampler を作り直す。sampler の RNG は (seed, epoch 番号) から決める。重み、optimizer、scheduler、`global_step`、`total_steps` はそのまま引き継ぐ |
   | 分割パラメータが不一致 | **resume を拒否する**。既存の作者の train / val 所属が変わり、検証用の作者が学習に混ざるため |
+  | 名前の変更などで、学習に使った item の作者が検証側に振り分けられる | 拒否しない。その作者を学習側に固定する（上記の pin）。所属が変わるのでハッシュが変わり、epoch の境界から再開する |
 
   - ハッシュ分割（§5）により、データが増えても既存の作者の所属は変わらない。新しく加わった作者も、名前から一意に train / val のどちらかに入る。
   - インデックスが変わると評価の集合も変わる。metrics の行にインデックスの版を記録し、チャートで不連続点として区別できるようにする。
@@ -224,7 +242,7 @@ mAP@R の R は、検索対象の中にある正解の枚数とする。(b) で�
     - HSIC に使った tagger checkpoint のパスとハッシュ
     - データセットの snapshot 情報
   - 作者の一覧や作者 ID の対応表は、配布用には**含めない**。
-- **学習状態**（resume 用）: optimizer、sampler の状態、作者インデックス、分割 seed。
+- **学習状態**（resume 用）: §9 で挙げた値（optimizer、epoch と step の位置、インデックスのハッシュ、分割パラメータ、sampler パラメータ、学習に使った item の snapshot）。
 - **LoRA**: adapter 単体を保存し、merge したものを出力することもできる。
 - **保持ルール**: tagger と同じ（step checkpoint はまとめて削除し、`latest` と `best` は対象外）。
 

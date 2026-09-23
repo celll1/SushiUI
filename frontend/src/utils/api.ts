@@ -7007,6 +7007,7 @@ export interface TrainingRunCreateRequest {
   sample_every?: number;
   sample_prompts?: SamplePrompt[];
   resume_from_checkpoint?: string | null;
+  resume_dataset_change_policy?: "existing" | "strict" | "rebase_remaining";
   sample_width?: number;
   sample_height?: number;
   sample_steps?: number;

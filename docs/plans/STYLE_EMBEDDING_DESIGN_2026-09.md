@@ -1,6 +1,6 @@
 # Style embedding encoder 設計書
 
-Status: 実装中（Phase 0・1・2 完了。Phase 3 の HSIC は CPU 実装済み、GPU での A/B 比較が未完了。Phase 4 の UI と推論 API は未着手）。2026-09-23 の外部監査の指摘 4 件を §4・§5・§9・§10・§14 に反映済み
+Status: 実装中（Phase 0・1・2 完了。Phase 3 の HSIC は CPU 実装済み、GPU での A/B 比較が未完了。Phase 4 の学習 UI と CPU 推論 API は実装済み、フロントエンド build は未検証）。2026-09-23 の外部監査の指摘 4 件を §4・§5・§9・§10・§14 に反映済み
 
 ## 1. 目的と要件
 
@@ -263,8 +263,8 @@ mAP@R の R は、検索対象の中にある正解の枚数とする。(b) で�
 - **デフォルト値**: `STYLE_TRAINING_DEFAULTS` を `backend/api/param_defaults.py` に追加する（唯一の情報源）。
 - **DB**: `training.db` に `style_training_runs` と `style_training_metrics` を新設する。
   - `tagger_training_runs` は tagger 固有の列（`best_f1`、`tag_vocabulary` など）を持つため、流用しない。
-- **UI**: 学習タブに style モードを追加する（設定と学習モニタ）。
-- **推論 API**（Phase 4）: `/api/v1/style/embed`、`/api/v1/style/similarity`。
+- **UI**: 学習タブの style モードからデータセット選択、主要設定、run の開始・停止・編集・削除、進捗・評価指標を扱う。フォームにない設定は API で指定する。
+- **推論 API**（Phase 4）: `/api/v1/style/embed`、`/api/v1/style/similarity`。配布用 encoder と隣接 metadata を読み込み、CPU で推論する。
 
 ## 13. フェーズ
 

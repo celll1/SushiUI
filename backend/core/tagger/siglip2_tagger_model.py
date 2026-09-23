@@ -304,12 +304,15 @@ class CustomAttentionPooling(nn.Module):
             # All in cls_dim space — no extra overhead
             self.attn = nn.MultiheadAttention(cls_dim, num_heads, batch_first=True)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x: [B, N, in_dim] -> [B, cls_dim]"""
+    def forward(
+        self, x: torch.Tensor, attention_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """x: [B, N, in_dim], attention_mask: [B, N] (1 = valid) -> [B, cls_dim]"""
         k = self.proj_k(x)                        # [B, N, kv_dim]
         v = self.proj_v(x)                        # [B, N, kv_dim]
         q = self.query.expand(x.size(0), -1, -1)  # [B, 1, cls_dim]
-        out, _ = self.attn(q, k, v)
+        key_padding_mask = attention_mask == 0 if attention_mask is not None else None
+        out, _ = self.attn(q, k, v, key_padding_mask=key_padding_mask)
         return out.squeeze(1)                      # [B, cls_dim]
 
     def get_token_features(self, x: torch.Tensor) -> torch.Tensor:
@@ -417,7 +420,10 @@ class SigLIP2TaggerModel(nn.Module):
         else:
             out = self.vision_encoder(pixel_values=pixel_values)
         if self.custom_pooler is not None:
-            pooled = self.custom_pooler(out.last_hidden_state)  # [B, cls_dim]
+            pooled = self.custom_pooler(
+                out.last_hidden_state,
+                pixel_attention_mask if self.is_naflex else None,
+            )                                                   # [B, cls_dim]
         else:
             pooled = out.pooler_output                          # [B, hidden_size]
         return self.head(pooled)                                # [B, num_tags]

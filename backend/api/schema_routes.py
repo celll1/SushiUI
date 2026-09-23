@@ -34,6 +34,7 @@ from api.param_defaults import (
     TAGGER_TRAINING_DEFAULTS,
     TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH,
     TRAINING_DEFAULTS,
+    TRAINING_GUIDANCE_LOSS_DEFAULTS_BY_ARCH,
     TRAINING_SAMPLE_DEFAULTS_BY_ARCH,
     TXT2AUD_DEFAULTS,
     TXT2IMG_DEFAULTS,
@@ -102,6 +103,7 @@ async def get_training_defaults():
     return {
         **TRAINING_DEFAULTS,
         "_sample_defaults_by_arch": TRAINING_SAMPLE_DEFAULTS_BY_ARCH,
+        "_guidance_loss_defaults_by_arch": TRAINING_GUIDANCE_LOSS_DEFAULTS_BY_ARCH,
     }
 
 

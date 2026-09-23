@@ -48,6 +48,13 @@ objective is `xt = (1-sigma)*x0 + sigma*noise`, target `noise-x0`; loss is taken
 only from the target latent tail. ReLoRA, ControlNet, text-encoder training,
 VAE swap, and reference-conditioned edit datasets are refused.
 
+For new runs, an omitted guidance-loss weight resolves to 1.0 (100% guided
+target); an explicit 0.0 selects ordinary MSE. Existing run YAML retains its
+stored value. Custom mixtures default to a stochastic per-image choice between
+the two targets; the legacy weighted blend remains available. The optional
+CFG-null sigma schedule applies dropout only after ordinary MSE is selected,
+while the independent fixed-drop mode remains available for comparisons.
+
 Real 256x256 gates passed for a three-step rank-4 ConvRot LoRA run (including
 checkpoint/optimizer resume) and a two-step Original full-DiT run resumed
 between steps. The full checkpoint is a four-shard 14.23 GB tensor set; its

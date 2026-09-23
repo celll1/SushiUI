@@ -12,6 +12,7 @@ import yaml
 
 from core.training.dataset_params import extract_dataset_params
 from api.param_defaults import (TRAINING_DEFAULTS, resolve_training_sample_defaults,
+                                resolve_training_guidance_loss_defaults,
                                 validate_reconstruction_loss_weight)
 
 
@@ -1054,6 +1055,9 @@ class TrainingConfigGenerator:
         p = resolve_training_sample_defaults(
             p, p.get("_explicit_fields"), arch
         )
+        p = resolve_training_guidance_loss_defaults(
+            p, p.get("_explicit_fields"), arch
+        )
 
         total_steps, epochs = _training_duration(p)
         datasets_array = _build_datasets(
@@ -1192,6 +1196,9 @@ class TrainingConfigGenerator:
         p = resolve_training_sample_defaults(
             p, p.get("_explicit_fields"), arch
         )
+        p = resolve_training_guidance_loss_defaults(
+            p, p.get("_explicit_fields"), arch
+        )
 
         total_steps, epochs = _training_duration(p)
         datasets_array = _build_datasets(dataset_path, dataset_configs)
@@ -1288,6 +1295,9 @@ class TrainingConfigGenerator:
         p = _prepare_params(p, legacy_kwargs)
         arch = _detect_arch(base_model_path)
         p = resolve_training_sample_defaults(
+            p, p.get("_explicit_fields"), arch
+        )
+        p = resolve_training_guidance_loss_defaults(
             p, p.get("_explicit_fields"), arch
         )
 

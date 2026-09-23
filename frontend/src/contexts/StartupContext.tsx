@@ -76,6 +76,7 @@ interface StartupContextType {
   generationDefaults: GenerationDefaultsResponse | null;
   trainingDefaults: Record<string, unknown> | null;
   trainingSampleDefaultsByArch: Record<string, Record<string, unknown>> | null;
+  trainingGuidanceLossDefaultsByArch: Record<string, number> | null;
   taggerTrainingDefaults: Record<string, unknown> | null;
   vaeTrainingDefaults: Record<string, unknown> | null;
   // What an omitted field of a runtime LR retarget resolves to, and the three
@@ -127,6 +128,7 @@ const StartupContext = createContext<StartupContextType>({
   generationDefaults: null,
   trainingDefaults: null,
   trainingSampleDefaultsByArch: null,
+  trainingGuidanceLossDefaultsByArch: null,
   taggerTrainingDefaults: null,
   vaeTrainingDefaults: null,
   lrRetargetDefaults: null,
@@ -175,6 +177,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
   const [generationDefaults, setGenerationDefaults] = useState<GenerationDefaultsResponse | null>(null);
   const [trainingDefaults, setTrainingDefaults] = useState<Record<string, unknown> | null>(null);
   const [trainingSampleDefaultsByArch, setTrainingSampleDefaultsByArch] = useState<Record<string, Record<string, unknown>> | null>(null);
+  const [trainingGuidanceLossDefaultsByArch, setTrainingGuidanceLossDefaultsByArch] = useState<Record<string, number> | null>(null);
   const [taggerTrainingDefaults, setTaggerTrainingDefaults] = useState<Record<string, unknown> | null>(null);
   const [vaeTrainingDefaults, setVaeTrainingDefaults] = useState<Record<string, unknown> | null>(null);
   const [lrRetargetDefaults, setLrRetargetDefaults] = useState<LrRetargetDefaults | null>(null);
@@ -222,10 +225,15 @@ export function StartupProvider({ children }: StartupProviderProps) {
           fetchGenerationSettings(),
         ]);
         setGenerationDefaults(genDef);
-        const { _sample_defaults_by_arch: sampleByArch, ...flatTrainDef } = trainDef;
+        const { _sample_defaults_by_arch: sampleByArch,
+                _guidance_loss_defaults_by_arch: guidanceByArch,
+                ...flatTrainDef } = trainDef;
         setTrainingDefaults(flatTrainDef);
         setTrainingSampleDefaultsByArch(
           (sampleByArch as Record<string, Record<string, unknown>> | undefined) ?? null
+        );
+        setTrainingGuidanceLossDefaultsByArch(
+          (guidanceByArch as Record<string, number> | undefined) ?? null
         );
         setTaggerTrainingDefaults(taggerDef);
         setVaeTrainingDefaults(vaeDef);
@@ -387,6 +395,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
       generationDefaults,
       trainingDefaults,
       trainingSampleDefaultsByArch,
+      trainingGuidanceLossDefaultsByArch,
       taggerTrainingDefaults,
       vaeTrainingDefaults,
       lrRetargetDefaults,

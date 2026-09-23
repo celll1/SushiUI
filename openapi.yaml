@@ -647,13 +647,16 @@ paths:
         `_sample_defaults_by_arch` member overlays architecture-specific
         training-preview defaults; currently SenseNova uses its normal-generation
         50 steps and CFG 4.0 when those request fields are omitted.
+        `_guidance_loss_defaults_by_arch` overlays the omitted guidance-loss
+        weight: ordinary MSE generally, full guidance-target loss for Qwen.
       tags: [Schema]
       responses:
         '200':
           description: |
             Map of training parameter name to default value, plus the one
-            non-parameter member `_sample_defaults_by_arch`. The underscore
-            marks it as not a request field: the frontend strips it before
+            non-parameter members `_sample_defaults_by_arch` and
+            `_guidance_loss_defaults_by_arch`. The underscore marks them as not
+            request fields: the frontend strips them before
             applying the rest as parameter defaults (`StartupContext.tsx`), so
             a client that treats every key as a parameter would send a field
             `TrainingRunCreateRequest` does not define.
@@ -677,6 +680,12 @@ paths:
                     example:
                       _default: {sample_steps: 28, sample_cfg_scale: 7.0}
                       sensenova: {sample_steps: 50, sample_cfg_scale: 4.0}
+                  _guidance_loss_defaults_by_arch:
+                    type: object
+                    description: Architecture -> default guided-loss weight for an omitted request field.
+                    additionalProperties:
+                      type: number
+                    example: {_default: 0.0, qwen_image_21: 1.0}
   /schema/tagger-training-defaults:
     get:
       summary: Get default parameter values for tagger training
@@ -25030,7 +25039,9 @@ components:
             Qwen-Image 2.1 only. Probability of selecting guidance-target MSE
             in stochastic mode, or guided-loss fraction in blend mode, for
             conditional items. Zero disables the extra empty-prompt forward.
-            CFG-null items always retain ordinary MSE. Experimental.
+            CFG-null items always retain ordinary MSE. Omission resolves to
+            1.0 for a new Qwen run and 0.0 for other architectures; explicit
+            0.0 remains ordinary MSE. Existing YAML values are preserved.
         qwen_guidance_loss_mix_mode:
           type: string
           enum: [stochastic, blend]

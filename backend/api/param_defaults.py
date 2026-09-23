@@ -3271,6 +3271,29 @@ TRAINING_SAMPLE_DEFAULTS_BY_ARCH: Dict[str, Dict[str, Any]] = {
     },
 }
 
+# Only Qwen currently implements the guidance/contrastive target. Other
+# architectures retain ordinary MSE; a future distilled model must first have
+# a validated guidance-loss implementation before it can enter this table.
+TRAINING_GUIDANCE_LOSS_DEFAULTS_BY_ARCH: Dict[str, float] = {
+    "_default": TRAINING_DEFAULTS["qwen_guidance_loss_weight"],
+    "qwen_image_21": 1.0,
+}
+
+
+def resolve_training_guidance_loss_defaults(
+    params: Dict[str, Any], explicit_fields, arch: str
+) -> Dict[str, Any]:
+    """Resolve a new run's loss without changing explicit or legacy YAML values."""
+    resolved = dict(params)
+    explicit = set(explicit_fields) if explicit_fields is not None else set(params)
+    if "qwen_guidance_loss_weight" not in explicit:
+        resolved["qwen_guidance_loss_weight"] = (
+            TRAINING_GUIDANCE_LOSS_DEFAULTS_BY_ARCH.get(
+                arch, TRAINING_GUIDANCE_LOSS_DEFAULTS_BY_ARCH["_default"]
+            )
+        )
+    return resolved
+
 
 def resolve_training_sample_defaults(
     params: Dict[str, Any], explicit_fields, arch: str

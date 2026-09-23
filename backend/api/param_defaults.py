@@ -2451,6 +2451,7 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # rather than a subject the config never named.
     "sample_prompts": [{"positive": "", "negative": ""}],
     "resume_from_checkpoint": "latest",
+    "resume_dataset_change_policy": "existing",
     "sample_width": 1024,
     "sample_height": 1024,
     "sample_steps": 28,

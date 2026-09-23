@@ -62,3 +62,33 @@ def test_api_orders_snapshot_without_trainer_access(tmp_path):
     assert top["rows"][0]["name"] == "Miku"
     assert top["rows"][0]["mean_passes_per_image"] == 5
     assert latest["rows"][0]["name"] == "Rin"
+
+
+def test_concept_tags_survive_dataset_rebase_independent_of_focus_assignment(tmp_path):
+    from core.training.concept_batch_order import ConceptOrderConfig, build_concept_batch_plan
+    from core.training.resume_batch_plan import make_plan, rebase_plan, resolve_suffix
+
+    item = {"image_path": "a.png", "width": 512, "height": 512,
+            "raw_caption": "miku, rin", "is_tags_format": True,
+            "tag_data": [{"tag": "miku", "category": "Character"},
+                         {"tag": "rin", "category": "Character"}]}
+    a = SimpleNamespace(unique_id="a", items=[item])
+    b = SimpleNamespace(unique_id="b", items=[
+        {"image_path": "b.png", "width": 512, "height": 512,
+         "raw_caption": "rin", "is_tags_format": True,
+         "tag_data": [{"tag": "rin", "category": "Character"}]}
+    ])
+    config = ConceptOrderConfig.parse({"enabled": True, "min_items_per_concept": 1,
+                                       "local_swap_window": 0})
+    old = build_concept_batch_plan([(item, a)], 1, config, 0, 7)
+    candidate = build_concept_batch_plan([(item, a), (b.items[0], b)], 1, config, 0, 7)
+    old_ledger = make_plan(old.batches, [a], "concept", "same", 0)
+    new_ledger = make_plan(candidate.batches, [a, b], "concept", "same", 0)
+    revised, _ = rebase_plan(old_ledger, 0, new_ledger)
+    suffix = resolve_suffix(revised, 0, candidate.batches)
+
+    tracker = ConceptExposure(tmp_path, "concept")
+    tracker.set_epoch({"miku": 1, "rin": 2}, {"miku": "miku", "rin": "rin"})
+    for batch in suffix:
+        tracker.record(batch, 1, 1)
+    assert tracker.state()["counts"] == {"miku": 1, "rin": 2}

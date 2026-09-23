@@ -9022,6 +9022,21 @@ export const deleteTaggerTrainingRun = async (runId: string): Promise<void> => {
 // Style encoder training (/style-training/*)
 // ---------------------------------------------------------------------------
 
+export interface StyleEmbedResponse {
+  embedding: number[];
+  dim: number;
+}
+
+export const embedStyleImage = async (encoderPath: string, imageBase64: string): Promise<StyleEmbedResponse> =>
+  (await api.post("/style/embed", { encoder_path: encoderPath, image_base64: imageBase64 })).data;
+
+export const compareStyleImages = async (
+  encoderPath: string, imageABase64: string, imageBBase64: string,
+): Promise<{ cosine_similarity: number }> =>
+  (await api.post("/style/similarity", {
+    encoder_path: encoderPath, image_a_base64: imageABase64, image_b_base64: imageBBase64,
+  })).data;
+
 export interface StyleDatasetConfig {
   dataset_id: number;
   caption_types?: string[];  // empty / absent = every tags-format caption

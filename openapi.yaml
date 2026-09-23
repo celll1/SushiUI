@@ -8008,6 +8008,49 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+  /style/embed:
+    post:
+      tags: [style]
+      summary: Embed an image with a distributable style encoder
+      description: Loads the encoder and its adjacent metadata from a local `latest` or `best` artifact. Inference runs on CPU and never needs the original base model repo.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StyleEmbedRequest'
+      responses:
+        '200':
+          description: L2-normalized style embedding
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StyleEmbedResponse'
+        '400':
+          description: Invalid image or artifact
+        '404':
+          description: Encoder artifact not found
+  /style/similarity:
+    post:
+      tags: [style]
+      summary: Compare two images with a style encoder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StyleSimilarityRequest'
+      responses:
+        '200':
+          description: Cosine similarity of normalized style embeddings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StyleSimilarityResponse'
+        '400':
+          description: Invalid image or artifact
+        '404':
+          description: Encoder artifact not found
   /style-training/runs:
     post:
       tags: [style-training]
@@ -28704,6 +28747,42 @@ components:
             type: string
           description: Tags-format caption types to read; empty or absent means all of them.
           example: [tags]
+    StyleEmbedRequest:
+      type: object
+      additionalProperties: false
+      required: [encoder_path, image_base64]
+      properties:
+        encoder_path:
+          type: string
+          description: Local path to a complete `_style_encoder.safetensors` artifact.
+        image_base64:
+          type: string
+          description: Base64 image bytes, optionally prefixed by a data URL header.
+    StyleEmbedResponse:
+      type: object
+      required: [embedding, dim]
+      properties:
+        embedding:
+          type: array
+          items: {type: number}
+          description: Unit-length style embedding.
+        dim: {type: integer}
+    StyleSimilarityRequest:
+      type: object
+      additionalProperties: false
+      required: [encoder_path, image_a_base64, image_b_base64]
+      properties:
+        encoder_path: {type: string}
+        image_a_base64: {type: string}
+        image_b_base64: {type: string}
+    StyleSimilarityResponse:
+      type: object
+      required: [cosine_similarity]
+      properties:
+        cosine_similarity:
+          type: number
+          minimum: -1
+          maximum: 1
     StyleTrainingConfigFields:
       type: object
       description: |

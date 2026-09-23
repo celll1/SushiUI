@@ -143,7 +143,7 @@ export const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [
   "sample_cfg_rescale_snr_alpha", "sample_dynamic_threshold_percentile", "sample_dynamic_threshold_mimic_scale",
   "sample_nag_enable", "sample_nag_scale", "sample_nag_tau", "sample_nag_alpha", "sample_nag_sigma_end", "sample_nag_negative_prompt",
   "sensenova_sample_timestep_shift", "sensenova_sample_img_cfg_scale", "sensenova_sample_cfg_norm",
-  "debug_latents", "debug_latents_every",
+  "debug_latents", "debug_latents_every", "qwen_debug_latent_view",
   "convergence_diagnostics_enable", "convergence_diagnostics_interval",
   "crop_decode_loss_enable", "crop_decode_loss_weight", "crop_decode_loss_margin_cells",
   "crop_decode_loss_out_cells", "crop_decode_loss_metric", "crop_decode_loss_snr_range",

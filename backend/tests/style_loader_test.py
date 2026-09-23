@@ -71,4 +71,4 @@ def test_spawned_worker_produces_the_same_batches(tmp_path):
     spawned = list(make_loader(dataset, batches, 1))
     for a, b in zip(serial, spawned, strict=True):
         for x, y in zip(a, b):
-            assert torch.equal(x, y)
+            assert x is y if x is None else torch.equal(x, y)

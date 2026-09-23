@@ -248,6 +248,39 @@ def test_old_lora_step_bundle_with_full_encoder_still_resumes(tmp_path):
     assert find_resume_checkpoint(str(tmp_path))[0] == "step_000002"
 
 
+def test_hsic_training_uses_frozen_tagger_and_records_path_free_metadata(tmp_path, monkeypatch):
+    from core.style_encoder.style_hsic import HSICTagger
+    import core.style_encoder.style_trainer as trainer_module
+    from style_training_fixture import image_processor
+    import json
+
+    class TinyTagger(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.scale = torch.nn.Parameter(torch.tensor(1.0))
+
+        def forward(self, pixel_values, pixel_attention_mask=None, spatial_shapes=None):
+            values = pixel_values.float().mean(dim=(1, 2)) * self.scale
+            return torch.stack([values, -values, values * 0.5], dim=1)
+
+    tagger = TinyTagger()
+    fake = HSICTagger(tagger, image_processor(), True,
+                      {"Character": torch.tensor([0]), "Copyright": torch.tensor([1]),
+                       "Rating": torch.tensor([2])}, "tagger.safetensors", "f" * 64,
+                      max_num_patches=16)
+    monkeypatch.setattr(trainer_module, "load_hsic_tagger", lambda path, weights, device: fake)
+    factory, ids, _ = build_corpus(tmp_path)
+    out = tmp_path / "out"
+    result, events = _run(factory, out, config(ids, style_hsic_tagger_path=str(tmp_path / "private" / "tagger.safetensors")))
+    assert result["global_step"] > 0
+    assert events.of("step") and all("hsic_loss" in event for event in events.of("step"))
+    assert all(p.grad is None for p in tagger.parameters())
+    metadata = json.loads((out / "latest_metadata.json").read_text(encoding="utf-8"))
+    assert metadata["hsic_tagger"]["checkpoint"] == "tagger.safetensors"
+    assert metadata["hsic_tagger"]["sha256"] == "f" * 64
+    assert str(tmp_path) not in json.dumps(metadata)
+
+
 def test_lora_distributable_is_merged_and_adapter_weights_reload(tmp_path):
     model = _lora_encoder().eval()
     save_bundle(model, str(tmp_path), "x", {"format": "sushiui-style-encoder", "format_version": 1,

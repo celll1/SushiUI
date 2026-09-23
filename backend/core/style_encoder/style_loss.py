@@ -67,3 +67,25 @@ def weighted_supcon_loss(embeddings: torch.Tensor, weights: torch.Tensor, temper
     per_anchor = torch.where(used, log_denominator - positive, torch.zeros_like(total))
     count = used.sum()
     return SupConResult(loss=per_anchor.sum() / count.clamp_min(1), anchors_used=count, anchors_excluded=m - count)
+
+
+def normalized_hsic(style: torch.Tensor, tag_probs: torch.Tensor) -> torch.Tensor:
+    """Gaussian-kernel CKA; the tag side and median bandwidths carry no gradient."""
+    if style.ndim != 2 or tag_probs.ndim != 2 or style.shape[0] != tag_probs.shape[0]:
+        raise ValueError("HSIC inputs must be [batch, features] with the same batch size")
+    if style.shape[0] < 4:
+        raise ValueError("HSIC needs at least four images")
+
+    def centered_kernel(x: torch.Tensor) -> torch.Tensor:
+        distances = torch.pdist(x, p=2).square()
+        positive = distances.detach()[distances.detach() > 0]
+        bandwidth = positive.median() if positive.numel() else x.new_tensor(1.0)
+        squared = torch.cdist(x, x).square()
+        kernel = torch.exp(-squared / bandwidth.clamp_min(1e-12))
+        return kernel - kernel.mean(dim=0, keepdim=True) - kernel.mean(dim=1, keepdim=True) + kernel.mean()
+
+    k = centered_kernel(style.float())
+    l = centered_kernel(tag_probs.detach().float())
+    denominator = (k.square().sum() * l.square().sum()).sqrt()
+    return torch.where(denominator > 1e-12, (k * l).sum() / denominator.clamp_min(1e-12),
+                       k.sum() * 0.0)

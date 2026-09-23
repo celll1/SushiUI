@@ -19,6 +19,7 @@ from .style_views import apply_block_masks, eval_view_entropy, train_view_entrop
 class StyleSampleKey(NamedTuple):
     row: int                          # StyleIndex row
     view_entropy: tuple[int, ...]     # SeedSequence entropy of the masked view
+    include_hsic: bool = False
 
 
 class StyleSample(NamedTuple):
@@ -27,6 +28,9 @@ class StyleSample(NamedTuple):
     masked_attention_mask: torch.Tensor  # [N] masked view, same pixels
     spatial_shapes: torch.Tensor      # [2]
     row: int
+    hsic_pixel_values: Optional[torch.Tensor] = None
+    hsic_attention_mask: Optional[torch.Tensor] = None
+    hsic_spatial_shapes: Optional[torch.Tensor] = None
 
 
 class StyleBatchTensors(NamedTuple):
@@ -35,13 +39,17 @@ class StyleBatchTensors(NamedTuple):
     masked_attention_mask: torch.Tensor  # [B, N]
     spatial_shapes: torch.Tensor         # [B, 2]
     rows: torch.Tensor                   # [B] int64; unreadable images are absent
+    hsic_pixel_values: Optional[torch.Tensor] = None
+    hsic_attention_mask: Optional[torch.Tensor] = None
+    hsic_spatial_shapes: Optional[torch.Tensor] = None
 
 
 class StyleImageDataset(Dataset):
     """Map-style dataset keyed by `StyleSampleKey`, so a sample depends only on its key and exact resume
     reproduces masked views whatever the worker split."""
 
-    def __init__(self, paths: ItemPaths, mask_ratios: np.ndarray, processor, max_num_patches: int) -> None:
+    def __init__(self, paths: ItemPaths, mask_ratios: np.ndarray, processor, max_num_patches: int,
+                 hsic_processor=None, hsic_max_num_patches: int = 256, hsic_is_naflex: bool = True) -> None:
         if len(paths) != mask_ratios.shape[0]:
             raise ValueError(f"{len(paths)} paths but {mask_ratios.shape[0]} mask ratios")
         # Only what __getitem__ reads, since the dataset is pickled into every spawned worker.
@@ -50,6 +58,9 @@ class StyleImageDataset(Dataset):
         self.mask_ratios = np.asarray(mask_ratios, dtype=np.float64)
         self.processor = processor
         self.max_num_patches = int(max_num_patches)
+        self.hsic_processor = hsic_processor
+        self.hsic_max_num_patches = int(hsic_max_num_patches)
+        self.hsic_is_naflex = bool(hsic_is_naflex)
 
     def __len__(self) -> int:
         return int(self._offsets.size - 1)
@@ -71,7 +82,20 @@ class StyleImageDataset(Dataset):
         shapes = inputs["spatial_shapes"]
         rng = np.random.default_rng(np.random.SeedSequence(list(key.view_entropy)))
         masked = apply_block_masks(mask, shapes, self.mask_ratios[key.row:key.row + 1], rng)
-        return StyleSample(inputs["pixel_values"][0], mask[0], masked[0], shapes[0], int(key.row))
+        if key.include_hsic:
+            if self.hsic_processor is None:
+                raise RuntimeError("HSIC processor was not attached to the style dataset")
+            kwargs = {"images": [image], "return_tensors": "pt"}
+            if self.hsic_is_naflex:
+                kwargs["max_num_patches"] = self.hsic_max_num_patches
+            hsic = self.hsic_processor(**kwargs)
+            hpv = hsic["pixel_values"][0]
+            ham = hsic["pixel_attention_mask"][0] if self.hsic_is_naflex else None
+            hss = hsic["spatial_shapes"][0] if self.hsic_is_naflex else None
+        else:
+            hpv = ham = hss = None
+        return StyleSample(inputs["pixel_values"][0], mask[0], masked[0], shapes[0], int(key.row),
+                           hpv, ham, hss)
 
 
 def style_collate(samples: Sequence[Optional[StyleSample]]) -> Optional[StyleBatchTensors]:
@@ -88,8 +112,21 @@ def style_collate(samples: Sequence[Optional[StyleSample]]) -> Optional[StyleBat
         pixel_values[i, :length] = s.pixel_values
         mask[i, :length] = s.attention_mask
         masked[i, :length] = s.masked_attention_mask
+    hpv = ham = hss = None
+    if valid[0].hsic_pixel_values is not None:
+        if valid[0].hsic_attention_mask is None:
+            hpv = torch.stack([s.hsic_pixel_values for s in valid])
+        else:
+            h_n = max(s.hsic_pixel_values.shape[0] for s in valid)
+            hpv = valid[0].hsic_pixel_values.new_zeros((b, h_n, valid[0].hsic_pixel_values.shape[-1]))
+            ham = valid[0].hsic_attention_mask.new_zeros((b, h_n))
+            for i, sample in enumerate(valid):
+                length = sample.hsic_pixel_values.shape[0]
+                hpv[i, :length] = sample.hsic_pixel_values
+                ham[i, :length] = sample.hsic_attention_mask
+            hss = torch.stack([s.hsic_spatial_shapes for s in valid])
     return StyleBatchTensors(pixel_values, mask, masked, torch.stack([s.spatial_shapes for s in valid]),
-                             torch.tensor([s.row for s in valid], dtype=torch.int64))
+                             torch.tensor([s.row for s in valid], dtype=torch.int64), hpv, ham, hss)
 
 
 class TrainBatchKeys:
@@ -98,9 +135,10 @@ class TrainBatchKeys:
     `set_range` between iterations lets one persistent-worker DataLoader serve every segment."""
 
     def __init__(self, sampler: StyleBatchSampler, view_seed: int, epoch: int, start_step: int,
-                 stop_step: int) -> None:
+                 stop_step: int, include_hsic: bool = False) -> None:
         self.sampler = sampler
         self.view_seed = int(view_seed)
+        self.include_hsic = include_hsic
         self.set_range(epoch, start_step, stop_step)
 
     def set_range(self, epoch: int, start_step: int, stop_step: int) -> None:
@@ -117,7 +155,8 @@ class TrainBatchKeys:
     def __iter__(self) -> Iterator[list[StyleSampleKey]]:
         for step in range(self.start_step, self.stop_step):
             rows = self.sampler.batch(self.epoch, step).rows.reshape(-1)
-            yield [StyleSampleKey(int(row), train_view_entropy(self.view_seed, self.epoch, step, position))
+            yield [StyleSampleKey(int(row), train_view_entropy(self.view_seed, self.epoch, step, position),
+                                  self.include_hsic)
                    for position, row in enumerate(rows)]
 
 

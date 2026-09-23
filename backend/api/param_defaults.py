@@ -3967,6 +3967,8 @@ STYLE_TRAINING_DEFAULTS: Dict[str, Any] = {
     "style_temperature": 0.1,
     "style_view_positive_weight": 1.0,
     "style_positive_weight_min": 0.3,
+    "style_hsic_tagger_path": "",
+    "style_hsic_weights": {"Character": 0.1, "Copyright": 0.1, "Rating": 0.1, "Quality": 0.0},
     # --- head -----------------------------------------------------------------
     "style_feature_layers": [21],
     "style_token_dim": 1152,  # divisible by style_pool_heads

@@ -611,7 +611,7 @@ activations. The raw `.pt` data remains available in both modes.
 
 ### 9.5 LoRA topology and adapter files
 
-Initial LoRA target scope is attention projections:
+The default LoRA target scope is attention projections:
 
 ```text
 transformer_blocks.*.attn.to_q
@@ -620,7 +620,11 @@ transformer_blocks.*.attn.to_v
 transformer_blocks.*.attn.to_out.0
 ```
 
-Expose optional MLP (`proj`, `gate_layer`, `out`) and model projection scopes
+`train_adapter: true` additionally targets `txt_in.in_layer` and
+`txt_in.out_layer`, with `adapter_lr` selecting a separate optimizer rate.
+The text encoder itself stays frozen. See
+`docs/guides/CONDITIONING_ADAPTER_TRAINING.md` for the common-key contract.
+Expose optional MLP (`proj`, `gate_layer`, `out`) and other model projection scopes
 only after target census and round-trip tests. The default matches the upstream
 training reference but the implementation uses SushiUI's adapter subsystem,
 not PEFT mutation.

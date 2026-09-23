@@ -53,8 +53,10 @@ class AnimaArchHandler(ArchHandler):
         scope_csv = resolve_scope_csv(
             trainer, "anima_lora_scope", "attention,mlp,llm_adapter")
         wanted = {tok.strip(): True for tok in scope_csv.split(",") if tok.strip()}
-        # train_llm_adapter overrides the llm_adapter scope flag.
-        if hasattr(trainer, "train_llm_adapter") or "train_llm_adapter" in trainer.config:
+        adapter_override = trainer.config.get("train_adapter")
+        if adapter_override is not None:
+            wanted["llm_adapter"] = bool(adapter_override)
+        elif hasattr(trainer, "train_llm_adapter") or "train_llm_adapter" in trainer.config:
             wanted["llm_adapter"] = bool(
                 getattr(trainer, "train_llm_adapter",
                         trainer.config.get("train_llm_adapter", True))

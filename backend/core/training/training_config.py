@@ -335,6 +335,8 @@ def _build_train_section(
         train["optimizer_state_host_resident"] = True
 
     # Component learning rates
+    train["train_adapter"] = p.get("train_adapter", _TD["train_adapter"])
+    train["adapter_lr"] = p.get("adapter_lr", _TD["adapter_lr"])
     if component_lr_always_emit:
         # LoRA-style: always emit with fallback to learning_rate
         train["unet_lr"] = p.get("unet_lr") if p.get("unet_lr") is not None else lr

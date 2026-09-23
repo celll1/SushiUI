@@ -1092,11 +1092,103 @@ def test_handler_is_concrete_and_tiny_lora_inventory_is_complete():
     )
     assert handler.name == MODEL_TYPE
     assert [path for _parent, _slot, path in iter_lora_slots(model)] == [
+        "txt_in.in_layer",
+        "txt_in.out_layer",
         "transformer_blocks.0.attn.to_q",
         "transformer_blocks.0.attn.to_k",
         "transformer_blocks.0.attn.to_v",
         "transformer_blocks.0.attn.to_out.0",
     ]
+
+
+def test_qwen_txt_in_lora_is_opt_in_and_has_independent_lr():
+    model = QwenImage21Transformer2DModel(
+        in_channels=8, out_channels=8, num_layers=1, attention_head_dim=16,
+        num_attention_heads=2, context_in_dim=32, mlp_ratio=2,
+        axes_dims_rope=(4, 6, 6),
+    )
+    trainer = SimpleNamespace(
+        transformer=model, learning_rate=1e-4, unet_lr=1e-4,
+        config={"train_adapter": True, "adapter_lr": 2e-5},
+    )
+    adapter = QwenImage21LoRAAdapter(
+        trainer, lora_rank=2, lora_alpha=2, lora_dtype=torch.float32
+    )
+    layers = {}
+    assert adapter.apply_lora_to_unet(layers) == 6
+    assert "lora_unet_txt_in__in_layer" in layers
+    assert "lora_unet_txt_in__out_layer" in layers
+    groups = adapter.arch_param_groups(layers)
+    assert [(group["component"], group["lr"]) for group in groups] == [
+        ("unet", 1e-4), ("adapter", 2e-5)
+    ]
+    state = adapter.export_state_dict(layers)
+    grouped = normalise_lora_state_dict(state)
+    assert "txt_in.in_layer" in grouped and "txt_in.out_layer" in grouped
+
+    adapter_only_model = QwenImage21Transformer2DModel(
+        in_channels=8, out_channels=8, num_layers=1, attention_head_dim=16,
+        num_attention_heads=2, context_in_dim=32, mlp_ratio=2,
+        axes_dims_rope=(4, 6, 6),
+    )
+    trainer.transformer = adapter_only_model
+    trainer.train_unet = False
+    adapter_only_layers = {}
+    assert adapter.apply_lora_to_unet(adapter_only_layers) == 2
+    assert [g["component"] for g in adapter.arch_param_groups(adapter_only_layers)] == ["adapter"]
+
+
+def test_adapter_controls_reach_training_yaml_and_validate_lr():
+    from core.training.training_config import _build_train_section
+
+    request = routes.TrainingRunCreateRequest(
+        training_method="lora", base_model_path="unused",
+        train_adapter=True, adapter_lr=2e-5,
+    )
+    train = _build_train_section(
+        request.model_dump(), total_steps=1, epochs=None,
+        train_unet=True, train_text_encoder=False, train_image_encoder=False,
+    )
+    assert train["train_adapter"] is True
+    assert train["adapter_lr"] == 2e-5
+    with pytest.raises(ValueError):
+        routes.TrainingRunCreateRequest(adapter_lr=-1)
+
+
+def test_qwen_full_txt_in_lr_and_freeze_are_independent():
+    model = QwenImage21Transformer2DModel(
+        in_channels=8, out_channels=8, num_layers=1, attention_head_dim=16,
+        num_attention_heads=2, context_in_dim=32, mlp_ratio=2,
+        axes_dims_rope=(4, 6, 6),
+    )
+    trainer = SimpleNamespace(
+        transformer=model, text_encoder=torch.nn.Linear(1, 1),
+        vae=torch.nn.Linear(1, 1), learning_rate=1e-4, unet_lr=1e-4,
+        train_text_encoder=False,
+        config={"train_adapter": True, "adapter_lr": 2e-5},
+    )
+    adapter = QwenImage21FullParameterAdapter(trainer)
+    adapter.prepare_models_for_training()
+    groups = adapter.arch_param_groups()
+    assert [(group["component"], group["lr"]) for group in groups] == [
+        ("unet", 1e-4), ("adapter", 2e-5)
+    ]
+    assert not ({id(p) for p in groups[0]["params"]}
+                & {id(p) for p in groups[1]["params"]})
+    trainer.config["train_adapter"] = False
+    adapter.prepare_models_for_training()
+    assert all(not p.requires_grad for p in model.txt_in.parameters())
+    assert len(adapter.arch_param_groups()) == 1
+    trainer.config.update(train_adapter=None, adapter_lr=None)
+    adapter.prepare_models_for_training()
+    assert all(p.requires_grad for p in model.txt_in.parameters())
+    assert len(adapter.arch_param_groups()) == 1
+    trainer.config.update(train_adapter=True, adapter_lr=2e-5)
+    trainer.train_unet = False
+    adapter.prepare_models_for_training()
+    assert all(p.requires_grad for p in model.txt_in.parameters())
+    assert all(not p.requires_grad for p in model.transformer_blocks.parameters())
+    assert [g["component"] for g in adapter.arch_param_groups()] == ["adapter"]
 
 
 def test_lora_save_classify_and_rebuild_round_trip():

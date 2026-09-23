@@ -33,7 +33,7 @@ from safetensors.torch import save_file
 
 from .base_adapter import (
     BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base,
-    resolve_component_lr, LORA_COMPONENT_UNET,
+    resolve_component_lr, LORA_COMPONENT_UNET, LORA_COMPONENT_ADAPTER,
 )
 from core.adapters import LoRALinearLayer, is_adapter_covered
 
@@ -94,6 +94,8 @@ class AnimaLoRAAdapter(BaseLoRAAdapter):
         count = 0
         skipped_blockskip = 0
         for module_path, parent, attr, current in iter_anima_lora_targets(transformer, self.scope):
+            if not getattr(self.trainer, "train_unet", True) and not module_path.startswith("llm_adapter."):
+                continue
             # Skip if an adapter already covers this slot (idempotent /
             # stacking-safe). The enumerator yields a CompositeAdapterLayer too,
             # and that one exposes in_features/out_features, so wrapping it would
@@ -120,7 +122,11 @@ class AnimaLoRAAdapter(BaseLoRAAdapter):
             else:
                 setattr(parent, attr, lora_layer)
 
-            self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_UNET)
+            component = (LORA_COMPONENT_ADAPTER
+                         if module_path.startswith("llm_adapter.")
+                         and self.trainer.config.get("adapter_lr") is not None
+                         else LORA_COMPONENT_UNET)
+            self.register_lora_layer(lora_layers, lora_name, lora_layer, component)
             count += 1
 
         if _bs_lo is not None:
@@ -152,6 +158,11 @@ class AnimaLoRAAdapter(BaseLoRAAdapter):
         return self.component_param_groups(lora_layers, {
             LORA_COMPONENT_UNET: lambda: resolve_component_lr(
                 self.trainer, "unet_lr", label="Anima LoRA"),
+            LORA_COMPONENT_ADAPTER: lambda: (
+                float(self.trainer.config["adapter_lr"])
+                if self.trainer.config.get("adapter_lr") is not None
+                else resolve_component_lr(self.trainer, "unet_lr", label="Anima LLM Adapter LoRA")
+            ),
         })
 
 
@@ -199,10 +210,10 @@ class AnimaFullParameterAdapter(BaseFullParameterAdapter):
         trainer = self.trainer
         reject_quantized_base(trainer.transformer, model_label="Anima")
         train_dit = bool(getattr(trainer, "train_unet", True))
-        train_adapter_only = bool(
-            getattr(trainer, "train_llm_adapter",
-                    trainer.config.get("train_llm_adapter", True))
-        )
+        adapter_override = trainer.config.get("train_adapter")
+        train_adapter_only = (bool(adapter_override) if adapter_override is not None
+                              else bool(getattr(trainer, "train_llm_adapter",
+                                                trainer.config.get("train_llm_adapter", True))))
 
         # DiT
         if train_dit and trainer.transformer is not None:
@@ -248,6 +259,10 @@ class AnimaFullParameterAdapter(BaseFullParameterAdapter):
                       f"to middle DiT blocks [{_bs_lo}, {_bs_hi}) of {_num_blocks} "
                       f"+ shared non-block components.")
             print("[AnimaFullParameterAdapter] Anima DiT set to train mode")
+        elif trainer.transformer is not None:
+            trainer.transformer.requires_grad_(False).eval()
+            if train_adapter_only and hasattr(trainer.transformer, "llm_adapter"):
+                trainer.transformer.llm_adapter.requires_grad_(True).train()
 
         # Text encoder (Qwen3): always frozen.
         if trainer.text_encoder is not None:
@@ -306,8 +321,11 @@ class AnimaFullParameterAdapter(BaseFullParameterAdapter):
             groups.append({"params": mod_params, "lr": base_lr * mod_factor,
                            "name": "mod", "component": "unet"})
         if adapter_params:
-            groups.append({"params": adapter_params, "lr": base_lr * adapter_factor,
-                           "name": "llm_adapter", "component": "unet"})
+            adapter_lr = trainer.config.get("adapter_lr")
+            groups.append({"params": adapter_params,
+                           "lr": float(adapter_lr) if adapter_lr is not None else base_lr * adapter_factor,
+                           "name": "llm_adapter",
+                           "component": "adapter" if adapter_lr is not None else "unet"})
 
         total = sum(sum(p.numel() for p in g["params"]) for g in groups)
         print(f"[AnimaFullParameterAdapter] {len(groups)} param group(s), "

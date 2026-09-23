@@ -15,6 +15,11 @@ def iter_lora_slots(transformer):
     from core.models.common.convrot_int8_linear import ConvRotInt8Linear
 
     target_types = (nn.Linear, ConvRotInt8Linear, LoRALinearLayer, CompositeAdapterLayer)
+    text_projection = getattr(transformer, "txt_in", None)
+    if text_projection is not None:
+        for attr in ("in_layer", "out_layer"):
+            if isinstance(getattr(text_projection, attr, None), target_types):
+                yield text_projection, attr, f"txt_in.{attr}"
     for index, block in enumerate(getattr(transformer, "transformer_blocks", ())):
         attention = getattr(block, "attn", None)
         if attention is None:

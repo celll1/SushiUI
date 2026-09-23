@@ -7057,6 +7057,8 @@ export interface TrainingRunCreateRequest {
   train_unet?: boolean;
   train_text_encoder?: boolean;
   unet_lr?: number | null;
+  train_adapter?: boolean | null;
+  adapter_lr?: number | null;
   text_encoder_lr?: number | null;
   text_encoder_1_lr?: number | null;
   text_encoder_2_lr?: number | null;

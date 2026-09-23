@@ -5051,6 +5051,33 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </div>
             )}
 
+            {(isQwenImage21Model || isAnimaModel(baseModelPath)) && (
+              <div className="mb-3 space-y-2 rounded border border-gray-700 p-3">
+                <label className="block text-xs text-gray-300">
+                  Conditioning adapter ({isQwenImage21Model ? "Qwen txt_in" : "Anima LLM Adapter"})
+                </label>
+                <select
+                  value={params.train_adapter == null ? "inherit" : String(params.train_adapter)}
+                  onChange={(e) => updateParam("train_adapter", e.target.value === "inherit" ? null : e.target.value === "true")}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
+                >
+                  <option value="inherit">Architecture default</option>
+                  <option value="true">Train adapter</option>
+                  <option value="false">Freeze adapter</option>
+                </select>
+                <label className="block text-xs text-gray-400">Adapter LR (empty = architecture default)</label>
+                <input
+                  type="number"
+                  min={0}
+                  step="any"
+                  value={params.adapter_lr ?? ""}
+                  onChange={(e) => updateParam("adapter_lr", e.target.value === "" ? null : Number(e.target.value))}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
+                />
+                <p className="text-xs text-gray-500">This is the bridge inside the denoiser, not the text encoder or the LoRA algorithm.</p>
+              </div>
+            )}
+
             {/* Text Encoder Learning Rates */}
             {trainTextEncoder && (
               <div className="space-y-2">
@@ -6478,12 +6505,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     // Keep a deterministic order so YAML diffs stay stable.
                     const ordered = ["attention", "mlp", "mod", "llm_adapter"].filter((t) => next.has(t));
                     updateParam("anima_lora_scope", ordered.join(","));
-                    // Mirror the llm_adapter scope into train_llm_adapter so
-                    // the two stay coherent (the trainer prefers the explicit
-                    // flag when present).
-                    if (tok === "llm_adapter") {
-                      updateParam("train_llm_adapter", next.has("llm_adapter"));
-                    }
                   };
                   return (
                     <div>
@@ -6495,7 +6516,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                           ["attention", "Attention (Q/K/V/Out)"],
                           ["mlp", "MLP / FFN"],
                           ["mod", "AdaLN modulation"],
-                          ["llm_adapter", "LLM Adapter"],
                         ].map(([tok, label]) => (
                           <label key={tok} className="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer">
                             <input
@@ -6509,33 +6529,16 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         ))}
                       </div>
                       <p className="text-xs text-gray-500 mt-1">
-                        Default: attention + mlp + llm_adapter. AdaLN modulation is off
+                        Default: attention + mlp. Adapter is controlled above. AdaLN modulation is off
                         by default (typically small and easy to overfit).
                       </p>
                     </div>
                   );
                 })()}
 
-                {/* Train LLM Adapter — for Full FT only (LoRA covers this
-                    via the scope multi-select above). */}
-                {trainingMethod !== "lora" && (
-                  <div className="flex items-center space-x-2">
-                    <input
-                      type="checkbox"
-                      id="train-llm-adapter"
-                      checked={params.train_llm_adapter ?? true}
-                      onChange={(e) => updateParam("train_llm_adapter", e.target.checked)}
-                      className="w-4 h-4"
-                    />
-                    <label htmlFor="train-llm-adapter" className="text-xs text-gray-300 cursor-pointer">
-                      Train LLM Adapter (Qwen3→T5 projection)
-                    </label>
-                  </div>
-                )}
-
                 {/* Per-group LR multipliers — Full FT only. */}
                 {trainingMethod !== "lora" && (
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label htmlFor="anima-attn-mlp-lr-factor" className="block text-xs text-gray-300 mb-1">
                         Attn+MLP LR ×
@@ -6561,21 +6564,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         value={params.anima_mod_lr_factor ?? 1.0}
                         onChange={(e) => updateParam("anima_mod_lr_factor", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
                         onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("anima_mod_lr_factor", 1.0); }}
-                        min={0}
-                        step="any"
-                        className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
-                      />
-                    </div>
-                    <div>
-                      <label htmlFor="anima-llm-adapter-lr-factor" className="block text-xs text-gray-300 mb-1">
-                        LLM-Adapter LR ×
-                      </label>
-                      <input
-                        type="number"
-                        id="anima-llm-adapter-lr-factor"
-                        value={params.anima_llm_adapter_lr_factor ?? 1.0}
-                        onChange={(e) => updateParam("anima_llm_adapter_lr_factor", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
-                        onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("anima_llm_adapter_lr_factor", 1.0); }}
                         min={0}
                         step="any"
                         className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"

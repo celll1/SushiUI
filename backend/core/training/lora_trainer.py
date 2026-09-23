@@ -180,7 +180,10 @@ class LoRATrainer(BaseTrainer):
         """Apply LoRA to U-Net/Transformer and Text Encoders using adapter."""
         print(f"{self.log_prefix} Applying LoRA layers...")
 
-        if self.train_unet:
+        adapter_only = (self.config.get("train_adapter") is True
+                        and getattr(getattr(self, "arch", None), "name", None)
+                        in {"qwen_image_21", "anima"})
+        if self.train_unet or adapter_only:
             unet_count = self.adapter.apply_lora_to_unet(self.lora_layers)
             print(f"{self.log_prefix} Injected {unet_count} LoRA layers into U-Net/Transformer")
         else:

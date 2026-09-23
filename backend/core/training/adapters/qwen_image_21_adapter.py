@@ -14,7 +14,7 @@ from core.models.qwen_image_21.artifact import artifact_metadata
 from .base_adapter import (
     BaseFullParameterAdapter,
     BaseLoRAAdapter,
-    LORA_COMPONENT_UNET,
+    LORA_COMPONENT_UNET, LORA_COMPONENT_ADAPTER,
     reject_quantized_base,
     resolve_component_lr,
 )
@@ -39,11 +39,15 @@ def _targets(transformer):
 
 class QwenImage21LoRAAdapter(BaseLoRAAdapter):
     def apply_lora_to_unet(self, lora_layers: Dict[str, nn.Module]) -> int:
+        from core.models.qwen_image_21.lora import flatten_to_key
+
         count = 0
-        for path, parent, attr, current in _targets(self.trainer.transformer):
+        for path, parent, attr, current in (
+            _targets(self.trainer.transformer)
+            if getattr(self.trainer, "train_unet", True) else ()
+        ):
             if is_adapter_covered(current):
                 continue
-            from core.models.qwen_image_21.lora import flatten_to_key
             name = flatten_to_key(path)
             layer = self.build_branch(current, name)
             if isinstance(attr, int):
@@ -53,6 +57,19 @@ class QwenImage21LoRAAdapter(BaseLoRAAdapter):
             self.register_lora_layer(lora_layers, name, layer, LORA_COMPONENT_UNET)
             count += 1
         config = getattr(self.trainer, "config", {})
+        if config.get("train_adapter") is True:
+            projection = self.trainer.transformer.txt_in
+            for attr in ("in_layer", "out_layer"):
+                current = getattr(projection, attr)
+                if is_adapter_covered(current):
+                    continue
+                name = flatten_to_key(f"txt_in.{attr}")
+                layer = self.build_branch(current, name)
+                setattr(projection, attr, layer)
+                self.register_lora_layer(
+                    lora_layers, name, layer, LORA_COMPONENT_ADAPTER
+                )
+                count += 1
         global_enabled = bool(config.get(
             "dit_partition_global_adapter_enabled",
             config.get("qwen_partition_global_adapter_enabled", False),
@@ -62,6 +79,8 @@ class QwenImage21LoRAAdapter(BaseLoRAAdapter):
             config.get("qwen_partition_training_enabled", False),
         ))
         if global_enabled:
+            if not getattr(self.trainer, "train_unet", True):
+                raise ValueError("Qwen partition global adapter requires train_unet=true")
             if not partition_enabled:
                 raise ValueError(
                     "Qwen partition global adapter requires dit_partition_training_enabled"
@@ -99,7 +118,14 @@ class QwenImage21LoRAAdapter(BaseLoRAAdapter):
         return self.component_param_groups(lora_layers, {
             LORA_COMPONENT_UNET: lambda: resolve_component_lr(
                 self.trainer, "unet_lr", label="Qwen-Image 2.1 LoRA"
-            )
+            ),
+            LORA_COMPONENT_ADAPTER: lambda: (
+                float(self.trainer.config["adapter_lr"])
+                if self.trainer.config.get("adapter_lr") is not None
+                else resolve_component_lr(
+                    self.trainer, "unet_lr", label="Qwen-Image 2.1 txt_in LoRA"
+                )
+            ),
         })
 
     def checkpoint_metadata(self, lora_layers, step, epoch):
@@ -137,19 +163,45 @@ class QwenImage21FullParameterAdapter(BaseFullParameterAdapter):
         reject_quantized_base(self.trainer.transformer, model_label="Qwen-Image 2.1")
         if bool(getattr(self.trainer, "train_text_encoder", False)):
             raise ValueError("Qwen-Image 2.1 text-encoder training is not supported")
-        self.trainer.transformer.requires_grad_(True).train()
+        train_dit = bool(getattr(self.trainer, "train_unet", True))
+        adapter_choice = self.trainer.config.get("train_adapter")
+        self.trainer.transformer.requires_grad_(train_dit).train()
+        self.trainer.transformer.txt_in.requires_grad_(
+            train_dit if adapter_choice is None else bool(adapter_choice)
+        )
         self.trainer.text_encoder.requires_grad_(False).eval()
         self.trainer.vae.requires_grad_(False).eval()
 
     def arch_param_groups(self):
         reject_quantized_base(self.trainer.transformer, model_label="Qwen-Image 2.1")
-        params = [p for p in self.trainer.transformer.parameters() if p.requires_grad]
-        return [{
-            "params": params,
-            "lr": resolve_component_lr(self.trainer, "unet_lr", label="Qwen-Image 2.1 transformer"),
-            "name": "unet",
-            "component": "unet",
-        }]
+        adapter_lr = self.trainer.config.get("adapter_lr")
+        if adapter_lr is None:
+            params = [p for p in self.trainer.transformer.parameters() if p.requires_grad]
+            return [{
+                "params": params,
+                "lr": resolve_component_lr(
+                    self.trainer, "unet_lr", label="Qwen-Image 2.1 transformer"
+                ),
+                "name": "unet", "component": "unet",
+            }]
+        projection = self.trainer.transformer.txt_in
+        adapter_ids = {id(p) for p in projection.parameters() if p.requires_grad}
+        base_params = [p for p in self.trainer.transformer.parameters()
+                       if p.requires_grad and id(p) not in adapter_ids]
+        groups = []
+        if base_params:
+            groups.append({
+                "params": base_params,
+                "lr": resolve_component_lr(self.trainer, "unet_lr", label="Qwen-Image 2.1 transformer"),
+                "name": "unet", "component": "unet",
+            })
+        if adapter_ids:
+            groups.append({
+                "params": [p for p in projection.parameters() if p.requires_grad],
+                "lr": float(adapter_lr),
+                "name": "adapter", "component": "adapter",
+            })
+        return groups
 
     def write_checkpoint(self, step: int, epoch: int, output_path: Path):
         output_path = Path(output_path)

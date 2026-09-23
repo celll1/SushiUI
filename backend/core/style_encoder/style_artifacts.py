@@ -1,9 +1,8 @@
 """Checkpoint bundles for style training (design §11).
 
-A bundle `{name}` is: `{name}_style_encoder.safetensors` + `{name}_metadata.json` (distributable, no
-artist names), `{name}_style_lora.safetensors` in LoRA mode (adapter + pooling/projector, the resume
-weights), and for resumable bundles `{name}_optimizer.pt`, `{name}_split_snapshot.npz` and
-`{name}_state.json`, which is published last and marks the bundle complete.
+`latest` and `best` have a distributable encoder and metadata. LoRA `step_*` bundles omit the
+merged encoder: their adapter, metadata, optimizer, snapshot, and state suffice for resume.
+The state is published last and marks a resumable bundle complete.
 """
 
 from __future__ import annotations
@@ -161,6 +160,10 @@ def _is_resumable_name(name: str) -> bool:
     return name == "latest" or re.fullmatch(r"step_\d+", name) is not None
 
 
+def _has_distributable(name: str, mode: str, resume: bool) -> bool:
+    return not (mode == "lora" and resume and re.fullmatch(r"step_\d+", name) is not None)
+
+
 def save_bundle(model: StyleEncoder, output_dir: str, name: str, metadata: dict,
                 resume: Optional[tuple[dict, dict, Any]] = None) -> str:
     """Write bundle `name`; `resume` = (state, optimizer_state, split snapshot) makes it resumable.
@@ -175,10 +178,12 @@ def save_bundle(model: StyleEncoder, output_dir: str, name: str, metadata: dict,
         staged.append((_staged(final), final))
         return _staged(final)
 
-    path = artifact_path(output_dir, name, ENCODER_SUFFIX)
+    has_distributable = _has_distributable(name, model.mode, resume is not None)
+    path = artifact_path(output_dir, name, ENCODER_SUFFIX if has_distributable else LORA_SUFFIX)
     state_path = artifact_path(output_dir, name, STATE_SUFFIX)
     try:
-        _save_file_safe(distributable_state_dict(model), stage(path))
+        if has_distributable:
+            _save_file_safe(distributable_state_dict(model), stage(path))
         if model.mode == "lora":
             _save_file_safe(lora_state_dict(model), stage(artifact_path(output_dir, name, LORA_SUFFIX)))
         write_json_atomic(stage(artifact_path(output_dir, name, METADATA_SUFFIX)), metadata)
@@ -187,7 +192,8 @@ def save_bundle(model: StyleEncoder, output_dir: str, name: str, metadata: dict,
             _torch_save_atomic(optimizer_state, stage(artifact_path(output_dir, name, OPTIMIZER_SUFFIX)))
             snapshot.save(stage(artifact_path(output_dir, name, SNAPSHOT_SUFFIX)))
             # Staged last: a staged state means every other file of the bundle is staged.
-            write_json_atomic(stage(state_path), {"format_version": STATE_FORMAT_VERSION, **state})
+            write_json_atomic(stage(state_path), {"format_version": STATE_FORMAT_VERSION,
+                                                  "has_distributable": has_distributable, **state})
     except BaseException:
         for staged_path, _ in staged:
             if os.path.exists(staged_path):
@@ -197,6 +203,10 @@ def save_bundle(model: StyleEncoder, output_dir: str, name: str, metadata: dict,
         os.remove(state_path)
     for staged_path, final in staged:
         os.replace(staged_path, final)
+    if not has_distributable:
+        old_encoder = artifact_path(output_dir, name, ENCODER_SUFFIX)
+        if os.path.exists(old_encoder):
+            os.remove(old_encoder)
     return path
 
 
@@ -214,7 +224,7 @@ def recover_staged_bundles(output_dir: str) -> tuple[list[str], list[str], list[
     if not os.path.isdir(output_dir):
         return recovered, refused, []
 
-    def roll_forward(name: str, marker: str, files: list[str]) -> None:
+    def roll_forward(name: str, marker: str, files: list[str], has_distributable: bool = True) -> None:
         if not all(os.path.isfile(_staged(p)) or os.path.isfile(p) for p in files):
             refused.append(name)
             return
@@ -224,15 +234,22 @@ def recover_staged_bundles(output_dir: str) -> tuple[list[str], list[str], list[
             if os.path.isfile(_staged(final)):
                 os.replace(_staged(final), final)
         os.replace(_staged(marker), marker)
+        if not has_distributable:
+            old_encoder = artifact_path(output_dir, name, ENCODER_SUFFIX)
+            if os.path.exists(old_encoder):
+                os.remove(old_encoder)
         recovered.append(name)
 
     for filename in sorted(os.listdir(output_dir)):
         if filename.endswith(_STAGED_STATE_SUFFIX):
             name = filename[:-len(_STAGED_STATE_SUFFIX)]
             with open(os.path.join(output_dir, filename), "r", encoding="utf-8") as handle:
-                method = json.load(handle)["model"]["training_method"]
+                state = json.load(handle)
+                method = state["model"]["training_method"]
             marker = artifact_path(output_dir, name, STATE_SUFFIX)
-            roll_forward(name, marker, [p for p in bundle_files(output_dir, name, method) if p != marker])
+            has_distributable = state.get("has_distributable", True)
+            roll_forward(name, marker, [p for p in bundle_files(output_dir, name, method, has_distributable)
+                                        if p != marker], has_distributable)
         elif filename.endswith(_STAGED_METADATA_SUFFIX):
             name = filename[:-len(_STAGED_METADATA_SUFFIX)]
             if _is_resumable_name(name):  # its marker is the state; metadata alone means staging was cut short
@@ -249,6 +266,19 @@ def recover_staged_bundles(output_dir: str) -> tuple[list[str], list[str], list[
         if match and match.group(1) not in refused:
             os.remove(os.path.join(output_dir, filename))
             deleted.append(filename)
+    for filename in os.listdir(output_dir):
+        if not filename.endswith(STATE_SUFFIX):
+            continue
+        name = filename[:-len(STATE_SUFFIX)]
+        if not re.fullmatch(r"step_\d+", name):
+            continue
+        with open(os.path.join(output_dir, filename), "r", encoding="utf-8") as handle:
+            has_distributable = json.load(handle).get("has_distributable", True)
+        if not has_distributable:
+            old_encoder = artifact_path(output_dir, name, ENCODER_SUFFIX)
+            if os.path.isfile(old_encoder):
+                os.remove(old_encoder)
+                deleted.append(os.path.basename(old_encoder))
     return recovered, refused, deleted
 
 
@@ -261,8 +291,10 @@ def resumable_bundle_files(output_dir: str) -> list[str]:
                   if (f.startswith("latest_") or _STEP_BUNDLE.match(f)) and f.endswith(suffixes))
 
 
-def bundle_files(output_dir: str, name: str, mode: str) -> list[str]:
-    suffixes = [ENCODER_SUFFIX, METADATA_SUFFIX, OPTIMIZER_SUFFIX, SNAPSHOT_SUFFIX, STATE_SUFFIX]
+def bundle_files(output_dir: str, name: str, mode: str, has_distributable: bool = True) -> list[str]:
+    suffixes = [METADATA_SUFFIX, OPTIMIZER_SUFFIX, SNAPSHOT_SUFFIX, STATE_SUFFIX]
+    if has_distributable:
+        suffixes.insert(0, ENCODER_SUFFIX)
     if mode == "lora":
         suffixes.append(LORA_SUFFIX)
     return [artifact_path(output_dir, name, s) for s in suffixes]
@@ -283,7 +315,8 @@ def find_resume_checkpoint(output_dir: str) -> Optional[tuple[str, dict]]:
             state = json.load(handle)
         if state.get("format_version") != STATE_FORMAT_VERSION:
             raise ValueError(f"{filename} has unsupported state format {state.get('format_version')!r}")
-        if all(os.path.isfile(p) for p in bundle_files(output_dir, name, state["model"]["training_method"])):
+        if all(os.path.isfile(p) for p in bundle_files(output_dir, name, state["model"]["training_method"],
+                                                       state.get("has_distributable", True))):
             candidates.append((int(state["global_step"]), name == "latest", name, state))
     if not candidates:
         return None

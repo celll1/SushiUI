@@ -250,6 +250,7 @@ mAP@R の R は、検索対象の中にある正解の枚数とする。(b) で�
   - 作者の一覧や作者 ID の対応表は、配布用には**含めない**。
 - **学習状態**（resume 用）: §9 で挙げた値（optimizer、epoch と step の位置、インデックスのハッシュ、分割パラメータ、sampler パラメータ、学習に使った item の snapshot）。
 - **LoRA**: adapter 単体を保存し、merge したものを出力することもできる。
+- **LoRA の step checkpoint**: adapter、optimizer、split snapshot、state、metadata のみを保存する。配布用の merged encoder は `latest` / `best` に保存する。旧形式のフル encoder 付き step bundle も resume できる。
 - **保持ルール**: tagger と同じ（step checkpoint はまとめて削除し、`latest` と `best` は対象外）。
 
 ## 12. API / DB / UI

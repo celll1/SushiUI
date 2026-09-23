@@ -25479,6 +25479,17 @@ components:
             an explicitly named checkpoint that does not exist is rejected rather
             than silently restarting from step 0.
           example: "latest"
+        resume_dataset_change_policy:
+          type: string
+          enum: [existing, strict, rebase_remaining]
+          default: existing
+          example: rebase_remaining
+          description: |
+            Mid-epoch resume policy when the selected training datasets change.
+            `existing` keeps each batch mode's current behavior; `strict` refuses
+            a changed batch structure; `rebase_remaining` uses a checkpoint-bound
+            batch ledger to retain completed batches and revise only the suffix.
+            The ledger must have been enabled before the checkpoint was saved.
         debug_latents:
           type: 'boolean'
           default: false

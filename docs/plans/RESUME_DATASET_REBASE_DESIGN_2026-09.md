@@ -1,6 +1,6 @@
 # データセット選択変更時のエポック内再開 設計書
 
-Status: 提案（2026-09-23）。コード未実装。
+Status: 初版実装（2026-09-23）。GPU を使う実学習での検証は未実施。
 
 ## 1. 目的と用語
 
@@ -34,15 +34,15 @@ Status: 提案（2026-09-23）。コード未実装。
 
 ### 4.1 最終バッチ計画の台帳
 
-`rebase_remaining` を有効にしたエポックでは、実行直前の**後段処理後の最終バッチ列**を不変な sidecar に保存する。既存の concept digest は継続して検証するが、digest だけでは未処理の画像を特定できない。sidecar は checkpoint 本体に複製せず、run 出力内の版付きファイルとし、checkpoint の state JSON が版・相対パス・サイズ・SHA-256・改訂番号・カーソルを参照する。ファイルは一時名に書いて flush 後に原子的に置換し、同じ checkpoint の state を最後に確定する。参照中の版は次の checkpoint ができても削除しない。
+`rebase_remaining` を有効にしたエポックでは、実行直前の**後段処理後の最終バッチ列**を不変な sidecar に保存する。既存の concept digest だけでは未処理の画像を特定できないため、新モードでは sidecar の SHA-256 を再開の主照合値にする。sidecar は checkpoint 本体に複製せず、run 出力内の版付きファイルとし、checkpoint の state JSON が版・相対パス・サイズ・SHA-256・改訂番号・カーソルを参照する。ファイルは一時名に書いて flush 後に原子的に置換し、同じ checkpoint の state を最後に確定する。参照中の版は次の checkpoint ができても削除しない。
 
-台帳は画像本体やキャプションを保存しない。各 batch の出現を `(dataset_unique_id, stable_item_id, occurrence_id, bucket/task/reference key, mode label, source occurrence)` として記録する。`stable_item_id` は初版では snapshot に記録した画像パスの規定化表現とし、その規定化手順を台帳 version に固定する。同じ dataset 内に重複する ID があれば拒否する。別 dataset の同じパスは別物である。`occurrence_id` は同一画像の基本提示、priority の反復番号、concept の replay 番号を区別する論理 ID とし、計画改訂番号とは独立させる。同じ論理出現を改訂後に再利用しない。必要な crop spec またはその再検証可能な digest も含める。million-item run でも画像バイト列や長い caption を重複保存せず、ID 辞書と batch の整数索引を使い圧縮・サイズ計測する。
+台帳は画像本体やキャプションを保存しない。各 batch の出現を `(dataset_unique_id, stable_item_id, occurrence_id, bucket/reference key, mode label, source occurrence)` として記録する。`stable_item_id` は初版では snapshot の画像パス文字列そのものを使う。同じ dataset 内に重複する ID があれば拒否する。別 dataset の同じパスは別物である。`occurrence_id` は同一画像の基本提示、priority の反復番号、concept の replay 番号を区別する論理 ID とし、計画改訂番号とは独立させる。同じ論理出現を改訂後に再利用しない。crop spec は再検証可能な digest に含める。sidecar は gzip 圧縮 JSON とし、million-item run の生成時間・サイズ・ピークメモリは実測ゲートに残す。
 
 台帳の prefix は `batch_idx` 個の**処理済み batch**であり、その中の出現だけが完了済みである。同じ画像の未処理反復を画像 ID の集合差で消してはならない。チェックポイント保存は既存どおり、batch の全 MNT iteration が終わった境界で行う。計画 sidecar が欠損・破損・checkpoint と step 不一致なら改訂を拒否し、`batch_idx` から推測しない。
 
 ### 4.2 データセット manifest
 
-選択された dataset ごとに、ID、画像 ID のソート済み集合と重複数、順序に関わる寸法・bucket・reference/task の入力、mode 別分類入力の hash、設定 version を保存する。concept では tag/caption alias と確定した concept 割当、priority では entry 順・分類・multiplier を照合する。学習文としての caption だけが変わり、mode の順序入力には影響しない場合は順序を維持できるが、raw caption と処理設定の hash で学習内容の変更を検出しログへ明示する。全 caption の内容同一性を要求する機能は本設計の `strict`（順序構造の厳密照合）とは別の課題とする。
+選択された dataset ごとに、ID、画像 ID の取得順列と重複検査、寸法・参照画像・mode 別分類入力の hash を保存する。concept / priority では raw caption と tag data も順序入力に含める。通常順序では caption hash を別に記録し、順序に影響しない変更を再開ログに出す。`strict` は caption hash を含む manifest と設定署名の一致を要求する。画像バイトの同一性までは確認しない。
 
 run 全体の seed、batch size、MNT、bucket 設定、crop 設定、reference/VE 分割条件、mode 設定、計画 version は改訂中に変えられない。異なる場合は dataset の選択変更であっても拒否する。現在の設定では再現できない旧 suffix を台帳から黙って実行しない。
 
@@ -54,7 +54,7 @@ run 全体の seed、batch size、MNT、bucket 設定、crop 設定、reference/
 
 1. 選択 checkpoint と同じ step の state・計画台帳を読み、hash、version、カーソル、batch 境界を照合する。モデルと optimizer をロードする前に、改訂可否と新計画のプレビューを確定する。
 2. 旧計画の `[0:batch_idx]` を不変の完了履歴とする。`[batch_idx:]` から選択解除 dataset の出現を除く。batch が空なら削除し、残った batch は初版ではその順序と同質条件を保持して端数のまま残す。削除した画像を埋めるために処理済み画像を再提示しない。
-3. 新規選択 dataset の基本提示を当該 epoch に一回ずつ生成する。通常順序には `(run seed, epoch, dataset ID, plan revision)` 由来の専用 RNG を使い、旧 suffix や global RNG の消費に依存させない。priority に分類された新規画像は既存 `multiplier` 回の論理出現を作る。concept では旧画像の割当数を初期値にして新規画像を安定 ID 順に割り当て、同点は専用 seed と画像 ID で解決する。元の割当は変えない。新規画像の replay はこの epoch では作らず、次 epoch から通常規則へ戻す。同じ epoch 内で一度選択解除した dataset を再選択する場合は、履歴中の同じ manifest と論理出現 ID を使い、完了済み出現を差し引いた義務だけを戻す。manifest が変わっていたら拒否する。
+3. 現在選択した dataset から当該 epoch の候補計画を再生成し、新規選択 dataset の出現だけを抽出する。通常順序と priority は候補計画の各画像の基本提示・`multiplier` 回の提示を使う。concept は候補計画における新規画像の基本提示だけを採り、新規 replay は次 epoch からとする。共通 dataset の旧割当は保存した suffix で固定する。候補計画の生成には checkpoint のバッチ生成前 RNG 状態を復元する。同じ epoch 内で一度選択解除した dataset を再選択する場合は、履歴中の同じ manifest と論理出現 ID を使い、完了済み出現を差し引いた義務だけを戻す。manifest が変わっていたら拒否する。
 4. mode 別に**未処理 suffix だけ**を配置する。通常順序では同質 batch を決定論的に分散する。priority は新規 priority batch を suffix の先頭に置き、その後に旧 priority の残り、通常 batch を置く。concept は残りの focus batch と新規 concept batch を現在の `front` / `spread` 設定で配置し、完了履歴を参照して replay の source より前に replay が来ないことを保証する。旧 replay の source が選択解除 dataset だけで構成される場合はその replay も除く。`front` でも全 epoch の先頭へ時間を巻き戻さず、`spread` の分散範囲も suffix に限定する。
 5. 新しい計画を `old completed prefix + revised suffix` として確定する。prefix は学習実行対象に戻さない。改訂番号、親計画 hash、追加・削除 dataset、追加・除外した基本/重複/再提示の出現数、部分 batch 数、残り batch 数を台帳とログに記録する。改訂後の cursor は旧 prefix 長から始める。再中断時は改訂版の cursor と hash を保存し、次回はその版を基準にする。複数回の追加・削除も同じ手順で連鎖できる。
 
@@ -71,9 +71,9 @@ CropPlanner の個別 spec は同じ元寸法・seed・epoch なら再計算で�
 ## 7. API・UI・実装境界
 
 - API は `openapi.yaml` を先に更新し、`backend/api/param_defaults.py` を唯一の既定値にする。`backend/api/routes.py`、training config の保存・復元、`frontend/src/utils/api.ts`、学習画面へ同じ enum を通す。既存 checkpoint に台帳がない場合、`rebase_remaining` を選べない理由を返す。
-- `backend/core/training/` に計画台帳と改訂処理を独立 module として置く。`base_trainer.py` は最終 batch 列の確定点、state の保存・復元、実行する suffix の切り出しだけを接続する。共通 dataset manifest は `train_runner.py` の snapshot 生成側で確定する。
-- 再開前プレビューは旧/新 dataset ID、共通 dataset の照合結果、計画改訂番号、旧 batch cursor、改訂後残り batch と MNT iteration、優先・集中・通常・replay の増減、端数 batch と実効 batch size、予定終了 step を表示する。新規画像の詳細パスを大量に UI へ送らない。
-- 旧 checkpoint からこの機能を後付けする場合、旧計画を再生成でき、保存済み digest と完全一致する場合に限り台帳を一度生成できる。旧選択 dataset の snapshot がなく完全照合できなければ改訂を拒否する。`existing` での通常再開は従来どおり可能とする。
+- `backend/core/training/resume_batch_plan.py` に計画台帳・dataset manifest・改訂処理を置く。`base_trainer.py` は最終 batch 列の確定点、state の保存・復元、実行する suffix の切り出しを接続する。
+- 初版は trainer の計画確定時に旧/新 dataset ID、旧 batch cursor、改訂後残り batch、追加・除外した出現数、端数 batch と実効 batch size、epoch 指定時の新しい終了 step をログに出す。モデルロード前の API プレビューは後続課題とする。新規画像の詳細パスを大量に UI へ送らない。
+- 旧 checkpoint からの台帳生成は初版では実装しない。旧 checkpoint に台帳がなければ `rebase_remaining` を拒否する。`existing` での通常再開は従来どおり可能とする。
 
 ## 8. 検証項目と実装順
 

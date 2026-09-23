@@ -39,7 +39,7 @@ backend/core/style_encoder/          # 新規パッケージ（既存に同名�
   style_ingest.py       # datasets.db からの読み込みと item キー
   style_loader.py       # torch Dataset / collate / batch キー
   style_artifacts.py    # 成果物・学習状態の保存と読み込み、保持ルール（§11）
-  style_loss.py         # 重み付き SupCon、nHSIC
+  style_loss.py         # 重み付き SupCon（nHSIC は Phase 3）
   style_trainer.py      # 学習ループ（共通基盤を import して使う）
   style_eval.py         # 検索評価
 ```
@@ -245,7 +245,7 @@ mAP@R の R は、検索対象の中にある正解の枚数とする。(b) で�
     - base repo id
     - `style_embed_dim`、`style_feature_layers`、`style_max_num_patches`
     - 前処理の設定
-    - HSIC に使った tagger checkpoint のパスとハッシュ
+    - HSIC に使った tagger checkpoint の公開可能な識別子とハッシュ（Phase 3）。ローカルパスは含めない
     - データセットの snapshot 情報
   - 作者の一覧や作者 ID の対応表は、配布用には**含めない**。
 - **学習状態**（resume 用）: §9 で挙げた値（optimizer、epoch と step の位置、インデックスのハッシュ、分割パラメータ、sampler パラメータ、学習に使った item の snapshot）。

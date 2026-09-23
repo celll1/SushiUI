@@ -800,6 +800,8 @@ def _build_train_section(
 
     # Resume
     train["resume_from_checkpoint"] = p.get("resume_from_checkpoint")
+    train["resume_dataset_change_policy"] = p.get(
+        "resume_dataset_change_policy", TRAINING_DEFAULTS["resume_dataset_change_policy"])
 
     # Pre-flight dataset rescan mode. Not read by the trainer subprocess; it is
     # persisted here because config_yaml is the only per-run config store for

@@ -39,7 +39,7 @@ export const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [
   "optimizer_use_radam", "optimizer_stochastic_rounding",
   "optimizer_state_host_resident",
   "save_every", "save_every_unit", "max_step_saves_to_keep",
-  "max_optimizer_saves_to_keep", "resume_from_checkpoint",
+  "max_optimizer_saves_to_keep", "resume_from_checkpoint", "resume_dataset_change_policy",
   "train_unet", "train_text_encoder", "train_image_encoder",
   "unet_lr", "train_adapter", "adapter_lr", "text_encoder_lr", "text_encoder_1_lr", "text_encoder_2_lr", "image_encoder_lr",
   "weight_dtype", "training_dtype", "output_dtype", "vae_dtype",

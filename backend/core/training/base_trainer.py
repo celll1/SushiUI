@@ -5432,6 +5432,9 @@ class BaseTrainer(ABC):
             # invalidates the saved shuffle/crop reproducibility -> fresh fallback on resume.
             "crop_plan_fingerprint": getattr(self, '_crop_plan_fingerprint', None),
             "concept_batch_plan": getattr(self, '_concept_batch_plan_state', None),
+            "resume_batch_plan": getattr(self, '_resume_batch_plan_ref', None),
+            "resume_order_signature": getattr(self, '_resume_plan_signature', None),
+            "resume_dataset_manifest": getattr(self, '_resume_dataset_manifest', None),
             # LR schedule position on ITS OWN axis (D9/§17.1 of
             # docs/guides/LR_SCHEDULER_DESIGN.md). global_step // gas does not
             # reproduce it: a skipped batch advances global_step without
@@ -5492,15 +5495,19 @@ class BaseTrainer(ABC):
             ) else None,
         }
 
-        with open(state_file, 'w') as f:
-            state_serializable = state.copy()
-            random_state = state["random_state"]
-            state_serializable["random_state"] = {
-                "version": random_state[0],
-                "state": list(random_state[1]),  # Convert tuple to list
-                "gauss_next": random_state[2],
-            }
+        state_serializable = state.copy()
+        random_state = state["random_state"]
+        state_serializable["random_state"] = {
+            "version": random_state[0],
+            "state": list(random_state[1]),
+            "gauss_next": random_state[2],
+        }
+        temporary_state = state_file.with_suffix(".json.tmp")
+        with open(temporary_state, 'w') as f:
             json.dump(state_serializable, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary_state, state_file)
 
         print(f"{self.log_prefix} Saved training state to {state_file.name}")
 
@@ -6662,6 +6669,22 @@ class BaseTrainer(ABC):
                 for ema_file in checkpoint_path.parent.glob(f"{ema_run_name}_step_{step_num:06d}*.safetensors"):
                     print(f"{self.log_prefix} Deleting old EMA checkpoint: {ema_file.name}")
                     self._safe_unlink(ema_file)
+
+        active_plan = getattr(self, "_resume_batch_plan_ref", None)
+        if active_plan:
+            referenced = {active_plan["file"]}
+            try:
+                for state_path in self.output_dir.glob(f"{self.run_name}_step_*_state.json"):
+                    saved = json.loads(state_path.read_text(encoding="utf-8"))
+                    plan_ref = saved.get("resume_batch_plan")
+                    if plan_ref:
+                        referenced.add(plan_ref["file"])
+            except (OSError, ValueError, KeyError) as exc:
+                print(f"{self.log_prefix} WARNING: Skipping batch ledger cleanup: unreadable checkpoint state ({exc})")
+                return
+            for plan_path in self.output_dir.glob(f"{self.run_name}_epoch_*_batch_plan_*.json.gz"):
+                if plan_path.name not in referenced:
+                    self._safe_unlink(plan_path)
 
     def _cleanup_old_optimizer_states(self, max_optimizer_saves_to_keep: int,
                                       current_step: Optional[int] = None):
@@ -15479,6 +15502,7 @@ class BaseTrainer(ABC):
         param_tracking_interval: int = 100,
         priority_training: Optional[Dict] = None,
         concept_batch_order: Optional[Dict] = None,
+        resume_dataset_change_policy: str = _TRAINING_DEFAULTS["resume_dataset_change_policy"],
     ):
         """
         Main training loop.
@@ -15629,6 +15653,44 @@ class BaseTrainer(ABC):
         concept_config = ConceptOrderConfig.parse(concept_batch_order)
         self._concept_batch_plan_state = None
         self._concept_order_seed = self.run_seed
+        if resume_dataset_change_policy not in ("existing", "strict", "rebase_remaining"):
+            raise ValueError("Invalid resume_dataset_change_policy")
+        self._resume_batch_plan_ref = None
+        self._resume_plan_signature = None
+        self._resume_dataset_manifest = None
+        if resume_dataset_change_policy == "rebase_remaining":
+            if (self.is_sensenova or self.is_sensenova_sdxl_chimera or
+                    self._temporal_spec() is not None or
+                    self.is_acestep or self.config.get("danbooru_aug_enable") or
+                    self.config.get("res_curriculum_enable")):
+                raise ValueError("rebase_remaining requires fixed image datasets without online augmentation or resolution curriculum")
+            if any(item.get("item_type") in ("video", "audio")
+                   for dataset in datasets for item in dataset.items):
+                raise ValueError("rebase_remaining supports image items only")
+        if resume_dataset_change_policy in ("strict", "rebase_remaining"):
+            from core.training.resume_batch_plan import dataset_manifest, digest
+            _priority_source = priority_training
+            if isinstance(priority_training, dict) and priority_training.get("_legacy_path"):
+                _priority_source = Path(priority_training["_legacy_path"]).read_text(encoding="utf-8")
+            self._resume_plan_mode = ("concept" if concept_config else
+                                      "priority" if priority_training else "normal")
+            self._resume_plan_signature = digest({
+                "seed": self.run_seed, "batch_size": batch_size,
+                "mnt": multi_noise_timesteps, "mode": self._resume_plan_mode,
+                "concept": concept_config.fingerprint() if concept_config else None,
+                "priority": _priority_source,
+                "bucketing": enable_bucketing,
+                "resolutions": base_resolutions,
+                "bucket_strategy": bucket_strategy,
+                "multi_resolution_mode": multi_resolution_mode,
+                "use_reference_images": use_reference_images,
+                "vision_encoder_path": vision_encoder_path,
+                "crop": {key: value for key, value in self.config.items()
+                         if key.startswith("crop_") or key.startswith("full_crop_")},
+            })
+            if resume_dataset_change_policy == "strict":
+                self._resume_dataset_manifest = dataset_manifest(
+                    datasets, self._resume_plan_mode)
         if concept_config:
             if priority_training:
                 raise ValueError("concept_batch_order cannot be combined with priority_training")
@@ -16212,6 +16274,9 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} [ConceptOrder] Planned batch counts: {_preview_counts[:8]}"
                   f"{'...' if len(_preview_counts) > 8 else ''}")
 
+        if resume_dataset_change_policy == "rebase_remaining" and total_steps is not None:
+            actual_total_steps = total_steps
+
         # Update DB with calculated total_steps (for resume correctness)
         if update_total_steps_callback is not None:
             update_total_steps_callback(actual_total_steps)
@@ -16680,14 +16745,30 @@ class BaseTrainer(ABC):
         # restart from a fresh epoch boundary. Fires ONLY when the dataset fingerprint or
         # batches_per_epoch changed, so a normal same-structure resume is byte-identical.
         self._resume_structure_changed = False
+        _ledger_resume = resume_dataset_change_policy == "rebase_remaining"
+        if _ledger_resume and resume_from_checkpoint:
+            if (global_step > 0 and resume_training_state is None) or (
+                    resume_training_state is not None and not resume_training_state.get("resume_batch_plan")):
+                raise ValueError("Cannot rebase dataset selection: checkpoint has no batch ledger")
+        if resume_dataset_change_policy == "strict" and resume_from_checkpoint and (
+                global_step > 0 or resume_training_state is not None):
+            if (resume_training_state is None
+                    or "resume_order_signature" not in resume_training_state
+                    or "resume_dataset_manifest" not in resume_training_state):
+                raise ValueError("Cannot strictly resume: checkpoint has no strict resume metadata")
+            if (resume_training_state.get("resume_order_signature") != self._resume_plan_signature
+                    or resume_training_state.get("resume_dataset_manifest") != self._resume_dataset_manifest):
+                raise ValueError("Cannot strictly resume: batch settings or dataset manifest changed")
         if concept_config and resume_from_checkpoint and global_step > 0 and resume_training_state is None:
             raise ValueError("Cannot resume concept batch order without matching training state")
         if resume_training_state is not None:
-            if not concept_config and resume_training_state.get("concept_batch_plan") is not None:
+            if resume_training_state.get("resume_batch_plan") and not _ledger_resume:
+                raise ValueError("Cannot change resume_dataset_change_policy for a checkpoint with a batch ledger")
+            if not _ledger_resume and not concept_config and resume_training_state.get("concept_batch_plan") is not None:
                 raise ValueError("Cannot resume a concept-ordered checkpoint with concept batch order disabled")
-            if concept_config and resume_training_state.get("concept_batch_plan") is None:
+            if not _ledger_resume and concept_config and resume_training_state.get("concept_batch_plan") is None:
                 raise ValueError("Cannot resume concept batch order: checkpoint has no batch plan state")
-            if concept_config:
+            if concept_config and not _ledger_resume:
                 saved_concept = resume_training_state["concept_batch_plan"]
                 if saved_concept.get("version") != 1:
                     raise ValueError("Cannot resume concept batch order: unsupported plan version")
@@ -16703,28 +16784,45 @@ class BaseTrainer(ABC):
             saved_bpe = resume_training_state.get('batches_per_epoch')
             bpe_changed = (saved_bpe is not None and saved_bpe != batches_per_epoch)
             if fp_changed or bpe_changed:
-                if concept_config:
+                if resume_dataset_change_policy == "strict":
+                    raise ValueError("Cannot resume: dataset or batch structure changed")
+                if concept_config and not _ledger_resume:
                     raise ValueError("Cannot resume concept batch order: dataset or batch structure changed")
-                self._resume_structure_changed = True
-                print(f"{self.log_prefix} Dataset/batch structure changed since checkpoint "
+                if _ledger_resume:
+                    print(f"{self.log_prefix} Dataset or batch count differs; verifying batch ledger before continuing")
+                else:
+                    self._resume_structure_changed = True
+                if not _ledger_resume:
+                    print(f"{self.log_prefix} Dataset/batch structure changed since checkpoint "
                       f"(fingerprint_changed={fp_changed}, batches_per_epoch: {saved_bpe} -> {batches_per_epoch})")
-                print(f"{self.log_prefix} Stored epoch/batch position is not portable; keeping "
+                    print(f"{self.log_prefix} Stored epoch/batch position is not portable; keeping "
                       f"global_step={global_step} and optimizer state, restarting epoch bookkeeping from a fresh boundary.")
-                print(f"{self.log_prefix} Configured total_steps={actual_total_steps} is the global_step stop target "
+                    print(f"{self.log_prefix} Configured total_steps={actual_total_steps} is the global_step stop target "
                       f"(remaining {actual_total_steps - global_step} steps ~= "
                       f"{max(0, actual_total_steps - global_step) // max(1, multi_noise_timesteps)} batches at MNT={multi_noise_timesteps})")
-                start_epoch = 0
-                resume_batch_idx = 0
-                resume_training_state = None  # disarms MNT-recompute, in-loop restore, and batch truncation
-                if actual_total_steps <= global_step:
+                    start_epoch = 0
+                    resume_batch_idx = 0
+                    resume_training_state = None  # disarms MNT-recompute, in-loop restore, and batch truncation
+                if not _ledger_resume and actual_total_steps <= global_step:
                     print(f"{self.log_prefix} WARNING: global_step ({global_step}) already >= total_steps "
                           f"({actual_total_steps}); increase `steps` in config to continue training.")
-                if str(lr_scheduler_type).lower() != "constant":
+                if not _ledger_resume and str(lr_scheduler_type).lower() != "constant":
                     print(f"{self.log_prefix} WARNING: non-constant LR scheduler across a dataset-structure change; "
                           f"LR position was fast-forwarded by old global_step and may not match intent.")
-                if getattr(self, '_rc_active', False):
+                if not _ledger_resume and getattr(self, '_rc_active', False):
                     print(f"{self.log_prefix} WARNING: res-curriculum epoch counter resets to 0; warmup would re-run. "
                           f"Curriculum + dataset swap is unsupported.")
+        if _ledger_resume and resume_training_state is not None and total_steps is not None:
+            if actual_total_steps <= global_step:
+                raise ValueError("Cannot continue remaining batches: configured steps already reached")
+            remaining_epochs = (max(0, actual_total_steps - global_step) +
+                                max(1, steps_per_epoch) - 1) // max(1, steps_per_epoch)
+            num_epochs = max(num_epochs, start_epoch + remaining_epochs + 1)
+            if self.crop_planner is not None:
+                planned = self.crop_planner._batches_per_epoch
+                if len(planned) < num_epochs:
+                    planned.extend([planned[-1]] * (num_epochs - len(planned)))
+                    self._crop_step_offsets = self.crop_planner.step_offsets(multi_noise_timesteps)
 
         # ============================================================
         # Timestep distribution: resolve the EFFECTIVE sampler
@@ -17164,6 +17262,7 @@ class BaseTrainer(ABC):
                     self.resume_seq = 0
                 print(f"{self.log_prefix} Metrics resume_seq = {self.resume_seq}")
 
+            _rebase_target_total = None
             for epoch in range(start_epoch, num_epochs):
                 # Recorded with each metric (for epoch-boundary markers in the UI).
                 self._current_epoch = epoch
@@ -17222,19 +17321,18 @@ class BaseTrainer(ABC):
                     dataset_changed = dataset_changed or crop_changed
 
                     if dataset_changed:
-                        if concept_config:
+                        if resume_dataset_change_policy == "strict":
+                            raise ValueError("Cannot resume: dataset or crop plan changed")
+                        if concept_config and not _ledger_resume:
                             raise ValueError("Cannot resume concept batch order: dataset or crop plan changed")
-                        print(f"{self.log_prefix} WARNING: Dataset has changed since checkpoint was saved!")
-                        print(f"{self.log_prefix} Saved shuffle state is invalid - using fresh random state")
-                        print(f"{self.log_prefix} Restarting current epoch from batch 0 (global_step={global_step} preserved)")
-                        # Do NOT restore random state - let it use current random state.
-                        # Also clear resume_training_state so the batch-truncation at
-                        # ``batches = batches[resume_batch_idx:]`` below does NOT run —
-                        # otherwise we'd skip the first resume_batch_idx batches of an
-                        # entirely different sample order, which means arbitrary
-                        # samples get skipped rather than the ones already trained on.
-                        resume_training_state = None
-                        resume_batch_idx     = 0
+                        if _ledger_resume:
+                            random.setstate(resume_training_state['random_state'])
+                        else:
+                            print(f"{self.log_prefix} WARNING: Dataset has changed since checkpoint was saved!")
+                            print(f"{self.log_prefix} Saved shuffle state is invalid - using fresh random state")
+                            print(f"{self.log_prefix} Restarting current epoch from batch 0 (global_step={global_step} preserved)")
+                            resume_training_state = None
+                            resume_batch_idx     = 0
                     else:
                         print(f"{self.log_prefix} Dataset unchanged - restoring random state for mid-epoch resume...")
                         random.setstate(resume_training_state['random_state'])
@@ -17251,6 +17349,8 @@ class BaseTrainer(ABC):
                         else:
                             priority_config = PriorityTrainingConfig.from_dict(priority_training)
                     except Exception as e:
+                        if _ledger_resume:
+                            raise ValueError("Cannot build priority batch ledger") from e
                         print(f"{self.log_prefix} WARNING: Failed to load priority training config: {e}")
                         print(f"{self.log_prefix} Continuing with normal training")
 
@@ -17539,7 +17639,7 @@ class BaseTrainer(ABC):
 
                 # Mid-epoch resume: skip completed batches
                 # (random state was already restored before batch building)
-                if not concept_config and epoch == start_epoch and resume_training_state is not None:
+                if not concept_config and not _ledger_resume and epoch == start_epoch and resume_training_state is not None:
                     print(f"{self.log_prefix} Skipping {resume_batch_idx} completed batches...")
                     batches = batches[resume_batch_idx:]
                     self._epoch_batch_offset = resume_batch_idx
@@ -17580,7 +17680,7 @@ class BaseTrainer(ABC):
                 if concept_config and len(batches) != self._concept_batch_plan_state["batch_count"]:
                     raise ValueError("Concept batch plan changed during reference-image processing")
 
-                if concept_config and epoch == start_epoch and resume_training_state is not None:
+                if concept_config and not _ledger_resume and epoch == start_epoch and resume_training_state is not None:
                     saved_plan = resume_training_state.get("concept_batch_plan")
                     if saved_plan != self._concept_batch_plan_state or len(batches) != saved_plan["batch_count"]:
                         raise ValueError("Cannot resume concept batch order: batch plan changed")
@@ -17589,6 +17689,53 @@ class BaseTrainer(ABC):
                     batches = batches[resume_batch_idx:]
                     self._epoch_batch_offset = resume_batch_idx
                     resume_training_state = None
+
+                if _ledger_resume:
+                    from core.training.resume_batch_plan import (
+                        load_plan, make_plan, rebase_plan, resolve_suffix, save_plan,
+                    )
+                    _priority_keys = None
+                    if priority_config and priority_config.entries:
+                        from core.training.priority_training import classify_items
+                        _priority_keys = {
+                            (str(dataset.unique_id), str(item["image_path"]))
+                            for item, dataset, _entry in classify_items(_image_all_items, priority_config)[0]
+                        }
+                    _candidate_batches = batches
+                    _candidate_plan = make_plan(
+                        batches, datasets, self._resume_plan_mode,
+                        self._resume_plan_signature, epoch, _priority_keys,
+                        batch_size=batch_size)
+                    if concept_config:
+                        _candidate_plan["placement"] = concept_config.background_placement
+                    if epoch == start_epoch and resume_training_state is not None:
+                        _old_plan = load_plan(
+                            self.output_dir, resume_training_state["resume_batch_plan"])
+                        if int(resume_training_state.get("epoch", -1)) != _old_plan["epoch"]:
+                            raise ValueError("Cannot resume batch plan: state epoch differs from ledger")
+                        if _old_plan["selected"] != _candidate_plan["selected"]:
+                            _active_plan, _change = rebase_plan(
+                                _old_plan, resume_batch_idx, _candidate_plan)
+                            print(f"{self.log_prefix} [BatchRebase] {_change}")
+                        else:
+                            _active_plan, _change = rebase_plan(
+                                _old_plan, resume_batch_idx, _candidate_plan)
+                        if _change["caption_changed"]:
+                            print(f"{self.log_prefix} [BatchRebase] Training captions changed in datasets: {_change['caption_changed']}")
+                        batches = resolve_suffix(
+                            _active_plan, resume_batch_idx, _candidate_batches)
+                        self._epoch_batch_offset = resume_batch_idx
+                        self._resume_plan_rebased = bool(
+                            _change["added_datasets"] or _change["removed_datasets"])
+                        resume_training_state = None
+                    else:
+                        _active_plan = _candidate_plan
+                        self._resume_plan_rebased = False
+                    self._resume_batch_plan_ref = save_plan(
+                        self.output_dir, self.run_name, _active_plan)
+                    self._batches_per_epoch = len(_active_plan["batches"])
+                    if not batches:
+                        batch_idx = -1
 
                 # Interrupt-batch injection of online Danbooru samples (image-gen
                 # augmentation).  Drained from the bounded collector buffer and
@@ -17951,7 +18098,9 @@ class BaseTrainer(ABC):
                 # Recomputing it here from epoch*steps_per_epoch would override the requested
                 # bound and let training run to an epoch-derived count instead of stopping at
                 # total_steps (the loop stop condition at global_step >= actual_total_steps).
-                if epoch == start_epoch and self._crop_step_offsets is None and total_steps is None:
+                if (epoch == start_epoch and self._crop_step_offsets is None
+                        and total_steps is None
+                        and not (_ledger_resume and self._resume_plan_rebased)):
                     # Calculate actual steps per epoch (before mid-epoch slicing)
                     if concept_config or bucket_manager or bool(getattr(
                         self, "config", {}
@@ -18002,6 +18151,21 @@ class BaseTrainer(ABC):
                         print(f"{self.log_prefix} Correcting total_steps: {steps_per_epoch * num_epochs} → {actual_total_steps} (bucketing overhead)")
                         if update_total_steps_callback is not None:
                             update_total_steps_callback(actual_total_steps)
+
+                if _ledger_resume and total_steps is None:
+                    if epoch == start_epoch and self._resume_plan_rebased:
+                        if self._crop_step_offsets is not None:
+                            future_steps = (self._crop_step_offsets[num_epochs]
+                                            - self._crop_step_offsets[epoch + 1])
+                        else:
+                            future_steps = max(0, num_epochs - epoch - 1) * steps_per_epoch
+                        _rebase_target_total = global_step + epoch_steps + future_steps
+                        print(f"{self.log_prefix} [BatchRebase] Updated epoch-based total_steps: {_rebase_target_total}")
+                        self._reanchor_lr_schedule_total(_rebase_target_total, global_step)
+                        if update_total_steps_callback is not None:
+                            update_total_steps_callback(_rebase_target_total)
+                    if _rebase_target_total is not None:
+                        actual_total_steps = _rebase_target_total
 
                 # Vision Encoder VRAM management: if NO batch this epoch uses a reference
                 # image (e.g. no VE-reconstruction data in the run), the trained VE would

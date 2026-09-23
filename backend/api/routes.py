@@ -15142,6 +15142,8 @@ class TrainingRunCreateRequest(BaseModel):
         default_factory=lambda: [dict(prompt) for prompt in TRAINING_DEFAULTS["sample_prompts"]]
     )  # List of {positive: str, negative: str, condition_image_path?: str}
     resume_from_checkpoint: Optional[str] = None  # Checkpoint filename to resume from (e.g., "lora_step_100.safetensors")
+    resume_dataset_change_policy: Literal["existing", "strict", "rebase_remaining"] = (
+        TRAINING_DEFAULTS["resume_dataset_change_policy"])
 
     # Debug
     debug_latents: bool = False
@@ -15791,6 +15793,9 @@ class TrainingRunCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def _concept_batch_order_compatible(self):
+        if (self.training_method == "vae_decoder"
+                and self.resume_dataset_change_policy != TRAINING_DEFAULTS["resume_dataset_change_policy"]):
+            raise ValueError("resume_dataset_change_policy requires image generation training")
         if self.concept_batch_order.enabled:
             if self.priority_training:
                 raise ValueError("concept_batch_order and priority_training cannot be combined")

@@ -3706,6 +3706,7 @@ def main():
                 param_tracking_interval=param_tracking_interval,
                 priority_training=priority_training,
                 concept_batch_order=concept_batch_order,
+                resume_dataset_change_policy=train_config.get("resume_dataset_change_policy", TRAINING_DEFAULTS["resume_dataset_change_policy"]),
             )
 
             print("[TrainRunner] Training completed successfully!")
@@ -4118,6 +4119,7 @@ def main():
                 param_tracking_interval=param_tracking_interval,
                 priority_training=priority_training,
                 concept_batch_order=train_config.get('concept_batch_order'),
+                resume_dataset_change_policy=train_config.get("resume_dataset_change_policy", TRAINING_DEFAULTS["resume_dataset_change_policy"]),
             )
 
             print("[TrainRunner] ReLoRA training completed successfully!")
@@ -4589,6 +4591,7 @@ def main():
                 param_tracking_interval=param_tracking_interval,
                 priority_training=priority_training,
                 concept_batch_order=concept_batch_order,
+                resume_dataset_change_policy=train_config.get("resume_dataset_change_policy", TRAINING_DEFAULTS["resume_dataset_change_policy"]),
             )
 
             print("[TrainRunner] Training completed successfully!")
@@ -4928,6 +4931,7 @@ def main():
                 trajectory_blend_alpha=trajectory_blend_alpha,
                 timestep_sampling_config=timestep_sampling_config,
                 concept_batch_order=train_config.get('concept_batch_order'),
+                resume_dataset_change_policy=train_config.get("resume_dataset_change_policy", TRAINING_DEFAULTS["resume_dataset_change_policy"]),
             )
 
             print("[TrainRunner] Training completed successfully!")

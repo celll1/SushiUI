@@ -1,9 +1,13 @@
 """CustomAttentionPooling must ignore NaFlex padding tokens."""
 
 from types import SimpleNamespace
+from pathlib import Path
+import sys
 
 import torch
 from torch import nn
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.tagger.siglip2_tagger_model import CustomAttentionPooling, SigLIP2TaggerModel
 

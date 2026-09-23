@@ -3381,6 +3381,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
     archCapabilities, loadedArch, videoCanvasWidth, videoCanvasHeight);
   const hasLeadConditioning = (isVideo && isRef2Va)
     || currentModelInfo?.model_info?.type === "flux2"
+    || currentModelInfo?.model_info?.type === "qwen_image_21"
     || currentModelInfo?.model_info?.type === "sensenova"
     || !!params.vision_encoder_path;
   const promptPanel = isAudio ? (
@@ -3660,6 +3661,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
         {/* Native edit / reference-conditioning images. */}
         {(currentModelInfo?.model_info?.type === "flux2" || isSenseNovaModel || isQwenImage21Model || params.vision_encoder_path) && (
           <Card
+            key={isQwenImage21Model ? "qwen-reference-images" : "reference-images"}
             title={
               currentModelInfo?.model_info?.type === "flux2"
                 ? "FLUX.2 Image Edit (Reference Images)"
@@ -3671,8 +3673,8 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
             }
 
             collapsible={true}
-            defaultCollapsed={true}
-            storageKey="txt2img_ref_images_collapsed"
+            defaultCollapsed={!isQwenImage21Model}
+            storageKey={isQwenImage21Model ? "txt2img_qwen_ref_images_collapsed" : "txt2img_ref_images_collapsed"}
             collapsedPreview={
               refImages.length > 0 ? (
                 <span className="text-green-400 text-sm">✓ {refImages.length} image{refImages.length > 1 ? 's' : ''}</span>

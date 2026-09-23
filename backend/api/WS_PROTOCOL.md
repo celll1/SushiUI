@@ -35,7 +35,7 @@ There is **no per-request / per-task subscription model**. Every connected clien
 appended to `ConnectionManager.active_connections`
 (`backend/api/websocket.py:8-23`), and every message the server produces —
 image-generation progress, LoRA/Full-FT training metrics, training notices,
-tagger-training metrics,
+tagger-training metrics, style-training metrics,
 and dataset-scan progress — is broadcast (`ConnectionManager.broadcast`,
 `backend/api/websocket.py:232-237`) to **all** currently connected clients, with no
 job id, request id, or client id filtering.
@@ -284,6 +284,42 @@ epoch/validation events).
   "loss": 0.0512,
   "lr": 0.0002,
   "progress": 12.5
+}
+```
+
+### `style_metrics`
+
+Style-encoder-training progress. Sent from `ConnectionManager.send_style_metrics()`
+(`backend/api/websocket.py`), called from the progress callback in
+`backend/api/style_training_routes.py`. Optional fields are omitted when unknown.
+Dataset loading before training is reported with the plain `progress` message.
+
+| field | type | description |
+|-------|------|-------------|
+| `type` | string | always `"style_metrics"` |
+| `run_id` | string | style training run id |
+| `event` | string | `"step"`, `"epoch"` or `"validation"` |
+| `step` | int | global optimizer step |
+| `resume_seq` | int | 0 for the first start, incremented per resume |
+| `epoch` | int (optional) | epoch index |
+| `index_hash` | string (optional) | style index the values were measured on; values with different hashes are not comparable |
+| `loss`, `lr`, `grad_norm` | float (optional) | `step` only |
+| `progress` | float (optional) | `step` only; global_step / total_steps, 0-1 |
+| `epoch_loss` | float (optional) | `epoch` only; mean loss of the epoch |
+| `val_map_at_r`, `val_recall_at_1`, `val_recall_at_5` | float (optional) | `validation` only; held-out-artist retrieval |
+
+```json
+{
+  "type": "style_metrics",
+  "run_id": "7d0c7a2e-1f3b-4c55-9a8e-2b1f0c6d9e11",
+  "event": "validation",
+  "step": 1200,
+  "resume_seq": 0,
+  "epoch": 2,
+  "index_hash": "3f9a0c1b2d4e",
+  "val_map_at_r": 0.41,
+  "val_recall_at_1": 0.63,
+  "val_recall_at_5": 0.81
 }
 ```
 

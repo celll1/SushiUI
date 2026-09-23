@@ -1748,6 +1748,10 @@ export const fetchTrainingDefaults = async (): Promise<Record<string, unknown>> 
 export const fetchTaggerTrainingDefaults = async (): Promise<Record<string, unknown>> =>
   (await api.get("/schema/tagger-training-defaults")).data;
 
+// Every key of the style trainer config (STYLE_TRAINING_DEFAULTS in param_defaults.py).
+export const fetchStyleTrainingDefaults = async (): Promise<StyleTrainingConfig> =>
+  (await api.get("/schema/style-training-defaults")).data;
+
 // Defaults for a decoder-only VAE fine-tune (training_method "vae_decoder").
 // Backed by backend/api/param_defaults.py VAE_TRAINING_DEFAULTS.
 export const fetchVaeTrainingDefaults = async (): Promise<Record<string, unknown>> =>
@@ -9012,6 +9016,196 @@ export const stopTaggerTrainingRun = async (
 
 export const deleteTaggerTrainingRun = async (runId: string): Promise<void> => {
   await api.delete(`/tagger-training/runs/${runId}`);
+};
+
+// ---------------------------------------------------------------------------
+// Style encoder training (/style-training/*)
+// ---------------------------------------------------------------------------
+
+export interface StyleDatasetConfig {
+  dataset_id: number;
+  caption_types?: string[];  // empty / absent = every tags-format caption
+}
+
+// The trainer config minus dataset_configs; defaults from GET /schema/style-training-defaults.
+export interface StyleTrainingConfig {
+  vision_encoder_path: string;  // .safetensors path or HF repo id; "" = the vision_encoder_repo release
+  vision_encoder_repo: string;
+  training_method: "full" | "lora";
+  lora_rank: number;
+  lora_alpha: number;
+  lora_dropout: number;
+  attn_implementation: string;
+  mixed_precision: "bf16" | "fp32";
+  gradient_checkpointing: boolean;
+  gpu_index: number | null;
+  optimizer: "adamw" | "adamw8bit" | "lion8bit";
+  learning_rate: number;
+  head_lr_multiplier: number;
+  weight_decay: number;
+  warmup_steps: number;
+  min_lr_ratio: number;
+  max_grad_norm: number;
+  epochs: number;
+  num_workers: number;
+  save_every_n_steps: number;
+  keep_last_n_checkpoints: number;
+  validate_every: number;
+  log_every_n_steps: number;
+  style_seed: number;
+  style_split_seed: number;
+  style_use_tag_aliases: boolean;
+  style_use_gelbooru_categories: boolean;
+  style_signature_tags: string[];
+  style_non_copyright_tags: string[];
+  style_val_artist_ratio: number;
+  style_val_image_ratio: number;
+  style_min_images_per_artist: number;
+  style_artists_per_batch: number;
+  style_images_per_artist: number;
+  style_same_copyright_batch_ratio: number;
+  style_artist_sampling_power: number;
+  style_mask_ratio_min: number;
+  style_mask_ratio_max: number;
+  style_max_num_patches: number;
+  style_temperature: number;
+  style_view_positive_weight: number;
+  style_positive_weight_min: number;
+  style_feature_layers: number[];
+  style_token_dim: number;
+  style_pool_heads: number;
+  style_projector_hidden_dim: number;
+  style_embed_dim: number;
+  style_val_max_items: number;
+  style_val_batch_size: number;
+  style_eval_chunk_size: number;
+}
+
+// Omitted config keys take the backend defaults; unknown keys are refused (422).
+export interface StyleTrainingRunCreateRequest extends Partial<StyleTrainingConfig> {
+  dataset_configs: StyleDatasetConfig[];
+  run_name?: string | null;
+  output_dir?: string | null;
+}
+
+// Only the given fields change; output_dir is fixed at creation.
+export interface StyleTrainingRunUpdateRequest extends Partial<StyleTrainingConfig> {
+  dataset_configs?: StyleDatasetConfig[];
+  run_name?: string | null;
+}
+
+export type StyleTrainingStatus =
+  | "pending" | "starting" | "running" | "stopping" | "completed" | "failed" | "stopped";
+
+export interface StyleTrainingRun {
+  id: number;
+  run_id: string;
+  run_name: string;
+  status: StyleTrainingStatus;
+  active: boolean;  // a trainer thread for this run is alive in the backend
+  progress: number;
+  current_epoch: number;
+  total_epochs: number;
+  current_step: number;
+  total_steps: number | null;
+  training_method: "full" | "lora";
+  vision_encoder_path: string;
+  vision_encoder_repo: string;
+  dataset_configs: StyleDatasetConfig[];
+  output_dir: string;
+  config: StyleTrainingConfig & { dataset_configs: StyleDatasetConfig[] };
+  index_hash: string | null;
+  latest_loss: number | null;
+  latest_lr: number | null;
+  best_map_at_r: number | null;
+  best_step: number | null;
+  best_checkpoint_path: string | null;
+  latest_checkpoint_path: string | null;
+  resumed_from_step: number | null;
+  last_resume_mode: "exact" | "epoch_boundary" | null;
+  last_resumed_at: string | null;
+  error_message: string | null;
+  status_message: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface StyleTrainingWarning {
+  message: string;
+  timestamp: string;
+  ignored?: Record<string, { saved: unknown; requested: unknown }>;
+  filled_defaults?: string[];
+}
+
+export interface StyleTrainingRunDetail extends StyleTrainingRun {
+  dataset_stats: Record<string, unknown> | null;
+  warnings: StyleTrainingWarning[];
+  detail_error: string | null;  // why the run's detail database could not be read
+}
+
+export interface StyleTrainingLifecycleResponse {
+  message: "started" | "stop_requested" | "marked_stopped";
+  run: StyleTrainingRun;
+  filled_defaults?: string[];  // start only: keys the stored config lacked, filled from current defaults
+}
+
+export interface StyleTrainingRunUpdated extends StyleTrainingRun {
+  filled_defaults: string[];
+}
+
+export interface StyleTrainingMetric {
+  step: number;
+  resume_seq: number;
+  epoch: number | null;
+  // Points with different index hashes were measured on different evaluation sets.
+  index_hash: string | null;
+  loss: number | null;
+  supcon_loss: number | null;
+  learning_rate: number | null;
+  grad_norm: number | null;
+  epoch_loss: number | null;
+  val_map_at_r: number | null;
+  val_recall_at_1: number | null;
+  val_recall_at_5: number | null;
+  evaluation: Record<string, unknown> | null;
+  timestamp: string | null;
+}
+
+export const createStyleTrainingRun = async (
+  data: StyleTrainingRunCreateRequest
+): Promise<StyleTrainingRun> => (await api.post("/style-training/runs", data)).data;
+
+export const listStyleTrainingRuns = async (): Promise<StyleTrainingRun[]> =>
+  (await api.get("/style-training/runs")).data;
+
+export const getStyleTrainingRun = async (runId: string): Promise<StyleTrainingRunDetail> =>
+  (await api.get(`/style-training/runs/${runId}`)).data;
+
+export const updateStyleTrainingRun = async (
+  runId: string,
+  data: StyleTrainingRunUpdateRequest
+): Promise<StyleTrainingRunUpdated> => (await api.patch(`/style-training/runs/${runId}`, data)).data;
+
+export const deleteStyleTrainingRun = async (runId: string): Promise<{ deleted: string }> =>
+  (await api.delete(`/style-training/runs/${runId}`)).data;
+
+export const startStyleTrainingRun = async (runId: string): Promise<StyleTrainingLifecycleResponse> =>
+  (await api.post(`/style-training/runs/${runId}/start`)).data;
+
+export const stopStyleTrainingRun = async (runId: string): Promise<StyleTrainingLifecycleResponse> =>
+  (await api.post(`/style-training/runs/${runId}/stop`)).data;
+
+export const getStyleTrainingMetrics = async (
+  runId: string,
+  sinceStep?: number,
+  maxPoints?: number,  // omitted = the backend default budget; 0 = no limit
+): Promise<StyleTrainingMetric[]> => {
+  const params: Record<string, number> = {};
+  if (sinceStep !== undefined) params.since_step = sinceStep;
+  if (maxPoints !== undefined) params.max_points = maxPoints;
+  return (await api.get(`/style-training/runs/${runId}/metrics`, { params })).data;
 };
 
 export interface DanbooruRecentPost {

@@ -3,7 +3,7 @@
 A bundle `{name}` is: `{name}_style_encoder.safetensors` + `{name}_metadata.json` (distributable, no
 artist names), `{name}_style_lora.safetensors` in LoRA mode (adapter + pooling/projector, the resume
 weights), and for resumable bundles `{name}_optimizer.pt`, `{name}_split_snapshot.npz` and
-`{name}_state.json`, which is written last and marks the bundle complete.
+`{name}_state.json`, which is published last and marks the bundle complete.
 """
 
 from __future__ import annotations
@@ -149,20 +149,34 @@ def load_training_weights(model: StyleEncoder, output_dir: str, name: str) -> No
             params[key].copy_(value)
 
 
+def _staged(final: str) -> str:
+    return final[:-len(".npz")] + ".staged.npz" if final.endswith(".npz") else final + ".staged"
+
+
+_STAGED_STATE_SUFFIX = STATE_SUFFIX + ".staged"
+_STAGED_METADATA_SUFFIX = METADATA_SUFFIX + ".staged"
+
+
+def _is_resumable_name(name: str) -> bool:
+    return name == "latest" or re.fullmatch(r"step_\d+", name) is not None
+
+
 def save_bundle(model: StyleEncoder, output_dir: str, name: str, metadata: dict,
                 resume: Optional[tuple[dict, dict, Any]] = None) -> str:
     """Write bundle `name`; `resume` = (state, optimizer_state, split snapshot) makes it resumable.
-    Every file is staged first; only then is the old state removed, the staged files moved into place and
-    the state written last. A failure while staging leaves the previous bundle intact and resumable."""
+    Every file is staged, the commit marker last (the state; the metadata in a non-resumable bundle); then the
+    old state is removed and the staged files are moved into place, the marker last. A failure while staging
+    leaves the previous bundle intact; an interruption after the marker was staged is finished by
+    `recover_staged_bundles`."""
     os.makedirs(output_dir, exist_ok=True)
     staged: list[tuple[str, str]] = []
 
     def stage(final: str) -> str:
-        path = final[:-len(".npz")] + ".staged.npz" if final.endswith(".npz") else final + ".staged"
-        staged.append((path, final))
-        return path
+        staged.append((_staged(final), final))
+        return _staged(final)
 
     path = artifact_path(output_dir, name, ENCODER_SUFFIX)
+    state_path = artifact_path(output_dir, name, STATE_SUFFIX)
     try:
         _save_file_safe(distributable_state_dict(model), stage(path))
         if model.mode == "lora":
@@ -172,19 +186,70 @@ def save_bundle(model: StyleEncoder, output_dir: str, name: str, metadata: dict,
             state, optimizer_state, snapshot = resume
             _torch_save_atomic(optimizer_state, stage(artifact_path(output_dir, name, OPTIMIZER_SUFFIX)))
             snapshot.save(stage(artifact_path(output_dir, name, SNAPSHOT_SUFFIX)))
+            # Staged last: a staged state means every other file of the bundle is staged.
+            write_json_atomic(stage(state_path), {"format_version": STATE_FORMAT_VERSION, **state})
     except BaseException:
         for staged_path, _ in staged:
             if os.path.exists(staged_path):
                 os.remove(staged_path)
         raise
-    state_path = artifact_path(output_dir, name, STATE_SUFFIX)
     if os.path.exists(state_path):
         os.remove(state_path)
     for staged_path, final in staged:
         os.replace(staged_path, final)
-    if resume is not None:
-        write_json_atomic(state_path, {"format_version": STATE_FORMAT_VERSION, **state})
     return path
+
+
+_STAGED_FILE = re.compile(r"^(latest|best|step_\d+)_.+\.staged(\.npz)?(\.tmp)?$")
+
+
+def recover_staged_bundles(output_dir: str) -> tuple[list[str], list[str], list[str]]:
+    """Finish saves interrupted after their commit marker was staged (`save_bundle`): each bundle file is then
+    either still staged or already moved into place, so the remaining moves are replayed and the marker
+    published last. A bundle missing a file in both forms is left untouched. Staged files of a bundle whose
+    marker was never staged come from a save interrupted while staging and are deleted.
+    Returns (recovered names, refused names, deleted files)."""
+    recovered: list[str] = []
+    refused: list[str] = []
+    if not os.path.isdir(output_dir):
+        return recovered, refused, []
+
+    def roll_forward(name: str, marker: str, files: list[str]) -> None:
+        if not all(os.path.isfile(_staged(p)) or os.path.isfile(p) for p in files):
+            refused.append(name)
+            return
+        if os.path.exists(marker):
+            os.remove(marker)
+        for final in files:
+            if os.path.isfile(_staged(final)):
+                os.replace(_staged(final), final)
+        os.replace(_staged(marker), marker)
+        recovered.append(name)
+
+    for filename in sorted(os.listdir(output_dir)):
+        if filename.endswith(_STAGED_STATE_SUFFIX):
+            name = filename[:-len(_STAGED_STATE_SUFFIX)]
+            with open(os.path.join(output_dir, filename), "r", encoding="utf-8") as handle:
+                method = json.load(handle)["model"]["training_method"]
+            marker = artifact_path(output_dir, name, STATE_SUFFIX)
+            roll_forward(name, marker, [p for p in bundle_files(output_dir, name, method) if p != marker])
+        elif filename.endswith(_STAGED_METADATA_SUFFIX):
+            name = filename[:-len(_STAGED_METADATA_SUFFIX)]
+            if _is_resumable_name(name):  # its marker is the state; metadata alone means staging was cut short
+                continue
+            with open(os.path.join(output_dir, filename), "r", encoding="utf-8") as handle:
+                method = json.load(handle).get("training_method")
+            files = [artifact_path(output_dir, name, ENCODER_SUFFIX)]
+            if method == "lora":
+                files.append(artifact_path(output_dir, name, LORA_SUFFIX))
+            roll_forward(name, artifact_path(output_dir, name, METADATA_SUFFIX), files)
+    deleted = []
+    for filename in sorted(os.listdir(output_dir)):
+        match = _STAGED_FILE.match(filename)
+        if match and match.group(1) not in refused:
+            os.remove(os.path.join(output_dir, filename))
+            deleted.append(filename)
+    return recovered, refused, deleted
 
 
 def resumable_bundle_files(output_dir: str) -> list[str]:

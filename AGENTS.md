@@ -32,10 +32,12 @@ changes.
 
 - **`backend/api/param_defaults.py` is the single source of truth for every
   API default value.** `GENERATION_DEFAULTS`, `TRAINING_DEFAULTS`,
-  `TAGGER_TRAINING_DEFAULTS`, and `VAE_TRAINING_DEFAULTS` back the
-  Pydantic/`Form()` defaults in `backend/api/routes.py` and are exposed to the
-  frontend via the `/schema/generation-defaults`, `/schema/training-defaults`,
-  `/schema/tagger-training-defaults`, and `/schema/vae-training-defaults`
+  `TAGGER_TRAINING_DEFAULTS`, `STYLE_TRAINING_DEFAULTS`, and
+  `VAE_TRAINING_DEFAULTS` back the Pydantic/`Form()` defaults in
+  `backend/api/routes.py` (style runs: `backend/api/style_training_routes.py`)
+  and are exposed to the frontend via the `/schema/generation-defaults`,
+  `/schema/training-defaults`, `/schema/tagger-training-defaults`,
+  `/schema/style-training-defaults`, and `/schema/vae-training-defaults`
   endpoints. Never hardcode a default anywhere else.
 - **API changes are openapi-first.** `openapi.yaml` is kept in full sync with
   `backend/api/routes.py`; update the spec (paths, schemas under

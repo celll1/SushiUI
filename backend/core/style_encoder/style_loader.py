@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import Iterator, NamedTuple, Optional, Sequence
 
 import numpy as np
@@ -138,6 +139,28 @@ class EvalBatchKeys:
         for start in range(0, self.rows.size, self.batch_size):
             rows = self.rows[start:start + self.batch_size]
             yield [StyleSampleKey(int(r), eval_view_entropy(self.view_seed, int(self.item_keys[r]))) for r in rows]
+
+
+class SwitchableBatchKeys:
+    """Batch sampler of one persistent DataLoader that serves both training segments and evaluations:
+    each `iter(loader)` draws from the source set at that moment, so no second worker set is spawned."""
+
+    def __init__(self, source) -> None:
+        self.source = source
+
+    @contextlib.contextmanager
+    def serving(self, source):
+        previous, self.source = self.source, source
+        try:
+            yield
+        finally:
+            self.source = previous
+
+    def __len__(self) -> int:
+        return len(self.source)
+
+    def __iter__(self):
+        return iter(self.source)
 
 
 def make_loader(dataset: StyleImageDataset, batch_keys, num_workers: int, persistent: bool = False) -> DataLoader:

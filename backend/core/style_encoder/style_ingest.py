@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import time
+import unicodedata
 from array import array
 from dataclasses import asdict, dataclass
 from typing import Any, Callable, Iterable, Iterator, Optional, Sequence
@@ -108,12 +110,16 @@ class _ItemPathsBuilder:
         self.offsets = array("q", [0])
         self.blob = bytearray()
 
-    def append(self, item_id: int, item_key: int, dataset_id: int, path: str) -> None:
+    def append(self, item_id: int, item_key: int, dataset_id: int, path: str) -> int:
         self.ids.append(item_id)
         self.keys.append(item_key)
         self.datasets.append(dataset_id)
         self.blob += path.encode("utf-8")
         self.offsets.append(len(self.blob))
+        return len(self.ids) - 1
+
+    def path(self, row: int) -> str:
+        return self.blob[self.offsets[row]:self.offsets[row + 1]].decode("utf-8")
 
     def finish(self) -> ItemPaths:
         ids = np.frombuffer(self.ids, dtype=np.int64)
@@ -124,6 +130,79 @@ class _ItemPathsBuilder:
         if order.size > 1 and np.any(ids[order][1:] == ids[order][:-1]):
             raise ValueError("an item was ingested twice")
         return unsorted._gather(order)
+
+
+def normalized_absolute_path(image_path: str) -> str:
+    """The form under which two items name the same file: absolute, NFC, and case- and separator-folded
+    where the OS folds them (`os.path.normcase`)."""
+    return os.path.normcase(unicodedata.normalize("NFC", os.path.abspath(image_path)))
+
+
+def _path_hash(normalized: str) -> int:
+    digest = hashlib.blake2b(normalized.encode("utf-8", "surrogatepass"), digest_size=8, person=b"style-path")
+    return int.from_bytes(digest.digest(), "little", signed=True)
+
+
+def _path_fingerprint(normalized: str) -> tuple[int, int]:
+    digest = hashlib.blake2b(normalized.encode("utf-8", "surrogatepass"), digest_size=16,
+                             person=b"style-pinpath").digest()
+    return int.from_bytes(digest[:8], "little", signed=True), int.from_bytes(digest[8:], "little", signed=True)
+
+
+class _PinnedPaths:
+    """Normalised path -> the pinned item that owns it (lowest dataset_id among pinned copies), keyed by a
+    128-bit path fingerprint so no path strings are held for millions of pinned items."""
+
+    def __init__(self, high: array, low: array, owners: array) -> None:
+        high, low, owners = (np.frombuffer(a, dtype=np.int64) for a in (high, low, owners))
+        order = np.lexsort((low, high))  # stable: equal paths keep their dataset_id order
+        high, low, owners = high[order], low[order], owners[order]
+        first = np.ones(high.size, dtype=bool)
+        first[1:] = (high[1:] != high[:-1]) | (low[1:] != low[:-1])
+        self._high, self._low, self._owners = high[first], low[first], owners[first]
+
+    def owner(self, normalized: str) -> Optional[int]:
+        high, low = _path_fingerprint(normalized)
+        i = int(np.searchsorted(self._high, high))
+        while i < self._high.size and self._high[i] == high:
+            if self._low[i] == low:
+                return int(self._owners[i])
+            i += 1
+        return None
+
+
+class _PathDeduper:
+    """Records of earlier datasets as sorted 64-bit path hashes with their path-table rows. A hash hit is
+    confirmed against the stored path, so a hash collision keeps both items."""
+
+    def __init__(self) -> None:
+        self._hashes = np.zeros(0, dtype=np.int64)
+        self._rows = np.zeros(0, dtype=np.int64)
+        self._pending_hashes, self._pending_rows = array("q"), array("q")
+
+    def find(self, path_hash: int, normalized: str, builder: _ItemPathsBuilder) -> Optional[int]:
+        if not self._hashes.size:
+            return None
+        i = int(np.searchsorted(self._hashes, path_hash))
+        while i < self._hashes.size and self._hashes[i] == path_hash:
+            row = int(self._rows[i])
+            if normalized_absolute_path(builder.path(row)) == normalized:
+                return row
+            i += 1
+        return None
+
+    def add(self, path_hash: int, row: int) -> None:
+        self._pending_hashes.append(path_hash)
+        self._pending_rows.append(row)
+
+    def end_dataset(self) -> None:
+        """Items of one dataset are not compared with each other: an exact repeated path is refused by the
+        item-key check, but a case or separator variant of one path within a dataset is not detected."""
+        hashes = np.concatenate([self._hashes, np.frombuffer(self._pending_hashes, dtype=np.int64)])
+        rows = np.concatenate([self._rows, np.frombuffer(self._pending_rows, dtype=np.int64)])
+        order = np.argsort(hashes, kind="stable")
+        self._hashes, self._rows = hashes[order], rows[order]
+        self._pending_hashes, self._pending_rows = array("q"), array("q")
 
 
 class DuplicateItemKeyError(ValueError):
@@ -160,6 +239,7 @@ class IngestStats:
     items_missing_image: int = 0
     items_outside_root: int = 0
     items_without_tag_caption: int = 0
+    items_duplicate_path: int = 0
     records: int = 0
 
     def as_dict(self) -> dict:
@@ -169,26 +249,39 @@ class IngestStats:
 class StyleIngest:
     """`records()` streams Phase 1 records (item_id, item_key, labels) for `build_style_index`; when it
     is exhausted, `paths` holds the path table of every record, item keys have been checked unique and
-    every configured dataset has yielded a record.
+    every configured dataset has yielded a record or only duplicates.
 
     Captions follow `TaggerDataset._build_samples` given a caption_types filter: `is_tags_format` captions,
     restricted to that dataset's caption_types when non-empty, all selected captions of an item
     contributing; items whose image file is missing are skipped. Unlike here, the tagger run passes
-    caption_types=None, so it ignores each dataset_configs entry's caption_types."""
+    caption_types=None, so it ignores each dataset_configs entry's caption_types.
+
+    Datasets are read in dataset_id order. An image that several items name (same
+    `normalized_absolute_path`, e.g. under nested dataset roots) is kept once, since the copies' item keys
+    differ: it would train twice and could land on both sides of the image split. The copy kept is the one
+    whose item key is in `pinned_keys` (the saved split snapshot; the lowest dataset_id among several),
+    else the lowest dataset_id. Keeping the pinned copy keeps a trained image under the key it trained with,
+    whose hash put it on the train side."""
 
     def __init__(self, session, configs: Sequence[StyleDatasetConfig], resolver: StyleLabelResolver,
-                 progress: Optional[Callable[[int, int, str], None]] = None) -> None:
+                 progress: Optional[Callable[[int, int, str], None]] = None,
+                 pinned_keys: Optional[np.ndarray] = None) -> None:
         self._session = session
         self._configs = tuple(configs)
         self.resolver = resolver
         self._progress = progress
+        self._pinned = np.unique(np.asarray(pinned_keys if pinned_keys is not None else [], dtype=np.int64))
+        self._pinned_paths: Optional[_PinnedPaths] = None
         self.stats = IngestStats()
         self.paths: Optional[ItemPaths] = None
-        self.skipped_examples: list[str] = []
+        self.skipped_examples: dict[int, list[str]] = {}  # dataset_id -> first skipped items
+        self.duplicate_examples: list[str] = []
+        self._deduper = _PathDeduper() if len(self._configs) > 1 else None
 
-    def _skip(self, what: str) -> None:
-        if len(self.skipped_examples) < _MAX_EXAMPLES:
-            self.skipped_examples.append(what)
+    def _skip(self, dataset_id: int, what: str) -> None:
+        examples = self.skipped_examples.setdefault(dataset_id, [])
+        if len(examples) < _MAX_EXAMPLES:
+            examples.append(what)
 
     def records(self) -> Iterator[tuple[int, int, StyleLabels]]:
         from sqlalchemy import and_
@@ -197,7 +290,10 @@ class StyleIngest:
         builder = _ItemPathsBuilder()
         stats = self.stats
         last_emit = 0.0
-        for n, config in enumerate(self._configs):
+        configs = sorted(self._configs, key=lambda c: c.dataset_id)
+        if self._deduper is not None and self._pinned.size:
+            self._pinned_paths = self._pinned_path_table(configs)
+        for n, config in enumerate(configs):
             dataset = self._session.query(Dataset.id, Dataset.path).filter(Dataset.id == config.dataset_id).first()
             if dataset is None:
                 raise ValueError(f"dataset {config.dataset_id} does not exist")
@@ -217,7 +313,7 @@ class StyleIngest:
             current: Optional[tuple[int, str]] = None
             captions: list[tuple[Any, Optional[str]]] = []
             done = 0
-            records_before = stats.records
+            records_before, duplicates_before = stats.records, stats.items_duplicate_path
             for item_id, image_path, caption_id, tag_data, content in _with_sentinel(rows):
                 if current is not None and item_id != current[0]:
                     record = self._record(config.dataset_id, dataset.path, current, captions, builder)
@@ -234,12 +330,69 @@ class StyleIngest:
                 current = (int(item_id), image_path)
                 if caption_id is not None:
                     captions.append((tag_data, content))
-            if stats.records == records_before:
+            if stats.records == records_before and stats.items_duplicate_path == duplicates_before:
                 raise ValueError(f"dataset {config.dataset_id} yielded no usable item ({done} scanned; check the "
                                  f"image files, the dataset root and caption_types {list(config.caption_types)}): "
-                                 f"{self.skipped_examples}")
+                                 f"{self.skipped_examples.get(config.dataset_id, [])}")
+            if self._deduper is not None:
+                self._deduper.end_dataset()
         self.paths = builder.finish()
         check_unique_item_keys(self.paths)
+
+    def _pinned_path_table(self, configs: Sequence[StyleDatasetConfig]) -> _PinnedPaths:
+        """Pre-pass over item paths (no file checks): the owning pinned item of each pinned path. Only an item
+        with a selected tags-format caption can own a path, since the main pass drops any other."""
+        from sqlalchemy import and_, exists
+        from database.models import Dataset, DatasetCaption, DatasetItem
+
+        high, low, owners = array("q"), array("q"), array("q")
+        pinned = self._pinned
+        for n, config in enumerate(configs):
+            root = self._session.query(Dataset.path).filter(Dataset.id == config.dataset_id).scalar()
+            if not root:
+                continue  # refused by the main pass
+            if self._progress is not None:
+                self._progress(n, len(configs), f"Locating trained images in dataset {config.dataset_id}")
+            captioned = [DatasetCaption.item_id == DatasetItem.id, DatasetCaption.is_tags_format == True]  # noqa: E712
+            if config.caption_types:
+                captioned.append(DatasetCaption.caption_type.in_(config.caption_types))
+            rows = (self._session.query(DatasetItem.id, DatasetItem.image_path)
+                    .filter(DatasetItem.dataset_id == config.dataset_id, exists().where(and_(*captioned)))
+                    .order_by(DatasetItem.id).yield_per(_ROWS_PER_FETCH))
+            ids: list[int] = []
+            paths: list[str] = []
+            keys: list[int] = []
+
+            def flush() -> None:
+                if not keys:
+                    return
+                k = np.asarray(keys, dtype=np.int64)
+                pos = np.minimum(np.searchsorted(pinned, k), pinned.size - 1)
+                for i in np.flatnonzero(pinned[pos] == k):
+                    h, lo = _path_fingerprint(normalized_absolute_path(paths[i]))
+                    high.append(h)
+                    low.append(lo)
+                    owners.append(ids[i])
+                ids.clear()
+                paths.clear()
+                keys.clear()
+
+            for item_id, image_path in rows:
+                relative = dataset_relative_path(image_path, root) if image_path else None
+                if relative is None:
+                    continue
+                ids.append(int(item_id))
+                paths.append(image_path)
+                keys.append(stable_item_key(config.dataset_id, relative))
+                if len(keys) >= _ROWS_PER_FETCH:
+                    flush()
+            flush()
+        return _PinnedPaths(high, low, owners)
+
+    def _drop_duplicate(self, item_id: int, dataset_id: int, image_path: str, of: str) -> None:
+        self.stats.items_duplicate_path += 1
+        if len(self.duplicate_examples) < _MAX_EXAMPLES:
+            self.duplicate_examples.append(f"item {item_id} of dataset {dataset_id} ({image_path!r}) is {of}")
 
     def _record(self, dataset_id: int, root: str, item: tuple[int, str], captions: list,
                 builder: _ItemPathsBuilder) -> Optional[tuple[int, int, StyleLabels]]:
@@ -248,19 +401,35 @@ class StyleIngest:
         stats.items_scanned += 1
         if not image_path or not os.path.isfile(image_path):
             stats.items_missing_image += 1
-            self._skip(f"item {item_id}: missing image {image_path!r}")
+            self._skip(dataset_id, f"item {item_id}: missing image {image_path!r}")
             return None
         relative = dataset_relative_path(image_path, root)
         if relative is None:
             stats.items_outside_root += 1
-            self._skip(f"item {item_id}: {image_path!r} is outside dataset root {root!r}")
+            self._skip(dataset_id, f"item {item_id}: {image_path!r} is outside dataset root {root!r}")
             return None
         if not captions:
             stats.items_without_tag_caption += 1
             return None
+        if self._deduper is not None:
+            normalized = normalized_absolute_path(image_path)
+            path_hash = _path_hash(normalized)
+            owner = self._pinned_paths.owner(normalized) if self._pinned_paths is not None else None
+            if owner is not None:
+                if owner != item_id:  # the owner itself is never a duplicate: other copies all drop here
+                    self._drop_duplicate(item_id, dataset_id, image_path, f"item {owner}, trained on by this run")
+                    return None
+            else:
+                original = self._deduper.find(path_hash, normalized, builder)
+                if original is not None:
+                    self._drop_duplicate(item_id, dataset_id, image_path,
+                                         f"item {builder.ids[original]} of dataset {builder.datasets[original]}")
+                    return None
         labels = self.resolver.resolve_captions(captions)
         key = stable_item_key(dataset_id, relative)
-        builder.append(item_id, key, dataset_id, image_path)
+        row = builder.append(item_id, key, dataset_id, image_path)
+        if self._deduper is not None:
+            self._deduper.add(path_hash, row)
         stats.records += 1
         return item_id, key, labels
 

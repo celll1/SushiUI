@@ -73,7 +73,8 @@ webui_cl/
 | `backend/core/inference/context_tiled_decode.py` | `vae_tile_mode: "context"` — tiled decode with a discarded real-context margin instead of an overlap cross-fade. |
 | `backend/core/inference/global_group_norm.py` | `vae_tile_global_norm` — opt-in two-pass whole-image GroupNorm statistics for a tiled decode. Both are installed by `PipelineManager._apply_vae_tiling`; see `docs/guides/VAE_DECODE_BEHAVIOR.md`. |
 | `backend/api/routes.py` | All FastAPI endpoints. The image generation endpoints (`/generate/txt2img`, `/generate/img2img`, `/generate/inpaint`) are `multipart/form-data` (`Form(...)` params), not JSON; the video/audio ones (`/generate/txt2vid`, `/generate/txt2aud`) take a JSON body, and the ones that carry a file (`/generate/img2vid`, `/generate/ref2vid`, `/generate/outpaint/video`, `/generate/outpaint/audio`) are multipart. `_reject_if_video_model` / `_reject_if_audio_model` keep each family's endpoints from accepting another family's loaded model. |
-| `backend/api/param_defaults.py` | Single source of truth for every default value (`GENERATION_DEFAULTS`, `TRAINING_DEFAULTS`, `TAGGER_TRAINING_DEFAULTS`, `VAE_TRAINING_DEFAULTS`), exposed via `/schema/*`. |
+| `backend/api/param_defaults.py` | Single source of truth for every default value (`GENERATION_DEFAULTS`, `TRAINING_DEFAULTS`, `TAGGER_TRAINING_DEFAULTS`, `STYLE_TRAINING_DEFAULTS`, `VAE_TRAINING_DEFAULTS`), exposed via `/schema/*`. |
+| `backend/api/style_training_routes.py` | `/style-training/*`: style encoder run catalogue, per-run detail store, thread lifecycle (included by `routes.py`). Lifecycle pieces shared with the tagger routes live in `backend/api/training_run_helpers.py`. |
 | `backend/api/websocket.py` | Progress-streaming WebSocket implementation (protocol documented in `backend/api/WS_PROTOCOL.md`). |
 | `backend/utils/image_utils.py` | Saves generated images with embedded PNG metadata (generation parameters). |
 | `backend/database/models.py` | SQLAlchemy models: `UserSettings`, `GeneratedImage`, `Dataset`/`DatasetItem`/`DatasetCaption`, `TrainingRun`/`TrainingMetrics`/`TrainingCheckpoint`, `TaggerTrainingRun`, etc. |
@@ -118,5 +119,6 @@ webui_cl/
   sync with `backend/api/routes.py`.
 - Runtime schema fetched by the frontend: `GET /api/v1/schema/generation-defaults`,
   `/schema/training-defaults`, `/schema/tagger-training-defaults`,
+  `/schema/style-training-defaults`,
   `/schema/vae-training-defaults`.
 - Full parameter-addition checklist: `docs/guides/ADD_A_PARAMETER.md`.

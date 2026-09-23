@@ -21,7 +21,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from api.param_defaults import (
     SENSENOVA_GENERATION_DEFAULTS,
     TRAINING_DEFAULTS,
+    TRAINING_GUIDANCE_LOSS_DEFAULTS_BY_ARCH,
     TRAINING_SAMPLE_DEFAULTS_BY_ARCH,
+    resolve_training_guidance_loss_defaults,
 )
 from api.routes import TrainingRunCreateRequest, get_training_defaults
 from core.training.arch import ARCH_REGISTRY
@@ -239,6 +241,55 @@ def test_training_defaults_schema_serves_sample_overlay():
 
     payload = asyncio.run(get_training_defaults())
     assert payload["_sample_defaults_by_arch"] == TRAINING_SAMPLE_DEFAULTS_BY_ARCH
+    assert payload["_guidance_loss_defaults_by_arch"] == TRAINING_GUIDANCE_LOSS_DEFAULTS_BY_ARCH
+
+
+def test_qwen_guidance_default_and_explicit_ordinary_loss():
+    params = TrainingRunCreateRequest(
+        training_method="lora", base_model_path=r"M:\model\qwen21\original"
+    )
+    resolved = resolve_training_guidance_loss_defaults(
+        params.model_dump(), params.model_fields_set, "qwen_image_21"
+    )
+    assert resolved["qwen_guidance_loss_weight"] == 1.0
+    assert resolve_training_guidance_loss_defaults(
+        params.model_dump(), params.model_fields_set, "sdxl"
+    )["qwen_guidance_loss_weight"] == 0.0
+
+    explicit = TrainingRunCreateRequest(
+        training_method="lora", base_model_path=r"M:\model\qwen21\original",
+        qwen_guidance_loss_weight=0.0,
+    )
+    assert resolve_training_guidance_loss_defaults(
+        explicit.model_dump(), explicit.model_fields_set, "qwen_image_21"
+    )["qwen_guidance_loss_weight"] == 0.0
+
+
+def test_qwen_config_uses_full_guidance_only_for_new_omitted_loss(monkeypatch):
+    from core.model_loader import ModelLoader
+
+    monkeypatch.setattr(ModelLoader, "detect_model_type", lambda path: "qwen_image_21")
+    request = TrainingRunCreateRequest(
+        training_method="lora", base_model_path=r"M:\model\qwen21\original",
+        total_steps=1,
+    )
+    payload = request.model_dump()
+    payload["_explicit_fields"] = sorted(request.model_fields_set)
+    text = TrainingConfigGenerator.generate_lora_config(
+        payload, run_name="qwen-guidance-default", base_model_path=request.base_model_path,
+        output_dir="output", dataset_path="dataset",
+    )
+    train = yaml.safe_load(text)["config"]["process"][0]["train"]
+    assert train["qwen_guidance_loss_weight"] == 1.0
+    assert train["qwen_guidance_loss_mix_mode"] == "stochastic"
+
+    payload["qwen_guidance_loss_weight"] = 0.0
+    payload["_explicit_fields"].append("qwen_guidance_loss_weight")
+    ordinary = TrainingConfigGenerator.generate_lora_config(
+        payload, run_name="qwen-ordinary-explicit", base_model_path=request.base_model_path,
+        output_dir="output", dataset_path="dataset",
+    )
+    assert yaml.safe_load(ordinary)["config"]["process"][0]["train"]["qwen_guidance_loss_weight"] == 0.0
 
 
 def test_dispatch_and_sd_handlers_forward_sampler_and_schedule():

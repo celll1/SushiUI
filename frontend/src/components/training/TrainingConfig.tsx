@@ -9,6 +9,7 @@ import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
 import NumberInput from "../common/NumberInput";
 import VisionEncoderSelector from "../common/VisionEncoderSelector";
 import TimestepDistributionGraph from "./TimestepDistributionGraph";
+import QwenTrainingObjective from "./QwenTrainingObjective";
 import GpuSelect from "./GpuSelect";
 import VaeSwapSourceSelector from "./VaeSwapSourceSelector";
 import DanbooruAugmentationSection from "./DanbooruAugmentationSection";
@@ -65,11 +66,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // the same values. Fallbacks and fixed option tables live in
   // trainingConfigDefinitions.tsx.
   const [params, setParams] = useState<TrainingRunCreateRequest>(DEFAULT_PARAMS);
-  const { trainingDefaults, trainingSampleDefaultsByArch, timestepDefaultsByArch, bundleVaeDefaultsByArch, archCapabilities } = useStartup();
+  const { trainingDefaults, trainingSampleDefaultsByArch, trainingGuidanceLossDefaultsByArch, timestepDefaultsByArch, bundleVaeDefaultsByArch, archCapabilities } = useStartup();
 
   // Apply backend-fetched defaults when they arrive (only for new runs, not edit mode)
   useEffect(() => {
     if (!trainingDefaults || editRunId) return;
+    lastGuidanceLossModelRef.current = null;
     setParams(prev => ({ ...DEFAULT_PARAMS, ...(trainingDefaults as Partial<TrainingRunCreateRequest>) }));
   }, [trainingDefaults, editRunId]);
 
@@ -147,6 +149,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // Same pattern for the per-arch default bundle_vae (sd15/sdxl -> true).
   const lastBundleVaeModelRef = useRef<string | null>(null);
   const lastSampleDefaultsModelRef = useRef<string | null>(null);
+  const lastGuidanceLossModelRef = useRef<string | null>(null);
   const sampleDefaultsExplicitlySetRef = useRef(false);
 
   // Tracks which editRunId has already been restored from YAML.
@@ -862,6 +865,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // shown only for it rather than as a knob that silently does nothing.
   const isMiniMaxH3Model = getModelArchitecture(baseModelPath) === "minimax_h3";
   const isQwenImage21Model = getModelArchitecture(baseModelPath) === "qwen_image_21";
+  const isQwenConvRotModel = isQwenImage21Model && /int8[_-]convrot/i.test(baseModelPath);
 
   function isSDOrSDXLModel(modelPath: string): boolean {
     const arch = getModelArchitecture(modelPath);
@@ -905,6 +909,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const getRequestData = useCallback((): any => {
     return {
       ...passThroughParams(params),
+      train_adapter: (trainingMethod === "lora" || trainingMethod === "full_finetune") &&
+        (isQwenImage21Model || isAnimaModel(baseModelPath)) ? params.train_adapter : null,
+      adapter_lr: (trainingMethod === "lora" || trainingMethod === "full_finetune") &&
+        (isQwenImage21Model || isAnimaModel(baseModelPath)) ? params.adapter_lr : null,
+      train_text_encoder: textEncoderTrainingUnsupported ? false : params.train_text_encoder,
+      qwen_guidance_loss_weight: isQwenImage21Model ? params.qwen_guidance_loss_weight : 0,
+      qwen_cfg_null_sigma_schedule: isQwenImage21Model &&
+        (params.cfg_uncond_drop_rate ?? cfgUncondDropDefaultRate ?? 0) > 0
+        ? params.qwen_cfg_null_sigma_schedule : false,
       dataset_configs: datasetConfigs.filter(c => c.dataset_id !== 0),
       run_name: runName.trim() || undefined,
       training_method: trainingMethod,
@@ -1048,7 +1061,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     // Core: entire params object (single source of truth for ~90 fields)
     params,
     // Non-params form state
-    datasetConfigs, runName, trainingMethod, baseModelPath, useEpochs,
+    datasetConfigs, runName, trainingMethod, baseModelPath, availableModels,
+    textEncoderTrainingUnsupported, cfgUncondDropDefaultRate, useEpochs,
     // Local text states (numeric-input helpers; written on blur but read here)
     localLrText,
     localBeta1Text, localBeta2Text, localEpsilonText, localWeightDecayText,
@@ -1086,6 +1100,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (incoming.run_name) setRunName(incoming.run_name);
     if (incoming.base_model_path !== undefined) {
       const bmp = incoming.base_model_path || "";
+      lastGuidanceLossModelRef.current = bmp;
       setBaseModelPath(bmp);
       // Reflect a from-scratch MiniT2I sentinel back into the checkbox/selectors.
       if (bmp.startsWith("scratch:minit2i:")) {
@@ -1459,6 +1474,23 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       sample_cfg_scale: overlay.sample_cfg_scale as number,
     }));
   }, [baseModelPath, trainingSampleDefaultsByArch]);
+
+  useEffect(() => {
+    if (!baseModelPath || !trainingGuidanceLossDefaultsByArch) return;
+    if (restoringFromYAMLRef.current) {
+      lastGuidanceLossModelRef.current = baseModelPath;
+      return;
+    }
+    if (lastGuidanceLossModelRef.current === baseModelPath) return;
+    const arch = getModelArchitecture(baseModelPath);
+    if (!arch) return;
+    const weight = (arch && trainingGuidanceLossDefaultsByArch[arch])
+      ?? trainingGuidanceLossDefaultsByArch["_default"];
+    lastGuidanceLossModelRef.current = baseModelPath;
+    if (weight !== undefined) {
+      setParams(prev => ({ ...prev, qwen_guidance_loss_weight: weight }));
+    }
+  }, [baseModelPath, trainingGuidanceLossDefaultsByArch, trainingDefaults, availableModels]);
 
   // Fall back to LoRA when the backend's TRAINING_UNSUPPORTED table says the
   // selected method is not offered for the selected base model (the run would
@@ -4346,6 +4378,207 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               />
             </div>
 
+            {/* Keep component rates beside the base LR. */}
+            <div className="pt-3 mt-3 border-t border-gray-700">
+              <h4 className="text-xs font-medium text-gray-400 mb-2">Trainable Components &amp; Learning Rates</h4>
+
+            {/* Train toggles in 2 columns */}
+            <div className="grid grid-cols-2 gap-3 mb-2">
+              {/* Train U-Net */}
+              <div className="flex items-center space-x-2" title={requiredValue("train_unet")?.reason}>
+                <input
+                  type="checkbox"
+                  id="train-unet"
+                  checked={trainUnet}
+                  onChange={(e) => updateParam("train_unet", e.target.checked)}
+                  disabled={!!requiredValue("train_unet")}
+                  className="w-4 h-4 disabled:opacity-50 disabled:cursor-not-allowed"
+                />
+                <label htmlFor="train-unet" className="text-xs text-gray-300 cursor-pointer">
+                  {baseModelArch === "sd15" || baseModelArch === "sdxl" || baseModelArch === "sensenova_sdxl_chimera"
+                    ? "Train U-Net" : "Train Denoiser / Transformer"}
+                </label>
+              </div>
+
+              {/* Train Text Encoder */}
+              {!textEncoderTrainingUnsupported && <div>
+                <div className="flex items-center space-x-2" title={textEncoderTrainingUnsupported ?? textEncoderTrainingAdvisory?.reason}>
+                  <input
+                    type="checkbox"
+                    id="train-text-encoder"
+                    checked={trainTextEncoder && !textEncoderTrainingUnsupported}
+                    onChange={(e) => updateParam("train_text_encoder", e.target.checked)}
+                    disabled={!!textEncoderTrainingUnsupported}
+                    className="w-4 h-4 disabled:opacity-50 disabled:cursor-not-allowed"
+                  />
+                  <label htmlFor="train-text-encoder" className="text-xs text-gray-300 cursor-pointer">
+                    Train Text Encoder
+                    {!textEncoderTrainingUnsupported && textEncoderTrainingAdvisory?.level === "high_memory" && ' (high memory)'}
+                    {isMiniT2IModel(baseModelPath) && '(FLAN-T5)'}
+                  </label>
+                </div>
+                {/* Advisory, not a refusal: the run is accepted either way. */}
+                {!textEncoderTrainingUnsupported && textEncoderTrainingAdvisory && (
+                  <p className="text-xs text-amber-400 mt-1">{textEncoderTrainingAdvisory.reason}</p>
+                )}
+              </div>}
+
+            </div>
+
+            {/* U-Net Learning Rate */}
+            {trainUnet && (
+              <div className="mb-3">
+                <label className="block text-xs text-gray-400 mb-1">
+                  Denoiser LR <span className="text-xs text-gray-500">(empty = use base LR)</span>
+                </label>
+                <input
+                  type="text"
+                  value={unetLr}
+                  onChange={(e) => setLocalUnetLrText(e.target.value)}
+                  onBlur={(e) => { const v = parseFloat(e.target.value); updateParam("unet_lr", (isNaN(v) || v < 0) ? null : v); }}
+                  placeholder={`Default: ${learningRate} (e.g., 1e-4)`}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                />
+              </div>
+            )}
+
+            {(trainingMethod === "lora" || trainingMethod === "full_finetune") &&
+             (isQwenImage21Model || isAnimaModel(baseModelPath)) && (
+              <div className="mb-3 space-y-2 rounded border border-gray-700 p-3">
+                <label className="block text-xs text-gray-300">
+                  Conditioning adapter ({isQwenImage21Model ? "Qwen txt_in" : "Anima LLM Adapter"})
+                </label>
+                <select
+                  value={params.train_adapter == null ? "inherit" : String(params.train_adapter)}
+                  onChange={(e) => updateParam("train_adapter", e.target.value === "inherit" ? null : e.target.value === "true")}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
+                >
+                  <option value="inherit">Architecture default</option>
+                  <option value="true">Train adapter</option>
+                  <option value="false">Freeze adapter</option>
+                </select>
+                <label className="block text-xs text-gray-400">Adapter LR (empty = architecture default)</label>
+                <input
+                  type="number"
+                  min={0}
+                  step="any"
+                  value={params.adapter_lr ?? ""}
+                  onChange={(e) => updateParam("adapter_lr", e.target.value === "" ? null : Number(e.target.value))}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
+                />
+                <p className="text-xs text-gray-500">
+                  This is the bridge inside the denoiser, not the text encoder or LoRA algorithm.
+                  Qwen LoRA defaults to frozen; Qwen full fine-tune and Anima retain their established adapter policy.
+                </p>
+              </div>
+            )}
+
+            {/* Text Encoder Learning Rates */}
+            {trainTextEncoder && (
+              <div className="space-y-2">
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">
+                    Text Encoder LR <span className="text-xs text-gray-500">(base, empty = use base LR)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={textEncoderLr}
+                    onChange={(e) => setLocalTextEncoderLrText(e.target.value)}
+                    onBlur={(e) => { const v = parseFloat(e.target.value); updateParam("text_encoder_lr", (isNaN(v) || v < 0) ? null : v); }}
+                    placeholder={`Default: ${learningRate} (e.g., 1e-5)`}
+                    className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                {/* SDXL-specific TE1/TE2 in 2 columns */}
+                {(baseModelArch === "sdxl" || baseModelArch === "sensenova_sdxl_chimera") &&
+                <div className="pl-3 space-y-2 border-l-2 border-gray-700">
+                  <p className="text-xs text-gray-500">SDXL: Individual TEs (optional)</p>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    {/* TE1 LR (CLIP-L) */}
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">
+                        TE1 LR <span className="text-xs text-gray-500">(CLIP-L)</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={textEncoder1Lr}
+                        onChange={(e) => setLocalTextEncoder1LrText(e.target.value)}
+                        onBlur={(e) => { const v = parseFloat(e.target.value); updateParam("text_encoder_1_lr", (isNaN(v) || v < 0) ? null : v); }}
+                        placeholder={`Default: ${textEncoderLr || learningRate}`}
+                        className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+
+                    {/* TE2 LR (CLIP-G) */}
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">
+                        TE2 LR <span className="text-xs text-gray-500">(CLIP-G)</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={textEncoder2Lr}
+                        onChange={(e) => setLocalTextEncoder2LrText(e.target.value)}
+                        onBlur={(e) => { const v = parseFloat(e.target.value); updateParam("text_encoder_2_lr", (isNaN(v) || v < 0) ? null : v); }}
+                        placeholder={`Default: ${textEncoderLr || learningRate}`}
+                        className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                  </div>
+                </div>}
+              </div>
+            )}
+
+            {/* Vision Encoder LR — shown only when VE is selected on SD/SDXL */}
+            {visionEncoderPath && isSDOrSDXLModel(baseModelPath) && (
+              <div className="mt-3 pt-3 border-t border-gray-700 space-y-2">
+                <div className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    id="train-vision-encoder"
+                    checked={trainVisionEncoder}
+                    onChange={(e) => updateParam("train_vision_encoder", e.target.checked)}
+                    className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+                  />
+                  <label htmlFor="train-vision-encoder" className="text-xs text-gray-300 cursor-pointer">
+                    Train Vision Encoder
+                  </label>
+                </div>
+                {trainVisionEncoder && (
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">
+                      VE LR <span className="text-xs text-gray-500">(empty = use text encoder LR)</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={visionEncoderLr}
+                      onChange={(e) => setLocalVisionEncoderLrText(e.target.value)}
+                      onBlur={(e) => { const v = parseFloat(e.target.value); updateParam("vision_encoder_lr", (isNaN(v) || v < 0) ? null : v); }}
+                      placeholder={`Default: ${textEncoderLr || learningRate}`}
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                )}
+                {trainTextEncoder && (
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="gradient-routing-ve"
+                      checked={gradientRoutingVE}
+                      onChange={(e) => updateParam("gradient_routing_ve", e.target.checked)}
+                      className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+                    />
+                    <label htmlFor="gradient-routing-ve" className="text-xs text-gray-300 cursor-pointer">
+                      Block text-encoder gradients on reference batches
+                    </label>
+                  </div>
+                )}
+              </div>
+            )}
+
+            </div>
+
             <div>
               <label className="block text-xs text-gray-400 mb-1">LR Scheduler</label>
               <select
@@ -4988,200 +5221,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             </div>
           </div>
 
-          {/* Component-Specific Settings */}
-          <div className="pt-3 mt-3 border-t border-gray-700">
-            <h4 className="text-xs font-medium text-gray-400 mb-2">Component-Specific Learning Rates</h4>
-
-            {/* Train toggles in 2 columns */}
-            <div className="grid grid-cols-2 gap-3 mb-2">
-              {/* Train U-Net */}
-              <div className="flex items-center space-x-2" title={requiredValue("train_unet")?.reason}>
-                <input
-                  type="checkbox"
-                  id="train-unet"
-                  checked={trainUnet}
-                  onChange={(e) => updateParam("train_unet", e.target.checked)}
-                  disabled={!!requiredValue("train_unet")}
-                  className="w-4 h-4 disabled:opacity-50 disabled:cursor-not-allowed"
-                />
-                <label htmlFor="train-unet" className="text-xs text-gray-300 cursor-pointer">
-                  Train U-Net
-                </label>
-              </div>
-
-              {/* Train Text Encoder */}
-              <div>
-                <div className="flex items-center space-x-2" title={textEncoderTrainingUnsupported ?? textEncoderTrainingAdvisory?.reason}>
-                  <input
-                    type="checkbox"
-                    id="train-text-encoder"
-                    checked={trainTextEncoder && !textEncoderTrainingUnsupported}
-                    onChange={(e) => updateParam("train_text_encoder", e.target.checked)}
-                    disabled={!!textEncoderTrainingUnsupported}
-                    className="w-4 h-4 disabled:opacity-50 disabled:cursor-not-allowed"
-                  />
-                  <label htmlFor="train-text-encoder" className={`text-xs cursor-pointer ${textEncoderTrainingUnsupported ? 'text-gray-500' : 'text-gray-300'}`}>
-                    Train Text Encoder {textEncoderTrainingUnsupported && '(not supported for this model)'}
-                    {!textEncoderTrainingUnsupported && textEncoderTrainingAdvisory?.level === "high_memory" && ' (high memory)'}
-                    {isMiniT2IModel(baseModelPath) && '(FLAN-T5)'}
-                  </label>
-                </div>
-                {/* Advisory, not a refusal: the run is accepted either way. */}
-                {!textEncoderTrainingUnsupported && textEncoderTrainingAdvisory && (
-                  <p className="text-xs text-amber-400 mt-1">{textEncoderTrainingAdvisory.reason}</p>
-                )}
-              </div>
-
-            </div>
-
-            {/* U-Net Learning Rate */}
-            {trainUnet && (
-              <div className="mb-3">
-                <label className="block text-xs text-gray-400 mb-1">
-                  U-Net LR <span className="text-xs text-gray-500">(empty = use base LR)</span>
-                </label>
-                <input
-                  type="text"
-                  value={unetLr}
-                  onChange={(e) => setLocalUnetLrText(e.target.value)}
-                  onBlur={(e) => { const v = parseFloat(e.target.value); updateParam("unet_lr", (isNaN(v) || v < 0) ? null : v); }}
-                  placeholder={`Default: ${learningRate} (e.g., 1e-4)`}
-                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
-                />
-              </div>
-            )}
-
-            {(isQwenImage21Model || isAnimaModel(baseModelPath)) && (
-              <div className="mb-3 space-y-2 rounded border border-gray-700 p-3">
-                <label className="block text-xs text-gray-300">
-                  Conditioning adapter ({isQwenImage21Model ? "Qwen txt_in" : "Anima LLM Adapter"})
-                </label>
-                <select
-                  value={params.train_adapter == null ? "inherit" : String(params.train_adapter)}
-                  onChange={(e) => updateParam("train_adapter", e.target.value === "inherit" ? null : e.target.value === "true")}
-                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
-                >
-                  <option value="inherit">Architecture default</option>
-                  <option value="true">Train adapter</option>
-                  <option value="false">Freeze adapter</option>
-                </select>
-                <label className="block text-xs text-gray-400">Adapter LR (empty = architecture default)</label>
-                <input
-                  type="number"
-                  min={0}
-                  step="any"
-                  value={params.adapter_lr ?? ""}
-                  onChange={(e) => updateParam("adapter_lr", e.target.value === "" ? null : Number(e.target.value))}
-                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
-                />
-                <p className="text-xs text-gray-500">This is the bridge inside the denoiser, not the text encoder or the LoRA algorithm.</p>
-              </div>
-            )}
-
-            {/* Text Encoder Learning Rates */}
-            {trainTextEncoder && (
-              <div className="space-y-2">
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">
-                    Text Encoder LR <span className="text-xs text-gray-500">(base, empty = use base LR)</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={textEncoderLr}
-                    onChange={(e) => setLocalTextEncoderLrText(e.target.value)}
-                    onBlur={(e) => { const v = parseFloat(e.target.value); updateParam("text_encoder_lr", (isNaN(v) || v < 0) ? null : v); }}
-                    placeholder={`Default: ${learningRate} (e.g., 1e-5)`}
-                    className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
-                  />
-                </div>
-
-                {/* SDXL-specific TE1/TE2 in 2 columns */}
-                <div className="pl-3 space-y-2 border-l-2 border-gray-700">
-                  <p className="text-xs text-gray-500">SDXL: Individual TEs (optional)</p>
-
-                  <div className="grid grid-cols-2 gap-3">
-                    {/* TE1 LR (CLIP-L) */}
-                    <div>
-                      <label className="block text-xs text-gray-400 mb-1">
-                        TE1 LR <span className="text-xs text-gray-500">(CLIP-L)</span>
-                      </label>
-                      <input
-                        type="text"
-                        value={textEncoder1Lr}
-                        onChange={(e) => setLocalTextEncoder1LrText(e.target.value)}
-                        onBlur={(e) => { const v = parseFloat(e.target.value); updateParam("text_encoder_1_lr", (isNaN(v) || v < 0) ? null : v); }}
-                        placeholder={`Default: ${textEncoderLr || learningRate}`}
-                        className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
-                      />
-                    </div>
-
-                    {/* TE2 LR (CLIP-G) */}
-                    <div>
-                      <label className="block text-xs text-gray-400 mb-1">
-                        TE2 LR <span className="text-xs text-gray-500">(CLIP-G)</span>
-                      </label>
-                      <input
-                        type="text"
-                        value={textEncoder2Lr}
-                        onChange={(e) => setLocalTextEncoder2LrText(e.target.value)}
-                        onBlur={(e) => { const v = parseFloat(e.target.value); updateParam("text_encoder_2_lr", (isNaN(v) || v < 0) ? null : v); }}
-                        placeholder={`Default: ${textEncoderLr || learningRate}`}
-                        className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Vision Encoder LR — shown only when VE is selected on SD/SDXL */}
-            {visionEncoderPath && isSDOrSDXLModel(baseModelPath) && (
-              <div className="mt-3 pt-3 border-t border-gray-700 space-y-2">
-                <div className="flex items-center space-x-2">
-                  <input
-                    type="checkbox"
-                    id="train-vision-encoder"
-                    checked={trainVisionEncoder}
-                    onChange={(e) => updateParam("train_vision_encoder", e.target.checked)}
-                    className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
-                  />
-                  <label htmlFor="train-vision-encoder" className="text-xs text-gray-300 cursor-pointer">
-                    Train Vision Encoder
-                  </label>
-                </div>
-                {trainVisionEncoder && (
-                  <div>
-                    <label className="block text-xs text-gray-400 mb-1">
-                      VE LR <span className="text-xs text-gray-500">(empty = use text encoder LR)</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={visionEncoderLr}
-                      onChange={(e) => setLocalVisionEncoderLrText(e.target.value)}
-                      onBlur={(e) => { const v = parseFloat(e.target.value); updateParam("vision_encoder_lr", (isNaN(v) || v < 0) ? null : v); }}
-                      placeholder={`Default: ${textEncoderLr || learningRate}`}
-                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
-                    />
-                  </div>
-                )}
-                {trainTextEncoder && (
-                  <div className="flex items-center space-x-2">
-                    <input
-                      type="checkbox"
-                      id="gradient-routing-ve"
-                      checked={gradientRoutingVE}
-                      onChange={(e) => updateParam("gradient_routing_ve", e.target.checked)}
-                      className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
-                    />
-                    <label htmlFor="gradient-routing-ve" className="text-xs text-gray-300 cursor-pointer">
-                      Block text-encoder gradients on reference batches
-                    </label>
-                  </div>
-                )}
-              </div>
-            )}
-
-          </div>
         </div>
 
         {/* Precision Settings (VRAM Optimization) */}
@@ -5338,7 +5377,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </div>
             )}
 
-            {/* Attention Impl */}
+            {/* Only these training paths consume attention_impl. */}
+            {(baseModelArch === "sd15" || baseModelArch === "sdxl" || baseModelArch === "flux2") &&
             <div className="space-y-1">
               <label htmlFor="attention-impl" className="block text-xs text-gray-300">
                 Attention Impl
@@ -5354,12 +5394,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </select>
               <p className="text-xs text-gray-500 mt-1">
                 Selects which registry runs the attention kernel (orthogonal to the backend above).
-                "diffusers" reproduces the legacy set_attention_backend path. Affects SDXL/SD1.5 training;
-                FLUX.2 is not yet migrated and ignores this setting.
+                "diffusers" reproduces the legacy path on SDXL/SD1.5 and FLUX.2.
               </p>
-            </div>
+            </div>}
 
             {/* Min-SNR Gamma */}
+            {(baseModelArch === "sd15" || baseModelArch === "sdxl") &&
             <div className="space-y-1">
               <label htmlFor="min-snr-gamma" className="block text-xs text-gray-300">
                 Min-SNR Gamma (loss weighting)
@@ -5378,7 +5418,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               <p className="text-xs text-gray-500">
                 Default: 5.0. Set to 0 to disable. Prevents overfitting to high-noise timesteps.
               </p>
-            </div>
+            </div>}
 
             {/* CFG unconditional drop rate. Hidden entirely on an architecture
                 the backend declares has no aligned null condition: there an
@@ -5392,7 +5432,20 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   type="number"
                   id="cfg-uncond-drop-rate"
                   value={params.cfg_uncond_drop_rate ?? ""}
-                  onChange={(e) => updateParam("cfg_uncond_drop_rate", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
+                  onChange={(e) => {
+                    const rate = e.target.value === "" ? undefined : parseFloat(e.target.value);
+                    setParams(prev => ({
+                      ...prev,
+                      cfg_uncond_drop_rate: rate,
+                      qwen_cfg_null_sigma_schedule: isQwenImage21Model &&
+                        (prev.cfg_uncond_drop_rate ?? cfgUncondDropDefaultRate ?? 0) <= 0 &&
+                        (rate ?? cfgUncondDropDefaultRate ?? 0) > 0 &&
+                        prev.qwen_guidance_loss_mix_mode === "stochastic" &&
+                        (prev.qwen_guidance_loss_weight ?? 0) > 0 &&
+                        (prev.qwen_guidance_loss_weight ?? 0) < 1
+                        ? true : prev.qwen_cfg_null_sigma_schedule,
+                    }));
+                  }}
                   step="any"
                   min={0}
                   max={1}
@@ -6001,6 +6054,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           </div>
         )}
 
+        {isQwenImage21Model && (
+          <QwenTrainingObjective
+            params={params}
+            defaults={trainingDefaults}
+            onChange={(patch) => setParams(prev => ({ ...prev, ...patch }))}
+          />
+        )}
+
         {/* Block Swap Settings (VRAM Optimization) */}
         <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-3">
           <h3 className="text-sm font-medium text-gray-300 mb-3">Block Swap (Training VRAM Optimization)</h3>
@@ -6061,7 +6122,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             )}
 
             {/* H2D-only block swap (selectable on non-SenseNova paths) */}
-            {!blockSwapUnsupported && blocksToSwap > 0 && !senseNovaBlockSwap && (
+            {!blockSwapUnsupported && blocksToSwap > 0 && baseModelArch === "flux2" && trainingMethod === "lora" && (
               <div className="flex items-center space-x-2">
                 <input
                   type="checkbox"
@@ -6181,94 +6242,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
             {isQwenImage21Model && (
               <div className="pt-2 border-t border-gray-700 space-y-2">
-                <div className="rounded border border-amber-800/50 bg-amber-950/20 p-2 space-y-2">
-                  <div className="text-xs text-amber-300">Guidance-target loss (experimental)</div>
-                  <p className="text-xs text-gray-400">
-                    Select ordinary or guided loss per image, or use the legacy weighted blend.
-                    Guided items need an extra no-gradient empty-prompt forward per image or tile.
-                    The empty-prompt branch shares LoRA weights even when CFG-null dropout is zero.
-                  </p>
-                  <label className="block text-xs text-gray-400">Loss selection
-                    <select
-                      value={params.qwen_guidance_loss_mix_mode ?? (trainingDefaults?.qwen_guidance_loss_mix_mode as string | undefined) ?? ""}
-                      onChange={(e) => {
-                        const mode = e.target.value as "stochastic" | "blend";
-                        updateParam("qwen_guidance_loss_mix_mode", mode);
-                        if (mode === "blend") updateParam("qwen_cfg_null_sigma_schedule", false);
-                      }}
-                      className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200">
-                      <option value="stochastic">Stochastic per image (default)</option>
-                      <option value="blend">Weighted blend (legacy runs)</option>
-                    </select>
-                  </label>
-                  <label className="flex items-center gap-2 text-xs text-gray-300">
-                    <input type="checkbox"
-                      checked={params.qwen_cfg_null_sigma_schedule ?? (trainingDefaults?.qwen_cfg_null_sigma_schedule as boolean | undefined) ?? false}
-                      onChange={(e) => updateParam("qwen_cfg_null_sigma_schedule", e.target.checked)}
-                      disabled={(params.qwen_guidance_loss_mix_mode ?? trainingDefaults?.qwen_guidance_loss_mix_mode) !== "stochastic"}
-                      className="w-3.5 h-3.5" />
-                    Apply CFG-null drop only to ordinary-MSE selections
-                  </label>
-                  <p className="text-xs text-gray-500">
-                    Marginal null rate is drop rate × (1 − guided probability).
-                    Requires stochastic selection, a positive CFG unconditional drop rate, and guidance weight.
-                    For MNT &gt; 1, draw the CFG-null label per timestep.
-                  </p>
-                  <div className="grid grid-cols-3 gap-2">
-                    <label className="text-xs text-gray-400">Low-σ guided probability / weight
-                      <input type="number" min={0} max={1} step={0.05}
-                        value={params.qwen_guidance_loss_weight ?? (trainingDefaults?.qwen_guidance_loss_weight as number | undefined) ?? ""}
-                        onChange={(e) => updateParam("qwen_guidance_loss_weight", e.target.value === "" ? (undefined as any) : parseFloat(e.target.value))}
-                        className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200" />
-                    </label>
-                    <label className="text-xs text-gray-400">Target CFG
-                      <input type="number" min={1} max={10} step={0.25}
-                        value={params.qwen_guidance_loss_scale ?? (trainingDefaults?.qwen_guidance_loss_scale as number | undefined) ?? ""}
-                        onChange={(e) => updateParam("qwen_guidance_loss_scale", e.target.value === "" ? (undefined as any) : parseFloat(e.target.value))}
-                        className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200" />
-                    </label>
-                    <label className="text-xs text-gray-400">Schedule
-                      <select
-                        value={params.qwen_guidance_loss_schedule ?? (trainingDefaults?.qwen_guidance_loss_schedule as string | undefined) ?? ""}
-                        onChange={(e) => updateParam("qwen_guidance_loss_schedule", e.target.value as "constant" | "sigma")}
-                        className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200">
-                        <option value="sigma">Sigma tapered</option>
-                        <option value="constant">Constant</option>
-                      </select>
-                    </label>
-                  </div>
-                  <div className="grid grid-cols-4 gap-2">
-                    <label className="text-xs text-gray-400">Probability / weight schedule
-                      <select
-                        value={params.qwen_guidance_loss_weight_schedule ?? (trainingDefaults?.qwen_guidance_loss_weight_schedule as string | undefined) ?? ""}
-                        onChange={(e) => updateParam("qwen_guidance_loss_weight_schedule", e.target.value as "constant" | "high_noise_smoothstep")}
-                        className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200">
-                        <option value="constant">Constant</option>
-                        <option value="high_noise_smoothstep">High-noise ramp</option>
-                      </select>
-                    </label>
-                    {(params.qwen_guidance_loss_weight_schedule ?? trainingDefaults?.qwen_guidance_loss_weight_schedule) === "high_noise_smoothstep" && (<>
-                      <label className="text-xs text-gray-400">High-σ weight
-                        <input type="number" min={0} max={1} step={0.05}
-                          value={params.qwen_guidance_loss_high_noise_weight ?? (trainingDefaults?.qwen_guidance_loss_high_noise_weight as number | undefined) ?? ""}
-                          onChange={(e) => updateParam("qwen_guidance_loss_high_noise_weight", e.target.value === "" ? (undefined as any) : parseFloat(e.target.value))}
-                          className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200" />
-                      </label>
-                      <label className="text-xs text-gray-400">Ramp starts at σ
-                        <input type="number" min={0} max={1} step={0.05}
-                          value={params.qwen_guidance_loss_ramp_start ?? (trainingDefaults?.qwen_guidance_loss_ramp_start as number | undefined) ?? ""}
-                          onChange={(e) => updateParam("qwen_guidance_loss_ramp_start", e.target.value === "" ? (undefined as any) : parseFloat(e.target.value))}
-                          className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200" />
-                      </label>
-                      <label className="text-xs text-gray-400">Ramp ends at σ
-                        <input type="number" min={0} max={1} step={0.05}
-                          value={params.qwen_guidance_loss_ramp_end ?? (trainingDefaults?.qwen_guidance_loss_ramp_end as number | undefined) ?? ""}
-                          onChange={(e) => updateParam("qwen_guidance_loss_ramp_end", e.target.value === "" ? (undefined as any) : parseFloat(e.target.value))}
-                          className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200" />
-                      </label>
-                    </>)}
-                  </div>
-                </div>
                 <div className="flex items-center space-x-2">
                   <input
                     type="checkbox"
@@ -6285,7 +6258,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   Processes every image region before one optimizer step and lowers peak activation,
                   but removes target attention between regions. This is not numerically equivalent to a full forward.
                 </p>
-                <div>
+                {isQwenConvRotModel && <div>
                   <label className="block text-xs text-gray-400 mb-1">ConvRot Training Backward Cache</label>
                   <select
                     value={params.qwen_convrot_training_forward ?? "auto"}
@@ -6298,8 +6271,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <option value="transient_bf16">Transient per-layer rebuild (diagnostic)</option>
                     <option value="dequant">Dense dequant forward</option>
                   </select>
-                </div>
-                {(params.qwen_convrot_training_forward ?? "auto") === "auto" || params.qwen_convrot_training_forward === "prefetch_bf16" ? (
+                </div>}
+                {isQwenConvRotModel && ((params.qwen_convrot_training_forward ?? "auto") === "auto" || params.qwen_convrot_training_forward === "prefetch_bf16") ? (
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label className="block text-xs text-gray-400 mb-1">Cache Blocks</label>
@@ -7615,7 +7588,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             </p>
           </div>
 
-          {/* Crop Decode Auxiliary Loss (Phase 3) */}
+          {/* Crop decode is consumed only by these four training paths. */}
+          {(["sd15", "sdxl", "sensenova", "zimage"].includes(baseModelArch ?? "")) &&
           <div className="pt-2 border-t border-gray-700/60">
             <div className="flex items-center justify-between">
               <label className="text-sm text-gray-300">Crop Decode Auxiliary Loss</label>
@@ -7687,7 +7661,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 </div>
               </div>
             )}
-          </div>
+          </div>}
 
           {/* Sample Prompts */}
           <div>

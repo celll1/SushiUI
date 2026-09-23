@@ -27,7 +27,12 @@ def test_counts_repeated_items_and_restores_from_checkpoint(tmp_path):
     assert data["target_items"] == {"miku": 2}
     assert data["last_step"] == {"miku": 3}
 
-    resumed = ConceptExposure(tmp_path, "concept", tracker.state())
+    saved = tracker.state()
+    tracker.record([a], 5, 1)
+    assert saved["counts"] == {"miku": 5}
+    assert saved["last_step"] == {"miku": 3}
+
+    resumed = ConceptExposure(tmp_path, "concept", saved)
     resumed.set_epoch({"miku": 2}, {"miku": "Miku"})
     resumed.record([b], 4, 1)
     assert resumed.state()["counts"] == {"miku": 6}

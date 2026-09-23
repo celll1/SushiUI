@@ -7731,6 +7731,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             <p className="text-xs text-gray-500 mt-1">
               Continue remaining batches requires a checkpoint saved with this mode enabled.
               It accepts dataset selection changes and rejects changes inside retained datasets.
+              Validation runs after model and optimizer loading, so an incompatible selection stops then.
             </p>
           </div>
         </div>

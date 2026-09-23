@@ -52,7 +52,7 @@ run 全体の seed、batch size、MNT、bucket 設定、crop 設定、reference/
 
 ## 5. 改訂アルゴリズム
 
-1. 選択 checkpoint と同じ step の state・計画台帳を読み、hash、version、カーソル、batch 境界を照合する。モデルと optimizer をロードする前に、改訂可否と新計画のプレビューを確定する。
+1. 選択 checkpoint と同じ step の state・計画台帳を読み、hash、version、カーソル、batch 境界を照合する。初版はモデルと optimizer をロードした後、最初の batch を実行する前に改訂可否を確定する。モデルロード前の検証・プレビューは後続課題とする。
 2. 旧計画の `[0:batch_idx]` を不変の完了履歴とする。`[batch_idx:]` から選択解除 dataset の出現を除く。batch が空なら削除し、残った batch は初版ではその順序と同質条件を保持して端数のまま残す。削除した画像を埋めるために処理済み画像を再提示しない。
 3. 現在選択した dataset から当該 epoch の候補計画を再生成し、新規選択 dataset の出現だけを抽出する。通常順序と priority は候補計画の各画像の基本提示・`multiplier` 回の提示を使う。concept は候補計画における新規画像の基本提示だけを採り、新規 replay は次 epoch からとする。共通 dataset の旧割当は保存した suffix で固定する。候補計画の生成には checkpoint のバッチ生成前 RNG 状態を復元する。同じ epoch 内で一度選択解除した dataset を再選択する場合は、履歴中の同じ manifest と論理出現 ID を使い、完了済み出現を差し引いた義務だけを戻す。manifest が変わっていたら拒否する。
 4. mode 別に**未処理 suffix だけ**を配置する。通常順序では同質 batch を決定論的に分散する。priority は新規 priority batch を suffix の先頭に置き、その後に旧 priority の残り、通常 batch を置く。concept は残りの focus batch と新規 concept batch を現在の `front` / `spread` 設定で配置し、完了履歴を参照して replay の source より前に replay が来ないことを保証する。旧 replay の source が選択解除 dataset だけで構成される場合はその replay も除く。`front` でも全 epoch の先頭へ時間を巻き戻さず、`spread` の分散範囲も suffix に限定する。
@@ -73,6 +73,7 @@ CropPlanner の個別 spec は同じ元寸法・seed・epoch なら再計算で�
 - API は `openapi.yaml` を先に更新し、`backend/api/param_defaults.py` を唯一の既定値にする。`backend/api/routes.py`、training config の保存・復元、`frontend/src/utils/api.ts`、学習画面へ同じ enum を通す。既存 checkpoint に台帳がない場合、`rebase_remaining` を選べない理由を返す。
 - `backend/core/training/resume_batch_plan.py` に計画台帳・dataset manifest・改訂処理を置く。`base_trainer.py` は最終 batch 列の確定点、state の保存・復元、実行する suffix の切り出しを接続する。
 - 初版は trainer の計画確定時に旧/新 dataset ID、旧 batch cursor、改訂後残り batch、追加・除外した出現数、端数 batch と実効 batch size、epoch 指定時の新しい終了 step をログに出す。モデルロード前の API プレビューは後続課題とする。新規画像の詳細パスを大量に UI へ送らない。
+- `BucketManager` の候補 bucket 表は設定した base resolution から固定生成され、画像集合の分布には依存しない。`multi_resolution_mode=max` の割当は画像寸法と設定だけで決まる。`random` は共有 RNG の消費順に依存するため、dataset の選択変更で共通画像の割当が変われば同質条件の照合で拒否する。
 - 旧 checkpoint からの台帳生成は初版では実装しない。旧 checkpoint に台帳がなければ `rebase_remaining` を拒否する。`existing` での通常再開は従来どおり可能とする。
 
 ## 8. 検証項目と実装順

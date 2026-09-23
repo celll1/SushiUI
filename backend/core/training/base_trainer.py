@@ -6679,7 +6679,8 @@ class BaseTrainer(ABC):
                     plan_ref = saved.get("resume_batch_plan")
                     if plan_ref:
                         referenced.add(plan_ref["file"])
-            except (OSError, ValueError, KeyError):
+            except (OSError, ValueError, KeyError) as exc:
+                print(f"{self.log_prefix} WARNING: Skipping batch ledger cleanup: unreadable checkpoint state ({exc})")
                 return
             for plan_path in self.output_dir.glob(f"{self.run_name}_epoch_*_batch_plan_*.json.gz"):
                 if plan_path.name not in referenced:
@@ -16752,7 +16753,10 @@ class BaseTrainer(ABC):
         if resume_dataset_change_policy == "strict" and resume_from_checkpoint and (
                 global_step > 0 or resume_training_state is not None):
             if (resume_training_state is None
-                    or resume_training_state.get("resume_order_signature") != self._resume_plan_signature
+                    or "resume_order_signature" not in resume_training_state
+                    or "resume_dataset_manifest" not in resume_training_state):
+                raise ValueError("Cannot strictly resume: checkpoint has no strict resume metadata")
+            if (resume_training_state.get("resume_order_signature") != self._resume_plan_signature
                     or resume_training_state.get("resume_dataset_manifest") != self._resume_dataset_manifest):
                 raise ValueError("Cannot strictly resume: batch settings or dataset manifest changed")
         if concept_config and resume_from_checkpoint and global_step > 0 and resume_training_state is None:

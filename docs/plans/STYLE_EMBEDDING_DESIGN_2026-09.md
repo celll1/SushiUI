@@ -54,7 +54,7 @@ tagger 側の `tagger_trainer.py` は単体のファイルが大きい（約2,80
 - **encoder**: SigLIP2 NaFlex（Apache-2.0）。初期値は tagger 用に調整する前の Google 公開重み。
   - サイズの候補は `google/siglip2-base-patch16-naflex` と `google/siglip2-so400m-patch16-naflex`。Phase 0 の測定で選ぶ。
 - **学習方式**: `full` / `lora`（既存の `LoRALinear` を使う）。
-- **pooling**: 学習可能な single-query attention pooling。**padding と mask 対象の token を `key_padding_mask` で除外すること**（不変条件 I-1）。
+- **pooling**: 学習可能な single-query attention pooling。**padding と mask 対象の token を `key_padding_mask` で除外すること**（不変条件 I-1）。修正済みの `CustomAttentionPooling` を流用してよい。
   - 入力は `style_feature_layers` で指定した層の token 列を連結し、線形変換したもの（デフォルト `[-1]`）。
 - **projector**: 2層 MLP → L2 正規化。出力次元は `style_embed_dim`（初期値 512）。
 - **出力**:
@@ -65,7 +65,7 @@ tagger 側の `tagger_trainer.py` は単体のファイルが大きい（約2,80
 
 SigLIP2 の encoder の attention は、mask された位置を key から除外する。しかし mask された token 自身の hidden state には、residual 経路を通って自身の画素情報が残る。したがって、pooling で除外しない限り情報が漏れる。
 
-> 参考：既存の `CustomAttentionPooling`（tagger で `cls_dim` を指定したときに使われる）は、mask を受け取らず padding token も attention の対象にしている。HF の `Siglip2MultiheadAttentionPoolingHead` は mask を適用しているので、デフォルトの tagger（`cls_dim=None`）は影響を受けない。style encoder では同じ実装を流用しない。
+> 参考：tagger の `CustomAttentionPooling`（`cls_dim` 指定時）は、以前 padding token も attention の対象にしていた。`dac6ed27` で `key_padding_mask` を適用するよう修正済みである（テスト: `backend/tests/tagger_custom_pooler_mask_test.py`）。style encoder の pooling も同じ不変条件を満たすこと。
 
 ## 5. データ
 

@@ -9,6 +9,7 @@ import { TrainingMetricsProvider } from "./TrainingMetricsContext";
 import TrainingMetricsChart from "./TrainingMetricsChart";
 import ResizableChartRow, { ChartPaneCount, useChartLayout } from "./ResizableChartRow";
 import DanbooruImageMetricsPanel from "./DanbooruImageMetricsPanel";
+import ConceptExposurePanel from "./ConceptExposurePanel";
 import CheckpointList from "./CheckpointList";
 import TimestepDistributionGraph, { TimestepGraphCurve } from "./TimestepDistributionGraph";
 import { densityOf, morphDensity } from "@/utils/timestepDistribution";
@@ -1461,6 +1462,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
               />
               <div className="grid grid-cols-1 gap-3 min-[1800px]:grid-cols-2 [&>*]:min-w-0">
                 <DanbooruImageMetricsPanel runId={currentRun.id} active={currentRun.status === "running"} />
+                <ConceptExposurePanel runId={currentRun.id} active={currentRun.status === "running"} />
               </div>
             </TrainingMetricsProvider>
           )}

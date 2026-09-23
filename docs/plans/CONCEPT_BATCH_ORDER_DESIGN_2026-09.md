@@ -135,3 +135,11 @@ API 追加時には `openapi.yaml` を先に更新し、training request、保�
 - `replay_interval=0` で全画像を一度ずつ提示すること、`front` / `spread` の差、別名の単語境界、同じ入力からの計画再生成、キャプション・参照画像変更の検出を専用テストで確認した。
 - #164 を複製した Qwen-Image 2.1 の検証 run #165 では `train_adapter=false` として txt_in を学習対象から外した。3 step の実 GPU 学習に続き、step 2 の checkpoint から step 4 まで再開した。保存 state の `batch_idx` は 2→4、分類 hash と最終 batch plan digest は一致した。
 - 初版は解像度 curriculum との同時指定を拒否する。大規模データでの計画生成時間・追加メモリ、複数 bucket と動的 crop を伴う実 GPU 学習、キャラクター知識への効果は今後の評価対象とする。
+
+## 11. 対象タグの学習通過数
+
+concept batch では、画像が割り当てられた focus concept ごとに、成功した backward に使われた画像の延べ通過数を数える。priority training では first-match で選ばれた entry ごとに数える。複数タグの AND entry は一つの行になる。スキップした batch は数えず、同じ画像の replay / multiplier と multi-noise の追加通過はそれぞれ数える。勾配累積時は optimizer update 数ではなく、学習に使った sample pass 数を示す。
+
+平均学習回数は「延べ通過数 / 現エポックでその group に割り当てられた対象画像数」とする。分母にはまだ未訪問の画像も含むため、早期停止時は 1 未満になりうる。dataset を変えた再開では分母は新しい分類の画像数へ更新する。既存の古い run の過去分は遡及集計しない。
+
+カウンターは checkpoint の state JSON に保存し、その checkpoint からの再開では同じ値へ戻す。monitor 向けには 25 回の成功通過ごとと state 保存時に `concept_exposure.json` を原子的に更新する。API はこのファイルだけを読み、学習プロセスへ RPC を送らない。画面は最新通過順と延べ通過数順を切り替え、各行の延べ通過数・対象画像数・平均学習回数を表示する。

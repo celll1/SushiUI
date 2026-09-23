@@ -7697,6 +7697,32 @@ export const getTrainingStatus = async (id: number): Promise<TrainingStatus> => 
   return response.data;
 };
 
+export interface ConceptExposureRow {
+  key: string;
+  name: string;
+  sample_passes: number;
+  target_images: number;
+  mean_passes_per_image: number;
+  last_step: number;
+}
+
+export interface ConceptExposureResponse {
+  enabled: boolean;
+  mode?: "concept" | "priority";
+  total_groups?: number;
+  order?: "latest" | "top";
+  rows: ConceptExposureRow[];
+}
+
+export const getTrainingConceptExposure = async (
+  runId: number, order: "latest" | "top" = "latest",
+): Promise<ConceptExposureResponse> => {
+  const response = await api.get(`/training/runs/${runId}/concept-exposure`, {
+    params: { order },
+  });
+  return response.data;
+};
+
 // TensorBoard API
 export interface TensorBoardStatus {
   is_running: boolean;

@@ -59,6 +59,7 @@ machine-local working material.
 | [docs/guides/SDXL_REGULARIZATION.md](SDXL_REGULARIZATION.md) | SD/SDXL regularization behavior. |
 | [docs/guides/SENSENOVA_TRAINING_DESIGN.md](SENSENOVA_TRAINING_DESIGN.md) | SenseNova training contract and measured validation boundary. |
 | [docs/guides/TAGGER.md](TAGGER.md) | Legacy WD and trainable SigLIP2 tagger ownership, safety, and resume contracts. |
+| [docs/plans/CONCEPT_BATCH_ORDER_DESIGN_2026-09.md](../plans/CONCEPT_BATCH_ORDER_DESIGN_2026-09.md) | Character/Artist concept batch ordering, caption matching, replay, and resume contract. |
 | [docs/decisions/TRAINING_RUN_STORAGE_V2.md](../decisions/TRAINING_RUN_STORAGE_V2.md) | Central catalogue and per-run database contract. |
 | [docs/guides/INT8_CONVROT_TRAINING_DESIGN.md](INT8_CONVROT_TRAINING_DESIGN.md) | INT8 ConvRot investigation and measurements. |
 | [docs/guides/FULL_PARAMETER_CHECKPOINT_EXPORT_DESIGN.md](FULL_PARAMETER_CHECKPOINT_EXPORT_DESIGN.md) | Architecture-neutral separation of exact training checkpoints and optional quantized inference exports. |

@@ -47,8 +47,9 @@ class ConceptExposure:
 
     def state(self):
         return {"mode": self.mode, "counts": dict(self.counts),
-                "last_step": self.last_step, "target_items": self.target_items,
-                "names": self.names}
+                "last_step": dict(self.last_step),
+                "target_items": dict(self.target_items),
+                "names": dict(self.names)}
 
     def publish(self, *, wait: bool = False):
         if self._writer is not None and self._writer.is_alive():

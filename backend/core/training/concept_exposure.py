@@ -37,8 +37,11 @@ class ConceptExposure:
         if passes <= 0:
             return
         for item, _dataset in batch:
-            group = item.get("_concept_exposure_group")
-            if group is not None:
+            groups = item.get("_concept_exposure_groups")
+            if groups is None:
+                group = item.get("_concept_exposure_group")
+                groups = (group,) if group is not None else ()
+            for group in groups:
                 self.counts[group] += passes
                 self.last_step[group] = step
         self.completed_batches += 1

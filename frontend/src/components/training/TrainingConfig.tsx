@@ -7715,6 +7715,25 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               Latest checkpoint will be auto-detected from the output directory
             </p>
           </div>
+          <div>
+            <label className="block text-sm text-gray-400 mb-1.5">Dataset Changes on Resume</label>
+            <select
+              value={params.resume_dataset_change_policy ??
+                (trainingDefaults as Partial<TrainingRunCreateRequest> | null)?.resume_dataset_change_policy ?? ""}
+              onChange={(e) => updateParam("resume_dataset_change_policy", e.target.value as TrainingRunCreateRequest["resume_dataset_change_policy"])}
+              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+            >
+              <option value="" disabled>Loading default…</option>
+              <option value="existing">Existing behavior</option>
+              <option value="strict">Reject changes</option>
+              <option value="rebase_remaining">Continue remaining batches</option>
+            </select>
+            <p className="text-xs text-gray-500 mt-1">
+              Continue remaining batches requires a checkpoint saved with this mode enabled.
+              It accepts dataset selection changes and rejects changes inside retained datasets.
+              Validation runs after model and optimizer loading, so an incompatible selection stops then.
+            </p>
+          </div>
         </div>
 
         {/* Sample Generation */}

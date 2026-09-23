@@ -138,8 +138,8 @@ API 追加時には `openapi.yaml` を先に更新し、training request、保�
 
 ## 11. 対象タグの学習通過数
 
-concept batch では、画像が割り当てられた focus concept ごとに、成功した backward に使われた画像の延べ通過数を数える。priority training では first-match で選ばれた entry ごとに数える。複数タグの AND entry は一つの行になる。スキップした batch は数えず、同じ画像の replay / multiplier と multi-noise の追加通過はそれぞれ数える。勾配累積時は optimizer update 数ではなく、学習に使った sample pass 数を示す。
+concept batch では、整列対象となる eligible tag を画像が複数持てばそれぞれに、成功した backward に使われた画像の延べ通過数を数える。バッチ割当先が dataset rebase によって変わっても、画像のタグ自体で計数する。priority training では first-match で選ばれた entry ごとに数える。複数タグの AND entry は一つの行になる。スキップした batch は数えず、同じ画像の replay / multiplier と multi-noise の追加通過はそれぞれ数える。勾配累積時は optimizer update 数ではなく、学習に使った sample pass 数を示す。
 
-平均学習回数は「延べ通過数 / 現エポックでその group に割り当てられた対象画像数」とする。分母にはまだ未訪問の画像も含むため、早期停止時は 1 未満になりうる。dataset を変えた再開では分母は新しい分類の画像数へ更新する。既存の古い run の過去分は遡及集計しない。
+平均学習回数は「延べ通過数 / 現エポックでそのタグ・entry に該当する対象画像数」とする。分母にはまだ未訪問の画像も含むため、早期停止時は 1 未満になりうる。dataset を変えた再開では分母は新しい分類の画像数へ更新する。以前は整列対象でなかったタグの過去分、および既存の古い run の過去分は遡及集計しない。
 
 カウンターは checkpoint の state JSON に保存し、その checkpoint からの再開では同じ値へ戻す。monitor 向けには 25 回の成功 backward ごとと state 保存時に `concept_exposure.json` を原子的に更新する。API はこのファイルだけを読み、学習プロセスへ RPC を送らない。画面は最新通過順と延べ通過数順を切り替え、各行の延べ通過数・対象画像数・平均学習回数を表示する。

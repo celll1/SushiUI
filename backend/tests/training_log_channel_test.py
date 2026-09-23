@@ -99,6 +99,9 @@ def _run_fp8_full_finetune_load(arch):
             super().__init__()
             self.proj = nn.Linear(4, 4)
 
+        def set_attention_backend(self, backend):
+            self.attention_backend = backend
+
     trainer = FullParameterTrainer()
     trainer.log_prefix = "[T]"
     trainer.model_path = "model.safetensors"
@@ -111,6 +114,8 @@ def _run_fp8_full_finetune_load(arch):
     trainer.gradient_checkpointing = False
     trainer.blocks_to_swap = 0
     trainer.use_flash_attention = False
+    trainer.attention_backend = "native"
+    trainer._resolve_training_backend = lambda backend: backend
 
     module, loader_target, components = {
         "anima": (anima_ops, "core.model_loader.ModelLoader.load_anima_from_files",

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Sequence
 
 import torch
+import torch.nn.functional as F
 
 
 def positive_weights(artists: Sequence[int], content_ids: Sequence[Sequence[int]],
@@ -35,3 +37,33 @@ def positive_weights(artists: Sequence[int], content_ids: Sequence[Sequence[int]
     full = weights.repeat(2, 2)
     full.fill_diagonal_(0.0)
     return full
+
+
+@dataclass(frozen=True)
+class SupConResult:
+    loss: torch.Tensor              # fp32 scalar, mean over anchors with positive weight
+    anchors_used: torch.Tensor      # int64 scalar
+    anchors_excluded: torch.Tensor  # int64 scalar, anchors whose positive weights sum to 0
+
+
+def weighted_supcon_loss(embeddings: torch.Tensor, weights: torch.Tensor, temperature: float) -> SupConResult:
+    """Weighted multi-positive SupCon (design §8.1). `weights` is [M, M], e.g. from positive_weights;
+    its diagonal is ignored. Computed in fp32 whatever the input dtype."""
+    if not temperature > 0.0:
+        raise ValueError(f"temperature must be > 0, got {temperature!r}")
+    if embeddings.dim() != 2 or embeddings.shape[0] < 2:
+        raise ValueError(f"embeddings must be [M >= 2, D], got {tuple(embeddings.shape)}")
+    m = embeddings.shape[0]
+    if tuple(weights.shape) != (m, m):
+        raise ValueError(f"weights must be [{m}, {m}], got {tuple(weights.shape)}")
+    z = F.normalize(embeddings.float(), dim=1)
+    logits = (z @ z.T) / temperature
+    eye = torch.eye(m, dtype=torch.bool, device=z.device)
+    w = weights.to(device=z.device, dtype=torch.float32).masked_fill(eye, 0.0)
+    log_denominator = torch.logsumexp(logits.masked_fill(eye, float("-inf")), dim=1)
+    total = w.sum(dim=1)
+    used = total > 0
+    positive = (w * logits).sum(dim=1) / total.clamp_min(torch.finfo(torch.float32).tiny)
+    per_anchor = torch.where(used, log_denominator - positive, torch.zeros_like(total))
+    count = used.sum()
+    return SupConResult(loss=per_anchor.sum() / count.clamp_min(1), anchors_used=count, anchors_excluded=m - count)

@@ -28,7 +28,7 @@ class _AllArtists:
 
 
 def _index(items, aliases=None, pins=None, split=SPLIT):
-    resolver = StyleLabelResolver(_AllArtists(), None, TagAliasResolver(aliases or {}), ())
+    resolver = StyleLabelResolver(_AllArtists(), None, TagAliasResolver(aliases or {}), (), ("original",))
     records = [(i, stable_item_key(1, f"{i}.png"), resolver.resolve(None, name)) for i, name in items]
     return build_style_index(records, split, np.zeros(0, dtype=np.int64) if pins is None else pins.keys)
 

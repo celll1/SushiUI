@@ -6306,6 +6306,33 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorResponse'}
+  /training/runs/{run_id}/concept-exposure:
+    get:
+      tags: [training]
+      summary: Get concept or priority sample exposure
+      description: Reads a periodic atomic snapshot from the run output directory; it does not contact the trainer.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: {type: integer}
+        - name: order
+          in: query
+          schema: {type: string, enum: [latest, top], default: latest}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 50, default: 12}
+      responses:
+        '200':
+          description: Latest exposure snapshot, or disabled when not yet published
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ConceptExposureResponse'}
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
   /training/runs/{run_id}/metrics_db:
     get:
       tags: [training]
@@ -10695,6 +10722,26 @@ components:
       bearerFormat: JWT
 
   schemas:
+    ConceptExposureResponse:
+      type: object
+      required: [enabled, rows]
+      properties:
+        enabled: {type: boolean}
+        mode: {type: string, enum: [concept, priority]}
+        total_groups: {type: integer}
+        order: {type: string, enum: [latest, top]}
+        rows:
+          type: array
+          items:
+            type: object
+            required: [key, name, sample_passes, target_images, mean_passes_per_image, last_step]
+            properties:
+              key: {type: string}
+              name: {type: string}
+              sample_passes: {type: integer}
+              target_images: {type: integer}
+              mean_passes_per_image: {type: number}
+              last_step: {type: integer}
     StudioRenderAssetRef:
       type: object
       required: [id, kind]

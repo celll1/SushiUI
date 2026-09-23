@@ -3510,6 +3510,11 @@ TRAINING_MONITOR_MEDIA_DEFAULTS: Dict[str, Any] = {
     "preview_size": 512,
 }
 
+CONCEPT_EXPOSURE_DEFAULTS: Dict[str, Any] = {
+    "order": "latest",
+    "limit": 12,
+}
+
 
 # ---------------------------------------------------------------------------
 # Tagger Training (TaggerTrainingRunCreateRequest)

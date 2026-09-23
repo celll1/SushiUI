@@ -5431,6 +5431,7 @@ class BaseTrainer(ABC):
             # Crop-plan fingerprint: a change in crop augmentation params (or num_epochs)
             # invalidates the saved shuffle/crop reproducibility -> fresh fallback on resume.
             "crop_plan_fingerprint": getattr(self, '_crop_plan_fingerprint', None),
+            "concept_batch_plan": getattr(self, '_concept_batch_plan_state', None),
             # LR schedule position on ITS OWN axis (D9/§17.1 of
             # docs/guides/LR_SCHEDULER_DESIGN.md). global_step // gas does not
             # reproduce it: a skipped batch advances global_step without
@@ -15460,6 +15461,7 @@ class BaseTrainer(ABC):
         param_tracking: bool = False,
         param_tracking_interval: int = 100,
         priority_training: Optional[Dict] = None,
+        concept_batch_order: Optional[Dict] = None,
     ):
         """
         Main training loop.
@@ -15605,6 +15607,20 @@ class BaseTrainer(ABC):
         # IMPORTANT: Only image paths are included - caption changes do NOT invalidate shuffle state
         self._dataset_fingerprint = self._compute_dataset_fingerprint(datasets)
         print(f"{self.log_prefix} Dataset fingerprint: {self._dataset_fingerprint['total_item_count']} items, hash={self._dataset_fingerprint['image_paths_hash'][:8]}...")
+
+        from core.training.concept_batch_order import ConceptOrderConfig
+        concept_config = ConceptOrderConfig.parse(concept_batch_order)
+        self._concept_batch_plan_state = None
+        self._concept_order_seed = self.run_seed
+        if concept_config:
+            if priority_training:
+                raise ValueError("concept_batch_order cannot be combined with priority_training")
+            if (self.is_sensenova or self._temporal_spec() is not None or
+                    self.is_acestep or self.config.get("danbooru_aug_enable")):
+                raise ValueError("concept_batch_order currently supports image training without SenseNova or online Danbooru augmentation")
+            if any(item.get("item_type") in ("video", "audio")
+                   for dataset in datasets for item in dataset.items):
+                raise ValueError("concept_batch_order does not support video or audio items")
 
         self._warn_unused_loss_weighting_keys(_arch_name)
         _sd_ve_arch = _arch_name in ("sd15", "sdxl")
@@ -16139,6 +16155,46 @@ class BaseTrainer(ABC):
                   f"{'...' if num_epochs > 8 else ''})")
             actual_total_steps = _crop_total
 
+        if concept_config:
+            from core.training.concept_batch_order import build_concept_batch_plan
+            if self._rc_active:
+                raise ValueError("concept_batch_order does not yet support resolution curriculum")
+            _preview_pairs = [(item, dataset) for dataset in datasets for item in dataset.items]
+            _preview_counts = []
+            _preview_epochs = range(num_epochs) if self.crop_planner is not None else range(1)
+            for _preview_epoch in _preview_epochs:
+                _prepared = []
+                for _item, _dataset in _preview_pairs:
+                    _copy = dict(_item)
+                    if self.crop_planner is not None:
+                        _ow, _oh = self._get_original_size_for_item(_item)
+                        _spec = self.crop_planner.spec_for(_preview_epoch, _item["image_path"], _ow, _oh)
+                        _copy["bucket_width"], _copy["bucket_height"] = _spec.bucket_w, _spec.bucket_h
+                    elif bucket_manager is not None:
+                        _bucket = bucket_manager.select_bucket(
+                            int(_item.get("width") or 1024), int(_item.get("height") or 1024))
+                        _copy["bucket_width"], _copy["bucket_height"] = _bucket.width, _bucket.height
+                    else:
+                        self._fit_items_to_base_area([_copy], base_resolutions or [1024])
+                    if (_copy.get("bucket_width"), _copy.get("bucket_height")) in self._unfittable_buckets:
+                        continue
+                    _prepared.append((_copy, _dataset))
+                _preview_counts.append(len(build_concept_batch_plan(
+                    _prepared, batch_size, concept_config, _preview_epoch,
+                    self._concept_order_seed).batches))
+            if self.crop_planner is not None:
+                self.crop_planner._batches_per_epoch = _preview_counts
+                self._crop_step_offsets = self.crop_planner.step_offsets(multi_noise_timesteps)
+                actual_total_steps = total_steps if total_steps is not None else self._crop_step_offsets[-1]
+            else:
+                batches_per_epoch = _preview_counts[0]
+                steps_per_epoch = batches_per_epoch * multi_noise_timesteps
+                self._batches_per_epoch = batches_per_epoch
+                if total_steps is None:
+                    actual_total_steps = steps_per_epoch * num_epochs
+            print(f"{self.log_prefix} [ConceptOrder] Planned batch counts: {_preview_counts[:8]}"
+                  f"{'...' if len(_preview_counts) > 8 else ''}")
+
         # Update DB with calculated total_steps (for resume correctness)
         if update_total_steps_callback is not None:
             update_total_steps_callback(actual_total_steps)
@@ -16607,12 +16663,31 @@ class BaseTrainer(ABC):
         # restart from a fresh epoch boundary. Fires ONLY when the dataset fingerprint or
         # batches_per_epoch changed, so a normal same-structure resume is byte-identical.
         self._resume_structure_changed = False
+        if concept_config and resume_from_checkpoint and global_step > 0 and resume_training_state is None:
+            raise ValueError("Cannot resume concept batch order without matching training state")
         if resume_training_state is not None:
+            if not concept_config and resume_training_state.get("concept_batch_plan") is not None:
+                raise ValueError("Cannot resume a concept-ordered checkpoint with concept batch order disabled")
+            if concept_config and resume_training_state.get("concept_batch_plan") is None:
+                raise ValueError("Cannot resume concept batch order: checkpoint has no batch plan state")
+            if concept_config:
+                saved_concept = resume_training_state["concept_batch_plan"]
+                if saved_concept.get("version") != 1:
+                    raise ValueError("Cannot resume concept batch order: unsupported plan version")
+                if saved_concept.get("config_hash") != concept_config.fingerprint():
+                    raise ValueError("Cannot resume concept batch order after changing its configuration")
+                if int(saved_concept["seed"]) != self._concept_order_seed:
+                    raise ValueError("Cannot resume concept batch order after changing the run seed")
+                if resume_training_state.get("multi_noise_timesteps") != multi_noise_timesteps:
+                    raise ValueError("Cannot resume concept batch order after changing MNT")
+                self._concept_order_seed = int(saved_concept["seed"])
             saved_fp = resume_training_state.get('dataset_fingerprint')
             fp_changed = self._check_dataset_fingerprint_changed(saved_fp, self._dataset_fingerprint)
             saved_bpe = resume_training_state.get('batches_per_epoch')
             bpe_changed = (saved_bpe is not None and saved_bpe != batches_per_epoch)
             if fp_changed or bpe_changed:
+                if concept_config:
+                    raise ValueError("Cannot resume concept batch order: dataset or batch structure changed")
                 self._resume_structure_changed = True
                 print(f"{self.log_prefix} Dataset/batch structure changed since checkpoint "
                       f"(fingerprint_changed={fp_changed}, batches_per_epoch: {saved_bpe} -> {batches_per_epoch})")
@@ -17130,6 +17205,8 @@ class BaseTrainer(ABC):
                     dataset_changed = dataset_changed or crop_changed
 
                     if dataset_changed:
+                        if concept_config:
+                            raise ValueError("Cannot resume concept batch order: dataset or crop plan changed")
                         print(f"{self.log_prefix} WARNING: Dataset has changed since checkpoint was saved!")
                         print(f"{self.log_prefix} Saved shuffle state is invalid - using fresh random state")
                         print(f"{self.log_prefix} Restarting current epoch from batch 0 (global_step={global_step} preserved)")
@@ -17294,7 +17371,25 @@ class BaseTrainer(ABC):
                         for item in dataset.items:
                             path_to_dataset[item["image_path"]] = dataset
 
-                    if priority_config and priority_config.entries:
+                    if concept_config:
+                        from core.training.concept_batch_order import build_concept_batch_plan
+                        _by_id = {(str(getattr(ds, "unique_id", "")), item["image_path"]):
+                                  (item, ds) for item, ds in _image_all_items}
+                        _concept_items = []
+                        for _bucket_members in bucket_manager.buckets.values():
+                            for _info in _bucket_members:
+                                _key = (str(_info.get("dataset_unique_id", "")), _info["image_path"])
+                                _pair = _by_id.get(_key)
+                                if _pair is None:
+                                    raise ValueError(f"Concept batch item missing from dataset: {_key}")
+                                _item, _dataset = _pair
+                                _item.update(_info)
+                                if (_item["bucket_width"], _item["bucket_height"]) not in self._unfittable_buckets:
+                                    _concept_items.append((_item, _dataset))
+                        concept_plan = build_concept_batch_plan(
+                            _concept_items, batch_size, concept_config, epoch, self._concept_order_seed)
+                        batches = concept_plan.batches
+                    elif priority_config and priority_config.entries:
                         # Priority training: split items, build priority batches first.
                         # LTX-2.3 video items are excluded here (batched separately below)
                         # so they are not routed through the ÷8 image bucket manager.
@@ -17368,7 +17463,16 @@ class BaseTrainer(ABC):
                     # shuffled (entry-index order is the documented priority-training
                     # contract, matched by the bucketed path's build_priority_batches).
                     import random
-                    if priority_config and priority_config.entries:
+                    if concept_config:
+                        from core.training.concept_batch_order import build_concept_batch_plan
+                        _concept_items = [pair for pair in _image_all_items
+                                          if ((pair[0].get("bucket_width") or pair[0].get("width"),
+                                               pair[0].get("bucket_height") or pair[0].get("height"))
+                                              not in self._unfittable_buckets)]
+                        concept_plan = build_concept_batch_plan(
+                            _concept_items, batch_size, concept_config, epoch, self._concept_order_seed)
+                        batches = concept_plan.batches
+                    elif priority_config and priority_config.entries:
                         priority_items, normal_items = classify_items(_image_all_items, priority_config)
                         p_items = [(item, dataset) for item, dataset, _ in priority_items]
                         normal_items = list(normal_items)
@@ -17389,6 +17493,17 @@ class BaseTrainer(ABC):
                         batches = batches + ltx2_video_batches + acestep_audio_batches
 
                 batches = self._drop_unfittable_batches(batches)
+                if concept_config:
+                    self._concept_batch_plan_state = concept_plan.state(
+                        concept_config, self._concept_order_seed, self._crop_plan_fingerprint)
+                    print(f"{self.log_prefix} [ConceptOrder] epoch={epoch + 1} "
+                          f"concepts={concept_plan.concept_count} focus={concept_plan.focus_items} "
+                          f"background={concept_plan.background_items} batches={len(batches)} "
+                          f"partial={concept_plan.partial_batches} replay={concept_plan.replay_batches} "
+                          f"missing_tag_data={concept_plan.missing_tag_data} "
+                          f"uncategorized={concept_plan.uncategorized_items} "
+                          f"missing_includes={concept_plan.missing_includes[:8]} "
+                          f"digest={concept_plan.digest[:12]}")
 
                 if self.is_sensenova:
                     import random as _sensenova_task_rng
@@ -17407,7 +17522,7 @@ class BaseTrainer(ABC):
 
                 # Mid-epoch resume: skip completed batches
                 # (random state was already restored before batch building)
-                if epoch == start_epoch and resume_training_state is not None:
+                if not concept_config and epoch == start_epoch and resume_training_state is not None:
                     print(f"{self.log_prefix} Skipping {resume_batch_idx} completed batches...")
                     batches = batches[resume_batch_idx:]
                     self._epoch_batch_offset = resume_batch_idx
@@ -17441,8 +17556,22 @@ class BaseTrainer(ABC):
                                       f"{len(_ref_items)} ref + {len(_noref_items)} no-ref sub-batches")
                         else:
                             clean_batches.append(_b)
-                    _random_ve.shuffle(clean_batches)
+                    if not concept_config:
+                        _random_ve.shuffle(clean_batches)
                     batches = clean_batches
+
+                if concept_config and len(batches) != self._concept_batch_plan_state["batch_count"]:
+                    raise ValueError("Concept batch plan changed during reference-image processing")
+
+                if concept_config and epoch == start_epoch and resume_training_state is not None:
+                    saved_plan = resume_training_state.get("concept_batch_plan")
+                    if saved_plan != self._concept_batch_plan_state or len(batches) != saved_plan["batch_count"]:
+                        raise ValueError("Cannot resume concept batch order: batch plan changed")
+                    if not 0 <= resume_batch_idx <= len(batches):
+                        raise ValueError("Cannot resume concept batch order: batch cursor out of range")
+                    batches = batches[resume_batch_idx:]
+                    self._epoch_batch_offset = resume_batch_idx
+                    resume_training_state = None
 
                 # Interrupt-batch injection of online Danbooru samples (image-gen
                 # augmentation).  Drained from the bounded collector buffer and
@@ -17807,7 +17936,7 @@ class BaseTrainer(ABC):
                 # total_steps (the loop stop condition at global_step >= actual_total_steps).
                 if epoch == start_epoch and self._crop_step_offsets is None and total_steps is None:
                     # Calculate actual steps per epoch (before mid-epoch slicing)
-                    if bucket_manager or bool(getattr(
+                    if concept_config or bucket_manager or bool(getattr(
                         self, "config", {}
                     ).get("_sensenova_explicit_tasks")):
                         # For bucketing: use the full batch count before resume slicing.

@@ -7391,6 +7391,22 @@ export interface TrainingRunCreateRequest {
     entries: string[];
     multiplier: number;
   };
+  concept_batch_order?: ConceptBatchOrderConfig;
+}
+
+export interface ConceptBatchOrderConfig {
+  enabled: boolean;
+  category: "character" | "artist";
+  min_items_per_concept: number;
+  include: string[];
+  exclude: string[];
+  focus_batches: number;
+  local_swap_window: number;
+  background_placement: "front" | "spread";
+  background_interval: number;
+  replay_interval: number;
+  caption_aliases: Record<string, string[]>;
+  match_natural_language: boolean;
 }
 
 export interface TrainingRunListResponse {

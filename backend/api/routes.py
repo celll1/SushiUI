@@ -14929,6 +14929,26 @@ class DatasetConfigItem(BaseModel):
     ve_reconstruction_mode: Optional[bool] = False
     task_views: List[SenseNovaTaskView] = Field(default_factory=list)
 
+_CONCEPT_DEFAULTS = TRAINING_DEFAULTS["concept_batch_order"]
+
+
+class ConceptBatchOrderRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    enabled: bool = _CONCEPT_DEFAULTS["enabled"]
+    category: Literal["character", "artist"] = _CONCEPT_DEFAULTS["category"]
+    min_items_per_concept: int = Field(default=_CONCEPT_DEFAULTS["min_items_per_concept"], ge=1)
+    include: List[str] = Field(default_factory=lambda: list(_CONCEPT_DEFAULTS["include"]))
+    exclude: List[str] = Field(default_factory=lambda: list(_CONCEPT_DEFAULTS["exclude"]))
+    focus_batches: int = Field(default=_CONCEPT_DEFAULTS["focus_batches"], ge=0, le=10000)
+    local_swap_window: int = Field(default=_CONCEPT_DEFAULTS["local_swap_window"], ge=0, le=32)
+    background_placement: Literal["front", "spread"] = _CONCEPT_DEFAULTS["background_placement"]
+    background_interval: int = Field(default=_CONCEPT_DEFAULTS["background_interval"], ge=0)
+    replay_interval: int = Field(default=_CONCEPT_DEFAULTS["replay_interval"], ge=0)
+    caption_aliases: Dict[str, List[str]] = Field(
+        default_factory=lambda: dict(_CONCEPT_DEFAULTS["caption_aliases"]))
+    match_natural_language: bool = _CONCEPT_DEFAULTS["match_natural_language"]
+
 class TrainingRunCreateRequest(BaseModel):
     dataset_id: Optional[int] = None  # Deprecated - use dataset_configs instead
     dataset_configs: Optional[List[DatasetConfigItem]] = None  # Multiple datasets with filters
@@ -15767,6 +15787,16 @@ class TrainingRunCreateRequest(BaseModel):
 
     # Priority training
     priority_training: Optional[Dict[str, Any]] = None  # Inline priority training config
+    concept_batch_order: ConceptBatchOrderRequest = Field(default_factory=ConceptBatchOrderRequest)
+
+    @model_validator(mode="after")
+    def _concept_batch_order_compatible(self):
+        if self.concept_batch_order.enabled:
+            if self.priority_training:
+                raise ValueError("concept_batch_order and priority_training cannot be combined")
+            if self.training_method == "vae_decoder":
+                raise ValueError("concept_batch_order requires image generation training")
+        return self
 
     # ReLoRA-specific parameters
     relora_merge_every: int = Field(

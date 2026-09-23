@@ -2299,6 +2299,20 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # run start and records it, so the previous unseeded behaviour is kept and
     # two runs can still be given the same order by pinning the drawn value.
     "seed": -1,
+    "concept_batch_order": {
+        "enabled": False,
+        "category": "character",
+        "min_items_per_concept": 8,
+        "include": [],
+        "exclude": [],
+        "focus_batches": 8,
+        "local_swap_window": 2,
+        "background_placement": "front",
+        "background_interval": 8,
+        "replay_interval": 0,
+        "caption_aliases": {},
+        "match_natural_language": False,
+    },
     "max_grad_norm": 1.0,
     # Per-parameter outlier clip on fused and ordinary optimizer paths.
     # On ordinary steps it runs before the independent global-norm clip.

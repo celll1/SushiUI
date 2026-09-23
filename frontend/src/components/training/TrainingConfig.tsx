@@ -380,6 +380,22 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [priorityText, setPriorityText] = useState("");  // newline-separated entries
   const [priorityMultiplier, setPriorityMultiplier] = useState(1);
   const [priorityExpanded, setPriorityExpanded] = useState(false);  // expand textarea modal
+  const conceptOrder = params.concept_batch_order ||
+    (trainingDefaults as Partial<TrainingRunCreateRequest> | null)?.concept_batch_order;
+  const [conceptAliasText, setConceptAliasText] = useState("{}");
+  const [conceptIncludeText, setConceptIncludeText] = useState("");
+  const [conceptExcludeText, setConceptExcludeText] = useState("");
+  useEffect(() => {
+    const defaults = (trainingDefaults as Partial<TrainingRunCreateRequest> | null)?.concept_batch_order;
+    if (defaults && !editRunId) {
+      setConceptAliasText(JSON.stringify(defaults.caption_aliases || {}, null, 2));
+      setConceptIncludeText((defaults.include || []).join(", "));
+      setConceptExcludeText((defaults.exclude || []).join(", "));
+    }
+  }, [trainingDefaults, editRunId]);
+  const updateConceptOrder = (patch: Partial<NonNullable<TrainingRunCreateRequest["concept_batch_order"]>>) => {
+    if (conceptOrder) updateParam("concept_batch_order", { ...conceptOrder, ...patch });
+  };
 
   // Bucketing options (Phase 3f: migrated to params)
   const enableBucketing = params.enable_bucketing ?? false;
@@ -1216,6 +1232,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       const entries = incoming.priority_training.entries || [];
       setPriorityText(entries.map((e: any) => typeof e === "string" ? e : JSON.stringify(e)).join("\n"));
       setPriorityMultiplier(incoming.priority_training.multiplier || 1);
+    }
+    if (incoming.concept_batch_order) {
+      setConceptAliasText(JSON.stringify(incoming.concept_batch_order.caption_aliases || {}, null, 2));
+      setConceptIncludeText((incoming.concept_batch_order.include || []).join(", "));
+      setConceptExcludeText((incoming.concept_batch_order.exclude || []).join(", "));
     }
 
     const patch: Partial<TrainingRunCreateRequest> = {};
@@ -2120,6 +2141,23 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
+    if (conceptOrder?.enabled) {
+      if (priorityEnabled && priorityText.trim()) {
+        setError("Concept batch order cannot be combined with Priority Training.");
+        return;
+      }
+      try {
+        const aliases = JSON.parse(conceptAliasText);
+        if (!aliases || typeof aliases !== "object" || Array.isArray(aliases) ||
+            Object.values(aliases).some(value => !Array.isArray(value) ||
+              (value as unknown[]).some(name => typeof name !== "string"))) {
+          throw new Error("Expected an object of string arrays");
+        }
+      } catch {
+        setError("Caption aliases must be JSON such as {\"hatsune_miku\": [\"Hatsune Miku\"]}.");
+        return;
+      }
+    }
     console.log("[TrainingConfig] Form submitted");
     console.log("[TrainingConfig] Run name:", runName);
     console.log("[TrainingConfig] Dataset configs:", datasetConfigs);
@@ -2172,6 +2210,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     setError(null);
 
     const requestData = getRequestData();
+    if (requestData.concept_batch_order?.enabled) {
+      requestData.concept_batch_order.caption_aliases = JSON.parse(conceptAliasText);
+      requestData.concept_batch_order.include = conceptIncludeText.split(",").map(s => s.trim()).filter(Boolean);
+      requestData.concept_batch_order.exclude = conceptExcludeText.split(",").map(s => s.trim()).filter(Boolean);
+    }
 
     console.log("[TrainingConfig] Request data:", requestData);
     console.log("[TrainingConfig] Learning rates:", {
@@ -7321,6 +7364,101 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         )}
 
         {/* Priority Training */}
+        <div className="border border-gray-700 rounded p-4 space-y-3">
+          <h3 className="text-sm font-medium text-gray-300">Concept Batch Order</h3>
+          <label className="flex items-center gap-2 text-sm text-gray-300">
+            <input type="checkbox" checked={conceptOrder?.enabled ?? false}
+              disabled={!conceptOrder}
+              onChange={e => updateConceptOrder({ enabled: e.target.checked })} />
+            Group Character or Artist batches during training
+          </label>
+          {conceptOrder?.enabled && (
+            <div className="space-y-3 text-xs text-gray-400">
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                <label>Category
+                  <select className="block w-full bg-gray-800 border border-gray-600 rounded p-1 text-white"
+                    value={conceptOrder.category}
+                    onChange={e => updateConceptOrder({ category: e.target.value as "character" | "artist" })}>
+                    <option value="character">Character</option><option value="artist">Artist</option>
+                  </select>
+                </label>
+                <label>Minimum images per concept
+                  <input type="number" min={1} className="block w-full bg-gray-800 border border-gray-600 rounded p-1 text-white"
+                    value={conceptOrder.min_items_per_concept}
+                    onChange={e => updateConceptOrder({ min_items_per_concept: Number(e.target.value) })} />
+                </label>
+                <label>Focus batches (0 = finish concept)
+                  <input type="number" min={0} className="block w-full bg-gray-800 border border-gray-600 rounded p-1 text-white"
+                    value={conceptOrder.focus_batches}
+                    onChange={e => updateConceptOrder({ focus_batches: Number(e.target.value) })} />
+                </label>
+                <label>Boundary swap width
+                  <input type="number" min={0} max={32} className="block w-full bg-gray-800 border border-gray-600 rounded p-1 text-white"
+                    value={conceptOrder.local_swap_window}
+                    onChange={e => updateConceptOrder({ local_swap_window: Number(e.target.value) })} />
+                </label>
+                <label>Background placement
+                  <select className="block w-full bg-gray-800 border border-gray-600 rounded p-1 text-white"
+                    value={conceptOrder.background_placement}
+                    onChange={e => updateConceptOrder({ background_placement: e.target.value as "front" | "spread" })}>
+                    <option value="front">Front (finish concepts early)</option>
+                    <option value="spread">Spread across epoch</option>
+                  </select>
+                </label>
+                <label>Background interval
+                  <input type="number" min={0} disabled={conceptOrder.background_placement === "spread"}
+                    className="block w-full bg-gray-800 border border-gray-600 rounded p-1 text-white disabled:opacity-40"
+                    value={conceptOrder.background_interval}
+                    onChange={e => updateConceptOrder({ background_interval: Number(e.target.value) })} />
+                </label>
+                <label>Replay interval (0 = off)
+                  <input type="number" min={0} className="block w-full bg-gray-800 border border-gray-600 rounded p-1 text-white"
+                    value={conceptOrder.replay_interval}
+                    onChange={e => updateConceptOrder({ replay_interval: Number(e.target.value) })} />
+                </label>
+              </div>
+              <p>{conceptOrder.background_placement === "spread"
+                ? "Spread visits concepts throughout the epoch; stopping early may leave concepts unvisited."
+                : "Front visits concepts early, leaving more background batches after they finish."}</p>
+              <div className="grid grid-cols-2 gap-3">
+                <label>Include tags (comma separated)
+                  <input className="block w-full bg-gray-800 border border-gray-600 rounded p-1 text-white"
+                    value={conceptIncludeText}
+                    onChange={e => setConceptIncludeText(e.target.value)}
+                    onBlur={() => updateConceptOrder({ include: conceptIncludeText.split(",").map(s => s.trim()).filter(Boolean) })} />
+                </label>
+                <label>Exclude tags (comma separated)
+                  <input className="block w-full bg-gray-800 border border-gray-600 rounded p-1 text-white"
+                    value={conceptExcludeText}
+                    onChange={e => setConceptExcludeText(e.target.value)}
+                    onBlur={() => updateConceptOrder({ exclude: conceptExcludeText.split(",").map(s => s.trim()).filter(Boolean) })} />
+                </label>
+              </div>
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={conceptOrder.match_natural_language}
+                  onChange={e => updateConceptOrder({ match_natural_language: e.target.checked })} />
+                Match natural language captions
+              </label>
+              {conceptOrder.match_natural_language && (
+                <label className="block">Caption aliases (JSON: concept name to spellings)
+                  <textarea rows={4} className="block w-full bg-gray-800 border border-gray-600 rounded p-2 font-mono text-white"
+                    value={conceptAliasText}
+                    onChange={e => setConceptAliasText(e.target.value)}
+                    onBlur={() => {
+                      try {
+                        const parsed = JSON.parse(conceptAliasText);
+                        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                          updateConceptOrder({ caption_aliases: parsed });
+                        }
+                      } catch { /* Submit reports incomplete JSON. */ }
+                    }} />
+                </label>
+              )}
+              {priorityEnabled && priorityText.trim() &&
+                <p className="text-yellow-400">Disable Priority Training to use concept ordering.</p>}
+            </div>
+          )}
+        </div>
         <div className="border border-gray-700 rounded p-4 space-y-3">
           <h3 className="text-sm font-medium text-gray-300 mb-2">Priority Training</h3>
           <label className="flex items-center gap-2 cursor-pointer">

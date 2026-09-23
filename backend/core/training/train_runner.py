@@ -3117,6 +3117,8 @@ def main():
             task_views = ds_params["task_views"]
             from core.training.sensenova_tasks import required_caption_types
             task_caption_types = required_caption_types(task_views)
+            if (train_config.get("concept_batch_order") or {}).get("match_natural_language"):
+                task_caption_types = list(dict.fromkeys([*task_caption_types, "natural_language"]))
             output_dir = Path(run.output_dir)
             is_resume = start_epoch > 0
             dataset_items = get_dataset_items_cached(
@@ -3214,6 +3216,10 @@ def main():
                 task_views = ds_params["task_views"]
                 from core.training.sensenova_tasks import required_caption_types
 
+                auxiliary_types = required_caption_types(task_views)
+                if (train_config.get("concept_batch_order") or {}).get("match_natural_language"):
+                    auxiliary_types = list(dict.fromkeys([*auxiliary_types, "natural_language"]))
+
                 items = get_dataset_items_cached(
                     db=datasets_db,
                     dataset_id=dataset_id,
@@ -3221,7 +3227,7 @@ def main():
                     epoch_num=epoch_num,
                     run_id=run_id,
                     caption_types=caption_types,
-                    auxiliary_caption_types=required_caption_types(task_views),
+                    auxiliary_caption_types=auxiliary_types,
                     use_cache=True,
                     force_reload=False,  # Use cache for epoch reloads
                     skip_captions=skip_captions,
@@ -3621,6 +3627,7 @@ def main():
 
             # Get priority training settings (inline dict or legacy file path)
             priority_training = train_config.get('priority_training', None)
+            concept_batch_order = train_config.get('concept_batch_order', None)
             # Legacy support: if it's a string path, load from file
             if isinstance(priority_training, str):
                 from core.training.priority_training import PriorityTrainingConfig
@@ -3698,6 +3705,7 @@ def main():
                 param_tracking=param_tracking,
                 param_tracking_interval=param_tracking_interval,
                 priority_training=priority_training,
+                concept_batch_order=concept_batch_order,
             )
 
             print("[TrainRunner] Training completed successfully!")
@@ -4109,6 +4117,7 @@ def main():
                 param_tracking=param_tracking,
                 param_tracking_interval=param_tracking_interval,
                 priority_training=priority_training,
+                concept_batch_order=train_config.get('concept_batch_order'),
             )
 
             print("[TrainRunner] ReLoRA training completed successfully!")
@@ -4501,6 +4510,7 @@ def main():
 
             # Get priority training settings (inline dict or legacy file path)
             priority_training = train_config.get('priority_training', None)
+            concept_batch_order = train_config.get('concept_batch_order', None)
             # Legacy support: if it's a string path, load from file
             if isinstance(priority_training, str):
                 from core.training.priority_training import PriorityTrainingConfig
@@ -4578,6 +4588,7 @@ def main():
                 param_tracking=param_tracking,
                 param_tracking_interval=param_tracking_interval,
                 priority_training=priority_training,
+                concept_batch_order=concept_batch_order,
             )
 
             print("[TrainRunner] Training completed successfully!")
@@ -4916,6 +4927,7 @@ def main():
                 multi_noise_mode=multi_noise_mode,
                 trajectory_blend_alpha=trajectory_blend_alpha,
                 timestep_sampling_config=timestep_sampling_config,
+                concept_batch_order=train_config.get('concept_batch_order'),
             )
 
             print("[TrainRunner] Training completed successfully!")

@@ -65,7 +65,7 @@ tagger 側の `tagger_trainer.py` は単体のファイルが大きい（約2,80
 
 SigLIP2 の encoder の attention は、mask された位置を key から除外する。しかし mask された token 自身の hidden state には、residual 経路を通って自身の画素情報が残る。したがって、pooling で除外しない限り情報が漏れる。
 
-> 参考：tagger の `CustomAttentionPooling`（`cls_dim` 指定時）は、以前 padding token も attention の対象にしていた。`dac6ed27` で `key_padding_mask` を適用するよう修正済みである（テスト: `backend/tests/tagger_custom_pooler_mask_test.py`）。style encoder の pooling も同じ不変条件を満たすこと。
+> 参考：tagger の `CustomAttentionPooling`（`cls_dim` 指定時）は、以前 padding token も attention の対象にしていた。`main` の `277d827e` で `key_padding_mask` を適用するよう修正済みである（テスト: `backend/tests/tagger_custom_pooler_mask_test.py`）。style encoder の pooling も同じ不変条件を満たすこと。
 
 ## 5. データ
 

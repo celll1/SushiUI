@@ -80,6 +80,7 @@ SigLIP2 の encoder の attention は、mask された位置を key から除外
   - **例外**: 明示された値が `General` で、manager が別のカテゴリ（None 以外）を返した場合は、manager の値を採用する。`backend/api/batch_operations.py` の tag_data backfill は、taglist に無いタグに一律 `General` を書き込むため、明示された `General` と backfill の既定値を区別できないからである。この件数は、食い違いとは別に数える。
   - Character / Copyright / Rating など、作者以外の内容タグの判定にも同じ規則を使う。
   - 同じ方針は `CONCEPT_BATCH_ORDER_DESIGN_2026-09.md` の Artist 抽出でも採られている。
+- **作品として扱わないタグ**: `style_non_copyright_tags`（初期値 `original`）に含まれるタグは、Copyright の集合から外す。Danbooru の `original` は共通の作品を表さないので、同じ作品の batch、正例の Jaccard、交絡度、同じ作品に限った評価のどれにも使わない。外した件数はログに出す。
 - **別名とカンマ入りタグ**: tagger の語彙構築（`tag_vocabulary.py`）と同じ順序で処理する。
   1. 既存の `CommaTagResolver` で、カンマで分割された断片を元のタグに結合する。結合されたタグは、`category_of()` の結果を確定したカテゴリとして扱う。
   2. `TagAliasResolver` で正規の名前に変換してから、カテゴリを調べる。正規の名前で見つからなければ、元の名前でも調べる。
@@ -185,7 +186,7 @@ L_i = − Σ_{j∈P(i)} (w_ij / Σ_{k∈P(i)} w_ik) · log( exp(s_ij/τ) / Σ_{a
 ## 9. 学習ループと共通基盤
 
 - **optimizer**: `adamw` / `adamw8bit` / `lion8bit`。scheduler は warmup → cosine。
-- **その他**: bf16、gradient checkpointing、FlashAttention-2（任意）、`gpu_index`。
+- **その他**: bf16、gradient checkpointing、`gpu_index`。attention の実装は `sdpa` / `eager`。transformers 5.17 の `Siglip2VisionModel` は FlashAttention-2 に対応していないため、`flash_attention_2` を指定した場合は黙って別の実装に切り替えず、学習の開始を拒否する。
 - **GPU 共有の offload**: 凍結した tagger も、退避と復帰の対象に含める。
 - **resume**: 次の値を state に保存する。
   - 重み、optimizer、scheduler、`global_step`、`total_steps`

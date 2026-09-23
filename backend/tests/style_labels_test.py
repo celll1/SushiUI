@@ -19,8 +19,8 @@ class _Manager:
         return self.groups.get(tag)
 
 
-def _resolver(groups, aliases=None, comma=None, signature=("signature",)):
-    return StyleLabelResolver(_Manager(groups), comma, TagAliasResolver(aliases or {}), signature)
+def _resolver(groups, aliases=None, comma=None, signature=("signature",), non_copyright=("original",)):
+    return StyleLabelResolver(_Manager(groups), comma, TagAliasResolver(aliases or {}), signature, non_copyright)
 
 
 def test_explicit_artist_unknown_to_taglist_is_kept():
@@ -122,3 +122,14 @@ def test_item_artist_counts():
     assert resolver.stats.items == 3
     assert resolver.stats.items_with_multiple_artists == 1
     assert resolver.stats.items_without_artist == 1
+
+
+def test_non_copyright_tags_are_dropped_after_canonicalisation():
+    resolver = _resolver({"original": "Copyright", "series": "Copyright", "someone": "Artist"},
+                         aliases={"original_work": "original"})
+    labels = resolver.resolve([{"tag": "Original"}, {"tag": "series"}, {"tag": "someone"}], None)
+    assert labels.copyrights == {"series"}
+    assert resolver.resolve(None, "original_work, someone").copyrights == frozenset()
+    assert resolver.stats.non_copyright_tags_dropped == 2
+    kept = _resolver({"original": "Copyright"}, non_copyright=())
+    assert kept.resolve(None, "original").copyrights == {"original"}

@@ -89,15 +89,18 @@ _MIX1 = np.uint64(0xBF58476D1CE4E5B9)
 _MIX2 = np.uint64(0x94D049BB133111EB)
 
 
+def splitmix64(z: np.ndarray) -> np.ndarray:
+    z = z.astype(np.uint64) + _GOLDEN
+    z = (z ^ (z >> np.uint64(30))) * _MIX1
+    z = (z ^ (z >> np.uint64(27))) * _MIX2
+    return z ^ (z >> np.uint64(31))
+
+
 def image_split_units(item_keys: np.ndarray, seed: int) -> np.ndarray:
     """splitmix64 of (item_key xor seed word); vectorized because it runs over every indexed item."""
     seed_word = int.from_bytes(hashlib.blake2b(str(seed).encode("utf-8"), digest_size=8,
                                                person=b"style-image").digest(), "little")
-    z = np.ascontiguousarray(item_keys, dtype=np.int64).view(np.uint64) ^ np.uint64(seed_word)
-    z = z + _GOLDEN
-    z = (z ^ (z >> np.uint64(30))) * _MIX1
-    z = (z ^ (z >> np.uint64(27))) * _MIX2
-    z = z ^ (z >> np.uint64(31))
+    z = splitmix64(np.ascontiguousarray(item_keys, dtype=np.int64).view(np.uint64) ^ np.uint64(seed_word))
     return (z >> np.uint64(11)).astype(np.float64) / 2.0 ** 53
 
 

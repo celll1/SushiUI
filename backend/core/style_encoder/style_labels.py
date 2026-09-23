@@ -51,6 +51,7 @@ class LabelStats:
     category_disagreements: int = 0
     general_overridden_by_manager: int = 0
     unresolved_tags: int = 0
+    non_copyright_tags_dropped: int = 0
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -116,11 +117,17 @@ class StyleLabelResolver:
         comma_resolver: Optional[CommaResolver],
         alias_resolver: Optional[AliasResolver],
         signature_tags: Iterable[str],
+        non_copyright_tags: Iterable[str],
     ) -> None:
+        """`non_copyright_tags` (e.g. `original`) are Copyright-category tags that name no shared work;
+        they are dropped from `copyrights` after alias canonicalisation."""
         self._categories = category_resolver
         self._comma = comma_resolver
         self._aliases = alias_resolver
         self._signature = frozenset(normalize_tag(tag) for tag in signature_tags)
+        self._non_copyright = frozenset(
+            alias_resolver.resolve(normalize_tag(tag)) if alias_resolver is not None else normalize_tag(tag)
+            for tag in non_copyright_tags)
         self._lookup_cache: dict[str, Optional[str]] = {}
         self.stats = LabelStats()
 
@@ -180,7 +187,10 @@ class StyleLabelResolver:
             elif category == "Character":
                 characters.add(name)
             elif category == "Copyright":
-                copyrights.add(name)
+                if name in self._non_copyright:
+                    stats.non_copyright_tags_dropped += 1
+                else:
+                    copyrights.add(name)
         stats.items += 1
         if not artists:
             stats.items_without_artist += 1

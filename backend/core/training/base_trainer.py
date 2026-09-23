@@ -5432,6 +5432,10 @@ class BaseTrainer(ABC):
             # invalidates the saved shuffle/crop reproducibility -> fresh fallback on resume.
             "crop_plan_fingerprint": getattr(self, '_crop_plan_fingerprint', None),
             "concept_batch_plan": getattr(self, '_concept_batch_plan_state', None),
+            "concept_exposure": (
+                self._concept_exposure.state()
+                if getattr(self, "_concept_exposure", None) is not None else None
+            ),
             "resume_batch_plan": getattr(self, '_resume_batch_plan_ref', None),
             "resume_order_signature": getattr(self, '_resume_plan_signature', None),
             "resume_dataset_manifest": getattr(self, '_resume_dataset_manifest', None),
@@ -5510,6 +5514,11 @@ class BaseTrainer(ABC):
         os.replace(temporary_state, state_file)
 
         print(f"{self.log_prefix} Saved training state to {state_file.name}")
+        if getattr(self, "_concept_exposure", None) is not None:
+            try:
+                self._concept_exposure.publish(wait=True)
+            except OSError as exc:
+                print(f"{self.log_prefix} WARNING: Failed to publish concept exposure: {exc}")
 
     def load_training_state(self, step: int) -> Optional[dict]:
         """
@@ -16744,6 +16753,14 @@ class BaseTrainer(ABC):
         # global_step stop target; discard the non-portable epoch/batch bookkeeping and
         # restart from a fresh epoch boundary. Fires ONLY when the dataset fingerprint or
         # batches_per_epoch changed, so a normal same-structure resume is byte-identical.
+        from core.training.concept_exposure import ConceptExposure
+        _saved_exposure = (resume_training_state or {}).get("concept_exposure")
+        self._concept_exposure = (
+            ConceptExposure(self.output_dir,
+                            "concept" if concept_config else "priority",
+                            _saved_exposure)
+            if concept_config or priority_training else None
+        )
         self._resume_structure_changed = False
         _ledger_resume = resume_dataset_change_policy == "rebase_remaining"
         if _ledger_resume and resume_from_checkpoint:
@@ -17610,6 +17627,38 @@ class BaseTrainer(ABC):
                         batches = batches + ltx2_video_batches + acestep_audio_batches
 
                 batches = self._drop_unfittable_batches(batches)
+                if self._concept_exposure is not None:
+                    from collections import Counter
+                    from core.training.concept_exposure import item_key
+                    if concept_config:
+                        target_items = Counter()
+                        for group_batch, name, repeated in zip(
+                                concept_plan.batches, concept_plan.labels, concept_plan.replay):
+                            if not repeated:
+                                for item, _dataset in group_batch:
+                                    target_items.update(item.get("_concept_exposure_groups", ()))
+                        names = {name: name for name in target_items}
+                    elif priority_config and priority_config.entries:
+                        available = {
+                            item_key(item, dataset)
+                            for batch in batches for item, dataset in batch
+                        }
+                        target_items = Counter()
+                        for item, dataset, index in priority_items:
+                            if item_key(item, dataset) in available:
+                                item["_concept_exposure_group"] = str(index)
+                                target_items[str(index)] += 1
+                        names = {
+                            str(index): (
+                                ", ".join(entry.tags) if entry.tags else
+                                f"caption:{entry.caption_contains}"
+                            ) for index, entry in enumerate(priority_config.entries)
+                        }
+                    else:
+                        target_items, names = {}, {}
+                    self._concept_exposure.set_epoch(target_items, names)
+                    if epoch == start_epoch:
+                        self._concept_exposure.publish()
                 if concept_config:
                     self._concept_batch_plan_state = concept_plan.state(
                         concept_config, self._concept_order_seed, self._crop_plan_fingerprint)
@@ -18189,6 +18238,7 @@ class BaseTrainer(ABC):
                             pass
 
                 for batch_idx, batch in enumerate(tqdm(batches, desc=f"Epoch {epoch+1}/{num_epochs} ({epoch_steps} steps)")):
+                    _exposure_items = batch
                     self._current_batch_position = (
                         int(batch_idx) + int(getattr(self, "_epoch_batch_offset", 0) or 0)
                     )
@@ -19226,6 +19276,7 @@ class BaseTrainer(ABC):
                                 print(f"{self.log_prefix} WARNING: Latent size mismatch in batch - expected {expected_shape}, got {lat.shape[2:]}, skipping item")
 
                         if len(valid_indices) < len(latents_list):
+                            _exposure_items = [batch[i] for i in valid_indices]
                             # Filter lists to keep only valid items
                             latents_list = [latents_list[i] for i in valid_indices]
                             # `batch` is not just the source of these lists: several
@@ -20045,6 +20096,8 @@ class BaseTrainer(ABC):
 
                         if not cuda_error_skip:
                             self._backwards_completed += 1
+                            if self._concept_exposure is not None:
+                                self._concept_exposure.record(_exposure_items, global_step + 1, 1)
                         else:
                             self._mnt_iterations_oom_skipped += 1
 

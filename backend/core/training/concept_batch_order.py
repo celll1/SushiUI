@@ -203,6 +203,7 @@ def _classification(items: list[tuple[dict, Any]], config: ConceptOrderConfig,
     assigned = Counter()
     for pair in ordered:
         choices = names_by_id[_item_id(pair)] & eligible
+        pair[0]["_concept_exposure_groups"] = tuple(sorted(choices))
         if not choices:
             background.append(pair)
             continue

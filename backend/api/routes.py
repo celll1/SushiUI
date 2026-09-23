@@ -57,6 +57,7 @@ from api.param_defaults import (
     LR_PREVIEW_DEFAULTS,
     LR_TRIGGER_DEFAULTS,
     TRAINING_MONITOR_MEDIA_DEFAULTS,
+    CONCEPT_EXPOSURE_DEFAULTS,
     BUNDLE_VAE_DEFAULTS_BY_ARCH,
     VIDEO_GEN_ARCH_OVERLAYS,
     OUTPAINT_AUDIO_ARCH_OVERLAYS,
@@ -18574,6 +18575,41 @@ async def get_training_step_profile(
             }
         )
     return {"run_id": run_id, "sessions": sessions}
+
+
+@router.get("/training/runs/{run_id}/concept-exposure")
+def get_training_concept_exposure(
+    run_id: int,
+    order: Literal["latest", "top"] = CONCEPT_EXPOSURE_DEFAULTS["order"],
+    limit: int = CONCEPT_EXPOSURE_DEFAULTS["limit"],
+    db: Session = Depends(get_training_db),
+):
+    """Read the trainer's atomic exposure snapshot without contacting its process."""
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Training run not found")
+    if not 1 <= limit <= 50:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 50")
+    path = Path(run.output_dir) / "concept_exposure.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"enabled": False, "rows": []}
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail=f"Exposure snapshot unavailable: {exc}")
+    rows = []
+    for key, count in data.get("counts", {}).items():
+        target = int(data.get("target_items", {}).get(key, 0))
+        rows.append({"key": key, "name": data.get("names", {}).get(key, key),
+                     "sample_passes": int(count), "target_images": target,
+                     "mean_passes_per_image": count / target if target else 0,
+                     "last_step": int(data.get("last_step", {}).get(key, 0))})
+    sort_key = ((lambda row: (row["last_step"], row["sample_passes"]))
+                if order == "latest" else
+                (lambda row: (row["sample_passes"], row["last_step"])))
+    rows.sort(key=sort_key, reverse=True)
+    return {"enabled": True, "mode": data.get("mode"), "total_groups": len(rows),
+            "order": order, "rows": rows[:limit]}
 
 
 @router.get("/training/runs/{run_id}/metrics_db")

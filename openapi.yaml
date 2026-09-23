@@ -25495,6 +25495,24 @@ components:
             Defaults to learning_rate if null. 0 deliberately holds this
             component still while another trains; only a negative rate is
             refused.
+        train_adapter:
+          type: 'boolean'
+          nullable: true
+          default: null
+          description: |
+            Train the architecture's conditioning bridge/adapter. Null preserves
+            its existing method-specific policy. Qwen-Image 2.1 LoRA targets
+            txt_in only when true; this is not text-encoder training or a VAE swap.
+          example: true
+        adapter_lr:
+          type: 'number'
+          nullable: true
+          minimum: 0
+          default: null
+          description: |
+            Independent conditioning adapter learning rate. Null keeps the
+            architecture's existing rate; zero deliberately holds it still.
+          example: 0.00002
         text_encoder_lr:
           type: 'number'
           nullable: true

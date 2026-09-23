@@ -143,6 +143,26 @@ def train_and_save(tmp_path, scope=None, name="anima.safetensors", seed=1234):
     return str(out), lora_layer_paths(model)
 
 
+def test_anima_common_adapter_lr_splits_only_when_set():
+    model = build_model()
+    trainer = SimpleNamespace(
+        transformer=model, blockskip_config=None, learning_rate=1e-4,
+        unet_lr=1e-4, config={"adapter_lr": 2e-5},
+    )
+    adapter = AnimaLoRAAdapter(trainer, RANK, ALPHA, torch.float32)
+    layers = {}
+    adapter.apply_lora_to_unet(layers)
+    assert [(g["component"], g["lr"]) for g in adapter.arch_param_groups(layers)] == [
+        ("unet", 1e-4), ("adapter", 2e-5)
+    ]
+    trainer.transformer = build_model()
+    trainer.train_unet = False
+    only_layers = {}
+    adapter.apply_lora_to_unet(only_layers)
+    assert only_layers and all("llm_adapter" in name for name in only_layers)
+    assert [g["component"] for g in adapter.arch_param_groups(only_layers)] == ["adapter"]
+
+
 def file_branch_tensors(path, target):
     """``(down, up)`` straight out of the checkpoint, for the analytic sum."""
     saved = load_file(path)

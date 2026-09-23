@@ -2508,6 +2508,8 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "train_unet": True,
     "train_text_encoder": False,            # Fix: frontend had True
     "unet_lr": None,        # None = falls back to learning_rate (see BaseTrainer.__init__)
+    "train_adapter": None,  # None preserves each architecture's existing adapter policy
+    "adapter_lr": None,     # None preserves the architecture's existing adapter LR
     # SenseNova SDXL Chimera. Alignment-loss coefficients intentionally have no
     # invented fallback: bridge_align refuses until an explicit measured pair is supplied.
     "chimera_training_stage": "unet",

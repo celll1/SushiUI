@@ -15176,6 +15176,8 @@ class TrainingRunCreateRequest(BaseModel):
     # that component's loss -- is refused. None keeps the "defaults to
     # learning_rate" fallback.
     unet_lr: Optional[float] = Field(default=None, ge=0)  # Defaults to learning_rate if None
+    train_adapter: Optional[bool] = TRAINING_DEFAULTS["train_adapter"]
+    adapter_lr: Optional[float] = Field(default=TRAINING_DEFAULTS["adapter_lr"], ge=0)
     text_encoder_lr: Optional[float] = Field(default=None, ge=0)  # Defaults to learning_rate if None
     text_encoder_1_lr: Optional[float] = Field(default=None, ge=0)  # SDXL TE1 LR (defaults to text_encoder_lr if None)
     text_encoder_2_lr: Optional[float] = Field(default=None, ge=0)  # SDXL TE2 LR (defaults to text_encoder_lr if None)
@@ -15917,6 +15919,29 @@ def _check_vae_swap_params(request: "TrainingRunCreateRequest") -> None:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+def _check_adapter_params(request: "TrainingRunCreateRequest") -> None:
+    if request.train_adapter is None and request.adapter_lr is None:
+        return
+    from core.training.training_config import _detect_arch
+
+    arch = _detect_arch(request.base_model_path)
+    if arch not in {"qwen_image_21", "anima"}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"train_adapter/adapter_lr are not supported for {arch}",
+        )
+    if request.training_method not in {"lora", "full_finetune"}:
+        raise HTTPException(
+            status_code=400,
+            detail="train_adapter/adapter_lr require LoRA or full fine-tuning",
+        )
+    if not request.train_unet and request.train_adapter is not True:
+        raise HTTPException(
+            status_code=400,
+            detail="adapter-only training requires train_adapter=true",
+        )
+
+
 @router.post("/training/runs", status_code=201)
 async def create_training_run(
     request: TrainingRunCreateRequest,
@@ -15965,6 +15990,7 @@ async def create_training_run(
             for c in dataset_configs
         ])
         _check_vae_swap_params(request)
+        _check_adapter_params(request)
         _check_timestep_sampling(request)
 
         # Build dataset_configs_for_yaml (with path, caption_types, and dataset_id)
@@ -16679,6 +16705,7 @@ async def update_training_run(
             for c in (request.dataset_configs or [])
         ])
         _check_vae_swap_params(request)
+        _check_adapter_params(request)
         _check_timestep_sampling(request)
 
         # Resolve temp_img:// references in sample_prompts condition_image_path

@@ -28,6 +28,7 @@ from core.training.repa import (projector_param_groups, repa_enabled,
 
 
 LORA_COMPONENT_UNET = "unet"
+LORA_COMPONENT_ADAPTER = "adapter"
 LORA_COMPONENT_TEXT_ENCODER = "text_encoder"
 LORA_COMPONENT_TEXT_ENCODER_1 = "text_encoder_1"
 LORA_COMPONENT_TEXT_ENCODER_2 = "text_encoder_2"
@@ -38,6 +39,7 @@ LORA_COMPONENT_VISION_ENCODER = "vision_encoder"
 # `_configured_group_lrs` is written back index-for-index.
 LORA_COMPONENT_ORDER = (
     LORA_COMPONENT_UNET,
+    LORA_COMPONENT_ADAPTER,
     LORA_COMPONENT_TEXT_ENCODER,
     LORA_COMPONENT_TEXT_ENCODER_1,
     LORA_COMPONENT_TEXT_ENCODER_2,

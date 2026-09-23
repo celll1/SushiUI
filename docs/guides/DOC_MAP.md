@@ -69,6 +69,7 @@ machine-local working material.
 | [docs/guides/CONVERGENCE_PHASE1_SENSENOVA.md](CONVERGENCE_PHASE1_SENSENOVA.md) | SenseNova diagnostic measurements. |
 | [docs/guides/SENSENOVA_LATENT_REFINER_DESIGN.md](SENSENOVA_LATENT_REFINER_DESIGN.md) | Optional fine-grid refiner branch for latent SenseNova: design, attach/detach across resumes, generation parity (not implemented). |
 | [docs/guides/LYCORIS_ADAPTER_DESIGN.md](LYCORIS_ADAPTER_DESIGN.md) | Current adapter subsystem contract. |
+| [docs/guides/CONDITIONING_ADAPTER_TRAINING.md](CONDITIONING_ADAPTER_TRAINING.md) | Shared conditioning-bridge train/LR controls, architecture inventory, and exclusions. |
 | [docs/guides/VAE_TRAINING.md](VAE_TRAINING.md) | VAE decoder training contract. |
 | [docs/guides/VAE_DECODE_BEHAVIOR.md](VAE_DECODE_BEHAVIOR.md) | VAE tiled-decode behavior and measured non-locality. |
 | [docs/guides/VAE_TRAINING_RESOLUTION.md](VAE_TRAINING_RESOLUTION.md) | VAE crop/resolution semantics and measurements. |

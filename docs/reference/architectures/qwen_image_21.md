@@ -39,7 +39,11 @@ generation block swap, keep-hot, and VAE/TE replacement are not claimed;
 capability data marks the shared controls unsupported.
 
 Training supports DiT LoRA on Original or a frozen INT8 ConvRot base, and full
-DiT fine-tuning on Original only. Qwen3-VL and the VAE remain frozen. The flow
+DiT fine-tuning on Original only. `train_adapter: true` adds LoRA to both
+`txt_in` Linear layers; `adapter_lr` gives those branches an independent
+optimizer group. The default LoRA inventory remains 128 attention projections.
+Full fine-tuning includes the complete `txt_in` by default and can freeze it
+with `train_adapter: false`. Qwen3-VL and the VAE remain frozen. The flow
 objective is `xt = (1-sigma)*x0 + sigma*noise`, target `noise-x0`; loss is taken
 only from the target latent tail. ReLoRA, ControlNet, text-encoder training,
 VAE swap, and reference-conditioned edit datasets are refused.

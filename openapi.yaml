@@ -24175,6 +24175,36 @@ components:
             Explicit SenseNova objectives eligible for each item. Empty keeps
             the legacy image-generation behavior.
 
+    ConceptBatchOrderRequest:
+      type: object
+      additionalProperties: false
+      description: >-
+        Deterministic Character or Artist batch ordering for image generation training.
+        Incompatible with priority training, SenseNova, video/audio, and online Danbooru injection.
+      properties:
+        enabled: {type: boolean, default: false}
+        category: {type: string, enum: [character, artist], default: character}
+        min_items_per_concept: {type: integer, minimum: 1, default: 8}
+        include: {type: array, items: {type: string}, default: []}
+        exclude: {type: array, items: {type: string}, default: []}
+        focus_batches: {type: integer, minimum: 0, maximum: 10000, default: 8}
+        local_swap_window: {type: integer, minimum: 0, maximum: 32, default: 2}
+        background_placement: {type: string, enum: [front, spread], default: front}
+        background_interval:
+          type: integer
+          minimum: 0
+          default: 8
+          description: Focus batches per background batch in front mode; unused in spread mode.
+        replay_interval: {type: integer, minimum: 0, default: 0}
+        caption_aliases:
+          type: object
+          additionalProperties:
+            type: array
+            items: {type: string}
+          default: {}
+          example: {hatsune_miku: ["Hatsune Miku", "Miku Hatsune"]}
+        match_natural_language: {type: boolean, default: false}
+
     TrainingRunCreateRequest:
       type: object
       required:
@@ -27105,6 +27135,8 @@ components:
           type: 'object'
           additionalProperties: true
           nullable: true
+        concept_batch_order:
+          $ref: '#/components/schemas/ConceptBatchOrderRequest'
         controlnet_type:
           type: 'string'
           default: 'standard'

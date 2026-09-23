@@ -753,6 +753,8 @@ def _build_train_section(
     # Priority training
     if include_priority_training and p.get("priority_training"):
         train["priority_training"] = p["priority_training"]
+    if include_priority_training and (p.get("concept_batch_order") or {}).get("enabled"):
+        train["concept_batch_order"] = p["concept_batch_order"]
 
     train["latent_encoding_mode"] = p.get("latent_encoding_mode", "swap_onthefly")
     train["latent_encoding_swap_interval"] = p.get("latent_encoding_swap_interval", 256)

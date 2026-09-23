@@ -159,6 +159,7 @@ export const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [
   "vision_encoder_lr", "param_tracking", "param_tracking_interval",
   "relora_merge_every", "relora_merge_unit", "restart_warmup_steps",
   "optimizer_reset_strategy", "optimizer_pruning_ratio",
+  "concept_batch_order",
 ];
 
 /** Request fields applyParamsToState() restores through its own coercion or

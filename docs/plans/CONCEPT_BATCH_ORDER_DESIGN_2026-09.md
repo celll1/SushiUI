@@ -1,6 +1,6 @@
 # コンセプト巡回バッチ順序 設計書
 
-Status: 提案・未実装（2026-09-23）
+Status: 初版実装済み（2026-09-23）
 
 ## 1. 目的と検証すべき仮説
 
@@ -21,9 +21,9 @@ Status: 提案・未実装（2026-09-23）
 
 ## 3. ユーザー向け設定案
 
-API の `concept_batch_order` は省略時 `null`、または以下の object とする。値は**提案値**であり、実装時に `backend/api/param_defaults.py` の `TRAINING_DEFAULTS` を唯一の既定値として定義する。`openapi.yaml` は具体的な schema、制約、例を持たせ、`backend/api/routes.py`、`frontend/src/utils/api.ts` と学習画面を同期する。
+API の `concept_batch_order` は省略時に `enabled=false` の object を使う。既定値は `backend/api/param_defaults.py` の `TRAINING_DEFAULTS` を唯一の定義とし、`openapi.yaml`、`backend/api/routes.py`、`frontend/src/utils/api.ts` と学習画面を同期する。
 
-| フィールド | 提案既定値 | 意味 |
+| フィールド | 既定値 | 意味 |
 |---|---:|---|
 | `enabled` | `false` | 機能の有効化 |
 | `category` | `character` | `character` / `artist`。両カテゴリ同時巡回は初版の対象外 |
@@ -87,6 +87,7 @@ API の `concept_batch_order` は省略時 `null`、または以下の object �
 | online Danbooru 注入 | 初版は同時指定を拒否する。非同期 collector の到着内容と挿入位置を再現するには、画像を含む確定済み注入計画と checkpoint cursor が別途必要。 |
 | priority training | 両方が有効ならエラー。既存の priority 設定と UI は維持する。 |
 | 勾配累積 / LR schedule | コンセプト・bucket ごとの端数と再提示を含む実際の batch 数から、MNT iteration 数、optimizer update 数、epoch 長、scheduler 位置を計算する。初期の `ceil(total_items/batch_size)` をそのまま使わない。crop 有効時の `CropPlanner.step_offsets` もコンセプト別 batch 数を含む方式へ拡張する。 |
+| 解像度 curriculum | 初版では同時指定を明示的に拒否する。phase ごとの bucket 別・コンセプト別 batch 数を事前計算する対応が必要。 |
 | 途中再開 | §7.1 の plan 再生成・照合を行い、一致した場合だけ保存された `batch_idx` を適用する。設定や分類情報が変わった場合は途中再開を拒否する。 |
 
 無効時は既存 batch path の順序と乱数消費を変えない。新しい順序計画には run seed と epoch から導く専用 RNG を使い、他の dropout / sampling 用 RNG を余計に進めない。
@@ -128,3 +129,9 @@ API 追加時には `openapi.yaml` を先に更新し、training request、保�
 ### 学習効果の評価
 
 同じデータ、seed、キャプション処理で、通常シャッフルと `replay_interval=0` の巡回順序を比較する。端数 batch による batch 数・実効 batch size・optimizer update 数の差を測り、比較条件を揃える。別実験で再提示を有効にし、**露出回数を揃えた対照群**を置く。`front` と `spread` は同じ早期停止 step でも訪問済みコンセプト数が違うため、途中 checkpoint の訪問率と品質を別々に示す。対象は頻出・希少な Character と Artist、既存知識の保持用プロンプトを含める。途中と最終 checkpoint でタグ応答、類似キャラクターへの混同、既存タグの劣化を評価する。contrastive loss / unconditional 関連の効果は、その設定を変えた実験で別に測る。改善を前提に既定有効化しない。
+
+## 10. 初版の確認結果と残る評価
+
+- `replay_interval=0` で全画像を一度ずつ提示すること、`front` / `spread` の差、別名の単語境界、同じ入力からの計画再生成、キャプション・参照画像変更の検出を専用テストで確認した。
+- #164 を複製した Qwen-Image 2.1 の検証 run #165 では `train_adapter=false` として txt_in を学習対象から外した。3 step の実 GPU 学習に続き、step 2 の checkpoint から step 4 まで再開した。保存 state の `batch_idx` は 2→4、分類 hash と最終 batch plan digest は一致した。
+- 初版は解像度 curriculum との同時指定を拒否する。大規模データでの計画生成時間・追加メモリ、複数 bucket と動的 crop を伴う実 GPU 学習、キャラクター知識への効果は今後の評価対象とする。

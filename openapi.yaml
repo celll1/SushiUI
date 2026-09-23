@@ -28818,7 +28818,7 @@ components:
         save_every_n_steps:
           type: integer
           minimum: 0
-          description: Step checkpoint interval; 0 writes only `latest` (epoch ends and stop) and `best`.
+          description: Step checkpoint interval; 0 writes only `latest` (epoch ends and stop) and `best`. LoRA step bundles contain adapter and resume state; merged distributable encoders are written for `latest` and `best`.
           example: 500
         keep_last_n_checkpoints:
           type: integer

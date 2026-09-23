@@ -203,6 +203,51 @@ def _lora_encoder(dropout=0.0):
     return model
 
 
+def test_lora_step_bundle_has_only_resume_weights_and_recovers_interrupted_publish(tmp_path, monkeypatch):
+    from core.style_encoder.style_artifacts import LORA_SUFFIX, recover_staged_bundles
+    from core.style_encoder.style_resume import SplitSnapshot
+
+    model = _lora_encoder()
+    state = {"global_step": 3, "model": {"training_method": "lora"}}
+    resume = (state, {"marker": 3}, SplitSnapshot(np.arange(3, dtype=np.int64)))
+    real_replace = os.replace
+
+    def interrupted_replace(src, dst):
+        if str(dst).endswith("step_000003_state.json"):
+            raise OSError("interrupted before marker")
+        return real_replace(src, dst)
+
+    with monkeypatch.context() as m:
+        m.setattr(os, "replace", interrupted_replace)
+        with pytest.raises(OSError, match="interrupted before marker"):
+            save_bundle(model, str(tmp_path), "step_000003", {"training_method": "lora"}, resume)
+    assert recover_staged_bundles(str(tmp_path))[0] == ["step_000003"]
+    assert not (tmp_path / f"step_000003{ENCODER_SUFFIX}").exists()
+    assert (tmp_path / f"step_000003{LORA_SUFFIX}").is_file()
+    name, found = find_resume_checkpoint(str(tmp_path))
+    assert name == "step_000003" and found["has_distributable"] is False
+    assert not any(".staged" in f for f in os.listdir(tmp_path))
+
+
+def test_old_lora_step_bundle_with_full_encoder_still_resumes(tmp_path):
+    from core.style_encoder.style_artifacts import LORA_SUFFIX
+    from core.style_encoder.style_resume import SplitSnapshot
+    import json
+
+    model = _lora_encoder()
+    state = {"global_step": 2, "model": {"training_method": "lora"}}
+    save_bundle(model, str(tmp_path), "latest", {"training_method": "lora"},
+                (state, {"marker": 2}, SplitSnapshot(np.arange(2, dtype=np.int64))))
+    for suffix in (ENCODER_SUFFIX, LORA_SUFFIX, "_metadata.json", "_optimizer.pt", "_split_snapshot.npz",
+                   "_state.json"):
+        os.replace(tmp_path / f"latest{suffix}", tmp_path / f"step_000002{suffix}")
+    state_path = tmp_path / "step_000002_state.json"
+    old_state = json.loads(state_path.read_text(encoding="utf-8"))
+    old_state.pop("has_distributable")
+    state_path.write_text(json.dumps(old_state), encoding="utf-8")
+    assert find_resume_checkpoint(str(tmp_path))[0] == "step_000002"
+
+
 def test_lora_distributable_is_merged_and_adapter_weights_reload(tmp_path):
     model = _lora_encoder().eval()
     save_bundle(model, str(tmp_path), "x", {"format": "sushiui-style-encoder", "format_version": 1,

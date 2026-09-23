@@ -304,6 +304,7 @@ Dataset loading before training is reported with the plain `progress` message.
 | `epoch` | int (optional) | epoch index |
 | `index_hash` | string (optional) | style index the values were measured on; values with different hashes are not comparable |
 | `loss`, `lr`, `grad_norm` | float (optional) | `step` only |
+| `hsic_loss` | float (optional) | `step` only; weighted content penalty when HSIC is enabled |
 | `progress` | float (optional) | `step` only; global_step / total_steps, 0-1 |
 | `epoch_loss` | float (optional) | `epoch` only; mean loss of the epoch |
 | `val_map_at_r`, `val_recall_at_1`, `val_recall_at_5` | float (optional) | `validation` only; held-out-artist retrieval |

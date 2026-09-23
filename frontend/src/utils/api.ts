@@ -9071,6 +9071,8 @@ export interface StyleTrainingConfig {
   style_temperature: number;
   style_view_positive_weight: number;
   style_positive_weight_min: number;
+  style_hsic_tagger_path: string;
+  style_hsic_weights: Record<"Character" | "Copyright" | "Rating" | "Quality", number>;
   style_feature_layers: number[];
   style_token_dim: number;
   style_pool_heads: number;
@@ -9163,6 +9165,8 @@ export interface StyleTrainingMetric {
   index_hash: string | null;
   loss: number | null;
   supcon_loss: number | null;
+  hsic_loss: number | null;
+  hsic_components: Record<string, number> | null;
   learning_rate: number | null;
   grad_norm: number | null;
   epoch_loss: number | null;

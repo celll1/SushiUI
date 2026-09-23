@@ -136,6 +136,8 @@ def config(dataset_ids, **overrides) -> dict:
         "style_same_copyright_batch_ratio": 0.5, "style_artist_sampling_power": 0.5, "style_mask_ratio_min": 0.3,
         "style_mask_ratio_max": 0.75, "style_max_num_patches": MAX_PATCHES, "style_temperature": 0.1,
         "style_view_positive_weight": 1.0, "style_positive_weight_min": 0.3, "style_feature_layers": [1, -2],
+        "style_hsic_tagger_path": "",
+        "style_hsic_weights": {"Character": 0.1, "Copyright": 0.1, "Rating": 0.1, "Quality": 0.0},
         "style_token_dim": 8, "style_pool_heads": 2, "style_projector_hidden_dim": 12, "style_embed_dim": 6,
         "style_val_max_items": 0, "style_val_batch_size": 5, "style_eval_chunk_size": 3,
     }

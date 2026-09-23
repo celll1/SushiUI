@@ -1,6 +1,6 @@
 # Style embedding encoder 設計書
 
-Status: 実装中（Phase 0・1・2 完了。Phase 3 の HSIC、Phase 4 の UI と推論 API は未着手）。2026-09-23 の外部監査の指摘 4 件を §4・§5・§9・§10・§14 に反映済み
+Status: 実装中（Phase 0・1・2 完了。Phase 3 の HSIC は CPU 実装済み、GPU での A/B 比較が未完了。Phase 4 の UI と推論 API は未着手）。2026-09-23 の外部監査の指摘 4 件を §4・§5・§9・§10・§14 に反映済み
 
 ## 1. 目的と要件
 
@@ -168,6 +168,8 @@ L_i = − Σ_{j∈P(i)} (w_ij / Σ_{k∈P(i)} w_ik) · log( exp(s_ij/τ) / Σ_{a
 ### 8.2 内容の追い出し：凍結した tagger による nHSIC
 
 - **tagger**: `style_hsic_tagger_path` で指定する、artist を外した SigLIP2 tagger の checkpoint。凍結して推論のみに使う。tagger 自身の前処理で、画像1枚につき1回 forward する。
+  - パスが空なら HSIC を無効にする。checkpoint 固有の vocabulary snapshot を必須とし、配布 metadata には checkpoint のファイル名と SHA-256 のみを記録する。
+  - tagger の NaFlex 前処理は推論と同じ 256 パッチ上限を使う。tagger の出力は global view の style embedding とだけ比較する。
 - **対象の列**: checkpoint の語彙にある `tag_to_category` を使って、カテゴリごとに出力確率（sigmoid）の列を選ぶ。
 - **ペナルティ**: カテゴリ g ごとに、正規化 HSIC（CKA 形式）nHSIC(K_Z, K_{T_g}) を global view の埋め込みに対して計算する。
   - kernel は両側とも Gaussian で、bandwidth は median heuristic で決める。

@@ -1406,6 +1406,8 @@ class StyleTrainingMetrics(TrainingBase):
     index_hash = Column(String, nullable=True)
     loss = Column(Float, nullable=True)
     supcon_loss = Column(Float, nullable=True)
+    hsic_loss = Column(Float, nullable=True)
+    hsic_components = Column(JSON, nullable=True)
     learning_rate = Column(Float, nullable=True)
     grad_norm = Column(Float, nullable=True)
     epoch_loss = Column(Float, nullable=True)
@@ -1428,6 +1430,8 @@ class StyleTrainingMetrics(TrainingBase):
             "index_hash": self.index_hash,
             "loss": self.loss,
             "supcon_loss": self.supcon_loss,
+            "hsic_loss": self.hsic_loss,
+            "hsic_components": self.hsic_components,
             "learning_rate": self.learning_rate,
             "grad_norm": self.grad_norm,
             "epoch_loss": self.epoch_loss,

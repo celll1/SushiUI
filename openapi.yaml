@@ -28936,6 +28936,17 @@ components:
           maximum: 1
           description: Floor of the content-overlap weight of same-artist positives.
           example: 0.3
+        style_hsic_tagger_path:
+          type: string
+          description: Frozen SigLIP2 tagger checkpoint for HSIC; empty disables HSIC. Changing it refuses resume.
+          example: ""
+        style_hsic_weights:
+          type: object
+          additionalProperties:
+            type: number
+            minimum: 0
+          description: Nonnegative HSIC weights for Character, Copyright, Rating and Quality. A positive weight requires that category in the checkpoint vocabulary; changing weights refuses resume.
+          example: {Character: 0.1, Copyright: 0.1, Rating: 0.1, Quality: 0.0}
         style_feature_layers:
           type: array
           minItems: 1
@@ -29028,6 +29039,8 @@ components:
             style_temperature: {default: 0.1}
             style_view_positive_weight: {default: 1.0}
             style_positive_weight_min: {default: 0.3}
+            style_hsic_tagger_path: {default: ""}
+            style_hsic_weights: {default: {Character: 0.1, Copyright: 0.1, Rating: 0.1, Quality: 0.0}}
             style_feature_layers: {default: [21]}
             style_token_dim: {default: 1152}
             style_pool_heads: {default: 8}
@@ -29261,6 +29274,16 @@ components:
         supcon_loss:
           type: number
           nullable: true
+        hsic_loss:
+          type: number
+          nullable: true
+          description: Weighted sum of the content HSIC penalties; null when HSIC is disabled.
+        hsic_components:
+          type: object
+          nullable: true
+          additionalProperties:
+            type: number
+          description: Unweighted nHSIC by active category.
         learning_rate:
           type: number
           nullable: true
@@ -29300,6 +29323,8 @@ components:
         index_hash: 3f9a0c1b2d4e
         loss: 3.12
         supcon_loss: 3.12
+        hsic_loss: null
+        hsic_components: null
         learning_rate: 0.00028
         grad_norm: 0.84
         epoch_loss: null

@@ -104,6 +104,8 @@ class StyleTrainingRunCreateRequest(BaseModel):
     style_temperature: float = _D["style_temperature"]
     style_view_positive_weight: float = _D["style_view_positive_weight"]
     style_positive_weight_min: float = _D["style_positive_weight_min"]
+    style_hsic_tagger_path: str = _D["style_hsic_tagger_path"]
+    style_hsic_weights: Dict[str, float] = _D["style_hsic_weights"]
     style_feature_layers: List[StrictInt] = _D["style_feature_layers"]
     style_token_dim: StrictInt = _D["style_token_dim"]
     style_pool_heads: StrictInt = _D["style_pool_heads"]
@@ -282,9 +284,13 @@ def _make_progress_callback(run_id: str, factory, entry: _ActiveRun):
                 index_hash = data.get("index_hash") or state["index_hash"]
                 metric = (data["step"], {"epoch": data.get("epoch"), "index_hash": index_hash,
                                          "loss": data.get("loss"), "supcon_loss": data.get("supcon_loss"),
+                                         "hsic_loss": data.get("hsic_loss"),
+                                         "hsic_components": {k[5:]: v for k, v in data.items()
+                                                             if k.startswith("hsic_") and k != "hsic_loss"} or None,
                                          "learning_rate": data.get("lr"), "grad_norm": data.get("grad_norm")})
                 manager.send_style_metrics(rid, "step", data["step"], resume_seq, epoch=data.get("epoch"),
                                            loss=data.get("loss"), lr=data.get("lr"),
+                                           hsic_loss=data.get("hsic_loss"),
                                            grad_norm=data.get("grad_norm"), progress=data.get("progress"),
                                            index_hash=index_hash)
             elif event == "epoch":

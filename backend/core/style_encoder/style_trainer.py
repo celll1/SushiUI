@@ -31,7 +31,8 @@ from .style_eval import Csr, RetrievalSummary, retrieve
 from .style_ingest import IngestStats, StyleDatasetConfig, StyleIngest, build_label_resolver, parse_dataset_configs
 from .style_labels import LabelStats, StyleLabelResolver
 from .style_loader import EvalBatchKeys, StyleImageDataset, SwitchableBatchKeys, TrainBatchKeys, make_loader
-from .style_loss import positive_weights, weighted_supcon_loss
+from .style_hsic import HSICTagger, load_hsic_tagger
+from .style_loss import normalized_hsic, positive_weights, weighted_supcon_loss
 from .style_model import LoRASpec, StyleEncoder, build_style_encoder, check_attn_implementation, lora_dropout_entropy
 from .style_resume import ResumeKey, SplitSnapshot, plan_resume, start_snapshot
 from .style_sampler import StyleBatchSampler
@@ -70,6 +71,11 @@ def _is_str(v: Any) -> bool:
 
 def _str_list(v: Any) -> bool:
     return isinstance(v, (list, tuple)) and all(isinstance(t, str) and t.strip() for t in v)
+
+
+def _hsic_weights(v: Any) -> bool:
+    return isinstance(v, dict) and set(v) == {"Character", "Copyright", "Rating", "Quality"} and all(
+        _num(0.0)(weight) for weight in v.values())
 
 
 def _int_list(v: Any) -> bool:
@@ -125,6 +131,8 @@ _CHECKS: dict[str, Callable[[Any], bool]] = {
     "style_temperature": _num(0.0, lo_open=True),
     "style_view_positive_weight": _num(0.0, lo_open=True),
     "style_positive_weight_min": _num(0.0, 1.0),
+    "style_hsic_tagger_path": lambda v: isinstance(v, str),
+    "style_hsic_weights": _hsic_weights,
     "style_feature_layers": _int_list,
     "style_token_dim": _int(1),
     "style_pool_heads": _int(1),
@@ -136,7 +144,8 @@ _CHECKS: dict[str, Callable[[Any], bool]] = {
 }
 # A resumed run must rebuild the same parameters and optimizer state layout.
 _IDENTITY_KEYS = ("training_method", "vision_encoder_path", "vision_encoder_repo", "style_feature_layers",
-                  "style_token_dim", "style_pool_heads", "style_projector_hidden_dim", "style_embed_dim", "optimizer")
+                  "style_token_dim", "style_pool_heads", "style_projector_hidden_dim", "style_embed_dim", "optimizer",
+                  "style_hsic_tagger_path", "style_hsic_weights")
 _LORA_IDENTITY_KEYS = ("lora_rank", "lora_alpha")
 # Fixed at run start (optimizer param groups, scheduler lambda, total_steps); a resume keeps the saved values.
 _SCHEDULE_KEYS = ("learning_rate", "head_lr_multiplier", "weight_decay", "warmup_steps", "min_lr_ratio", "epochs")
@@ -198,6 +207,8 @@ class StyleTrainingConfig:
     style_temperature: float
     style_view_positive_weight: float
     style_positive_weight_min: float
+    style_hsic_tagger_path: str
+    style_hsic_weights: dict[str, float]
     style_feature_layers: tuple[int, ...]
     style_token_dim: int
     style_pool_heads: int
@@ -250,6 +261,9 @@ class StyleTrainingConfig:
         values = {k: getattr(self, k) for k in resume_identity_keys(self.training_method)}
         values["vision_encoder_path"] = self.encoder_source()
         return {k: list(v) if isinstance(v, tuple) else v for k, v in values.items()}
+
+    def hsic_enabled(self) -> bool:
+        return bool(self.style_hsic_tagger_path.strip()) and any(v > 0 for v in self.style_hsic_weights.values())
 
 
 @dataclass(frozen=True)
@@ -419,6 +433,7 @@ class StyleTrainer:
         self._stop_event = threading.Event()
         self._optimizer_steps_completed = 0
         self._batches_entered = 0
+        self.hsic_tagger: Optional[HSICTagger] = None
         self._loader: Optional[torch.utils.data.DataLoader] = None
         self._loader_keys: Optional[SwitchableBatchKeys] = None
         self._coordinator_handle = StyleTrainerHandle(
@@ -508,6 +523,24 @@ class StyleTrainer:
         with self._autocast(device):
             out = model(torch.cat([pv, pv]), mask, torch.cat([ss, ss]))
         loss, parts = self._loss(out.embedding, rows, data.index)
+        if self.hsic_tagger is not None:
+            tagger = self.hsic_tagger
+            if batch.hsic_pixel_values is None:
+                raise RuntimeError("HSIC training batch has no tagger inputs")
+            with torch.no_grad(), self._autocast(device):
+                tag_logits = tagger.model(
+                    batch.hsic_pixel_values.to(device),
+                    batch.hsic_attention_mask.to(device) if tagger.is_naflex else None,
+                    batch.hsic_spatial_shapes.to(device) if tagger.is_naflex else None,
+                ).float()
+                tag_probs = tag_logits.sigmoid()
+            hsic_total = loss.new_zeros(())
+            for category, indices in tagger.category_indices.items():
+                value = normalized_hsic(out.embedding[:len(rows)], tag_probs.index_select(1, indices.to(device)))
+                hsic_total = hsic_total + self.cfg.style_hsic_weights[category] * value
+                parts[f"hsic_{category.lower()}"] = float(value.detach())
+            loss = loss + hsic_total
+            parts["hsic_loss"] = float(hsic_total.detach())
         if not torch.isfinite(loss):
             print(f"[StyleTrainer] WARNING: non-finite loss, skipping batch")
             optimizer.zero_grad(set_to_none=True)
@@ -555,7 +588,10 @@ class StyleTrainer:
             "training_method": cfg.training_method,
             "lora": {"rank": cfg.lora_rank, "alpha": cfg.lora_alpha, "merged": True}
             if cfg.training_method == "lora" else None,
-            "hsic_tagger": None,
+            "hsic_tagger": ({"checkpoint": self.hsic_tagger.checkpoint_name,
+                             "sha256": self.hsic_tagger.checkpoint_sha256,
+                             "weights": cfg.style_hsic_weights}
+                            if self.hsic_tagger is not None else None),
             "dataset_snapshot": {"index_hash": data.index.index_hash,
                                  "dataset_ids": [c.dataset_id for c in cfg.dataset_configs],
                                  "index_stats": data.index.stats.as_dict()},
@@ -659,7 +695,9 @@ class StyleTrainer:
                     f"the bundle, remove these files, or use another output directory.")
         else:
             resume_name, saved = resume
-            if saved["model"] != cfg.identity():
+            saved_identity = {"style_hsic_tagger_path": "", "style_hsic_weights": cfg.style_hsic_weights,
+                              **saved["model"]}
+            if saved_identity != cfg.identity():
                 raise ValueError(f"checkpoint {resume_name} was trained with {saved['model']}, the config now asks "
                                  f"for {cfg.identity()}; start a new run in another output directory instead")
             saved_snapshot = SplitSnapshot.load(artifact_path(self.output_dir, resume_name, SNAPSHOT_SUFFIX))
@@ -707,6 +745,12 @@ class StyleTrainer:
             torch.manual_seed(cfg.style_seed)
             model = self._build_model(processor, device)
         self.model = model
+        if cfg.hsic_enabled():
+            self._emit("phase", {"phase": "initializing", "message": "Loading frozen HSIC tagger..."})
+            self.hsic_tagger = load_hsic_tagger(cfg.style_hsic_tagger_path, cfg.style_hsic_weights, device)
+            data.dataset.hsic_processor = self.hsic_tagger.processor
+            data.dataset.hsic_max_num_patches = self.hsic_tagger.max_num_patches
+            data.dataset.hsic_is_naflex = self.hsic_tagger.is_naflex
         if resume is not None:
             load_training_weights(model, self.output_dir, resume_name)
         if cfg.gradient_checkpointing:
@@ -725,7 +769,9 @@ class StyleTrainer:
             return self._stopped_during_setup("before training started", resume)
 
         from core.gpu_coordinator import gpu_coordinator
-        self._coordinator_handle.attach(model, optimizer, None)
+        offload_model = (nn.ModuleDict({"style": model, "tagger": self.hsic_tagger.model})
+                         if self.hsic_tagger is not None else model)
+        self._coordinator_handle.attach(offload_model, optimizer, None)
         gpu_coordinator.register_trainer(self._coordinator_handle)
         try:
             return self._loop(model, data, processor, optimizer, scheduler, trainable, device, resume_key, snapshot,
@@ -779,7 +825,8 @@ class StyleTrainer:
                         "index_hash": last_eval["index_hash"]}
                 save("best", False, (eval_epoch, step))
 
-        batch_keys = TrainBatchKeys(sampler, cfg.style_seed, epoch, step, step)
+        batch_keys = TrainBatchKeys(sampler, cfg.style_seed, epoch, step, step,
+                                    include_hsic=self.hsic_tagger is not None)
         self._loader_keys = SwitchableBatchKeys(batch_keys)
         self._loader = loader = make_loader(data.dataset, self._loader_keys, cfg.num_workers, persistent=True)
 

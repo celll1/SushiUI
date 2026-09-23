@@ -1514,31 +1514,9 @@ class TaggerTrainer:
                 if _n2_eval > 0 or _train_count_on:
                     _tag_metrics_acc.update(_step_probs, _step_labels)
 
-                # ----- GPU-coordinator pause check (batch boundary) ----------
-                # Generation requests set ``pause_event`` and stash an offload
-                # ``OffloadDecision`` in ``pending_decision``.  We perform the
-                # state movement here (in the trainer thread) so cross-thread
-                # ``.to()`` calls never happen.  Stop wins over pause.
-                if self._pause_event.is_set():
-                    decision = self._coordinator_handle.pending_decision
-                    if decision is not None:
-                        self._coordinator_handle.offload(decision)
-                    self._resumed_event.set()
-                    # Block until either coordinator clears pause_event or a
-                    # stop is requested.  Re-check at 0.5s cadence so a fast
-                    # stop is responsive.
-                    while self._pause_event.is_set() and not self._stop_requested:
-                        self._stop_event.wait(timeout=0.5)
-                    # Restore state regardless of why we exited the wait —
-                    # either we'll continue training (need GPU state) or we'll
-                    # hit the stop checkpoint below (need state to save it).
-                    if decision is not None:
-                        self._coordinator_handle.restore()
-                    self._restored_event.set()
-                    # Reset events for the next pause cycle
-                    self._resumed_event.clear()
-                    self._restored_event.clear()
-                    self._coordinator_handle.pending_decision = None
+                # GPU-coordinator pause at the batch boundary; the state moves
+                # on this thread so cross-thread ``.to()`` never happens.
+                self._coordinator_handle.service_pause(self._stop_event, lambda: self._stop_requested)
 
                 # Progress callback every 10 steps
                 if global_step % 10 == 0:
@@ -2033,12 +2011,12 @@ def run_tagger_training(
         use_tag_aliases = bool(config.get("use_tag_aliases", False))
         alias_resolver = None
         if use_tag_aliases:
-            from .tag_alias_resolver import TagAliasResolver
+            from .tag_alias_resolver import TagAliasResolver, alias_table_path
             try:
                 from config import settings as _settings
-                alias_path = os.path.join(_settings.root_dir, "tagother", "tag_aliases.json")
+                alias_path = alias_table_path(_settings.root_dir)
             except Exception:
-                alias_path = os.path.join(output_dir, "..", "..", "tagother", "tag_aliases.json")
+                alias_path = alias_table_path(os.path.join(output_dir, "..", ".."))
             if os.path.isfile(alias_path):
                 alias_resolver = TagAliasResolver.load(alias_path)
                 print(f"[TaggerTraining] Loaded {len(alias_resolver)} tag aliases from {alias_path}")

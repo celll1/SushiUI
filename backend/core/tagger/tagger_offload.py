@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import os
 import threading
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import torch
 
@@ -230,6 +230,25 @@ class TaggerTrainerHandle:
         self._active_decision = None
         print(f"[TaggerHandle:{self.run_id[:8]}] restore complete (mode was {mode_was})")
 
+
+    def service_pause(self, stop_event: threading.Event, stop_requested: Callable[[], bool]) -> None:
+        """Serve a coordinator pause at a batch boundary; returns at once if none is pending.
+        Trainer-thread-only. State is restored even when a stop ends the wait, because the
+        stop path saves a checkpoint from it."""
+        if not self.pause_event.is_set():
+            return
+        decision = self.pending_decision
+        if decision is not None:
+            self.offload(decision)
+        self.resumed_event.set()
+        while self.pause_event.is_set() and not stop_requested():
+            stop_event.wait(timeout=0.5)
+        if decision is not None:
+            self.restore()
+        self.restored_event.set()
+        self.resumed_event.clear()
+        self.restored_event.clear()
+        self.pending_decision = None
 
     def can_predict(self) -> bool:
         """True when the training model is attached and currently on CUDA."""

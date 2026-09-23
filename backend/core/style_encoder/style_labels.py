@@ -96,7 +96,8 @@ def canonical_tokens(rows: list[tuple[str, Optional[str]]], comma_resolver: Opti
         name = normalize_tag(raw)
         if name:
             names.append(name)
-            explicit_of.setdefault(name, explicit)
+            if explicit_of.get(name) is None:
+                explicit_of[name] = explicit
     if comma_resolver is not None:
         names = comma_resolver.resolve(names)
     out = []
@@ -140,17 +141,29 @@ class StyleLabelResolver:
             return group
 
     def resolve(self, tag_data: Any, content: Optional[str]) -> StyleLabels:
+        return self.resolve_captions(((tag_data, content),))
+
+    def resolve_captions(self, captions: Iterable[tuple[Any, Optional[str]]]) -> StyleLabels:
+        """One item's labels from all of its (tag_data, content) captions. Comma re-merge runs per
+        caption, so fragments at the end of one caption never join the start of the next. Each canonical
+        name is resolved once, with the first explicit and first comma category any caption gives it."""
         artists: set[str] = set()
         characters: set[str] = set()
         copyrights: set[str] = set()
         has_signature = False
-        seen: set[str] = set()
         stats = self.stats
-        tokens = canonical_tokens(caption_rows(tag_data, content), self._comma, self._aliases)
-        for name, original, explicit, comma_category in tokens:
-            if name in seen:
-                continue
-            seen.add(name)
+        merged: dict[str, list] = {}  # canonical -> [pre-alias names, explicit, comma category]
+        for tag_data, content in captions:
+            for name, original, explicit, comma_category in canonical_tokens(
+                    caption_rows(tag_data, content), self._comma, self._aliases):
+                entry = merged.setdefault(name, [[], None, None])
+                if original not in entry[0]:
+                    entry[0].append(original)
+                if entry[1] is None:
+                    entry[1] = explicit
+                if entry[2] is None:
+                    entry[2] = comma_category
+        for name, (originals, explicit, comma_category) in merged.items():
             source = "explicit"
             if comma_category is not None:
                 category = comma_category
@@ -158,8 +171,11 @@ class StyleLabelResolver:
             else:
                 # get_tag_group has no alias fallback and taglists mostly lack deprecated names.
                 looked_up = self._lookup(name)
-                if looked_up is None and original != name:
-                    looked_up = self._lookup(original)
+                for original in originals:
+                    if looked_up is not None:
+                        break
+                    if original != name:
+                        looked_up = self._lookup(original)
                 if explicit is None:
                     category = looked_up
                     source = "manager"
@@ -174,7 +190,7 @@ class StyleLabelResolver:
                     category = explicit
                     if looked_up is not None and looked_up != explicit:
                         stats.category_disagreements += 1
-            if name in self._signature or original in self._signature:
+            if name in self._signature or not self._signature.isdisjoint(originals):
                 has_signature = True
             if category == "Artist":
                 if source == "explicit":

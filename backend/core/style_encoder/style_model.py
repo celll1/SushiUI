@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -15,6 +16,7 @@ from core.tagger.siglip2_tagger_model import CustomAttentionPooling, _load_visio
 
 MODES = ("full", "lora")
 _LORA_PROJECTIONS = "q_proj|k_proj|v_proj|out_proj"
+_DROPOUT_DOMAIN = 0x6C6F726164726F70
 _ATTN_SUPPORT_FLAGS = {"eager": None, "sdpa": "_supports_sdpa", "flash_attention_2": "_supports_flash_attn",
                        "flex_attention": "_supports_flex_attn"}
 
@@ -59,6 +61,30 @@ def resolve_feature_layers(feature_layers: Sequence[int], num_layers: int) -> tu
     return tuple(resolved)
 
 
+def lora_dropout_entropy(seed: int, epoch: int, step: int) -> tuple[int, ...]:
+    return (int(seed), _DROPOUT_DOMAIN, int(epoch), int(step))
+
+
+class SeededDropout(nn.Module):
+    """Dropout from a generator seeded per (training step, module), never the process-wide RNG: exact resume
+    redraws the same masks, and a gradient-checkpoint recompute redraws the forward's mask."""
+
+    def __init__(self, p: float) -> None:
+        super().__init__()
+        self.p = float(p)
+        self.seed: Optional[int] = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not self.training or self.p == 0.0:
+            return x
+        if self.seed is None:
+            raise RuntimeError("StyleEncoder.set_dropout_entropy was not called before this training forward")
+        generator = torch.Generator(device=x.device)
+        generator.manual_seed(self.seed)
+        keep = torch.empty(x.shape, dtype=x.dtype, device=x.device).bernoulli_(1.0 - self.p, generator=generator)
+        return x * keep / (1.0 - self.p)
+
+
 class StyleEncoder(nn.Module):
     def __init__(self, vision_encoder: nn.Module, feature_layers: Sequence[int], token_dim: int, pool_heads: int,
                  projector_hidden_dim: int, embed_dim: int, mode: str, lora: Optional[LoRASpec]) -> None:
@@ -72,6 +98,13 @@ class StyleEncoder(nn.Module):
         if token_dim % pool_heads != 0:
             raise ValueError(f"token_dim {token_dim} is not divisible by pool_heads {pool_heads}")
         check_attn_implementation(vision_encoder.config._attn_implementation, type(vision_encoder))
+        # Encoder dropout draws from the process-wide RNG, so exact resume could not reproduce it.
+        active = sorted(f"{k}={v}" for k, v in vision_encoder.config.to_dict().items()
+                        if "dropout" in k and isinstance(v, (int, float)) and not isinstance(v, bool) and v != 0)
+        active += sorted(name for name, m in vision_encoder.named_modules() if isinstance(m, nn.Dropout) and m.p > 0)
+        if active:
+            raise ValueError(f"the vision encoder has active dropout ({', '.join(active)}); style training needs "
+                             f"it at 0 because encoder dropout uses the global RNG and would break exact resume")
         self.vision_encoder = vision_encoder
         self.mode = mode
         config = vision_encoder.config
@@ -101,6 +134,16 @@ class StyleEncoder(nn.Module):
             if not self.lora_modules:
                 raise ValueError(f"mode='lora' with style_feature_layers {list(feature_layers)} runs no encoder "
                                  f"layer to adapt; the encoder would stay frozen")
+            if lora.dropout > 0.0:
+                for module in self.lora_modules.values():
+                    module.dropout = SeededDropout(lora.dropout)
+
+    def set_dropout_entropy(self, entropy: Optional[Sequence[int]]) -> None:
+        """Seeds every SeededDropout for the next training forward (`lora_dropout_entropy`)."""
+        for i, module in enumerate(self.lora_modules.values()):
+            if isinstance(module.dropout, SeededDropout):
+                module.dropout.seed = None if entropy is None else int(
+                    np.random.SeedSequence([*entropy, i]).generate_state(1, np.uint64)[0])
 
     def forward(self, pixel_values: torch.Tensor, pixel_attention_mask: torch.Tensor,
                 spatial_shapes: torch.Tensor) -> StyleOutput:
@@ -139,8 +182,10 @@ class StyleEncoder(nn.Module):
 
 def build_style_encoder(source: str, repo_id: str, attn_implementation: str, feature_layers: Sequence[int],
                         token_dim: int, pool_heads: int, projector_hidden_dim: int, embed_dim: int, mode: str,
-                        lora: Optional[LoRASpec]) -> StyleEncoder:
+                        lora: Optional[LoRASpec],
+                        load_vision_encoder: Callable[..., nn.Module] = _load_vision_encoder) -> StyleEncoder:
+    """`load_vision_encoder(source, repo_id=..., attn_implementation=...)`; replaceable so tests need no download."""
     check_attn_implementation(attn_implementation, Siglip2VisionModel)
-    vision_encoder = _load_vision_encoder(source, repo_id=repo_id, attn_implementation=attn_implementation)
+    vision_encoder = load_vision_encoder(source, repo_id=repo_id, attn_implementation=attn_implementation)
     return StyleEncoder(vision_encoder, feature_layers, token_dim, pool_heads, projector_hidden_dim, embed_dim,
                         mode, lora)

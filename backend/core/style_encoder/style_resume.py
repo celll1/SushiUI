@@ -10,6 +10,7 @@ import numpy as np
 
 from .style_dataset import TRAIN, SplitParams, StyleIndex
 from .style_sampler import SamplerParams, StyleBatchSampler
+from .style_views import ViewParams
 
 _SNAPSHOT_VERSION = 2
 
@@ -64,18 +65,23 @@ class ResumeKey:
     index_hash: str
     split: SplitParams
     sampler: SamplerParams
+    views: ViewParams
 
     @classmethod
-    def of(cls, sampler: StyleBatchSampler) -> "ResumeKey":
-        return cls(sampler.index.index_hash, sampler.index.split_params, sampler.params)
+    def of(cls, sampler: StyleBatchSampler, views: ViewParams) -> "ResumeKey":
+        return cls(sampler.index.index_hash, sampler.index.split_params, sampler.params, views)
 
     def to_state(self) -> dict:
-        return {"index_hash": self.index_hash, "split": self.split.to_state(), "sampler": self.sampler.to_state()}
+        return {"index_hash": self.index_hash, "split": self.split.to_state(), "sampler": self.sampler.to_state(),
+                "views": self.views.to_state()}
 
     @classmethod
     def from_state(cls, state: dict) -> "ResumeKey":
+        missing = [name for name in ("index_hash", "split", "sampler", "views") if name not in state]
+        if missing:
+            raise ValueError(f"saved resume key is missing {missing}")
         return cls(str(state["index_hash"]), SplitParams.from_state(state["split"]),
-                   SamplerParams.from_state(state["sampler"]))
+                   SamplerParams.from_state(state["sampler"]), ViewParams.from_state(state["views"]))
 
 
 @dataclass(frozen=True, eq=False)
@@ -91,11 +97,12 @@ def start_snapshot(index: StyleIndex) -> SplitSnapshot:
     return SplitSnapshot.empty().merged_with(index)
 
 
-def plan_resume(saved: ResumeKey, saved_snapshot: SplitSnapshot, sampler: StyleBatchSampler,
+def plan_resume(saved: ResumeKey, saved_snapshot: SplitSnapshot, sampler: StyleBatchSampler, views: ViewParams,
                 saved_epoch: int, saved_step_in_epoch: int) -> ResumePlan:
     """`sampler.index` must be built with pinned_keys=saved_snapshot.keys. `saved_step_in_epoch` is the
-    next batch to draw. Save `next_snapshot`, never `saved_snapshot`."""
-    current = ResumeKey.of(sampler)
+    next batch to draw. Save `next_snapshot`, never `saved_snapshot`. Changed view parameters, like changed
+    sampler parameters, restart at the epoch boundary: batches would repeat but their masked views would not."""
+    current = ResumeKey.of(sampler, views)
     if saved.split != current.split:
         diff = {f.name: (getattr(saved.split, f.name), getattr(current.split, f.name))
                 for f in fields(SplitParams) if getattr(saved.split, f.name) != getattr(current.split, f.name)}
@@ -109,7 +116,7 @@ def plan_resume(saved: ResumeKey, saved_snapshot: SplitSnapshot, sampler: StyleB
     next_snapshot = saved_snapshot.merged_with(index)
     epoch_length = sampler.epoch_length
     # The full numpy version is compared: NEP 19 gives no stream guarantee across releases.
-    if saved.index_hash == current.index_hash and saved.sampler == current.sampler:
+    if (saved.index_hash, saved.sampler, saved.views) == (current.index_hash, current.sampler, current.views):
         if not 0 <= saved_step_in_epoch <= epoch_length:
             raise ValueError(f"saved step {saved_step_in_epoch} outside epoch of length {epoch_length}")
         if saved_step_in_epoch < epoch_length:

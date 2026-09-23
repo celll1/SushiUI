@@ -3,16 +3,68 @@
 from __future__ import annotations
 
 import math
+from dataclasses import asdict, dataclass
 
 import numpy as np
 import torch
 
+from .style_dataset import _is_int, _is_number, fields_from_state
+
+# Bump when the masked view drawn for the same (params, entropy) changes: block policy, RNG use, entropy layout.
+VIEWS_VERSION = 1
 # Block policy: area ~ U{1..patches still to mask}, aspect log-uniform in [1/3, 3], clipped to the grid;
 # a draw that would overshoot the target is retried, then replaced by one 1x1 block, so the count is exact.
 BLOCK_ASPECT_MAX = 3.0
 BLOCK_ATTEMPTS = 10
 # Absorbs float error in r * V so that e.g. 0.3 * 10 = 3.0000000000000004 still needs 3 patches.
 _RATIO_EPS = 1e-9
+_TRAIN_VIEW_DOMAIN = 0x7472616976696577  # separates view streams from the sampler's SeedSequence([seed, epoch, step])
+_EVAL_VIEW_DOMAIN = 0x6576616C76696577
+_U64 = (1 << 64) - 1
+
+
+@dataclass(frozen=True)
+class ViewParams:
+    mask_ratio_min: float
+    mask_ratio_max: float
+    max_num_patches: int
+    seed: int
+    views_version: int
+
+    def __post_init__(self) -> None:
+        for name in ("mask_ratio_min", "mask_ratio_max"):
+            if not _is_number(getattr(self, name)):
+                raise ValueError(f"{name} must be a number, got {getattr(self, name)!r}")
+        if not 0.0 <= self.mask_ratio_min <= self.mask_ratio_max < 1.0:
+            raise ValueError(f"need 0 <= mask_ratio_min <= mask_ratio_max < 1, got "
+                             f"{self.mask_ratio_min!r}, {self.mask_ratio_max!r}")
+        if not _is_int(self.max_num_patches) or self.max_num_patches < 1:
+            raise ValueError(f"max_num_patches must be an integer >= 1, got {self.max_num_patches!r}")
+        if not _is_int(self.seed) or self.seed < 0:
+            raise ValueError(f"view seed must be an integer >= 0, got {self.seed!r}")
+        if not _is_int(self.views_version):
+            raise ValueError("views_version must be an integer")
+
+    @classmethod
+    def create(cls, mask_ratio_min: float, mask_ratio_max: float, max_num_patches: int, seed: int) -> "ViewParams":
+        return cls(mask_ratio_min, mask_ratio_max, max_num_patches, seed, VIEWS_VERSION)
+
+    def to_state(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_state(cls, state: dict) -> "ViewParams":
+        return cls(**fields_from_state(cls, state, "view parameter"))
+
+
+def train_view_entropy(seed: int, epoch: int, step: int, position: int) -> tuple[int, ...]:
+    """SeedSequence entropy of the masked view at batch position `position` of (epoch, step)."""
+    return (int(seed), _TRAIN_VIEW_DOMAIN, int(epoch), int(step), int(position))
+
+
+def eval_view_entropy(seed: int, item_key: int) -> tuple[int, ...]:
+    """Fixed per item, so every validation masks an item the same way."""
+    return (int(seed), _EVAL_VIEW_DOMAIN, int(item_key) & _U64)
 
 
 def artist_mask_ratios(confound: np.ndarray, ratio_min: float, ratio_max: float) -> np.ndarray:

@@ -340,3 +340,18 @@ mAP@R の R は、検索対象の中にある正解の枚数とする。(b) で�
 - **限界**: 凍結特徴による代理指標であり、学習後の順位が同じになるとは限らない。評価セットは seed 1 つ。学習時の backward のコストは測っていない。
 
 **この結果に基づく決定**: encoder は `google/siglip2-so400m-patch16-naflex`、`style_feature_layers` は `[21]`（L22 以降の計算を省ける）、`style_token_dim` は 1152 とする。パッチ上限（256 / 1024）は、精度とコストの兼ね合いで repo owner が決める。
+
+### 16.1 学習の smoke と学習コスト（2026-09-23）
+
+- **smoke**: so400m-naflex、LoRA、デフォルト設定、1 データセット（学習用 1,097 item、1 epoch = 17 step）。step 3 で停止 → 「そのまま続行」で再開して step 5 → さらに再開して step 17（epoch の終わり）で評価。17 step の loss はすべて有限（4.53 → 3.41）。配布用 metadata に作者名とローカルパスは含まれなかった。
+- **学習コスト**（学習時、backward を含む。step 4〜13 の平均、P16×K4×2 view、`num_workers` 4）:
+
+| 構成 | 秒/step | 画像/s | 最大 VRAM（allocated / reserved） | 1 epoch の時間（学習用 2,867,931 item ÷ 64 = 44,811 step） |
+|---|---|---|---|---|
+| LoRA・256 | 1.31 | 48.8 | 6.5 / 9.2 GB | 16.3 h |
+| full・256 | 1.55 | 41.2 | 7.2 / 10.4 GB | 19.3 h |
+| LoRA・1024 | 6.78 | 9.4 | 20.7 / 24.4 GB | 84.4 h |
+| full・1024 | 7.91 | 8.1 | 22.1 / 24.9 GB | 98.5 h |
+
+- 1024 パッチは、PyTorch の既定のメモリ確保設定では 30 GB の上限内で断片化により OOM になった（allocated は約 20 GB）。Windows では `expandable_segments` が使えず、`PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512,garbage_collection_threshold:0.8` で収まった。上の 1024 の数値はこの設定での測定。
+- `num_workers` 2 では、データ読み込みの待ち時間が step 時間の 23〜37% を占めた（4 では 0.6% 以下）。

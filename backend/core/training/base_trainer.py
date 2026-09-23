@@ -9828,7 +9828,9 @@ class BaseTrainer(ABC):
         elif self.is_krea2:
             return self.encode_prompt_krea2(caption)
         elif self.is_qwen_image_21:
-            return self.arch.encode_prompt(self, caption)
+            return self.arch.encode_prompt(
+                self, caption, requires_grad=requires_grad
+            )
         elif self.is_anima:
             payload = self.encode_prompt_anima(caption)
             # Return the Qwen3 hidden states as the primary embedding plus the

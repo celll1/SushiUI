@@ -550,15 +550,64 @@ a 2x2 latent group. The DiT itself has patch size 1.
 | Method | First release | Contract |
 |---|---|---|
 | LoRA | yes | DiT only; BF16 or validated frozen ConvRot base |
-| Full parameter | yes | DiT only; BF16 base required |
+| Full parameter | yes | DiT and/or Qwen3-VL TE; frozen BF16 or ConvRot TE when TE is not trained |
 | ReLoRA | no | open only after merge/reset/resume and loader round trip |
 | ControlNet | no | no released compatible architecture |
-| TE training | no | Qwen3-VL frozen; no save/load contract yet |
+| TE training | yes, full parameter | live prompt graph, independent LR, bundled checkpoint; TE LoRA remains unsupported |
 | VAE training through model trainer | no | VAE frozen; generic VAE-decoder work requires explicit 4-channel/5-D support first |
 
-"Full parameter" means the complete DiT, including input/output projections,
-shared modulation, all blocks, and output norm/projection. It does not include
-the Qwen3-VL encoder or VAE.
+"Full parameter" may train the complete DiT (including `txt_in`) and/or the
+Qwen3-VL encoder. The VAE remains frozen.
+
+### 9.1.1 Component precision policy for full-parameter training
+
+The opt-in dequantization and TE full-parameter checkpoint path are implemented.
+The real-model memory, speed, and generation validation gates below remain open.
+
+Distribute the ordinary Original and INT8 ConvRot variants, not a third mixed
+weight set. The artifact manifest selects DiT and TE files independently. A
+DiT-only full fine-tune may load the existing Original DiT with the frozen INT8
+TE using a small mixed manifest that references both files, without copying
+weights. This is useful when both distributed variants are installed. Measure
+peak VRAM separately for `swap_onthefly` (TE leaves GPU before the DiT step)
+and `onthefly_gpu` (TE may remain resident); the TE's smaller file does not
+imply an equal reduction in step peak VRAM.
+
+For an INT8-only installation, allow an **explicit opt-in** to materialize
+every ConvRot component on the *trainable backward path* into floating-point
+weights once, before optimizer creation. This includes the frozen DiT when
+only the TE or `txt_in` trains; a frozen TE used only to produce conditioning
+is not on that path. Reconstruct each layer into BF16 (or the selected training
+weight dtype), replace its ConvRot module with an ordinary trainable Linear,
+and release that layer's packed INT8 weight, scale, and marker. Process one
+layer at a time so INT8 and floating-point copies do not coexist for an entire
+DiT or TE. The dequantization operator may need a transient CUDA layer buffer;
+measure this peak as well as host RAM. Frozen components outside the trainable
+backward path keep their INT8 forward path.
+Do not run a trainable ConvRot forward with a separate BF16 master copy, or
+re-dequantize weights on every step. The dequantized starting point is an
+approximation to Original, **not** a byte- or numerically identical Original
+checkpoint; label its checkpoint provenance and measure the initial output
+delta. Original remains the preferred full-fine-tune source when available.
+Without explicit opt-in, a request to train an INT8 component is rejected
+before GPU-heavy loading. A TE-only request from an INT8 variant also needs a
+floating-point DiT path for TE grad-input: either use the Original DiT or
+materialize its frozen DiT weights once and discard INT8. The latter trades
+memory for a valid backward; it is not an INT8 DiT training path.
+
+TE training must use on-the-fly encoding with a live graph (not cached hidden
+states); it needs an independent TE optimizer group/LR, component checkpoint,
+and atomic save/resume of both trained components when both are selected. A
+TE-only requests are legal without `train_adapter: true`. Partitioned backward
+retains the TE graph until the final region; it does not re-encode per region.
+
+Acceptance gates: load the mixed Original-DiT/ConvRot-TE manifest for DiT-only
+training; reject INT8 training without opt-in; materialize only the requested
+trainable components with no persistent packed/BF16 duplicate; verify finite,
+nonzero gradients in TE-only and joint runs; compare initial outputs against
+Original; and round-trip trained components through generation and
+optimizer-state resume. Record startup time, step time, peak VRAM, and host
+memory for each source and placement mode.
 
 ### 9.2 Dataset mode
 
@@ -645,8 +694,11 @@ ConvRot is frozen-base only:
 
 * LoRA/additive branches may train when the complete expected DiT ConvRot census
   is present;
-* full parameter and ReLoRA refuse a ConvRot base before model load;
-* TE ConvRot is allowed because TE is frozen and encoding runs under `no_grad`;
+* current full parameter and ReLoRA refuse a ConvRot **DiT** before training;
+  section 9.1.1 defines the future one-time dequantization gate;
+* TE ConvRot is allowed while TE stays frozen and encoding runs under
+  `no_grad`; a future trainable TE must be materialized first as in section
+  9.1.1;
 * the ConvRot base forward uses its INT8 kernel, while `grad_input` uses one
   cached BF16 dequantized weight per frozen Linear; LoRA and attention backward
   remain floating point;
@@ -694,11 +746,17 @@ an expectation, not a measured number. Actual VRAM/host-RAM figures belong in
 
 ### 9.8 Full-checkpoint save and resume
 
+The cross-architecture separation of resumable checkpoints and quantized
+inference exports is specified in
+[`FULL_PARAMETER_CHECKPOINT_EXPORT_DESIGN.md`](FULL_PARAMETER_CHECKPOINT_EXPORT_DESIGN.md).
+`output_dtype` must not be used as a synonym for ConvRot export.
+
 Full-parameter saves contain the complete DiT state and embedded construction
-config. Metadata records `companion_path`, which resolves the frozen TE, VAE,
-processor, and scheduler from the run's base artifact. The shared 4 GiB writer
-may produce a shard index for the trained DiT; the loader accepts either the
-single file or the index and replaces only the companion artifact's DiT.
+config. Metadata records `companion_path`, which resolves frozen components.
+When the TE trains, a single `training_bundle` checkpoint carries prefixed DiT
+and TE states; the loader replaces both components. The shared 4 GiB writer
+may produce a shard index. An optimizer/state sidecar completes the resumable
+checkpoint; export selects only complete sets.
 
 Resume restores model, optimizer, scheduler, scaler, RNG, timestep-sampler
 state, cache namespace, adapter scope, and component digests. A changed TE,
@@ -746,9 +804,9 @@ training panels.
 | NAG/NegPip/regional | refused | no exact block-causal implementation |
 | ControlNet generation/training | refused | no compatible released architecture |
 | LoRA | supported | DiT; BF16/ConvRot base; real ConvRot backward passed |
-| full parameter | supported | complete DiT; BF16 only; companion-based resume |
+| full parameter | supported | DiT and/or Qwen3-VL TE; floating bundled resume when TE trains |
 | ReLoRA | refused | reset/resume contract absent |
-| TE training/override | refused | fixed Qwen3-VL conditioning contract |
+| TE full-parameter training | supported | live graph and independent LR; TE LoRA remains refused |
 | VAE swap | refused | 64-channel RGBA latent contract has no validated replacement |
 | generation block swap | refused | component CPU offload is used instead |
 | training block swap | supported | ordered 32-block DiT; gradient checkpointing required |

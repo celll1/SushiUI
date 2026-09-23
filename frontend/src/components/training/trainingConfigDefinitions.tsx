@@ -202,6 +202,8 @@ export const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   lora_alpha: 16,
   lora_dtype: "fp32",
   adapter_algorithm: "lora",
+  full_finetune_dequantize_int8_base: false,
+  training_export_format: "none",
   // No UI: accepted, refused (DoRA is Phase 3). Present so an edit-form PUT
   // round-trips the value the run was created with instead of dropping it.
   weight_decompose: false,

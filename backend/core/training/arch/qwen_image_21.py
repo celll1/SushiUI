@@ -54,7 +54,9 @@ class QwenImage21ArchHandler(ArchHandler):
 
     def encode_prompt(self, trainer, prompt, *, requires_grad=False):
         from core.training.ops import qwen_image_21_ops
-        return qwen_image_21_ops.encode_prompt(trainer, prompt)
+        return qwen_image_21_ops.encode_prompt(
+            trainer, prompt, requires_grad=requires_grad
+        )
 
     def vae_encode(self, trainer, image_tensor, **kwargs):
         from core.training.ops import qwen_image_21_ops

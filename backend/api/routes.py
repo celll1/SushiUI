@@ -15178,6 +15178,8 @@ class TrainingRunCreateRequest(BaseModel):
     unet_lr: Optional[float] = Field(default=None, ge=0)  # Defaults to learning_rate if None
     train_adapter: Optional[bool] = TRAINING_DEFAULTS["train_adapter"]
     adapter_lr: Optional[float] = Field(default=TRAINING_DEFAULTS["adapter_lr"], ge=0)
+    full_finetune_dequantize_int8_base: bool = TRAINING_DEFAULTS["full_finetune_dequantize_int8_base"]
+    training_export_format: Literal["none", "int8_convrot"] = TRAINING_DEFAULTS["training_export_format"]
     text_encoder_lr: Optional[float] = Field(default=None, ge=0)  # Defaults to learning_rate if None
     text_encoder_1_lr: Optional[float] = Field(default=None, ge=0)  # SDXL TE1 LR (defaults to text_encoder_lr if None)
     text_encoder_2_lr: Optional[float] = Field(default=None, ge=0)  # SDXL TE2 LR (defaults to text_encoder_lr if None)
@@ -15936,9 +15938,42 @@ def _check_adapter_params(request: "TrainingRunCreateRequest") -> None:
             detail="train_adapter/adapter_lr require LoRA or full fine-tuning",
         )
     if not request.train_unet and request.train_adapter is not True:
+        if (arch == "qwen_image_21" and request.training_method == "full_finetune"
+                and request.train_text_encoder):
+            return
         raise HTTPException(
             status_code=400,
             detail="adapter-only training requires train_adapter=true",
+        )
+
+
+def _check_qwen_full_finetune_params(request: "TrainingRunCreateRequest") -> None:
+    if (not request.full_finetune_dequantize_int8_base
+            and not request.train_text_encoder
+            and request.training_export_format == "none"):
+        return
+    from core.training.training_config import _detect_arch
+
+    arch = _detect_arch(request.base_model_path)
+    if request.full_finetune_dequantize_int8_base and (
+        arch != "qwen_image_21" or request.training_method != "full_finetune"
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="full_finetune_dequantize_int8_base requires Qwen-Image 2.1 full fine-tuning",
+        )
+    if request.training_export_format == "int8_convrot" and (
+        arch != "qwen_image_21" or request.training_method != "full_finetune"
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="INT8 ConvRot training export requires Qwen-Image 2.1 full fine-tuning",
+        )
+    if arch == "qwen_image_21" and request.train_text_encoder \
+            and request.training_method != "full_finetune":
+        raise HTTPException(
+            status_code=400,
+            detail="Qwen-Image 2.1 text-encoder training requires full fine-tuning",
         )
 
 
@@ -15991,6 +16026,7 @@ async def create_training_run(
         ])
         _check_vae_swap_params(request)
         _check_adapter_params(request)
+        _check_qwen_full_finetune_params(request)
         _check_timestep_sampling(request)
 
         # Build dataset_configs_for_yaml (with path, caption_types, and dataset_id)
@@ -16706,6 +16742,7 @@ async def update_training_run(
         ])
         _check_vae_swap_params(request)
         _check_adapter_params(request)
+        _check_qwen_full_finetune_params(request)
         _check_timestep_sampling(request)
 
         # Resolve temp_img:// references in sample_prompts condition_image_path
@@ -16825,6 +16862,9 @@ async def delete_training_run(run_id: int, db: Session = Depends(get_training_db
         # Don't delete if running or starting
         if run.status in ["running", "starting"]:
             raise HTTPException(status_code=400, detail=f"Cannot delete {run.status} training run. Please stop it first.")
+        from api.training_export_job import job_is_running as training_export_running
+        if training_export_running(run_id):
+            raise HTTPException(status_code=409, detail="Wait for this run's export to finish")
 
         from database.training_cleanup import delete_training_run_record
         delete_training_run_record(db, run)
@@ -16937,6 +16977,10 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
     run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Training run not found")
+
+    from api.training_export_job import job_is_running as training_export_running
+    if training_export_running(run_id):
+        raise HTTPException(status_code=409, detail="Wait for this run's export to finish")
 
     if run.status == "running":
         raise HTTPException(status_code=400, detail="Training run is already running")
@@ -17558,6 +17602,44 @@ async def stop_training_run(run_id: int, db: Session = Depends(get_training_db))
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to stop training: {str(e)}")
+
+
+class TrainingExportRequest(BaseModel):
+    format: Literal["int8_convrot"] = "int8_convrot"
+    overwrite: bool = False
+
+
+@router.get("/training/runs/{run_id}/export")
+async def get_training_export(run_id: int, db: Session = Depends(get_training_db)):
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+    from api.training_export_job import export_status
+    return export_status(run.output_dir, run_id)
+
+
+@router.post("/training/runs/{run_id}/export")
+async def start_training_export(
+    run_id: int, request: TrainingExportRequest,
+    db: Session = Depends(get_training_db),
+):
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+    if run.training_method != "full_finetune":
+        raise HTTPException(status_code=400, detail="Training export requires full fine-tuning")
+    from core.training.training_config import _detect_arch
+    if _detect_arch(run.base_model_path) != "qwen_image_21":
+        raise HTTPException(status_code=400, detail="INT8 ConvRot training export is not available for this architecture")
+    if run.status not in {"stopped", "completed"} or training_process_manager.is_live(run_id):
+        raise HTTPException(status_code=409, detail="Wait until the training process has exited")
+    from api.training_export_job import start_export
+    try:
+        return start_export(run_id, run.run_name, run.output_dir, overwrite=request.overwrite)
+    except (FileNotFoundError, FileExistsError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 class SkipRescanRequest(BaseModel):

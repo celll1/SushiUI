@@ -62,6 +62,29 @@ class _GuidanceTransformer(torch.nn.Module):
         return (hidden_states * self.scale + encoder_hidden_states.mean(dim=(1, 2), keepdim=True),)
 
 
+def test_qwen_partition_retains_trainable_encoder_graph_until_last_region():
+    transformer = _GuidanceTransformer()
+    encoder = torch.nn.Linear(4, 4, bias=False)
+    features = encoder(torch.ones(1, 2, 4))
+    trainer = SimpleNamespace(
+        device=torch.device("cpu"), training_dtype=torch.float32,
+        mixed_precision=False, use_grad_scaler=False, transformer=transformer,
+        arch=QwenImage21ArchHandler(),
+        config={"dit_partition_fixed_count": 2},
+        _active_mnt_noise=torch.ones(1, 32, 4),
+        reconstruction_loss_weight=0.0,
+        log_extra_metric=lambda *_args: None,
+    )
+    qwen_image_21_ops.train_step_partitioned_backward(
+        trainer, latents=torch.zeros(1, 32, 4), encoder_features=features,
+        encoder_mask=torch.ones(1, 2, dtype=torch.bool),
+        timesteps=torch.tensor([0.5]), latent_h=4, latent_w=8,
+        backward_scale=1.0,
+    )
+    assert encoder.weight.grad is not None
+    assert encoder.weight.grad.abs().sum() > 0
+
+
 @pytest.mark.parametrize("partitioned", [False, True])
 def test_qwen_guidance_loss_mixes_targets_and_detaches_null_forward(partitioned):
     transformer = _GuidanceTransformer()
@@ -1190,6 +1213,112 @@ def test_qwen_full_txt_in_lr_and_freeze_are_independent():
     assert all(not p.requires_grad for p in model.transformer_blocks.parameters())
     assert [g["component"] for g in adapter.arch_param_groups()] == ["adapter"]
 
+    trainer.train_text_encoder = True
+    trainer.text_encoder_lr = 3e-5
+    adapter.prepare_models_for_training()
+    groups = adapter.arch_param_groups()
+    assert [g["component"] for g in groups] == ["adapter", "text_encoder_1"]
+    assert groups[1]["lr"] == 3e-5
+    assert all(p.requires_grad for p in trainer.text_encoder.parameters())
+
+
+def test_qwen_trainable_prompt_encoding_preserves_text_encoder_gradient():
+    encoder = torch.nn.Linear(4, 4)
+
+    class Pipe:
+        def encode_prompt(self, *, prompt, device):
+            source = torch.ones(1, 2, 4, device=device)
+            return encoder(source), None, None
+
+    trainer = SimpleNamespace(text_encoder=encoder, qwen_image_21_pipeline=Pipe())
+    embeds, mask = qwen_image_21_ops.encode_prompt(
+        trainer, "new character", requires_grad=True
+    )
+    embeds.square().mean().backward()
+    assert encoder.weight.grad is not None
+    assert bool(torch.isfinite(encoder.weight.grad).all())
+    assert bool(mask.all())
+
+
+def test_qwen_full_te_bundle_round_trip(tmp_path, monkeypatch):
+    from transformers import Qwen3VLConfig, Qwen3VLForConditionalGeneration
+    from core.models.qwen_image_21 import loader
+
+    dit = QwenImage21Transformer2DModel(
+        in_channels=8, out_channels=8, num_layers=1, attention_head_dim=16,
+        num_attention_heads=2, context_in_dim=32, mlp_ratio=2,
+        axes_dims_rope=(4, 6, 6),
+    )
+    te_config = Qwen3VLConfig(
+        text_config={
+            "vocab_size": 128, "hidden_size": 32, "intermediate_size": 64,
+            "num_hidden_layers": 1, "num_attention_heads": 4,
+            "num_key_value_heads": 4, "head_dim": 8,
+        },
+        vision_config={
+            "depth": 1, "hidden_size": 32, "intermediate_size": 64,
+            "num_heads": 4, "out_hidden_size": 32,
+            "num_position_embeddings": 16, "deepstack_visual_indexes": [],
+        },
+    )
+    te = Qwen3VLForConditionalGeneration(te_config)
+    companion = tmp_path / "companion"
+    companion.mkdir()
+    (companion / "manifest.json").write_text("{}", encoding="utf-8")
+    config_path = companion / "text_encoder_config.json"
+    te_config.to_json_file(str(config_path))
+    trainer = SimpleNamespace(
+        transformer=dit, text_encoder=te, model_path=str(companion),
+        qwen_image_21_companion_path=str(companion), train_text_encoder=True,
+    )
+    checkpoint = QwenImage21FullParameterAdapter(trainer).write_checkpoint(
+        1, 0, tmp_path / "run_step_000001"
+    )
+    monkeypatch.setattr(loader, "_artifact_components", lambda *_args, **_kwargs: {
+        "transformer": None, "text_encoder": None,
+        "vae": torch.nn.Linear(1, 1), "processor": object(),
+        "scheduler": object(),
+        "manifest": SimpleNamespace(text_encoder_config=str(config_path)),
+    })
+    loaded = loader.load_qwen_image_21_components(
+        str(checkpoint), torch_dtype=torch.float32
+    )
+    assert loaded["text_encoder_variant"] == "bf16"
+    assert torch.equal(
+        loaded["text_encoder"].model.language_model.embed_tokens.weight,
+        te.model.language_model.embed_tokens.weight,
+    )
+    assert torch.equal(
+        loaded["transformer"].txt_in.in_layer.weight,
+        dit.txt_in.in_layer.weight,
+    )
+
+
+def test_convrot_materialization_releases_packed_weight_and_preserves_gradient():
+    from comfy_kitchen.backends.eager.quantization import quantize_int8_convrot_weight
+    from core.models.common.convrot_int8_linear import (
+        ConvRotInt8Linear, materialize_convrot_linears,
+    )
+
+    reference = torch.randn(32, 256, dtype=torch.bfloat16)
+    packed, scale = quantize_int8_convrot_weight(
+        reference, 256, stochastic_rounding=0
+    )
+    layer = ConvRotInt8Linear(
+        256, 32, False, torch.bfloat16,
+        convrot_groupsize=256, marker_numel=1, device="cpu",
+    )
+    layer.weight.copy_(packed)
+    layer.weight_scale.copy_(scale.reshape(-1))
+    module = torch.nn.Sequential(layer)
+    assert materialize_convrot_linears(module, torch.bfloat16) == 1
+    assert isinstance(module[0], torch.nn.Linear)
+    assert not hasattr(module[0], "weight_scale")
+    x = torch.randn(2, 256, dtype=torch.bfloat16, requires_grad=True)
+    module(x).float().square().mean().backward()
+    assert module[0].weight.grad is not None
+    assert x.grad is not None
+
 
 def test_lora_save_classify_and_rebuild_round_trip():
     model = QwenImage21Transformer2DModel(
@@ -1498,7 +1627,7 @@ def test_full_checkpoint_records_companion_and_loader_replaces_transformer(tmp_p
         "text_encoder_variant": "bf16",
     })
     monkeypatch.setattr(
-        loader, "load_transformer", lambda *_args, **_kwargs: (trained_transformer, "bf16")
+        loader, "load_transformer_artifact", lambda *_args, **_kwargs: (trained_transformer, "bf16")
     )
     loaded = loader.load_qwen_image_21_components(str(checkpoint))
     assert loaded["transformer"] is trained_transformer

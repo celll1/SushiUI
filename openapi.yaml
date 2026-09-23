@@ -5772,6 +5772,54 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/export:
+    get:
+      tags: [training]
+      summary: Get the run's inference-export job status
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: {type: integer}
+      responses:
+        '200':
+          description: Export status document
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+    post:
+      tags: [training]
+      summary: Export a stopped Qwen full-fine-tune checkpoint for inference
+      description: |
+        Requires a stopped or completed run with no live training process and
+        a complete floating checkpoint with optimizer state. Never substitutes
+        the export for a resumable checkpoint. A completed run may retry a
+        failed automatic export. INT8 ConvRot is currently Qwen-only.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: {type: integer}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                format: {type: string, enum: [int8_convrot], default: int8_convrot}
+                overwrite: {type: boolean, default: false}
+      responses:
+        '200':
+          description: Export queued
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        '409':
+          description: Training still live, export busy, or no complete checkpoint
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
   /training/runs/{run_id}/skip-rescan:
     post:
       tags: [training]
@@ -25524,6 +25572,23 @@ components:
             Independent conditioning adapter learning rate. Null keeps the
             architecture's existing rate; zero deliberately holds it still.
           example: 0.00002
+        full_finetune_dequantize_int8_base:
+          type: boolean
+          default: false
+          description: |
+            Explicitly materialize Qwen-Image 2.1 INT8 ConvRot components on
+            the full-fine-tune backward path into floating weights once before
+            optimizer creation. Quantization loss remains in the starting
+            weights. Unsupported for other architectures and training methods.
+        training_export_format:
+          type: string
+          enum: [none, int8_convrot]
+          default: none
+          description: |
+            Optional inference export after normal full fine-tune completion.
+            It is separate from the floating resumable checkpoint; no periodic
+            export is performed. INT8 ConvRot is currently implemented for
+            Qwen-Image 2.1 only.
         text_encoder_lr:
           type: 'number'
           nullable: true

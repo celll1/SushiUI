@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
-import { X, Play, Square, Trash2, AlertTriangle } from "lucide-react";
-import { TrainingRun, TrainingLogEvent, getTrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, reloadTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization, skipTrainingRescan, queueTrainingSample, getTrainingSampleQueue, TrainingSampleQueueResponse, trainingFeatureUnsupportedReason, getLrScheduleStatus, queueLrScheduleCommand, LrScheduleStatusResponse, lrScheduleResultExplanation, getTimestepDistributionStatus, TimestepDistributionStatusResponse } from "@/utils/api";
+import { X, Play, Square, Trash2, AlertTriangle, Download } from "lucide-react";
+import { TrainingRun, TrainingLogEvent, getTrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, reloadTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization, skipTrainingRescan, queueTrainingSample, getTrainingSampleQueue, TrainingSampleQueueResponse, trainingFeatureUnsupportedReason, getLrScheduleStatus, queueLrScheduleCommand, LrScheduleStatusResponse, lrScheduleResultExplanation, getTimestepDistributionStatus, TimestepDistributionStatusResponse, getTrainingExportStatus, startTrainingExport, TrainingExportStatus } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
 import { wsClient, DatasetScanProgress, TrainingLogMessage } from "@/utils/websocket";
 import { TrainingMetricsProvider } from "./TrainingMetricsContext";
@@ -97,6 +97,8 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
   const [isStarting, setIsStarting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [exportStatus, setExportStatus] = useState<TrainingExportStatus | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
   const [samples, setSamples] = useState<TrainingSampleStep[]>([]);
   const [sampleQueue, setSampleQueue] = useState<TrainingSampleQueueResponse | null>(null);
   const [isQueueingSample, setIsQueueingSample] = useState(false);
@@ -187,6 +189,21 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
       .catch(() => {});
     return () => { cancelled = true; };
   }, [currentRun.id]);
+
+  const canExport = currentRun.training_method === "full_finetune" &&
+    /qwen[-_]?image[-_]?2[._]?1|qwen21/i.test(currentRun.base_model_path) &&
+    (currentRun.status === "stopped" || currentRun.status === "completed");
+
+  useEffect(() => {
+    if (!canExport) return;
+    let cancelled = false;
+    const refresh = () => getTrainingExportStatus(currentRun.id)
+      .then((status) => { if (!cancelled) setExportStatus(status); })
+      .catch(() => {});
+    refresh();
+    const timer = setInterval(refresh, 3000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [canExport, currentRun.id]);
 
   useEffect(() => {
     speedWindowRef.current = [];
@@ -724,6 +741,19 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
     }
   };
 
+  const handleExport = async () => {
+    const overwrite = exportStatus?.state === "completed";
+    if (overwrite && !confirm("Replace the existing INT8 ConvRot export? The floating training checkpoint is retained.")) return;
+    setIsExporting(true);
+    try {
+      setExportStatus(await startTrainingExport(currentRun.id, overwrite));
+    } catch (err: any) {
+      alert(err.response?.data?.detail || "Failed to start INT8 ConvRot export");
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   const handleDelete = async () => {
     if (!confirm(`Are you sure you want to delete training run "${currentRun.run_name}"?`)) {
       return;
@@ -1031,6 +1061,23 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
               </button>
             ) : null}
           </div>
+
+          {canExport && (
+            <div className="flex items-center gap-3 text-xs text-gray-300">
+              <button
+                onClick={handleExport}
+                disabled={isExporting || exportStatus?.state === "queued" || exportStatus?.state === "running"}
+                className="flex items-center gap-1.5 rounded bg-blue-700 px-3 py-1.5 hover:bg-blue-600 disabled:opacity-50"
+              >
+                <Download className="h-3.5 w-3.5" />
+                {exportStatus?.state === "completed" ? "Re-export INT8 ConvRot" : "Export INT8 ConvRot"}
+              </button>
+              <span>{exportStatus?.state === "failed" ? `Export failed: ${exportStatus.error ?? "unknown error"}` :
+                exportStatus?.state === "completed" ? `Exported: ${exportStatus.path}` :
+                exportStatus?.state === "queued" || exportStatus?.state === "running" ? `Export ${exportStatus.state}...` :
+                "Floating checkpoint remains available for resume"}</span>
+            </div>
+          )}
 
           {/* Trainer notices — settings this run overrode or ignored. Backlog
               from the status response, live ones over the WebSocket. */}

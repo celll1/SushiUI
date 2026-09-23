@@ -1,6 +1,6 @@
 # Style embedding encoder 設計書
 
-Status: 実装中（Phase 1）。2026-09-23 の外部監査の指摘 4 件を §4・§5・§9・§10・§14 に反映済み
+Status: 実装中（Phase 1・2a 完了、Phase 2b 実装中）。2026-09-23 の外部監査の指摘 4 件を §4・§5・§9・§10・§14 に反映済み
 
 ## 1. 目的と要件
 
@@ -32,9 +32,13 @@ SigLIP2 tagger は、run の設定（`excluded_categories: ["Artist"]`）で art
 backend/core/style_encoder/          # 新規パッケージ（既存に同名なし）
   style_labels.py       # caption → 作者・作品・キャラ（§5 の判定規則）
   style_model.py        # encoder + masked pooling + projector
-  style_dataset.py      # 作者インデックス、分割、交絡度、view 生成
+  style_dataset.py      # 作者インデックス、分割、交絡度
   style_sampler.py      # P×K / 同じ作品 batch の sampler
   style_resume.py       # resume の判定（§9）
+  style_views.py        # block mask の view（§7）
+  style_ingest.py       # datasets.db からの読み込みと item キー
+  style_loader.py       # torch Dataset / collate / batch キー
+  style_artifacts.py    # 成果物・学習状態の保存と読み込み、保持ルール（§11）
   style_loss.py         # 重み付き SupCon、nHSIC
   style_trainer.py      # 学習ループ（共通基盤を import して使う）
   style_eval.py         # 検索評価

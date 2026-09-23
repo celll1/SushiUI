@@ -133,3 +133,14 @@ def test_non_copyright_tags_are_dropped_after_canonicalisation():
     assert resolver.stats.non_copyright_tags_dropped == 2
     kept = _resolver({"original": "Copyright"}, non_copyright=())
     assert kept.resolve(None, "original").copyrights == {"original"}
+
+
+def test_explicit_category_from_any_caption_wins_in_either_order():
+    tagged = ([{"tag": "Brand_New", "category": "Artist"}], None)
+    plain = (None, "brand_new, other")
+    for captions in ((plain, tagged), (tagged, plain)):
+        resolver = _resolver({"brand new": "General"})
+        assert resolver.resolve_captions(captions).artists == {"brand new"}
+        assert resolver.stats.artist_tags_explicit == 1
+    same_caption = [{"tag": "brand_new"}, {"tag": "Brand_New", "category": "Artist"}]
+    assert _resolver({}).resolve(same_caption, None).artists == {"brand new"}

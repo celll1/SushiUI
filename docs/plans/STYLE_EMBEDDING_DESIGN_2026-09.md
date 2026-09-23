@@ -1,6 +1,6 @@
 # Style embedding encoder 設計書
 
-Status: 設計確定・未実装（2026-09-23）
+Status: 設計・未実装（2026-09-23。外部監査の指摘 4 件を §4・§5・§9・§10・§14 に反映）
 
 ## 1. 目的と要件
 
@@ -59,19 +59,32 @@ tagger 側の `tagger_trainer.py` は単体のファイルが大きい（約2,80
 - **projector**: 2層 MLP → L2 正規化。出力次元は `style_embed_dim`（初期値 512）。
 - **出力**:
   - `embed(x) -> [B, D]`：画風の埋め込み
-  - `token_features(x) -> [B, N, D_tok]`：将来の cross-attention conditioning 用
+  - `token_features(x) -> (features [B, N, D_tok], valid_mask [B, N])`：将来の cross-attention conditioning 用。mask 対象と padding の位置は **features を 0 にし**、`valid_mask` を 0 にして返す。利用側は `valid_mask` を attention mask として使う
 
-**不変条件 I-1**: 出力は、mask 対象または padding の位置の画素値に依存しない。
+**不変条件 I-1**: `embed` と `token_features` のどちらの出力も、mask 対象または padding の位置の画素値に依存しない。
 
-SigLIP2 の encoder の attention は、mask された位置を key から除外する。しかし mask された token 自身の hidden state には、residual 経路を通って自身の画素情報が残る。したがって、pooling で除外しない限り情報が漏れる。
+SigLIP2 の encoder の attention は、mask された位置を key から除外する。しかし mask された token 自身の hidden state には、residual 経路を通って自身の画素情報が残る。したがって、pooling で除外するだけでなく、token 列を返す出力でもその位置を 0 にしない限り情報が漏れる。
 
 > 参考：tagger の `CustomAttentionPooling`（`cls_dim` 指定時）は、以前 padding token も attention の対象にしていた。`main` の `277d827e` で `key_padding_mask` を適用するよう修正済みである（テスト: `backend/tests/tagger_custom_pooler_mask_test.py`）。style encoder の pooling も同じ不変条件を満たすこと。
 
 ## 5. データ
 
 - **入力**: `dataset_configs`（tagger と同じ形式）。caption の解釈には既存の取り込み処理を使う。
-- **カテゴリ判定**: 必ず `get_tag_group_manager().get_tag_group()` を使う（独自の判定は禁止）。artist の別名は既存の `TagAliasResolver` で正規の名前にまとめる。
-- **作者ラベル**: artist タグがちょうど1つの item だけを使う。共作（2つ以上）と作者不明（0）は除外し、件数をログに出す。
+- **カテゴリ判定**: 次の優先順位で決める。独自の判定規則は追加しない。
+  1. caption の `tag_data` の要素に `category` が**明示されている**場合は、その値を使う（大文字小文字を正規化する）。追加中の作者データのように、taglist にない作者名でも `Artist` と明記されていれば学習対象になる。
+  2. `category` が無い、または `Unknown` / `__lookup__` の場合は、`get_tag_group_manager().get_tag_group()` で判定する。
+  - 既存の `_parse_caption_tags`（`tag_vocabulary.py`）は、`category` が無い要素を `General` として返す。このため、style 側ではこの関数の戻り値をそのまま使わず、「明示あり」と「無し」を区別して読む。
+  - 1 と 2 の結果が食い違った場合は 1 を採用し、件数をログに出す。
+  - Character / Copyright / Rating など、作者以外の内容タグの判定にも同じ規則を使う。
+  - 同じ方針は `CONCEPT_BATCH_ORDER_DESIGN_2026-09.md` の Artist 抽出でも採られている。
+- **別名**: artist の別名は、既存の `TagAliasResolver` で正規の名前にまとめる。
+- **作者ラベル**: artist タグがちょうど1つの item だけを使う。
+- **除外件数のログ**: 学習開始時に次の件数を出す。
+  - 共作（作者が2人以上）
+  - 作者不明（0人）
+  - 判定の出どころ別の作者タグ数（`tag_data` の明示 / manager）
+  - 判定の食い違い
+  - どちらでも判定できなかったタグ
 - **学習対象の作者**: 画像が `style_min_images_per_artist`（初期値 4）枚以上ある作者。
 - **インデックス**（学習開始時に一度構築）:
   - artist → items
@@ -94,6 +107,7 @@ SigLIP2 の encoder の attention は、mask された位置を key から除外
   3. 条件を満たす copyright がない場合は、通常の batch に戻す。
 - **通常の batch**: 作者を n^α に比例する確率で選ぶ（n は作者の画像数、`style_artist_sampling_power` α、初期値 0.5）。作者ごとの K 枚は、その作者の中でキャラが分散するように選ぶ。
 - **epoch**: 学習対象の画像数 ÷ (P·K) step と定義する。
+- **run の長さ**: 学習開始時に `total_steps` = epochs × epoch 長を確定し、state に保存する。scheduler の horizon もこの値に固定する。データが増減して epoch 長が変わっても、`total_steps` と LR の曲線は変えない（最後の epoch が途中で終わることがある）。
 
 ## 7. View 生成
 
@@ -163,7 +177,23 @@ L_i = − Σ_{j∈P(i)} (w_ij / Σ_{k∈P(i)} w_ik) · log( exp(s_ij/τ) / Σ_{a
 - **optimizer**: `adamw` / `adamw8bit` / `lion8bit`。scheduler は warmup → cosine。
 - **その他**: bf16、gradient checkpointing、FlashAttention-2（任意）、`gpu_index`。
 - **GPU 共有の offload**: 凍結した tagger も、退避と復帰の対象に含める。
-- **resume**: sampler の状態（RNG、epoch 内の位置）、分割に使う seed、作者インデックスのハッシュを保存する。インデックスのハッシュが変わった場合は、sampler を作り直したうえで続行する。
+- **resume**: 次の値を state に保存する。
+  - 重み、optimizer、scheduler、`global_step`、`total_steps`
+  - epoch 番号と epoch 内の step 位置
+  - sampler の RNG 状態
+  - **インデックスのハッシュ**: 学習対象の item ID、その作者 ID、train / val の所属から計算する
+  - **分割パラメータ**: `style_val_artist_ratio`、`style_val_image_ratio`、`style_min_images_per_artist`、分割 seed、作者名の正規化の版
+
+  resume 時は、次の3通りで扱いを決める。
+
+  | 状況 | 扱い |
+  |---|---|
+  | ハッシュが一致 | 保存した epoch 内の位置と RNG 状態から、そのまま続行する |
+  | ハッシュが不一致（データの追加・削除）で、分割パラメータは一致 | **epoch の境界から再開する**。中断した epoch は終わったものとして扱う。次の epoch の先頭から、新しいインデックスで sampler を作り直す。sampler の RNG は (seed, epoch 番号) から決める。重み、optimizer、scheduler、`global_step`、`total_steps` はそのまま引き継ぐ |
+  | 分割パラメータが不一致 | **resume を拒否する**。既存の作者の train / val 所属が変わり、検証用の作者が学習に混ざるため |
+
+  - ハッシュ分割（§5）により、データが増えても既存の作者の所属は変わらない。新しく加わった作者も、名前から一意に train / val のどちらかに入る。
+  - インデックスが変わると評価の集合も変わる。metrics の行にインデックスの版を記録し、チャートで不連続点として区別できるようにする。
 - **optimizer step ゼロ**: 一度も optimizer step が完了しなかった run は、完了扱いにせず重みも保存しない（tagger と同じ規約）。
 
 ## 10. 評価
@@ -173,10 +203,16 @@ L_i = − Σ_{j∈P(i)} (w_ij / Σ_{k∈P(i)} w_ik) · log( exp(s_ij/τ) / Σ_{a
 | 指標 | 内容 | 用途 |
 |---|---|---|
 | (a) 学習に出てこない作者での検索 | Recall@1/5、mAP@R。各画像を query にし、残りを検索対象にする | **主指標**。`best` の選定に使う |
-| (b) 同じ作品に限った検索 | 検索対象を query と同じ copyright に限る。該当する作品に、学習に出てこない作者が2人以上いる query のみで計算する | 内容の shortcut の検出 |
-| (c) サインの有無による分割 | サイン系タグ（`style_signature_tags`、初期値 `signature, artist name, watermark, twitter username, web address`）の有無で分け、(a) をそれぞれ計算する | サインによる精度の水増しの検出 |
+| (b) 同じ作品に限った検索 | 検索対象を、query と copyright を1つ以上共有する画像に限る。対象条件は下記 | 内容の shortcut の検出 |
+| (c) サインの有無による分割 | サイン系タグ（`style_signature_tags`、初期値 `signature, artist name, watermark, twitter username, web address`）の有無で **query を**分け、(a) をそれぞれ計算する。検索対象は分けない | サインによる精度の水増しの検出 |
 | (d) masked view 同士の検索 | (a) を masked view で計算する | mask に対して頑健かの確認 |
 | (e) 学習済み作者の、学習に使わない画像での検索 | (a) と同じ計算 | 参考値（ほぼ同じ画像による水増しの可能性あり） |
+
+**query の対象条件**: どの指標でも、検索対象の中に次の2つがそろう query だけを数える。
+- 同じ作者の別の画像（正解が1枚以上）
+- 別の作者の画像（不正解が1枚以上）
+
+mAP@R の R は、検索対象の中にある正解の枚数とする。(b) では、作品内に学習に出てこない作者が2人いても、各作者の画像がその作品に1枚ずつしかなければ、条件を満たさず対象外になる。指標ごとに、対象になった query の数と除外した数を併せて記録する。
 
 ## 11. 成果物
 
@@ -208,15 +244,15 @@ L_i = − Σ_{j∈P(i)} (w_ij / Σ_{k∈P(i)} w_ik) · log( exp(s_ij/τ) / Σ_{a
 | Phase | 内容 | 完了条件 |
 |---|---|---|
 | 0 | 測定（推論のみ）。素の SigLIP2 base / so400m、パッチ上限 256 / 1024 について、層ごとの特徴で (a)(b) を測る。GPU を使う前に使用状況を確認し、host RAM のピークを見積もって告知する | サイズ、層、パッチ上限を決定 |
-| 1 | 作者インデックス、分割、交絡度、sampler（CPU のみ） | §14 のテスト T3〜T5 が通る |
-| 2 | モデル、view、SupCon、学習ループ、checkpoint、評価、REST / DB / デフォルト値 | 約3 step の smoke で loss が有限、評価が完走 |
+| 1 | 作者インデックス、分割、交絡度、sampler（CPU のみ） | §14 のテスト T3〜T5、T9 が通る |
+| 2 | モデル、view、SupCon、学習ループ、checkpoint、評価、REST / DB / デフォルト値 | T1、T2、T10、T11 が通り、約3 step の smoke で loss が有限、評価が完走 |
 | 3 | HSIC、凍結 tagger の offload 対応 | T6、T7 が通る。HSIC の有無で A/B 比較 |
 | 4 | UI、推論 API | |
 | 5 | 生成側での利用、保留事項の再検討 | |
 
 ## 14. テスト（CPU での契約テスト）
 
-- **T1**: masked / padding 位置の画素値を変えても出力が変わらない（I-1）。
+- **T1**: masked / padding 位置の画素値を変えても、`embed` と `token_features` のどちらの出力も変わらない。`token_features` の該当位置が 0 で、`valid_mask` が 0 である（I-1）。
 - **T2**: 同じ画像で padding の長さだけが違う場合、出力が一致する。
 - **T3**: 同じ作品の batch では、作者が P 人の別人で、全画像が同じ copyright に属する。
 - **T4**: 作者のハッシュ分割が、データの追加前後で既存の作者について変わらない。
@@ -224,6 +260,15 @@ L_i = − Σ_{j∈P(i)} (w_ij / Σ_{k∈P(i)} w_ik) · log( exp(s_ij/τ) / Σ_{a
 - **T6**: nHSIC が、独立な入力でほぼ 0、依存する入力で正になる。
 - **T7**: 重みが 0 より大きいカテゴリが tagger の語彙にないとき、学習の開始を拒否する。
 - **T8**: 成果物の中身（配布用に作者一覧が含まれないこと）。
+- **T9**: カテゴリ判定の優先順位。
+  - taglist にない名前でも、`tag_data` に `Artist` と明示されていれば作者として採用される。
+  - `category` が無い要素は manager で判定される（`General` 扱いにならない）。
+  - 食い違いは `tag_data` 側が採用され、件数に数えられる。
+- **T10**: resume の境界。
+  - ハッシュが一致すれば、epoch 内の位置から続行する。
+  - ハッシュが不一致なら、次の epoch の先頭から再開し、`global_step` と `total_steps` が保たれる。
+  - 分割パラメータが不一致なら、resume を拒否する。
+- **T11**: 評価の対象条件。正解または不正解が検索対象にない query が除外され、除外数が記録される（(b) で、作者ごとの画像が作品内に1枚ずつの場合を含む）。
 
 ## 15. 保留事項と既知のリスク
 

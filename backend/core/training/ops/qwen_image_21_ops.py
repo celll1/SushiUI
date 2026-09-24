@@ -11,11 +11,28 @@ import torch.nn.functional as F
 from api.param_defaults import TRAINING_DEFAULTS
 
 
-def partition_training_enabled(trainer) -> bool:
-    return bool(trainer.config.get(
+def partition_training_enabled(trainer, *, latent_h=None, latent_w=None) -> bool:
+    enabled = bool(trainer.config.get(
         "dit_partition_training_enabled",
         trainer.config.get("qwen_partition_training_enabled", False),
     ))
+    if not enabled:
+        return False
+    # Older saved runs may enable partitioning without recording a mode.
+    mode = str(_partition_config(trainer.config, "mode", "fixed")).strip().lower()
+    if mode == "fixed":
+        return True
+    if mode == "token_threshold":
+        if latent_h is None or latent_w is None:
+            raise ValueError("Qwen token-threshold partitioning requires latent_h/latent_w")
+        limit = int(trainer.config.get(
+            "dit_partition_full_frame_max_tokens",
+            TRAINING_DEFAULTS["dit_partition_full_frame_max_tokens"],
+        ))
+        if limit < 1:
+            raise ValueError("dit_partition_full_frame_max_tokens must be positive")
+        return int(latent_h) * int(latent_w) > limit
+    raise ValueError(f"Invalid Qwen partition mode: {mode}")
 
 
 def resolve_guidance_weight_schedule(config, low_weight: float):
@@ -159,11 +176,8 @@ def _partition_config(config, name: str, default):
 
 def _partition_plan(trainer, latent_h: int, latent_w: int):
     mode = str(_partition_config(trainer.config, "mode", "fixed")).strip().lower()
-    if mode != "fixed":
-        raise ValueError(
-            "The first Qwen partitioned-training implementation supports mode='fixed'; "
-            f"got {mode!r}"
-        )
+    if mode not in {"fixed", "token_threshold"}:
+        raise ValueError(f"Unsupported Qwen partition mode: {mode!r}")
     key = (
         int(getattr(trainer, "_current_epoch", 0)),
         int(getattr(trainer, "_current_batch_position", 0)),
@@ -196,7 +210,7 @@ def _partition_plan(trainer, latent_h: int, latent_w: int):
 
 def partition_dispatch_view(trainer, latents: torch.Tensor, *, latent_h: int, latent_w: int):
     """Shape-only view used so activation dispatch sees the largest region."""
-    if not partition_training_enabled(trainer):
+    if not partition_training_enabled(trainer, latent_h=latent_h, latent_w=latent_w):
         return latents
     plan = _partition_plan(trainer, latent_h, latent_w)
     return latents[:, : plan.largest_input_tokens]

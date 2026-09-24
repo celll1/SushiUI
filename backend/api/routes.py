@@ -15520,8 +15520,11 @@ class TrainingRunCreateRequest(BaseModel):
         default=TRAINING_DEFAULTS["dit_partition_gradient_checkpointing_blocks"], ge=0
     )
     dit_partition_training_enabled: bool = TRAINING_DEFAULTS["dit_partition_training_enabled"]
-    dit_partition_mode: Literal["fixed"] = TRAINING_DEFAULTS["dit_partition_mode"]
+    dit_partition_mode: Literal["fixed", "token_threshold"] = TRAINING_DEFAULTS["dit_partition_mode"]
     dit_partition_fixed_count: Literal[2, 4] = TRAINING_DEFAULTS["dit_partition_fixed_count"]
+    dit_partition_full_frame_max_tokens: int = Field(
+        default=TRAINING_DEFAULTS["dit_partition_full_frame_max_tokens"], ge=1
+    )
     dit_partition_halo_tokens: int = Field(
         default=TRAINING_DEFAULTS["dit_partition_halo_tokens"], ge=0
     )
@@ -15543,7 +15546,7 @@ class TrainingRunCreateRequest(BaseModel):
         default=TRAINING_DEFAULTS["dit_partition_global_tokens"], ge=1, le=256
     )
     qwen_partition_training_enabled: Optional[bool] = TRAINING_DEFAULTS["qwen_partition_training_enabled"]
-    qwen_partition_mode: Optional[Literal["fixed"]] = TRAINING_DEFAULTS["qwen_partition_mode"]
+    qwen_partition_mode: Optional[Literal["fixed", "token_threshold"]] = TRAINING_DEFAULTS["qwen_partition_mode"]
     qwen_partition_fixed_count: Optional[Literal[2, 4]] = TRAINING_DEFAULTS["qwen_partition_fixed_count"]
     qwen_partition_halo_tokens: Optional[int] = Field(
         default=TRAINING_DEFAULTS["qwen_partition_halo_tokens"], ge=0

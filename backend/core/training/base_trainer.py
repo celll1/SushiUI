@@ -11421,7 +11421,9 @@ class BaseTrainer(ABC):
         if self.is_qwen_image_21:
             from core.training.ops import qwen_image_21_ops
 
-            if qwen_image_21_ops.partition_training_enabled(self):
+            if qwen_image_21_ops.partition_training_enabled(
+                    self, latent_h=lens_latent_shape[0] if lens_latent_shape else None,
+                    latent_w=lens_latent_shape[1] if lens_latent_shape else None):
                 _qwen_partitioned = True
                 if lens_latent_shape is None:
                     raise ValueError("Qwen partitioned training requires latent_h/latent_w")
@@ -12084,7 +12086,9 @@ class BaseTrainer(ABC):
         if self.is_qwen_image_21:
             from core.training.ops import qwen_image_21_ops
 
-            if qwen_image_21_ops.partition_training_enabled(self):
+            if qwen_image_21_ops.partition_training_enabled(
+                    self, latent_h=lens_latent_shape[0] if lens_latent_shape else None,
+                    latent_w=lens_latent_shape[1] if lens_latent_shape else None):
                 return self._execute_qwen_partitioned_forward_backward(
                     mnt_latents=mnt_latents,
                     mnt_text_embeddings=mnt_text_embeddings,

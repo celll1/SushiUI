@@ -1,6 +1,6 @@
 # Qwen-Image 2.1 partitioned full-frame training design
 
-Status: **fixed-count prototype and architecture-gated DiT extraction implemented; adaptive policy planned**
+Status: **fixed-count and deterministic token-threshold routing implemented; memory-profile adaptive policy planned**
 
 Architecture key: `qwen_image_21`
 
@@ -181,6 +181,7 @@ The design admits these modes:
 |---|---|
 | `off` | Existing dense full-frame training. |
 | `fixed` | Prototype and diagnostic mode with a requested count such as 2 or 4. |
+| `token_threshold` | Full-canvas training through a configured latent-token limit; fixed 2/4-region training above it. |
 | `adaptive` | Production candidate driven by predicted peak residency and an optional elective policy. |
 
 Fixed mode does not require fixed boundaries. It fixes only the requested
@@ -459,8 +460,9 @@ aliases remain read-compatible for saved runs and older API clients.
 
 ```text
 dit_partition_training_enabled
-dit_partition_mode                 # fixed in the prototype
+dit_partition_mode                 # token_threshold (default) | fixed
 dit_partition_fixed_count          # prototype: 2 or 4
+dit_partition_full_frame_max_tokens # threshold mode: full when H * W <= limit
 dit_partition_split_ratio_min
 dit_partition_split_ratio_max
 dit_partition_halo_tokens
@@ -471,7 +473,9 @@ dit_partition_global_tokens
 dit_partition_gradient_checkpointing_blocks
 ```
 
-Adaptive budget, elective probability, sigma adaptation, and position sidecar
+The token threshold uses target latent tokens and does not estimate memory from
+prefix length or batch size. Existing runs that explicitly saved `fixed` keep
+partitioning every image. Adaptive budget, elective probability, sigma adaptation, and position sidecar
 remain designed follow-ups rather than accepted configuration fields.
 
 The UI should expose a simple off/fixed/adaptive selector, fixed count for the
@@ -635,7 +639,9 @@ halo, exact full-canvas target RoPE coordinates, area-weighted loss cores,
 sequential region backward, activation-dispatch sizing from the largest input
 region, and per-region checkpoint selection. A failed minimum-size region is a
 run error after the activation-offload retry, not a silently skipped image.
-Adaptive feasibility and elective full/partition mixing remain later stages.
+The token-threshold mode now routes small images through the existing dense
+training path and larger images through this prototype. Adaptive feasibility
+and elective mixing remain later stages.
 
 The sequential-backward oracle passes on a one-block CPU model: backward after
 each region matches backward of the summed partition graph for loss and every

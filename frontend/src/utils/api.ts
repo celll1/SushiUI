@@ -7215,8 +7215,9 @@ export interface TrainingRunCreateRequest {
   dit_gradient_checkpointing_blocks?: number | null;
   dit_partition_gradient_checkpointing_blocks?: number | null;
   dit_partition_training_enabled?: boolean;
-  dit_partition_mode?: "fixed";
+  dit_partition_mode?: "fixed" | "token_threshold";
   dit_partition_fixed_count?: 2 | 4;
+  dit_partition_full_frame_max_tokens?: number;
   dit_partition_halo_tokens?: number;
   dit_partition_split_ratio_min?: number;
   dit_partition_split_ratio_max?: number;
@@ -7226,7 +7227,7 @@ export interface TrainingRunCreateRequest {
   dit_partition_global_rank?: number;
   dit_partition_global_tokens?: number;
   qwen_partition_training_enabled?: boolean;
-  qwen_partition_mode?: "fixed";
+  qwen_partition_mode?: "fixed" | "token_threshold";
   qwen_partition_fixed_count?: 2 | 4;
   qwen_partition_halo_tokens?: number;
   qwen_partition_split_ratio_min?: number;

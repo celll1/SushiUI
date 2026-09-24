@@ -104,6 +104,7 @@ export const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [
   "activation_offload_pinned_budget_mb",
   "dit_gradient_checkpointing_blocks", "dit_partition_gradient_checkpointing_blocks",
   "dit_partition_training_enabled", "dit_partition_mode",
+  "dit_partition_full_frame_max_tokens",
   "dit_partition_fixed_count", "dit_partition_halo_tokens",
   "dit_partition_split_ratio_min", "dit_partition_split_ratio_max",
   "dit_partition_seed", "dit_partition_profile",

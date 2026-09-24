@@ -24994,13 +24994,24 @@ components:
             Unsupported attention topologies are refused before model loading.
         dit_partition_mode:
           type: string
-          enum: [fixed]
-          default: fixed
+          enum: [fixed, token_threshold]
+          default: token_threshold
+          description: >-
+            Fixed partitions every Qwen image. Token threshold keeps an image
+            whole when its target latent token count is at or below the limit.
         dit_partition_fixed_count:
           type: integer
           enum: [2, 4]
           default: 2
           description: Number of target regions; boundaries vary deterministically by epoch and item.
+        dit_partition_full_frame_max_tokens:
+          type: integer
+          minimum: 1
+          default: 4096
+          example: 4096
+          description: >-
+            In token_threshold mode, keep the full image when latent height
+            times latent width is at or below this number; split above it.
         dit_partition_halo_tokens:
           type: integer
           minimum: 0

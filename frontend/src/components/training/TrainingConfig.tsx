@@ -6402,6 +6402,33 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 </div>
                 {params.dit_partition_training_enabled && (
                   <div className="grid grid-cols-2 gap-2">
+                    <div className="col-span-2">
+                      <label className="block text-xs text-gray-400 mb-1">When to partition</label>
+                      <select
+                        value={params.dit_partition_mode ?? "token_threshold"}
+                        onChange={(e) => updateParam("dit_partition_mode", e.target.value as "fixed" | "token_threshold")}
+                        className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
+                      >
+                        <option value="token_threshold">Above latent-token limit (full frame for smaller images)</option>
+                        <option value="fixed">Every image (legacy fixed mode)</option>
+                      </select>
+                    </div>
+                    {params.dit_partition_mode === "token_threshold" && (
+                      <div className="col-span-2">
+                        <label className="block text-xs text-gray-400 mb-1">Full-frame limit (latent image tokens)</label>
+                        <input
+                          type="number"
+                          min={1}
+                          step={256}
+                          value={params.dit_partition_full_frame_max_tokens ?? 4096}
+                          onChange={(e) => updateParam("dit_partition_full_frame_max_tokens", Math.max(1, parseInt(e.target.value) || 4096))}
+                          className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">
+                          Images at or below this latent H × W use one full-canvas forward. Larger images use the selected region count.
+                        </p>
+                      </div>
+                    )}
                     <div>
                       <label className="block text-xs text-gray-400 mb-1">Regions</label>
                       <select

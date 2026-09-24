@@ -1047,6 +1047,54 @@ def test_qwen_partition_api_refuses_odd_halo():
         routes.TrainingRunCreateRequest(qwen_partition_halo_tokens=3)
 
 
+def test_qwen_partition_token_limit_routes_full_and_partitioned_views():
+    trainer = SimpleNamespace(
+        config={"dit_partition_training_enabled": True,
+                "dit_partition_mode": "token_threshold",
+                "dit_partition_full_frame_max_tokens": 4096,
+                "dit_partition_fixed_count": 2},
+        arch=QwenImage21ArchHandler(),
+    )
+    small = torch.zeros(1, 64 * 64, 4)
+    large = torch.zeros(1, 64 * 66, 4)
+    assert not qwen_image_21_ops.partition_training_enabled(trainer, latent_h=64, latent_w=64)
+    assert qwen_image_21_ops.partition_dispatch_view(
+        trainer, small, latent_h=64, latent_w=64) is small
+    assert qwen_image_21_ops.partition_training_enabled(trainer, latent_h=64, latent_w=66)
+    assert qwen_image_21_ops.partition_dispatch_view(
+        trainer, large, latent_h=64, latent_w=66).shape[1] < large.shape[1]
+    trainer.config["dit_partition_mode"] = "fixed"
+    assert qwen_image_21_ops.partition_training_enabled(trainer, latent_h=64, latent_w=64)
+    del trainer.config["dit_partition_mode"]
+    assert qwen_image_21_ops.partition_training_enabled(trainer, latent_h=64, latent_w=64)
+
+
+def test_qwen_partition_token_limit_request_contract():
+    from core.training.training_config import _build_train_section
+
+    request = routes.TrainingRunCreateRequest(
+        training_method="lora", base_model_path="unused",
+        dit_partition_training_enabled=True,
+        dit_partition_mode="token_threshold",
+        dit_partition_full_frame_max_tokens=6144,
+    )
+    assert request.dit_partition_full_frame_max_tokens == 6144
+    assert routes.TrainingRunCreateRequest(
+        training_method="lora", base_model_path="unused",
+    ).dit_partition_mode == "token_threshold"
+    train = _build_train_section(
+        request.model_dump(), total_steps=20, epochs=None,
+        train_unet=True, train_text_encoder=False, arch="qwen_image_21",
+    )
+    assert train["dit_partition_mode"] == "token_threshold"
+    assert train["dit_partition_full_frame_max_tokens"] == 6144
+    with pytest.raises(ValueError):
+        routes.TrainingRunCreateRequest(
+            training_method="lora", base_model_path="unused",
+            dit_partition_full_frame_max_tokens=0,
+        )
+
+
 def test_qwen_partition_legacy_request_populates_canonical_fields():
     request = routes.TrainingRunCreateRequest(
         training_method="lora",

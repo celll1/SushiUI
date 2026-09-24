@@ -510,11 +510,14 @@ def _build_train_section(
             train[canonical] = p[canonical]
         else:
             train[canonical] = p.get(legacy, _TD[canonical])
+    train["dit_partition_full_frame_max_tokens"] = p.get(
+        "dit_partition_full_frame_max_tokens", _TD["dit_partition_full_frame_max_tokens"])
     # Literal loop keeps the AST-derived editable-config vocabulary aligned
     # with the alias map above.
     for key in (
         "dit_partition_training_enabled", "dit_partition_mode",
         "dit_partition_fixed_count", "dit_partition_halo_tokens",
+        "dit_partition_full_frame_max_tokens",
         "dit_partition_split_ratio_min", "dit_partition_split_ratio_max",
         "dit_partition_seed", "dit_partition_profile",
         "dit_partition_global_adapter_enabled", "dit_partition_global_rank",

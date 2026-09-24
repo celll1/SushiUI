@@ -23,6 +23,7 @@ outputs/
 lora/
 controlnet/
 tagger_models/
+style_models/
 taglist/
 taglist_gel/
 tagother/

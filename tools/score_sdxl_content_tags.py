@@ -49,12 +49,15 @@ def main() -> None:
         if not indices:
             return []
         with Image.open(path) as source:
-            inputs = manager.processor(images=source.convert("RGB"), max_num_patches=256,
-                                       return_tensors="pt")
+            kwargs = {"images": source.convert("RGB"), "return_tensors": "pt"}
+            if manager.is_naflex:
+                kwargs["max_num_patches"] = 256
+            inputs = manager.processor(**kwargs)
+        pixel_values = inputs["pixel_values"].to("cuda")
+        attention = inputs["pixel_attention_mask"].to("cuda") if manager.is_naflex else None
+        shapes = inputs["spatial_shapes"].to("cuda") if manager.is_naflex else None
         with torch.inference_mode(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
-            logits = manager.model(inputs["pixel_values"].to("cuda"),
-                                   inputs["pixel_attention_mask"].to("cuda"),
-                                   inputs["spatial_shapes"].to("cuda"))[0]
+            logits = manager.model(pixel_values, attention, shapes)[0]
         return torch.sigmoid(logits.float()[indices]).cpu().tolist()
 
     rows = []

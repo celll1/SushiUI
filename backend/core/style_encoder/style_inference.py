@@ -8,6 +8,7 @@ import io
 import json
 import os
 import threading
+from typing import Iterable
 
 import torch
 from PIL import Image, UnidentifiedImageError
@@ -78,6 +79,15 @@ class StyleInferenceService:
             a = torch.tensor(self._embed(first))
             b = torch.tensor(self._embed(second))
             return float((a * b).sum().clamp(-1.0, 1.0))
+
+    def select_reference(self, path: str, query: Image.Image,
+                         candidates: Iterable[Image.Image]) -> tuple[int, list[float]]:
+        with self._lock:
+            self._load(path)
+            query_embedding = torch.tensor(self._embed(query))
+            scores = [float((query_embedding * torch.tensor(self._embed(image))).sum().clamp(-1, 1))
+                      for image in candidates]
+        return max(range(len(scores)), key=scores.__getitem__), scores
 
 
 style_inference_service = StyleInferenceService()

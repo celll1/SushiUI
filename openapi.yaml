@@ -8051,6 +8051,32 @@ paths:
           description: Invalid image or artifact
         '404':
           description: Encoder artifact not found
+  /style/reference-select:
+    post:
+      tags: [style]
+      summary: Select a style reference image from candidates
+      description: |
+        Ranks candidate images against a style exemplar using the distributable
+        style encoder. Send the selected original image as image_base64 in an
+        is_style_transfer ControlNet entry on Qwen-Image 2.1's existing
+        /generate/txt2img endpoint. This endpoint does not generate an image.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StyleReferenceSelectRequest'
+      responses:
+        '200':
+          description: Best candidate index and all cosine similarities
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StyleReferenceSelectResponse'
+        '400':
+          description: Invalid image or candidate count
+        '404':
+          description: Encoder artifact not found
   /style/sdxl-generate:
     post:
       tags: [style]
@@ -28813,6 +28839,37 @@ components:
           type: number
           minimum: -1
           maximum: 1
+    StyleReferenceSelectRequest:
+      type: object
+      additionalProperties: false
+      required: [encoder_path, query_image_base64, candidate_images_base64]
+      properties:
+        encoder_path:
+          type: string
+          description: Local distributable style encoder artifact.
+        query_image_base64:
+          type: string
+          description: Base64 style exemplar image, optionally with a data URL header.
+        candidate_images_base64:
+          type: array
+          minItems: 2
+          maxItems: 16
+          items:
+            type: string
+          description: Original candidate images in input order, encoded as base64; 64 MiB total encoded limit.
+    StyleReferenceSelectResponse:
+      type: object
+      required: [selected_index, cosine_similarities]
+      properties:
+        selected_index:
+          type: integer
+          minimum: 0
+          description: Zero-based index of the highest scoring candidate.
+        cosine_similarities:
+          type: array
+          items:
+            type: number
+          description: Style cosine similarities in candidate order.
     StyleSDXLGenerateRequest:
       type: object
       additionalProperties: false

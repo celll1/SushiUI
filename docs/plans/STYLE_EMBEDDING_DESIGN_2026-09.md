@@ -1,6 +1,6 @@
 # Style embedding encoder 設計書
 
-Status: 実装中（Phase 0・1・2 完了。Phase 3 の HSIC は CPU 実装済み、GPU での A/B 比較が未完了。Phase 4 の学習 UI と CPU 推論 API は実装済み、フロントエンド build は未検証）。2026-09-23 の外部監査の指摘 4 件を §4・§5・§9・§10・§14 に反映済み
+Status: 実装中（Phase 0・1・2 完了。Phase 3 の HSIC 実装と短期 GPU A/B 比較は完了、効果の再現性は未確定。Phase 4 の学習 UI と CPU 推論 API は実装済み、フロントエンド build は未検証。Phase 5 は未着手）。2026-09-23 の外部監査の指摘 4 件を §4・§5・§9・§10・§14 に反映済み
 
 ## 1. 目的と要件
 
@@ -358,3 +358,16 @@ mAP@R の R は、検索対象の中にある正解の枚数とする。(b) で�
 
 - 1024 パッチは、PyTorch の既定のメモリ確保設定では 30 GB の上限内で断片化により OOM になった（allocated は約 20 GB）。Windows では `expandable_segments` が使えず、`PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512,garbage_collection_threshold:0.8` で収まった。上の 1024 の数値はこの設定での測定。
 - `num_workers` 2 では、データ読み込みの待ち時間が step 時間の 23〜37% を占めた（4 では 0.6% 以下）。
+
+## 17. Phase 3 の実データ確認と短期 A/B（2026-09-24）
+
+dataset 39（`image-tag-caption-dataset`）の 33,099 item を調べ、tags caption のある 18,634 件から 9,926 item・7,444 作者を index 化した。学習対象は 209 作者・1,477 item で、16 作者×4 枚なら 1 epoch は 23 step。条件を満たす copyright が 1 件あり、seed 0 の 3 epoch・69 batch 中 30 batch が同じ作品の batch になった。各 batch で作者 16 人が異なり、64 枚すべてに選ばれた copyright があることを実データで確認した。
+
+同じ index hash `9df70dad080a8b3dfa3eb5b000371830`、初期重み、seed 0、so400m・LoRA・256 パッチ、3 epoch で HSIC の有無だけを変えた。`num_workers=0` は Windows の実験スクリプトで子プロセスを使わないため。評価は検証作者の 490 枚から検索可能な 176 query（同じ作品内では 58 query）。HSIC 側は Artist タグを含まない tagger の `best_f1.safetensors`（SHA-256 `bd48dd2e60717678434c62f71941a55d54d3823db1ac9994a3c12bcd9152c626`）を凍結し、Character / Copyright / Rating を各 0.1、Quality を 0 とした。
+
+| 設定 | step 23 mAP@R | step 46 mAP@R | step 69 mAP@R | step 69・同じ作品内 mAP@R |
+|---|---:|---:|---:|---:|
+| HSIC なし | 0.2511 | 0.1603 | 0.1581 | 0.5932 |
+| HSIC あり | 0.2207 | 0.2093 | 0.1734 | 0.5327 |
+
+両 run の 69 step の loss はすべて有限で、HSIC loss は 0.082〜0.204。HSIC ありの GPU 使用量は学習中の観測時点で 16.7 GB。主指標は step 23 では HSIC なしが高く、step 46・69 では HSIC ありが高い。同じ作品内の最終指標は逆に HSIC なしが高い。単一 seed・短い学習・有効 query 176 件なので、効果が安定したとは判断しない。HSIC は opt-in のままとし、採用判断には複数 seed とより大きい評価集合が必要。

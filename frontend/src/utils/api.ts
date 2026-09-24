@@ -9076,6 +9076,16 @@ export interface StyleTrainingConfig {
   style_val_artist_ratio: number;
   style_val_image_ratio: number;
   style_min_images_per_artist: number;
+  style_danbooru_enable: boolean;
+  style_danbooru_min_post_count: number;
+  style_danbooru_order: "count_desc" | "random";
+  style_danbooru_seed: number;
+  style_danbooru_max_artists: number;
+  style_danbooru_max_tag_pages: number;
+  style_danbooru_max_posts_per_artist: number;
+  style_danbooru_max_post_pages_per_artist: number;
+  style_danbooru_api_interval: number;
+  style_danbooru_dl_speed_kbps: number;
   style_artists_per_batch: number;
   style_images_per_artist: number;
   style_same_copyright_batch_ratio: number;

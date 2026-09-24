@@ -2,7 +2,7 @@
 
 Status: 実装中（Phase 0・1・2 完了。Phase 3 の HSIC 実装と短期 GPU A/B 比較は完了、効果の再現性は未確定。Phase 4 の学習 UI と CPU 推論 API は実装済みで、実 checkpoint の API 推論も確認済み。フロントエンド build は未検証。Phase 5 の SDXL bridge は dataset 39 で通常版・HSIC 版をそれぞれ 1 epoch 学習し、未学習作者 2 集合・計 48 組で style と内容保持を比較した。HSIC 版でも確認集合の style 効果は不確実で、異なる作品の組の内容低下と参照内容漏れが残り、品質判定は未完了。Qwen-Image 2.1 は既存参照画像経路の実 GPU 生成と、style encoder による参照画像選択 API を確認済み）。2026-09-23 の外部監査の指摘 4 件を §4・§5・§9・§10・§14 に反映済み
 
-Danbooru API による style 学習データ補充は未接続。設計と試験範囲は [STYLE_DANBOORU_AUGMENTATION_DESIGN_2026-09.md](STYLE_DANBOORU_AUGMENTATION_DESIGN_2026-09.md)。
+Danbooru API による style 学習データ補充はコードと学習 UI に接続済み。合成画像・モック API で学習を検証し、実 API は画像を含まない Artist-tag メタデータのみ確認した。詳細は [STYLE_DANBOORU_AUGMENTATION_DESIGN_2026-09.md](STYLE_DANBOORU_AUGMENTATION_DESIGN_2026-09.md)。
 
 ## 1. 目的と要件
 

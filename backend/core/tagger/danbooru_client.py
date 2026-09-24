@@ -2,7 +2,7 @@
 Rate-limited Danbooru API client for in-memory image fetching.
 
 Enforces:
-  - Minimum api_interval seconds between /posts.json calls (Danbooru TOS)
+  - At least 1.4 seconds after one JSON response before the next JSON request
   - Bandwidth cap (dl_speed_kbps KB/s) during image download
   - No disk writes — images returned as raw bytes
 
@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import time
 import threading
+from contextlib import contextmanager
 from typing import List, Optional, Tuple
 from urllib.parse import quote_plus
 
@@ -46,6 +47,10 @@ _TAG_STRING_KEYS = [
 ]
 
 
+class DanbooruApiError(RuntimeError):
+    """A request failed; callers must not treat this as an exhausted page."""
+
+
 class DanbooruClient:
     """Thread-safe, rate-limited Danbooru API client (anonymous access).
 
@@ -56,22 +61,29 @@ class DanbooruClient:
 
     _global_lock: threading.Lock = threading.Lock()
     _global_last_call: float = 0.0
+    _minimum_api_interval: float = 1.4
 
     def __init__(self, api_interval: float = 1.4, dl_speed_kbps: int = 500) -> None:
         self._api_interval = api_interval
         self._dl_speed_bytes_per_sec = dl_speed_kbps * 1024
 
 
-    def _wait_for_api_rate(self) -> None:
-        """Block until at least api_interval seconds have passed since the last API call.
-
-        Uses a class-level lock so all DanbooruClient instances share one rate limit.
-        """
+    @contextmanager
+    def _api_slot(self):
+        """Keep the gate locked through the HTTP call; the next call waits after its completion."""
         with DanbooruClient._global_lock:
             elapsed = time.monotonic() - DanbooruClient._global_last_call
-            if elapsed < self._api_interval:
-                time.sleep(self._api_interval - elapsed)
-            DanbooruClient._global_last_call = time.monotonic()
+            interval = max(self._api_interval, DanbooruClient._minimum_api_interval)
+            if elapsed < interval:
+                time.sleep(interval - elapsed)
+            try:
+                yield
+            finally:
+                DanbooruClient._global_last_call = time.monotonic()
+
+    def _wait_for_api_rate(self) -> None:
+        with self._api_slot():
+            pass
 
     @staticmethod
     def _record_download_timeout() -> None:
@@ -84,7 +96,7 @@ class DanbooruClient:
             pass
 
 
-    def fetch_posts(self, tags: str, page: int = 1, min_score: int = 0) -> List[dict]:
+    def fetch_posts(self, tags: str, page: int = 1, min_score: int = 0, *, strict: bool = False) -> List[dict]:
         """Fetch up to 200 posts from Danbooru matching ``tags`` on ``page``.
 
         Parameters
@@ -99,8 +111,6 @@ class DanbooruClient:
         -------
         List of post dicts, or empty list on any error / rate-limit response.
         """
-        self._wait_for_api_rate()
-
         tag_parts = [t.strip() for t in tags.split() if t.strip()]
         if min_score > 0:
             tag_parts.append(f"score:>={min_score}")
@@ -113,8 +123,11 @@ class DanbooruClient:
 
         headers = {"User-Agent": _USER_AGENT}
         try:
-            response = requests.get(url, headers=headers, timeout=30)
+            with self._api_slot():
+                response = requests.get(url, headers=headers, timeout=30)
         except requests.exceptions.RequestException as exc:
+            if strict:
+                raise DanbooruApiError("posts request failed") from exc
             print(f"[DanbooruClient] fetch_posts network error: {exc}")
             return []
 
@@ -124,25 +137,64 @@ class DanbooruClient:
                 "Waiting 10 s before continuing."
             )
             time.sleep(10.0)
+            if strict:
+                raise DanbooruApiError(f"posts request returned HTTP {response.status_code}")
             return []
 
         if response.status_code != 200:
+            if strict:
+                raise DanbooruApiError(f"posts request returned HTTP {response.status_code}")
             print(f"[DanbooruClient] fetch_posts HTTP {response.status_code} for {url!r}")
             return []
 
         try:
             data = response.json()
         except (json.JSONDecodeError, ValueError) as exc:
+            if strict:
+                raise DanbooruApiError("posts response is not JSON") from exc
             print(f"[DanbooruClient] JSON decode error: {exc}")
             return []
 
         if isinstance(data, dict) and data.get("success") is False:
+            if strict:
+                raise DanbooruApiError("posts API rejected the request")
             print(f"[DanbooruClient] API error: {data.get('message')}")
             return []
 
         if not isinstance(data, list):
+            if strict:
+                raise DanbooruApiError("posts response is not a list")
             return []
 
+        return data
+
+    def fetch_artist_tags(self, min_count: int, page: int = 1) -> List[dict]:
+        """Fetch one category-1 tag page without the new-tag survey's date filter."""
+        if isinstance(min_count, bool) or not isinstance(min_count, int) or min_count < 1:
+            raise ValueError("min_count must be a positive integer")
+        if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+            raise ValueError("page must be a positive integer")
+        url = (
+            "https://danbooru.donmai.us/tags.json"
+            f"?search[post_count]={min_count}..&search[category]=1"
+            f"&search[order]=count&limit=200&page={page}"
+        )
+        try:
+            with self._api_slot():
+                response = requests.get(url, headers={"User-Agent": _USER_AGENT}, timeout=30)
+        except requests.exceptions.RequestException as exc:
+            raise DanbooruApiError("artist tags request failed") from exc
+        if response.status_code in (429, 503):
+            time.sleep(10.0)
+            raise DanbooruApiError(f"artist tags request returned HTTP {response.status_code}")
+        if response.status_code != 200:
+            raise DanbooruApiError(f"artist tags request returned HTTP {response.status_code}")
+        try:
+            data = response.json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise DanbooruApiError("artist tags response is not JSON") from exc
+        if not isinstance(data, list):
+            raise DanbooruApiError("artist tags response is not a list")
         return data
 
     def fetch_tags(
@@ -166,8 +218,6 @@ class DanbooruClient:
         List of tag dicts with keys ``name``, ``post_count``, ``created_at``,
         ``category``.  Empty list on any error or rate-limit response.
         """
-        self._wait_for_api_rate()
-
         url = (
             f"https://danbooru.donmai.us/tags.json"
             f"?search[post_count]={min_count}.."
@@ -178,7 +228,8 @@ class DanbooruClient:
         )
         headers = {"User-Agent": _USER_AGENT}
         try:
-            response = requests.get(url, headers=headers, timeout=30)
+            with self._api_slot():
+                response = requests.get(url, headers=headers, timeout=30)
         except requests.exceptions.RequestException as exc:
             print(f"[DanbooruClient] fetch_tags network error: {exc}")
             return []
@@ -233,8 +284,6 @@ class DanbooruClient:
         List of tag dicts with keys ``name``, ``post_count``, ``category``.
         Empty list on any error or rate-limit response.
         """
-        self._wait_for_api_rate()
-
         import urllib.parse as _url
         _pat = _url.quote(name_matches, safe="*")
         url = (
@@ -246,7 +295,8 @@ class DanbooruClient:
         )
         headers = {"User-Agent": _USER_AGENT}
         try:
-            response = requests.get(url, headers=headers, timeout=30)
+            with self._api_slot():
+                response = requests.get(url, headers=headers, timeout=30)
         except requests.exceptions.RequestException as exc:
             print(f"[DanbooruClient] fetch_tags_by_name network error: {exc}")
             return []

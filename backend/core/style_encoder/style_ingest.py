@@ -265,7 +265,8 @@ class StyleIngest:
 
     def __init__(self, session, configs: Sequence[StyleDatasetConfig], resolver: StyleLabelResolver,
                  progress: Optional[Callable[[int, int, str], None]] = None,
-                 pinned_keys: Optional[np.ndarray] = None) -> None:
+                 pinned_keys: Optional[np.ndarray] = None, remote_manifest: Optional[dict] = None,
+                 remote_dir: Optional[str] = None) -> None:
         self._session = session
         self._configs = tuple(configs)
         self.resolver = resolver
@@ -277,6 +278,8 @@ class StyleIngest:
         self.skipped_examples: dict[int, list[str]] = {}  # dataset_id -> first skipped items
         self.duplicate_examples: list[str] = []
         self._deduper = _PathDeduper() if len(self._configs) > 1 else None
+        self._remote_manifest = remote_manifest
+        self._remote_dir = remote_dir
 
     def _skip(self, dataset_id: int, what: str) -> None:
         examples = self.skipped_examples.setdefault(dataset_id, [])
@@ -336,6 +339,19 @@ class StyleIngest:
                                  f"{self.skipped_examples.get(config.dataset_id, [])}")
             if self._deduper is not None:
                 self._deduper.end_dataset()
+        if self._remote_manifest is not None:
+            if self._remote_dir is None:
+                raise ValueError("remote manifest needs an image directory")
+            for entry in self._remote_manifest["items"]:
+                post_id = int(entry["post_id"])
+                path = os.path.join(self._remote_dir, "images", entry["file"])
+                labels = self.resolver.resolve(entry["tag_data"], None)
+                if labels.artists != frozenset((entry["artist"],)):
+                    raise ValueError("style Danbooru cache Artist label changed; start a new run")
+                key = stable_item_key(-1, str(post_id))
+                builder.append(-post_id, key, -1, path)
+                stats.records += 1
+                yield -post_id, key, labels
         self.paths = builder.finish()
         check_unique_item_keys(self.paths)
 

@@ -276,7 +276,7 @@ mAP@R の R は、検索対象の中にある正解の枚数とする。(b) で�
 | 2 | モデル、view、SupCon、学習ループ、checkpoint、評価、REST / DB / デフォルト値 | T1、T2、T10、T11 が通り、約3 step の smoke で loss が有限、評価が完走 |
 | 3 | HSIC、凍結 tagger の offload 対応 | T6、T7 が通る。HSIC の有無で A/B 比較 |
 | 4 | UI、推論 API | |
-| 5 | 生成側での利用、保留事項の再検討 | |
+| 5 | 生成側での利用、保留事項の再検討 | 対象の生成 architecture と変換器の学習契約を決め、strength 0 の既存出力一致・style と内容の両評価を通す |
 
 ## 14. テスト（CPU での契約テスト）
 
@@ -372,3 +372,11 @@ dataset 39（`image-tag-caption-dataset`）の 33,099 item を調べ、tags capt
 | HSIC あり | 0.2207 | 0.2093 | 0.1734 | 0.5327 |
 
 両 run の 69 step の loss はすべて有限で、HSIC loss は 0.082〜0.204。HSIC ありの GPU 使用量は学習中の観測時点で 16.7 GB。主指標は step 23 では HSIC なしが高く、step 46・69 では HSIC ありが高い。同じ作品内の最終指標は逆に HSIC なしが高い。単一 seed・短い学習・有効 query 176 件なので、効果が安定したとは判断しない。HSIC は opt-in のままとし、採用判断には複数 seed とより大きい評価集合が必要。
+
+## 18. Phase 5 の接続条件（実装前の確認）
+
+style encoder は画像から正規化された 512 次元のベクトルを出す。一方、既存の `core.inference.reference_style` は参照画像を VAE latent にして denoise step ごとに生成モデルの Key/Value を取り出す。両者は入力形式も学習した表現空間も異なり、ベクトルをそのまま既存の参照画像経路へ渡すことはできない。`controlnet_manager.py` の IP-Adapter 重み判定はファイル検出であり、style ベクトル用の投影器や学習経路ではない。
+
+最初の対象として SDXL を仮定する場合は、style encoder と生成モデルを凍結し、512 次元から SDXL の条件付けに必要な token / attention Key/Value へ写す変換器を別 artifact として学習する。参照画像と生成対象には同じ作者の異なる画像を使い、内容の異なる組を含める。style 条件の dropout と強度 0 の経路を設け、強度 0 では既存の生成結果が一致することを確認する。評価は未学習作者での style 類似度、内容保持、同じ作品に限った指標を既存の画像参照 style transfer と比較する。変換器の重み形式、resume、API/default/UI は対象 architecture が決まってから OpenAPI-first で定義する。
+
+Qwen-Image 2.1 の既存 style transfer は segmented attention の参照画像 K/V を使うため、SDXL の変換器を流用しない。対象 architecture と実験予算が確定するまでは、生成 endpoint に `style_encoder_path` を追加しない。

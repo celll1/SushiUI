@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import style_training_fixture  # noqa: F401
 
 from api.style_inference_routes import router
+from api.error_handlers import register_error_handlers
 from core.style_encoder.style_artifacts import ENCODER_SUFFIX, architecture_metadata, save_bundle
 from core.style_encoder.style_model import StyleEncoder
 from style_training_fixture import image_processor, tiny_vision
@@ -43,6 +44,7 @@ def test_embed_and_similarity_use_the_distributable_artifact(tmp_path):
     path = _artifact(tmp_path)
     assert path.endswith(ENCODER_SUFFIX)
     app = FastAPI()
+    register_error_handlers(app)
     app.include_router(router, prefix="/api/v1")
     def post(url, body):
         async def send():
@@ -59,3 +61,8 @@ def test_embed_and_similarity_use_the_distributable_artifact(tmp_path):
         "encoder_path": path, "image_a_base64": image, "image_b_base64": f"data:image/png;base64,{image}"})
     assert similarity.status_code == 200
     assert math.isclose(similarity.json()["cosine_similarity"], 1.0, abs_tol=1e-5)
+    invalid = post("/api/v1/style/embed", {"encoder_path": path, "image_base64": "invalid"})
+    assert invalid.status_code == 400
+    missing = post("/api/v1/style/embed", {"encoder_path": str(tmp_path / "missing.safetensors"),
+                                            "image_base64": image})
+    assert missing.status_code == 404

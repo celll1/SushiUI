@@ -56,7 +56,7 @@ export default function StyleTrainingPanel() {
   useEffect(() => { void refresh(); }, [refresh]);
   useEffect(() => {
     const timer = setInterval(() => {
-      if (runs.some(run => run.active || run.status === "starting" || run.status === "stopping")) void refresh();
+      if (runs.some(run => run.active || run.status === "starting" || run.status === "running" || run.status === "stopping")) void refresh();
     }, 3000);
     return () => clearInterval(timer);
   }, [runs, refresh]);

@@ -40,6 +40,36 @@ def _image_base64():
     return base64.b64encode(out.getvalue()).decode("ascii")
 
 
+def test_sdxl_style_generation_route_validates_shape_and_passes_reference(monkeypatch):
+    from core.style_encoder.sdxl_ip_inference import sdxl_style_generation_service
+
+    calls = []
+    def fake_generate(**kwargs):
+        calls.append(kwargs)
+        return "generated-png"
+    monkeypatch.setattr(sdxl_style_generation_service, "generate", fake_generate)
+    app = FastAPI()
+    register_error_handlers(app)
+    app.include_router(router, prefix="/api/v1")
+    body = {"sdxl_model_path": "model.safetensors", "encoder_path": "encoder_style_encoder.safetensors",
+            "adapter_path": "adapter.safetensors", "reference_image_base64": _image_base64(),
+            "prompt": "portrait"}
+
+    async def post(payload):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.post("/api/v1/style/sdxl-generate", json=payload)
+
+    result = asyncio.run(post(body))
+    assert result.status_code == 200
+    assert result.json() == {"image_base64": "generated-png", "seed": 0}
+    assert calls[0]["reference"].size == (16, 16)
+    assert calls[0]["width"] == 512
+    result = asyncio.run(post({**body, "width": 513}))
+    assert result.status_code == 400
+    assert len(calls) == 1
+
+
 def test_embed_and_similarity_use_the_distributable_artifact(tmp_path):
     path = _artifact(tmp_path)
     assert path.endswith(ENCODER_SUFFIX)

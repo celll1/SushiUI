@@ -1,6 +1,6 @@
 # Style embedding encoder 設計書
 
-Status: 実装中（Phase 0・1・2 完了。Phase 3 の HSIC 実装と短期 GPU A/B 比較は完了、効果の再現性は未確定。Phase 4 の学習 UI と CPU 推論 API は実装済み、フロントエンド build は未検証。Phase 5 は未着手）。2026-09-23 の外部監査の指摘 4 件を §4・§5・§9・§10・§14 に反映済み
+Status: 実装中（Phase 0・1・2 完了。Phase 3 の HSIC 実装と短期 GPU A/B 比較は完了、効果の再現性は未確定。Phase 4 の学習 UI と CPU 推論 API は実装済みで、実 checkpoint の API 推論も確認済み。フロントエンド build は未検証。Phase 5 の生成 conditioning は未着手）。2026-09-23 の外部監査の指摘 4 件を §4・§5・§9・§10・§14 に反映済み
 
 ## 1. 目的と要件
 
@@ -265,6 +265,7 @@ mAP@R の R は、検索対象の中にある正解の枚数とする。(b) で�
   - `tagger_training_runs` は tagger 固有の列（`best_f1`、`tag_vocabulary` など）を持つため、流用しない。
 - **UI**: 学習タブの style モードからデータセット選択、主要設定、run の開始・停止・編集・削除、進捗・評価指標を扱う。フォームにない設定は API で指定する。
 - **推論 API**（Phase 4）: `/api/v1/style/embed`、`/api/v1/style/similarity`。配布用 encoder と隣接 metadata を読み込み、CPU で推論する。
+  - 2026-09-24、実 GPU run の `latest_style_encoder.safetensors` を API 経由で読み込み、512 次元・L2 norm 1・同一画像の cosine 1 を確認した。
 
 ## 13. フェーズ
 

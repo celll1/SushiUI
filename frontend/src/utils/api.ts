@@ -8503,6 +8503,7 @@ export interface DebugLatentVisualization {
   step: number;
   timestep: number;
   loss: number;
+  display_resolution?: { width: number; height: number; space: "image" | "latent" } | null;
   recon_loss?: number;  // Optional: may not exist in older debug data
   caption?: string;  // Processed caption used during training
   reference_image?: string;  // base64 thumbnail of reference image used in this training batch

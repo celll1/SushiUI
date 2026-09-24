@@ -6157,7 +6157,9 @@ paths:
             default: true
       responses:
         '200':
-          description: Scalar manifest with optional legacy base64 images
+          description: >-
+            Scalar manifest with display_resolution (unscaled target image or
+            latent preview width, height, and space) and optional legacy base64 images
           content:
             application/json:
               schema:

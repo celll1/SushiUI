@@ -1734,6 +1734,14 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                         <div className="text-xs space-y-1 bg-gray-800 rounded p-2">
                           <div><span className="text-gray-400">Step:</span> {debugVisualization.step}</div>
                           <div><span className="text-gray-400">Timestep:</span> {debugVisualization.timestep}</div>
+                          {debugVisualization.display_resolution && (
+                            <div>
+                              <span className="text-gray-400">
+                                {debugVisualization.display_resolution.space === "image" ? "Image resolution" : "Latent preview resolution"} (W×H):
+                              </span>{" "}
+                              {debugVisualization.display_resolution.width}×{debugVisualization.display_resolution.height}
+                            </div>
+                          )}
                           <div><span className="text-gray-400">Prediction Loss:</span> {debugVisualization.loss.toFixed(6)}</div>
                           {debugVisualization.recon_loss !== undefined && (
                             <div><span className="text-gray-400">Recon Loss:</span> {debugVisualization.recon_loss.toFixed(6)}</div>

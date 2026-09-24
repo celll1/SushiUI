@@ -18222,7 +18222,8 @@ async def visualize_debug_latent(
         if _k in data:
             result[_k] = data[_k]
 
-    from api.training_media import debug_image_urls
+    from api.training_media import debug_display_resolution, debug_image_urls
+    result["display_resolution"] = debug_display_resolution(data, latent_file)
     result["image_urls"] = debug_image_urls(
         run_id, step, data, latent_file
     )

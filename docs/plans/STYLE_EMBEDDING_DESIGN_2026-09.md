@@ -1,6 +1,6 @@
 # Style embedding encoder 設計書
 
-Status: 実装中（Phase 0・1・2 完了。Phase 3 の HSIC 実装と短期 GPU A/B 比較は完了、効果の再現性は未確定。Phase 4 の学習 UI と CPU 推論 API は実装済みで、実 checkpoint の API 推論も確認済み。フロントエンド build は未検証。Phase 5 は SDXL の学習可能な IP-Adapter 型 attention bridge の基礎実装まで。学習済み重み・生成 API は未実装）。2026-09-23 の外部監査の指摘 4 件を §4・§5・§9・§10・§14 に反映済み
+Status: 実装中（Phase 0・1・2 完了。Phase 3 の HSIC 実装と短期 GPU A/B 比較は完了、効果の再現性は未確定。Phase 4 の学習 UI と CPU 推論 API は実装済みで、実 checkpoint の API 推論も確認済み。フロントエンド build は未検証。Phase 5 の SDXL bridge は dataset 39 で 1 epoch 学習し、未学習作者 24 組の生成比較と公開 API 経由の生成を確認済み。内容保持・既存参照画像経路との比較および Qwen-Image 2.1 への接続は未完了）。2026-09-23 の外部監査の指摘 4 件を §4・§5・§9・§10・§14 に反映済み
 
 ## 1. 目的と要件
 
@@ -373,12 +373,14 @@ dataset 39（`image-tag-caption-dataset`）の 33,099 item を調べ、tags capt
 
 両 run の 69 step の loss はすべて有限で、HSIC loss は 0.082〜0.204。HSIC ありの GPU 使用量は学習中の観測時点で 16.7 GB。主指標は step 23 では HSIC なしが高く、step 46・69 では HSIC ありが高い。同じ作品内の最終指標は逆に HSIC なしが高い。単一 seed・短い学習・有効 query 176 件なので、効果が安定したとは判断しない。HSIC は opt-in のままとし、採用判断には複数 seed とより大きい評価集合が必要。
 
-## 18. Phase 5 の接続条件（実装前の確認）
+## 18. Phase 5 の接続条件と SDXL 実測
 
 style encoder は画像から正規化された 512 次元のベクトルを出す。一方、既存の `core.inference.reference_style` は参照画像を VAE latent にして denoise step ごとに生成モデルの Key/Value を取り出す。両者は入力形式も学習した表現空間も異なり、ベクトルをそのまま既存の参照画像経路へ渡すことはできない。`controlnet_manager.py` の IP-Adapter 重み判定はファイル検出であり、style ベクトル用の投影器や学習経路ではない。
 
-最初の対象として SDXL を仮定する場合は、style encoder と生成モデルを凍結し、512 次元から SDXL の条件付けに必要な token / attention Key/Value へ写す変換器を別 artifact として学習する。参照画像と生成対象には同じ作者の異なる画像を使い、内容の異なる組を含める。style 条件の dropout と強度 0 の経路を設け、強度 0 では既存の生成結果が一致することを確認する。評価は未学習作者での style 類似度、内容保持、同じ作品に限った指標を既存の画像参照 style transfer と比較する。変換器の重み形式、resume、API/default/UI は対象 architecture が決まってから OpenAPI-first で定義する。
+SDXL では style encoder と生成モデルを凍結し、512 次元から画像 token と cross-attention Key/Value へ写す変換器を別 artifact として学習する。参照画像と生成対象は同じ作者の異なる画像にし、可能なら content ID が異なる組を選ぶ。強度 0 は通常生成との画素一致で検証する。内容保持、同じ作品に限った指標、既存参照画像 style transfer との比較は引き続き必要。
 
-実装順は SDXL の IP-Adapter 型、次に Qwen-Image 2.1 の既存参照画像経路。SDXL の `sdxl_ip_adapter.py` は 512 次元から画像 token と各 cross-attention 層の専用 K/V を学習し、`UnifiedAttnProcessor` で通常のテキスト attention 出力に独立加算する。CFG の負側には加算せず、強度 0 は既存出力と一致する。重み artifact は style encoder と SDXL model の SHA-256 および U-Net 層構成で照合する。`sdxl_ip_training.py` には別画像・同一作者で内容の異なる参照を優先するペア選択と、凍結 U-Net の denoising loss を用意した。CPU の小型モデルで勾配と強度 0 を確認済み。実データの学習 runner、resume、学習済み artifact、未学習作者での生成比較が揃うまで生成 API には公開しない。
+実装順は SDXL の IP-Adapter 型、次に Qwen-Image 2.1 の既存参照画像経路。SDXL の `sdxl_ip_adapter.py` は各 cross-attention 層の専用 K/V を学習し、`UnifiedAttnProcessor` でテキスト attention 出力に独立加算する。CFG の負側には加算しない。artifact は style encoder と SDXL model の SHA-256 および U-Net 層構成で照合する。`tools/train_sdxl_style_ip.py` は dataset 39 の index hash `9df70dad080a8b3dfa3eb5b000371830` から作った manifest の 209 作者・1,477 枚を使い、`NoobAI-XL-Vpred-v1.0.safetensors` の v-prediction loss で bridge だけを 1 epoch 学習した。全 step の loss は有限、ピーク VRAM は 13.67 GB。checkpoint には optimizer と run identity を保存し、resume で元モデル・style encoder・manifest の SHA-256 を照合する。
+
+未学習作者の別画像ペアを同じ seed・512 px・20 denoise step で通常生成と比較した。style encoder cosine の平均差は bridge 強度 1.0 で 8 組中 8 組悪化し、平均 -0.505。強度 0.1 では 24 組中 15 組改善し、平均 +0.150 だった。このため `/api/v1/style/sdxl-generate` の既定強度は 0.1 とした。強度 0 の通常生成との画素一致を確認し、実 artifact を使った API 呼び出しは HTTP 200 と 512×512 PNG を返した。24 組の改善率と内容保持の検証は十分でなく、強度 1.0 は実用設定として採用しない。学習 runner に style 条件 dropout はまだなく、長期学習・複数 seed・既存参照画像経路との比較も未実施。
 
 Qwen-Image 2.1 の既存 style transfer は segmented attention の参照画像 K/V を使う。参照画像が backend mixin から vendor pipeline に届き、capture/inject が出力を変えることを既存 CPU テストで確認した。この経路は画像そのものを入力とし、style encoder の 512 次元を直接消費しない。SDXL の投影器も流用しない。SDXL の学習・評価を先に終えた後、Qwen では既存参照画像経路を基準に style encoder を使った参照画像選択と生成評価を進める。

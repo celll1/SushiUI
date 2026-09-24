@@ -3911,6 +3911,16 @@ VAE_TRAINING_DEFAULTS: Dict[str, Any] = {
 # ---------------------------------------------------------------------------
 # Style encoder training (StyleTrainingRunCreateRequest)
 # ---------------------------------------------------------------------------
+STYLE_SDXL_GENERATION_DEFAULTS: Dict[str, Any] = {
+    "negative_prompt": "",
+    "width": 512,
+    "height": 512,
+    "steps": 20,
+    "guidance_scale": 5.0,
+    "style_strength": 0.1,
+    "seed": 0,
+}
+
 # Exactly the keys core/style_encoder/style_trainer.StyleTrainingConfig requires
 # (besides dataset_configs); the trainer validates every value. The encoder,
 # feature layer and token width follow the Phase 0 measurement; the patch

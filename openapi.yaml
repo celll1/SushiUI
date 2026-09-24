@@ -8051,6 +8051,36 @@ paths:
           description: Invalid image or artifact
         '404':
           description: Encoder artifact not found
+  /style/sdxl-generate:
+    post:
+      tags: [style]
+      summary: Generate an SDXL image from text and a style reference image
+      description: |
+        Loads an SDXL single-file checkpoint, a distributable style encoder,
+        and its separately trained IP-Adapter bridge. The bridge artifact must
+        match both source files by SHA-256 and the U-Net cross-attention layout.
+        The reference image supplies style only; the prompt supplies content.
+        Strength 0 runs the ordinary text-only SDXL path. Generation is refused
+        while another backend-managed training run is active.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StyleSDXLGenerateRequest'
+      responses:
+        '200':
+          description: Generated PNG as base64
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StyleSDXLGenerateResponse'
+        '400':
+          description: Invalid settings, image, or incompatible artifact
+        '404':
+          description: Required local artifact not found
+        '409':
+          description: GPU is occupied by backend-managed training
   /style-training/runs:
     post:
       tags: [style-training]
@@ -28783,6 +28813,39 @@ components:
           type: number
           minimum: -1
           maximum: 1
+    StyleSDXLGenerateRequest:
+      type: object
+      additionalProperties: false
+      required: [sdxl_model_path, encoder_path, adapter_path, reference_image_base64, prompt]
+      properties:
+        sdxl_model_path:
+          type: string
+          description: Local SDXL single-file `.safetensors` checkpoint.
+        encoder_path:
+          type: string
+          description: Local distributable style encoder artifact.
+        adapter_path:
+          type: string
+          description: Local SDXL style IP-Adapter artifact bound to both source files.
+        reference_image_base64:
+          type: string
+          description: Base64 style reference image, optionally with a data URL header.
+        prompt: {type: string}
+        negative_prompt: {type: string, default: ''}
+        width: {type: integer, minimum: 256, maximum: 2048, multipleOf: 64, default: 512}
+        height: {type: integer, minimum: 256, maximum: 2048, multipleOf: 64, default: 512}
+        steps: {type: integer, minimum: 1, maximum: 150, default: 20}
+        guidance_scale: {type: number, minimum: 0, maximum: 30, default: 5.0}
+        style_strength: {type: number, minimum: 0, maximum: 2, default: 0.1}
+        seed: {type: integer, minimum: 0, maximum: 2147483647, default: 0}
+    StyleSDXLGenerateResponse:
+      type: object
+      required: [image_base64, seed]
+      properties:
+        image_base64:
+          type: string
+          description: PNG image bytes as base64 without a data URL header.
+        seed: {type: integer}
     StyleTrainingConfigFields:
       type: object
       description: |

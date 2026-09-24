@@ -447,7 +447,9 @@ def build_label_resolver(root_dir: str, use_tag_aliases: bool, use_gelbooru_cate
     from core.tagger.tag_alias_resolver import TagAliasResolver, alias_table_path
     from core.training.tag_group_utils import get_tag_group_manager
 
-    manager = get_tag_group_manager(enable_gelbooru=use_gelbooru_categories)
+    manager = get_tag_group_manager(
+        tag_group_dir=os.path.join(root_dir, "taglist"), enable_gelbooru=use_gelbooru_categories,
+    )
     comma = CommaTagResolver.build_from_taglist_cache(root_dir, use_gelbooru=use_gelbooru_categories)
     print(f"[StyleTraining] Comma-tag resolver: {len(comma)} comma-containing tags")
     aliases = None

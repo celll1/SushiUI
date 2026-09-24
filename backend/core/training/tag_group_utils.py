@@ -146,7 +146,9 @@ class TagGroupManager:
         tag_path = Path(tag_group_dir)
 
         # If relative path, resolve from project root (parent of backend)
-        if not tag_path.is_absolute():
+        if tag_path.is_absolute():
+            project_root = tag_path.parent
+        else:
             # Get project root
             # __file__ = backend/core/training/tag_group_utils.py
             # .parent = backend/core/training

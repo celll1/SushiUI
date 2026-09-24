@@ -2458,6 +2458,13 @@ def apply_run_seed(configured: Any) -> Tuple[int, bool]:
     return seed, drawn
 
 
+def resolve_concept_resume_seed(current_seed: int, drawn: bool,
+                                saved_seed: Any) -> Tuple[int, bool]:
+    """Return the checkpoint seed and whether the override needs a notice."""
+    saved = int(saved_seed)
+    return saved, drawn or saved != current_seed
+
+
 
 class _LazyMorphMntTimestepBlock:
     """Generate each stratified MNT partition only when execution reaches it.
@@ -15666,6 +15673,7 @@ class BaseTrainer(ABC):
             raise ValueError("Invalid resume_dataset_change_policy")
         self._resume_batch_plan_ref = None
         self._resume_plan_signature = None
+        self._resume_plan_signature_data = None
         self._resume_dataset_manifest = None
         if resume_dataset_change_policy == "rebase_remaining":
             if (self.is_sensenova or self.is_sensenova_sdxl_chimera or
@@ -15683,7 +15691,7 @@ class BaseTrainer(ABC):
                 _priority_source = Path(priority_training["_legacy_path"]).read_text(encoding="utf-8")
             self._resume_plan_mode = ("concept" if concept_config else
                                       "priority" if priority_training else "normal")
-            self._resume_plan_signature = digest({
+            self._resume_plan_signature_data = {
                 "seed": self.run_seed, "batch_size": batch_size,
                 "mnt": multi_noise_timesteps, "mode": self._resume_plan_mode,
                 "concept": concept_config.fingerprint() if concept_config else None,
@@ -15696,7 +15704,8 @@ class BaseTrainer(ABC):
                 "vision_encoder_path": vision_encoder_path,
                 "crop": {key: value for key, value in self.config.items()
                          if key.startswith("crop_") or key.startswith("full_crop_")},
-            })
+            }
+            self._resume_plan_signature = digest(self._resume_plan_signature_data)
             if resume_dataset_change_policy == "strict":
                 self._resume_dataset_manifest = dataset_manifest(
                     datasets, self._resume_plan_mode)
@@ -16767,15 +16776,9 @@ class BaseTrainer(ABC):
             if (global_step > 0 and resume_training_state is None) or (
                     resume_training_state is not None and not resume_training_state.get("resume_batch_plan")):
                 raise ValueError("Cannot rebase dataset selection: checkpoint has no batch ledger")
-        if resume_dataset_change_policy == "strict" and resume_from_checkpoint and (
-                global_step > 0 or resume_training_state is not None):
-            if (resume_training_state is None
-                    or "resume_order_signature" not in resume_training_state
-                    or "resume_dataset_manifest" not in resume_training_state):
-                raise ValueError("Cannot strictly resume: checkpoint has no strict resume metadata")
-            if (resume_training_state.get("resume_order_signature") != self._resume_plan_signature
-                    or resume_training_state.get("resume_dataset_manifest") != self._resume_dataset_manifest):
-                raise ValueError("Cannot strictly resume: batch settings or dataset manifest changed")
+        if (resume_dataset_change_policy == "strict" and resume_from_checkpoint
+                and global_step > 0 and resume_training_state is None):
+            raise ValueError("Cannot strictly resume: checkpoint has no strict resume metadata")
         if concept_config and resume_from_checkpoint and global_step > 0 and resume_training_state is None:
             raise ValueError("Cannot resume concept batch order without matching training state")
         if resume_training_state is not None:
@@ -16783,19 +16786,35 @@ class BaseTrainer(ABC):
                 raise ValueError("Cannot change resume_dataset_change_policy for a checkpoint with a batch ledger")
             if not _ledger_resume and not concept_config and resume_training_state.get("concept_batch_plan") is not None:
                 raise ValueError("Cannot resume a concept-ordered checkpoint with concept batch order disabled")
-            if not _ledger_resume and concept_config and resume_training_state.get("concept_batch_plan") is None:
+            if concept_config and resume_training_state.get("concept_batch_plan") is None:
                 raise ValueError("Cannot resume concept batch order: checkpoint has no batch plan state")
-            if concept_config and not _ledger_resume:
+            if concept_config:
                 saved_concept = resume_training_state["concept_batch_plan"]
-                if saved_concept.get("version") != 1:
-                    raise ValueError("Cannot resume concept batch order: unsupported plan version")
-                if saved_concept.get("config_hash") != concept_config.fingerprint():
-                    raise ValueError("Cannot resume concept batch order after changing its configuration")
-                if int(saved_concept["seed"]) != self._concept_order_seed:
-                    raise ValueError("Cannot resume concept batch order after changing the run seed")
-                if resume_training_state.get("multi_noise_timesteps") != multi_noise_timesteps:
-                    raise ValueError("Cannot resume concept batch order after changing MNT")
-                self._concept_order_seed = int(saved_concept["seed"])
+                if not _ledger_resume:
+                    if saved_concept.get("version") != 1:
+                        raise ValueError("Cannot resume concept batch order: unsupported plan version")
+                    if saved_concept.get("config_hash") != concept_config.fingerprint():
+                        raise ValueError("Cannot resume concept batch order after changing its configuration")
+                    if resume_training_state.get("multi_noise_timesteps") != multi_noise_timesteps:
+                        raise ValueError("Cannot resume concept batch order after changing MNT")
+                saved_seed, seed_notice = resolve_concept_resume_seed(
+                    self._concept_order_seed, self.run_seed_drawn, saved_concept["seed"])
+                if seed_notice:
+                    print(f"{self.log_prefix} NOTICE: Restoring checkpoint concept-order seed "
+                          f"{saved_seed} (configured seed={self.config.get('seed', -1)})")
+                self._concept_order_seed = saved_seed
+                self.run_seed = saved_seed
+                if self._resume_plan_signature_data is not None:
+                    from core.training.resume_batch_plan import digest
+                    self._resume_plan_signature_data["seed"] = saved_seed
+                    self._resume_plan_signature = digest(self._resume_plan_signature_data)
+            if resume_dataset_change_policy == "strict":
+                if ("resume_order_signature" not in resume_training_state
+                        or "resume_dataset_manifest" not in resume_training_state):
+                    raise ValueError("Cannot strictly resume: checkpoint has no strict resume metadata")
+                if (resume_training_state.get("resume_order_signature") != self._resume_plan_signature
+                        or resume_training_state.get("resume_dataset_manifest") != self._resume_dataset_manifest):
+                    raise ValueError("Cannot strictly resume: batch settings or dataset manifest changed")
             saved_fp = resume_training_state.get('dataset_fingerprint')
             fp_changed = self._check_dataset_fingerprint_changed(saved_fp, self._dataset_fingerprint)
             saved_bpe = resume_training_state.get('batches_per_epoch')

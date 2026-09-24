@@ -1,6 +1,6 @@
 # Style embedding encoder 設計書
 
-Status: 実装中（Phase 0・1・2 完了。Phase 3 の HSIC 実装と短期 GPU A/B 比較は完了、効果の再現性は未確定。Phase 4 の学習 UI と CPU 推論 API は実装済みで、実 checkpoint の API 推論も確認済み。フロントエンド build は未検証。Phase 5 の SDXL bridge は dataset 39 で 1 epoch 学習し、未学習作者 24 組の生成比較と公開 API 経由の生成を確認済み。内容保持・既存参照画像経路との比較および Qwen-Image 2.1 への接続は未完了）。2026-09-23 の外部監査の指摘 4 件を §4・§5・§9・§10・§14 に反映済み
+Status: 実装中（Phase 0・1・2 完了。Phase 3 の HSIC 実装と短期 GPU A/B 比較は完了、効果の再現性は未確定。Phase 4 の学習 UI と CPU 推論 API は実装済みで、実 checkpoint の API 推論も確認済み。フロントエンド build は未検証。Phase 5 の SDXL bridge は dataset 39 で 1 epoch 学習し、未学習作者 24 組の生成比較と公開 API 経由の生成を確認済み。Qwen-Image 2.1 は既存参照画像経路の実 GPU 生成と、style encoder による参照画像選択 API を確認済み。内容保持・既存参照画像経路との体系的な比較は未完了）。2026-09-23 の外部監査の指摘 4 件を §4・§5・§9・§10・§14 に反映済み
 
 ## 1. 目的と要件
 
@@ -383,4 +383,6 @@ SDXL では style encoder と生成モデルを凍結し、512 次元から画�
 
 未学習作者の別画像ペアを同じ seed・512 px・20 denoise step で通常生成と比較した。style encoder cosine の平均差は bridge 強度 1.0 で 8 組中 8 組悪化し、平均 -0.505。強度 0.1 では 24 組中 15 組改善し、平均 +0.150 だった。このため `/api/v1/style/sdxl-generate` の既定強度は 0.1 とした。強度 0 の通常生成との画素一致を確認し、実 artifact を使った API 呼び出しは HTTP 200 と 512×512 PNG を返した。24 組の改善率と内容保持の検証は十分でなく、強度 1.0 は実用設定として採用しない。学習 runner に style 条件 dropout はまだなく、長期学習・複数 seed・既存参照画像経路との比較も未実施。
 
-Qwen-Image 2.1 の既存 style transfer は segmented attention の参照画像 K/V を使う。参照画像が backend mixin から vendor pipeline に届き、capture/inject が出力を変えることを既存 CPU テストで確認した。この経路は画像そのものを入力とし、style encoder の 512 次元を直接消費しない。SDXL の投影器も流用しない。SDXL の学習・評価を先に終えた後、Qwen では既存参照画像経路を基準に style encoder を使った参照画像選択と生成評価を進める。
+Qwen-Image 2.1 の既存 style transfer は segmented attention の参照画像 K/V を使う。この経路は画像そのものを入力とし、style encoder の 512 次元を直接消費せず、SDXL の投影器も流用しない。`/api/v1/style/reference-select` は style exemplar と 2〜16 枚の候補画像の cosine を返し、最も近い元画像の index を選ぶ。クライアントはその元画像を既存 `/api/v1/generate/txt2img` の `is_style_transfer: true` entry に送る。dataset 39 の未学習作者の実画像では、3 候補から同作者の画像を選び、cosine は 0.955、他は 0.386 と -0.082 だった。
+
+Qwen-Image 2.1 の `int8_convrot` variant を実 GPU で動かし、同一 prompt・seed 777・512 px・8 step の通常生成と参照画像あり生成を比較した。参照画像ありは HTTP 200、warnings 0 で、画像 hash は通常生成と異なる。凍結 style encoder で測った参照画像との cosine は 0.437 → 0.509。顔と衣装の大枠は両画像で保持された。この単一例は経路の動作確認であり、Qwen の style 性能や内容保持の結論には使わない。検証後、元の SDXL モデルに戻した。

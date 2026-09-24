@@ -29,6 +29,13 @@ class StyleSimilarityRequest(BaseModel):
     image_b_base64: str
 
 
+class StyleReferenceSelectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    encoder_path: str
+    query_image_base64: str
+    candidate_images_base64: list[str] = Field(min_length=2, max_length=16)
+
+
 class StyleSDXLGenerateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     sdxl_model_path: str
@@ -68,6 +75,21 @@ def style_similarity(request: StyleSimilarityRequest):
     except (ValueError, KeyError) as exc:
         raise ValidationError("Invalid style similarity request", detail=str(exc)) from exc
     return {"cosine_similarity": similarity}
+
+
+@router.post("/style/reference-select")
+def style_reference_select(request: StyleReferenceSelectRequest):
+    try:
+        if sum(map(len, request.candidate_images_base64)) > 64 * 1024 * 1024:
+            raise ValueError("candidate images exceed 64 MiB encoded")
+        query = decode_style_image(request.query_image_base64)
+        candidates = (decode_style_image(encoded) for encoded in request.candidate_images_base64)
+        selected, scores = style_inference_service.select_reference(request.encoder_path, query, candidates)
+    except FileNotFoundError as exc:
+        raise NotFoundError("Style encoder artifact not found", detail=str(exc)) from exc
+    except (ValueError, KeyError) as exc:
+        raise ValidationError("Invalid style reference selection request", detail=str(exc)) from exc
+    return {"selected_index": selected, "cosine_similarities": scores}
 
 
 @router.post("/style/sdxl-generate")

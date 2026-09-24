@@ -70,6 +70,28 @@ def test_sdxl_style_generation_route_validates_shape_and_passes_reference(monkey
     assert len(calls) == 1
 
 
+def test_reference_selection_returns_original_candidate_index(tmp_path):
+    encoder_path = _artifact(tmp_path)
+    query = _image_base64()
+    other = io.BytesIO()
+    Image.new("RGB", (16, 16), (192, 32, 16)).save(other, format="PNG")
+    body = {"encoder_path": encoder_path, "query_image_base64": query,
+            "candidate_images_base64": [base64.b64encode(other.getvalue()).decode("ascii"), query]}
+    app = FastAPI()
+    register_error_handlers(app)
+    app.include_router(router, prefix="/api/v1")
+
+    async def post():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                    base_url="http://test") as client:
+            return await client.post("/api/v1/style/reference-select", json=body)
+
+    result = asyncio.run(post())
+    assert result.status_code == 200
+    assert result.json()["selected_index"] == 1
+    assert len(result.json()["cosine_similarities"]) == 2
+
+
 def test_embed_and_similarity_use_the_distributable_artifact(tmp_path):
     path = _artifact(tmp_path)
     assert path.endswith(ENCODER_SUFFIX)

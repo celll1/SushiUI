@@ -79,15 +79,18 @@ def main() -> None:
     parser.add_argument("--resolution", type=int, default=512)
     parser.add_argument("--save-every", type=int, default=50)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--encoder-path", default=str(
+        WORKTREE / "outputs/style_hsic_ab_dataset39/baseline/best_style_encoder.safetensors"))
+    parser.add_argument("--output-dir", default=str(WORKTREE / "outputs/sdxl_style_ip_dataset39"))
     args = parser.parse_args()
     if args.steps < 1 or args.resolution < 256 or args.resolution % 64 or args.save_every < 1:
         parser.error("steps/save-every must be positive and resolution must be a multiple of 64 >= 256")
 
     model_path = REPO / "models" / "NoobAI-XL-Vpred-v1.0.safetensors"
-    encoder_path = WORKTREE / "outputs/style_hsic_ab_dataset39/baseline/best_style_encoder.safetensors"
+    encoder_path = Path(args.encoder_path).resolve()
     metadata_path = encoder_path.with_name("best_metadata.json")
     manifest_path = WORKTREE / "outputs/sdxl_style_ip_dataset39/manifest.jsonl"
-    output = WORKTREE / "outputs/sdxl_style_ip_dataset39"
+    output = Path(args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=True)
     model_sha, encoder_sha = digest(model_path), digest(encoder_path)
     manifest = [json.loads(line) for line in manifest_path.read_text(encoding="utf-8").splitlines()]

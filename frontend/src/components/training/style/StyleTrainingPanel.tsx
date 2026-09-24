@@ -14,6 +14,10 @@ const editableKeys = [
   "training_method", "epochs", "learning_rate", "style_max_num_patches",
   "style_artists_per_batch", "style_images_per_artist", "num_workers",
   "style_hsic_tagger_path", "vision_encoder_path",
+  "style_danbooru_enable", "style_danbooru_min_post_count", "style_danbooru_order",
+  "style_danbooru_seed", "style_danbooru_max_artists", "style_danbooru_max_tag_pages",
+  "style_danbooru_max_posts_per_artist", "style_danbooru_max_post_pages_per_artist",
+  "style_danbooru_api_interval", "style_danbooru_dl_speed_kbps",
 ] as const;
 
 function errorText(error: unknown): string {
@@ -188,6 +192,29 @@ export default function StyleTrainingPanel() {
                 <label className="text-sm sm:col-span-2">Vision encoder path or repo ID<input className={field} value={editor.config.vision_encoder_path} onChange={event => change("vision_encoder_path", event.target.value)} /></label>
                 <label className="text-sm sm:col-span-2">HSIC tagger path (blank disables HSIC)<input className={field} value={editor.config.style_hsic_tagger_path} onChange={event => change("style_hsic_tagger_path", event.target.value)} /></label>
               </div>
+              <fieldset className="space-y-3 rounded border border-gray-700 p-3 text-sm">
+                <legend>Danbooru Artist-tag supplementation</legend>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={editor.config.style_danbooru_enable}
+                  onChange={event => change("style_danbooru_enable", event.target.checked)} />Collect before training and reuse the run cache on resume</label>
+                {editor.config.style_danbooru_enable && <div className="grid gap-3 sm:grid-cols-2">
+                  <label>Artist order<select className={field} value={editor.config.style_danbooru_order}
+                    onChange={event => change("style_danbooru_order", event.target.value as "count_desc" | "random")}>
+                    <option value="count_desc">Most posts first</option><option value="random">Seeded random</option>
+                  </select></label>
+                  {([
+                    ["style_danbooru_min_post_count", "Minimum posts on Danbooru", 1, 1],
+                    ["style_danbooru_seed", "Selection seed", 0, 1],
+                    ["style_danbooru_max_artists", "Maximum artists", 1, 1],
+                    ["style_danbooru_max_tag_pages", "Maximum tag pages", 1, 1],
+                    ["style_danbooru_max_posts_per_artist", "Maximum images per artist", 1, 1],
+                    ["style_danbooru_max_post_pages_per_artist", "Maximum post pages per artist", 1, 1],
+                    ["style_danbooru_api_interval", "API interval (seconds, ≥1.4)", 1.4, 0.1],
+                    ["style_danbooru_dl_speed_kbps", "Download limit (KB/s)", 1, 1],
+                  ] as const).map(([key, label, min, step]) => <label key={key}>{label}<input className={field}
+                    type="number" min={min} step={step} value={editor.config[key]}
+                    onChange={event => change(key, Number(event.target.value))} /></label>)}
+                </div>}
+              </fieldset>
               <div className="flex gap-2"><button className={button} disabled={busy} onClick={() => void save()}>Save</button><button className={button} onClick={() => setEditor(null)}>Cancel</button></div>
             </div>
           ) : selected ? (

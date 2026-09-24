@@ -29081,6 +29081,50 @@ components:
           minimum: 1
           description: Training images an artist needs to be trained on. Changing it refuses a resume.
           example: 4
+        style_danbooru_enable:
+          type: boolean
+          description: Add a fixed, run-local Danbooru Artist-tag source before training starts.
+          example: false
+        style_danbooru_min_post_count:
+          type: integer
+          minimum: 1
+          description: Minimum Danbooru post_count for an Artist tag; usable downloaded images may be fewer.
+          example: 100
+        style_danbooru_order:
+          type: string
+          enum: [count_desc, random]
+          description: Artist candidate order after the tag scan. Random order uses style_danbooru_seed.
+          example: count_desc
+        style_danbooru_seed:
+          type: integer
+          minimum: 0
+          example: 0
+        style_danbooru_max_artists:
+          type: integer
+          minimum: 1
+          example: 16
+        style_danbooru_max_tag_pages:
+          type: integer
+          minimum: 1
+          description: Fail if the tag scan is still full at this page, rather than silently sampling a prefix.
+          example: 100
+        style_danbooru_max_posts_per_artist:
+          type: integer
+          minimum: 1
+          example: 32
+        style_danbooru_max_post_pages_per_artist:
+          type: integer
+          minimum: 1
+          example: 4
+        style_danbooru_api_interval:
+          type: number
+          minimum: 1.4
+          description: Minimum seconds between API calls; the shared client also enforces a 1.4-second floor.
+          example: 1.4
+        style_danbooru_dl_speed_kbps:
+          type: integer
+          minimum: 1
+          example: 500
         style_artists_per_batch:
           type: integer
           minimum: 1
@@ -29228,6 +29272,16 @@ components:
             style_val_artist_ratio: {default: 0.05}
             style_val_image_ratio: {default: 0.02}
             style_min_images_per_artist: {default: 4}
+            style_danbooru_enable: {default: false}
+            style_danbooru_min_post_count: {default: 100}
+            style_danbooru_order: {default: count_desc}
+            style_danbooru_seed: {default: 0}
+            style_danbooru_max_artists: {default: 16}
+            style_danbooru_max_tag_pages: {default: 100}
+            style_danbooru_max_posts_per_artist: {default: 32}
+            style_danbooru_max_post_pages_per_artist: {default: 4}
+            style_danbooru_api_interval: {default: 1.4}
+            style_danbooru_dl_speed_kbps: {default: 500}
             style_artists_per_batch: {default: 16}
             style_images_per_artist: {default: 4}
             style_same_copyright_batch_ratio: {default: 0.5}

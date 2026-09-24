@@ -94,6 +94,16 @@ class StyleTrainingRunCreateRequest(BaseModel):
     style_val_artist_ratio: float = _D["style_val_artist_ratio"]
     style_val_image_ratio: float = _D["style_val_image_ratio"]
     style_min_images_per_artist: StrictInt = _D["style_min_images_per_artist"]
+    style_danbooru_enable: StrictBool = _D["style_danbooru_enable"]
+    style_danbooru_min_post_count: StrictInt = _D["style_danbooru_min_post_count"]
+    style_danbooru_order: str = _D["style_danbooru_order"]
+    style_danbooru_seed: StrictInt = _D["style_danbooru_seed"]
+    style_danbooru_max_artists: StrictInt = _D["style_danbooru_max_artists"]
+    style_danbooru_max_tag_pages: StrictInt = _D["style_danbooru_max_tag_pages"]
+    style_danbooru_max_posts_per_artist: StrictInt = _D["style_danbooru_max_posts_per_artist"]
+    style_danbooru_max_post_pages_per_artist: StrictInt = _D["style_danbooru_max_post_pages_per_artist"]
+    style_danbooru_api_interval: float = _D["style_danbooru_api_interval"]
+    style_danbooru_dl_speed_kbps: StrictInt = _D["style_danbooru_dl_speed_kbps"]
     style_artists_per_batch: StrictInt = _D["style_artists_per_batch"]
     style_images_per_artist: StrictInt = _D["style_images_per_artist"]
     style_same_copyright_batch_ratio: float = _D["style_same_copyright_batch_ratio"]
@@ -189,6 +199,8 @@ def _complete_config(run: StyleTrainingRun, config: dict) -> tuple[dict, list[st
     from core.style_encoder.style_artifacts import resumable_bundle_files
     from core.style_encoder.style_trainer import resume_refusing_keys
     refusing = [k for k in missing if k in resume_refusing_keys(config.get("training_method", _D["training_method"]))]
+    if not config.get("style_danbooru_enable", False):
+        refusing = [k for k in refusing if not k.startswith("style_danbooru_")]
     if refusing and run.output_dir and resumable_bundle_files(run.output_dir):
         raise APIError("The stored configuration lacks keys its checkpoints depend on", 409,
                        detail=f"run {run.run_id} has checkpoints in {run.output_dir} but no stored value for "

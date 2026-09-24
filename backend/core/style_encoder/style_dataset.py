@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import unicodedata
 from dataclasses import asdict, dataclass, fields
-from typing import Iterable
+from typing import Iterable, Optional
 
 import numpy as np
 
@@ -204,7 +204,7 @@ class StyleIndex:
 
 
 def build_style_index(records: Iterable[tuple[int, int, StyleLabels]], split_params: SplitParams,
-                      pinned_keys: np.ndarray) -> StyleIndex:
+                      pinned_keys: np.ndarray, force_train_keys: Optional[np.ndarray] = None) -> StyleIndex:
     """Records are (item_id, item_key, labels). An artist owning a pinned key (an item sampled
     earlier in the run) stays on the train side even if its name hashes to held-out."""
     artists, copyrights, characters = _Interner(), _Interner(), _Interner()
@@ -274,6 +274,8 @@ def build_style_index(records: Iterable[tuple[int, int, StyleLabels]], split_par
     forced = pinned_artists & artist_is_val
     artist_is_val &= ~forced
     image_val = image_split_units(keys, split_params.seed) < split_params.val_image_ratio
+    if force_train_keys is not None:
+        image_val[np.isin(keys, force_train_keys)] = False
     item_split = np.where(artist_is_val[item_artist], VAL_ARTIST,
                           np.where(image_val, VAL_IMAGE, TRAIN)).astype(np.int8)
     artist_train_count = np.bincount(item_artist[item_split == TRAIN], minlength=n_artists)

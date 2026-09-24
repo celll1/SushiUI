@@ -26,7 +26,7 @@ from .style_artifacts import (
     artifact_path, find_resume_checkpoint, load_training_weights, prune_step_bundles, recover_staged_bundles,
     resumable_bundle_files, save_bundle,
 )
-from .style_dataset import VAL_ARTIST, VAL_IMAGE, SplitParams, StyleIndex, build_style_index, confound_scores, gather_csr
+from .style_dataset import VAL_ARTIST, VAL_IMAGE, SplitParams, StyleIndex, build_style_index, confound_scores, gather_csr, stable_item_key
 from .style_eval import Csr, RetrievalSummary, retrieve
 from .style_ingest import IngestStats, StyleDatasetConfig, StyleIngest, build_label_resolver, parse_dataset_configs
 from .style_labels import LabelStats, StyleLabelResolver
@@ -121,6 +121,16 @@ _CHECKS: dict[str, Callable[[Any], bool]] = {
     "style_val_artist_ratio": _num(0.0, 1.0, hi_open=True),
     "style_val_image_ratio": _num(0.0, 1.0, hi_open=True),
     "style_min_images_per_artist": _int(1),
+    "style_danbooru_enable": _is_bool,
+    "style_danbooru_min_post_count": _int(1),
+    "style_danbooru_order": _choice("count_desc", "random"),
+    "style_danbooru_seed": _int(0),
+    "style_danbooru_max_artists": _int(1),
+    "style_danbooru_max_tag_pages": _int(1),
+    "style_danbooru_max_posts_per_artist": _int(1),
+    "style_danbooru_max_post_pages_per_artist": _int(1),
+    "style_danbooru_api_interval": _num(1.4),
+    "style_danbooru_dl_speed_kbps": _int(1),
     "style_artists_per_batch": _int(1),
     "style_images_per_artist": _int(1),
     "style_same_copyright_batch_ratio": _num(0.0, 1.0),
@@ -150,7 +160,10 @@ _LORA_IDENTITY_KEYS = ("lora_rank", "lora_alpha")
 # Fixed at run start (optimizer param groups, scheduler lambda, total_steps); a resume keeps the saved values.
 _SCHEDULE_KEYS = ("learning_rate", "head_lr_multiplier", "weight_decay", "warmup_steps", "min_lr_ratio", "epochs")
 # A resume refuses a change of these (SplitParamsMismatch).
-_SPLIT_KEYS = ("style_val_artist_ratio", "style_val_image_ratio", "style_min_images_per_artist", "style_split_seed")
+_SPLIT_KEYS = ("style_val_artist_ratio", "style_val_image_ratio", "style_min_images_per_artist", "style_split_seed",
+               "style_danbooru_enable", "style_danbooru_min_post_count", "style_danbooru_order",
+               "style_danbooru_seed", "style_danbooru_max_artists", "style_danbooru_max_tag_pages",
+               "style_danbooru_max_posts_per_artist", "style_danbooru_max_post_pages_per_artist")
 
 
 def resume_identity_keys(training_method: str) -> tuple[str, ...]:
@@ -197,6 +210,16 @@ class StyleTrainingConfig:
     style_val_artist_ratio: float
     style_val_image_ratio: float
     style_min_images_per_artist: int
+    style_danbooru_enable: bool
+    style_danbooru_min_post_count: int
+    style_danbooru_order: str
+    style_danbooru_seed: int
+    style_danbooru_max_artists: int
+    style_danbooru_max_tag_pages: int
+    style_danbooru_max_posts_per_artist: int
+    style_danbooru_max_post_pages_per_artist: int
+    style_danbooru_api_interval: float
+    style_danbooru_dl_speed_kbps: int
     style_artists_per_batch: int
     style_images_per_artist: int
     style_same_copyright_batch_ratio: float
@@ -241,6 +264,8 @@ class StyleTrainingConfig:
         if values["style_images_per_artist"] > values["style_min_images_per_artist"]:
             raise StyleConfigError(f"style_images_per_artist ({values['style_images_per_artist']}) must not exceed "
                                    f"style_min_images_per_artist ({values['style_min_images_per_artist']})")
+        if values["style_danbooru_enable"] and values["style_danbooru_max_posts_per_artist"] < values["style_min_images_per_artist"]:
+            raise StyleConfigError("style_danbooru_max_posts_per_artist must be at least style_min_images_per_artist")
         if len(set(values["style_feature_layers"])) != len(values["style_feature_layers"]):
             raise StyleConfigError(f"style_feature_layers {list(values['style_feature_layers'])} repeats a layer")
         try:
@@ -351,16 +376,66 @@ class StyleData:
     label_stats: LabelStats
     skipped_examples: dict[int, tuple[str, ...]]  # dataset_id -> examples
     duplicate_examples: tuple[str, ...]
+    remote_manifest_hash: Optional[str] = None
 
 
 def prepare_style_data(cfg: StyleTrainingConfig, env: StyleEnvironment, processor, pinned_keys: np.ndarray,
-                       progress: Optional[Callable[[int, int, str], None]] = None) -> StyleData:
+                       progress: Optional[Callable[[int, int, str], None]] = None, *, output_dir: Optional[str] = None,
+                       danbooru_client=None, stop_requested: Callable[[], bool] = lambda: False) -> StyleData:
+    split = SplitParams.create(cfg.style_val_artist_ratio, cfg.style_val_image_ratio,
+                               cfg.style_min_images_per_artist, cfg.style_split_seed)
+    remote_manifest = None
+    remote_dir = None
+    if cfg.style_danbooru_enable:
+        if output_dir is None:
+            raise ValueError("style Danbooru collection requires a run output directory")
+        from core.tagger.danbooru_client import DanbooruClient
+        from .style_danbooru_cache import materialize_style_danbooru
+        local_session = env.open_datasets_session()
+        try:
+            local_ingest = StyleIngest(local_session, cfg.dataset_configs, env.build_label_resolver(cfg),
+                                       progress, pinned_keys)
+            local_index = build_style_index(local_ingest.records(), split, pinned_keys)
+        finally:
+            local_session.close()
+        excluded_artists = {local_index.artist_names[i] for i in np.flatnonzero(local_index.artist_is_val)}
+        val_ids = local_index.item_ids[local_index.item_split != 0]
+        val_paths = local_ingest.paths.take(val_ids)
+        excluded_hashes = set()
+        for row in range(len(val_paths)):
+            if stop_requested():
+                raise InterruptedError("style Danbooru collection stopped")
+            if progress is not None and row % 1000 == 0:
+                progress(row, len(val_paths), f"Checking validation image hashes: {row:,}/{len(val_paths):,}")
+            digest = hashlib.sha256()
+            with open(val_paths.path(row), "rb") as image_file:
+                for chunk in iter(lambda: image_file.read(1 << 20), b""):
+                    digest.update(chunk)
+            excluded_hashes.add(digest.hexdigest())
+        if progress is not None and len(val_paths):
+            progress(len(val_paths), len(val_paths), "Validation image hashes checked")
+        remote_dir = os.path.join(output_dir, "style_danbooru_cache")
+        client = danbooru_client or DanbooruClient(cfg.style_danbooru_api_interval,
+                                                    cfg.style_danbooru_dl_speed_kbps)
+        remote_manifest = materialize_style_danbooru(
+            remote_dir, client=client, resolver=env.build_label_resolver(cfg),
+            excluded_artists=excluded_artists, excluded_hashes=excluded_hashes,
+            min_post_count=cfg.style_danbooru_min_post_count, order=cfg.style_danbooru_order,
+            seed=cfg.style_danbooru_seed, max_artists=cfg.style_danbooru_max_artists,
+            max_tag_pages=cfg.style_danbooru_max_tag_pages,
+            max_posts_per_artist=cfg.style_danbooru_max_posts_per_artist,
+            max_post_pages_per_artist=cfg.style_danbooru_max_post_pages_per_artist,
+            min_images_per_artist=cfg.style_min_images_per_artist,
+            split_seed=cfg.style_split_seed, val_artist_ratio=cfg.style_val_artist_ratio,
+            stop_requested=stop_requested, progress=progress)
     session = env.open_datasets_session()
     try:
-        ingest = StyleIngest(session, cfg.dataset_configs, env.build_label_resolver(cfg), progress, pinned_keys)
-        split = SplitParams.create(cfg.style_val_artist_ratio, cfg.style_val_image_ratio,
-                                   cfg.style_min_images_per_artist, cfg.style_split_seed)
-        index = build_style_index(ingest.records(), split, pinned_keys)
+        ingest = StyleIngest(session, cfg.dataset_configs, env.build_label_resolver(cfg), progress, pinned_keys,
+                             remote_manifest, remote_dir)
+        remote_keys = (np.asarray([stable_item_key(-1, str(item["post_id"]))
+                                   for item in remote_manifest["items"]], dtype=np.int64)
+                       if remote_manifest is not None else None)
+        index = build_style_index(ingest.records(), split, pinned_keys, remote_keys)
     finally:
         session.close()
     sampler = StyleBatchSampler(index, cfg.style_artists_per_batch, cfg.style_images_per_artist,
@@ -372,7 +447,9 @@ def prepare_style_data(cfg: StyleTrainingConfig, env: StyleEnvironment, processo
                                 cfg.style_max_num_patches)
     return StyleData(index, sampler, views, dataset, ingest.stats, ingest.resolver.stats,
                      {d: tuple(examples) for d, examples in ingest.skipped_examples.items()},
-                     tuple(ingest.duplicate_examples))
+                     tuple(ingest.duplicate_examples),
+                     hashlib.sha256(json.dumps(remote_manifest, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+                     if remote_manifest is not None else None)
 
 
 def eval_rows(index: StyleIndex, split_code: int, max_items: int, seed: int) -> np.ndarray:
@@ -705,10 +782,18 @@ class StyleTrainer:
 
         processor = self._load_processor()
         self._emit("phase", {"phase": "dataset", "message": "Loading datasets..."})
-        data = prepare_style_data(
-            cfg, self.env, processor, saved_snapshot.keys if saved_snapshot is not None else np.zeros(0, np.int64),
-            lambda done, total, msg: self._emit("dataset_progress", {"step": done, "total": total, "message": msg}))
+        try:
+            data = prepare_style_data(
+                cfg, self.env, processor, saved_snapshot.keys if saved_snapshot is not None else np.zeros(0, np.int64),
+                lambda done, total, msg: self._emit("dataset_progress", {"step": done, "total": total, "message": msg}),
+                output_dir=self.output_dir, stop_requested=lambda: self._stop_requested)
+        except InterruptedError:
+            if self._stop_requested:
+                return self._stopped_during_setup("during Danbooru collection", resume)
+            raise
         self._log_data(data)
+        if resume is not None and saved.get("remote_manifest_hash") != data.remote_manifest_hash:
+            raise ValueError("style Danbooru manifest changed since the checkpoint")
         if self._stop_requested:
             return self._stopped_during_setup("after loading the datasets", resume)
 
@@ -799,7 +884,8 @@ class StyleTrainer:
                 state = {"global_step": global_step, "total_steps": total_steps, "epoch": pos[0],
                          "step_in_epoch": pos[1], "resume_key": resume_key.to_state(), "model": cfg.identity(),
                          "schedule": schedule, "best": best, "last_eval_epoch": last_eval_epoch,
-                         "index_hash": data.index.index_hash}
+                         "index_hash": data.index.index_hash,
+                         "remote_manifest_hash": data.remote_manifest_hash}
                 resume = (state, {"optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict()}, snapshot)
             path = save_bundle(model, self.output_dir, name, metadata, resume)
             self._emit("checkpoint", {"name": name, "step": global_step, "epoch": pos[0], "path": path})

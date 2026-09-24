@@ -36,19 +36,34 @@ def main() -> None:
     parser.add_argument("--pairs", type=int, default=8)
     parser.add_argument("--steps", type=int, default=20)
     parser.add_argument("--strength", type=float, default=1.0)
+    parser.add_argument("--cohort", choices=("primary", "confirm"), default="primary")
+    parser.add_argument("--shuffle-reference", action="store_true")
+    parser.add_argument("--ip-layer-start", type=float, default=0.0)
+    parser.add_argument("--encoder-path", default=str(
+        WORKTREE / "outputs/style_hsic_ab_dataset39/baseline/best_style_encoder.safetensors"))
+    parser.add_argument("--result-dir", default=str(WORKTREE / "outputs/sdxl_style_ip_dataset39"))
     args = parser.parse_args()
-    output = WORKTREE / "outputs/sdxl_style_ip_dataset39"
-    manifest = [json.loads(line) for line in (output / "manifest.jsonl").read_text(encoding="utf-8").splitlines()]
+    if not 0 <= args.ip_layer_start < 1:
+        parser.error("ip-layer-start must be in [0, 1)")
+    output = Path(args.result_dir).resolve()
+    manifest = [json.loads(line) for line in (WORKTREE / "outputs/sdxl_style_ip_dataset39/manifest.jsonl")
+                .read_text(encoding="utf-8").splitlines()]
     by_artist = defaultdict(list)
     for item in manifest:
         if item["split"] == 2:
             by_artist[item["artist"]].append(item)
     artists = [items for items in by_artist.values() if len(items) >= 2]
     rng = np.random.default_rng(17)
-    selected = [artists[int(i)] for i in rng.choice(len(artists), size=min(args.pairs, len(artists)), replace=False)]
+    if args.cohort == "confirm":
+        primary = set(rng.choice(len(artists), size=min(24, len(artists)), replace=False).tolist())
+        remaining = [i for i in range(len(artists)) if i not in primary]
+        picked = np.random.default_rng(29).choice(remaining, size=min(args.pairs, len(remaining)), replace=False)
+    else:
+        picked = rng.choice(len(artists), size=min(args.pairs, len(artists)), replace=False)
+    selected = [artists[int(i)] for i in picked]
 
     model_path = REPO / "models/NoobAI-XL-Vpred-v1.0.safetensors"
-    encoder_path = WORKTREE / "outputs/style_hsic_ab_dataset39/baseline/best_style_encoder.safetensors"
+    encoder_path = Path(args.encoder_path).resolve()
     with encoder_path.with_name("best_metadata.json").open(encoding="utf-8") as handle:
         metadata = json.load(handle)
     pipe = load_sdxl_style_pipeline(str(model_path))
@@ -62,11 +77,19 @@ def main() -> None:
     style_model = load_style_encoder(str(encoder_path), "sdpa").to("cuda", dtype=torch.bfloat16).eval()
     processor = Siglip2ImageProcessor.from_dict(metadata["preprocessing"])
     label = f"strength_{args.strength:g}".replace(".", "p")
+    if args.cohort == "confirm":
+        label += "_confirm"
+    if args.ip_layer_start:
+        label += f"_late{round(100 * (1 - args.ip_layer_start))}"
+    if args.shuffle_reference:
+        label += "_shuffled"
     image_dir = output / "evaluation" / label
     image_dir.mkdir(parents=True, exist_ok=True)
     rows = []
     for n, items in enumerate(selected):
         target, reference = items[:2]
+        if args.shuffle_reference:
+            reference = selected[(n + 1) % len(selected)][1]
         with Image.open(reference["path"]) as source:
             reference_image = source.convert("RGB")
         reference_style = embed_image(reference_image, style_model, processor, 256)
@@ -74,6 +97,10 @@ def main() -> None:
 
         def generate(ctx):
             set_style_ip_context(pipe.unet, ctx)
+            if ctx is not None and args.ip_layer_start:
+                limit = int(len(adapter.layer_names) * args.ip_layer_start)
+                for name in adapter.layer_names[:limit]:
+                    pipe.unet.attn_processors[name]._style_ip_ctx = None
             try:
                 generator = torch.Generator(device="cuda").manual_seed(seed)
                 with torch.inference_mode():

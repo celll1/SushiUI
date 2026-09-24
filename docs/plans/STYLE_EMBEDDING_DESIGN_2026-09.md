@@ -1,6 +1,6 @@
 # Style embedding encoder 設計書
 
-Status: 実装中（Phase 0・1・2 完了。Phase 3 の HSIC 実装と短期 GPU A/B 比較は完了、効果の再現性は未確定。Phase 4 の学習 UI と CPU 推論 API は実装済みで、実 checkpoint の API 推論も確認済み。フロントエンド build は未検証。Phase 5 の SDXL bridge は dataset 39 で 1 epoch 学習し、未学習作者 24 組の生成比較と公開 API 経由の生成を確認済み。Qwen-Image 2.1 は既存参照画像経路の実 GPU 生成と、style encoder による参照画像選択 API を確認済み。内容保持・既存参照画像経路との体系的な比較は未完了）。2026-09-23 の外部監査の指摘 4 件を §4・§5・§9・§10・§14 に反映済み
+Status: 実装中（Phase 0・1・2 完了。Phase 3 の HSIC 実装と短期 GPU A/B 比較は完了、効果の再現性は未確定。Phase 4 の学習 UI と CPU 推論 API は実装済みで、実 checkpoint の API 推論も確認済み。フロントエンド build は未検証。Phase 5 の SDXL bridge は dataset 39 で 1 epoch 学習し、未学習作者 2 集合・計 48 組で内容保持と既存参照画像経路を比較した。確認集合では style 効果が再現せず、異なる作品の組で内容保持の低下が見られたため、Phase 5 の品質判定は未完了。Qwen-Image 2.1 は既存参照画像経路の実 GPU 生成と、style encoder による参照画像選択 API を確認済み）。2026-09-23 の外部監査の指摘 4 件を §4・§5・§9・§10・§14 に反映済み
 
 ## 1. 目的と要件
 
@@ -386,3 +386,17 @@ SDXL では style encoder と生成モデルを凍結し、512 次元から画�
 Qwen-Image 2.1 の既存 style transfer は segmented attention の参照画像 K/V を使う。この経路は画像そのものを入力とし、style encoder の 512 次元を直接消費せず、SDXL の投影器も流用しない。`/api/v1/style/reference-select` は style exemplar と 2〜16 枚の候補画像の cosine を返し、最も近い元画像の index を選ぶ。クライアントはその元画像を既存 `/api/v1/generate/txt2img` の `is_style_transfer: true` entry に送る。dataset 39 の未学習作者の実画像では、3 候補から同作者の画像を選び、cosine は 0.955、他は 0.386 と -0.082 だった。
 
 Qwen-Image 2.1 の `int8_convrot` variant を実 GPU で動かし、同一 prompt・seed 777・512 px・8 step の通常生成と参照画像あり生成を比較した。参照画像ありは HTTP 200、warnings 0 で、画像 hash は通常生成と異なる。凍結 style encoder で測った参照画像との cosine は 0.437 → 0.509。顔と衣装の大枠は両画像で保持された。この単一例は経路の動作確認であり、Qwen の style 性能や内容保持の結論には使わない。検証後、元の SDXL モデルに戻した。
+
+### 未学習作者での内容保持・既存参照画像経路との比較（2026-09-24）
+
+dataset 39 の学習に使っていない作者から、同じ作者の別画像を参照・生成対象にした 24 組を選び、別の 24 作者で確認集合を作った。各組の target caption と seed を固定し、SDXL bridge、既存の SDXL 参照画像 style transfer、それぞれの参照なし生成を 512 px・20 step で比較した。既存経路は公開 `/api/v1/generate/txt2img` の `is_style_transfer` を通し、48 組すべて HTTP 成功・warnings なし。評価には凍結 style encoder の参照画像 cosine と、独立した CLIP ViT-L/14 の prompt・target 画像 cosine を使った。数値は各経路で「参照あり − その経路の参照なし」の平均である。両経路の参照なし画像は異なるため、生の cosine の直接比較は避ける。
+
+| 集合・条件 | 組数 | bridge の style Δ | bridge の prompt Δ | bridge の target 画像 Δ | 既存経路の style Δ | 既存経路の prompt Δ |
+|---|---:|---:|---:|---:|---:|---:|
+| 初回・bridge 0.10 / 既存 0.50 | 24 | +0.150 | -0.010 | +0.010 | +0.001 | +0.000 |
+| 初回・bridge 0.05 / 既存 0.50 | 24 | +0.208 | -0.009 | +0.021 | +0.001 | +0.000 |
+| 確認・bridge 0.05 / 既存 0.50 | 24 | +0.036 | -0.008 | -0.021 | -0.040 | +0.013 |
+
+初回集合では style 指標が改善したが、確認集合の bridge 0.05 の 95% bootstrap 区間は -0.073〜+0.139 で、効果は再現していない。確認集合で参照と target の copyright が異なる 9 組では、bridge 0.05 の prompt Δ は -0.0215（95% 区間 -0.0392〜-0.0062）、target 画像 Δ は -0.0394（-0.0821〜-0.0053）で、内容保持に懸念がある。正しい参照を別作者の参照と入れ替えた確認では、正しい参照への style cosine が平均 +0.100 高く、bridge が参照に反応することは確認できた。ただしこの差の全 24 組の 95% 区間は -0.002〜+0.217 と広い。
+
+後半半分の cross-attention 層だけに bridge を適用する試行では、確認集合の prompt Δ は -0.002 に縮んだが、style Δ は +0.026、target 画像 Δ は -0.018 となり、改善策として採用しない。caption は確認集合の 22/24 件が CLIP の 77 token 上限を超えたため、prompt 指標は先頭 77 token に限られる。現時点の bridge は品質が十分と判断できず、強度 0.10 の既定値を本番推奨値とは扱わない。凍結 tagger による Character/Copyright の保持・参照内容漏れの測定と、HSIC style encoder を使った bridge の確認を続ける。HSIC bridge は別 run で step 750 の optimizer・重みを保存済み。Qwen LoRA との併走中に GPU 使用量が約 48 GB に達したため、bridge 側だけ中断した。

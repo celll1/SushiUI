@@ -588,6 +588,16 @@ def test_qwen_debug_latents_save_full_canvas(tmp_path, partitioned):
         saved["predicted_latent"], as_grid(noisy - sigma * expected_prediction)
     )
     assert saved["partition_count"] == (2 if partitioned else 1)
+    if partitioned:
+        plan = qwen_image_21_ops._partition_plan(trainer, height, width)
+        assert saved["partition_grid_size"] == [width, height]
+        assert saved["partition_regions"] == [
+            {"top": region.core.top, "left": region.core.left,
+             "bottom": region.core.bottom, "right": region.core.right}
+            for region in plan.regions
+        ]
+    else:
+        assert "partition_regions" not in saved
     assert saved["caption"] == "caption"
 
 

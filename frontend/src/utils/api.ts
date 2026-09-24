@@ -8504,6 +8504,9 @@ export interface DebugLatentVisualization {
   timestep: number;
   loss: number;
   display_resolution?: { width: number; height: number; space: "image" | "latent" } | null;
+  partition_count?: number;
+  partition_grid_size?: [number, number]; // latent W, H
+  partition_regions?: { top: number; left: number; bottom: number; right: number }[];
   recon_loss?: number;  // Optional: may not exist in older debug data
   caption?: string;  // Processed caption used during training
   reference_image?: string;  // base64 thumbnail of reference image used in this training batch

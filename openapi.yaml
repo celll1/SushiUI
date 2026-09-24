@@ -6159,7 +6159,9 @@ paths:
         '200':
           description: >-
             Scalar manifest with display_resolution (unscaled target image or
-            latent preview width, height, and space) and optional legacy base64 images
+            latent preview width, height, and space), optional partition_count,
+            partition_grid_size and partition_regions (actual Qwen latent core bounds), and optional
+            legacy base64 images
           content:
             application/json:
               schema:

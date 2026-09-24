@@ -536,7 +536,7 @@ def vae_decode(trainer, latents, *, latent_h: int, latent_w: int):
 def _save_debug_latents(
     trainer, path, *, latents, noisy, target, prediction, timesteps,
     latent_h, latent_w, loss, recon_loss, captions=None, reference_image_paths=None,
-    partition_count=1,
+    partition_count=1, partition_plan=None,
 ):
     if path is None:
         return
@@ -566,6 +566,13 @@ def _save_debug_latents(
             "model_type": "qwen_image_21",
             "partition_count": int(partition_count),
         }
+        if partition_plan is not None:
+            data["partition_grid_size"] = [int(latent_w), int(latent_h)]
+            data["partition_regions"] = [
+                {"top": region.core.top, "left": region.core.left,
+                 "bottom": region.core.bottom, "right": region.core.right}
+                for region in partition_plan.regions
+            ]
         if captions:
             data["caption"] = captions[0]
             data["all_captions"] = captions
@@ -940,6 +947,7 @@ def train_step_partitioned_backward(
             loss=logical_loss, recon_loss=recon_loss_value, captions=debug_captions,
             reference_image_paths=debug_reference_image_paths,
             partition_count=len(plan.regions),
+            partition_plan=plan,
         )
     wall_ms = (time.perf_counter() - wall_start) * 1000.0
     trainer.log_extra_metric("qwen_partition_count", float(len(plan.regions)))

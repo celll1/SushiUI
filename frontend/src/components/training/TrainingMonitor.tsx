@@ -85,6 +85,41 @@ const debugImageUrl = (
   return typeof legacy === "string" ? `data:image/png;base64,${legacy}` : undefined;
 };
 
+const PARTITION_COLORS = ["#22d3ee", "#f472b6", "#a3e635", "#fb923c"];
+
+function DebugPartitionOverlay({ visualization }: { visualization: DebugLatentVisualization }) {
+  const [width, height] = visualization.partition_grid_size ?? [];
+  const regions = visualization.partition_regions;
+  if (!width || !height || !regions?.length) return null;
+
+  return (
+    <svg
+      className="absolute inset-0 w-full h-full pointer-events-none"
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="xMidYMid meet"
+      aria-label="Actual training partition boundaries"
+    >
+      {regions.map((region, index) => {
+        const color = PARTITION_COLORS[index % PARTITION_COLORS.length];
+        return (
+          <g key={index} fill="none" stroke={color} strokeWidth="2"
+            strokeDasharray="5 4" strokeLinecap="round"
+            style={{ filter: "drop-shadow(0 0 1px black)" }}>
+            {region.right < width && (
+              <line x1={region.right} y1={region.top} x2={region.right} y2={region.bottom}
+                vectorEffect="non-scaling-stroke" />
+            )}
+            {region.bottom < height && (
+              <line x1={region.left} y1={region.bottom} x2={region.right} y2={region.bottom}
+                vectorEffect="non-scaling-stroke" />
+            )}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 // Per-pane persistence slot and the preset each pane opens on. Pane 3 defaults
 // to the param-change view, which is why ParamChangeChart no longer exists as a
 // component -- its two tabs are two presets now.
@@ -1742,6 +1777,15 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                               {debugVisualization.display_resolution.width}×{debugVisualization.display_resolution.height}
                             </div>
                           )}
+                          {debugVisualization.partition_count !== undefined && (
+                            <div><span className="text-gray-400">Partitions:</span>{" "}
+                              {debugVisualization.partition_count === 1
+                                ? "Full frame"
+                                : debugVisualization.partition_regions?.length
+                                  ? `${debugVisualization.partition_count} regions (colored dashed boundaries)`
+                                  : `${debugVisualization.partition_count} regions (boundaries unavailable in this save)`}
+                            </div>
+                          )}
                           <div><span className="text-gray-400">Prediction Loss:</span> {debugVisualization.loss.toFixed(6)}</div>
                           {debugVisualization.recon_loss !== undefined && (
                             <div><span className="text-gray-400">Recon Loss:</span> {debugVisualization.recon_loss.toFixed(6)}</div>
@@ -1855,6 +1899,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                                 <div className={`absolute top-1 left-1 ${topColor} text-white text-xs px-1.5 py-0.5 rounded`}>{topLabel}</div>
                               </div>
                             )}
+                            <DebugPartitionOverlay visualization={v} />
                             {/* Yellow line exactly on the transition */}
                             <div
                               className="absolute top-0 bottom-0 w-0.5 bg-yellow-500 pointer-events-none"
@@ -1905,6 +1950,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                                     decoding="async"
                                     className="w-full h-full object-contain"
                                   />
+                                  <DebugPartitionOverlay visualization={debugVisualization} />
                                 </div>
                               </div>
                             )}
@@ -1920,6 +1966,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                                     decoding="async"
                                     className="w-full h-full object-contain"
                                   />
+                                  <DebugPartitionOverlay visualization={debugVisualization} />
                                 </div>
                               </div>
                             )}

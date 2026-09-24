@@ -18218,7 +18218,8 @@ async def visualize_debug_latent(
     if "channel_stats" in data:
         result["channel_stats"] = data["channel_stats"]
     for _k in ("window_latent_frames", "clip_latent_frames", "audio_sigma",
-               "audio_present", "latent_frames"):
+               "audio_present", "latent_frames", "partition_count", "partition_grid_size",
+               "partition_regions"):
         if _k in data:
             result[_k] = data[_k]
 

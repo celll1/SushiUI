@@ -373,6 +373,17 @@ dataset 39（`image-tag-caption-dataset`）の 33,099 item を調べ、tags capt
 
 両 run の 69 step の loss はすべて有限で、HSIC loss は 0.082〜0.204。HSIC ありの GPU 使用量は学習中の観測時点で 16.7 GB。主指標は step 23 では HSIC なしが高く、step 46・69 では HSIC ありが高い。同じ作品内の最終指標は逆に HSIC なしが高い。単一 seed・短い学習・有効 query 176 件なので、効果が安定したとは判断しない。HSIC は opt-in のままとし、採用判断には複数 seed とより大きい評価集合が必要。
 
+### 完成 checkpoint による同作者識別（2026-09-24）
+
+`tools/evaluate_style_artist_identity.py` で dataset 39 の未学習作者 376 人・490 枚を両 `best_style_encoder.safetensors` に入力し、作者ラベルだけで結果を集計した。画像の目視確認はしていない。同作者の別画像が存在する 62 人・176 query では、最近傍が同作者なのは HSIC なし 68/176（38.6%）、HSIC あり 65/176（36.9%）。残る 314 query は正解画像がないため検索指標から除外した。
+
+| checkpoint | 同作者ペア cosine 平均 | 別作者ペア cosine 平均 | ペア識別 AUC | 同じ copyright に限定した AUC | 異なる copyright のペア AUC |
+|---|---:|---:|---:|---:|---:|
+| HSIC なし・best step 23 | 0.759 | 0.159 | 0.908 | 0.885 | 0.873 |
+| HSIC あり・best step 23 | 0.774 | 0.197 | 0.897 | 0.881 | 0.851 |
+
+同作者ペアは 298 組、別作者ペアは 119,507 組。同じ copyright のペア内では正例 160・負例 877、異なる copyright のペア内では正例 138・負例 118,630。AUC はランダムな正例の cosine がランダムな負例を上回る割合であり、実際の検索で正解を最上位に置ける率とは異なる。best checkpoint の選択にもこの検証集合を使っているため、独立した外部テストの精度とは扱わない。
+
 ## 18. Phase 5 の接続条件と SDXL 実測
 
 style encoder は画像から正規化された 512 次元のベクトルを出す。一方、既存の `core.inference.reference_style` は参照画像を VAE latent にして denoise step ごとに生成モデルの Key/Value を取り出す。両者は入力形式も学習した表現空間も異なり、ベクトルをそのまま既存の参照画像経路へ渡すことはできない。`controlnet_manager.py` の IP-Adapter 重み判定はファイル検出であり、style ベクトル用の投影器や学習経路ではない。

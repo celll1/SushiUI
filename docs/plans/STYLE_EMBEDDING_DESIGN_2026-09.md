@@ -377,11 +377,11 @@ dataset 39（`image-tag-caption-dataset`）の 33,099 item を調べ、tags capt
 
 style encoder は画像から正規化された 512 次元のベクトルを出す。一方、既存の `core.inference.reference_style` は参照画像を VAE latent にして denoise step ごとに生成モデルの Key/Value を取り出す。両者は入力形式も学習した表現空間も異なり、ベクトルをそのまま既存の参照画像経路へ渡すことはできない。`controlnet_manager.py` の IP-Adapter 重み判定はファイル検出であり、style ベクトル用の投影器や学習経路ではない。
 
-SDXL では style encoder と生成モデルを凍結し、512 次元から画像 token と cross-attention Key/Value へ写す変換器を別 artifact として学習する。参照画像と生成対象は同じ作者の異なる画像にし、可能なら content ID が異なる組を選ぶ。強度 0 は通常生成との画素一致で検証する。内容保持、同じ作品に限った指標、既存参照画像 style transfer との比較は引き続き必要。
+SDXL では style encoder と生成モデルを凍結し、512 次元から画像 token と cross-attention Key/Value へ写す変換器を別 artifact として学習する。参照画像と生成対象は同じ作者の異なる画像にし、可能なら content ID が異なる組を選ぶ。強度 0 は通常生成との画素一致で検証する。同じ作品に限った指標と、内容保持を改善した後の再評価は引き続き必要。
 
 実装順は SDXL の IP-Adapter 型、次に Qwen-Image 2.1 の既存参照画像経路。SDXL の `sdxl_ip_adapter.py` は各 cross-attention 層の専用 K/V を学習し、`UnifiedAttnProcessor` でテキスト attention 出力に独立加算する。CFG の負側には加算しない。artifact は style encoder と SDXL model の SHA-256 および U-Net 層構成で照合する。`tools/train_sdxl_style_ip.py` は dataset 39 の index hash `9df70dad080a8b3dfa3eb5b000371830` から作った manifest の 209 作者・1,477 枚を使い、`NoobAI-XL-Vpred-v1.0.safetensors` の v-prediction loss で bridge だけを 1 epoch 学習した。全 step の loss は有限、ピーク VRAM は 13.67 GB。checkpoint には optimizer と run identity を保存し、resume で元モデル・style encoder・manifest の SHA-256 を照合する。
 
-未学習作者の別画像ペアを同じ seed・512 px・20 denoise step で通常生成と比較した。style encoder cosine の平均差は bridge 強度 1.0 で 8 組中 8 組悪化し、平均 -0.505。強度 0.1 では 24 組中 15 組改善し、平均 +0.150 だった。このため `/api/v1/style/sdxl-generate` の既定強度は 0.1 とした。強度 0 の通常生成との画素一致を確認し、実 artifact を使った API 呼び出しは HTTP 200 と 512×512 PNG を返した。24 組の改善率と内容保持の検証は十分でなく、強度 1.0 は実用設定として採用しない。学習 runner に style 条件 dropout はまだなく、長期学習・複数 seed・既存参照画像経路との比較も未実施。
+未学習作者の別画像ペアを同じ seed・512 px・20 denoise step で通常生成と比較した。style encoder cosine の平均差は bridge 強度 1.0 で 8 組中 8 組悪化し、平均 -0.505。強度 0.1 では 24 組中 15 組改善し、平均 +0.150 だった。このため `/api/v1/style/sdxl-generate` の既定強度は 0.1 とした。強度 0 の通常生成との画素一致を確認し、実 artifact を使った API 呼び出しは HTTP 200 と 512×512 PNG を返した。強度 1.0 は実用設定として採用しない。学習 runner に style 条件 dropout はまだなく、長期学習・複数 seed の比較も未実施。内容保持と既存参照画像経路の比較は以下に記す。
 
 Qwen-Image 2.1 の既存 style transfer は segmented attention の参照画像 K/V を使う。この経路は画像そのものを入力とし、style encoder の 512 次元を直接消費せず、SDXL の投影器も流用しない。`/api/v1/style/reference-select` は style exemplar と 2〜16 枚の候補画像の cosine を返し、最も近い元画像の index を選ぶ。クライアントはその元画像を既存 `/api/v1/generate/txt2img` の `is_style_transfer: true` entry に送る。dataset 39 の未学習作者の実画像では、3 候補から同作者の画像を選び、cosine は 0.955、他は 0.386 と -0.082 だった。
 
@@ -399,4 +399,14 @@ dataset 39 の学習に使っていない作者から、同じ作者の別画像
 
 初回集合では style 指標が改善したが、確認集合の bridge 0.05 の 95% bootstrap 区間は -0.073〜+0.139 で、効果は再現していない。確認集合で参照と target の copyright が異なる 9 組では、bridge 0.05 の prompt Δ は -0.0215（95% 区間 -0.0392〜-0.0062）、target 画像 Δ は -0.0394（-0.0821〜-0.0053）で、内容保持に懸念がある。正しい参照を別作者の参照と入れ替えた確認では、正しい参照への style cosine が平均 +0.100 高く、bridge が参照に反応することは確認できた。ただしこの差の全 24 組の 95% 区間は -0.002〜+0.217 と広い。
 
-後半半分の cross-attention 層だけに bridge を適用する試行では、確認集合の prompt Δ は -0.002 に縮んだが、style Δ は +0.026、target 画像 Δ は -0.018 となり、改善策として採用しない。caption は確認集合の 22/24 件が CLIP の 77 token 上限を超えたため、prompt 指標は先頭 77 token に限られる。現時点の bridge は品質が十分と判断できず、強度 0.10 の既定値を本番推奨値とは扱わない。凍結 tagger による Character/Copyright の保持・参照内容漏れの測定と、HSIC style encoder を使った bridge の確認を続ける。HSIC bridge は別 run で step 750 の optimizer・重みを保存済み。Qwen LoRA との併走中に GPU 使用量が約 48 GB に達したため、bridge 側だけ中断した。
+後半半分の cross-attention 層だけに bridge を適用する試行では、確認集合の prompt Δ は -0.002 に縮んだが、style Δ は +0.026、target 画像 Δ は -0.018 となり、改善策として採用しない。caption は確認集合の 22/24 件が CLIP の 77 token 上限を超えたため、prompt 指標は先頭 77 token に限られる。
+
+凍結 tagger `best_f1.safetensors`（§17 と同じ checkpoint）の raw sigmoid 確率でも Character/Copyright を採点した。target caption に含まれる tag の平均確率を内容保持、参照 caption のみに含まれる tag の平均確率を内容漏れの指標とし、それぞれの参照なし生成との差を取った。前者が採点できたのは初回 22 組、確認 20 組。後者は初回 14 組、確認 12 組。どの区間も 95% bootstrap 区間に 0 を含む。
+
+| 集合・bridge 強度 | bridge の target tag Δ | 既存経路の target tag Δ | bridge の参照のみ tag Δ | 既存経路の参照のみ tag Δ |
+|---|---:|---:|---:|---:|
+| 初回・0.10 | -0.019 | +0.010 | +0.008 | +0.031 |
+| 初回・0.05 | +0.017 | +0.010 | -0.006 | +0.031 |
+| 確認・0.05 | -0.047 | +0.026 | +0.002 | -0.003 |
+
+tagger の結果も 2 集合で方向が一致せず、参照内容漏れの明確な差は出なかった。独立 CLIP 指標では確認集合の異なる copyright の 9 組で内容低下が見られるため、現時点の bridge は品質が十分と判断できず、強度 0.10 の既定値を本番推奨値とは扱わない。HSIC style encoder を使った bridge の確認が残る。HSIC bridge は別 run で step 750 の optimizer・重みを保存済み。Qwen LoRA との併走中に GPU 使用量が約 48 GB に達したため、bridge 側だけ中断した。

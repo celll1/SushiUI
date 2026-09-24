@@ -6409,7 +6409,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         onChange={(e) => updateParam("dit_partition_mode", e.target.value as "fixed" | "token_threshold")}
                         className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
                       >
-                        <option value="token_threshold">Above latent-token limit (full frame for smaller images)</option>
+                        <option value="token_threshold">Full / 2 / 4 regions by latent tokens</option>
                         <option value="fixed">Every image (legacy fixed mode)</option>
                       </select>
                     </div>
@@ -6425,11 +6425,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                           className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
                         />
                         <p className="text-xs text-gray-500 mt-1">
-                          Images at or below this latent H × W use one full-canvas forward. Larger images use the selected region count.
+                          At or below this latent H × W: full frame. Above it: 2 regions; at 4× the limit or above: 4 regions.
                         </p>
                       </div>
                     )}
-                    <div>
+                    {params.dit_partition_mode === "fixed" && <div>
                       <label className="block text-xs text-gray-400 mb-1">Regions</label>
                       <select
                         value={params.dit_partition_fixed_count ?? 2}
@@ -6439,7 +6439,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         <option value={2}>2 regions</option>
                         <option value={4}>4 regions</option>
                       </select>
-                    </div>
+                    </div>}
                     <div>
                       <label className="block text-xs text-gray-400 mb-1">Halo (latent tokens)</label>
                       <input

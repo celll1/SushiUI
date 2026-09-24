@@ -181,7 +181,7 @@ The design admits these modes:
 |---|---|
 | `off` | Existing dense full-frame training. |
 | `fixed` | Prototype and diagnostic mode with a requested count such as 2 or 4. |
-| `token_threshold` | Full-canvas training through a configured latent-token limit; fixed 2/4-region training above it. |
+| `token_threshold` | Full-canvas through the latent-token limit, 2 regions above it, and 4 regions at four times the limit or above. |
 | `adaptive` | Production candidate driven by predicted peak residency and an optional elective policy. |
 
 Fixed mode does not require fixed boundaries. It fixes only the requested
@@ -461,7 +461,7 @@ aliases remain read-compatible for saved runs and older API clients.
 ```text
 dit_partition_training_enabled
 dit_partition_mode                 # token_threshold (default) | fixed
-dit_partition_fixed_count          # prototype: 2 or 4
+dit_partition_fixed_count          # fixed mode only: 2 or 4
 dit_partition_full_frame_max_tokens # threshold mode: full when H * W <= limit
 dit_partition_split_ratio_min
 dit_partition_split_ratio_max
@@ -475,13 +475,15 @@ dit_partition_gradient_checkpointing_blocks
 
 The token threshold uses target latent tokens and does not estimate memory from
 prefix length or batch size. Existing runs that explicitly saved `fixed` keep
-partitioning every image. Adaptive budget, elective probability, sigma adaptation, and position sidecar
+partitioning every image. With limit 4096, 4096 tokens are full-frame,
+4097 through 16383 use two regions, and 16384 or more use four. Adaptive
+budget, elective probability, sigma adaptation, and position sidecar
 remain designed follow-ups rather than accepted configuration fields.
 
-The UI should expose a simple off/fixed/adaptive selector, fixed count for the
-prototype, elective probability, halo, and an advanced memory safety control.
-Planner internals such as measured profile coefficients are diagnostics, not
-user-authored tuning fields.
+The current UI exposes the enable switch, token-threshold/fixed selector,
+threshold, fixed count (in fixed mode), and halo. An adaptive memory policy
+and its safety controls remain future work; planner profile coefficients
+would be diagnostics rather than user-authored tuning fields.
 
 The checkpoint identity records the complete policy, policy version, seed,
 immutable planning-profile snapshot, and any position-sidecar declaration.

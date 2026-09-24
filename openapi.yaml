@@ -24997,13 +24997,14 @@ components:
           enum: [fixed, token_threshold]
           default: token_threshold
           description: >-
-            Fixed partitions every Qwen image. Token threshold keeps an image
-            whole when its target latent token count is at or below the limit.
+            Fixed partitions every Qwen image. Token threshold uses the full
+            image through the limit, two regions above it, and four regions
+            at four times the limit or above.
         dit_partition_fixed_count:
           type: integer
           enum: [2, 4]
           default: 2
-          description: Number of target regions; boundaries vary deterministically by epoch and item.
+          description: Number of target regions in fixed mode; boundaries vary deterministically by epoch and item.
         dit_partition_full_frame_max_tokens:
           type: integer
           minimum: 1
@@ -25011,7 +25012,8 @@ components:
           example: 4096
           description: >-
             In token_threshold mode, keep the full image when latent height
-            times latent width is at or below this number; split above it.
+            times latent width is at or below this number; use two regions above
+            it and four regions at four times this number or above.
         dit_partition_halo_tokens:
           type: integer
           minimum: 0

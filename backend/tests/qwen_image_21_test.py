@@ -1057,12 +1057,19 @@ def test_qwen_partition_token_limit_routes_full_and_partitioned_views():
     )
     small = torch.zeros(1, 64 * 64, 4)
     large = torch.zeros(1, 64 * 66, 4)
+    huge = torch.zeros(1, 128 * 128, 4)
+    assert qwen_image_21_ops.partition_region_count(trainer, latent_h=64, latent_w=64) == 1
     assert not qwen_image_21_ops.partition_training_enabled(trainer, latent_h=64, latent_w=64)
     assert qwen_image_21_ops.partition_dispatch_view(
         trainer, small, latent_h=64, latent_w=64) is small
     assert qwen_image_21_ops.partition_training_enabled(trainer, latent_h=64, latent_w=66)
+    assert qwen_image_21_ops.partition_region_count(trainer, latent_h=64, latent_w=66) == 2
     assert qwen_image_21_ops.partition_dispatch_view(
         trainer, large, latent_h=64, latent_w=66).shape[1] < large.shape[1]
+    assert qwen_image_21_ops.partition_region_count(trainer, latent_h=128, latent_w=128) == 4
+    assert len(qwen_image_21_ops._partition_plan(trainer, 128, 128).regions) == 4
+    assert qwen_image_21_ops.partition_dispatch_view(
+        trainer, huge, latent_h=128, latent_w=128).shape[1] < huge.shape[1]
     trainer.config["dit_partition_mode"] = "fixed"
     assert qwen_image_21_ops.partition_training_enabled(trainer, latent_h=64, latent_w=64)
     del trainer.config["dit_partition_mode"]

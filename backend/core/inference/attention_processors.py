@@ -67,6 +67,8 @@ class UnifiedAttnProcessor:
         # instances). Defaults to `None` so an unstamped processor (region
         # inactive) takes the byte-identical original path.
         self._region_ctx = None
+        self._style_ip_ctx = None
+        self._style_ip_name: Optional[str] = None
 
     def __call__(
         self,
@@ -279,6 +281,26 @@ class UnifiedAttnProcessor:
             layout="BHSD",
         )
 
+        ip_ctx = self._style_ip_ctx
+        if not is_self_attn and ip_ctx is not None and ip_ctx.scale != 0.0:
+            ip_tokens = ip_ctx.tokens
+            if ip_ctx.cfg_batch:
+                ip_tokens = torch.cat((ip_tokens, ip_tokens), dim=0)
+            ip_key, ip_value = ip_ctx.adapter.project_kv(
+                self._style_ip_name, ip_tokens, attn.heads, head_dim,
+                device=query.device, dtype=query.dtype,
+            )
+            if ip_key.shape[0] != batch_size:
+                raise ValueError("Style IP-Adapter batch must match the U-Net attention batch")
+            image_attention = dispatch_attention(
+                query, ip_key, ip_value, attn_mask=None, dropout_p=0.0,
+                is_causal=False, backend=self.backend, mode=self.mode, layout="BHSD",
+            )
+            if ip_ctx.cfg_batch:
+                image_attention = torch.cat((torch.zeros_like(image_attention[:batch_size // 2]),
+                                             image_attention[batch_size // 2:]), dim=0)
+            hidden_states = hidden_states + ip_ctx.scale * image_attention
+
         hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
         hidden_states = hidden_states.to(query.dtype)
 
@@ -370,6 +392,20 @@ def set_style_context(unet, ctx) -> None:
     for name, proc in unet.attn_processors.items():
         if hasattr(proc, "block_idx") and proc.block_idx is not None:
             proc._style_ctx = ctx
+
+
+def set_style_ip_context(unet, ctx) -> None:
+    """Attach a decoupled style-token context to SDXL cross-attention layers."""
+    installed = []
+    for name, proc in unet.attn_processors.items():
+        if name.endswith("attn2.processor") and isinstance(proc, UnifiedAttnProcessor):
+            proc._style_ip_name = name
+            proc._style_ip_ctx = ctx
+            installed.append(name)
+    if ctx is not None and set(installed) != set(ctx.adapter.layer_names):
+        for name in installed:
+            unet.attn_processors[name]._style_ip_ctx = None
+        raise ValueError("Style IP-Adapter requires UnifiedAttnProcessor on every matching SDXL cross-attention layer")
 
 
 # ---------------------------------------------------------------------------

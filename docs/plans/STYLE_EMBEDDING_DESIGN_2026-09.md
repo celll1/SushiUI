@@ -1,6 +1,6 @@
 # Style embedding encoder 設計書
 
-Status: 実装中（Phase 0・1・2 完了。Phase 3 の HSIC 実装と短期 GPU A/B 比較は完了、効果の再現性は未確定。Phase 4 の学習 UI と CPU 推論 API は実装済みで、実 checkpoint の API 推論も確認済み。フロントエンド build は未検証。Phase 5 の生成 conditioning は未着手）。2026-09-23 の外部監査の指摘 4 件を §4・§5・§9・§10・§14 に反映済み
+Status: 実装中（Phase 0・1・2 完了。Phase 3 の HSIC 実装と短期 GPU A/B 比較は完了、効果の再現性は未確定。Phase 4 の学習 UI と CPU 推論 API は実装済みで、実 checkpoint の API 推論も確認済み。フロントエンド build は未検証。Phase 5 は SDXL の学習可能な IP-Adapter 型 attention bridge の基礎実装まで。学習済み重み・生成 API は未実装）。2026-09-23 の外部監査の指摘 4 件を §4・§5・§9・§10・§14 に反映済み
 
 ## 1. 目的と要件
 
@@ -379,4 +379,6 @@ style encoder は画像から正規化された 512 次元のベクトルを出�
 
 最初の対象として SDXL を仮定する場合は、style encoder と生成モデルを凍結し、512 次元から SDXL の条件付けに必要な token / attention Key/Value へ写す変換器を別 artifact として学習する。参照画像と生成対象には同じ作者の異なる画像を使い、内容の異なる組を含める。style 条件の dropout と強度 0 の経路を設け、強度 0 では既存の生成結果が一致することを確認する。評価は未学習作者での style 類似度、内容保持、同じ作品に限った指標を既存の画像参照 style transfer と比較する。変換器の重み形式、resume、API/default/UI は対象 architecture が決まってから OpenAPI-first で定義する。
 
-Qwen-Image 2.1 の既存 style transfer は segmented attention の参照画像 K/V を使うため、SDXL の変換器を流用しない。対象 architecture と実験予算が確定するまでは、生成 endpoint に `style_encoder_path` を追加しない。
+実装順は SDXL の IP-Adapter 型、次に Qwen-Image 2.1 の既存参照画像経路。SDXL の `sdxl_ip_adapter.py` は 512 次元から画像 token と各 cross-attention 層の専用 K/V を学習し、`UnifiedAttnProcessor` で通常のテキスト attention 出力に独立加算する。CFG の負側には加算せず、強度 0 は既存出力と一致する。重み artifact は style encoder と SDXL model の SHA-256 および U-Net 層構成で照合する。`sdxl_ip_training.py` には別画像・同一作者で内容の異なる参照を優先するペア選択と、凍結 U-Net の denoising loss を用意した。CPU の小型モデルで勾配と強度 0 を確認済み。実データの学習 runner、resume、学習済み artifact、未学習作者での生成比較が揃うまで生成 API には公開しない。
+
+Qwen-Image 2.1 の既存 style transfer は segmented attention の参照画像 K/V を使う。参照画像が backend mixin から vendor pipeline に届き、capture/inject が出力を変えることを既存 CPU テストで確認した。この経路は画像そのものを入力とし、style encoder の 512 次元を直接消費しない。SDXL の投影器も流用しない。SDXL の学習・評価を先に終えた後、Qwen では既存参照画像経路を基準に style encoder を使った参照画像選択と生成評価を進める。

@@ -1,6 +1,6 @@
 # Style embedding encoder 設計書
 
-Status: 実装中（Phase 0・1・2 完了。Phase 3 の HSIC 実装と短期 GPU A/B 比較は完了、効果の再現性は未確定。Phase 4 の学習 UI と CPU 推論 API は実装済みで、実 checkpoint の API 推論も確認済み。フロントエンド build は未検証。Phase 5 の SDXL bridge は dataset 39 で 1 epoch 学習し、未学習作者 2 集合・計 48 組で内容保持と既存参照画像経路を比較した。確認集合では style 効果が再現せず、異なる作品の組で内容保持の低下が見られたため、Phase 5 の品質判定は未完了。Qwen-Image 2.1 は既存参照画像経路の実 GPU 生成と、style encoder による参照画像選択 API を確認済み）。2026-09-23 の外部監査の指摘 4 件を §4・§5・§9・§10・§14 に反映済み
+Status: 実装中（Phase 0・1・2 完了。Phase 3 の HSIC 実装と短期 GPU A/B 比較は完了、効果の再現性は未確定。Phase 4 の学習 UI と CPU 推論 API は実装済みで、実 checkpoint の API 推論も確認済み。フロントエンド build は未検証。Phase 5 の SDXL bridge は dataset 39 で通常版・HSIC 版をそれぞれ 1 epoch 学習し、未学習作者 2 集合・計 48 組で style と内容保持を比較した。HSIC 版でも確認集合の style 効果は不確実で、異なる作品の組の内容低下と参照内容漏れが残り、品質判定は未完了。Qwen-Image 2.1 は既存参照画像経路の実 GPU 生成と、style encoder による参照画像選択 API を確認済み）。2026-09-23 の外部監査の指摘 4 件を §4・§5・§9・§10・§14 に反映済み
 
 ## 1. 目的と要件
 
@@ -420,4 +420,17 @@ dataset 39 の学習に使っていない作者から、同じ作者の別画像
 | 初回・0.05 | +0.017 | +0.010 | -0.006 | +0.031 |
 | 確認・0.05 | -0.047 | +0.026 | +0.002 | -0.003 |
 
-tagger の結果も 2 集合で方向が一致せず、参照内容漏れの明確な差は出なかった。独立 CLIP 指標では確認集合の異なる copyright の 9 組で内容低下が見られるため、現時点の bridge は品質が十分と判断できず、強度 0.10 の既定値を本番推奨値とは扱わない。HSIC style encoder を使った bridge の確認が残る。HSIC bridge は別 run で step 750 の optimizer・重みを保存済み。Qwen LoRA との併走中に GPU 使用量が約 48 GB に達したため、bridge 側だけ中断した。
+tagger の結果も 2 集合で方向が一致せず、参照内容漏れの明確な差は出なかった。独立 CLIP 指標では確認集合の異なる copyright の 9 組で内容低下が見られるため、現時点の bridge は品質が十分と判断できず、強度 0.10 の既定値を本番推奨値とは扱わない。Qwen LoRA との併走中は GPU 使用量が約 48 GB に達したため HSIC bridge 側だけ中断し、Qwen 停止後に step 750 の optimizer・重みから再開した。再開後の 727 step は全て有限の loss で、step 1477 まで完走した。ピーク割当 VRAM は 13.67 GB。
+
+### HSIC style encoder を使った bridge の再評価（2026-09-24）
+
+通常版と同じ SDXL、manifest、1 epoch、強度 0.05、seed、24 組ずつの 2 集合を使用し、style encoder だけ HSIC 版に替えて別 bridge を学習した。参照なし生成の PNG は通常版と 48/48 枚で hash 一致し、両 bridge の差は同じ基準画像に対する差として比較できる。ここでも画像は目視していない。
+
+| 集合・bridge | style cosine Δ | prompt CLIP Δ | target 画像 CLIP Δ | target Character/Copyright tag Δ | 参照のみ tag Δ |
+|---|---:|---:|---:|---:|---:|
+| 初回・通常版 | +0.208 | -0.009 | +0.021 | +0.017 | -0.006 |
+| 初回・HSIC 版 | +0.132 | +0.003 | +0.041 | +0.080 | ±0.000 |
+| 確認・通常版 | +0.036 | -0.008 | -0.021 | -0.047 | +0.002 |
+| 確認・HSIC 版 | +0.052 | -0.004 | -0.009 | +0.020 | +0.039 |
+
+HSIC 版の初回集合 style Δ は 95% bootstrap 区間 +0.050〜+0.218 だが、確認集合は -0.031〜+0.144。確認集合の異なる copyright 9 組では prompt Δ -0.0208（区間 -0.0333〜-0.0067）、target 画像 Δ -0.0315（-0.0667〜-0.0046）で内容低下が残った。確認集合の参照のみ tag Δ +0.039 は区間 +0.008〜+0.073 で、参照内容漏れが疑われる。HSIC 版は target tag の点推定を両集合で改善したが、style と内容保持をともに安定して満たすとは言えない。公開 API の通常版 artifact と既定強度は変更せず、Phase 5 の品質ゲートは未達とする。

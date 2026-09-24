@@ -53,7 +53,9 @@ from api.routes import (  # noqa: E402
     TrainingRunCreateRequest,
     _extract_request_params_from_yaml,
 )
-from core.training.base_trainer import apply_run_seed, resolve_run_seed  # noqa: E402
+from core.training.base_trainer import (  # noqa: E402
+    apply_run_seed, resolve_concept_resume_seed, resolve_run_seed,
+)
 from core.training.bucketing import BucketManager  # noqa: E402
 from core.training.crop_planner import CropPlanner  # noqa: E402
 from core.training.training_config import TrainingConfigGenerator  # noqa: E402
@@ -228,3 +230,9 @@ def test_a_drawn_seed_leaves_the_crop_plan_seed_alone():
     assert CropPlanner(config={"seed": -1, "crop_plan_seed": 7},
                        base_resolutions=[1024]).seed == 7
     assert "0 if self.run_seed_drawn else self.run_seed" in _BASE_TRAINER_SRC
+
+
+def test_concept_resume_uses_saved_seed_and_notices_changed_setting():
+    assert resolve_concept_resume_seed(123, True, 1776698411) == (1776698411, True)
+    assert resolve_concept_resume_seed(42, False, 42) == (42, False)
+    assert resolve_concept_resume_seed(43, False, 42) == (42, True)

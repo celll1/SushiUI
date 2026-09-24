@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   createStyleTrainingRun, deleteStyleTrainingRun, fetchStyleTrainingDefaults,
   getStyleTrainingMetrics, getStyleTrainingRun, listDatasets, listStyleTrainingRuns,
@@ -8,6 +8,7 @@ import {
   type Dataset, type StyleDatasetConfig, type StyleTrainingConfig, type StyleTrainingMetric,
   type StyleTrainingRun, type StyleTrainingRunDetail,
 } from "@/utils/api";
+import SharedMetricChart, { type ChartSeries } from "../SharedMetricChart";
 
 type Editor = { runId: string | null; name: string; datasetIds: number[]; datasetConfigs: StyleDatasetConfig[]; config: StyleTrainingConfig };
 const editableKeys = [
@@ -147,6 +148,22 @@ export default function StyleTrainingPanel() {
 
   const selected = runs.find(run => run.run_id === selectedId);
   const latest = metrics.at(-1);
+  const lossSeries = useMemo<ChartSeries[]>(() => {
+    const groups = new Map<number, { step: number; value: number; resume_seq: number }[]>();
+    for (const metric of metrics) {
+      if (metric.loss === null || !Number.isFinite(metric.loss)) continue;
+      const points = groups.get(metric.resume_seq) ?? [];
+      points.push({ step: metric.step, value: metric.loss, resume_seq: metric.resume_seq });
+      groups.set(metric.resume_seq, points);
+    }
+    const palette = ["#60a5fa", "#f97316", "#34d399", "#f472b6", "#a78bfa"];
+    return [...groups.entries()].sort(([a], [b]) => a - b).map(([resumeSeq, points]) => ({
+      id: `loss:${resumeSeq}`,
+      label: groups.size > 1 ? `Loss (resume ${resumeSeq})` : "Loss",
+      color: palette[resumeSeq % palette.length],
+      points: points.sort((a, b) => a.step - b.step),
+    }));
+  }, [metrics]);
   const button = "rounded border border-gray-600 px-3 py-1.5 text-sm hover:bg-gray-700 disabled:opacity-40";
   const field = "w-full rounded border border-gray-600 bg-gray-900 px-2 py-1.5 text-sm";
   return (
@@ -229,6 +246,10 @@ export default function StyleTrainingPanel() {
                 <div>Best mAP@R<br /><strong>{selected.best_map_at_r?.toFixed(4) ?? "—"}</strong></div>
                 <div>Learning rate<br /><strong>{selected.latest_lr?.toExponential(2) ?? "—"}</strong></div>
               </div>
+              {lossSeries.length > 0 ? (
+                <SharedMetricChart key={selected.run_id} title="Training loss" series={lossSeries} height={220}
+                  yMinFloor={0} smoothable defaultSmoothing={0.9} />
+              ) : <p className="text-gray-400">No loss history yet.</p>}
               {latest?.hsic_components && <p>HSIC: {Object.entries(latest.hsic_components).map(([name, value]) => `${name} ${value.toFixed(4)}`).join(" · ")}</p>}
               {detail?.warnings.map((warning, index) => <p className="text-amber-300" key={index}>{warning.message}</p>)}
               <div className="flex flex-wrap gap-2">

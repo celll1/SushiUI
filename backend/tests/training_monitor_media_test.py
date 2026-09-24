@@ -18,6 +18,7 @@ _SPEC.loader.exec_module(_MEDIA)
 cached_debug_preview = _MEDIA.cached_debug_preview
 cached_image_preview = _MEDIA.cached_image_preview
 debug_image_urls = _MEDIA.debug_image_urls
+debug_display_resolution = _MEDIA.debug_display_resolution
 file_fingerprint = _MEDIA.file_fingerprint
 find_debug_latent_file = _MEDIA.find_debug_latent_file
 publish_sample_png = _MEDIA.publish_sample_png
@@ -132,6 +133,17 @@ def test_debug_preview_prefers_saved_decode_webp(tmp_path: Path):
     preview, _etag = cached_debug_preview(latent_file, data, "target", 512)
     with Image.open(preview) as image:
         assert image.size == (512, 341)
+    assert debug_display_resolution(data, latent_file) == {
+        "width": 900, "height": 600, "space": "image"
+    }
+
+
+def test_debug_resolution_uses_latent_grid_without_decode(tmp_path: Path):
+    latent_file = tmp_path / "latents_t1.pt"
+    assert debug_display_resolution(
+        {"model_type": "qwen_image_21", "latents": torch.zeros(1, 16, 64, 80)},
+        latent_file,
+    ) == {"width": 80, "height": 64, "space": "latent"}
 
 
 def test_openapi_and_frontend_use_compact_incremental_media_contract():

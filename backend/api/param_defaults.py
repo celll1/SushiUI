@@ -3914,3 +3914,105 @@ VAE_TRAINING_DEFAULTS: Dict[str, Any] = {
     # Changing it MID-RUN puts a step in the vae_val_psnr chart.
     "validation_resolution": 1024,
 }
+
+# ---------------------------------------------------------------------------
+# Style encoder training (StyleTrainingRunCreateRequest)
+# ---------------------------------------------------------------------------
+STYLE_SDXL_GENERATION_DEFAULTS: Dict[str, Any] = {
+    "negative_prompt": "",
+    "width": 512,
+    "height": 512,
+    "steps": 20,
+    "guidance_scale": 5.0,
+    "style_strength": 0.1,
+    "seed": 0,
+}
+
+# Exactly the keys core/style_encoder/style_trainer.StyleTrainingConfig requires
+# (besides dataset_configs); the trainer validates every value. The encoder,
+# feature layer and token width follow the Phase 0 measurement; the patch
+# budget is still open (docs/plans/STYLE_EMBEDDING_DESIGN_2026-09.md §16).
+
+STYLE_TRAINING_DEFAULTS: Dict[str, Any] = {
+    # --- run / model --------------------------------------------------------
+    # Empty: the published weights of vision_encoder_repo (design §4).
+    "vision_encoder_path": "",
+    "vision_encoder_repo": "google/siglip2-so400m-patch16-naflex",
+    "training_method": "lora",
+    "lora_rank": 32,
+    "lora_alpha": 16.0,
+    "lora_dropout": 0.0,
+    "attn_implementation": "sdpa",
+    "mixed_precision": "bf16",
+    "gradient_checkpointing": True,
+    "gpu_index": None,
+    # --- optimisation ---------------------------------------------------------
+    "optimizer": "adamw8bit",
+    "learning_rate": 3e-4,
+    "head_lr_multiplier": 10.0,
+    "weight_decay": 1e-4,
+    "warmup_steps": 100,
+    "min_lr_ratio": 0.0,
+    "max_grad_norm": 1.0,
+    "epochs": 10,
+    # --- housekeeping ---------------------------------------------------------
+    "num_workers": 4,
+    "save_every_n_steps": 500,
+    "keep_last_n_checkpoints": 3,
+    "validate_every": 1,
+    "log_every_n_steps": 10,
+    # Also the evaluation tie-break seed (style_eval.retrieve).
+    "style_seed": 0,
+    "style_split_seed": 0,
+    # --- labels ---------------------------------------------------------------
+    "style_use_tag_aliases": True,
+    "style_use_gelbooru_categories": True,
+    "style_signature_tags": ["signature", "artist name", "watermark", "twitter username", "web address"],
+    "style_non_copyright_tags": ["original"],
+    # --- split / sampling -----------------------------------------------------
+    "style_val_artist_ratio": 0.05,
+    "style_val_image_ratio": 0.02,
+    "style_min_images_per_artist": 4,
+    "style_danbooru_enable": False,
+    "style_danbooru_min_post_count": 100,
+    "style_danbooru_order": "count_desc",
+    "style_danbooru_seed": 0,
+    "style_danbooru_max_artists": 16,
+    "style_danbooru_max_tag_pages": 100,
+    "style_danbooru_max_posts_per_artist": 32,
+    "style_danbooru_max_post_pages_per_artist": 4,
+    "style_danbooru_api_interval": 1.4,
+    "style_danbooru_dl_speed_kbps": 500,
+    "style_artists_per_batch": 16,
+    "style_images_per_artist": 4,
+    "style_same_copyright_batch_ratio": 0.5,
+    "style_artist_sampling_power": 0.5,
+    # --- views / loss ---------------------------------------------------------
+    "style_mask_ratio_min": 0.3,
+    "style_mask_ratio_max": 0.75,
+    "style_max_num_patches": 256,  # 256 vs 1024 is the repo owner's open decision
+    "style_temperature": 0.1,
+    "style_view_positive_weight": 1.0,
+    "style_positive_weight_min": 0.3,
+    "style_hsic_tagger_path": "",
+    "style_hsic_weights": {"Character": 0.1, "Copyright": 0.1, "Rating": 0.1, "Quality": 0.0},
+    # --- head -----------------------------------------------------------------
+    "style_feature_layers": [21],
+    "style_token_dim": 1152,  # divisible by style_pool_heads
+    "style_pool_heads": 8,
+    "style_projector_hidden_dim": 2048,
+    "style_embed_dim": 512,
+    # --- evaluation -----------------------------------------------------------
+    "style_val_max_items": 20000,
+    "style_val_batch_size": 64,
+    # Collapsed embeddings tie every similarity, so a retrieval chunk then holds
+    # ~65 B per (query, gallery) pair on the device: 256 x 20000 ~ 0.33 GB.
+    "style_eval_chunk_size": 256,
+}
+
+# GET /style-training/runs/{run_id}/metrics query parameters.
+STYLE_TRAINING_METRICS_QUERY_DEFAULTS: Dict[str, Any] = {
+    "since_step": 0,
+    # Uniform decimation budget of the dense per-step rows; 0 = no limit.
+    "max_points": 2000,
+}

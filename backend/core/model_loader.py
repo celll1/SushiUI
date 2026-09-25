@@ -2511,6 +2511,8 @@ class ModelLoader:
         # Use single_file loading which is the standard way to load safetensors
         print(f"[ModelLoader] Loading as {'SDXL' if model_type == 'sdxl' else 'SD1.5'} (standard pipeline)")
         try:
+            from core.transformers_clip_compat import install as install_clip_compat
+            install_clip_compat()
             if model_type == "sdxl":
                 # Only pass vae parameter if external VAE was loaded
                 if external_vae is not None:

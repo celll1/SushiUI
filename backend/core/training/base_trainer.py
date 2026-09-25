@@ -4867,6 +4867,8 @@ class BaseTrainer(ABC):
                           f"layer={self.te_hidden_layer}, train_encoder={self.sdxl_te_train_encoder})")
             else:
                 # Standard SD1.5 / SDXL: plain from_single_file (unchanged path)
+                from core.transformers_clip_compat import install as install_clip_compat
+                install_clip_compat()
                 if is_sdxl_model:
                     print(f"{self.log_prefix} Detected SDXL checkpoint")
                     from diffusers import StableDiffusionXLPipeline

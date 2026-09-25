@@ -199,6 +199,37 @@ def _infer_config_from_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[s
     }
 
 
+_LEGACY_PREFIX = "vision_model."
+
+
+def _normalize_vision_state_dict(
+    state_dict: Dict[str, torch.Tensor], model: nn.Module
+) -> Dict[str, torch.Tensor]:
+    """Map on-disk keys onto ``model``'s keys exactly, or raise.
+
+    transformers 5.x ``Siglip2VisionModel`` keys are bare (``embeddings.*``); files
+    saved by this wrapper under 4.x carry a ``vision_model.`` prefix.
+    """
+    normalized: Dict[str, torch.Tensor] = {}
+    for key, value in state_dict.items():
+        bare = key[len(_LEGACY_PREFIX):] if key.startswith(_LEGACY_PREFIX) else key
+        if bare in normalized:
+            raise ValueError(f"Vision encoder checkpoint has both '{bare}' and '{_LEGACY_PREFIX}{bare}'")
+        normalized[bare] = value
+
+    expected = set(model.state_dict().keys())
+    missing = sorted(expected - normalized.keys())
+    unexpected = sorted(normalized.keys() - expected)
+    if missing or unexpected:
+        def _head(keys: List[str]) -> str:
+            return f"{keys[:5]}{'...' if len(keys) > 5 else ''}"
+        raise ValueError(
+            f"Vision encoder checkpoint does not match Siglip2VisionModel: "
+            f"{len(missing)} missing {_head(missing)}, {len(unexpected)} unexpected {_head(unexpected)}"
+        )
+    return normalized
+
+
 class SigLIP2VisionEncoderWrapper:
     """
     Wraps Siglip2VisionModel loaded from a safetensors checkpoint.
@@ -238,18 +269,7 @@ class SigLIP2VisionEncoderWrapper:
         config = Siglip2VisionConfig(**cfg_dict)
         self.model = Siglip2VisionModel(config)
 
-        # Some checkpoint formats omit the "vision_model." prefix that Siglip2VisionModel expects.
-        # Detect this by checking whether any key begins with "vision_model."; if not, remap.
-        if raw_sd and not any(k.startswith("vision_model.") for k in raw_sd):
-            raw_sd = {f"vision_model.{k}": v for k, v in raw_sd.items()}
-            print("[VisionEncoder] Remapped keys: added 'vision_model.' prefix")
-
-        # Load weights (strict=False to tolerate missing header_token)
-        missing, unexpected = self.model.load_state_dict(raw_sd, strict=False)
-        if missing:
-            print(f"[VisionEncoder] Missing keys: {missing[:5]}{'...' if len(missing) > 5 else ''}")
-        if unexpected:
-            print(f"[VisionEncoder] Unexpected keys: {unexpected[:5]}{'...' if len(unexpected) > 5 else ''}")
+        self.model.load_state_dict(_normalize_vision_state_dict(raw_sd, self.model), strict=True)
 
         self.model.eval()
         self.model.to(device)

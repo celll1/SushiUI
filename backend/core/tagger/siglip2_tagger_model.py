@@ -124,6 +124,28 @@ class LoRALinear(nn.Module):
             self.base.weight.data += delta
 
 
+def inject_lora(
+    root: nn.Module, patterns: List[str], rank: int, alpha: float, dropout: float,
+) -> Dict[str, LoRALinear]:
+    """Replace each nn.Linear under *root* whose qualified name matches a pattern with LoRALinear."""
+    compiled = [re.compile(p) for p in patterns]
+    injected: Dict[str, LoRALinear] = {}
+    for name, module in list(root.named_modules()):
+        if not isinstance(module, nn.Linear):
+            continue
+        if not any(p.match(name) for p in compiled):
+            continue
+
+        parts  = name.split(".")
+        parent = root
+        for part in parts[:-1]:
+            parent = getattr(parent, part)
+
+        lora_linear = LoRALinear(module, rank=rank, alpha=alpha, dropout=dropout)
+        setattr(parent, parts[-1], lora_linear)
+        injected[name] = lora_linear
+    return injected
+
 
 def _load_vision_encoder(
     safetensors_path: str,
@@ -414,7 +436,7 @@ class SigLIP2TaggerModel(nn.Module):
         if self.is_naflex:
             out = self.vision_encoder(
                 pixel_values=pixel_values,
-                attention_mask=pixel_attention_mask,
+                pixel_attention_mask=pixel_attention_mask,
                 spatial_shapes=spatial_shapes,
             )
         else:
@@ -575,23 +597,9 @@ class SigLIP2TaggerLoRAModel(nn.Module):
         self._inject_lora(lora_rank, lora_alpha, lora_dropout)
 
     def _inject_lora(self, rank: int, alpha: float, dropout: float) -> None:
-        patterns = [re.compile(p) for p in self.LORA_TARGET_PATTERNS]
-
-        for name, module in list(self.vision_encoder.named_modules()):
-            if not isinstance(module, nn.Linear):
-                continue
-            if not any(p.match(name) for p in patterns):
-                continue
-
-            parts  = name.split(".")
-            parent = self.vision_encoder
-            for part in parts[:-1]:
-                parent = getattr(parent, part)
-
-            lora_linear = LoRALinear(module, rank=rank, alpha=alpha, dropout=dropout)
-            setattr(parent, parts[-1], lora_linear)
-            self._lora_modules[name] = lora_linear
-
+        self._lora_modules.update(
+            inject_lora(self.vision_encoder, self.LORA_TARGET_PATTERNS, rank, alpha, dropout)
+        )
         print(f"[TaggerLoRA] Injected LoRA into {len(self._lora_modules)} modules")
 
     def forward(
@@ -603,7 +611,7 @@ class SigLIP2TaggerLoRAModel(nn.Module):
         if self.is_naflex:
             out = self.vision_encoder(
                 pixel_values=pixel_values,
-                attention_mask=pixel_attention_mask,
+                pixel_attention_mask=pixel_attention_mask,
                 spatial_shapes=spatial_shapes,
             )
         else:

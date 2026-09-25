@@ -13,7 +13,7 @@ from core.tagger.siglip2_tagger_model import CustomAttentionPooling, SigLIP2Tagg
 
 
 class _IdentityEncoder(nn.Module):
-    def forward(self, pixel_values, attention_mask=None, spatial_shapes=None):
+    def forward(self, pixel_values, pixel_attention_mask, spatial_shapes, **kwargs):
         return SimpleNamespace(last_hidden_state=pixel_values)
 
 

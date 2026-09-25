@@ -126,6 +126,8 @@ def _load_alignment_teacher(trainer, donor: str) -> None:
             str(path), torch_dtype=trainer.weight_dtype
         )
     else:
+        from core.transformers_clip_compat import install as install_clip_compat
+        install_clip_compat()
         pipeline = StableDiffusionXLPipeline.from_single_file(
             str(path), torch_dtype=trainer.weight_dtype, use_safetensors=True
         )

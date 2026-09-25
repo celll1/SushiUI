@@ -199,6 +199,15 @@ class ConnectionManager:
         self.message_queue.put(data)
         self._notify_sender()
 
+    def send_style_metrics(self, run_id: str, event_type: str, step: int, resume_seq: int = 0, **fields):
+        """Style training step / epoch / validation event (WS_PROTOCOL.md `style_metrics`); None fields are
+        omitted. Thread-safe (uses the message queue)."""
+        data = {"type": "style_metrics", "run_id": run_id, "event": event_type, "step": step,
+                "resume_seq": resume_seq}
+        data.update({key: value for key, value in fields.items() if value is not None})
+        self.message_queue.put(data)
+        self._notify_sender()
+
     def send_dataset_scan_progress(
         self,
         *,

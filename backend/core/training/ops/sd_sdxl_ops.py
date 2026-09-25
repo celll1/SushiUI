@@ -75,6 +75,8 @@ def load_components(trainer) -> None:
                 "vae": declared_module,
             }
         # Try SDXL first, fall back to SD1.5
+        from core.transformers_clip_compat import install as install_clip_compat
+        install_clip_compat()
         try:
             print(f"{trainer.log_prefix} Trying SDXL pipeline...")
             temp_pipeline = StableDiffusionXLPipeline.from_single_file(

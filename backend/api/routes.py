@@ -162,9 +162,20 @@ from api.schema_routes import (
     get_vae_training_defaults,
     router as schema_router,
 )
+from api.style_training_routes import router as style_training_router
+from api.style_inference_routes import router as style_inference_router
+from api.training_run_helpers import (
+    LazySerialExecutor,
+    decimate_metric_rows,
+    next_resume_seq,
+    upsert_metric_row,
+    validate_gpu_index,
+)
 
 router = APIRouter()
 router.include_router(schema_router)
+router.include_router(style_training_router)
+router.include_router(style_inference_router)
 
 minimax_h3_prompt_assistant = MiniMaxH3PromptAssistant(
     PROMPT_ASSIST_DEFAULTS["cache_max_entries"]
@@ -21019,18 +21030,12 @@ class TaggerTrainingRunCreateRequest(BaseModel):
 
 # Active tagger training threads
 _tagger_training_threads: Dict[str, Any] = {}
-_tagger_detail_executor = None
+_tagger_detail_writer = LazySerialExecutor("tagger_detail_db")
 
 
 def _get_tagger_detail_executor():
     """One ordered history writer for all tagger runs, created on first use."""
-    global _tagger_detail_executor
-    if _tagger_detail_executor is None:
-        from concurrent.futures import ThreadPoolExecutor
-        _tagger_detail_executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="tagger_detail_db"
-        )
-    return _tagger_detail_executor
+    return _tagger_detail_writer.get()
 
 
 def _make_tagger_progress_callback(run_id: str, training_db_factory):
@@ -21043,7 +21048,6 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
     contributes a distinct curve in the loss chart.
     """
     from database.training_detail_store import open_tagger_history_session
-    from sqlalchemy import func as _sa_func
     _db = training_db_factory()
     _history_db = None
     _owns_history_db = False
@@ -21051,10 +21055,7 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
         _history_db, _owns_history_db, _ = open_tagger_history_session(
             _db, run_id
         )
-        _max_seq = _history_db.query(
-            _sa_func.coalesce(_sa_func.max(TaggerTrainingMetrics.resume_seq), -1)
-        ).filter(TaggerTrainingMetrics.run_id == run_id).scalar()
-        resume_seq = int(_max_seq) + 1   # 0 for fresh; existing_max + 1 on resume
+        resume_seq = next_resume_seq(_history_db, TaggerTrainingMetrics, run_id)
     except Exception as e:
         print(f"[TaggerCallback] Could not determine resume_seq for {run_id}: {e}; defaulting to 0")
         resume_seq = 0
@@ -21075,19 +21076,7 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
             history_db, owns_history_db, _ = open_tagger_history_session(
                 catalog_db, rid
             )
-            existing = history_db.query(TaggerTrainingMetrics).filter(
-                TaggerTrainingMetrics.run_id == rid,
-                TaggerTrainingMetrics.resume_seq == resume_seq,
-                TaggerTrainingMetrics.step == step,
-            ).first()
-            if existing:
-                for key, value in values.items():
-                    if value is not None:
-                        setattr(existing, key, value)
-            else:
-                history_db.add(TaggerTrainingMetrics(
-                    run_id=rid, resume_seq=resume_seq, step=step, **values
-                ))
+            upsert_metric_row(history_db, TaggerTrainingMetrics, rid, resume_seq, step, values)
             history_db.commit()
         except Exception as exc:
             if history_db is not None:
@@ -21399,18 +21388,7 @@ async def start_tagger_training_run(run_id: str, training_db: Session = Depends(
 
     # GPU selection is validated before the row is moved to "starting": the
     # trainer thread would otherwise have to fail the run to report it.
-    _tagger_gpu_index = (run.config or {}).get("gpu_index")
-    if _tagger_gpu_index is not None:
-        import torch as _torch
-        _device_count = _torch.cuda.device_count()
-        if not isinstance(_tagger_gpu_index, int) or not (0 <= _tagger_gpu_index < _device_count):
-            raise CustomValidationError(
-                "Selected GPU is not available",
-                detail=(
-                    f"gpu_index={_tagger_gpu_index!r} but this machine exposes "
-                    f"{_device_count} CUDA device(s)."
-                ),
-            )
+    validate_gpu_index((run.config or {}).get("gpu_index"))
 
     previous_status = run.status
     previous_started_at = run.started_at
@@ -21812,43 +21790,12 @@ def get_tagger_training_metrics(
             .order_by(TaggerTrainingMetrics.resume_seq, TaggerTrainingMetrics.step)
             .all()
         )
-    # Group by resume_seq so each curve gets its own decimation budget.
-    # Without this, sparse early resumes can get fully decimated away when a
-    # later resume has many more points.
-    from collections import defaultdict as _defaultdict
-    groups: Dict[int, List] = _defaultdict(list)
-    for m in rows:
-        groups[m.resume_seq].append(m)
-
-    # Validation rows (f1 / threshold non-null) are sparse — typically one per
-    # epoch — and easily fall through the cracks of a fixed-step decimation
-    # grid.  Split them out, decimate only the dense training-loss rows, and
-    # always include the full validation set.  Without this the Validation F1
-    # and Optimal Threshold charts render empty for any run with > max_points
-    # total metrics.
+    # Validation rows (f1 / threshold non-null) are one per epoch; without keeping
+    # them whole the Validation F1 / Threshold charts empty past max_points.
     def _is_validation_row(m) -> bool:
         return getattr(m, "f1", None) is not None or getattr(m, "threshold", None) is not None
 
-    data: List[dict] = []
-    if max_points > 0 and len(rows) > max_points:
-        per_group_max = max(50, max_points // max(1, len(groups)))
-        for seq in sorted(groups):
-            g_all   = groups[seq]
-            g_train = [m for m in g_all if not _is_validation_row(m)]
-            g_val   = [m for m in g_all if _is_validation_row(m)]
-            # Decimate training-loss rows only
-            if len(g_train) > per_group_max:
-                step_size = max(1, len(g_train) // per_group_max)
-                indices = list(range(0, len(g_train), step_size))
-                if indices[-1] != len(g_train) - 1:
-                    indices.append(len(g_train) - 1)
-                g_train = [g_train[i] for i in indices]
-            # Re-merge by step so the consumer sees a monotonic series
-            merged = sorted(g_train + g_val, key=lambda m: m.step)
-            data.extend(m.to_dict() for m in merged)
-    else:
-        for seq in sorted(groups):
-            data.extend(m.to_dict() for m in groups[seq])
+    data = decimate_metric_rows(rows, max_points, _is_validation_row)
     if owns_metrics_db:
         metrics_db.close()
     return data

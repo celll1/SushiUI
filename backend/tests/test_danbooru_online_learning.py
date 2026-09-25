@@ -43,6 +43,15 @@ from PIL import Image
 
 # Subjects under test
 from backend.core.tagger.danbooru_client import DanbooruClient, _RATING_MAP
+_original_minimum_api_interval = DanbooruClient._minimum_api_interval
+
+
+def setUpModule():
+    DanbooruClient._minimum_api_interval = 0.0  # mocked API tests use zero-delay clients
+
+
+def tearDownModule():
+    DanbooruClient._minimum_api_interval = _original_minimum_api_interval
 from backend.core.tagger.danbooru_sampler import (
     DanbooruSampleBuffer,
     MixedDataLoader,

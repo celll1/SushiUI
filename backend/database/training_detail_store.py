@@ -16,6 +16,7 @@ CENTRAL_V1 = "central_v1"
 RUN_DB_V2 = "run_db_v2"
 RUN_DB_FILENAME = "training_run.db"
 TAGGER_RUN_DB_FILENAME = "tagger_training_run.db"
+STYLE_RUN_DB_FILENAME = "style_training_run.db"
 SUPPORTED_DETAIL_STORES = frozenset((CENTRAL_V1, RUN_DB_V2))
 RUN_DB_SCHEMA_VERSION = 2
 TERMINAL_RUN_STATUSES = frozenset(("completed", "failed", "stopped"))
@@ -54,17 +55,125 @@ def detail_db_path(run) -> Path:
     return Path(output_dir) / name
 
 
-def tagger_detail_db_path(run) -> Path:
-    """Resolve the fixed tagger DB name beneath its output directory."""
+@dataclass(frozen=True)
+class _KeyedStore:
+    """A run kind whose metrics are keyed by the string `run_id` (tagger, style)."""
+    run_model: str      # ORM class names in .models
+    metric_model: str
+    default_db_name: str
+    run_label: str      # "Tagger training run"
+    short_label: str    # "Tagger run"
+    db_label: str       # "tagger detail database"
+    migrate_on_open: bool
+
+    def models(self):
+        from . import models
+        return getattr(models, self.run_model), getattr(models, self.metric_model)
+
+
+_TAGGER_STORE = _KeyedStore("TaggerTrainingRun", "TaggerTrainingMetrics", TAGGER_RUN_DB_FILENAME,
+                            "Tagger training run", "Tagger run", "tagger detail database", False)
+_STYLE_STORE = _KeyedStore("StyleTrainingRun", "StyleTrainingMetrics", STYLE_RUN_DB_FILENAME,
+                           "Style training run", "Style run", "style detail database", True)
+
+
+def _keyed_detail_db_path(store: _KeyedStore, run) -> Path:
     output_dir = getattr(run, "output_dir", None)
     if not output_dir:
-        raise DetailStoreError("Tagger training run has no output directory")
+        raise DetailStoreError(f"{store.run_label} has no output directory")
     configured_name = getattr(run, "detail_db_name", None)
-    name = TAGGER_RUN_DB_FILENAME if configured_name is None else configured_name
+    name = store.default_db_name if configured_name is None else configured_name
     candidate = Path(name)
     if candidate.name != name or candidate.is_absolute() or name in ("", ".", ".."):
-        raise DetailStoreError(f"Invalid tagger detail database name: {name!r}")
+        raise DetailStoreError(f"Invalid {store.db_label} name: {name!r}")
     return Path(output_dir) / name
+
+
+def _mismatch(store: _KeyedStore, path: Path) -> DetailStoreError:
+    return DetailStoreError(f"{store.db_label[0].upper()}{store.db_label[1:]} identity mismatch at {path}")
+
+
+@lru_cache(maxsize=64)
+def _migrate_keyed_schema(store: _KeyedStore, path_text: str) -> None:
+    """Create missing tables and add missing model columns in an existing run DB, once per process."""
+    from .auto_migrate import auto_migrate
+
+    engine = _run_db_session_factory(path_text).kw["bind"]
+    models = store.models()
+    for model in models:
+        model.__table__.create(bind=engine, checkfirst=True)
+    auto_migrate(engine, None, Path(path_text).name, model_classes=models)
+
+
+def _initialize_keyed_detail_database(store: _KeyedStore, run):
+    run_model, metric_model = store.models()
+    path = _keyed_detail_db_path(store, run)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    factory = run_db_session_factory(path)
+    engine = factory.kw["bind"]
+    for table in (run_model.__table__, metric_model.__table__):
+        table.create(bind=engine, checkfirst=True)
+    if store.migrate_on_open:
+        _migrate_keyed_schema(store, str(path.resolve()))
+    values = {
+        column.name: getattr(run, column.name)
+        for column in run_model.__table__.columns
+    }
+    db = factory()
+    try:
+        local = db.query(run_model).filter(run_model.run_id == run.run_id).first()
+        if local is None:
+            if db.query(run_model).count():
+                raise _mismatch(store, path)
+            db.add(run_model(**values))
+            db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+    return factory
+
+
+def _open_keyed_detail_session(store: _KeyedStore, run):
+    run_model, _ = store.models()
+    if detail_store_kind(run) != RUN_DB_V2:
+        raise DetailStoreError(f"{store.short_label} does not use a v2 detail database")
+    path = _keyed_detail_db_path(store, run)
+    if not path.is_file():
+        raise DetailStoreError(f"{store.db_label[0].upper()}{store.db_label[1:]} is unavailable: {path}")
+    if store.migrate_on_open:
+        _migrate_keyed_schema(store, str(path.resolve()))
+    db = run_db_session_factory(path)()
+    try:
+        local = db.query(run_model).filter(run_model.run_id == run.run_id).first()
+        if local is None:
+            raise _mismatch(store, path)
+        return db
+    except Exception:
+        db.close()
+        raise
+
+
+def _open_keyed_history_session(store: _KeyedStore, catalog_db, run_id: str):
+    run_model, _ = store.models()
+    run = catalog_db.query(run_model).filter(run_model.run_id == run_id).first()
+    if run is None:
+        raise DetailStoreError(f"{store.run_label} {run_id!r} is missing from the catalogue")
+    if detail_store_kind(run) == CENTRAL_V1:
+        return catalog_db, False, run
+    if run.detail_state != "ready":
+        raise DetailStoreError(f"{store.short_label} {run_id!r} detail store is not ready: {run.detail_state!r}")
+    return _open_keyed_detail_session(store, run), True, run
+
+
+def tagger_detail_db_path(run) -> Path:
+    """Resolve the fixed tagger DB name beneath its output directory."""
+    return _keyed_detail_db_path(_TAGGER_STORE, run)
+
+
+def style_detail_db_path(run) -> Path:
+    return _keyed_detail_db_path(_STYLE_STORE, run)
 
 
 def resolve_detail_store(run) -> DetailStoreLocation:
@@ -382,80 +491,30 @@ def migrate_terminal_run_to_v2(central_db, run, *, batch_size: int = 5000) -> di
 
 def initialize_tagger_detail_database(run):
     """Create and identify a tagger run's isolated detail database."""
-    from .models import TaggerTrainingMetrics, TaggerTrainingRun
-
-    path = tagger_detail_db_path(run)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    factory = run_db_session_factory(path)
-    engine = factory.kw["bind"]
-    for table in (TaggerTrainingRun.__table__, TaggerTrainingMetrics.__table__):
-        table.create(bind=engine, checkfirst=True)
-    values = {
-        column.name: getattr(run, column.name)
-        for column in TaggerTrainingRun.__table__.columns
-    }
-    db = factory()
-    try:
-        local = db.query(TaggerTrainingRun).filter(
-            TaggerTrainingRun.run_id == run.run_id
-        ).first()
-        if local is None:
-            if db.query(TaggerTrainingRun).count():
-                raise DetailStoreError(
-                    f"Tagger detail database identity mismatch at {path}"
-                )
-            db.add(TaggerTrainingRun(**values))
-            db.commit()
-    except Exception:
-        db.rollback()
-        raise
-    finally:
-        db.close()
-    return factory
+    return _initialize_keyed_detail_database(_TAGGER_STORE, run)
 
 
 def open_tagger_detail_session(run):
     """Open an existing tagger run DB and verify its UUID identity."""
-    from .models import TaggerTrainingRun
-
-    if detail_store_kind(run) != RUN_DB_V2:
-        raise DetailStoreError("Tagger run does not use a v2 detail database")
-    path = tagger_detail_db_path(run)
-    if not path.is_file():
-        raise DetailStoreError(f"Tagger detail database is unavailable: {path}")
-    db = run_db_session_factory(path)()
-    try:
-        local = db.query(TaggerTrainingRun).filter(
-            TaggerTrainingRun.run_id == run.run_id
-        ).first()
-        if local is None:
-            raise DetailStoreError(
-                f"Tagger detail database identity mismatch at {path}"
-            )
-        return db
-    except Exception:
-        db.close()
-        raise
+    return _open_keyed_detail_session(_TAGGER_STORE, run)
 
 
 def open_tagger_history_session(catalog_db, run_id: str):
     """Return the authoritative tagger history session and ownership flag."""
-    from .models import TaggerTrainingRun
+    return _open_keyed_history_session(_TAGGER_STORE, catalog_db, run_id)
 
-    run = catalog_db.query(TaggerTrainingRun).filter(
-        TaggerTrainingRun.run_id == run_id
-    ).first()
-    if run is None:
-        raise DetailStoreError(
-            f"Tagger training run {run_id!r} is missing from the catalogue"
-        )
-    if detail_store_kind(run) == CENTRAL_V1:
-        return catalog_db, False, run
-    if run.detail_state != "ready":
-        raise DetailStoreError(
-            f"Tagger run {run_id!r} detail store is not ready: {run.detail_state!r}"
-        )
-    return open_tagger_detail_session(run), True, run
+
+def initialize_style_detail_database(run):
+    """Create and identify a style run's detail database; reopening an existing one is a no-op."""
+    return _initialize_keyed_detail_database(_STYLE_STORE, run)
+
+
+def open_style_detail_session(run):
+    return _open_keyed_detail_session(_STYLE_STORE, run)
+
+
+def open_style_history_session(catalog_db, run_id: str):
+    return _open_keyed_history_session(_STYLE_STORE, catalog_db, run_id)
 
 
 def _verify_tagger_migrated_counts(central_db, local_db, run_id: str) -> dict:

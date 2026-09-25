@@ -381,7 +381,7 @@ function TrainingPageContent() {
               >
                 {isMobile ? "New" : "New VAE Run"}
               </button>
-            )}
+            ) : null}
           </div>
         </div>
 

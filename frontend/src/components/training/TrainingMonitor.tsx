@@ -547,13 +547,13 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
     };
   }, [currentRun.id, currentRun.status]);
 
-  // The overlay: source and target faint, the law actually being sampled solid.
+  // The overlay: source and target faint, the active sampling law solid.
   const timestepCurves = useMemo<TimestepGraphCurve[] | null>(() => {
     const status = timestepStatus?.status;
     if (!status) return null;
     if (!status.active || !status.source || !status.target) {
       const single = status.target ? densityOf(status.target) : null;
-      return single ? [{ points: single, color: "#3b82f6", label: "sampled" }] : null;
+      return single ? [{ points: single, color: "#3b82f6", label: "active law" }] : null;
     }
     const source = densityOf(status.source);
     const target = densityOf(status.target);

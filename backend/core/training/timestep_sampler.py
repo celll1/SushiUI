@@ -5,7 +5,7 @@ This module provides an extensible framework for sampling timesteps during train
 
 Supported distributions:
 - UniformTimestepSampler: Standard uniform distribution [min, max]
-- NormalTimestepSampler: Gaussian distribution, clamped to [min, max]
+- NormalTimestepSampler: Gaussian distribution conditioned on [min, max]
 - LogitNormalTimestepSampler: Logit-normal (sigmoid of normal), used in FLUX/SD3
 - BetaTimestepSampler: Beta distribution for flexible shape control
 - CustomTimestepSampler: Arbitrary weighted distribution
@@ -235,7 +235,7 @@ class UniformTimestepSampler(TimestepSampler):
 
 class NormalTimestepSampler(TimestepSampler):
     """
-    Sample timesteps from normal (Gaussian) distribution.
+    Sample timesteps from a normal distribution truncated to [min, max].
 
     Useful for focusing training on specific timestep ranges while still
     covering the full range with lower probability.
@@ -249,20 +249,32 @@ class NormalTimestepSampler(TimestepSampler):
         std: float = 0.2
     ):
         super().__init__(min_timestep, max_timestep)
+        if not math.isfinite(mean) or not math.isfinite(std) or std <= 0:
+            raise ValueError("normal timestep mean must be finite and std must be finite and > 0")
         self.mean = mean
         self.std = std
+        lower = (min_timestep - mean) / std
+        upper = (max_timestep - mean) / std
+        self._upper_tail = lower >= 0
+        if self._upper_tail:
+            self._cdf_start = 0.5 * math.erfc(lower / math.sqrt(2))
+            self._cdf_span = self._cdf_start - 0.5 * math.erfc(upper / math.sqrt(2))
+        else:
+            self._cdf_start = 0.5 * math.erfc(-lower / math.sqrt(2))
+            self._cdf_span = 0.5 * math.erfc(-upper / math.sqrt(2)) - self._cdf_start
+        if self._cdf_span <= 0:
+            raise ValueError("normal timestep distribution has no representable mass in the selected range")
 
     def sample(self, batch_size: int, device: torch.device) -> torch.Tensor:
-        """Sample from normal distribution, clamped to [min, max]."""
-        timesteps = torch.randn(batch_size, device=device) * self.std + self.mean
-        timesteps = torch.clamp(timesteps, self.min_timestep, self.max_timestep)
-        return timesteps
+        return self.icdf(torch.rand(batch_size, device=device, dtype=torch.float64)).float()
 
     def icdf(self, u: torch.Tensor) -> torch.Tensor:
-        # Clamping is monotone, so the quantile of the clamped variable is the
-        # clamped quantile -- the same law ``sample`` produces, atoms included.
-        z = torch.special.ndtri(u.clamp(1e-7, 1 - 1e-7))
-        return torch.clamp(z * self.std + self.mean, self.min_timestep, self.max_timestep)
+        quantile = u.to(torch.float64).clamp(1e-12, 1 - 1e-12)
+        probability = self._cdf_start + (
+            -quantile if self._upper_tail else quantile
+        ) * self._cdf_span
+        z = -torch.special.ndtri(probability) if self._upper_tail else torch.special.ndtri(probability)
+        return (z * self.std + self.mean).to(u.dtype)
 
 
 class LogitNormalTimestepSampler(TimestepSampler):

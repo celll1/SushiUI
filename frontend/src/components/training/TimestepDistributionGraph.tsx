@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { densityOf } from "@/utils/timestepDistribution";
 
 /** One pre-computed density, for the morph overlay (see `curves` below). */
 export interface TimestepGraphCurve {
@@ -27,74 +28,6 @@ interface TimestepDistributionGraphProps {
    * interpolation no single parameter set describes.
    */
   curves?: TimestepGraphCurve[];
-}
-
-/**
- * Calculate probability density for different distributions.
- * These are normalized for visualization purposes (not exact PDFs).
- */
-
-// Standard normal PDF
-function normalPdf(x: number, mean: number, std: number): number {
-  const z = (x - mean) / std;
-  return Math.exp(-0.5 * z * z) / (std * Math.sqrt(2 * Math.PI));
-}
-
-// Logit-normal PDF: derivative of sigmoid(normal)
-// PDF(t) = (1 / (std * sqrt(2*pi))) * (1 / (t * (1-t))) * exp(-0.5 * ((logit(t) - mean) / std)^2)
-function logitNormalPdf(t: number, mean: number, std: number): number {
-  // Avoid division by zero at boundaries
-  if (t <= 0.001 || t >= 0.999) return 0;
-
-  const logit = Math.log(t / (1 - t));
-  const z = (logit - mean) / std;
-  const jacobian = 1 / (t * (1 - t));
-  return normalPdf(logit, mean, std) * jacobian;
-}
-
-// Beta PDF using the gamma function approximation
-function betaPdf(x: number, alpha: number, beta: number): number {
-  if (x <= 0 || x >= 1) return 0;
-
-  const logBeta = logGamma(alpha) + logGamma(beta) - logGamma(alpha + beta);
-  const logPdf = (alpha - 1) * Math.log(x) + (beta - 1) * Math.log(1 - x) - logBeta;
-  return Math.exp(logPdf);
-}
-
-// Log-gamma approximation (Stirling's approximation for large values)
-function logGamma(x: number): number {
-  if (x <= 0) return 0;
-  if (x < 0.5) {
-    // Reflection formula
-    return Math.log(Math.PI / Math.sin(Math.PI * x)) - logGamma(1 - x);
-  }
-  // Lanczos approximation
-  const g = 7;
-  const c = [
-    0.99999999999980993,
-    676.5203681218851,
-    -1259.1392167224028,
-    771.32342877765313,
-    -176.61502916214059,
-    12.507343278686905,
-    -0.13857109526572012,
-    9.9843695780195716e-6,
-    1.5056327351493116e-7,
-  ];
-
-  x -= 1;
-  let sum = c[0];
-  for (let i = 1; i < g + 2; i++) {
-    sum += c[i] / (x + i);
-  }
-  const t = x + g + 0.5;
-  return 0.5 * Math.log(2 * Math.PI) + (x + 0.5) * Math.log(t) - t + Math.log(sum);
-}
-
-// Uniform PDF (constant)
-function uniformPdf(x: number, min: number, max: number): number {
-  if (x < min || x > max) return 0;
-  return 1 / (max - min);
 }
 
 export default function TimestepDistributionGraph({
@@ -149,48 +82,22 @@ export default function TimestepDistributionGraph({
     safeAlpha > 0 &&
     safeBeta > 0;
 
-  const { path, maxY, points } = useMemo(() => {
-    if (!isValidForRender) {
-      return { path: "", maxY: 1, points: [] };
-    }
-
-    const numPoints = 100;
-    const pts: { x: number; y: number }[] = [];
-
-    for (let i = 0; i <= numPoints; i++) {
-      const t = i / numPoints; // 0 to 1
-      let y = 0;
-
-      switch (distribution) {
-        case "uniform":
-          // Uniform within [minTimestep, maxTimestep]
-          if (t >= safeMinTimestep && t <= safeMaxTimestep) {
-            y = 1;
-          }
-          break;
-
-        case "logit_normal":
-        case "lognormal":
-          y = logitNormalPdf(t, safeMean, safeStd);
-          break;
-
-        case "normal":
-          // Normal distribution clamped to [0, 1]
-          if (t >= safeMinTimestep && t <= safeMaxTimestep) {
-            y = normalPdf(t, safeMean, safeStd);
-          }
-          break;
-
-        case "beta":
-          y = betaPdf(t, safeAlpha, safeBeta);
-          break;
-
-        default:
-          y = 1; // Default to uniform
-      }
-
-      pts.push({ x: t, y: isFinite(y) ? y : 0 });
-    }
+  const path = useMemo(() => {
+    if (!isValidForRender) return "";
+    const pts = densityOf({
+      version: 1,
+      kind: "config",
+      config: {
+        distribution,
+        min_timestep: safeMinTimestep,
+        max_timestep: safeMaxTimestep,
+        mean: safeMean,
+        std: safeStd,
+        alpha: safeAlpha,
+        beta: safeBeta,
+      },
+    });
+    if (!pts) return "";
 
     const maxYVal = Math.max(...pts.map(p => p.y), 0.001);
 
@@ -209,7 +116,7 @@ export default function TimestepDistributionGraph({
       }
     });
 
-    return { path: pathStr, maxY: maxYVal, points: pts };
+    return pathStr;
   }, [distribution, isValidForRender, safeMinTimestep, safeMaxTimestep, safeMean, safeStd, safeAlpha, safeBeta, renderWidth, height]);
 
   const overlayPaths = useMemo(() => {

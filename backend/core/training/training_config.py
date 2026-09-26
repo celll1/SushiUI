@@ -415,6 +415,7 @@ def _build_train_section(
     # "conduit"; base_trainer applies the resume backward-compat (missing key on a
     # resume -> "diffusers"). Orthogonal to attention_backend.
     train["attention_impl"] = p.get("attention_impl", "conduit")
+    train["tq_backward_mode"] = p.get("tq_backward_mode", _TD["tq_backward_mode"])
     train["min_snr_gamma"] = p.get("min_snr_gamma", 5.0)
     train["reconstruction_loss_weight"] = validate_reconstruction_loss_weight(
         p.get("reconstruction_loss_weight"))

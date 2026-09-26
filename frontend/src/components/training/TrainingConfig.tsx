@@ -3737,7 +3737,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   >
                     <option value="uniform">Uniform (Default)</option>
                     <option value="logit_normal">Logit-Normal (FLUX/SD3)</option>
-                    <option value="normal">Normal (Gaussian)</option>
+                    <option value="normal">Normal (Gaussian, truncated to range)</option>
                     <option value="beta">Beta Distribution</option>
                   </select>
                   <p className="text-xs text-gray-500 mt-1">
@@ -3805,7 +3805,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     </div>
                     <p className="col-span-2 text-xs text-gray-500">
                       {timestepDistribution === "normal" ? (
-                        <>Mean: center of distribution (0.0-1.0). Std: spread (smaller = more concentrated)</>
+                        <>Mean: center of the Gaussian. Std: spread. Probability is renormalized within Min/Max, without piling up at the endpoints.</>
                       ) : (
                         <>{meanBiasNote}</>
                       )}

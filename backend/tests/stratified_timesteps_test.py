@@ -87,6 +87,18 @@ def test_icdf_is_the_inverse_of_the_sampled_cdf(name):
         assert analytic == pytest.approx(empirical, abs=0.01), f"{name} @ p={p}"
 
 
+def test_normal_truncation_redistributes_outside_mass_without_endpoint_atoms():
+    sampler = NormalTimestepSampler(0.0, 1.0, 1.0, 0.2)
+    torch.manual_seed(42)
+    drawn = sampler.sample(20000, CPU)
+    assert bool(((drawn > 0) & (drawn < 1)).all())
+    assert sampler.icdf(torch.tensor([0.5])).item() == pytest.approx(0.8651, abs=0.001)
+    assert drawn.median().item() == pytest.approx(0.8651, abs=0.01)
+    low_mean = NormalTimestepSampler(0.0, 1.0, -0.2, 0.2)
+    low_drawn = low_mean.sample(20000, CPU)
+    assert bool(((low_drawn > 0) & (low_drawn < 1)).all())
+
+
 def test_stratification_reduces_window_variance():
     """The point of the change. 16 strata vs 16 IID draws, same marginal."""
     sampler = SAMPLERS["logit_normal(-0.8,0.8)"]

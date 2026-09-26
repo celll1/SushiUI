@@ -6419,7 +6419,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         <input
                           type="number"
                           min={1}
-                          step={256}
+                          step={1}
                           value={params.dit_partition_full_frame_max_tokens ?? 4096}
                           onChange={(e) => updateParam("dit_partition_full_frame_max_tokens", Math.max(1, parseInt(e.target.value) || 4096))}
                           className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"

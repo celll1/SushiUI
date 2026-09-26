@@ -1734,6 +1734,14 @@ def _checkpoint_aux_base(entry_path: Path) -> str:
     return entry_path.name if entry_path.is_dir() else entry_path.stem
 
 
+def _require_loaded_resume_weights(loaded_path: Optional[str], selected_path: Path) -> None:
+    if not loaded_path or Path(loaded_path).resolve() != Path(selected_path).resolve():
+        raise RuntimeError(
+            "Resume checkpoint was selected without loading its model/adapter weights: "
+            f"{selected_path}. Refusing to restore step and optimizer state onto fresh weights."
+        )
+
+
 # Marker inserted into the run_name for weight-EMA checkpoint saves
 # (base_trainer._save_ema_checkpoint temporarily sets self.run_name to
 # f"{run_name}{EMA_RUN_NAME_SUFFIX}" before calling the normal
@@ -16608,6 +16616,7 @@ class BaseTrainer(ABC):
 
                 if checkpoint_result is not None:
                     checkpoint_path, checkpoint_step = checkpoint_result
+                    _require_loaded_resume_weights(self._loaded_checkpoint_path, Path(checkpoint_path))
                     print(f"{self.log_prefix} Resuming from checkpoint (weights already loaded in __init__): {checkpoint_path}")
                     # NOTE: Model weights were already loaded in __init__()
                     # We only need the step number here
@@ -16678,6 +16687,7 @@ class BaseTrainer(ABC):
                 # User specified a specific checkpoint file
                 checkpoint_path = self.output_dir / resume_from_checkpoint
                 if checkpoint_path.exists():
+                    _require_loaded_resume_weights(self._loaded_checkpoint_path, checkpoint_path)
                     print(f"{self.log_prefix} Resuming from specified checkpoint (weights already loaded in __init__): {checkpoint_path}")
 
                     # NOTE: Model weights were already loaded in __init__()

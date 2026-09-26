@@ -91,6 +91,12 @@ class LoRATrainer(BaseTrainer):
         # LoRA modules storage
         self.lora_layers: Dict[str, nn.Module] = {}
 
+        # Adapter checkpoints cannot be loaded as base-model checkpoints.
+        self._manages_own_resume = True
+        resume_request = kwargs.get("resume_from_checkpoint") or (
+            kwargs.get("train_config") or {}).get("resume_from_checkpoint")
+        kwargs["resume_from_checkpoint"] = resume_request
+
         super().__init__(**kwargs)
 
         # Convert lora_dtype string to torch.dtype (after super().__init__ to have access to get_torch_dtype)
@@ -103,6 +109,8 @@ class LoRATrainer(BaseTrainer):
         self._create_adapter()
 
         self._apply_lora()
+        if not getattr(self, "is_yue2", False):
+            self._load_resume_adapter(resume_request)
 
         # Block swap deferred until after LoRA wraps Linear modules — the
         # LayerOffloadConductor snapshots layer state_dicts at registration
@@ -149,6 +157,10 @@ class LoRATrainer(BaseTrainer):
                     writer = getattr(self, "writer", None)
                     if writer is not None:
                         writer.close()
+            requested = kwargs.get("resume_from_checkpoint") or self.resume_from_checkpoint
+            self._load_resume_adapter(requested)
+            if requested and "resume_from_checkpoint" not in kwargs:
+                kwargs["resume_from_checkpoint"] = requested
             return super().train(*args, **kwargs)
         finally:
             evictor = getattr(self, "sensenova_phase_evictor", None)
@@ -159,6 +171,38 @@ class LoRATrainer(BaseTrainer):
                     print(f"{self.log_prefix} WARNING: SenseNova eviction teardown failed: {exc}")
                 finally:
                     self.sensenova_phase_evictor = None
+
+    def _load_resume_adapter(self, requested: Optional[str]) -> None:
+        if not requested:
+            return
+        if self._loaded_checkpoint_path:
+            return
+        if str(requested).lower() == "latest":
+            candidates = list(self.output_dir.glob(f"{self.run_name}_step_*.safetensors"))
+            from .base_trainer import _checkpoint_step_from_name
+            candidates = [path for path in candidates
+                          if path.name.removeprefix(f"{self.run_name}_step_")
+                          .removesuffix(".safetensors").isdigit()
+                          and _checkpoint_step_from_name(path.name) is not None]
+            checkpoint = max(candidates, key=lambda path: _checkpoint_step_from_name(path.name)) if candidates else None
+            if checkpoint is None:
+                if list(self.output_dir.glob(f"{self.run_name}_step_*_state.json")):
+                    raise RuntimeError("LoRA resume state exists but no weight checkpoint remains")
+                print(f"{self.log_prefix} Resume: no LoRA checkpoint found; starting fresh")
+                return
+        else:
+            checkpoint = self.output_dir / requested
+            if not checkpoint.is_file():
+                checkpoint = Path(requested)
+            if not checkpoint.is_file():
+                raise FileNotFoundError(f"LoRA resume checkpoint does not exist: {requested}")
+        step = self.load_checkpoint(str(checkpoint))
+        from .base_trainer import _checkpoint_step_from_name
+        expected = _checkpoint_step_from_name(checkpoint.name)
+        if expected is None or step != expected:
+            raise ValueError(f"LoRA checkpoint step mismatch: filename={expected}, metadata={step}")
+        self._loaded_checkpoint_path = str(checkpoint)
+        print(f"{self.log_prefix} Resume: LoRA weights loaded from {checkpoint.name}")
 
     def _setup_sensenova_phase_eviction(self) -> None:
         if not self.is_sensenova:

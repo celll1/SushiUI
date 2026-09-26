@@ -21,6 +21,8 @@ Reference:
 Author: Claude (2026-01-29)
 """
 
+import json
+from pathlib import Path
 from typing import Dict, Optional, Set
 
 import torch
@@ -46,6 +48,22 @@ class ReLoRATrainer(LoRATrainer):
     Class hierarchy: BaseTrainer -> LoRATrainer -> ReLoRATrainer
     Supports SD1.5 / SDXL / Z-Image / FLUX.2 via adapter system.
     """
+
+    def _load_resume_adapter(self, requested: Optional[str]) -> None:
+        super()._load_resume_adapter(requested)
+        if not self._loaded_checkpoint_path:
+            return
+        checkpoint = Path(self._loaded_checkpoint_path)
+        state_path = checkpoint.with_name(checkpoint.stem + "_state.json")
+        if not state_path.is_file():
+            raise RuntimeError("ReLoRA resume requires training state to verify merged base history")
+        with state_path.open("r", encoding="utf-8") as handle:
+            state = json.load(handle)
+        if int(state.get("merge_count", 0)) > 0:
+            raise RuntimeError(
+                "ReLoRA cannot resume after a merge: the checkpoint contains adapter weights "
+                "but not the merged base weights. Start from an unmerged checkpoint."
+            )
 
     def __init__(
         self,

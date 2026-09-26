@@ -330,6 +330,29 @@ class LoRATrainer(BaseTrainer):
 
         checkpoint = load_file(checkpoint_path)
 
+        if getattr(self, "is_qwen_image_21", False):
+            global_name = "qwen_partition_global_adapter"
+            saved_global = (
+                bool(metadata.get(global_name))
+                or any(key.startswith(f"{global_name}.") for key in checkpoint)
+            )
+            current_global = self.lora_layers.get(global_name)
+            if saved_global and current_global is None:
+                raise ValueError(
+                    "Qwen-Image 2.1 checkpoint contains partition global adapter "
+                    "weights, but this run has the global adapter disabled"
+                )
+            if current_global is not None:
+                for field, expected in (
+                    ("qwen_partition_global_rank", current_global.rank),
+                    ("qwen_partition_global_tokens", current_global.summary_tokens),
+                ):
+                    if field in metadata and metadata[field] != str(expected):
+                        raise ValueError(
+                            f"Qwen-Image 2.1 checkpoint {field}={metadata[field]!r} "
+                            f"conflicts with this run's {expected}"
+                        )
+
         for field in ("lora_rank", "lora_alpha"):
             expected = getattr(self, field, None)
             if field in metadata and expected is not None:

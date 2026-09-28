@@ -55,6 +55,7 @@ class ViewSpec:
     def normalized_geometry(self, image_width: int, image_height: int) -> Tuple[float, ...]:
         """Continuous geometry features; no discrete resolution bucket is used."""
         center_x, center_y = self.source_box.center
+        content_left, content_top, content_width, content_height = self.content_box
         field_fraction = math.sqrt(
             (self.source_box.width * self.source_box.height) / float(image_width * image_height)
         )
@@ -65,6 +66,10 @@ class ViewSpec:
             self.source_box.height / image_height,
             math.log2(max(field_fraction, 1e-8)),
             math.log2(max(self.pixels_per_canvas_pixel, 1e-8)),
+            content_left / self.canvas_width,
+            content_top / self.canvas_height,
+            content_width / self.canvas_width,
+            content_height / self.canvas_height,
         )
 
 

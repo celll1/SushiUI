@@ -18,7 +18,7 @@ class FoveaEncoderConfig:
     window_size: int = 8
     attention_heads: Tuple[int, int] = (8, 8)
     mlp_ratio: float = 3.0
-    geometry_dim: int = 6
+    geometry_dim: int = 10
     scale_dropout: float = 0.2
 
     def __post_init__(self) -> None:
@@ -26,8 +26,8 @@ class FoveaEncoderConfig:
             raise ValueError("widths and depths must contain four stages")
         if any(value <= 0 for value in (*self.widths, *self.depths)):
             raise ValueError("widths and depths must be positive")
-        if self.window_size <= 0 or self.geometry_dim < 6:
-            raise ValueError("window_size must be positive and geometry_dim at least 6")
+        if self.window_size <= 0 or self.geometry_dim < 10:
+            raise ValueError("window_size must be positive and geometry_dim at least 10")
         if not 0 <= self.scale_dropout < 1:
             raise ValueError("scale_dropout must be in [0, 1)")
         for width, heads in zip(self.widths[2:], self.attention_heads):
@@ -357,7 +357,7 @@ class FoveaEncoder(nn.Module):
             return geometry
         keep = torch.rand((geometry.shape[0], 1), device=geometry.device) >= self.config.scale_dropout
         result = geometry.clone()
-        result[:, -2:] *= keep.to(result.dtype)
+        result[:, 4:6] *= keep.to(result.dtype)
         return result
 
     def parameter_count(self) -> int:
@@ -378,10 +378,18 @@ def source_coordinates(
     y = (torch.arange(height, device=device, dtype=dtype) + 0.5) / height - 0.5
     x = (torch.arange(width, device=device, dtype=dtype) + 0.5) / width - 0.5
     grid_y, grid_x = torch.meshgrid(y, x, indexing="ij")
+    canvas_x = grid_x + 0.5
+    canvas_y = grid_y + 0.5
+    content_left = geometry[:, 6, None, None]
+    content_top = geometry[:, 7, None, None]
+    content_width = geometry[:, 8, None, None].clamp_min(1e-8)
+    content_height = geometry[:, 9, None, None].clamp_min(1e-8)
+    local_x = (canvas_x[None] - content_left) / content_width - 0.5
+    local_y = (canvas_y[None] - content_top) / content_height - 0.5
     center_x = geometry[:, 0, None, None]
     center_y = geometry[:, 1, None, None]
     field_width = geometry[:, 2, None, None]
     field_height = geometry[:, 3, None, None]
-    source_x = center_x + grid_x[None] * field_width
-    source_y = center_y + grid_y[None] * field_height
+    source_x = center_x + local_x * field_width
+    source_y = center_y + local_y * field_height
     return torch.stack((source_x, source_y), dim=-1)

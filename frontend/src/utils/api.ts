@@ -420,6 +420,12 @@ export interface LoRAInfo extends Partial<LoRAAdapterDetection> {
   // Only present on GET /loras/{lora_name}; null when the file's metadata
   // declares nothing recognized -- never a guessed/invented recommendation.
   recommended?: LoRARecommendedSettings | null;
+  partition_guidance?: {
+    halo_tokens: number;
+    halo_pixels: number;
+    training_halo_tokens: number | null;
+    source: "file_metadata" | "sushiui_default";
+  } | null;
 }
 
 export interface ControlNetConfig {

@@ -62,6 +62,7 @@ def test_full_ft_global_trains_saves_and_resumes_without_affecting_ordinary_forw
         monkeypatch.setattr(adapter_module, "DEFAULT_EXPORT_SHARD_BYTES", 1024)
     torch.manual_seed(31)
     trainer = _trainer(dtype=dtype)
+    trainer.config["dit_partition_halo_tokens"] = 4
     adapter = QwenImage21FullParameterAdapter(trainer)
     adapter.prepare_models_for_training()
     global_adapter = trainer.transformer.qwen_partition_global_adapter
@@ -80,6 +81,7 @@ def test_full_ft_global_trains_saves_and_resumes_without_affecting_ordinary_forw
     assert path.name.endswith(".index.json") is sharded
     loaded, variant = load_transformer(str(path), dict(trainer.transformer.config), dtype)
     assert variant == "bf16"
+    assert loaded._qwen_partition_global_payload["metadata"]["qwen_partition_global_training_halo_tokens"] == "4"
     assert not hasattr(loaded, "qwen_partition_global_adapter")
     assert not any("global_adapter" in name for name, _ in loaded.named_parameters())
     assert all(value.device.type == "cpu" for value in loaded._qwen_partition_global_payload["state"].values())

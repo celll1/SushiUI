@@ -533,6 +533,28 @@ def _has_adapter_keys(keys, adapter: Dict[str, Any]) -> bool:
             or adapter.get("adapter_algorithm") in ("loha", "lokr"))
 
 
+def _partition_guidance_from_metadata(metadata):
+    if (metadata or {}).get("qwen_partition_global_adapter") != "latent_summary_v1":
+        return None
+    from api.param_defaults import QWEN_IMAGE_21_GENERATION_DEFAULTS
+
+    def halo_value(key):
+        try:
+            value = int(metadata[key])
+            return value if value >= 0 and value % 2 == 0 else None
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    declared = halo_value("qwen_partition_global_generation_halo_tokens")
+    halo = (declared if declared is not None else
+            QWEN_IMAGE_21_GENERATION_DEFAULTS["qwen_image_21_partition"]["halo_tokens"])
+    return {
+        "halo_tokens": halo, "halo_pixels": halo * 16,
+        "training_halo_tokens": halo_value("qwen_partition_global_training_halo_tokens"),
+        "source": "file_metadata" if declared is not None else "sushiui_default",
+    }
+
+
 def _recommended_from_metadata(name: str,
                                metadata: Dict[str, str]) -> Optional[Dict[str, Any]]:
     """A step-distillation recommendation the file itself declares, or None.
@@ -996,6 +1018,7 @@ class LoRAManager:
             "adapter": adapter,
             "is_adapter": _has_adapter_keys(keys, adapter),
             "recommended": _recommended_from_metadata(file_path.name, metadata),
+            "partition_guidance": _partition_guidance_from_metadata(metadata),
         }
 
     @staticmethod
@@ -1659,6 +1682,7 @@ class LoRAManager:
             "arch": record.get("arch", "unknown"),
             "layers": record.get("blocks", []),
             "recommended": record.get("recommended"),
+            "partition_guidance": record.get("partition_guidance"),
             **(record.get("adapter")
                or _unknown_adapter_fields("file could not be read")),
         }

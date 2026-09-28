@@ -21610,6 +21610,27 @@ components:
           items:
             type: string
           example: ["IN00", "IN01", "MID", "OUT00"]
+        partition_guidance:
+          nullable: true
+          type: object
+          description: Qwen global adapter halo guidance; informational only, never applied automatically.
+          required: [halo_tokens, halo_pixels, source]
+          properties:
+            halo_tokens:
+              type: integer
+              minimum: 0
+              description: Halo width in VAE latent cells, must be even.
+            halo_pixels:
+              type: integer
+              description: Halo width in pixels (16 pixels per latent cell).
+            training_halo_tokens:
+              type: integer
+              nullable: true
+              description: Training halo when recorded; unknown for older artifacts.
+            source:
+              type: string
+              enum: [file_metadata, sushiui_default]
+              description: Distinguishes artifact recommendation from a legacy fallback starting point.
         recommended:
           allOf:
             - $ref: '#/components/schemas/LoRARecommendedSettings'

@@ -260,6 +260,10 @@ QWEN_IMAGE_21_GENERATION_DEFAULTS: Dict[str, Any] = {
     "steps": 40,
     "cfg_scale": 1.0,
     "qwen_image_21_kv_cache": True,
+    "qwen_image_21_partition": {
+        "version": 1, "mode": "off", "max_target_tokens": 4096,
+        "layout": None, "halo_tokens": 16,
+    },
 }
 
 # SenseNova visual-understanding generation. This is deliberately separate
@@ -312,6 +316,7 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     # it (accepted and warned, api/arch_capabilities.py).
     "sensenova_kv_cache_streaming": SENSENOVA_GENERATION_DEFAULTS["sensenova_kv_cache_streaming"],
     "qwen_image_21_kv_cache": QWEN_IMAGE_21_GENERATION_DEFAULTS["qwen_image_21_kv_cache"],
+    "qwen_image_21_partition": QWEN_IMAGE_21_GENERATION_DEFAULTS["qwen_image_21_partition"],
     "sampler": "euler",
     "schedule_type": "uniform",
     "seed": -1,

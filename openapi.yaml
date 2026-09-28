@@ -13478,6 +13478,32 @@ components:
         std: 0.8
         min_timestep: 0.0
         max_timestep: 1.0
+    QwenImage21Split:
+      type: object
+      additionalProperties: false
+      required: [axis, ratio, first, second]
+      properties:
+        axis: {type: string, enum: [x, y]}
+        ratio: {type: number, exclusiveMinimum: 0, exclusiveMaximum: 1}
+        first:
+          allOf: [{ $ref: '#/components/schemas/QwenImage21Split' }]
+          nullable: true
+          description: Null is a leaf region.
+        second:
+          allOf: [{ $ref: '#/components/schemas/QwenImage21Split' }]
+          nullable: true
+    QwenImage21Partition:
+      type: object
+      additionalProperties: false
+      properties:
+        version: {type: integer, enum: [1], default: 1}
+        mode: {type: string, enum: ['off', auto, manual], default: 'off'}
+        max_target_tokens: {type: integer, minimum: 1, default: 4096}
+        layout:
+          allOf: [{ $ref: '#/components/schemas/QwenImage21Split' }]
+          nullable: true
+          default: null
+        halo_tokens: {type: integer, minimum: 0, multipleOf: 2, default: 16}
     GenerationParams:
       type: object
       description: |
@@ -13635,6 +13661,13 @@ components:
             may be combined or used alone. Ignored (accepted and warned) by
             every other architecture.
           example: false
+        qwen_image_21_partition:
+          allOf:
+            - $ref: '#/components/schemas/QwenImage21Partition'
+          nullable: true
+          description: Qwen-only partitioned generation. Multipart requests encode this object as JSON. Off uses the existing full-frame path.
+          default: {version: 1, mode: 'off', max_target_tokens: 4096, layout: null, halo_tokens: 16}
+          example: {version: 1, mode: auto, max_target_tokens: 4096, layout: null, halo_tokens: 16}
         qwen_image_21_kv_cache:
           type: boolean
           default: true
@@ -21577,6 +21610,27 @@ components:
           items:
             type: string
           example: ["IN00", "IN01", "MID", "OUT00"]
+        partition_guidance:
+          nullable: true
+          type: object
+          description: Qwen global adapter halo guidance; informational only, never applied automatically.
+          required: [halo_tokens, halo_pixels, source]
+          properties:
+            halo_tokens:
+              type: integer
+              minimum: 0
+              description: Halo width in VAE latent cells, must be even.
+            halo_pixels:
+              type: integer
+              description: Halo width in pixels (16 pixels per latent cell).
+            training_halo_tokens:
+              type: integer
+              nullable: true
+              description: Training halo when recorded; unknown for older artifacts.
+            source:
+              type: string
+              enum: [file_metadata, sushiui_default]
+              description: Distinguishes artifact recommendation from a legacy fallback starting point.
         recommended:
           allOf:
             - $ref: '#/components/schemas/LoRARecommendedSettings'

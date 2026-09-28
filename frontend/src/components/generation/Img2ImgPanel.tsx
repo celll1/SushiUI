@@ -38,6 +38,7 @@ import ResizableColumns, {
 } from "../common/ResizableColumns";
 import H3PromptAssist from "../common/H3PromptAssist";
 import Qwen21PromptUpsample from "../common/Qwen21PromptUpsample";
+import QwenPartitionControls from "../common/QwenPartitionControls";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import MiniMaxH3KeyframeTimeline from "../common/MiniMaxH3KeyframeTimeline";
@@ -235,6 +236,7 @@ interface Img2ImgParams {
 
 const DEFAULT_PARAMS: Img2ImgParams = {
   prompt: "",
+  qwen_image_21_partition: undefined,
   negative_prompt: "",
   steps: 20,
   cfg_scale: 7.0,
@@ -3039,6 +3041,8 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
         cfg_norm: mainParams.cfg_norm, // Inherit SenseNova U1.5 CFG-overshoot clamp
         sensenova_mot_phase_eviction: mainParams.sensenova_mot_phase_eviction, // Inherit SenseNova U1.5 per-phase weight-half CPU eviction
         sensenova_kv_cache_streaming: mainParams.sensenova_kv_cache_streaming, // Inherit SenseNova U1.5 per-layer KV cache CPU streaming
+        qwen_image_21_partition: mainParams.qwen_image_21_partition,
+        qwen_image_21_kv_cache: mainParams.qwen_image_21_kv_cache,
         original_size_w: mainParams.original_size_w,
         original_size_h: mainParams.original_size_h,
         original_size_scale: mainParams.original_size_scale,
@@ -4270,6 +4274,12 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
           images={[inputImage || inputImagePreview!, ...refImages]}
           onApply={(prompt) => setParams((previous) => ({ ...previous, prompt }))}
         />
+      )}
+      {loadedArch === "qwen_image_21" && (
+        <QwenPartitionControls value={params.qwen_image_21_partition}
+          background={inputImagePreview}
+          width={params.width} height={params.height}
+          onChange={(qwen_image_21_partition) => setParams(previous => ({ ...previous, qwen_image_21_partition }))} />
       )}
       {!isVideo && <div className="flex flex-wrap items-center gap-1.5 rounded bg-gray-800 px-2 py-1.5">
         <label className="flex cursor-pointer items-center gap-2">

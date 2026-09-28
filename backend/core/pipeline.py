@@ -4234,6 +4234,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         """
         # VAE tiling flag for this request (read by all decode paths, incl. the
         # per-architecture handlers dispatched just below).
+        self._validate_qwen_partition_arch(params)
         self._vae_tiling = bool(params.get("vae_tiling", False))
         self._vae_tile_threshold = int(params.get("vae_tile_threshold", 0) or 0)
         self._vae_tile_mode = str(params.get("vae_tile_mode", "blend") or "blend")
@@ -4946,6 +4947,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             params["loop_decode"] == "none" (SD1.5/SDXL legacy path only) --
             see generate_txt2img's docstring for the same contract.
         """
+        self._validate_qwen_partition_arch(params)
         self._vae_tiling = bool(params.get("vae_tiling", False))
         self._vae_tile_threshold = int(params.get("vae_tile_threshold", 0) or 0)
         self._vae_tile_mode = str(params.get("vae_tile_mode", "blend") or "blend")
@@ -5712,6 +5714,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             supported for inpaint (see the guard below) because its
             pixel-space mask compositing needs a decoded image.
         """
+        self._validate_qwen_partition_arch(params)
         self._vae_tiling = bool(params.get("vae_tiling", False))
         self._vae_tile_threshold = int(params.get("vae_tile_threshold", 0) or 0)
         self._vae_tile_mode = str(params.get("vae_tile_mode", "blend") or "blend")
@@ -6871,6 +6874,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             work, canvas_img, mask_img,
             progress_callback=progress_callback, step_callback=step_callback,
         )
+        if "qwen_image_21_partition_actual" in work:
+            params["qwen_image_21_partition_actual"] = work["qwen_image_21_partition_actual"]
+        else:
+            params.pop("qwen_image_21_partition_actual", None)
 
         # BDR Variant B (feather): when boundary relaxation is active AND the
         # paste mode is "feather", erode/feather a thin strip at the rect's

@@ -444,9 +444,34 @@ measured on project hardware.
 The Phase 3 gate is set from Phase 0 and Phase 1 measurements before the
 from-scratch run, so the criterion cannot be adjusted to fit its result.
 
-Phase 0 must precede implementation. The project does not currently have an
-evaluation that can distinguish a better high-resolution architecture from a
-model that merely changes thresholds or prevalence bias.
+Phase 0 measurement must precede expensive training and product integration.
+Implementation of the isolated benchmark, model, and loss components may happen
+earlier, but no architectural success claim follows from unit tests alone. The
+project does not currently have measured evidence that distinguishes a better
+high-resolution architecture from a model that merely changes thresholds or
+prevalence bias.
+
+### 9.1 Implementation status (2026-09-29)
+
+The isolated implementation now lives in `backend/core/tagger/foveatag/`. It is
+not yet selectable through the production trainer or inference API. The current
+status separates implemented software contracts from experiments that still
+require data and GPU time:
+
+| Phase | Implemented | Still required before exit |
+|---|---|---|
+| 0 | Versioned benchmark manifest, evidence-box validation, resolution/group metrics, saved predictions, and per-stage timing summaries. | Populate the fixed benchmark and run current SigLIP2 baselines and candidate epoch timings. |
+| 1 | Deterministic multi-scale views, exact source transforms, expandable evidence head, and fixed/NaFlex SigLIP2 token adapter. | Train and measure the encoder-swap control. |
+| 2 | A 37,388,448-parameter default scratch encoder, content-aware continuous 2-D RoPE, stride-16 local map, low-token global stage, teacher-free losses, and the diagnostic local-teacher projection. | Add the pretraining loop and reconstruction decoder, then run convergence and held-out measurements. |
+| 3 | End-to-end scratch tagger, masked classifier composition, and density-gated prediction consistency. | Connect the existing dataset/vocabulary lifecycle and run the pre-registered comparison. |
+| 4 | Generic scale-space router, padding mask, NMS, dense-oracle targets, ranking/diversity losses, and retained random-budget selection. | Run dense-oracle training, choose its batch frequency from measured cost, and measure router recall. |
+| 5 | Versioned inference/resume artifacts, exclusion of diagnostic weights from inference artifacts, coordinate-aware collation, cached-overview staged inference, evidence boxes, and per-stage wall time. | Add production manager/export, API/defaults/OpenAPI/frontend surfaces, and lifecycle tests after the go/no-go gates pass. |
+| 6 | Not started. | Run registered capacity and component ablations only after the smaller model is measured. |
+
+All implementation validation to date is CPU-only. Fifty-nine focused tests
+cover the isolated modules. No backend restart, CUDA allocation, throughput
+measurement, quality benchmark, or VRAM measurement was performed while the
+owner's separate training run occupied the GPU.
 
 ## 10. Integration surface after acceptance
 

@@ -18649,7 +18649,7 @@ def get_training_concept_exposure(
         return {"enabled": False, "rows": []}
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=503, detail=f"Exposure snapshot unavailable: {exc}")
-    from core.training.concept_exposure import TIMESTEP_BIN_EDGES
+    from core.training.concept_exposure import TIMESTEP_BIN_EDGES, LOSS_METRIC, loss_histogram
     edges = list(TIMESTEP_BIN_EDGES)
     rows = []
     counts = data.get("counts", {})
@@ -18664,12 +18664,23 @@ def get_training_concept_exposure(
                 or any(not isinstance(value, int) or value < 0 for value in bins)):
             raise HTTPException(status_code=503, detail="Exposure histogram snapshot is invalid")
         recorded = sum(bins)
+        try:
+            loss_sums, loss_counts = loss_histogram(data, key, bins)
+        except ValueError as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
+        loss_recorded = sum(loss_counts)
         rows.append({"key": key, "name": name,
                      "sample_passes": int(count), "target_images": target,
                      "mean_passes_per_image": count / target if target else 0,
                      "last_step": int(data.get("last_step", {}).get(key, 0)),
                      "timestep_counts": bins, "timestep_recorded_passes": recorded,
-                     "timestep_unknown_passes": max(0, int(count) - recorded)})
+                     "timestep_unknown_passes": max(0, int(count) - recorded),
+                     "timestep_loss_counts": loss_counts,
+                     "timestep_loss_means": [total / n if n else None
+                                             for total, n in zip(loss_sums, loss_counts)],
+                     "timestep_loss_recorded_passes": loss_recorded,
+                     "timestep_loss_unknown_passes": max(0, int(count) - loss_recorded),
+                     "timestep_loss_metric": LOSS_METRIC})
     sort_key = ((lambda row: (row["last_step"], row["sample_passes"]))
                 if order == "latest" else
                 (lambda row: (row["sample_passes"], row["last_step"])))

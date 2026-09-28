@@ -11381,6 +11381,7 @@ class BaseTrainer(ABC):
             cuda_error_skip is True if batch was skipped due to unrecoverable CUDA error
         """
         batch_size = mnt_latents.shape[0]
+        self._concept_sample_loss_chunks = []
         if getattr(self, "_adaptive_timestep", None) is not None:
             self._adaptive_prediction_loss_chunks = []
         # A failed attempt must not leak its detached REPA scalar into an OOM retry.
@@ -11490,6 +11491,7 @@ class BaseTrainer(ABC):
                 # per-forward footprint. The two-stage helper handles on-the-fly
                 # encoder graphs, so we no longer have to skip those batches.
                 self._oom_recovery_cleanup()
+                self._concept_sample_loss_chunks = []
                 if getattr(self, "_adaptive_timestep", None) is not None:
                     self._adaptive_prediction_loss_chunks = []
                 # OFFLOAD-FIRST rung (mirrors the proactive ordering): before
@@ -11523,6 +11525,7 @@ class BaseTrainer(ABC):
                             self._refuse_partial_fused_step(e_off)
                             e = e_off
                             self._oom_recovery_cleanup()
+                            self._concept_sample_loss_chunks = []
                             if getattr(self, "_adaptive_timestep", None) is not None:
                                 self._adaptive_prediction_loss_chunks = []
                 if not activation_dispatch_batch_reduction_enabled(self):
@@ -11568,6 +11571,7 @@ class BaseTrainer(ABC):
                     print(f"{self.log_prefix} [OOM] retrying batch {batch_size} micro-batched "
                           f"(micro={_retry_micro}) after: {str(e)[:80]}")
                     try:
+                        self._concept_sample_loss_chunks = []
                         if getattr(self, "_adaptive_timestep", None) is not None:
                             self._adaptive_prediction_loss_chunks = []
                         loss, pred_loss, recon_loss = self._microbatch_two_stage(
@@ -12097,6 +12101,7 @@ class BaseTrainer(ABC):
         The returned loss VALUE stays unscaled (per-chunk mean) for reporting.
         """
         self._active_mnt_noise = mnt_noise
+        self._pending_concept_sample_loss = None
         self._qwen_guidance_draw = qwen_guidance_draw
         self._begin_repa_profile_call(mnt_repa_pixels)
         if self.is_qwen_image_21:
@@ -12461,6 +12466,7 @@ class BaseTrainer(ABC):
         self._finish_repa_profile_call(_loss_item_wait_s, _repa_item_wait_s)
         pred_loss_value = pred_loss.item() if isinstance(pred_loss, torch.Tensor) else pred_loss
         recon_loss_value = recon_loss.item() if isinstance(recon_loss, torch.Tensor) else recon_loss
+        self._flush_concept_sample_loss()
 
         # Free computation graph
         del loss, loss_for_backward, pred_loss, recon_loss
@@ -12554,7 +12560,14 @@ class BaseTrainer(ABC):
         self._flush_deferred_extra_metrics()
         repa_wait = self._flush_repa_loss_metric_after_backward()
         self._finish_repa_profile_call(0.0, repa_wait)
+        self._flush_concept_sample_loss()
         return result
+
+    def _flush_concept_sample_loss(self):
+        pending = getattr(self, "_pending_concept_sample_loss", None)
+        self._pending_concept_sample_loss = None
+        if pending is not None:
+            self._concept_sample_loss_chunks.extend(pending.detach().float().cpu().reshape(-1).tolist())
 
     def _assert_sensenova_step_seam_residency(self, four_phase) -> None:
         """Which MoT half must be GPU-resident at the optimizer-step seam.
@@ -19993,6 +20006,12 @@ class BaseTrainer(ABC):
                         if (self.is_lens or self.is_ideogram4 or self.is_krea2 or self.is_qwen_image_21) and width and height:
                             batch_lens_latent_shape = (height // 16, width // 16)
 
+                        self._collect_concept_sample_loss = (
+                            self.is_qwen_image_21 and self._concept_exposure is not None
+                            and any(item.get("_concept_exposure_groups")
+                                    or item.get("_concept_exposure_group") is not None
+                                    for item, _dataset in _exposure_items)
+                        )
                         try:
                             mnt_loss_value, mnt_pred_loss_value, mnt_recon_loss_value, cuda_error_skip = self._forward_backward_with_oom_recovery(
                                 mnt_latents=mnt_latents,
@@ -20153,6 +20172,9 @@ class BaseTrainer(ABC):
                                 self._concept_exposure.record(
                                     _exposure_items, global_step + 1, 1,
                                     exposure_t, convention=_convention,
+                                    losses=(self._concept_sample_loss_chunks
+                                            if len(self._concept_sample_loss_chunks) == len(_exposure_items)
+                                            else None),
                                 )
                         else:
                             self._mnt_iterations_oom_skipped += 1

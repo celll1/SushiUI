@@ -11233,6 +11233,17 @@ components:
                 items: {type: integer, minimum: 0}
               timestep_recorded_passes: {type: integer, minimum: 0}
               timestep_unknown_passes: {type: integer, minimum: 0}
+              timestep_loss_counts:
+                type: array
+                description: Per-bin passes with an actual per-image loss; never includes historical or unsupported losses.
+                items: {type: integer, minimum: 0}
+              timestep_loss_means:
+                type: array
+                description: Mean per-image Qwen prediction/reconstruction objective before gradient accumulation or micro-batch scaling; null when unrecorded. Excludes auxiliary losses.
+                items: {type: number, nullable: true, minimum: 0}
+              timestep_loss_recorded_passes: {type: integer, minimum: 0}
+              timestep_loss_unknown_passes: {type: integer, minimum: 0}
+              timestep_loss_metric: {type: string, enum: [qwen_prediction_reconstruction_v1]}
     StudioRenderAssetRef:
       type: object
       required: [id, kind]

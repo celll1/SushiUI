@@ -113,7 +113,7 @@ def test_timestep_histogram_tracks_per_item_repeats_mnt_and_resume(tmp_path):
     assert sum(state["timestep_counts"]["miku"]) == 4  # Snapshot is isolated from later updates.
     tracker.publish(wait=True)
     disk = json.loads(tracker.path.read_text(encoding="utf-8"))
-    assert disk["version"] == 2
+    assert disk["version"] == 3
     resumed = ConceptExposure(tmp_path, "concept", disk)
     resumed.record([b], 4, 1, [0.99])
     assert sum(resumed.state()["timestep_counts"]["miku"]) == 6
@@ -195,3 +195,101 @@ def test_search_covers_all_groups_before_limit_and_preserves_histogram(tmp_path)
     with pytest.raises(HTTPException) as error:
         get_training_concept_exposure(1, "top", 1, Db(), q="x" * 257)
     assert error.value.status_code == 422
+
+
+def test_loss_coverage_keeps_legacy_timesteps_out_of_mean_and_restores(tmp_path):
+    import pytest
+    from core.training.concept_exposure import TIMESTEP_BIN_EDGES
+    ds = SimpleNamespace(unique_id="dataset")
+    a = ({"image_path": "a", "_concept_exposure_groups": ("miku", "rin")}, ds)
+    b = ({"image_path": "b", "_concept_exposure_group": "miku"}, ds)
+    bins = [0] * (len(TIMESTEP_BIN_EDGES) - 1)
+    bins[-1] = 4
+    old = {"mode": "concept", "counts": {"miku": 10}, "timestep_counts": {"miku": bins}}
+    tracker = ConceptExposure(tmp_path, "concept", old)
+    tracker.record([a, b], 1, 1, [1, 1], losses=[2, 6])
+    saved = tracker.state()
+    assert saved["counts"]["miku"] == 12
+    assert saved["timestep_counts"]["miku"][-1] == 6
+    assert saved["timestep_loss_counts"]["miku"][-1] == 2
+    assert saved["timestep_loss_sums"]["miku"][-1] == 8
+    assert saved["timestep_loss_sums"]["rin"][-1] == 2
+    tracker.record([a], 2, 1, [1], losses=[99])
+    assert saved["timestep_loss_sums"]["miku"][-1] == 8
+    resumed = ConceptExposure(tmp_path, "concept", saved)
+    resumed.record([a], 3, 2, [1], losses=[4])
+    resumed.record([a], 4, 1, [1], losses=[float("nan")])
+    resumed.record([a], 5, 1, [1], losses=[-1])
+    resumed.publish(wait=True)
+    assert resumed.state()["timestep_loss_counts"]["miku"][-1] == 4
+    assert resumed.state()["timestep_loss_sums"]["miku"][-1] == 16
+    with pytest.raises(ValueError, match="losses must match"):
+        resumed.record([a], 6, 1, [1], losses=[])
+    with pytest.raises(ValueError, match="loss histogram"):
+        ConceptExposure(tmp_path, "concept", {**saved, "timestep_loss_counts": {"miku": [99] * 36}})
+    with pytest.raises(ValueError, match="loss histogram"):
+        ConceptExposure(tmp_path, "concept", {**saved, "timestep_loss_sums": {"miku": [float("nan")] * 36}})
+    with pytest.raises(ValueError, match="Incomplete"):
+        ConceptExposure(tmp_path, "concept", {**saved, "timestep_loss_sums": {}})
+
+
+def test_api_loss_means_use_only_recorded_samples(tmp_path):
+    from api.routes import get_training_concept_exposure
+    class Db:
+        def query(self, _model): return self
+        def filter(self, _condition): return self
+        def first(self): return SimpleNamespace(output_dir=str(tmp_path))
+    ds = SimpleNamespace(unique_id="dataset")
+    item = ({"image_path": "a", "_concept_exposure_group": "miku"}, ds)
+    tracker = ConceptExposure(tmp_path, "concept", {"mode": "concept", "counts": {"miku": 10}})
+    tracker.record([item], 1, 1, [1])
+    tracker.record([item], 2, 1, [1], losses=[4])
+    tracker.record([item], 3, 1, [1], losses=[8])
+    tracker.publish(wait=True)
+    row = get_training_concept_exposure(1, db=Db())["rows"][0]
+    assert row["timestep_loss_means"][-1] == 6
+    assert row["timestep_loss_means"][0] is None
+    assert row["timestep_loss_counts"][-1] == 2
+    assert row["timestep_loss_recorded_passes"] == 2
+    assert row["timestep_loss_unknown_passes"] == 11
+
+
+def test_loss_chunks_discard_failed_microbatch_prefix_and_keep_image_order():
+    import torch
+    from core.training.base_trainer import BaseTrainer
+    calls = []
+    stub = SimpleNamespace(
+        is_qwen_image_21=False, use_fused_backward=False, fused_optimizer_groups=None,
+        activation_dispatcher=None, log_prefix="[Exposure test]",
+        _activation_dispatch_begin=lambda _latents: (None, None),
+        _activation_dispatch_end=lambda *_args: None,
+        _oom_recovery_cleanup=lambda: None,
+        _refuse_partial_fused_step=lambda _exc: None,
+        _classify_cuda_error=BaseTrainer._classify_cuda_error,
+        _slice_aux=BaseTrainer._slice_aux,
+    )
+    def execute(**kwargs):
+        ids = kwargs["mnt_latents"].flatten().tolist()
+        calls.append(ids)
+        stub._pending_concept_sample_loss = torch.tensor(ids)
+        BaseTrainer._flush_concept_sample_loss(stub)
+        if len(ids) == 4 or (len(ids) == 2 and ids[0] == 2):
+            raise RuntimeError("CUDA out of memory")
+        return 1.0, 1.0, 0.0
+    stub._execute_forward_backward = execute
+    stub._microbatch_two_stage = lambda *args: BaseTrainer._microbatch_two_stage(stub, *args)
+    inputs = dict(
+        mnt_latents=torch.arange(4, dtype=torch.float32).reshape(4, 1),
+        mnt_text_embeddings=None, mnt_attention_mask=None, mnt_pooled_embeddings=None,
+        timesteps=torch.zeros(4), debug_save_path=None, batch_captions=None,
+        batch_reference_paths=None, alphas_cumprod_cached=None, use_condition_images=False,
+        condition_images_batch=None, reference_latents_nested=None,
+    )
+    result = BaseTrainer._forward_backward_with_oom_recovery(stub, **inputs)
+    assert result[-1] is False
+    assert calls == [[0, 1, 2, 3], [0, 1], [2, 3], [0], [1], [2], [3]]
+    assert stub._concept_sample_loss_chunks == [0, 1, 2, 3]
+    # A new MNT iteration starts with empty coverage, even after successful chunks.
+    result = BaseTrainer._forward_backward_with_oom_recovery(stub, **inputs)
+    assert result[-1] is False
+    assert stub._concept_sample_loss_chunks == [0, 1, 2, 3]

@@ -13,6 +13,7 @@ from .benchmark import (
 )
 from .head import EvidenceHeadOutput, EvidenceSlotMixer, EvidenceTagHead
 from .encoder import FoveaEncoder, FoveaEncoderConfig, FoveaEncoderOutput
+from .model import FoveaTagger, FoveaTaggerOutput
 from .siglip2_control import (
     MaskedSlotPooler,
     SigLIP2ControlOutput,
@@ -37,6 +38,8 @@ __all__ = [
     "FoveaEncoder",
     "FoveaEncoderConfig",
     "FoveaEncoderOutput",
+    "FoveaTagger",
+    "FoveaTaggerOutput",
     "MaskedSlotPooler",
     "SigLIP2ControlOutput",
     "SigLIP2ControlTagger",

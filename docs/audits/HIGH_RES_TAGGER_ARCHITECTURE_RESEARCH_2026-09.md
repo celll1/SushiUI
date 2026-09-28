@@ -33,15 +33,24 @@ features across enough learned cells to classify them. Whole-image upscaling
 adds cost without adding evidence and creates a particularly easy scale
 shortcut.
 
-The target encoder is original and trained on project data, carrying no
-third-party model weights. It is not assumed that image-level tags alone can
-train a 50--100M-parameter vision backbone from random initialization; that is
-the largest risk in this proposal and is gated in Phase 2 (section 9). Phase 1
-therefore prototypes the view and head design on the existing SigLIP2 encoder.
-Recent encoders remain useful as benchmark teachers or initialization
-candidates, but none has the combination of licensing, weak-label localization,
-bounded arbitrary-resolution cost, and tagger-specific evidence aggregation
-required here.
+FoveaTag is fully from scratch: original architecture, random initialization,
+and self-supervised pretraining on project data, with no third-party model
+weights. The goal is a representation that keeps local detail, not a
+replacement for an existing encoder, so the encoder should not inherit the
+inductive biases of a fixed-resolution pretrained model.
+
+Image-level tags alone are not expected to train the encoder end to end from
+random initialization. For a small eye or colored contact lens, the tag gradient
+is diluted across the whole image, and a learned router and an untrained encoder
+each wait on the other. Training is therefore staged (section 5.1):
+self-supervised pretraining, tag training on random and stratified views,
+router training from a dense-candidate teacher, then joint fine-tuning.
+
+Pretrained encoders such as SigLIP2 or PE are used only as diagnostic controls
+and as a reference upper bound (section 8.2). They are never used for
+initialization, and a gap to them does not trigger a switch to pretrained
+weights. If the from-scratch encoder does not meet its pre-registered gate,
+work stops and the cause is measured (section 9).
 
 ## 2. Current failure mechanism
 
@@ -197,9 +206,11 @@ geometry without becoming a label shortcut. Global attention is applied only
 after spatial reduction; compute is approximately linear in the number of
 encoded view pixels rather than quadratic in all source patches.
 
-The first size target should be 50--100 million parameters, below the current
-SO400M encoder. Width and depth are selected only after throughput measurement;
-the document intentionally does not invent a final configuration.
+The first size target is 25--50 million parameters. The number of effective
+fine-detail supervision signals is much smaller than the number of images, so
+capacity is increased only after the smaller model is shown to work. Width and
+depth are selected after throughput measurement; the document intentionally
+does not invent a final configuration.
 
 ### 4.4 Evidence slots and tag head
 
@@ -227,6 +238,35 @@ vocabulary, so vocabulary growth does not alter the image representation.
 
 ## 5. Training objectives
 
+### 5.1 Training stages
+
+1. **Self-supervised pretraining** on the same dataset, with no external
+   weights or teachers:
+   - coordinate-aware correspondence between the overview and overlapping local
+     views;
+   - masked local-patch reconstruction; and
+   - chroma-preserving reconstruction. Pixel- or color-space targets must keep
+     color differences; a semantic-only target can discard the contact-lens
+     color this project is trying to recover.
+2. **Tag training on random and stratified local views.** No learned router.
+   The encoder and evidence head are established first.
+3. **Router training from dense candidates.** The stage-2 head evaluates a dense
+   candidate set, and the regions that contribute to positive-tag margins become
+   router targets.
+4. **Joint fine-tuning with the router.** Random coverage is kept, never fully
+   annealed away, so rare tags continue to be explored.
+
+The stage-3 teacher is biased: the head learned only what random views exposed,
+so evidence it does not yet recognize yields no router target. Retained random
+coverage is the mitigation, and its effect is checked with router recall and
+with rare-tag results split by positives and negatives.
+
+Self-supervised pretraining on one GPU is a large time cost. Its budget is set
+from the Phase 0 timing harness (time per epoch at the chosen model size) before
+it starts.
+
+### 5.2 Losses
+
 The minimum viable objective is a weighted sum whose coefficients must be
 measured rather than copied from another regime:
 
@@ -244,12 +284,6 @@ Do not force a deliberately blurred view to predict a fine-detail tag merely to
 obtain scale consistency. Consistency is gated by the known pixel footprint of
 the corresponding evidence. Otherwise the loss teaches the desired information
 away.
-
-Training from scratch should first test a short self-supervised warm-up on the
-same dataset: masked local-patch prediction plus coordinate-aware agreement of
-overlapping pyramid views. Pixel- or color-space prediction must retain chroma;
-a semantic-only teacher can discard the contact-lens color this project is
-trying to recover. This phase is optional until an ablation shows it helps.
 
 ## 6. Why this should extrapolate better
 
@@ -284,7 +318,7 @@ necessary exploration during training.
 
 ### Replace SigLIP2 with DINOv3, PE, or C-RADIO
 
-All are valuable baselines. None supplies a tagger-trained, weak-label router
+All are usable as baselines. None supplies a tagger-trained, weak-label router
 and per-tag local evidence reduction. DINOv3 and RADIO also add material license
 constraints. Encoder replacement alone does not remove the pooling bottleneck.
 
@@ -331,6 +365,16 @@ batch-size scaling, peak VRAM, and host preprocessing time.
    checkpoints), with the
    same downstream evidence head when technically possible.
 
+Baselines 3 and 7 are **encoder-swap controls**. No pretrained weights are
+loaded into the FoveaTag encoder; instead, the whole encoder is replaced by an
+existing model, and the FoveaTag view construction and evidence head consume
+its patch-token map. The views and the head need only a spatial token map, so
+this works with any such encoder. These controls answer whether the view and
+head design helps independently of the encoder, and they give a reference
+upper bound for the from-scratch encoder. They cannot test the encoder's
+internal choices (continuous coordinate RoPE, scale features, stem design);
+those are ablated within the from-scratch encoder.
+
 The router, local `2x` magnification, continuous scale feature, dense-oracle
 frequency, and local `logsumexp` head each require an ablation.
 
@@ -354,12 +398,16 @@ measured on project hardware.
 
 | Phase | Work | Exit condition |
 |---|---|---|
-| 0 | Add the fixed benchmark, evidence-area annotations, and timing harness. Measure current 256-patch and enlarged-patch SigLIP2. | The current failure is quantified by tag group and evidence size. |
-| 1 | On the existing SigLIP2 encoder, prototype deterministic overview plus random multi-scale views and the evidence-slot head, without a learned router. | Local evidence can improve fine-detail tags at a known cost. |
-| 2 | Add the original shared encoder and continuous coordinate/scale contract. Train it from random initialization and, as a control, compare against the same view contract and head on a pretrained permissive encoder. | Resolution-ladder extrapolation beats the Phase 1 control, and the random-initialization encoder is not materially worse than the pretrained control. Otherwise, adopt pretrained initialization and record its license/provenance decision. |
-| 3 | Add exploration-aware learned routing and the training-only dense oracle. | Learned routing beats random views at the same `K`; router recall is measurable. |
-| 4 | Add checkpoint bundles, resume, inference manager, export, API, defaults, OpenAPI, and UI. | Existing tagger lifecycle tests plus new view-contract tests pass. |
-| 5 | Optional self-supervised warm-up and external-teacher experiments. | Retain only components with isolated improvements. |
+| 0 | Add the fixed benchmark, evidence-area annotations, and timing harness. Measure current 256-patch and enlarged-patch SigLIP2, and time per epoch of candidate from-scratch model sizes. | The current failure is quantified by tag group and evidence size; the self-supervised pretraining budget is set. |
+| 1 | Encoder-swap control: FoveaTag random multi-scale views and evidence-slot head on the existing SigLIP2 encoder, without a learned router. | The view and head design improves fine-detail tags at a known cost. The from-scratch gate for Phase 3 is written into this document before Phase 2 starts. |
+| 2 | Original shared encoder (25--50M) with the continuous coordinate/scale contract; self-supervised pretraining (stage 1). | Pretraining losses converge, and overlap correspondence and chroma reconstruction are measured on held-out images. |
+| 3 | Tag training on random and stratified views (stage 2). | The pre-registered gate against the Phase 1 control, including resolution-ladder extrapolation, is met. If not, stop and measure the cause (pretraining objectives, model capacity, router timing); do not switch to pretrained weights. |
+| 4 | Router training from dense candidates (stage 3), then joint fine-tuning with retained random coverage (stage 4). | Learned routing beats random views at the same `K`; router recall and rare-tag results are measured. |
+| 5 | Add checkpoint bundles, resume, inference manager, export, API, defaults, OpenAPI, and UI. | Existing tagger lifecycle tests plus new view-contract tests pass. |
+| 6 | Optional capacity increase and further objective ablations. | Retain only components with isolated improvements. |
+
+The Phase 3 gate is set from Phase 0 and Phase 1 measurements before the
+from-scratch run, so the criterion cannot be adjusted to fit its result.
 
 Phase 0 must precede implementation. The project does not currently have an
 evaluation that can distinguish a better high-resolution architecture from a

@@ -275,6 +275,20 @@ from SigLIP2 is not used; its patch16 linear embedding and absolute position
 embedding do not match this encoder, and matching them would reintroduce the
 fixed-resolution assumptions this design avoids.
 
+The alignment is defined as follows. The teacher encodes each 256-square local
+canvas with `max_num_patches=256`, giving a 16 x 16 grid of 16-pixel cells, and
+its last hidden state (before pooling) is the target. The student's final local
+token map is average-pooled onto the same cells through the exact source
+coordinate transform, so both sides describe the same pixels. A training-only
+projection head maps the pooled student features to the teacher dimension, and
+the loss is cosine distance between L2-normalized features per cell. The
+projection head is excluded from the distributed checkpoint.
+
+The comparison against pure self-supervised pretraining uses the same number
+of images presented and the same number of optimizer steps. The teacher forward
+pass makes equal GPU time incompatible with equal steps, so GPU time including
+the teacher and peak VRAM are reported separately rather than equalized.
+
 Self-supervised pretraining on one GPU is a large time cost. Its budget is set
 from the Phase 0 timing harness (time per epoch at the chosen model size) before
 it starts.
@@ -392,7 +406,7 @@ those are ablated within the from-scratch encoder.
 The router, local `2x` magnification, continuous scale feature, dense-oracle
 frequency, and local `logsumexp` head each require an ablation. Local-view
 teacher distillation (section 5.1) is compared against pure self-supervised
-pretraining under the same budget.
+pretraining at equal images presented and optimizer steps.
 
 ### 8.3 Go/no-go gates
 

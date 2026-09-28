@@ -10,6 +10,9 @@ from core.adapters import is_adapter_covered
 from core.models.common.convrot_int8_linear import ConvRotInt8Linear, materialize_convrot_linears
 from core.models.common.quantized_export import DEFAULT_EXPORT_SHARD_BYTES, ShardWriter
 from core.models.qwen_image_21.artifact import artifact_metadata
+from core.models.qwen_image_21.partition_global import (
+    global_adapter_metadata, prepare_training_global_adapter,
+)
 
 from .base_adapter import (
     BaseFullParameterAdapter,
@@ -70,39 +73,8 @@ class QwenImage21LoRAAdapter(BaseLoRAAdapter):
                     lora_layers, name, layer, LORA_COMPONENT_ADAPTER
                 )
                 count += 1
-        global_enabled = bool(config.get(
-            "dit_partition_global_adapter_enabled",
-            config.get("qwen_partition_global_adapter_enabled", False),
-        ))
-        partition_enabled = bool(config.get(
-            "dit_partition_training_enabled",
-            config.get("qwen_partition_training_enabled", False),
-        ))
-        if global_enabled:
-            if not getattr(self.trainer, "train_unet", True):
-                raise ValueError("Qwen partition global adapter requires train_unet=true")
-            if not partition_enabled:
-                raise ValueError(
-                    "Qwen partition global adapter requires dit_partition_training_enabled"
-                )
-            from core.training.qwen_partition import QwenPartitionGlobalAdapter
-
-            global_adapter = QwenPartitionGlobalAdapter(
-                int(self.trainer.transformer.config.in_channels),
-                int(self.trainer.transformer.inner_dim),
-                rank=int(config.get(
-                    "dit_partition_global_rank",
-                    config.get("qwen_partition_global_rank", 64),
-                )),
-                summary_tokens=int(
-                    config.get(
-                        "dit_partition_global_tokens",
-                        config.get("qwen_partition_global_tokens", 16),
-                    )
-                ),
-                dtype=self.lora_dtype,
-            ).to(next(self.trainer.transformer.parameters()).device)
-            self.trainer.transformer.qwen_partition_global_adapter = global_adapter
+        global_adapter = prepare_training_global_adapter(self.trainer, dtype=self.lora_dtype)
+        if global_adapter is not None:
             self.register_lora_layer(
                 lora_layers,
                 "qwen_partition_global_adapter",
@@ -149,12 +121,7 @@ class QwenImage21LoRAAdapter(BaseLoRAAdapter):
             "qwen_partition_global_adapter",
             None,
         )
-        if global_adapter is not None:
-            metadata.update(
-                qwen_partition_global_adapter="latent_summary_v1",
-                qwen_partition_global_rank=str(global_adapter.rank),
-                qwen_partition_global_tokens=str(global_adapter.summary_tokens),
-            )
+        metadata.update(global_adapter_metadata(global_adapter, getattr(self.trainer, "config", {})))
         return metadata
 
 
@@ -190,6 +157,9 @@ class QwenImage21FullParameterAdapter(BaseFullParameterAdapter):
         if train_te and bool(getattr(self.trainer, "gradient_checkpointing", False)):
             self.trainer.text_encoder.gradient_checkpointing_enable()
         self.trainer.vae.requires_grad_(False).eval()
+        prepare_training_global_adapter(
+            self.trainer, dtype=next(self.trainer.transformer.parameters()).dtype
+        )
 
     def arch_param_groups(self):
         reject_quantized_base(self.trainer.transformer, model_label="Qwen-Image 2.1")
@@ -250,6 +220,9 @@ class QwenImage21FullParameterAdapter(BaseFullParameterAdapter):
             self.trainer, "qwen_image_21_companion_path", self.trainer.model_path
         ))
         metadata.update(step=str(step), epoch=str(epoch), companion_path=companion_path)
+        metadata.update(global_adapter_metadata(getattr(
+            self.trainer.transformer, "qwen_partition_global_adapter", None
+        ), getattr(self.trainer, "config", {})))
         if bool(getattr(self.trainer, "qwen_full_dequantized_from_int8", False)):
             metadata["full_finetune_initialization"] = "dequantized_int8_convrot"
         writer = ShardWriter(str(output_path), metadata, DEFAULT_EXPORT_SHARD_BYTES)

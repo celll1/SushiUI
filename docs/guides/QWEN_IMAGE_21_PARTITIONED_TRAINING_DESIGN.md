@@ -733,8 +733,9 @@ step from 1.999 s to 2.069 s and the step allocation delta from 17.2280 GiB to
 Flash optimization: the kernel already performs its own query tiling and the
 extra launches cost about 3.5% here.
 
-`qwen_partition_global_adapter_enabled` adds a training-only latent-summary
-adapter to partitioned LoRA training. Full-canvas noisy latent features plus
+`dit_partition_global_adapter_enabled` (legacy alias
+`qwen_partition_global_adapter_enabled`) adds a latent-summary adapter to
+partitioned LoRA or full-parameter training. Full-canvas noisy latent features plus
 normalized coordinates are gathered into learned summary tokens, then
 broadcast through a low-rank query path into each tile immediately after
 `img_in`. Its output projection is zero-initialized, so enabling it does not
@@ -742,6 +743,16 @@ perturb the initial model. The branch has its own
 `qwen_partition_global_adapter.*` checkpoint namespace and metadata; ordinary
 full-frame generation warns and ignores this disposable branch while loading
 the standard LoRA matrices.
+
+Full FT includes the same global module in its transformer optimizer group and
+checkpoint, including transformer/TE bundles. Component loaders retain its
+validated weights as an unregistered CPU payload, so ordinary generation never
+moves or forwards it. Training preparation restores it before block swap and
+optimizer setup; dimensions and enabled state must match on resume. Old full-FT
+checkpoints contain no global weights, even if that option was set: adding the
+adapter requires a new run, not an implicit random initialization on resume.
+See [the generation contract](QWEN_IMAGE_21_PARTITIONED_GENERATION_DESIGN.md)
+for loading, visual partition controls, and the planned inference executor.
 
 This changes the approximation boundary relative to the hard-partition
 baseline. Direct target-target attention edges across regions remain absent,

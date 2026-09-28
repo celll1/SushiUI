@@ -31,6 +31,7 @@ import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import MiniMaxH3ReferenceSelector from "../common/MiniMaxH3ReferenceSelector";
 import H3PromptAssist from "../common/H3PromptAssist";
 import Qwen21PromptUpsample from "../common/Qwen21PromptUpsample";
+import QwenPartitionControls from "../common/QwenPartitionControls";
 import ImageViewer from "../common/ImageViewer";
 import PostEditControls from "../common/PostEditControls";
 import VideoAccelerationControls from "../common/VideoAccelerationControls";
@@ -174,6 +175,7 @@ interface OutpaintPanelParams extends ApiOutpaintParams {
 // unless the user already has localStorage state.
 const DEFAULT_PARAMS: OutpaintPanelParams = {
   prompt: "",
+  qwen_image_21_partition: undefined,
   negative_prompt: "",
   steps: 20,
   cfg_scale: 7.0,
@@ -3110,6 +3112,11 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
           images={[inputImagePreview]}
           onApply={(prompt) => setParams((previous) => ({ ...previous, prompt }))}
         />
+      )}
+      {loadedArchType === "qwen_image_21" && (
+        <QwenPartitionControls value={params.qwen_image_21_partition}
+          width={params.canvas_width} height={params.canvas_height}
+          onChange={(qwen_image_21_partition) => setParams(previous => ({ ...previous, qwen_image_21_partition }))} />
       )}
       <TextareaWithTagSuggestions
         label="Negative Prompt"

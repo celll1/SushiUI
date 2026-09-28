@@ -151,6 +151,8 @@ def load_qwen_image_21_components(
                 raise ValueError(f"{model_path}: incomplete Qwen-Image 2.1 training bundle")
             with init_empty_weights():
                 transformer = QwenImage21Transformer2DModel(**config)
+            from .partition_global import stash_partition_global_payload
+            stash_partition_global_payload(transformer, transformer_state, metadata)
             transformer = _finish_load(transformer, transformer_state, "Qwen-Image 2.1 transformer")
             transformer.to(dtype=torch_dtype)
             if load_text_encoder:

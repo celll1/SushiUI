@@ -1835,3 +1835,34 @@ bucket_manager = BucketManager(
 
 - [MODEL_ARCHITECTURES.md](MODEL_ARCHITECTURES.md) - Model architecture specifications (SD1.5, SDXL, Z-Image)
 - [../../../AGENTS.md](../../../AGENTS.md) - Task router and development guidelines
+
+
+### Concept exposure timestep coverage
+
+`GET /api/v1/training/runs/{run_id}/concept-exposure` reads the trainer's atomic
+snapshot only; it never calls the training process. Each row now includes
+`timestep_counts`, `timestep_recorded_passes`, and `timestep_unknown_passes`,
+with shared `timestep_bin_edges`. The fixed 36-bin geometry uses 0.05 intervals
+through 0.8 and 0.01 intervals above 0.8. The axis is always 0=clean, 1=noisy;
+t1 architectures are inverted. For Qwen, the histogram records the BF16 or
+other configured training dtype's actual sigma rather than the pre-cast draw.
+Repeated images and successful MNT backwards count separately; skipped
+backwards do not count. Text-only steps and old checkpoint passes without
+recorded timesteps remain unknown. Unknown counts are not reconstructed from
+the configured probability distribution.
+
+Checkpoint state preserves counts and histograms. Version 1 snapshots/checkpoints
+load with their existing total counts and unknown timestep coverage; version 2
+adds the histogram. Invalid/incompatible histogram geometry is rejected on resume.
+Background items without tracked groups do not incur a timestep read. Target
+items are accumulated after backward's existing synchronization, and JSON is
+published through the existing asynchronous writer every 25 completed passes.
+No history proportional to the number of training steps is retained.
+
+The monitor renders one continuous heatmap per row, left=clean/right=noisy,
+with marks at 0.8/0.95. Brightness is logarithmic, proportional to passes per
+target image per unit timestep width, and scaled to the maximum density in the
+visible rows. Hover intervals for exact counts and mean passes per image;
+focus/hover the bar for coverage, unknown passes, and the total above 0.95.
+The interpolation is visual only; stored observations stay in their discrete
+bins. Row means do not guarantee that every target image saw that noise range.

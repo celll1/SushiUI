@@ -18643,19 +18643,29 @@ def get_training_concept_exposure(
         return {"enabled": False, "rows": []}
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=503, detail=f"Exposure snapshot unavailable: {exc}")
+    from core.training.concept_exposure import TIMESTEP_BIN_EDGES
+    edges = list(TIMESTEP_BIN_EDGES)
     rows = []
     for key, count in data.get("counts", {}).items():
         target = int(data.get("target_items", {}).get(key, 0))
+        bins = data.get("timestep_counts", {}).get(key, [0] * (len(edges) - 1))
+        if (data.get("timestep_bin_edges", edges) != edges
+                or len(bins) != len(edges) - 1
+                or any(not isinstance(value, int) or value < 0 for value in bins)):
+            raise HTTPException(status_code=503, detail="Exposure histogram snapshot is invalid")
+        recorded = sum(bins)
         rows.append({"key": key, "name": data.get("names", {}).get(key, key),
                      "sample_passes": int(count), "target_images": target,
                      "mean_passes_per_image": count / target if target else 0,
-                     "last_step": int(data.get("last_step", {}).get(key, 0))})
+                     "last_step": int(data.get("last_step", {}).get(key, 0)),
+                     "timestep_counts": bins, "timestep_recorded_passes": recorded,
+                     "timestep_unknown_passes": max(0, int(count) - recorded)})
     sort_key = ((lambda row: (row["last_step"], row["sample_passes"]))
                 if order == "latest" else
                 (lambda row: (row["sample_passes"], row["last_step"])))
     rows.sort(key=sort_key, reverse=True)
     return {"enabled": True, "mode": data.get("mode"), "total_groups": len(rows),
-            "order": order, "rows": rows[:limit]}
+            "order": order, "timestep_bin_edges": edges, "rows": rows[:limit]}
 
 
 @router.get("/training/runs/{run_id}/metrics_db")

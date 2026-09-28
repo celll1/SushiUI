@@ -11205,6 +11205,10 @@ components:
         mode: {type: string, enum: [concept, priority]}
         total_groups: {type: integer}
         order: {type: string, enum: [latest, top]}
+        timestep_bin_edges:
+          type: array
+          description: Fixed 37 edges, 0=clean and 1=noisy; bins are left-inclusive and right-exclusive except the final bin includes 1.
+          items: {type: number, minimum: 0, maximum: 1}
         rows:
           type: array
           items:
@@ -11217,6 +11221,12 @@ components:
               target_images: {type: integer}
               mean_passes_per_image: {type: number}
               last_step: {type: integer}
+              timestep_counts:
+                type: array
+                description: Completed sample passes per bin, including repeated items and MNT; historical passes without timestep data are excluded.
+                items: {type: integer, minimum: 0}
+              timestep_recorded_passes: {type: integer, minimum: 0}
+              timestep_unknown_passes: {type: integer, minimum: 0}
     StudioRenderAssetRef:
       type: object
       required: [id, kind]

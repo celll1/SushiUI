@@ -7753,16 +7753,19 @@ export interface ConceptExposureResponse {
   enabled: boolean;
   mode?: "concept" | "priority";
   total_groups?: number;
+  matched_groups?: number;
+  query?: string;
   order?: "latest" | "top";
   timestep_bin_edges?: number[];
   rows: ConceptExposureRow[];
 }
 
 export const getTrainingConceptExposure = async (
-  runId: number, order: "latest" | "top" = "latest",
+  runId: number, order: "latest" | "top" = "latest", q?: string, signal?: AbortSignal,
 ): Promise<ConceptExposureResponse> => {
   const response = await api.get(`/training/runs/${runId}/concept-exposure`, {
-    params: { order },
+    params: { order, q },
+    signal,
   });
   return response.data;
 };

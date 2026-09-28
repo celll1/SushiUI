@@ -1866,3 +1866,13 @@ visible rows. Hover intervals for exact counts and mean passes per image;
 focus/hover the bar for coverage, unknown passes, and the total above 0.95.
 The interpolation is visual only; stored observations stay in their discrete
 bins. Row means do not guarantee that every target image saw that noise range.
+
+
+The concept-exposure endpoint also accepts `q` (maximum 256 characters), a
+literal partial name/key search. Matching ignores case and treats underscores
+as spaces. It filters all groups before applying `order` and `limit`, returns
+`matched_groups` alongside the unfiltered `total_groups`, and does not treat
+regex or wildcard syntax specially. Search reads the existing snapshot only;
+no trainer RPC, CUDA work, or training locks are used. The monitor debounces
+input by 350ms, aborts superseded requests, and prevents overlapping polls.
+The existing five-second polling interval is unchanged.

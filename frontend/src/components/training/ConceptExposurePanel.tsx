@@ -41,25 +41,35 @@ function TimestepHeatmap({ row, edges, maximum }: {
 
 export default function ConceptExposurePanel({ runId, active }: Props) {
   const [order, setOrder] = useState<"latest" | "top">("latest");
+  const [search, setSearch] = useState("");
+  const [query, setQuery] = useState("");
   const [data, setData] = useState<ConceptExposureResponse | null>(null);
 
   useEffect(() => { setData(null); }, [runId]);
+  useEffect(() => {
+    const timer = setTimeout(() => setQuery(search.trim()), 350);
+    return () => clearTimeout(timer);
+  }, [search]);
 
   useEffect(() => {
     let cancelled = false;
+    let pending = false;
+    const controller = new AbortController();
     const fetchOnce = async () => {
+      if (pending || cancelled) return;
+      pending = true;
       try {
-        const response = await getTrainingConceptExposure(runId, order);
+        const response = await getTrainingConceptExposure(runId, order, query, controller.signal);
         if (!cancelled) setData(response);
       } catch {
         // Keep the last published snapshot during a transient read failure.
-      }
+      } finally { pending = false; }
     };
     fetchOnce();
-    if (!active) return () => { cancelled = true; };
+    if (!active) return () => { cancelled = true; controller.abort(); };
     const timer = setInterval(fetchOnce, 5000);
-    return () => { cancelled = true; clearInterval(timer); };
-  }, [runId, order, active]);
+    return () => { cancelled = true; controller.abort(); clearInterval(timer); };
+  }, [runId, order, active, query]);
 
   if (!data?.enabled) return null;
   const edges = data.timestep_bin_edges;
@@ -82,13 +92,20 @@ export default function ConceptExposurePanel({ runId, active }: Props) {
           <option value="top">Most passes</option>
         </select>
       </div>
+      <input type="search" value={search} onChange={(event) => setSearch(event.target.value)}
+        maxLength={256} placeholder="Search concept tags or priority entries…" aria-label="Search concept exposure"
+        className="w-full rounded border border-gray-600 bg-gray-800 px-2 py-1 text-xs text-gray-200"
+      />
+      {(search.trim() !== query || (data.query !== undefined && data.query !== query)) &&
+        <p className="text-[10px] text-gray-500">Updating search…</p>}
       <p className="text-xs text-gray-500">
-        {data.mode === "priority" ? "Priority entries" : "Concept tags"} · {data.total_groups ?? 0} trained
+        {data.mode === "priority" ? "Priority entries" : "Concept tags"} · {data.total_groups ?? 0} trained{query && ` · ${data.matched_groups ?? data.rows.length} matches`}
       </p>
       <p className="text-[10px] text-gray-500" title="Brightness is normalized exposure density across visible rows. Marks: 0.8 and 0.95. Hover each interval for counts; earlier passes remain unknown.">
         Timestep heatmap: clean 0 → noisy 1 · marks at 0.8 / 0.95 · hover for counts
       </p>
       <div className="max-h-56 overflow-auto space-y-1 text-xs">
+        {data.rows.length === 0 && <p className="text-gray-500">No matching concepts.</p>}
         {(data.rows ?? []).map((row) => (
           <div key={row.key} className="grid min-w-[600px] grid-cols-[minmax(0,1fr)_180px_max-content] items-center gap-3 border-b border-gray-800 pb-1">
             <span className="min-w-0 truncate text-gray-200" title={row.name}>{row.name}</span>

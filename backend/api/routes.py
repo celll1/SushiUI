@@ -18629,6 +18629,7 @@ def get_training_concept_exposure(
     order: Literal["latest", "top"] = CONCEPT_EXPOSURE_DEFAULTS["order"],
     limit: int = CONCEPT_EXPOSURE_DEFAULTS["limit"],
     db: Session = Depends(get_training_db),
+    q: str = CONCEPT_EXPOSURE_DEFAULTS["q"],
 ):
     """Read the trainer's atomic exposure snapshot without contacting its process."""
     run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
@@ -18636,6 +18637,11 @@ def get_training_concept_exposure(
         raise HTTPException(status_code=404, detail="Training run not found")
     if not 1 <= limit <= 50:
         raise HTTPException(status_code=422, detail="limit must be between 1 and 50")
+    if len(q) > 256:
+        raise HTTPException(status_code=422, detail="q must be at most 256 characters")
+    def search_text(value):
+        return " ".join(str(value).casefold().replace("_", " ").split())
+    needle = search_text(q)
     path = Path(run.output_dir) / "concept_exposure.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -18646,7 +18652,11 @@ def get_training_concept_exposure(
     from core.training.concept_exposure import TIMESTEP_BIN_EDGES
     edges = list(TIMESTEP_BIN_EDGES)
     rows = []
-    for key, count in data.get("counts", {}).items():
+    counts = data.get("counts", {})
+    for key, count in counts.items():
+        name = data.get("names", {}).get(key, key)
+        if needle and needle not in search_text(name) and needle not in search_text(key):
+            continue
         target = int(data.get("target_items", {}).get(key, 0))
         bins = data.get("timestep_counts", {}).get(key, [0] * (len(edges) - 1))
         if (data.get("timestep_bin_edges", edges) != edges
@@ -18654,7 +18664,7 @@ def get_training_concept_exposure(
                 or any(not isinstance(value, int) or value < 0 for value in bins)):
             raise HTTPException(status_code=503, detail="Exposure histogram snapshot is invalid")
         recorded = sum(bins)
-        rows.append({"key": key, "name": data.get("names", {}).get(key, key),
+        rows.append({"key": key, "name": name,
                      "sample_passes": int(count), "target_images": target,
                      "mean_passes_per_image": count / target if target else 0,
                      "last_step": int(data.get("last_step", {}).get(key, 0)),
@@ -18664,7 +18674,8 @@ def get_training_concept_exposure(
                 if order == "latest" else
                 (lambda row: (row["sample_passes"], row["last_step"])))
     rows.sort(key=sort_key, reverse=True)
-    return {"enabled": True, "mode": data.get("mode"), "total_groups": len(rows),
+    return {"enabled": True, "mode": data.get("mode"), "total_groups": len(counts),
+            "matched_groups": len(rows), "query": q.strip(),
             "order": order, "timestep_bin_edges": edges, "rows": rows[:limit]}
 
 

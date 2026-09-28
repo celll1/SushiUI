@@ -277,12 +277,17 @@ fixed-resolution assumptions this design avoids.
 
 The alignment is defined as follows. The teacher encodes each 256-square local
 canvas with `max_num_patches=256`, giving a 16 x 16 grid of 16-pixel cells, and
-its last hidden state (before pooling) is the target. The student's final local
-token map is average-pooled onto the same cells through the exact source
-coordinate transform, so both sides describe the same pixels. A training-only
-projection head maps the pooled student features to the teacher dimension, and
-the loss is cosine distance between L2-normalized features per cell. The
-projection head is excluded from the distributed checkpoint.
+its last hidden state (before pooling) is the target. After self-attention each
+teacher token also carries context from the whole canvas, so a cell is a 16 x 16
+spatial anchor at a source coordinate, not a description of those pixels alone.
+The student map used for distillation must be at least 16 x 16 on a 256 canvas
+(stride 16 or finer), so it is taken from the windowed-attention stage before
+spatial merging, not from the low-token global stage. It is average-pooled onto
+the teacher's anchors through the exact source coordinate transform. A
+training-only projection head maps the pooled student features to the teacher
+dimension, and the loss is cosine distance between L2-normalized features per
+anchor. The projection head weights and optimizer state are saved in resumable
+training checkpoints and excluded from inference and export artifacts.
 
 The comparison against pure self-supervised pretraining uses the same number
 of images presented and the same number of optimizer steps. The teacher forward

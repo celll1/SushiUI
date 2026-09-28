@@ -6,7 +6,7 @@ import json
 import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional
 
 import torch
 from safetensors.torch import load_file, save_file
@@ -41,11 +41,6 @@ class FoveaArtifactConfig:
     views: ViewConfig = field(default_factory=ViewConfig)
     routing_slots: int = 4
     routing_dim: int = 256
-    router_field_sizes: Tuple[Tuple[float, float], ...] = (
-        (0.08, 0.08),
-        (0.18, 0.18),
-        (0.36, 0.36),
-    )
     inference_modes: Mapping[str, InferenceMode] = field(default_factory=lambda: {
         "fast": InferenceMode(384, 2),
         "balanced": InferenceMode(448, 4),
@@ -55,8 +50,6 @@ class FoveaArtifactConfig:
     def __post_init__(self) -> None:
         if self.num_tags <= 0 or min(self.feature_dim, self.evidence_slots_per_view, self.pool_heads) <= 0:
             raise ValueError("model dimensions and num_tags must be positive")
-        if not self.router_field_sizes:
-            raise ValueError("router_field_sizes cannot be empty")
 
     def to_dict(self) -> Dict[str, Any]:
         value = asdict(self)
@@ -95,7 +88,6 @@ class FoveaArtifactConfig:
             views=views,
             routing_slots=int(value["routing_slots"]),
             routing_dim=int(value["routing_dim"]),
-            router_field_sizes=tuple(tuple(pair) for pair in value["router_field_sizes"]),
             inference_modes=modes,
         )
 

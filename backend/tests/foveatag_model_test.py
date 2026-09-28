@@ -75,3 +75,17 @@ def test_vocabulary_expansion_preserves_all_existing_global_and_local_weights():
     torch.testing.assert_close(model.head.weight[:2], old_weight)
     torch.testing.assert_close(model.head.bias[:2], old_bias)
     assert model.head.weight.shape == (4, 32)
+
+
+def test_cached_overview_path_matches_regular_forward():
+    model = _model(num_tags=3).eval()
+    overview_images = torch.randn(1, 3, 32, 32)
+    overview_geometry = _geometry(1)
+    local_images = torch.randn(1, 2, 3, 16, 16)
+    local_geometry = _geometry(1, 2)
+
+    regular = model(overview_images, overview_geometry, local_images, local_geometry)
+    encoded = model.encoder(overview_images, overview_geometry)
+    cached = model.classify_encoded_overview(encoded, local_images, local_geometry)
+
+    torch.testing.assert_close(cached, regular)

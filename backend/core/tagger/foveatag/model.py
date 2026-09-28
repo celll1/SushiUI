@@ -8,7 +8,7 @@ from typing import Optional, Tuple, Union
 import torch
 from torch import nn
 
-from .encoder import FoveaEncoder, FoveaEncoderConfig
+from .encoder import FoveaEncoder, FoveaEncoderConfig, FoveaEncoderOutput
 from .head import EvidenceHeadOutput, EvidenceTagHead
 from .siglip2_control import MaskedSlotPooler
 
@@ -75,8 +75,38 @@ class FoveaTagger(nn.Module):
             raise ValueError(
                 "local_geometry must have shape [batch, views, geometry_dim]"
             )
-        view_mask = _view_mask(local_view_mask, batch_size, view_count, overview_images.device)
         overview = self.encoder(overview_images, overview_geometry)
+        return self.classify_encoded_overview(
+            overview,
+            local_images,
+            local_geometry,
+            local_view_mask=local_view_mask,
+            return_details=return_details,
+        )
+
+    def classify_encoded_overview(
+        self,
+        overview: FoveaEncoderOutput,
+        local_images: torch.Tensor,
+        local_geometry: torch.Tensor,
+        *,
+        local_view_mask: Optional[torch.Tensor] = None,
+        return_details: bool = False,
+    ) -> Union[torch.Tensor, FoveaTaggerOutput]:
+        """Classify local views without recomputing a cached overview encoding."""
+        if local_images.ndim != 5 or local_images.shape[2] != 3:
+            raise ValueError("local_images must have shape [batch, views, 3, height, width]")
+        batch_size, view_count = local_images.shape[:2]
+        if overview.global_summary.shape[0] != batch_size:
+            raise ValueError("encoded overview and local batch sizes must match")
+        if local_geometry.shape != (batch_size, view_count, self.encoder.config.geometry_dim):
+            raise ValueError("local_geometry must have shape [batch, views, geometry_dim]")
+        view_mask = _view_mask(
+            local_view_mask,
+            batch_size,
+            view_count,
+            overview.global_summary.device,
+        )
         global_summary = self.global_projection(overview.global_summary)
 
         if view_count:

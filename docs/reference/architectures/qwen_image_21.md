@@ -58,6 +58,14 @@ objective is `xt = (1-sigma)*x0 + sigma*noise`, target `noise-x0`; loss is taken
 only from the target latent tail. ReLoRA, ControlNet, TE LoRA,
 VAE swap, and reference-conditioned edit datasets are refused.
 
+Optional partitioned training supports the same latent-summary global adapter
+for LoRA and full FT. Full-FT checkpoints and INT8 inference exports retain its
+weights and structural metadata; training restores it before optimizer setup.
+Generation component loading retains it as an unregistered CPU payload, so
+ordinary full-frame generation does not execute it or move it to CUDA.
+Partitioned generation controls and execution are designed but not implemented;
+see `docs/guides/QWEN_IMAGE_21_PARTITIONED_GENERATION_DESIGN.md`.
+
 For new runs, an omitted guidance-loss weight resolves to 1.0 (100% guided
 target); an explicit 0.0 selects ordinary MSE. Existing run YAML retains its
 stored value. Custom mixtures default to a stochastic per-image choice between

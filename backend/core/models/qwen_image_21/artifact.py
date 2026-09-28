@@ -152,6 +152,8 @@ def load_transformer(path: str, config: dict[str, Any], dtype: torch.dtype) -> t
     variant = _validate_component(path, metadata, "transformer")
     with init_empty_weights():
         model = QwenImage21Transformer2DModel(**config)
+    from .partition_global import stash_partition_global_payload
+    stash_partition_global_payload(model, state, metadata)
     if variant == "int8_convrot":
         from core.models.common.convrot_int8_linear import require_convrot_int8_runtime, swap_linears_to_convrot_int8
 

@@ -1305,7 +1305,8 @@ def test_qwen_trainable_prompt_encoding_preserves_text_encoder_gradient():
     assert bool(mask.all())
 
 
-def test_qwen_full_te_bundle_round_trip(tmp_path, monkeypatch):
+@pytest.mark.parametrize("with_global", [False, True])
+def test_qwen_full_te_bundle_round_trip(tmp_path, monkeypatch, with_global):
     from transformers import Qwen3VLConfig, Qwen3VLForConditionalGeneration
     from core.models.qwen_image_21 import loader
 
@@ -1335,7 +1336,18 @@ def test_qwen_full_te_bundle_round_trip(tmp_path, monkeypatch):
     trainer = SimpleNamespace(
         transformer=dit, text_encoder=te, model_path=str(companion),
         qwen_image_21_companion_path=str(companion), train_text_encoder=True,
+        trains_base_weights=True,
     )
+    if with_global:
+        from core.models.qwen_image_21.partition_global import prepare_training_global_adapter
+        trainer.config = {
+            "dit_partition_training_enabled": True,
+            "dit_partition_global_adapter_enabled": True,
+            "dit_partition_global_rank": 4, "dit_partition_global_tokens": 3,
+        }
+        prepare_training_global_adapter(trainer, dtype=torch.float32)
+        with torch.no_grad():
+            dit.qwen_partition_global_adapter.out.weight.fill_(0.25)
     checkpoint = QwenImage21FullParameterAdapter(trainer).write_checkpoint(
         1, 0, tmp_path / "run_step_000001"
     )
@@ -1357,6 +1369,11 @@ def test_qwen_full_te_bundle_round_trip(tmp_path, monkeypatch):
         loaded["transformer"].txt_in.in_layer.weight,
         dit.txt_in.in_layer.weight,
     )
+    if with_global:
+        trainer.transformer = loaded["transformer"]
+        restored = prepare_training_global_adapter(trainer, dtype=torch.float32)
+        for key, value in restored.branch_tensors().items():
+            assert torch.equal(value, dit.qwen_partition_global_adapter.branch_tensors()[key])
 
 
 def test_convrot_materialization_releases_packed_weight_and_preserves_gradient():

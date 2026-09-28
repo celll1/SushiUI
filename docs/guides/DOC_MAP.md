@@ -42,6 +42,7 @@ machine-local working material.
 | [docs/guides/QWEN_IMAGE_21_BRANCH_LORA_DESIGN.md](QWEN_IMAGE_21_BRANCH_LORA_DESIGN.md) | Proposed Qwen conditional/empty-branch LoRA separation, loss routing, negative-prompt policy, and checkpoint contract. |
 | [docs/guides/QWEN_IMAGE_21_BRANCH_LORA_EVALUATION.md](QWEN_IMAGE_21_BRANCH_LORA_EVALUATION.md) | Paired Run 156 CFG branch-rollout plan and subsequent split-adapter acceptance gates. |
 | [docs/guides/QWEN_IMAGE_21_PARTITIONED_TRAINING_DESIGN.md](QWEN_IMAGE_21_PARTITIONED_TRAINING_DESIGN.md) | Proposed complete-coverage partitioned training for Qwen-Image 2.1, including adaptive feasibility, optional halo, and validation gates. |
+| [docs/guides/QWEN_IMAGE_21_PARTITIONED_GENERATION_DESIGN.md](QWEN_IMAGE_21_PARTITIONED_GENERATION_DESIGN.md) | Partitioned generation design, visual layouts, ordinary-path cost boundary, and implemented full-FT global-adapter checkpoint foundation. |
 | [docs/reference/architectures/sensenova_sdxl_chimera.md](../reference/architectures/sensenova_sdxl_chimera.md) | Implemented Chimera component, tensor, generation, training, and constraint reference. |
 | [docs/guides/SENSENOVA_SDXL_CHIMERA_DESIGN.md](SENSENOVA_SDXL_CHIMERA_DESIGN.md) | Chimera architecture contract, bootstrap workflow, and remaining measured acceptance gates. |
 | [docs/guides/SENSENOVA_SDXL_CHIMERA_V2_DESIGN.md](SENSENOVA_SDXL_CHIMERA_V2_DESIGN.md) | Accepted v2 endpoint-observable path, analytic skip, residual target, versioning, and implementation gates. |

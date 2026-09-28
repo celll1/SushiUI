@@ -157,9 +157,8 @@ async def startup_event():
                 # Scan models
                 try:
                     from database import GallerySessionLocal
-                    db = GallerySessionLocal()
-                    asyncio.run(routes.get_models(db=db, force_rescan=True))
-                    db.close()
+                    with GallerySessionLocal() as db:
+                        routes.get_models(db=db, force_rescan=True)
                     print("[Startup] Models cache populated")
                 except Exception as e:
                     print(f"[Startup] Error scanning models: {e}")

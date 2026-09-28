@@ -11,6 +11,16 @@ from .benchmark import (
     load_benchmark_manifest,
     load_prediction_set,
 )
+from .artifact import (
+    COORDINATE_CONVENTION,
+    FOVEATAG_FORMAT_VERSION,
+    FoveaArtifactConfig,
+    InferenceMode,
+    load_inference_artifact,
+    load_training_checkpoint,
+    save_inference_artifact,
+    save_training_checkpoint,
+)
 from .head import EvidenceHeadOutput, EvidenceSlotMixer, EvidenceTagHead
 from .encoder import FoveaEncoder, FoveaEncoderConfig, FoveaEncoderOutput
 from .distillation import DistillationOutput, LocalSigLIP2DistillationHead, pool_to_source_anchors
@@ -45,6 +55,14 @@ from .views import SourceBox, ViewBatch, ViewConfig, ViewSpec, build_views, samp
 
 __all__ = [
     "BENCHMARK_FORMAT_VERSION",
+    "COORDINATE_CONVENTION",
+    "FOVEATAG_FORMAT_VERSION",
+    "FoveaArtifactConfig",
+    "InferenceMode",
+    "load_inference_artifact",
+    "load_training_checkpoint",
+    "save_inference_artifact",
+    "save_training_checkpoint",
     "PREDICTION_FORMAT_VERSION",
     "BenchmarkManifest",
     "EvidenceBox",

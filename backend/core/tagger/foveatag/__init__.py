@@ -11,6 +11,7 @@ from .benchmark import (
     load_benchmark_manifest,
     load_prediction_set,
 )
+from .views import SourceBox, ViewBatch, ViewConfig, ViewSpec, build_views, sample_local_specs
 
 __all__ = [
     "BENCHMARK_FORMAT_VERSION",
@@ -22,4 +23,10 @@ __all__ = [
     "evaluate_predictions",
     "load_benchmark_manifest",
     "load_prediction_set",
+    "SourceBox",
+    "ViewBatch",
+    "ViewConfig",
+    "ViewSpec",
+    "build_views",
+    "sample_local_specs",
 ]

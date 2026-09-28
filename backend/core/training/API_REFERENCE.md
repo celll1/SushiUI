@@ -1603,6 +1603,17 @@ passes. `multi_noise_mode` accepts `independent`, `shared`, `trajectory`, and
 `0` means "never" for every optional periodic action. `gradient_accumulation_steps`
 is not optional, so `0` folds to `1` rather than disabling the optimizer step.
 
+Successful LoRA/full-parameter completion writes weights, training state and
+`<run_name>_step_<step>_optimizer.pt`, even between periodic-save intervals.
+A same-step periodic save is reused only after all bundle stages succeeded;
+an optimizer/state/EMA write failure requires a final retry. A final save
+failure fails the run instead of reporting completion. Optimizer retention
+protects the current saved step and is independent of weight retention.
+To extend a completed run, increase its epoch/step target and resume from the
+latest checkpoint in the same output directory. Keep the matching optimizer
+and state sidecars; changing optimizer/parameter layout can require remapping
+or fresh state and is reported separately in the resume log.
+
 `text_encoding_mode` (Z-Image and other swap-capable architectures) accepts
 `"swap_onthefly"` (swap text encoder and transformer, encode on the fly),
 `"pre_encoded_cache"` (disk cache), and `"onthefly_gpu"` (encode on GPU without

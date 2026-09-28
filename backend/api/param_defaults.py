@@ -262,7 +262,7 @@ QWEN_IMAGE_21_GENERATION_DEFAULTS: Dict[str, Any] = {
     "qwen_image_21_kv_cache": True,
     "qwen_image_21_partition": {
         "version": 1, "mode": "off", "max_target_tokens": 4096,
-        "layout": None, "halo_tokens": 0,
+        "layout": None, "halo_tokens": 16,
     },
 }
 

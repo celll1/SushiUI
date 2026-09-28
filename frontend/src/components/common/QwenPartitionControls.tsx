@@ -89,7 +89,7 @@ export default function QwenPartitionControls({ value, onChange, width, height, 
           stroke="transparent" strokeWidth={Math.min(w, h) / 15} style={{ cursor: d.axis === "x" ? "ew-resize" : "ns-resize" }}
           onPointerDown={e => { remember(); setDrag(d.path); svg.current?.setPointerCapture(e.pointerId); e.preventDefault(); }} />)}
       </svg>}
-      <p className="text-xs text-gray-400">Select a region to split; drag its boundaries. Snaps to 32 px. Global adapters follow their LoRA strength and step range. Without an adapter, regions share no learned global summary.</p>
+      <p className="text-xs text-gray-400">Select a region to split; drag its boundaries. Snaps to 32 px. Halo supplies shared border context; zero halo can split subjects even with a global adapter. Global adapters follow their LoRA strength and step range. Without an adapter, regions share no learned global summary.</p>
     </>}
   </details>;
 }

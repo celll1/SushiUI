@@ -21,6 +21,7 @@ from .artifact import (
     save_inference_artifact,
     save_training_checkpoint,
 )
+from .batch import FoveaViewTensorBatch, collate_view_batches
 from .head import EvidenceHeadOutput, EvidenceSlotMixer, EvidenceTagHead
 from .encoder import FoveaEncoder, FoveaEncoderConfig, FoveaEncoderOutput
 from .distillation import DistillationOutput, LocalSigLIP2DistillationHead, pool_to_source_anchors
@@ -63,6 +64,8 @@ __all__ = [
     "load_training_checkpoint",
     "save_inference_artifact",
     "save_training_checkpoint",
+    "FoveaViewTensorBatch",
+    "collate_view_batches",
     "PREDICTION_FORMAT_VERSION",
     "BenchmarkManifest",
     "EvidenceBox",

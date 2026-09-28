@@ -339,3 +339,23 @@ or checkpoints; halo 0 remains an explicit experimental choice.
 No quality equivalence or speedup is assumed. Splitting removes dense target
 attention, and a learned summary does not restore it. Global adapter training
 quality and benefits for new layouts require measured generated samples.
+
+
+## Distribution and halo guidance
+
+New LoRA and full-FT checkpoints with a global adapter record
+`qwen_partition_global_training_halo_tokens` and
+`qwen_partition_global_generation_halo_tokens` separately. Generation halo is
+an inference starting point from the current API default, not a learned optimum
+or a claim that training used that halo. INT8 full-FT export preserves both fields.
+The validated CPU payload retains these fields when the checkpoint is loaded.
+
+GET `/api/v1/loras/{identifier}` exposes `partition_guidance` from its existing
+header-only inspection. Generate's selected LoRA note shows the global adapter,
+recommended halo in latent cells and pixels, and training halo when known.
+An older file without a recommendation displays a clearly labeled SushiUI
+fallback starting point; it does not pretend that the file declared a value.
+Invalid recommendation fields also use that fallback. This is informational:
+users set Halo in Qwen Partition controls, and existing settings are never
+silently overwritten. Ordinary generation ignores the global adapter. Other
+applications must implement this metadata convention to display it.

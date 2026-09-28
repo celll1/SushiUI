@@ -121,7 +121,7 @@ class QwenImage21LoRAAdapter(BaseLoRAAdapter):
             "qwen_partition_global_adapter",
             None,
         )
-        metadata.update(global_adapter_metadata(global_adapter))
+        metadata.update(global_adapter_metadata(global_adapter, getattr(self.trainer, "config", {})))
         return metadata
 
 
@@ -222,7 +222,7 @@ class QwenImage21FullParameterAdapter(BaseFullParameterAdapter):
         metadata.update(step=str(step), epoch=str(epoch), companion_path=companion_path)
         metadata.update(global_adapter_metadata(getattr(
             self.trainer.transformer, "qwen_partition_global_adapter", None
-        )))
+        ), getattr(self.trainer, "config", {})))
         if bool(getattr(self.trainer, "qwen_full_dequantized_from_int8", False)):
             metadata["full_finetune_initialization"] = "dequantized_int8_convrot"
         writer = ShardWriter(str(output_path), metadata, DEFAULT_EXPORT_SHARD_BYTES)

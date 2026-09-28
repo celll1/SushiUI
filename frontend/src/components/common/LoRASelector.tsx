@@ -212,58 +212,77 @@ interface LoRARecommendedNoteProps {
   onApplyRecommended?: (settings: Record<string, unknown>) => string[] | void;
 }
 
-// Shows a LoRA's own declared step-distillation recommendation (from the
-// file's safetensors metadata) and an explicit, one-click control to apply
-// it to the generation params. Renders nothing when the LoRA declares no
-// recommendation -- never a guessed/invented one.
+// Artifact recommendations require an explicit action; legacy halo guidance is labeled separately.
 function LoRARecommendedNote({ loraPath, loadLoraInfo, onApplyRecommended }: LoRARecommendedNoteProps) {
+  const [partition, setPartition] = useState<LoRAInfo["partition_guidance"]>(null);
   const [recommended, setRecommended] = useState<LoRAInfo["recommended"] | undefined>(undefined);
   const [applyResult, setApplyResult] = useState<"applied" | string[] | null>(null);
 
   useEffect(() => {
     setApplyResult(null);
+    setPartition(null);
+    setRecommended(undefined);
     let cancelled = false;
     loadLoraInfo(loraPath).then((info) => {
-      if (!cancelled) setRecommended(info?.recommended ?? null);
+      if (!cancelled) {
+        setRecommended(info?.recommended ?? null);
+        setPartition(info?.partition_guidance ?? null);
+      }
     });
     return () => {
       cancelled = true;
     };
   }, [loraPath]);
 
-  if (!recommended) return null;
+  if (!recommended && !partition) return null;
 
   return (
-    <div className="mt-1 flex flex-wrap items-center gap-2 rounded bg-gray-900/60 px-2 py-1.5 text-xs text-gray-400">
-      <span>
-        This LoRA&apos;s file metadata declares {recommended.num_inference_steps} inference steps
-        {!recommended.fbcache_enable && !recommended.spectrum_enable
-          ? ", First Block Cache off, and Spectrum forecasting off"
-          : ""}
-        {" "}(source: {recommended.source}).
-      </span>
-      {onApplyRecommended && (
-        <Button
-          onClick={() => {
-            const skipped = onApplyRecommended({
-              num_inference_steps: recommended.num_inference_steps,
-              fbcache_enable: recommended.fbcache_enable,
-              spectrum_enable: recommended.spectrum_enable,
-            });
-            setApplyResult(skipped && skipped.length > 0 ? skipped : "applied");
-          }}
-          variant="secondary"
-          size="sm"
-        >
-          {applyResult ? "Applied" : "Apply to params"}
-        </Button>
+    <>
+      {partition && (
+        <div className="mt-1 rounded bg-gray-900/60 px-2 py-1.5 text-xs text-amber-300">
+          Qwen global adapter included. For split generation, set Halo in Qwen Partition controls
+          to {partition.halo_tokens} latent cells ({partition.halo_pixels}px) as a starting point.
+          {partition.source === "file_metadata"
+            ? " Recommendation recorded in this file."
+            : " No recommendation in this older file; this is a SushiUI default suggestion."}
+          {partition.training_halo_tokens != null && ` Training halo: ${partition.training_halo_tokens} latent cells.`}
+          {" "}Not applied automatically; ordinary generation ignores the global adapter.
+          {" "}Quality depends on the split layout and image.
+        </div>
       )}
-      {Array.isArray(applyResult) && (
-        <span className="text-amber-400">
-          This panel has no param for: {applyResult.join(", ")} -- not applied.
-        </span>
+      {recommended && (
+        <div className="mt-1 flex flex-wrap items-center gap-2 rounded bg-gray-900/60 px-2 py-1.5 text-xs text-gray-400">
+          <span>
+            This LoRA&apos;s file metadata declares {recommended.num_inference_steps} inference steps
+            {!recommended.fbcache_enable && !recommended.spectrum_enable
+              ? ", First Block Cache off, and Spectrum forecasting off"
+              : ""}
+            {" "}(source: {recommended.source}).
+          </span>
+          {onApplyRecommended && (
+            <Button
+              onClick={() => {
+                const skipped = onApplyRecommended({
+                  num_inference_steps: recommended.num_inference_steps,
+                  fbcache_enable: recommended.fbcache_enable,
+                  spectrum_enable: recommended.spectrum_enable,
+                });
+                setApplyResult(skipped && skipped.length > 0 ? skipped : "applied");
+              }}
+              variant="secondary"
+              size="sm"
+            >
+              {applyResult ? "Applied" : "Apply to params"}
+            </Button>
+          )}
+          {Array.isArray(applyResult) && (
+            <span className="text-amber-400">
+              This panel has no param for: {applyResult.join(", ")} -- not applied.
+            </span>
+          )}
+        </div>
       )}
-    </div>
+    </>
   );
 }
 

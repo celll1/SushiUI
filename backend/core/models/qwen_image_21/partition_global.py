@@ -108,14 +108,25 @@ GLOBAL_ADAPTER_NAME = "qwen_partition_global_adapter"
 GLOBAL_ADAPTER_VERSION = "latent_summary_v1"
 
 
-def global_adapter_metadata(adapter: QwenPartitionGlobalAdapter | None) -> dict[str, str]:
+def global_adapter_metadata(adapter: QwenPartitionGlobalAdapter | None, training_config=None) -> dict[str, str]:
     if adapter is None:
         return {}
-    return {
+    from api.param_defaults import QWEN_IMAGE_21_GENERATION_DEFAULTS, TRAINING_DEFAULTS
+    metadata = {
         GLOBAL_ADAPTER_NAME: GLOBAL_ADAPTER_VERSION,
         "qwen_partition_global_rank": str(adapter.rank),
         "qwen_partition_global_tokens": str(adapter.summary_tokens),
     }
+    if training_config is not None:
+        metadata["qwen_partition_global_generation_halo_tokens"] = str(
+            QWEN_IMAGE_21_GENERATION_DEFAULTS["qwen_image_21_partition"]["halo_tokens"])
+        halo = training_config.get("dit_partition_halo_tokens")
+        if halo is None:
+            halo = training_config.get("qwen_partition_halo_tokens")
+        if halo is None:
+            halo = TRAINING_DEFAULTS["dit_partition_halo_tokens"]
+        metadata["qwen_partition_global_training_halo_tokens"] = str(halo)
+    return metadata
 
 
 def read_partition_global_payload(model, state, metadata, *, allow_alpha=False):
@@ -147,7 +158,7 @@ def read_partition_global_payload(model, state, metadata, *, allow_alpha=False):
         if value.shape != targets[key].shape or not value.is_floating_point():
             raise ValueError(f"Invalid Qwen partition global adapter tensor {key!r}")
     return {
-        "state": tensors, "metadata": global_adapter_metadata(spec),
+        "state": tensors, "metadata": {**metadata, **global_adapter_metadata(spec)},
     }
 
 

@@ -314,3 +314,33 @@ def test_lora_embedded_global_load_and_failed_second_file_are_atomic(tmp_path, m
     assert mixin._load_lora_qwen21([dict(path=str(global_only))]) == 0
     assert len(mixin._qwen21_loaded_files) == 1
     mixin._unload_lora_qwen21()
+
+
+def test_distributed_halo_guidance_roundtrip_and_legacy_fallback(tmp_path):
+    from api.param_defaults import QWEN_IMAGE_21_GENERATION_DEFAULTS
+    from core.extensions.lora_manager import _partition_guidance_from_metadata, LoRAManager
+    from safetensors.torch import save_file
+    net = model()
+    adapter = QwenPartitionGlobalAdapter(8, net.inner_dim, rank=4, summary_tokens=3)
+    metadata = global_adapter_metadata(adapter, {"dit_partition_halo_tokens": 0})
+    expected = QWEN_IMAGE_21_GENERATION_DEFAULTS["qwen_image_21_partition"]["halo_tokens"]
+    assert metadata["qwen_partition_global_generation_halo_tokens"] == str(expected)
+    state = {f"{GLOBAL_ADAPTER_NAME}.{key}": value for key, value in adapter.export_tensors().items()}
+    restored = read_partition_global_payload(net, state, metadata)
+    assert restored["metadata"] == metadata
+    path = tmp_path / "distributed.safetensors"
+    save_file(state, path, metadata=metadata)
+    record = LoRAManager.__new__(LoRAManager)._read_lora_header(path)
+    assert record["partition_guidance"] == {
+        "halo_tokens": expected, "halo_pixels": expected * 16,
+        "training_halo_tokens": 0, "source": "file_metadata",
+    }
+    legacy = _partition_guidance_from_metadata(global_adapter_metadata(adapter))
+    assert legacy["source"] == "sushiui_default"
+    assert legacy["training_halo_tokens"] is None
+    assert _partition_guidance_from_metadata({}) is None
+    for invalid in ("abc", "-2", "3", "16.5"):
+        invalid_metadata = {**metadata, "qwen_partition_global_generation_halo_tokens": invalid}
+        assert _partition_guidance_from_metadata(invalid_metadata)["source"] == "sushiui_default"
+    declared = {**metadata, "qwen_partition_global_generation_halo_tokens": "8"}
+    assert _partition_guidance_from_metadata(declared)["halo_tokens"] == 8

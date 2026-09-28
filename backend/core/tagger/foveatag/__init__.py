@@ -23,6 +23,17 @@ from .objectives import (
     overlap_correspondence_loss,
     rgb_to_chroma,
 )
+from .router import (
+    EvidenceRouter,
+    RouterOutput,
+    build_scale_space_candidates,
+    dense_oracle_targets,
+    router_diversity_loss,
+    router_ranking_loss,
+    select_proposals,
+    select_training_proposals,
+    source_candidate_mask,
+)
 from .siglip2_control import (
     MaskedSlotPooler,
     SigLIP2ControlOutput,
@@ -58,6 +69,15 @@ __all__ = [
     "masked_patch_reconstruction_loss",
     "overlap_correspondence_loss",
     "rgb_to_chroma",
+    "EvidenceRouter",
+    "RouterOutput",
+    "build_scale_space_candidates",
+    "dense_oracle_targets",
+    "router_diversity_loss",
+    "router_ranking_loss",
+    "select_proposals",
+    "select_training_proposals",
+    "source_candidate_mask",
     "MaskedSlotPooler",
     "SigLIP2ControlOutput",
     "SigLIP2ControlTagger",

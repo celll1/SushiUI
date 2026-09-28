@@ -13503,7 +13503,7 @@ components:
           allOf: [{ $ref: '#/components/schemas/QwenImage21Split' }]
           nullable: true
           default: null
-        halo_tokens: {type: integer, minimum: 0, multipleOf: 2, default: 0}
+        halo_tokens: {type: integer, minimum: 0, multipleOf: 2, default: 16}
     GenerationParams:
       type: object
       description: |
@@ -13666,8 +13666,8 @@ components:
             - $ref: '#/components/schemas/QwenImage21Partition'
           nullable: true
           description: Qwen-only partitioned generation. Multipart requests encode this object as JSON. Off uses the existing full-frame path.
-          default: {version: 1, mode: 'off', max_target_tokens: 4096, layout: null, halo_tokens: 0}
-          example: {version: 1, mode: auto, max_target_tokens: 4096, layout: null, halo_tokens: 0}
+          default: {version: 1, mode: 'off', max_target_tokens: 4096, layout: null, halo_tokens: 16}
+          example: {version: 1, mode: auto, max_target_tokens: 4096, layout: null, halo_tokens: 16}
         qwen_image_21_kv_cache:
           type: boolean
           default: true

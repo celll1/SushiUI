@@ -1,6 +1,6 @@
 # Qwen-Image 2.1 partitioned generation and global-adapter contract
 
-Status: **implemented on `codex/qwen-partition-generation`; CPU acceptance passed, production GPU and owner frontend gates pending**.
+Status: **implemented; CPU acceptance and real ConvRot GPU execution passed. Halo-free coherence fails on the tested LoRA; the default halo is 16 latent pixels. Owner frontend build gate remains.**
 
 This extends [partitioned training](QWEN_IMAGE_21_PARTITIONED_TRAINING_DESIGN.md).
 The four image generation panels expose Off/Auto/Manual and a shared visual
@@ -272,7 +272,7 @@ field for all four image multipart routes. Defaults are served from
 `param_defaults.py`. The version-1 shape is:
 
 ```json
-{"version":1,"mode":"auto","max_target_tokens":4096,"layout":null,"halo_tokens":0}
+{"version":1,"mode":"auto","max_target_tokens":4096,"layout":null,"halo_tokens":16}
 ```
 
 Manual layout uses `{axis, ratio, first, second}` split nodes, with null leaves.
@@ -303,8 +303,38 @@ two CUDA tests are excluded. All changed Python modules compile and import
 with CUDA initialization stubbed; the assertion confirms no CUDA context.
 The full-FT foundation tests also cover real training gradients, sharded/TE
 bundle restoration, ordinary-forward isolation and INT8 export preservation.
-Production model quality/VRAM/timing and browser interaction still require the
-GPU and owner frontend build gates; CPU tests establish no speed or quality claim.
+Browser interaction still requires the owner frontend build gate; CPU tests
+establish no speed or quality claim.
+
+### Real GPU checks (2026-09-28)
+
+RTX 6000 Ada, local ConvRot transformer/TE, BF16 inference and model CPU offload:
+Run166 step 17801 passed 1024x1024 Off, one-region Auto, 2/6-region execution,
+CFG 1/3, native image references and a full-model CPU-payload injection.
+The full-model injection tests the inference branch, not a separately trained
+full-FT model's quality. Off is pixel-identical with/without the paired global
+payload and after partition requests. Every request unloads ordinary adapters.
+
+The owner's `20260926_193229_22397712` checkpoint at step 24411 contains all five
+global weights, version `latent_summary_v1`, rank 64, 16 summary tokens and an
+output-weight L2 norm of 3.100887. Its 128 ordinary LoRA targets also load.
+At its recorded 1472x896 / CFG1 / 40-step / seed611809507 sample settings:
+
+| Route | Wall seconds | Peak allocated GiB | Visual result |
+|---|---:|---:|---|
+| Off | 42.25 | 9.238 | One coherent subject |
+| 2 regions, halo 0 | 31.32 | 9.243 | Face/body mismatch at the central boundary |
+| 2 regions, halo 16 (256px) | 48.37 | 9.295 | Central face split resolved in this comparison |
+
+These are single sequential calls with unequal warmup conditions, including
+LoRA loading and decode, not a speedup benchmark. A forward pre-hook measured
+nonzero global residuals on all 80 halo-enabled region calls (RMS range
+0.0007529–0.0659909). Missing/restored weights are therefore not the explanation
+for the halo-free failure. The global summary alone does not replace spatial
+border context. The generation default is now halo 16, while Off/one-region
+plans still create no partition executor. Auto counts the expanded input in
+its ceiling. This one comparison does not prove coherence for all seeds, layouts
+or checkpoints; halo 0 remains an explicit experimental choice.
 
 No quality equivalence or speedup is assumed. Splitting removes dense target
 attention, and a learned summary does not restore it. Global adapter training

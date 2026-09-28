@@ -545,6 +545,7 @@ def _save_debug_latents(
     trainer, path, *, latents, noisy, target, prediction, timesteps,
     latent_h, latent_w, loss, recon_loss, captions=None, reference_image_paths=None,
     partition_count=1, partition_plan=None,
+    uncond_prediction=None,
 ):
     if path is None:
         return
@@ -574,6 +575,12 @@ def _save_debug_latents(
             "model_type": "qwen_image_21",
             "partition_count": int(partition_count),
         }
+        if float(trainer.config.get("qwen_guidance_loss_weight", TRAINING_DEFAULTS["qwen_guidance_loss_weight"]) or 0) > 0:
+            data["uncond_prediction_status"] = "computed" if uncond_prediction is not None else "not_selected"
+        if uncond_prediction is not None:
+            uncond_grid = image_grid(uncond_prediction)
+            data["uncond_predicted_velocity"] = uncond_grid
+            data["uncond_predicted_latent"] = noisy_grid - timestep * uncond_grid
         if partition_plan is not None:
             data["partition_grid_size"] = [int(latent_w), int(latent_h)]
             data["partition_regions"] = [
@@ -601,7 +608,8 @@ def _save_debug_latents(
                     ("target", clean_grid),
                     ("noisy", noisy_grid),
                     ("pred_x0", data["predicted_latent"]),
-                ),
+                ) + ((("uncond_pred_x0", data["uncond_predicted_latent"]),)
+                     if "uncond_predicted_latent" in data else ()),
             }
     except Exception as exc:
         print(f"{trainer.log_prefix} [debug_latents] save failed: {exc}")
@@ -748,6 +756,8 @@ def train_step(
         latent_w=latent_w, loss=loss.detach(), recon_loss=recon_loss.detach(),
         captions=debug_captions,
         reference_image_paths=debug_reference_image_paths,
+        uncond_prediction=(uncond_prediction if debug_save_path is not None
+                           and uncond_prediction is not None and bool(guided_mask[0]) else None),
     )
     return loss, pred_loss.detach(), recon_loss.detach()
 
@@ -797,6 +807,9 @@ def train_step_partitioned_backward(
         torch.empty((int(latent_h), int(latent_w), channels), dtype=torch.float32)
         if debug_save_path is not None else None
     )
+    debug_uncond_grid = (torch.empty_like(debug_prediction_grid)
+                         if debug_prediction_grid is not None and guidance is not None
+                         and bool(guided_mask[0]) else None)
 
     original_checkpoint_blocks = getattr(
         trainer.transformer, "_training_gradient_checkpointing_blocks", None
@@ -907,6 +920,11 @@ def train_step_partitioned_backward(
                     exposure_losses.append(_per_image_mse(core_prediction, core_target))
             else:
                 core_uncond = flatten_region(uncond_prediction, local)
+                if debug_uncond_grid is not None:
+                    core = region.core
+                    debug_uncond_grid[core.top:core.bottom, core.left:core.right] = (
+                        core_uncond[0].detach().float().reshape(core.height, core.width, channels).cpu()
+                    )
                 core_loss, normal_loss, guided_loss = _guidance_loss(
                     core_prediction, core_target, core_uncond, sigma, guidance, selection, exposure_losses
                 )
@@ -976,6 +994,8 @@ def train_step_partitioned_backward(
             reference_image_paths=debug_reference_image_paths,
             partition_count=len(plan.regions),
             partition_plan=plan,
+            uncond_prediction=(debug_uncond_grid.reshape(1, tokens, channels)
+                               if debug_uncond_grid is not None else None),
         )
     wall_ms = (time.perf_counter() - wall_start) * 1000.0
     trainer.log_extra_metric("qwen_partition_count", float(len(plan.regions)))

@@ -18260,7 +18260,7 @@ async def visualize_debug_latent(
         result["channel_stats"] = data["channel_stats"]
     for _k in ("window_latent_frames", "clip_latent_frames", "audio_sigma",
                "audio_present", "latent_frames", "partition_count", "partition_grid_size",
-               "partition_regions"):
+               "partition_regions", "uncond_prediction_status"):
         if _k in data:
             result[_k] = data[_k]
 
@@ -18307,6 +18307,7 @@ async def visualize_debug_latent(
         _target_webp = latent_file.parent / f"decode_t{_ts_part}_target.webp"
         _pred_webp = latent_file.parent / f"decode_t{_ts_part}_pred_x0.webp"
         _noisy_webp = latent_file.parent / f"decode_t{_ts_part}_noisy.webp"
+        _uncond_webp = latent_file.parent / f"decode_t{_ts_part}_uncond_pred_x0.webp"
         def _webp_preview(p):
             im = Image.open(p).convert("RGB")
             im.thumbnail((768, 768))  # downscale: debug preview doesn't need full res
@@ -18317,6 +18318,8 @@ async def visualize_debug_latent(
             result["predicted_latent_image"] = _webp_preview(_pred_webp)
         if _noisy_webp.exists():  # older runs have no noisy webp -> falls back below
             result["noisy_latents_image"] = _webp_preview(_noisy_webp)
+        if "uncond_predicted_latent" in data and _uncond_webp.exists():
+            result["uncond_predicted_latent_image"] = _webp_preview(_uncond_webp)
     except Exception as _webp_e:
         print(f"[debug-latents] webp preview load failed: {_webp_e}")
 
@@ -18340,6 +18343,9 @@ async def visualize_debug_latent(
     if "predicted_latent" in data and "predicted_latent_image" not in result:
         img = latent_to_image(data["predicted_latent"], is_flux2=is_flux2)
         result["predicted_latent_image"] = image_to_base64(img)
+    if "uncond_predicted_latent" in data and "uncond_predicted_latent_image" not in result:
+        result["uncond_predicted_latent_image"] = image_to_base64(
+            latent_to_image(data["uncond_predicted_latent"], is_flux2=is_flux2))
 
     # MiniMax-H3 trains video and audio jointly and dumps both streams into one
     # file, so an audio-side collapse is diagnosable separately. Audio tensors
@@ -18356,7 +18362,7 @@ def get_debug_latent_image(
     run_id: int,
     step: int,
     kind: Literal[
-        "target", "noisy", "predicted_latent", "predicted_noise",
+        "target", "noisy", "predicted_latent", "uncond_predicted_latent", "predicted_noise",
         "predicted_velocity", "reference", "audio_target", "audio_noisy",
         "audio_predicted_velocity", "audio_actual_velocity",
         "audio_predicted_latent",

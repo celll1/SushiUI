@@ -733,6 +733,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
     let upgrade: ReturnType<typeof setTimeout> | null = null;
     const preloads = [
       "latents_image", "predicted_latent_image", "noisy_latents_image",
+      "uncond_predicted_latent_image",
       "predicted_noise_image",
     ].map((key) => {
       const source = debugImageUrl(
@@ -1848,13 +1849,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                         <div className="space-y-2">
                           <div className="text-xs text-gray-400">Latent Comparison (Goal: Minimize Difference)</div>
 
-                          {/* Comparison Container — staged left→right wipe so the yellow
-                              line ALWAYS sits exactly on the image transition.
-                              3-way (latent runs): drag right reveals noisy→predicted→target.
-                                stage 1 [0..50]: base=noisy,     top=predicted (clip [0,wipe])
-                                stage 2 [50..100]: base=predicted, top=target    (clip [0,wipe])
-                              wipe = position of the transition (= the line), 0→100 per stage.
-                              2-way fallback (no noisy): base=target, top=predicted clipped to s. */}
+                          {/* Each slider stage wipes between two adjacent saved images. */}
                           {(() => {
                             const v = debugVisualization;
                             const has = (key: keyof NonNullable<DebugLatentVisualization["image_urls"]>) =>
@@ -1864,25 +1859,26 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                             const s = comparisonSlider;
                             const px = (key: keyof NonNullable<DebugLatentVisualization["image_urls"]>) =>
                               debugImageUrl(v, key, debugImageSize);
+                            type ImageKey = keyof NonNullable<DebugLatentVisualization["image_urls"]>;
                             const GREEN = "bg-green-700/80", BLUE = "bg-blue-700/80", PURPLE = "bg-purple-700/80";
-                            let baseSrc: string | undefined, baseLabel = "", baseColor = GREEN;
-                            let topSrc: string | undefined, topLabel = "", topColor = BLUE;
-                            let wipe: number;  // transition position (%) = yellow line
+                            const frames: { key: ImageKey; label: string; color: string }[] = [];
                             if (has3) {
-                              const stage2 = s > 50;
-                              wipe = stage2 ? (s - 50) * 2 : s * 2;  // 0→100 within each stage
-                              if (stage2) {
-                                baseSrc = px("predicted_latent_image"); baseLabel = "Predicted"; baseColor = BLUE;
-                                topSrc = px("latents_image");           topLabel = "Target";     topColor = GREEN;
-                              } else {
-                                baseSrc = px("noisy_latents_image");    baseLabel = "Noisy";     baseColor = PURPLE;
-                                topSrc = px("predicted_latent_image");  topLabel = "Predicted";  topColor = BLUE;
+                              frames.push({ key: "noisy_latents_image", label: "Noisy", color: PURPLE });
+                              if (has("uncond_predicted_latent_image")) {
+                                frames.push({ key: "uncond_predicted_latent_image", label: "Uncond predicted", color: "bg-orange-700/80" });
                               }
+                              frames.push({ key: "predicted_latent_image", label: "Predicted", color: BLUE },
+                                { key: "latents_image", label: "Target", color: GREEN });
                             } else {
-                              wipe = s;
-                              baseSrc = px("latents_image");            baseLabel = "Target";    baseColor = GREEN;
-                              topSrc = px("predicted_latent_image");    topLabel = "Predicted";  topColor = BLUE;
+                              frames.push({ key: "latents_image", label: "Target", color: GREEN },
+                                { key: "predicted_latent_image", label: "Predicted", color: BLUE });
                             }
+                            const scaled = s / 100 * (frames.length - 1);
+                            const stage = Math.min(Math.floor(scaled), frames.length - 2);
+                            const wipe = (scaled - stage) * 100;
+                            const base = frames[stage], top = frames[stage + 1];
+                            const baseSrc = px(base.key), baseLabel = base.label, baseColor = base.color;
+                            const topSrc = px(top.key), topLabel = top.label, topColor = top.color;
                             return (
                           <div className="relative aspect-square bg-gray-800 rounded overflow-hidden">
                             {/* Base layer (right side of the wipe) */}
@@ -1923,6 +1919,8 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                             {(debugVisualization.image_urls?.noisy_latents_image || debugVisualization.noisy_latents_image) ? (
                               <>
                                 <span>Noisy (t={debugVisualization.timestep})</span>
+                                {(debugVisualization.image_urls?.uncond_predicted_latent_image || debugVisualization.uncond_predicted_latent_image) &&
+                                  <span>Uncond predicted (t=0)</span>}
                                 <span>Predicted (t=0)</span>
                                 <span>Target</span>
                               </>
@@ -1933,6 +1931,8 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                               </>
                             )}
                           </div>
+                          {debugVisualization.uncond_prediction_status === "not_selected" &&
+                            <p className="text-xs text-gray-500">Uncond preview unavailable: guidance did not compute it for this image.</p>}
 
                           {/* Additional Debug Images */}
                           <div className="grid grid-cols-2 gap-2 mt-3">

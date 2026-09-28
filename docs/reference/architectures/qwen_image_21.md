@@ -58,6 +58,17 @@ objective is `xt = (1-sigma)*x0 + sigma*noise`, target `noise-x0`; loss is taken
 only from the target latent tail. ReLoRA, ControlNet, TE LoRA,
 VAE swap, and reference-conditioned edit datasets are refused.
 
+Guidance-loss debug dumps reuse the first image's computed null-prompt prediction
+as `uncond_predicted_velocity` and `uncond_predicted_latent` (one-step x0).
+Partition cores are assembled into the full canvas. No extra DiT forward or
+backward is run for debug; traditional loss retains its existing previews.
+If guidance selection excludes that image, `uncond_prediction_status` is
+`not_selected`, with no fabricated uncond tensor. The monitor adds Uncond predicted
+between Noisy and Predicted when available. Pixel debug performs one additional
+VAE decode after backward and saves `decode_t<sigma>_uncond_pred_x0.webp`;
+latent debug only adds detached CPU copies and file storage. This is the
+training model's null-prompt output, not a separately frozen base-model branch.
+
 Optional partitioned training supports the same latent-summary global adapter
 for LoRA and full FT. Full-FT checkpoints and INT8 inference exports retain its
 weights and structural metadata; training restores it before optimizer setup.

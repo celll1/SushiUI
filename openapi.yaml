@@ -6190,12 +6190,32 @@ paths:
             Scalar manifest with display_resolution (unscaled target image or
             latent preview width, height, and space), optional partition_count,
             partition_grid_size and partition_regions (actual Qwen latent core bounds), and optional
-            legacy base64 images
+            legacy base64 images. Qwen guidance-loss debug files optionally include
+            uncond_prediction_status (computed or not_selected),
+            uncond_predicted_latent_image and its image_urls entry. Uncond uses an
+            already-computed null-prompt prediction; no preview-only model forward.
           content:
             application/json:
               schema:
                 type: object
                 additionalProperties: true
+                properties:
+                  uncond_prediction_status: {type: string, enum: [computed, not_selected]}
+                  uncond_predicted_latent_image:
+                    type: string
+                    description: Optional legacy base64 preview of null-prompt predicted x0.
+                  image_urls:
+                    type: object
+                    additionalProperties: {type: string}
+                    properties:
+                      uncond_predicted_latent_image: {type: string}
+              example:
+                step: 200
+                timestep: 0.5
+                loss: 0.1
+                uncond_prediction_status: computed
+                image_urls:
+                  uncond_predicted_latent_image: /api/v1/training/runs/1/debug-latents/200/images/uncond_predicted_latent?timestep=0.5000&v=example
         '404':
           description: Run or latents not found
           content:
@@ -6224,7 +6244,7 @@ paths:
           required: true
           schema:
             type: string
-            enum: [target, noisy, predicted_latent, predicted_noise, predicted_velocity, reference, audio_target, audio_noisy, audio_predicted_velocity, audio_actual_velocity, audio_predicted_latent]
+            enum: [target, noisy, predicted_latent, uncond_predicted_latent, predicted_noise, predicted_velocity, reference, audio_target, audio_noisy, audio_predicted_velocity, audio_actual_velocity, audio_predicted_latent]
         - name: timestep
           in: query
           required: false

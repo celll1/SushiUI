@@ -8573,6 +8573,8 @@ export interface DebugLatentVisualization {
   noisy_latents_image?: string;  // base64
   predicted_noise_image?: string;  // base64
   predicted_latent_image?: string;  // base64
+  uncond_predicted_latent_image?: string; // base64; computed guidance-loss null-prompt x0
+  uncond_prediction_status?: "computed" | "not_selected";
   // Video archs (LTX-2.3, MiniMax-H3): the images above tile the clip's leading
   // decodable window along width, window_latent_frames frames wide.
   window_latent_frames?: number;
@@ -8592,6 +8594,7 @@ export interface DebugLatentVisualization {
     | "predicted_noise_image"
     | "predicted_velocity_image"
     | "predicted_latent_image"
+    | "uncond_predicted_latent_image"
     | "reference_image"
     | "audio_latents_image"
     | "audio_noisy_latents_image"

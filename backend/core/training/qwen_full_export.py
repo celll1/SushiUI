@@ -59,8 +59,12 @@ def _quantize_component(
 ) -> str:
     linears = _linear_names(component, config)
     marker = encode_comfy_quant_marker(convrot_marker_fields())
+    metadata = artifact_metadata(component, config, variant="int8_convrot")
+    if component == "transformer":
+        metadata.update({key: value for key, value in _metadata(source).items()
+                         if key.startswith("qwen_partition_global_")})
     writer = ShardWriter(
-        str(destination), artifact_metadata(component, config, variant="int8_convrot"),
+        str(destination), metadata,
         DEFAULT_EXPORT_SHARD_BYTES,
     )
     count = 0

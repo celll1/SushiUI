@@ -261,6 +261,20 @@ so evidence it does not yet recognize yields no router target. Retained random
 coverage is the mitigation, and its effect is checked with router recall and
 with rare-tag results split by positives and negatives.
 
+**Local-view teacher distillation (ablation only).** A variant of stage 1 adds
+a feature-alignment term to SigLIP2 (`google/siglip2-so400m-patch16-naflex`,
+Apache-2.0) evaluated on local views only. A local crop keeps fine detail
+visible at the teacher's own input size, whereas the teacher's whole-image
+input discards it. No teacher weights enter the FoveaTag checkpoint, but a
+distilled checkpoint records the teacher as provenance. The chroma
+reconstruction term is kept, and color-sensitive tags are checked for
+regression, because a semantic teacher can discard color differences. This
+variant is not part of the default plan: it is the Phase 3 cause measurement
+that separates missing semantic knowledge from other causes. Weight transplant
+from SigLIP2 is not used; its patch16 linear embedding and absolute position
+embedding do not match this encoder, and matching them would reintroduce the
+fixed-resolution assumptions this design avoids.
+
 Self-supervised pretraining on one GPU is a large time cost. Its budget is set
 from the Phase 0 timing harness (time per epoch at the chosen model size) before
 it starts.
@@ -376,7 +390,9 @@ internal choices (continuous coordinate RoPE, scale features, stem design);
 those are ablated within the from-scratch encoder.
 
 The router, local `2x` magnification, continuous scale feature, dense-oracle
-frequency, and local `logsumexp` head each require an ablation.
+frequency, and local `logsumexp` head each require an ablation. Local-view
+teacher distillation (section 5.1) is compared against pure self-supervised
+pretraining under the same budget.
 
 ### 8.3 Go/no-go gates
 
@@ -401,7 +417,7 @@ measured on project hardware.
 | 0 | Add the fixed benchmark, evidence-area annotations, and timing harness. Measure current 256-patch and enlarged-patch SigLIP2, and time per epoch of candidate from-scratch model sizes. | The current failure is quantified by tag group and evidence size; the self-supervised pretraining budget is set. |
 | 1 | Encoder-swap control: FoveaTag random multi-scale views and evidence-slot head on the existing SigLIP2 encoder, without a learned router. | The view and head design improves fine-detail tags at a known cost. The from-scratch gate for Phase 3 is written into this document before Phase 2 starts. |
 | 2 | Original shared encoder (25--50M) with the continuous coordinate/scale contract; self-supervised pretraining (stage 1). | Pretraining losses converge, and overlap correspondence and chroma reconstruction are measured on held-out images. |
-| 3 | Tag training on random and stratified views (stage 2). | The pre-registered gate against the Phase 1 control, including resolution-ladder extrapolation, is met. If not, stop and measure the cause (pretraining objectives, model capacity, router timing); do not switch to pretrained weights. |
+| 3 | Tag training on random and stratified views (stage 2). | The pre-registered gate against the Phase 1 control, including resolution-ladder extrapolation, is met. If not, stop and measure the cause (pretraining objectives, model capacity, router timing, and missing semantic knowledge via the local-view teacher distillation ablation); do not switch to pretrained weights. |
 | 4 | Router training from dense candidates (stage 3), then joint fine-tuning with retained random coverage (stage 4). | Learned routing beats random views at the same `K`; router recall and rare-tag results are measured. |
 | 5 | Add checkpoint bundles, resume, inference manager, export, API, defaults, OpenAPI, and UI. | Existing tagger lifecycle tests plus new view-contract tests pass. |
 | 6 | Optional capacity increase and further objective ablations. | Retain only components with isolated improvements. |

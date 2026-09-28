@@ -17,6 +17,15 @@ def _aligned(value: int) -> int:
 
 
 class QwenImage21Mixin:
+    def _validate_qwen_partition_arch(self, params):
+        config = params.get("qwen_image_21_partition")
+        if config is None:
+            return
+        from core.inference.qwen_image_21_partition import normalize_partition_config
+        if normalize_partition_config(config)["mode"] != "off" and not self.is_qwen_image_21_model:
+            from api.error_handlers import ValidationError
+            raise ValidationError("Partition generation is only available for Qwen-Image 2.1")
+
     @staticmethod
     def _qwen21_lora_warn(message, code):
         print(f"[Qwen-Image 2.1 LoRA] WARNING: {message}")
@@ -54,12 +63,11 @@ class QwenImage21Mixin:
 
     def _qwen21_prepare_lora_file(self, file):
         from core.models.qwen_image_21.lora import normalise_lora_state_dict
-        if file.metadata.get("qwen_partition_global_adapter"):
-            self._qwen21_lora_warn(
-                f"Qwen-Image 2.1 LoRA '{file.name}' contains a partition-training "
-                "global adapter; full-frame generation uses the ordinary LoRA branches only.",
-                "qwen_partition_global_adapter_ignored",
-            )
+        from core.models.qwen_image_21.partition_global import read_partition_global_payload
+        file.qwen_global_payload = read_partition_global_payload(
+            self.qwen_image_21_components.get("transformer"), file.tensors, file.metadata,
+            allow_alpha=True,
+        )
         base_forward = str(file.metadata.get("qwen_base_forward") or "")
         if base_forward:
             if base_forward != "convrot_int8_bf16_backward_v1":
@@ -79,6 +87,10 @@ class QwenImage21Mixin:
 
     @staticmethod
     def _qwen21_zero_target_message(file, counts):
+        if (file.declared_branches == 0 and file.apply_to_unet
+                and all(key.startswith("qwen_partition_global_adapter.") for key in file.tensors)
+                and getattr(file, "qwen_global_payload", None) is not None):
+            return None
         return (
             f"Qwen-Image 2.1 LoRA '{file.name}' matched no transformer attention targets; "
             "the file is for another architecture or uses an unsupported key layout."
@@ -108,9 +120,12 @@ class QwenImage21Mixin:
         self._unload_lora_qwen21()
         if not configs:
             return 0
-        return self._qwen21_lora_session.load(configs, self._qwen21_lora_components()).applied
+        result = self._qwen21_lora_session.load(configs, self._qwen21_lora_components())
+        self._qwen21_loaded_files = [file for file, _counts in result.files]
+        return result.applied
 
     def _unload_lora_qwen21(self):
+        self._qwen21_loaded_files = []
         return self._qwen21_lora_session.unload(self._qwen21_lora_components())
 
     def _qwen_image_21_pipe(self):
@@ -170,6 +185,15 @@ class QwenImage21Mixin:
             item for item in (params.get("style_transfers") or [])
             if item.get("image") is not None
         ]
+        from core.inference.qwen_image_21_partition import resolve_partition_plan
+        try:
+            plan = resolve_partition_plan(params.get("qwen_image_21_partition"), height // 16, width // 16)
+        except ValueError as exc:
+            from api.error_handlers import ValidationError
+            raise ValidationError(str(exc)) from exc
+        if plan is not None and (reference_guides or style_transfers):
+            from api.error_handlers import ValidationError
+            raise ValidationError("Qwen partitioned generation currently excludes Reference Guide and Style Transfer")
 
         def callback(_pipe, index, timestep, callback_kwargs):
             if self.cancel_requested:
@@ -183,8 +207,53 @@ class QwenImage21Mixin:
                 step_callback(index, timestep, latents)
             return callback_kwargs
 
-        self._load_lora_qwen21(params.get("loras") or [])
+        executor = None
         try:
+            self._load_lora_qwen21(params.get("loras") or [])
+            partition_kwargs = {}
+            before_step = self._qwen21_lora_session.set_step
+            if plan is not None:
+                from core.inference.qwen_image_21_partition import PartitionExecutor
+                model = self.qwen_image_21_components["transformer"]
+                payloads = []
+                base_payload = getattr(model, "_qwen_partition_global_payload", None)
+                if base_payload is not None:
+                    payloads.append((base_payload, None))
+                files = getattr(self, "_qwen21_loaded_files", [])
+                payloads.extend((file.qwen_global_payload, file) for file in files
+                                if file.apply_to_unet and file.qwen_global_payload is not None)
+                executor = PartitionExecutor(
+                    model, plan, payloads, step_sources=files,
+                    use_cache=bool(params.get("qwen_image_21_kv_cache", True)),
+                    cancelled=lambda: self.cancel_requested or pipe.interrupt,
+                )
+                if not payloads:
+                    self._qwen21_lora_warn(
+                        "Qwen partitioned generation has no global adapter; cross-region attention is absent.",
+                        "qwen_partition_no_global_adapter",
+                    )
+                params["qwen_image_21_partition_actual"] = {
+                    **plan.metadata(), "global_adapters": [
+                        {"name": "full model" if source is None else source.name,
+                         "strength": 1.0 if source is None else source.strength,
+                         "step_range": None if source is None else source.step_range}
+                        for _payload, source in payloads
+                    ],
+                }
+
+                def before_step(index, total):
+                    self._qwen21_lora_session.set_step(index, total)
+                    executor.set_step(index, total)
+
+                partition_kwargs["partition_executor"] = executor
+            else:
+                params.pop("qwen_image_21_partition_actual", None)
+                for file in getattr(self, "_qwen21_loaded_files", []):
+                    if file.qwen_global_payload is not None and file.apply_to_unet:
+                        self._qwen21_lora_warn(
+                            f"Qwen LoRA '{file.name}': full-frame generation ignores its global adapter.",
+                            "qwen_partition_global_adapter_ignored",
+                        )
             result = pipe(
                 prompt=params.get("prompt", ""), image=images,
                 negative_prompt=negative_prompt, true_cfg_scale=cfg_scale,
@@ -195,9 +264,12 @@ class QwenImage21Mixin:
                 reference_guides=reference_guides,
                 style_transfers=style_transfers,
                 style_combine_mode=str(params.get("style_combine_mode", "stack") or "stack"),
-                before_step_callback=self._qwen21_lora_session.set_step,
+                before_step_callback=before_step,
+                **partition_kwargs,
             ).images[0]
         finally:
+            if executor is not None:
+                executor.close()
             self._unload_lora_qwen21()
         return result, seed, seed
 

@@ -557,6 +557,7 @@ class GenerationParams(BaseModel):
     # architecture ignores it.
     sensenova_kv_cache_streaming: bool = GENERATION_DEFAULTS["sensenova_kv_cache_streaming"]
     qwen_image_21_kv_cache: bool = GENERATION_DEFAULTS["qwen_image_21_kv_cache"]
+    qwen_image_21_partition: Optional[Dict[str, Any]] = GENERATION_DEFAULTS["qwen_image_21_partition"]
     sampler: str = "euler"
     schedule_type: str = "uniform"
     seed: int = -1
@@ -640,11 +641,28 @@ class GenerationParams(BaseModel):
     # Preview mode
     preview_predicted_x0: bool = False  # Show predicted x0 instead of current latent in preview
 
+    @field_validator("qwen_image_21_partition", mode="before")
+    @classmethod
+    def _partition_config(cls, value):
+        from core.inference.qwen_image_21_partition import normalize_partition_config
+        return normalize_partition_config(value)
+
 class Txt2ImgRequest(GenerationParams):
     pass
 
 class Img2ImgRequest(GenerationParams):
     denoising_strength: float = 0.75
+
+
+def _parse_qwen_partition(value, *, arch=None):
+    from core.inference.qwen_image_21_partition import normalize_partition_config
+    try:
+        config = normalize_partition_config(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if arch is not None and config["mode"] != "off" and arch != "qwen_image_21":
+        raise HTTPException(status_code=400, detail="Partitioned generation requires Qwen-Image 2.1")
+    return config
 
 
 @router.get("/health", tags=["system"])
@@ -1238,6 +1256,7 @@ async def generate_txt2img(
     sensenova_mot_phase_eviction: bool = Form(GENERATION_DEFAULTS["sensenova_mot_phase_eviction"]),  # SenseNova U1.5 per-phase weight-half CPU eviction; other archs ignore it
     sensenova_kv_cache_streaming: bool = Form(GENERATION_DEFAULTS["sensenova_kv_cache_streaming"]),  # SenseNova U1.5 per-phase KV cache CPU streaming; other archs ignore it
     qwen_image_21_kv_cache: bool = Form(GENERATION_DEFAULTS["qwen_image_21_kv_cache"]),
+    qwen_image_21_partition: str = Form(json.dumps(GENERATION_DEFAULTS["qwen_image_21_partition"])),
     sampler: str = Form("euler"),
     schedule_type: str = Form("uniform"),
     seed: int = Form(-1),
@@ -1469,6 +1488,7 @@ async def generate_txt2img(
             "sensenova_mot_phase_eviction": sensenova_mot_phase_eviction,
             "sensenova_kv_cache_streaming": sensenova_kv_cache_streaming,
             "qwen_image_21_kv_cache": qwen_image_21_kv_cache,
+            "qwen_image_21_partition": _parse_qwen_partition(qwen_image_21_partition),
             "sampler": sampler,
             "schedule_type": schedule_type,
             "seed": seed,
@@ -1605,6 +1625,7 @@ async def generate_txt2img(
 
         # Warn about parameters the loaded architecture silently ignores
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
+        _parse_qwen_partition(params.get("qwen_image_21_partition"), arch=_current_arch)
         check_arch_capabilities(params, _current_arch, defaults=_img_defaults)
 
         # Progress callback to send updates via WebSocket
@@ -2229,6 +2250,7 @@ async def generate_img2img(
     sensenova_mot_phase_eviction: bool = Form(GENERATION_DEFAULTS["sensenova_mot_phase_eviction"]),  # SenseNova U1.5 per-phase weight-half CPU eviction; other archs ignore it
     sensenova_kv_cache_streaming: bool = Form(GENERATION_DEFAULTS["sensenova_kv_cache_streaming"]),  # SenseNova U1.5 per-phase KV cache CPU streaming; other archs ignore it
     qwen_image_21_kv_cache: bool = Form(GENERATION_DEFAULTS["qwen_image_21_kv_cache"]),
+    qwen_image_21_partition: str = Form(json.dumps(GENERATION_DEFAULTS["qwen_image_21_partition"])),
     denoising_strength: float = Form(0.75),
     img2img_fix_steps: bool = Form(True),
     sampler: str = Form("euler"),
@@ -2479,6 +2501,7 @@ async def generate_img2img(
             "sensenova_mot_phase_eviction": sensenova_mot_phase_eviction,
             "sensenova_kv_cache_streaming": sensenova_kv_cache_streaming,
             "qwen_image_21_kv_cache": qwen_image_21_kv_cache,
+            "qwen_image_21_partition": _parse_qwen_partition(qwen_image_21_partition),
             "denoising_strength": denoising_strength,
             "img2img_fix_steps": img2img_fix_steps,
             "sampler": sampler,
@@ -2587,6 +2610,7 @@ async def generate_img2img(
 
         # Warn about parameters the loaded architecture silently ignores
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
+        _parse_qwen_partition(params.get("qwen_image_21_partition"), arch=_current_arch)
         check_arch_capabilities(params, _current_arch, defaults=_img_defaults)
 
         # Progress callback to send updates via WebSocket
@@ -7663,6 +7687,7 @@ async def generate_inpaint(
     sensenova_mot_phase_eviction: bool = Form(GENERATION_DEFAULTS["sensenova_mot_phase_eviction"]),  # SenseNova U1.5 per-phase weight-half CPU eviction; other archs ignore it
     sensenova_kv_cache_streaming: bool = Form(GENERATION_DEFAULTS["sensenova_kv_cache_streaming"]),  # SenseNova U1.5 per-phase KV cache CPU streaming; other archs ignore it
     qwen_image_21_kv_cache: bool = Form(GENERATION_DEFAULTS["qwen_image_21_kv_cache"]),
+    qwen_image_21_partition: str = Form(json.dumps(GENERATION_DEFAULTS["qwen_image_21_partition"])),
     denoising_strength: float = Form(0.75),
     img2img_fix_steps: bool = Form(True),
     sampler: str = Form("euler"),
@@ -7946,6 +7971,7 @@ async def generate_inpaint(
             "sensenova_mot_phase_eviction": sensenova_mot_phase_eviction,
             "sensenova_kv_cache_streaming": sensenova_kv_cache_streaming,
             "qwen_image_21_kv_cache": qwen_image_21_kv_cache,
+            "qwen_image_21_partition": _parse_qwen_partition(qwen_image_21_partition),
             "denoising_strength": denoising_strength,
             "img2img_fix_steps": img2img_fix_steps,
             "sampler": sampler,
@@ -8081,6 +8107,7 @@ async def generate_inpaint(
 
         # Warn about parameters the loaded architecture silently ignores
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
+        _parse_qwen_partition(params.get("qwen_image_21_partition"), arch=_current_arch)
         check_arch_capabilities(params, _current_arch, defaults=_img_defaults)
 
         # Progress callback to send updates via WebSocket
@@ -8258,6 +8285,7 @@ async def generate_outpaint(
     steps: Optional[int] = Form(None),
     cfg_scale: Optional[float] = Form(None),
     qwen_image_21_kv_cache: bool = Form(OUTPAINT_DEFAULTS["qwen_image_21_kv_cache"]),
+    qwen_image_21_partition: str = Form(json.dumps(OUTPAINT_DEFAULTS["qwen_image_21_partition"])),
     # KNOWN GAP: this signature has no `cfg_norm`/`timestep_shift`/
     # `img_cfg_scale` Form() params, but openapi.yaml's OutpaintRequest
     # advertises all three via its `allOf` on GenerationParams -- FastAPI
@@ -8605,6 +8633,7 @@ async def generate_outpaint(
             "steps": steps,
             "cfg_scale": cfg_scale,
             "qwen_image_21_kv_cache": qwen_image_21_kv_cache,
+            "qwen_image_21_partition": _parse_qwen_partition(qwen_image_21_partition),
             "denoising_strength": denoising_strength,
             "img2img_fix_steps": img2img_fix_steps,
             "sampler": sampler,
@@ -8787,6 +8816,7 @@ async def generate_outpaint(
 
         # Warn about parameters the loaded architecture silently ignores
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
+        _parse_qwen_partition(params.get("qwen_image_21_partition"), arch=_current_arch)
         check_arch_capabilities(params, _current_arch, defaults=_img_defaults)
 
         # Progress callback to send updates via WebSocket. Uses the CANVAS

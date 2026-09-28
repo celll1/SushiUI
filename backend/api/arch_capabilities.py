@@ -142,6 +142,7 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     # architecture has an equivalent knob at the API layer.
     "sensenova_kv_cache_streaming": ["sensenova_kv_cache_streaming"],
     "qwen_image_21_kv_cache": ["qwen_image_21_kv_cache"],
+    "qwen_image_21_partition": ["qwen_image_21_partition"],
     # Per-block CPU offload swap count. Enable-gated (see the file-header
     # convention above): the image routes (txt2img/img2img/inpaint/outpaint)
     # carry a separate `enable_block_swap` flag and only consult
@@ -194,6 +195,7 @@ FEATURE_LABELS: Dict[str, str] = {
     "sensenova_mot_phase_eviction": "sensenova_mot_phase_eviction (SenseNova U1.5 per-phase weight-half CPU eviction)",
     "sensenova_kv_cache_streaming": "sensenova_kv_cache_streaming (SenseNova U1.5 per-layer prefix KV cache CPU streaming)",
     "qwen_image_21_kv_cache": "qwen_image_21_kv_cache (Qwen-Image 2.1 condition KV cache)",
+    "qwen_image_21_partition": "Qwen-Image 2.1 partition generation",
     "block_swap": "enable_block_swap/blocks_to_swap (per-block CPU offload)",
     "vae_tiling": "vae_tiling (VAE decode tiling)",
     "block_swap_pinned_memory": "use_pinned_memory (block-swap pinned-memory staging)",
@@ -892,6 +894,7 @@ for _a in [a for a in _ALL_ARCHS if a != "sensenova"]:
          "sensenova_kv_cache_streaming is a SenseNova U1.5-specific per-layer prefix KV cache CPU streaming parameter; this architecture does not consult it")
 
 for _a in [a for a in _ALL_ARCHS if a != "qwen_image_21"]:
+    _add(_a, "qwen_image_21_partition", "Partition generation requires Qwen-Image 2.1")
     _add(_a, "qwen_image_21_kv_cache",
          "qwen_image_21_kv_cache is specific to Qwen-Image 2.1 condition-token attention; this architecture does not consult it")
 
@@ -2267,6 +2270,10 @@ def check_arch_capabilities(params: Dict[str, Any], arch: str,
             # but is armed by the OPPOSITE entries (is_style_transfer=True),
             # so it cannot use the generic per-key _is_user_set check.
             if not _is_style_transfer_set(params):
+                continue
+        elif feature == "qwen_image_21_partition":
+            from core.inference.qwen_image_21_partition import normalize_partition_config
+            if normalize_partition_config(params.get(feature))["mode"] == "off":
                 continue
         elif not any(_is_user_set(params, k, defaults) for k in trigger_keys):
             continue

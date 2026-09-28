@@ -453,6 +453,21 @@ export interface ControlNetConfig {
 // `null` (or an absent field) means "do not touch the process-level setting".
 export type QuantizedGemmMode = "w8a8" | "dequant" | null;
 
+export type QwenPartitionSplit = {
+  axis: "x" | "y";
+  ratio: number;
+  first: QwenPartitionSplit | null;
+  second: QwenPartitionSplit | null;
+};
+
+export interface QwenPartitionConfig {
+  version: 1;
+  mode: "off" | "auto" | "manual";
+  max_target_tokens: number;
+  layout: QwenPartitionSplit | null;
+  halo_tokens: number;
+}
+
 export interface GenerationParams {
   prompt: string;
   negative_prompt?: string;
@@ -474,6 +489,7 @@ export interface GenerationParams {
   // architecture ignores it.
   sensenova_kv_cache_streaming?: boolean;
   qwen_image_21_kv_cache?: boolean;
+  qwen_image_21_partition?: QwenPartitionConfig | null;
   sampler?: string;
   schedule_type?: string;
   seed?: number;
@@ -2558,6 +2574,9 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   // SenseNova U1.5 per-layer prefix KV cache CPU streaming; every other architecture ignores it.
   formData.append("sensenova_kv_cache_streaming", String(paramsWithImages.sensenova_kv_cache_streaming ?? false));
   formData.append("qwen_image_21_kv_cache", String(paramsWithImages.qwen_image_21_kv_cache ?? true));
+  if (paramsWithImages.qwen_image_21_partition) {
+    formData.append("qwen_image_21_partition", JSON.stringify(paramsWithImages.qwen_image_21_partition));
+  }
   formData.append("sampler", paramsWithImages.sampler || "euler");
   formData.append("schedule_type", paramsWithImages.schedule_type || "uniform");
   formData.append("seed", String(paramsWithImages.seed || -1));
@@ -2929,6 +2948,9 @@ export const generateImg2Img = async (
   // SenseNova U1.5 per-layer prefix KV cache CPU streaming; every other architecture ignores it.
   formData.append("sensenova_kv_cache_streaming", String(paramsWithImages.sensenova_kv_cache_streaming ?? false));
   formData.append("qwen_image_21_kv_cache", String(paramsWithImages.qwen_image_21_kv_cache ?? true));
+  if (paramsWithImages.qwen_image_21_partition) {
+    formData.append("qwen_image_21_partition", JSON.stringify(paramsWithImages.qwen_image_21_partition));
+  }
   formData.append("denoising_strength", String(paramsWithImages.denoising_strength || 0.75));
   formData.append("img2img_fix_steps", String(paramsWithImages.img2img_fix_steps ?? true));
   formData.append("vae_drift_correction", String(paramsWithImages.vae_drift_correction ?? false));
@@ -3858,6 +3880,9 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   // SenseNova U1.5 per-layer prefix KV cache CPU streaming; every other architecture ignores it.
   formData.append("sensenova_kv_cache_streaming", String(paramsWithImages.sensenova_kv_cache_streaming ?? false));
   formData.append("qwen_image_21_kv_cache", String(paramsWithImages.qwen_image_21_kv_cache ?? true));
+  if (paramsWithImages.qwen_image_21_partition) {
+    formData.append("qwen_image_21_partition", JSON.stringify(paramsWithImages.qwen_image_21_partition));
+  }
   formData.append("denoising_strength", String(paramsWithImages.denoising_strength || 0.75));
   formData.append("img2img_fix_steps", String(paramsWithImages.img2img_fix_steps ?? true));
   formData.append("vae_drift_correction", String(paramsWithImages.vae_drift_correction ?? false));
@@ -4059,6 +4084,9 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
   formData.append("denoising_strength", String(paramsWithImages.denoising_strength ?? 1.0));
   formData.append("img2img_fix_steps", String(paramsWithImages.img2img_fix_steps ?? true));
   formData.append("qwen_image_21_kv_cache", String(paramsWithImages.qwen_image_21_kv_cache ?? true));
+  if (paramsWithImages.qwen_image_21_partition) {
+    formData.append("qwen_image_21_partition", JSON.stringify(paramsWithImages.qwen_image_21_partition));
+  }
   formData.append("sampler", paramsWithImages.sampler || "euler");
   formData.append("schedule_type", paramsWithImages.schedule_type || "uniform");
   formData.append("seed", String(paramsWithImages.seed || -1));

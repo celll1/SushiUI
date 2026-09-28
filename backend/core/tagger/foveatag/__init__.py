@@ -13,6 +13,7 @@ from .benchmark import (
 )
 from .head import EvidenceHeadOutput, EvidenceSlotMixer, EvidenceTagHead
 from .encoder import FoveaEncoder, FoveaEncoderConfig, FoveaEncoderOutput
+from .distillation import DistillationOutput, LocalSigLIP2DistillationHead, pool_to_source_anchors
 from .model import FoveaTagger, FoveaTaggerOutput
 from .objectives import (
     FoveaSelfSupervisedLoss,
@@ -46,6 +47,9 @@ __all__ = [
     "FoveaEncoder",
     "FoveaEncoderConfig",
     "FoveaEncoderOutput",
+    "DistillationOutput",
+    "LocalSigLIP2DistillationHead",
+    "pool_to_source_anchors",
     "FoveaTagger",
     "FoveaTaggerOutput",
     "FoveaSelfSupervisedLoss",

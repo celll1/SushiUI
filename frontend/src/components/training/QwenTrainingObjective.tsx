@@ -64,6 +64,25 @@ export default function QwenTrainingObjective({ params, defaults, onChange }: Pr
           </label>
         </div>
       )}
+      {objective !== "mse" && (
+        <div className="space-y-1">
+          <label className="block text-xs text-gray-400">Max target extrapolation (clean latent RMS; 0 = off)
+            <input type="number" min={0} step="any"
+              value={params.qwen_guidance_loss_extrapolation_max_rms ??
+                (typeof defaults?.qwen_guidance_loss_extrapolation_max_rms === "number"
+                  ? defaults.qwen_guidance_loss_extrapolation_max_rms : "")}
+              onChange={(event) => {
+                const value = event.target.valueAsNumber;
+                if (Number.isFinite(value) && value >= 0) onChange({ qwen_guidance_loss_extrapolation_max_rms: value });
+              }}
+              className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200" />
+          </label>
+          <p className="text-xs text-gray-500">
+            Positive values move Target CFG toward 1 when the null prediction is far from the target.
+            Guidance samples only; one factor per image across all partitions. This does not freeze null weights.
+          </p>
+        </div>
+      )}
       {objective === "mixed" && (
         <div className="space-y-2 border-t border-gray-700 pt-2">
           <label className="block text-xs text-gray-400">How to combine losses

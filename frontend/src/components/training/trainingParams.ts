@@ -114,6 +114,7 @@ export const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [
   "qwen_convrot_backward_cache_blocks", "qwen_convrot_backward_prefetch_depth",
   "qwen_guidance_loss_weight", "qwen_guidance_loss_mix_mode", "qwen_cfg_null_sigma_schedule",
   "qwen_guidance_loss_scale", "qwen_guidance_loss_schedule",
+  "qwen_guidance_loss_extrapolation_max_rms",
   "qwen_guidance_loss_weight_schedule", "qwen_guidance_loss_high_noise_weight",
   "qwen_guidance_loss_ramp_start", "qwen_guidance_loss_ramp_end",
   "multi_noise_timesteps", "multi_noise_mode", "stratified_timesteps",

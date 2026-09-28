@@ -91,6 +91,42 @@ the two targets; the legacy weighted blend remains available. The optional
 CFG-null sigma schedule applies dropout only after ordinary MSE is selected,
 while the independent fixed-drop mode remains available for comparisons.
 
+### Guidance target extrapolation cap
+
+`qwen_guidance_loss_extrapolation_max_rms` defaults to `0` (disabled).
+A positive value `tau` limits the guidance target's distance from the ordinary
+target in normalized clean-latent RMS units. With ordinary flow target `y`,
+detached null velocity `u`, and scheduled factor `g_base`, each image uses:
+
+```
+d = RMS(sigma * (y - u))
+g_eff = 1 + min(g_base - 1, tau / d)
+guided_target = u + g_eff * (y - u)
+```
+
+Zero distance retains `g_base`. The distance is between the ordinary and null
+clean estimates using the same noisy latent, so BF16 noise-mixing roundoff
+does not change the bound `(g_eff - 1) * d <= tau`. The cap affects only guided
+selections, including the guided portion of blended losses. Ordinary MSE and
+CFG-null training samples retain their losses. LoRA and full FT share this path;
+null forwards still use no gradients, but shared weight updates can change null
+outputs. This is an extrapolation limit, not a detector of incorrect null outputs.
+
+Partitioned training computes the area-weighted squared distance over disjoint
+cores before any backward, then applies one factor to every core of that image.
+It caches detached null cores instead of repeating forwards. The extra buffer
+contains one full latent prediction per batch; halo overlap is not counted.
+Null evaluation precedes all conditional backward calls when enabled, including
+under fused optimizers. Disabled runs retain the previous per-region ordering.
+
+The training metrics record `qwen_guidance_effective_scale_mean`,
+`qwen_guidance_effective_scale_min`, `qwen_guidance_capped_fraction`, and
+`qwen_guidance_null_clean_rms` over selected images. `tau=0.5` is a conservative
+experiment value, not a validated quality default; increasing it weakens the
+limit. CPU FP32/BF16 tests cover image-level partition equivalence, gradients,
+null exclusion, unchanged forward counts, and API/YAML round trips. GPU and
+generation-quality validation remain pending.
+
 Real 256x256 gates passed for a three-step rank-4 ConvRot LoRA run (including
 checkpoint/optimizer resume) and a two-step Original full-DiT run resumed
 between steps. The full checkpoint is a four-shard 14.23 GB tensor set; its

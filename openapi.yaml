@@ -25803,6 +25803,20 @@ components:
           description: >-
             Sigma schedule uses effective scale 1 + (scale - 1) * sigma,
             avoiding full extrapolation at nearly clean timesteps.
+        qwen_guidance_loss_extrapolation_max_rms:
+          type: number
+          format: float
+          minimum: 0
+          default: 0.0
+          example: 0.5
+          description: >-
+            Qwen guidance-only cap on the per-image clean-latent RMS distance
+            of the extrapolated target from the ordinary target. Zero disables
+            the cap. Positive tau uses g_eff = 1 + min(g_base - 1, tau / d),
+            where d is the detached RMS error of the empty-prompt clean estimate.
+            Partitioned training measures d across all non-overlapping cores
+            before backward and uses one factor per image. Ordinary MSE and
+            CFG-null training samples are unaffected; no extra model forwards.
         qwen_guidance_loss_weight_schedule:
           type: string
           enum: [constant, high_noise_smoothstep]

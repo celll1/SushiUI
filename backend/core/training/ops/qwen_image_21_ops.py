@@ -158,7 +158,7 @@ def _guidance_condition(trainer, batch: int, cfg_drop_mask, device, dtype):
     )
 
 
-def _guidance_loss(prediction, target, uncond_prediction, sigma, condition, selection=None):
+def _guidance_loss(prediction, target, uncond_prediction, sigma, condition, selection=None, sample_losses=None):
     _, _, eligible, _, scale, schedule, *_ = condition
     guide_scale = scale if schedule == "constant" else 1 + (scale - 1) * sigma.float()
     while isinstance(guide_scale, torch.Tensor) and guide_scale.ndim < target.ndim:
@@ -169,10 +169,18 @@ def _guidance_loss(prediction, target, uncond_prediction, sigma, condition, sele
     normal = (prediction.float() - target.float()).square().flatten(1).mean(1)
     guided = (prediction.float() - guided_target).square().flatten(1).mean(1)
     mix = (_guidance_mix_for_condition(sigma, condition) if selection is None else selection).to(dtype=normal.dtype)
-    loss = ((1 - mix) * normal + mix * guided).mean()
+    per_image = (1 - mix) * normal + mix * guided
+    loss = per_image.mean()
+    if sample_losses is not None:
+        sample_losses.append(per_image.detach())
     used = eligible & (mix > 0)
     guided_metric = guided[used].mean() if bool(used.any()) else guided.new_zeros(())
     return loss, normal.mean().detach(), guided_metric.detach()
+
+
+@torch.no_grad()
+def _per_image_mse(prediction, target):
+    return (prediction.float() - target.float()).square().flatten(1).mean(1)
 
 
 def _partition_config(config, name: str, default):
@@ -708,11 +716,14 @@ def train_step(
     else:
         prediction = forward(encoder_features, encoder_mask)
     prediction = prediction[:, -tokens:]
+    exposure_losses = [] if getattr(trainer, "_collect_concept_sample_loss", False) else None
     if guidance is None or not bool(guided_mask.any()):
         pred_loss = F.mse_loss(prediction.float(), target.float())
+        if exposure_losses is not None:
+            exposure_losses.append(_per_image_mse(prediction, target))
     else:
         pred_loss, normal_loss, guided_loss = _guidance_loss(
-            prediction, target, uncond_prediction, sigma, guidance, selection
+            prediction, target, uncond_prediction, sigma, guidance, selection, exposure_losses
         )
         trainer.log_extra_metric("qwen_guidance_loss_normal", float(normal_loss))
         trainer.log_extra_metric("qwen_guidance_loss_guided", float(guided_loss))
@@ -726,6 +737,11 @@ def train_step(
         predicted_clean = noisy.float() - sigma.float().view(-1, 1, 1) * prediction.float()
         recon_loss = F.mse_loss(predicted_clean, latents.float())
     loss = (1 - recon_weight) * pred_loss + recon_weight * recon_loss
+    if exposure_losses is not None:
+        trainer._pending_concept_sample_loss = (
+            (1 - recon_weight) * exposure_losses[0]
+            + (recon_weight * _per_image_mse(predicted_clean, latents) if recon_weight else 0)
+        ).detach()
     _save_debug_latents(
         trainer, debug_save_path, latents=latents, noisy=noisy, target=target,
         prediction=prediction, timesteps=timesteps, latent_h=latent_h,
@@ -803,6 +819,8 @@ def train_step_partitioned_backward(
     normal_loss_total = 0.0
     guided_loss_total = 0.0
     total_input_tokens = 0
+    exposure_total = (torch.zeros(batch, device=trainer.device, dtype=torch.float32)
+                      if getattr(trainer, "_collect_concept_sample_loss", False) else None)
     wall_start = time.perf_counter()
     try:
         for region_index, region in enumerate(plan.regions):
@@ -882,12 +900,15 @@ def train_step_partitioned_backward(
                     ).cpu()
                 )
             core_fraction = region.core.tokens / plan.full_tokens
+            exposure_losses = [] if exposure_total is not None else None
             if guidance is None or not bool(guided_mask.any()):
                 core_loss = F.mse_loss(core_prediction.float(), core_target.float())
+                if exposure_losses is not None:
+                    exposure_losses.append(_per_image_mse(core_prediction, core_target))
             else:
                 core_uncond = flatten_region(uncond_prediction, local)
                 core_loss, normal_loss, guided_loss = _guidance_loss(
-                    core_prediction, core_target, core_uncond, sigma, guidance, selection
+                    core_prediction, core_target, core_uncond, sigma, guidance, selection, exposure_losses
                 )
                 normal_loss_total += core_fraction * normal_loss
                 guided_loss_total += core_fraction * guided_loss
@@ -900,6 +921,11 @@ def train_step_partitioned_backward(
             weighted_pred_loss = core_fraction * core_loss
             weighted_recon_loss = core_fraction * core_recon_loss
             weighted_loss = (1 - recon_weight) * weighted_pred_loss + recon_weight * weighted_recon_loss
+            if exposure_total is not None:
+                exposure_total += core_fraction * (
+                    (1 - recon_weight) * exposure_losses[0]
+                    + (recon_weight * _per_image_mse(core_predicted_clean, core_clean) if recon_weight else 0)
+                )
 
             if cuda_timing:
                 forward_end.record(torch.cuda.current_stream(trainer.device))
@@ -929,6 +955,8 @@ def train_step_partitioned_backward(
             trainer.transformer._training_gradient_checkpointing_blocks = original_checkpoint_blocks
 
     logical_loss = float(logical_loss_tensor.item())
+    if exposure_total is not None:
+        trainer._pending_concept_sample_loss = exposure_total
     pred_loss_value = float(pred_loss_tensor.item())
     recon_loss_value = float(recon_loss_tensor.item())
     if guidance is not None:

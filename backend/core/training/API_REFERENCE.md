@@ -1863,11 +1863,39 @@ The monitor renders one 24px histogram per row, left=clean/right=noisy,
 with marks at 0.8/0.95 and a separate recorded-pass count beside the cumulative
 total. Heights use passes per unit timestep width on a shared linear scale
 across visible rows, so colored area is proportional to recorded passes even
-with unequal bin widths. Color intensity is logarithmic on the same density
-scale. Bins are not interpolated. Hover intervals for exact counts and mean
+with unequal bin widths. Color shows mean per-image loss on a shared linear
+scale across visible rows (blue=low, orange=high); gray area represents passes
+without loss. Bins are not interpolated. Hover intervals for exact counts and mean
 passes per image; focus/hover the chart for coverage, unknown passes, and the
 total above 0.95. Row means do not guarantee that every target image saw that
 noise range.
+
+Version 3 snapshots/checkpoint state add `timestep_loss_sums` and
+`timestep_loss_counts`, each with 36 entries per recorded group. Versions 1/2
+resume without inventing historical losses: old exposure counts remain intact,
+and only finite, nonnegative losses with known timesteps enter the loss mean.
+The API returns `timestep_loss_counts`, nullable `timestep_loss_means`, recorded
+and unknown loss coverage, and `timestep_loss_metric`.
+
+The initial metric `qwen_prediction_reconstruction_v1` records Qwen's per-image
+prediction/reconstruction objective, including guidance blend/selection and
+reconstruction weighting, before gradient-accumulation/micro-batch scaling.
+Auxiliary losses are excluded. Partition cores accumulate with token-area
+weights into one value per logical image. Successful micro-chunks preserve
+image order; failed OOM attempts are discarded before retry, and skipped
+batches add no exposure. Other architectures leave loss coverage unknown.
+Only detached batch-size vectors are read after existing backward synchronization;
+the monitor continues reading the asynchronous snapshot without trainer RPC.
+Loss values describe the training objective, not character-generation quality,
+and depend on timestep and the objective settings used when observed.
+
+Storage grows with recorded groups, not iterations. A filled-bin JSON estimate
+using the current 398 groups, 36 float sums and 36 integer counts per group
+(representative sums `123.4567890123456`, counts `100`) adds 364,269 bytes
+(356 KiB) to the monitor snapshot and 604,685 bytes (591 KiB) to each indented
+checkpoint state. At 10,000 groups this is about 8.73 MiB / 14.49 MiB;
+retained checkpoints multiply the state increment. Actual size depends on
+number lengths and groups with recorded loss; these are estimates, not caps.
 
 
 The concept-exposure endpoint also accepts `q` (maximum 256 characters), a

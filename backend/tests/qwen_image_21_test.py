@@ -408,6 +408,48 @@ def test_qwen_guidance_sigma_schedule_returns_to_ordinary_at_clean_end():
 
 
 @pytest.mark.parametrize("partitioned", [False, True])
+@pytest.mark.parametrize("guidance_weight", [0.0, 0.25, 1.0])
+def test_exposure_loss_is_per_image_and_preserves_objective_and_gradient(partitioned, guidance_weight):
+    def run(track):
+        transformer = _GuidanceTransformer()
+        trainer = SimpleNamespace(
+            device=torch.device("cpu"), training_dtype=torch.float32,
+            mixed_precision=False, use_grad_scaler=False, transformer=transformer,
+            arch=QwenImage21ArchHandler(),
+            config={"dit_partition_fixed_count": 2, "qwen_guidance_loss_weight": guidance_weight,
+                    "qwen_guidance_loss_scale": 3.0, "qwen_guidance_loss_schedule": "sigma"},
+            _active_mnt_noise=torch.stack([torch.ones(32, 4), torch.ones(32, 4) * 2]),
+            _qwen_guidance_blank_encoding=(torch.zeros(1, 3, 4), torch.ones(3, dtype=torch.bool)),
+            _concept_exposure=object() if track else None,
+            _collect_concept_sample_loss=track,
+            reconstruction_loss_weight=0.2,
+            log_extra_metric=lambda *_args: None,
+        )
+        inputs = dict(latents=torch.zeros(2, 32, 4),
+                      encoder_features=torch.stack([torch.ones(2, 4), torch.ones(2, 4) * 3]),
+                      encoder_mask=torch.ones(2, 2, dtype=torch.bool),
+                      timesteps=torch.tensor([0.5, 0.9]), latent_h=4, latent_w=8,
+                      cfg_drop_mask=torch.tensor([False, False]))
+        if partitioned:
+            total, _, _ = qwen_image_21_ops.train_step_partitioned_backward(
+                trainer, **inputs, backward_scale=0.25)
+        else:
+            loss, _, _ = qwen_image_21_ops.train_step(trainer, **inputs)
+            total = float(loss.detach())
+            (loss * 0.25).backward()
+        return trainer, total, transformer.scale.grad.clone()
+    plain, plain_total, plain_grad = run(False)
+    tracked, total, grad = run(True)
+    values = tracked._pending_concept_sample_loss
+    assert values.shape == (2,)
+    assert not values.requires_grad
+    assert float(values[0]) != pytest.approx(float(values[1]))
+    assert float(values.mean()) == pytest.approx(total)
+    assert total == pytest.approx(plain_total)
+    torch.testing.assert_close(grad, plain_grad)
+
+
+@pytest.mark.parametrize("partitioned", [False, True])
 def test_qwen_reconstruction_loss_is_reported_and_weighted(partitioned):
     transformer = _DebugTransformer()
     trainer = SimpleNamespace(

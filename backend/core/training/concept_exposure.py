@@ -12,6 +12,26 @@ import threading
 
 # Versioned storage geometry, with finer coverage near pure noise.
 TIMESTEP_BIN_EDGES = tuple(i / 20 for i in range(17)) + tuple(i / 100 for i in range(81, 101))
+LOSS_METRIC = "qwen_prediction_reconstruction_v1"
+
+
+def loss_histogram(saved, key, timestep_counts):
+    """Validate additive loss coverage independently of historical exposure."""
+    size = len(TIMESTEP_BIN_EDGES) - 1
+    if ((key in saved.get("timestep_loss_sums", {}))
+            != (key in saved.get("timestep_loss_counts", {}))):
+        raise ValueError("Incomplete concept exposure loss histogram")
+    sums = list(saved.get("timestep_loss_sums", {}).get(key, [0.0] * size))
+    counts = list(saved.get("timestep_loss_counts", {}).get(key, [0] * size))
+    if (saved.get("timestep_loss_metric", LOSS_METRIC) != LOSS_METRIC
+            or len(sums) != size or len(counts) != size):
+        raise ValueError("Invalid concept exposure loss histogram geometry or metric")
+    for total, count, exposed in zip(sums, counts, timestep_counts):
+        if (not isinstance(count, int) or not 0 <= count <= exposed
+                or not isinstance(total, (float, int)) or not math.isfinite(total)
+                or total < 0 or (count == 0 and total != 0)):
+            raise ValueError("Invalid concept exposure loss histogram")
+    return sums, counts
 
 
 def item_key(item, dataset):
@@ -40,6 +60,15 @@ class ConceptExposure:
                 not isinstance(value, int) or value < 0 for value in values
             ):
                 raise ValueError("Invalid saved concept exposure timestep histogram")
+        self.timestep_loss_sums = {}
+        self.timestep_loss_counts = {}
+        loss_keys = set((saved or {}).get("timestep_loss_sums", {})) | set(
+            (saved or {}).get("timestep_loss_counts", {}))
+        for key in loss_keys:
+            sums, counts = loss_histogram(saved, key, self.timestep_counts.get(
+                key, [0] * (len(TIMESTEP_BIN_EDGES) - 1)))
+            self.timestep_loss_sums[key] = sums
+            self.timestep_loss_counts[key] = counts
         self.completed_batches = 0
         self._writer = None
 
@@ -50,11 +79,13 @@ class ConceptExposure:
         self.names.update(names)
         self.target_items.update(target_items)
 
-    def record(self, batch, step: int, passes: int, timesteps=None, *, convention="t0"):
+    def record(self, batch, step: int, passes: int, timesteps=None, *, convention="t0", losses=None):
         if passes <= 0:
             return
         if timesteps is not None and len(timesteps) != len(batch):
             raise ValueError("Exposure timesteps must match the completed sample batch")
+        if losses is not None and len(losses) != len(batch):
+            raise ValueError("Exposure losses must match the completed sample batch")
         for index, (item, _dataset) in enumerate(batch):
             bin_index = None
             if timesteps is not None:
@@ -75,6 +106,13 @@ class ConceptExposure:
                     if bins is None:
                         bins = self.timestep_counts[group] = [0] * (len(TIMESTEP_BIN_EDGES) - 1)
                     bins[bin_index] += passes
+                    loss = float(losses[index]) if losses is not None else None
+                    if loss is not None and math.isfinite(loss) and loss >= 0:
+                        if group not in self.timestep_loss_counts:
+                            self.timestep_loss_counts[group] = [0] * len(bins)
+                            self.timestep_loss_sums[group] = [0.0] * len(bins)
+                        self.timestep_loss_counts[group][bin_index] += passes
+                        self.timestep_loss_sums[group][bin_index] += loss * passes
         self.completed_batches += 1
         if self.completed_batches % 25 == 0:
             self.publish()
@@ -85,14 +123,17 @@ class ConceptExposure:
                 "target_items": dict(self.target_items),
                 "names": dict(self.names),
                 "timestep_bin_edges": list(TIMESTEP_BIN_EDGES),
-                "timestep_counts": {key: list(values) for key, values in self.timestep_counts.items()}}
+                "timestep_counts": {key: list(values) for key, values in self.timestep_counts.items()},
+                "timestep_loss_metric": LOSS_METRIC,
+                "timestep_loss_sums": {key: list(values) for key, values in self.timestep_loss_sums.items()},
+                "timestep_loss_counts": {key: list(values) for key, values in self.timestep_loss_counts.items()}}
 
     def publish(self, *, wait: bool = False):
         if self._writer is not None and self._writer.is_alive():
             if not wait:
                 return
             self._writer.join()
-        payload = {"version": 2, **self.state()}
+        payload = {"version": 3, **self.state()}
         def write():
             pending = self.path.with_suffix(".json.tmp")
             pending.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")

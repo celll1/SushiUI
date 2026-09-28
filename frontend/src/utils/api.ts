@@ -7747,6 +7747,11 @@ export interface ConceptExposureRow {
   timestep_counts?: number[];
   timestep_recorded_passes?: number;
   timestep_unknown_passes?: number;
+  timestep_loss_counts?: number[];
+  timestep_loss_means?: (number | null)[];
+  timestep_loss_recorded_passes?: number;
+  timestep_loss_unknown_passes?: number;
+  timestep_loss_metric?: "qwen_prediction_reconstruction_v1";
 }
 
 export interface ConceptExposureResponse {

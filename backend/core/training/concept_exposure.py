@@ -34,6 +34,25 @@ def loss_histogram(saved, key, timestep_counts):
     return sums, counts
 
 
+def loss_moments(saved, key, loss_counts):
+    """Mean-only history cannot supply a variance cohort."""
+    fields = ("timestep_loss_variance_counts", "timestep_loss_variance_means", "timestep_loss_m2")
+    present = [key in saved.get(field, {}) for field in fields]
+    if any(present) and not all(present):
+        raise ValueError("Incomplete concept exposure loss moments")
+    size = len(TIMESTEP_BIN_EDGES) - 1
+    counts, means, m2s = (list(saved.get(field, {}).get(key, [0] * size)) for field in fields)
+    if any(len(values) != size for values in (counts, means, m2s)):
+        raise ValueError("Invalid concept exposure loss moments geometry")
+    for count, mean, m2, total_count in zip(counts, means, m2s, loss_counts):
+        if (not isinstance(count, int) or not 0 <= count <= total_count
+                or any(not isinstance(value, (int, float)) or not math.isfinite(value)
+                       or value < 0 for value in (mean, m2))
+                or (count == 0 and mean != 0) or (count < 2 and m2 != 0)):
+            raise ValueError("Invalid concept exposure loss moments")
+    return counts, means, m2s
+
+
 def item_key(item, dataset):
     return (str(getattr(dataset, "unique_id", item.get("dataset_unique_id", ""))),
             str(item["image_path"]))
@@ -69,6 +88,17 @@ class ConceptExposure:
                 key, [0] * (len(TIMESTEP_BIN_EDGES) - 1)))
             self.timestep_loss_sums[key] = sums
             self.timestep_loss_counts[key] = counts
+        self.timestep_loss_variance_counts = {}
+        self.timestep_loss_variance_means = {}
+        self.timestep_loss_m2 = {}
+        moment_fields = ("timestep_loss_variance_counts", "timestep_loss_variance_means", "timestep_loss_m2")
+        moment_keys = set().union(*(set((saved or {}).get(field, {})) for field in moment_fields))
+        for key in moment_keys:
+            counts, means, m2s = loss_moments(saved, key, self.timestep_loss_counts.get(
+                key, [0] * (len(TIMESTEP_BIN_EDGES) - 1)))
+            self.timestep_loss_variance_counts[key] = counts
+            self.timestep_loss_variance_means[key] = means
+            self.timestep_loss_m2[key] = m2s
         self.completed_batches = 0
         self._writer = None
 
@@ -113,6 +143,19 @@ class ConceptExposure:
                             self.timestep_loss_sums[group] = [0.0] * len(bins)
                         self.timestep_loss_counts[group][bin_index] += passes
                         self.timestep_loss_sums[group][bin_index] += loss * passes
+                        if group not in self.timestep_loss_variance_counts:
+                            self.timestep_loss_variance_counts[group] = [0] * len(bins)
+                            self.timestep_loss_variance_means[group] = [0.0] * len(bins)
+                            self.timestep_loss_m2[group] = [0.0] * len(bins)
+                        n = self.timestep_loss_variance_counts[group][bin_index]
+                        delta = loss - self.timestep_loss_variance_means[group][bin_index]
+                        new_n = n + passes
+                        if n == 0:
+                            self.timestep_loss_variance_means[group][bin_index] = loss
+                        else:
+                            self.timestep_loss_variance_means[group][bin_index] += delta * (passes / new_n)
+                            self.timestep_loss_m2[group][bin_index] += delta * delta * (n * passes / new_n)
+                        self.timestep_loss_variance_counts[group][bin_index] = new_n
         self.completed_batches += 1
         if self.completed_batches % 25 == 0:
             self.publish()
@@ -126,14 +169,17 @@ class ConceptExposure:
                 "timestep_counts": {key: list(values) for key, values in self.timestep_counts.items()},
                 "timestep_loss_metric": LOSS_METRIC,
                 "timestep_loss_sums": {key: list(values) for key, values in self.timestep_loss_sums.items()},
-                "timestep_loss_counts": {key: list(values) for key, values in self.timestep_loss_counts.items()}}
+                "timestep_loss_counts": {key: list(values) for key, values in self.timestep_loss_counts.items()},
+                "timestep_loss_variance_counts": {key: list(values) for key, values in self.timestep_loss_variance_counts.items()},
+                "timestep_loss_variance_means": {key: list(values) for key, values in self.timestep_loss_variance_means.items()},
+                "timestep_loss_m2": {key: list(values) for key, values in self.timestep_loss_m2.items()}}
 
     def publish(self, *, wait: bool = False):
         if self._writer is not None and self._writer.is_alive():
             if not wait:
                 return
             self._writer.join()
-        payload = {"version": 3, **self.state()}
+        payload = {"version": 4, **self.state()}
         def write():
             pending = self.path.with_suffix(".json.tmp")
             pending.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")

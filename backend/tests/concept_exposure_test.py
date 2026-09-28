@@ -113,7 +113,7 @@ def test_timestep_histogram_tracks_per_item_repeats_mnt_and_resume(tmp_path):
     assert sum(state["timestep_counts"]["miku"]) == 4  # Snapshot is isolated from later updates.
     tracker.publish(wait=True)
     disk = json.loads(tracker.path.read_text(encoding="utf-8"))
-    assert disk["version"] == 3
+    assert disk["version"] == 4
     resumed = ConceptExposure(tmp_path, "concept", disk)
     resumed.record([b], 4, 1, [0.99])
     assert sum(resumed.state()["timestep_counts"]["miku"]) == 6
@@ -293,3 +293,65 @@ def test_loss_chunks_discard_failed_microbatch_prefix_and_keep_image_order():
     result = BaseTrainer._forward_backward_with_oom_recovery(stub, **inputs)
     assert result[-1] is False
     assert stub._concept_sample_loss_chunks == [0, 1, 2, 3]
+
+
+def test_variance_resume_excludes_mean_only_history_and_api_reports_cohort(tmp_path):
+    import pytest
+    from api.routes import get_training_concept_exposure
+    class Db:
+        def query(self, _model): return self
+        def filter(self, _condition): return self
+        def first(self): return SimpleNamespace(output_dir=str(tmp_path))
+    ds = SimpleNamespace(unique_id="dataset")
+    item = ({"image_path": "a", "_concept_exposure_group": "miku"}, ds)
+    tracker = ConceptExposure(tmp_path, "concept")
+    tracker.record([item], 1, 1, [1], losses=[2])
+    tracker.record([item], 2, 1, [1], losses=[6])
+    old = tracker.state()
+    for field in ("timestep_loss_variance_counts", "timestep_loss_variance_means", "timestep_loss_m2"):
+        del old[field]
+    resumed = ConceptExposure(tmp_path, "concept", old)
+    resumed.publish(wait=True)
+    row = get_training_concept_exposure(1, db=Db())["rows"][0]
+    assert row["timestep_loss_means"][-1] == 4
+    assert row["timestep_loss_stddevs"][-1] is None
+    assert row["timestep_loss_variance_counts"][-1] == 0
+    resumed.record([item], 3, 1, [1], losses=[10])
+    resumed.publish(wait=True)
+    assert get_training_concept_exposure(1, db=Db())["rows"][0]["timestep_loss_stddevs"][-1] is None
+    saved = resumed.state()
+    resumed.record([item], 4, 1, [1], losses=[99])
+    assert saved["timestep_loss_variance_counts"]["miku"][-1] == 1
+    restored = ConceptExposure(tmp_path, "concept", saved)
+    restored.record([item], 5, 1, [1], losses=[14])
+    restored.publish(wait=True)
+    row = get_training_concept_exposure(1, db=Db())["rows"][0]
+    assert row["timestep_loss_means"][-1] == 8
+    assert row["timestep_loss_variance_means"][-1] == 12
+    assert row["timestep_loss_variance_counts"][-1] == 2
+    assert row["timestep_loss_stddevs"][-1] == pytest.approx(8 ** 0.5)
+
+
+def test_welford_variance_is_stable_and_handles_repeated_passes(tmp_path):
+    import pytest
+    from core.training.concept_exposure import loss_moments
+    ds = SimpleNamespace(unique_id="dataset")
+    item = ({"image_path": "a", "_concept_exposure_group": "miku"}, ds)
+    tracker = ConceptExposure(tmp_path, "concept")
+    for step, value in enumerate([1e12 + 1, 1e12 + 2, 1e12 + 3]):
+        tracker.record([item], step, 1, [1], losses=[value])
+    state = tracker.state()
+    assert state["timestep_loss_m2"]["miku"][-1] == pytest.approx(2)
+    assert state["timestep_loss_variance_means"]["miku"][-1] == 1e12 + 2
+    repeated = ConceptExposure(tmp_path, "concept")
+    repeated.record([item], 1, 2, [1], losses=[2])
+    repeated.record([item], 2, 1, [1], losses=[4])
+    assert repeated.state()["timestep_loss_m2"]["miku"][-1] == pytest.approx(8 / 3)
+    broken = {**state, "timestep_loss_m2": {}}
+    with pytest.raises(ValueError, match="Incomplete"):
+        ConceptExposure(tmp_path, "concept", broken)
+    for field, bad in (("timestep_loss_m2", -1), ("timestep_loss_variance_counts", 99),
+                       ("timestep_loss_variance_means", float("nan"))):
+        broken = {**state, field: {"miku": [bad] * 36}}
+        with pytest.raises(ValueError, match="loss moments"):
+            loss_moments(broken, "miku", state["timestep_loss_counts"]["miku"])

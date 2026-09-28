@@ -7752,6 +7752,9 @@ export interface ConceptExposureRow {
   timestep_loss_recorded_passes?: number;
   timestep_loss_unknown_passes?: number;
   timestep_loss_metric?: "qwen_prediction_reconstruction_v1";
+  timestep_loss_variance_counts?: number[];
+  timestep_loss_variance_means?: (number | null)[];
+  timestep_loss_stddevs?: (number | null)[];
 }
 
 export interface ConceptExposureResponse {

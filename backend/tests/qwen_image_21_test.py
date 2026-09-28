@@ -519,7 +519,8 @@ def test_qwen_sigma_null_schedule_rejects_blend_mode():
         )
 
 
-def test_qwen_pixel_debug_decodes_after_forward(tmp_path):
+@pytest.mark.parametrize("guidance", [False, True])
+def test_qwen_pixel_debug_decodes_after_forward(tmp_path, guidance):
     class VAE(torch.nn.Module):
         def __init__(self):
             super().__init__()
@@ -539,7 +540,8 @@ def test_qwen_pixel_debug_decodes_after_forward(tmp_path):
         vae_dtype=torch.float32, mixed_precision=False,
         transformer=_DebugTransformer(), vae=VAE(),
         qwen_image_21_pipeline=SimpleNamespace(image_processor=Processor()),
-        config={"qwen_debug_latent_view": "pixel"},
+        config={"qwen_debug_latent_view": "pixel", "qwen_guidance_loss_weight": 1.0 if guidance else 0.0},
+        _qwen_guidance_blank_encoding=(torch.zeros(1, 3, 4), torch.ones(3, dtype=torch.bool)),
         _active_mnt_noise=torch.ones(1, 32, 4),
         log_extra_metric=lambda *_args: None,
     )
@@ -552,12 +554,63 @@ def test_qwen_pixel_debug_decodes_after_forward(tmp_path):
     )
     assert list(tmp_path.glob("decode_*.webp")) == []
     qwen_image_21_ops.flush_pending_debug_previews(trainer)
-    assert sorted(p.name for p in tmp_path.glob("decode_*.webp")) == [
+    expected = [
         "decode_t0.5000_noisy.webp", "decode_t0.5000_pred_x0.webp",
         "decode_t0.5000_target.webp",
     ]
+    if guidance:
+        expected.append("decode_t0.5000_uncond_pred_x0.webp")
+    assert sorted(p.name for p in tmp_path.glob("decode_*.webp")) == sorted(expected)
     saved = torch.load(next(tmp_path.glob("latents_t*.pt")), weights_only=False)
     assert saved["recon_loss"] > 0
+
+
+@pytest.mark.parametrize("partitioned", [False, True])
+@pytest.mark.parametrize("mode", ["normal", "guidance", "first_not_selected"])
+def test_debug_uncond_reuses_forward_and_only_saves_computed_first_image(tmp_path, partitioned, mode):
+    class CountingTransformer(_GuidanceTransformer):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+        def forward(self, **kwargs):
+            self.calls += 1
+            return super().forward(**kwargs)
+    def run(path):
+        transformer = CountingTransformer()
+        trainer = SimpleNamespace(
+            device=torch.device("cpu"), training_dtype=torch.float32,
+            mixed_precision=False, use_grad_scaler=False, transformer=transformer,
+            arch=QwenImage21ArchHandler(), log_prefix="[test]",
+            config={"dit_partition_fixed_count": 2, "qwen_guidance_loss_weight": 0 if mode == "normal" else 0.25,
+                    "qwen_guidance_loss_mix_mode": "stochastic" if mode == "first_not_selected" else "blend"},
+            _qwen_guidance_draw=torch.tensor([0.9, 0.0]),
+            _qwen_guidance_blank_encoding=(torch.zeros(1, 3, 4), torch.ones(3, dtype=torch.bool)),
+            _active_mnt_noise=torch.ones(2, 32, 4), log_extra_metric=lambda *_args: None,
+        )
+        inputs = dict(latents=torch.zeros(2, 32, 4), encoder_features=torch.ones(2, 2, 4),
+                      encoder_mask=torch.ones(2, 2, dtype=torch.bool), timesteps=torch.tensor([0.5, 0.9]),
+                      latent_h=4, latent_w=8, debug_save_path=path)
+        if partitioned:
+            loss, _, _ = qwen_image_21_ops.train_step_partitioned_backward(trainer, **inputs, backward_scale=1.0)
+        else:
+            value, _, _ = qwen_image_21_ops.train_step(trainer, **inputs)
+            loss = float(value.detach())
+            value.backward()
+        return transformer.calls, loss, transformer.scale.grad
+    calls, loss, grad = run(None)
+    debug_calls, debug_loss, debug_grad = run(tmp_path)
+    assert debug_calls == calls
+    assert debug_loss == pytest.approx(loss)
+    torch.testing.assert_close(debug_grad, grad)
+    saved = torch.load(next(tmp_path.glob("latents_t*.pt")), weights_only=False)
+    if mode == "guidance":
+        assert saved["uncond_prediction_status"] == "computed"
+        torch.testing.assert_close(saved["uncond_predicted_velocity"], torch.full((1, 4, 4, 8), 0.25))
+        torch.testing.assert_close(saved["uncond_predicted_latent"], torch.full((1, 4, 4, 8), 0.375))
+    else:
+        assert "uncond_predicted_velocity" not in saved
+        assert "uncond_predicted_latent" not in saved
+        assert saved.get("uncond_prediction_status") == ("not_selected" if mode == "first_not_selected" else None)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")

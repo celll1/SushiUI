@@ -6355,6 +6355,10 @@ paths:
         - name: limit
           in: query
           schema: {type: integer, minimum: 1, maximum: 50, default: 12}
+        - name: q
+          in: query
+          description: Literal case-insensitive partial name/key search across all groups, before sorting and limiting; underscores and whitespace are equivalent.
+          schema: {type: string, maxLength: 256, default: ""}
       responses:
         '200':
           description: Latest exposure snapshot, or disabled when not yet published
@@ -11205,6 +11209,8 @@ components:
         mode: {type: string, enum: [concept, priority]}
         total_groups: {type: integer}
         order: {type: string, enum: [latest, top]}
+        matched_groups: {type: integer, minimum: 0}
+        query: {type: string}
         timestep_bin_edges:
           type: array
           description: Fixed 37 edges, 0=clean and 1=noisy; bins are left-inclusive and right-exclusive except the final bin includes 1.

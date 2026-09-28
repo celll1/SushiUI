@@ -163,3 +163,35 @@ def test_api_histogram_preserves_legacy_unknown_and_known_counts(tmp_path):
     assert new["timestep_unknown_passes"] == 5
     assert old["timestep_recorded_passes"] == 0
     assert old["timestep_unknown_passes"] == 5
+
+
+def test_search_covers_all_groups_before_limit_and_preserves_histogram(tmp_path):
+    import pytest
+    from fastapi import HTTPException
+    from api.routes import get_training_concept_exposure
+    from core.training.concept_exposure import TIMESTEP_BIN_EDGES
+    class Db:
+        def query(self, _model): return self
+        def filter(self, _condition): return self
+        def first(self): return SimpleNamespace(output_dir=str(tmp_path))
+    counts = {f"other-{i}": 100 + i for i in range(15)}
+    counts.update({"target": 1, "entry-17": 2})
+    bins = [0] * (len(TIMESTEP_BIN_EDGES) - 1)
+    bins[-1] = 1
+    data = {"mode": "concept", "counts": counts, "names": {
+        "target": "Mew Ichigo (Tokyo Mew Mew)", "entry-17": "Other [literal] character"},
+        "timestep_bin_edges": list(TIMESTEP_BIN_EDGES), "timestep_counts": {"target": bins}}
+    (tmp_path / "concept_exposure.json").write_text(json.dumps(data), encoding="utf-8")
+    assert "target" not in [r["key"] for r in get_training_concept_exposure(1, "top", 12, Db())["rows"]]
+    result = get_training_concept_exposure(1, "top", 1, Db(), q="  MEW_ICHIGO ")
+    assert result["total_groups"] == 17
+    assert result["matched_groups"] == 1
+    assert result["rows"][0]["key"] == "target"
+    assert result["rows"][0]["timestep_counts"] == bins
+    assert get_training_concept_exposure(1, "top", 1, Db(), q="entry-17")["rows"][0]["key"] == "entry-17"
+    assert get_training_concept_exposure(1, "top", 1, Db(), q="[literal]")["matched_groups"] == 1
+    assert get_training_concept_exposure(1, "top", 1, Db(), q=".*")["matched_groups"] == 0
+    assert get_training_concept_exposure(1, "top", 1, Db(), q="   ")["matched_groups"] == 17
+    with pytest.raises(HTTPException) as error:
+        get_training_concept_exposure(1, "top", 1, Db(), q="x" * 257)
+    assert error.value.status_code == 422

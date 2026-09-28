@@ -3519,6 +3519,7 @@ TRAINING_MONITOR_MEDIA_DEFAULTS: Dict[str, Any] = {
 CONCEPT_EXPOSURE_DEFAULTS: Dict[str, Any] = {
     "order": "latest",
     "limit": 12,
+    "q": "",
 }
 
 

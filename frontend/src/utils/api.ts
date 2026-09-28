@@ -7284,6 +7284,7 @@ export interface TrainingRunCreateRequest {
   qwen_guidance_loss_mix_mode?: "stochastic" | "blend";
   qwen_cfg_null_sigma_schedule?: boolean;
   qwen_guidance_loss_scale?: number;
+  qwen_guidance_loss_extrapolation_max_rms?: number;
   qwen_guidance_loss_schedule?: "constant" | "sigma";
   qwen_guidance_loss_weight_schedule?: "constant" | "high_noise_smoothstep";
   qwen_guidance_loss_high_noise_weight?: number;

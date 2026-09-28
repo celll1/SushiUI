@@ -15634,6 +15634,10 @@ class TrainingRunCreateRequest(BaseModel):
     qwen_guidance_loss_scale: float = Field(
         default=TRAINING_DEFAULTS["qwen_guidance_loss_scale"], ge=1, le=10
     )
+    qwen_guidance_loss_extrapolation_max_rms: float = Field(
+        default=TRAINING_DEFAULTS["qwen_guidance_loss_extrapolation_max_rms"],
+        ge=0, allow_inf_nan=False,
+    )
     qwen_guidance_loss_schedule: Literal["constant", "sigma"] = TRAINING_DEFAULTS[
         "qwen_guidance_loss_schedule"
     ]

@@ -407,6 +407,110 @@ def test_qwen_guidance_sigma_schedule_returns_to_ordinary_at_clean_end():
     assert float(guided) == pytest.approx(float(normal))
 
 
+@pytest.mark.parametrize("schedule", ["constant", "sigma"])
+def test_guidance_cap_bounds_clean_extrapolation_and_detaches(schedule):
+    sigma = torch.tensor([0.0, 0.5, 1.0])
+    distance_squared = torch.tensor([0.0, 0.01, 100.0], requires_grad=True)
+    condition = (None, None, torch.ones(3, dtype=torch.bool), 1.0, 3.0, schedule)
+    scale = qwen_image_21_ops._capped_guidance_scale(sigma, condition, distance_squared, 0.5)
+    base = torch.full_like(sigma, 3.0) if schedule == "constant" else 1 + 2 * sigma
+    assert not scale.requires_grad
+    assert torch.isfinite(scale).all()
+    assert torch.all((scale >= 1) & (scale <= base))
+    assert torch.all((scale - 1) * distance_squared.detach().sqrt() <= 0.500001)
+    assert scale[1] == base[1]
+    assert float(scale[2]) == pytest.approx(1.05)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("weight,drop", [(0.0, False), (0.25, False), (1.0, False), (1.0, True)])
+@pytest.mark.parametrize("mix_mode", ["blend", "stochastic"])
+def test_guidance_cap_partition_matches_whole_image_and_reuses_null(dtype, weight, drop, mix_mode):
+    class CountingTransformer(_GuidanceTransformer):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+        def forward(self, **kwargs):
+            self.calls.append(torch.is_grad_enabled())
+            return super().forward(**kwargs)
+
+    def run(partitioned, cap):
+        transformer = CountingTransformer()
+        metrics = {}
+        trainer = SimpleNamespace(
+            device=torch.device("cpu"), training_dtype=dtype,
+            mixed_precision=False, use_grad_scaler=False, transformer=transformer,
+            arch=QwenImage21ArchHandler(),
+            config={"dit_partition_fixed_count": 2, "dit_partition_halo_tokens": 2,
+                    "qwen_guidance_loss_weight": weight, "qwen_guidance_loss_mix_mode": mix_mode,
+                    "qwen_guidance_loss_extrapolation_max_rms": cap},
+            _active_mnt_noise=torch.arange(256).reshape(2, 32, 4).to(dtype) / 32,
+            _qwen_guidance_blank_encoding=(torch.zeros(1, 3, 4), torch.ones(3, dtype=torch.bool)),
+            _qwen_guidance_draw=torch.tensor([0.8, 0.1]),
+            reconstruction_loss_weight=0.0, _collect_concept_sample_loss=True,
+            log_extra_metric=lambda key, value: metrics.__setitem__(key, value),
+        )
+        inputs = dict(latents=torch.zeros(2, 32, 4),
+                      encoder_features=torch.ones(2, 2, 4), encoder_mask=torch.ones(2, 2, dtype=torch.bool),
+                      timesteps=torch.tensor([0.5, 0.9]), latent_h=4, latent_w=8,
+                      cfg_drop_mask=torch.tensor([drop, False]))
+        if partitioned:
+            loss, _, _ = qwen_image_21_ops.train_step_partitioned_backward(trainer, **inputs, backward_scale=1.0)
+        else:
+            loss, _, _ = qwen_image_21_ops.train_step(trainer, **inputs)
+            loss.backward()
+        return float(loss), transformer.scale.grad, metrics, transformer.calls, trainer._pending_concept_sample_loss
+
+    plain = run(False, 0.0)
+    capped = run(False, 0.1)
+    partitioned = run(True, 0.1)
+    uncapped_partitioned = run(True, 0.0)
+    loose = run(False, 100.0)
+    assert capped[0] == pytest.approx(partitioned[0], rel=0.01 if dtype == torch.bfloat16 else 1e-6)
+    torch.testing.assert_close(capped[1], partitioned[1], rtol=0.01, atol=1e-5)
+    torch.testing.assert_close(capped[4], partitioned[4], rtol=0.01, atol=1e-5)
+    assert capped[3] == plain[3]
+    assert len(partitioned[3]) == len(uncapped_partitioned[3])
+    assert sum(not x for x in partitioned[3]) == sum(not x for x in uncapped_partitioned[3])
+    assert loose[0] == plain[0]
+    torch.testing.assert_close(loose[1], plain[1], rtol=0, atol=0)
+    if weight == 0:
+        assert capped[0] == plain[0]
+        assert "qwen_guidance_effective_scale_mean" not in capped[2]
+    else:
+        assert capped[2]["qwen_guidance_effective_scale_mean"] == pytest.approx(
+            partitioned[2]["qwen_guidance_effective_scale_mean"], rel=1e-6)
+        if drop or (mix_mode == "stochastic" and weight == 0.25):
+            assert capped[4][0] == plain[4][0]
+
+
+@pytest.mark.parametrize("cap", [-1.0, float("inf"), float("nan")])
+def test_guidance_cap_rejects_invalid_api_and_yaml(cap):
+    with pytest.raises(ValueError):
+        routes.TrainingRunCreateRequest(base_model_path="unused", training_method="lora",
+                                       qwen_guidance_loss_extrapolation_max_rms=cap)
+    with pytest.raises(ValueError):
+        qwen_image_21_ops._extrapolation_cap(SimpleNamespace(config={"qwen_guidance_loss_extrapolation_max_rms": cap}))
+
+
+def test_guidance_cap_survives_api_yaml_roundtrip():
+    from core.training.training_config import _build_train_section, train_section_key_vocabulary
+    key = "qwen_guidance_loss_extrapolation_max_rms"
+    request = routes.TrainingRunCreateRequest(base_model_path="unused", training_method="lora", **{key: 0.5})
+    train = _build_train_section(request.model_dump(), total_steps=20, epochs=None,
+                                 train_unet=True, train_text_encoder=False, arch="qwen_image_21")
+    assert train[key] == 0.5
+    assert key in train_section_key_vocabulary()
+    restored = routes._extract_request_params_from_yaml({"train": train}, "lora")
+    assert restored[key] == 0.5
+    import yaml
+    from api.param_defaults import TRAINING_DEFAULTS
+    spec = yaml.safe_load((BACKEND.parent / "openapi.yaml").read_text(encoding="utf-8"))
+    field = spec["components"]["schemas"]["TrainingRunCreateRequest"]["properties"][key]
+    assert field["default"] == TRAINING_DEFAULTS[key]
+    assert routes.TrainingRunCreateRequest.model_fields[key].default == TRAINING_DEFAULTS[key]
+
+
 @pytest.mark.parametrize("partitioned", [False, True])
 @pytest.mark.parametrize("guidance_weight", [0.0, 0.25, 1.0])
 def test_exposure_loss_is_per_image_and_preserves_objective_and_gradient(partitioned, guidance_weight):

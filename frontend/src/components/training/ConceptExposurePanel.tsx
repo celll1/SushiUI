@@ -106,15 +106,17 @@ export default function ConceptExposurePanel({ runId, active }: Props) {
       </p>
       <div className="max-h-56 overflow-auto space-y-1 text-xs">
         {data.rows.length === 0 && <p className="text-gray-500">No matching concepts.</p>}
-        {(data.rows ?? []).map((row) => (
-          <div key={row.key} className="grid min-w-[600px] grid-cols-[minmax(0,1fr)_180px_max-content] items-center gap-3 border-b border-gray-800 pb-1">
-            <span className="min-w-0 truncate text-gray-200" title={row.name}>{row.name}</span>
-            <TimestepHeatmap row={row} edges={edges} maximum={maximum} />
-            <span className="shrink-0 text-gray-400" title={`${row.target_images.toLocaleString()} target images; last step ${row.last_step.toLocaleString()}`}>
-              {row.sample_passes.toLocaleString()} passes · {row.mean_passes_per_image.toFixed(2)}×/image
-            </span>
-          </div>
-        ))}
+        <div className="grid min-w-[600px] grid-cols-[minmax(0,1fr)_180px_max-content] gap-x-3">
+          {(data.rows ?? []).map((row) => (
+            <div key={row.key} className="col-span-3 grid grid-cols-subgrid items-center gap-x-3 border-b border-gray-800 py-1">
+              <span className="min-w-0 truncate text-gray-200" title={row.name}>{row.name}</span>
+              <TimestepHeatmap row={row} edges={edges} maximum={maximum} />
+              <span className="whitespace-nowrap text-right tabular-nums text-gray-400" title={`${row.target_images.toLocaleString()} target images; last step ${row.last_step.toLocaleString()}`}>
+                {row.sample_passes.toLocaleString()} passes · {row.mean_passes_per_image.toFixed(2)}×/image
+              </span>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

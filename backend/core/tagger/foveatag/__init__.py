@@ -23,6 +23,7 @@ from .artifact import (
 )
 from .batch import FoveaViewTensorBatch, collate_view_batches
 from .head import EvidenceHeadOutput, EvidenceSlotMixer, EvidenceTagHead
+from .inference import FoveaInferenceResult, predict_image, source_field_sizes
 from .encoder import FoveaEncoder, FoveaEncoderConfig, FoveaEncoderOutput
 from .distillation import DistillationOutput, LocalSigLIP2DistillationHead, pool_to_source_anchors
 from .model import FoveaTagger, FoveaTaggerOutput
@@ -77,6 +78,9 @@ __all__ = [
     "EvidenceHeadOutput",
     "EvidenceSlotMixer",
     "EvidenceTagHead",
+    "FoveaInferenceResult",
+    "predict_image",
+    "source_field_sizes",
     "FoveaEncoder",
     "FoveaEncoderConfig",
     "FoveaEncoderOutput",

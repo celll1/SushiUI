@@ -6,32 +6,35 @@ interface Props {
   active: boolean;
 }
 
-function TimestepHeatmap({ row, edges, maximum }: {
+function TimestepHistogram({ row, edges, maximum }: {
   row: ConceptExposureRow; edges?: number[]; maximum: number;
 }) {
   const bins = row.timestep_counts;
   const recorded = row.timestep_recorded_passes ?? 0;
   const unknown = row.timestep_unknown_passes ?? row.sample_passes;
   if (!edges || !bins || bins.length !== edges.length - 1 || !recorded) {
-    return <div className="h-4 rounded bg-gray-800 text-center text-[10px] text-gray-500"
+    return <div className="h-6 rounded bg-gray-800 text-center text-[10px] leading-6 text-gray-500"
       title={`${unknown.toLocaleString()} passes have no recorded timestep`}>No timestep data</div>;
   }
   const target = row.target_images || 1;
-  const density = bins.map((count, index) => count / target / (edges[index + 1] - edges[index]));
+  const density = bins.map((count, index) => count / (edges[index + 1] - edges[index]));
   const color = (value: number) => {
     if (!value) return "rgb(31,41,55)";
     const level = Math.log1p(value) / Math.log1p(maximum || 1);
     return `hsl(${215 - 170 * level} 85% ${25 + 35 * level}%)`;
   };
-  const stops = density.map((value, index) => `${color(value)} ${(edges[index] + edges[index + 1]) * 50}%`);
   const high = bins.reduce((sum, count, index) => sum + (edges[index] >= 0.95 ? count : 0), 0);
-  const summary = `${recorded.toLocaleString()} recorded; ${unknown.toLocaleString()} unknown; t >= 0.95: ${high.toLocaleString()} passes (${row.target_images ? (high / target).toFixed(2) : "n/a"} per image). Brightness: passes/image/bin width, scaled across visible rows.`;
+  const summary = `${recorded.toLocaleString()} recorded; ${unknown.toLocaleString()} unknown; t >= 0.95: ${high.toLocaleString()} passes (${row.target_images ? (high / target).toFixed(2) : "n/a"} per image). Height: passes/bin width, shared scale across visible rows; bar area is proportional to passes.`;
   return (
-    <div className="relative flex h-4 overflow-hidden rounded" role="img" aria-label={summary}
-      title={summary} tabIndex={0} style={{ background: `linear-gradient(to right, ${stops.join(",")})` }}>
+    <div className="relative flex h-6 items-end overflow-hidden rounded bg-gray-800" role="img" aria-label={summary}
+      title={summary} tabIndex={0}>
       {bins.map((count, index) => (
-        <span key={index} style={{ width: `${(edges[index + 1] - edges[index]) * 100}%` }}
-          title={`t ${edges[index].toFixed(2)}–${edges[index + 1].toFixed(2)}: ${count.toLocaleString()} passes; ${row.target_images ? (count / target).toFixed(2) : "n/a"} per image. ${unknown.toLocaleString()} historical/unknown passes excluded.`} />
+        <span key={index} className="relative h-full shrink-0"
+          style={{ width: `${(edges[index + 1] - edges[index]) * 100}%` }}
+          title={`t ${edges[index].toFixed(2)}–${edges[index + 1].toFixed(2)}: ${count.toLocaleString()} passes; ${row.target_images ? (count / target).toFixed(2) : "n/a"} per image. ${unknown.toLocaleString()} historical/unknown passes excluded.`}>
+          <span className="pointer-events-none absolute inset-x-0 bottom-0"
+            style={{ height: `${density[index] / maximum * 100}%`, backgroundColor: color(density[index]) }} />
+        </span>
       ))}
       {[0.8, 0.95].map((value) => <span key={value} className="pointer-events-none absolute inset-y-0 border-l border-white/40"
         style={{ left: `${value * 100}%` }} />)}
@@ -75,7 +78,7 @@ export default function ConceptExposurePanel({ runId, active }: Props) {
   const edges = data.timestep_bin_edges;
   const maximum = Math.max(1, ...data.rows.flatMap((row) =>
     edges && row.timestep_counts?.length === edges.length - 1
-      ? row.timestep_counts.map((count, index) => count / (row.target_images || 1) / (edges[index + 1] - edges[index]))
+      ? row.timestep_counts.map((count, index) => count / (edges[index + 1] - edges[index]))
       : []));
 
   return (
@@ -101,16 +104,20 @@ export default function ConceptExposurePanel({ runId, active }: Props) {
       <p className="text-xs text-gray-500">
         {data.mode === "priority" ? "Priority entries" : "Concept tags"} · {data.total_groups ?? 0} trained{query && ` · ${data.matched_groups ?? data.rows.length} matches`}
       </p>
-      <p className="text-[10px] text-gray-500" title="Brightness is normalized exposure density across visible rows. Marks: 0.8 and 0.95. Hover each interval for counts; earlier passes remain unknown.">
-        Timestep heatmap: clean 0 → noisy 1 · marks at 0.8 / 0.95 · hover for counts
+      <p className="text-[10px] text-gray-500" title="Height is passes per timestep unit on a shared linear scale across visible rows. Bar area is proportional to recorded passes. Marks: 0.8 and 0.95. Earlier passes remain unknown.">
+        Timestep histogram: clean 0 → noisy 1 · area = recorded passes · marks at 0.8 / 0.95
       </p>
       <div className="max-h-56 overflow-auto space-y-1 text-xs">
         {data.rows.length === 0 && <p className="text-gray-500">No matching concepts.</p>}
-        <div className="grid min-w-[600px] grid-cols-[minmax(0,1fr)_180px_max-content] gap-x-3">
+        <div className="grid min-w-[680px] grid-cols-[minmax(0,1fr)_180px_max-content_max-content] gap-x-3">
           {(data.rows ?? []).map((row) => (
-            <div key={row.key} className="col-span-3 grid grid-cols-subgrid items-center gap-x-3 border-b border-gray-800 py-1">
+            <div key={row.key} className="col-span-4 grid grid-cols-subgrid items-center gap-x-3 border-b border-gray-800 py-1">
               <span className="min-w-0 truncate text-gray-200" title={row.name}>{row.name}</span>
-              <TimestepHeatmap row={row} edges={edges} maximum={maximum} />
+              <TimestepHistogram row={row} edges={edges} maximum={maximum} />
+              <span className="whitespace-nowrap text-right tabular-nums text-gray-400"
+                title={`${(row.timestep_unknown_passes ?? row.sample_passes).toLocaleString()} passes have no recorded timestep`}>
+                t recorded: {(row.timestep_recorded_passes ?? 0).toLocaleString()}
+              </span>
               <span className="whitespace-nowrap text-right tabular-nums text-gray-400" title={`${row.target_images.toLocaleString()} target images; last step ${row.last_step.toLocaleString()}`}>
                 {row.sample_passes.toLocaleString()} passes · {row.mean_passes_per_image.toFixed(2)}×/image
               </span>

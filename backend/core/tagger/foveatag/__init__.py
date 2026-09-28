@@ -46,6 +46,12 @@ from .router import (
     select_training_proposals,
     source_candidate_mask,
 )
+from .reconstruction import (
+    PatchReconstructionHead,
+    expand_patch_mask,
+    mask_image_patches,
+    random_patch_mask,
+)
 from .training import FoveaTagTrainingLoss, TagTrainingLossOutput, prediction_consistency_loss
 from .siglip2_control import (
     MaskedSlotPooler,
@@ -104,6 +110,10 @@ __all__ = [
     "select_proposals",
     "select_training_proposals",
     "source_candidate_mask",
+    "PatchReconstructionHead",
+    "expand_patch_mask",
+    "mask_image_patches",
+    "random_patch_mask",
     "FoveaTagTrainingLoss",
     "TagTrainingLossOutput",
     "prediction_consistency_loss",

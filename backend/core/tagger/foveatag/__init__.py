@@ -34,6 +34,7 @@ from .router import (
     select_training_proposals,
     source_candidate_mask,
 )
+from .training import FoveaTagTrainingLoss, TagTrainingLossOutput, prediction_consistency_loss
 from .siglip2_control import (
     MaskedSlotPooler,
     SigLIP2ControlOutput,
@@ -78,6 +79,9 @@ __all__ = [
     "select_proposals",
     "select_training_proposals",
     "source_candidate_mask",
+    "FoveaTagTrainingLoss",
+    "TagTrainingLossOutput",
+    "prediction_consistency_loss",
     "MaskedSlotPooler",
     "SigLIP2ControlOutput",
     "SigLIP2ControlTagger",

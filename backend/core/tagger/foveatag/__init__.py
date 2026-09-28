@@ -11,6 +11,7 @@ from .benchmark import (
     load_benchmark_manifest,
     load_prediction_set,
 )
+from .head import EvidenceHeadOutput, EvidenceSlotMixer, EvidenceTagHead
 from .views import SourceBox, ViewBatch, ViewConfig, ViewSpec, build_views, sample_local_specs
 
 __all__ = [
@@ -23,6 +24,9 @@ __all__ = [
     "evaluate_predictions",
     "load_benchmark_manifest",
     "load_prediction_set",
+    "EvidenceHeadOutput",
+    "EvidenceSlotMixer",
+    "EvidenceTagHead",
     "SourceBox",
     "ViewBatch",
     "ViewConfig",

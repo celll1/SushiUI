@@ -1,10 +1,10 @@
 # Qwen-Image 2.1 partitioned generation and global-adapter contract
 
-Status: **generation design; full-FT checkpoint foundation implemented on this branch**.
+Status: **implemented on `codex/qwen-partition-generation`; CPU acceptance passed, production GPU and owner frontend gates pending**.
 
 This extends [partitioned training](QWEN_IMAGE_21_PARTITIONED_TRAINING_DESIGN.md).
-The generation controls and partitioned denoising described below are not yet
-implemented. They must not be advertised as available by capability data.
+The four image generation panels expose Off/Auto/Manual and a shared visual
+editor. API capability data advertises partitioning only for Qwen-Image 2.1.
 
 ## 1. Scope and current evidence
 
@@ -13,11 +13,11 @@ regions. Every region retains full-canvas RoPE coordinates. An optional
 `latent_summary_v1` global adapter computes a low-rank full-canvas residual and
 adds it after `img_in` through `target_input_residual`.
 
-The current generation backend in `core/pipeline_backends/qwen_image_21.py`
-warns about this adapter and uses ordinary LoRA branches only. The vendor
-pipeline in `core/models/qwen_image_21/vendor/pipeline.py` calls the transformer
-once per CFG branch and advances one scheduler over the full canvas. It has no
-partition-generation interface.
+Before this change, generation warned about this adapter and used ordinary
+LoRA branches only. The generation backend now prepares paired global payloads
+and calls a generation-scoped executor for actual multi-region plans. The
+vendor pipeline retains the existing full-frame branch and advances one
+scheduler over the complete canvas in either mode.
 
 Before this change, only the LoRA training adapter constructed the global
 module. Qwen full FT accepted partition settings but did not construct it.
@@ -264,6 +264,47 @@ negative residual routing; full coverage and per-step scheduler-call count;
 tile traversal order invariance; cache-on/off parity and invalidation; adapter
 failure rollback; repeated mode switching; cancellation cleanup; UI 4096 input;
 and queue/dequeue/loop reproduction of exact snapped boundaries.
+
+### Implemented transport and validation
+
+`qwen_image_21_partition` is an object for JSON callers and a JSON-encoded form
+field for all four image multipart routes. Defaults are served from
+`param_defaults.py`. The version-1 shape is:
+
+```json
+{"version":1,"mode":"auto","max_target_tokens":4096,"layout":null,"halo_tokens":0}
+```
+
+Manual layout uses `{axis, ratio, first, second}` split nodes, with null leaves.
+The current guards are 64 regions and depth 8. Invalid/collapsed geometry fails
+with a validation error. Auto does not silently exceed the input-token ceiling.
+Queues and image loops forward the config and KV-cache switch. The editor
+offers drag, selected-region splits, 2/3/6 columns, 2x2/2x3, undo, reset and
+optional source background in img2img/inpaint. Outpaint shows the sampled canvas
+without misplacing its source image. PNG/gallery metadata records requested
+configuration and `qwen_image_21_partition_actual` with snapped core/input boxes
+and adapter names, strengths and step ranges.
+
+KV caches are scoped to one generation and CFG branch. Within that scope model,
+reference images, dtype, geometry and attention processors are fixed. Effective
+ordinary-LoRA step transitions and text tensor replacement/in-place changes
+invalidate caches. Cancellation polls between regions and raises before any
+partial scheduler update; backend `finally` releases caches/global modules and
+unloads ordinary LoRAs. No partition executor or global GPU module is created
+when Off/Auto/Manual resolves to a complete-frame call.
+
+CPU acceptance covers FP32/BF16 cache parity with native reference-image slots,
+region traversal invariance, 3/6 coverage, halo ceilings, lazy weight restore and
+RNG isolation, additive global outputs with zero reference residual, separate
+CFG caches, one Euler update per timestep, inactive adapters, prompt/step cache
+invalidation, failed second-file rollback, and exception/cancellation cleanup.
+The combined generation/checkpoint/training/export suite passes 120 CPU tests;
+two CUDA tests are excluded. All changed Python modules compile and import
+with CUDA initialization stubbed; the assertion confirms no CUDA context.
+The full-FT foundation tests also cover real training gradients, sharded/TE
+bundle restoration, ordinary-forward isolation and INT8 export preservation.
+Production model quality/VRAM/timing and browser interaction still require the
+GPU and owner frontend build gates; CPU tests establish no speed or quality claim.
 
 No quality equivalence or speedup is assumed. Splitting removes dense target
 attention, and a learned summary does not restore it. Global adapter training

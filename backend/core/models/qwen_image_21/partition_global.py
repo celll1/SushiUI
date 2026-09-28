@@ -118,14 +118,16 @@ def global_adapter_metadata(adapter: QwenPartitionGlobalAdapter | None) -> dict[
     }
 
 
-def stash_partition_global_payload(model, state, metadata) -> None:
-    """Keep validated weights on CPU outside the ordinary transformer module tree."""
+def read_partition_global_payload(model, state, metadata, *, allow_alpha=False):
+    """Validate the payload without mutating the model or checkpoint."""
     prefix = f"{GLOBAL_ADAPTER_NAME}."
     tensors = {key[len(prefix):]: value for key, value in state.items()
                if key.startswith(prefix)}
     version = metadata.get(GLOBAL_ADAPTER_NAME)
     if not tensors and not version:
-        return
+        return None
+    if allow_alpha:
+        tensors.pop("alpha", None)
     if version != GLOBAL_ADAPTER_VERSION:
         raise ValueError(f"Unsupported Qwen partition global adapter version: {version!r}")
     try:
@@ -144,11 +146,18 @@ def stash_partition_global_payload(model, state, metadata) -> None:
     for key, value in tensors.items():
         if value.shape != targets[key].shape or not value.is_floating_point():
             raise ValueError(f"Invalid Qwen partition global adapter tensor {key!r}")
-    model._qwen_partition_global_payload = {
+    return {
         "state": tensors, "metadata": global_adapter_metadata(spec),
     }
-    for key in tensors:
-        del state[f"{prefix}{key}"]
+
+
+def stash_partition_global_payload(model, state, metadata) -> None:
+    """Keep validated weights on CPU outside the ordinary transformer module tree."""
+    payload = read_partition_global_payload(model, state, metadata)
+    if payload is not None:
+        model._qwen_partition_global_payload = payload
+        for key in payload["state"]:
+            del state[f"{GLOBAL_ADAPTER_NAME}.{key}"]
 
 
 def prepare_training_global_adapter(trainer, *, dtype: torch.dtype):

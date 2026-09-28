@@ -1469,6 +1469,7 @@ def test_api_defaults_and_capabilities_expose_qwen_controls():
         "steps": 40,
         "cfg_scale": 1.0,
         "qwen_image_21_kv_cache": True,
+        "qwen_image_21_partition": defaults["txt2img"]["qwen_image_21_partition"],
     }
     assert defaults["txt2img"]["qwen_image_21_kv_cache"] is True
     capabilities = asyncio.run(get_arch_capabilities())

@@ -63,7 +63,11 @@ for LoRA and full FT. Full-FT checkpoints and INT8 inference exports retain its
 weights and structural metadata; training restores it before optimizer setup.
 Generation component loading retains it as an unregistered CPU payload, so
 ordinary full-frame generation does not execute it or move it to CUDA.
-Partitioned generation controls and execution are designed but not implemented;
+Partitioned generation adds Off/Auto/Manual to all four image panels. Actual
+multi-region calls use embedded LoRA/full-FT global adapters with full-canvas
+CFG and one scheduler update per timestep; Off and one-region plans retain the
+ordinary path. Reference Guide/Style Transfer remain full-frame-only. CPU
+FP32/BF16 contracts pass; production GPU and frontend interaction gates remain.
 see `docs/guides/QWEN_IMAGE_21_PARTITIONED_GENERATION_DESIGN.md`.
 
 For new runs, an omitted guidance-loss weight resolves to 1.0 (100% guided

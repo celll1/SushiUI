@@ -559,6 +559,7 @@ class QwenImage21Pipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
         style_transfers: list[dict[str, Any]] | None = None,
         style_combine_mode: str = "stack",
         before_step_callback: Callable[[int, int], None] | None = None,
+        partition_executor=None,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -628,6 +629,8 @@ class QwenImage21Pipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
             [`~pipelines.qwenimage.QwenImagePipelineOutput`] if `return_dict` is True, otherwise a `tuple` whose first
             element is a list with the generated images.
         """
+        if partition_executor is not None and (reference_guides or style_transfers):
+            raise ValueError("Partition generation excludes Reference Guide and Style Transfer")
         if image is not None:
             # The text encoder reads each condition image as vision context, so the pixels have to be there. Normalize
             # to PIL up front, and everything downstream — the aspect ratio below, the resize, the VAE — sees one type.
@@ -821,6 +824,7 @@ class QwenImage21Pipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
         cache_enabled = (
             use_kv_cache and self.transformer.config.causal_condition
             and not prepared_styles
+            and partition_executor is None
         )
         cond_cache = QwenImage21KVCache(num_blocks) if cache_enabled else None
         neg_cache = QwenImage21KVCache(num_blocks) if cache_enabled and do_true_cfg else None
@@ -905,36 +909,54 @@ class QwenImage21Pipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
                 self.transformer._style_ctx = inject_context
                 try:
                     with self.transformer.cache_context("cond"):
-                        noise_pred = self.transformer(
-                            hidden_states=latent_model_input,
-                            timestep=timestep / 1000,
-                            encoder_hidden_states=prompt_embeds,
-                            encoder_hidden_states_mask=prompt_embeds_mask,
-                            img_shapes=img_shapes,
-                            img_mask=image_pad_mask,
-                            attention_kwargs=self.attention_kwargs,
-                            kv_cache=cond_cache,
-                            kv_cache_mode=kv_mode,
-                            return_dict=False,
-                        )[0]
+                        if partition_executor is None:
+                            noise_pred = self.transformer(
+                                hidden_states=latent_model_input,
+                                timestep=timestep / 1000,
+                                encoder_hidden_states=prompt_embeds,
+                                encoder_hidden_states_mask=prompt_embeds_mask,
+                                img_shapes=img_shapes,
+                                img_mask=image_pad_mask,
+                                attention_kwargs=self.attention_kwargs,
+                                kv_cache=cond_cache,
+                                kv_cache_mode=kv_mode,
+                                return_dict=False,
+                            )[0]
+                        else:
+                            noise_pred = partition_executor.predict(
+                                branch="cond", hidden_states=latent_model_input,
+                                timestep=timestep / 1000, encoder_hidden_states=prompt_embeds,
+                                encoder_hidden_states_mask=prompt_embeds_mask,
+                                img_shapes=img_shapes, img_mask=image_pad_mask,
+                                attention_kwargs=self.attention_kwargs, return_dict=False,
+                            )
                 finally:
                     self.transformer._style_ctx = None
                 noise_pred = noise_pred[:, -latents.size(1) :]
 
                 if do_true_cfg:
                     with self.transformer.cache_context("uncond"):
-                        neg_noise_pred = self.transformer(
-                            hidden_states=latent_model_input,
-                            timestep=timestep / 1000,
-                            encoder_hidden_states=negative_prompt_embeds,
-                            encoder_hidden_states_mask=negative_prompt_embeds_mask,
-                            img_shapes=img_shapes,
-                            img_mask=negative_image_pad_mask,
-                            attention_kwargs=self.attention_kwargs,
-                            kv_cache=neg_cache,
-                            kv_cache_mode=kv_mode,
-                            return_dict=False,
-                        )[0]
+                        if partition_executor is None:
+                            neg_noise_pred = self.transformer(
+                                hidden_states=latent_model_input,
+                                timestep=timestep / 1000,
+                                encoder_hidden_states=negative_prompt_embeds,
+                                encoder_hidden_states_mask=negative_prompt_embeds_mask,
+                                img_shapes=img_shapes,
+                                img_mask=negative_image_pad_mask,
+                                attention_kwargs=self.attention_kwargs,
+                                kv_cache=neg_cache,
+                                kv_cache_mode=kv_mode,
+                                return_dict=False,
+                            )[0]
+                        else:
+                            neg_noise_pred = partition_executor.predict(
+                                branch="uncond", hidden_states=latent_model_input,
+                                timestep=timestep / 1000, encoder_hidden_states=negative_prompt_embeds,
+                                encoder_hidden_states_mask=negative_prompt_embeds_mask,
+                                img_shapes=img_shapes, img_mask=negative_image_pad_mask,
+                                attention_kwargs=self.attention_kwargs, return_dict=False,
+                            )
                     neg_noise_pred = neg_noise_pred[:, -latents.size(1) :]
                     noise_pred = neg_noise_pred + true_cfg_scale * (noise_pred - neg_noise_pred)
 

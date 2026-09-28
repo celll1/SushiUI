@@ -450,6 +450,8 @@ export default function GenerationQueueProcessor() {
       cfg_norm: p.cfg_norm,
       sensenova_mot_phase_eviction: p.sensenova_mot_phase_eviction,
       sensenova_kv_cache_streaming: p.sensenova_kv_cache_streaming,
+      qwen_image_21_partition: p.qwen_image_21_partition,
+      qwen_image_21_kv_cache: p.qwen_image_21_kv_cache,
       sampler: p.sampler,
       schedule_type: p.schedule_type,
       seed: p.seed,

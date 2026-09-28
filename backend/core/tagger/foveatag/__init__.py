@@ -12,6 +12,12 @@ from .benchmark import (
     load_prediction_set,
 )
 from .head import EvidenceHeadOutput, EvidenceSlotMixer, EvidenceTagHead
+from .siglip2_control import (
+    MaskedSlotPooler,
+    SigLIP2ControlOutput,
+    SigLIP2ControlTagger,
+    SigLIP2ViewInputs,
+)
 from .views import SourceBox, ViewBatch, ViewConfig, ViewSpec, build_views, sample_local_specs
 
 __all__ = [
@@ -27,6 +33,10 @@ __all__ = [
     "EvidenceHeadOutput",
     "EvidenceSlotMixer",
     "EvidenceTagHead",
+    "MaskedSlotPooler",
+    "SigLIP2ControlOutput",
+    "SigLIP2ControlTagger",
+    "SigLIP2ViewInputs",
     "SourceBox",
     "ViewBatch",
     "ViewConfig",

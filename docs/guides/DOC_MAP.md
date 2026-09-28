@@ -100,6 +100,7 @@ machine-local working material.
 | [docs/audits/UNIFIED_OFFLOAD_TRANSFER_VALIDATION_2026-09.md](../audits/UNIFIED_OFFLOAD_TRANSFER_VALIDATION_2026-09.md) | Completed common-engine validation. |
 | [docs/audits/SENSENOVA_UND_BRANCH_DISCRIMINATION.md](../audits/SENSENOVA_UND_BRANCH_DISCRIMINATION.md) | Prompt-detail discrimination measurement. |
 | [docs/audits/TAGGER_REFACTOR_PLAN_2026-09.md](../audits/TAGGER_REFACTOR_PLAN_2026-09.md) | Tagger correctness, usability, and equivalent-refactor plan. |
+| [docs/audits/HIGH_RES_TAGGER_ARCHITECTURE_RESEARCH_2026-09.md](../audits/HIGH_RES_TAGGER_ARCHITECTURE_RESEARCH_2026-09.md) | High-resolution tagger research, FoveaTag proposal, licensing assessment, and measurement gates. |
 
 ## API, tools, and subapps
 

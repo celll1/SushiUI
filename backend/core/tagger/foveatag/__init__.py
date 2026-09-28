@@ -12,6 +12,7 @@ from .benchmark import (
     load_prediction_set,
 )
 from .head import EvidenceHeadOutput, EvidenceSlotMixer, EvidenceTagHead
+from .encoder import FoveaEncoder, FoveaEncoderConfig, FoveaEncoderOutput
 from .siglip2_control import (
     MaskedSlotPooler,
     SigLIP2ControlOutput,
@@ -33,6 +34,9 @@ __all__ = [
     "EvidenceHeadOutput",
     "EvidenceSlotMixer",
     "EvidenceTagHead",
+    "FoveaEncoder",
+    "FoveaEncoderConfig",
+    "FoveaEncoderOutput",
     "MaskedSlotPooler",
     "SigLIP2ControlOutput",
     "SigLIP2ControlTagger",

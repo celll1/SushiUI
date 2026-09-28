@@ -1859,13 +1859,15 @@ items are accumulated after backward's existing synchronization, and JSON is
 published through the existing asynchronous writer every 25 completed passes.
 No history proportional to the number of training steps is retained.
 
-The monitor renders one continuous heatmap per row, left=clean/right=noisy,
-with marks at 0.8/0.95. Brightness is logarithmic, proportional to passes per
-target image per unit timestep width, and scaled to the maximum density in the
-visible rows. Hover intervals for exact counts and mean passes per image;
-focus/hover the bar for coverage, unknown passes, and the total above 0.95.
-The interpolation is visual only; stored observations stay in their discrete
-bins. Row means do not guarantee that every target image saw that noise range.
+The monitor renders one 24px histogram per row, left=clean/right=noisy,
+with marks at 0.8/0.95 and a separate recorded-pass count beside the cumulative
+total. Heights use passes per unit timestep width on a shared linear scale
+across visible rows, so colored area is proportional to recorded passes even
+with unequal bin widths. Color intensity is logarithmic on the same density
+scale. Bins are not interpolated. Hover intervals for exact counts and mean
+passes per image; focus/hover the chart for coverage, unknown passes, and the
+total above 0.95. Row means do not guarantee that every target image saw that
+noise range.
 
 
 The concept-exposure endpoint also accepts `q` (maximum 256 characters), a

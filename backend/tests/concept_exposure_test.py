@@ -92,3 +92,74 @@ def test_concept_tags_survive_dataset_rebase_independent_of_focus_assignment(tmp
     for batch in suffix:
         tracker.record(batch, 1, 1)
     assert tracker.state()["counts"] == {"miku": 1, "rin": 2}
+
+
+def test_timestep_histogram_tracks_per_item_repeats_mnt_and_resume(tmp_path):
+    from core.training.concept_exposure import TIMESTEP_BIN_EDGES
+    ds = SimpleNamespace(unique_id="dataset")
+    a = ({"image_path": "a", "_concept_exposure_groups": ("miku", "rin")}, ds)
+    b = ({"image_path": "b", "_concept_exposure_group": "miku"}, ds)
+    old = {"mode": "concept", "counts": {"miku": 7}}
+    tracker = ConceptExposure(tmp_path, "concept", old)
+    tracker.record([a, b], 1, 1, [0, 0.98])
+    tracker.record([a, a], 2, 1, [0.95, 1])
+    state = tracker.state()
+    assert state["counts"] == {"miku": 11, "rin": 3}
+    assert len(TIMESTEP_BIN_EDGES) == 37
+    assert sum(state["timestep_counts"]["miku"]) == 4
+    assert state["timestep_counts"]["miku"][0] == 1
+    assert state["timestep_counts"]["miku"][-1] == 1
+    tracker.record([a], 3, 1, [0.8])
+    assert sum(state["timestep_counts"]["miku"]) == 4  # Snapshot is isolated from later updates.
+    tracker.publish(wait=True)
+    disk = json.loads(tracker.path.read_text(encoding="utf-8"))
+    assert disk["version"] == 2
+    resumed = ConceptExposure(tmp_path, "concept", disk)
+    resumed.record([b], 4, 1, [0.99])
+    assert sum(resumed.state()["timestep_counts"]["miku"]) == 6
+    assert resumed.state()["counts"]["miku"] == 13
+
+
+def test_timestep_convention_unknown_values_and_invalid_resume(tmp_path):
+    import pytest
+    from core.training.concept_exposure import TIMESTEP_BIN_EDGES
+    ds = SimpleNamespace(unique_id="dataset")
+    item = ({"image_path": "a", "_concept_exposure_group": "priority-0"}, ds)
+    tracker = ConceptExposure(tmp_path, "priority")
+    tracker.record([item], 1, 1, [0], convention="t1")
+    assert tracker.state()["timestep_counts"]["priority-0"][-1] == 1
+    tracker.record([item], 2, 1, [1], convention="t1")
+    assert tracker.state()["timestep_counts"]["priority-0"][0] == 1
+    for value in (float("nan"), float("inf"), -0.1, 1.1):
+        tracker.record([item], 3, 1, [value])
+    assert sum(tracker.state()["timestep_counts"]["priority-0"]) == 2
+    before = tracker.state()
+    tracker.record([item], 4, 0, [0.5])
+    assert tracker.state() == before
+    with pytest.raises(ValueError):
+        tracker.record([item], 4, 1, [])
+    with pytest.raises(ValueError):
+        ConceptExposure(tmp_path, "priority", {**before, "timestep_bin_edges": [0, 1]})
+    with pytest.raises(ValueError):
+        ConceptExposure(tmp_path, "priority", {**before, "timestep_counts": {"x": [1]}})
+
+
+def test_api_histogram_preserves_legacy_unknown_and_known_counts(tmp_path):
+    from api.routes import get_training_concept_exposure
+    from core.training.concept_exposure import TIMESTEP_BIN_EDGES
+    class Db:
+        def query(self, _model): return self
+        def filter(self, _condition): return self
+        def first(self): return SimpleNamespace(output_dir=str(tmp_path))
+    bins = [0] * (len(TIMESTEP_BIN_EDGES) - 1)
+    bins[-1] = 3
+    data = {"mode": "priority", "counts": {"old": 5, "new": 8},
+            "timestep_bin_edges": list(TIMESTEP_BIN_EDGES), "timestep_counts": {"new": bins}}
+    (tmp_path / "concept_exposure.json").write_text(json.dumps(data), encoding="utf-8")
+    result = get_training_concept_exposure(1, order="top", limit=10, db=Db())
+    assert result["timestep_bin_edges"] == list(TIMESTEP_BIN_EDGES)
+    new, old = result["rows"]
+    assert new["timestep_recorded_passes"] == 3
+    assert new["timestep_unknown_passes"] == 5
+    assert old["timestep_recorded_passes"] == 0
+    assert old["timestep_unknown_passes"] == 5

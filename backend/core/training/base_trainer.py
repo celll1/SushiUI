@@ -20138,7 +20138,22 @@ class BaseTrainer(ABC):
                         if not cuda_error_skip:
                             self._backwards_completed += 1
                             if self._concept_exposure is not None:
-                                self._concept_exposure.record(_exposure_items, global_step + 1, 1)
+                                # Read only after backward's existing synchronization.
+                                exposure_t = None
+                                if not _sensenova_text_batch_active and any(
+                                    item.get("_concept_exposure_groups")
+                                    or item.get("_concept_exposure_group") is not None
+                                    for item, _dataset in _exposure_items
+                                ):
+                                    exposure_t = timesteps.detach()
+                                if exposure_t is not None:
+                                    if self.arch.name == "qwen_image_21":
+                                        exposure_t = exposure_t.to(self.training_dtype)
+                                    exposure_t = exposure_t.float().cpu().reshape(-1).tolist()
+                                self._concept_exposure.record(
+                                    _exposure_items, global_step + 1, 1,
+                                    exposure_t, convention=_convention,
+                                )
                         else:
                             self._mnt_iterations_oom_skipped += 1
 

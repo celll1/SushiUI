@@ -7744,6 +7744,9 @@ export interface ConceptExposureRow {
   target_images: number;
   mean_passes_per_image: number;
   last_step: number;
+  timestep_counts?: number[];
+  timestep_recorded_passes?: number;
+  timestep_unknown_passes?: number;
 }
 
 export interface ConceptExposureResponse {
@@ -7751,6 +7754,7 @@ export interface ConceptExposureResponse {
   mode?: "concept" | "priority";
   total_groups?: number;
   order?: "latest" | "top";
+  timestep_bin_edges?: number[];
   rows: ConceptExposureRow[];
 }
 

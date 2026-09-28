@@ -11244,6 +11244,18 @@ components:
               timestep_loss_recorded_passes: {type: integer, minimum: 0}
               timestep_loss_unknown_passes: {type: integer, minimum: 0}
               timestep_loss_metric: {type: string, enum: [qwen_prediction_reconstruction_v1]}
+              timestep_loss_variance_counts:
+                type: array
+                description: Per-bin passes observed since variance recording began; excludes historical mean-only observations.
+                items: {type: integer, minimum: 0}
+              timestep_loss_variance_means:
+                type: array
+                description: Mean of the variance-recorded cohort, which may differ from the cumulative loss mean.
+                items: {type: number, nullable: true, minimum: 0}
+              timestep_loss_stddevs:
+                type: array
+                description: Sample standard deviation from Welford M2/(n-1); null for fewer than two recorded observations.
+                items: {type: number, nullable: true, minimum: 0}
     StudioRenderAssetRef:
       type: object
       required: [id, kind]

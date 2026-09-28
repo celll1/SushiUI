@@ -6,8 +6,8 @@ interface Props {
   active: boolean;
 }
 
-function TimestepHistogram({ row, edges, maximum, lossRange }: {
-  row: ConceptExposureRow; edges?: number[]; maximum: number; lossRange: [number, number] | null;
+function TimestepHistogram({ row, edges, maximum, lossRange, maximumStddev }: {
+  row: ConceptExposureRow; edges?: number[]; maximum: number; lossRange: [number, number] | null; maximumStddev: number;
 }) {
   const bins = row.timestep_counts;
   const recorded = row.timestep_recorded_passes ?? 0;
@@ -23,21 +23,26 @@ function TimestepHistogram({ row, edges, maximum, lossRange }: {
     if (loss == null || !lossRange) return "rgb(107,114,128)";
     const [low, high] = lossRange;
     const level = high > low ? (loss - low) / (high - low) : 0.5;
-    return `rgb(${59 + 190 * level}, ${130 - 15 * level}, ${246 - 224 * level})`;
+    const stddev = row.timestep_loss_stddevs?.[index];
+    const saturation = stddev != null && maximumStddev > 0 ? 1 - 0.75 * stddev / maximumStddev : 1;
+    const channel = (value: number) => 205 + (value - 205) * saturation;
+    return `rgb(${channel(59 + 190 * level)}, ${channel(130 - 15 * level)}, ${channel(246 - 224 * level)})`;
   };
   const high = bins.reduce((sum, count, index) => sum + (edges[index] >= 0.95 ? count : 0), 0);
-  const summary = `${recorded.toLocaleString()} timesteps recorded; ${unknown.toLocaleString()} unknown; ${(row.timestep_loss_recorded_passes ?? 0).toLocaleString()} losses recorded; t >= 0.95: ${high.toLocaleString()} passes (${row.target_images ? (high / target).toFixed(2) : "n/a"} per image). Height: passes/bin width; color: mean loss, shared scales across visible rows. Gray: loss unrecorded.`;
+  const summary = `${recorded.toLocaleString()} timesteps recorded; ${unknown.toLocaleString()} unknown; ${(row.timestep_loss_recorded_passes ?? 0).toLocaleString()} losses recorded; t >= 0.95: ${high.toLocaleString()} passes (${row.target_images ? (high / target).toFixed(2) : "n/a"} per image). Height: passes/bin width; color: mean loss; paler: greater standard deviation, shared scales across visible rows. Stripes: standard deviation unavailable. Gray: loss unrecorded.`;
   return (
     <div className="relative flex h-6 items-end overflow-hidden rounded bg-gray-800" role="img" aria-label={summary}
       title={summary} tabIndex={0}>
       {bins.map((count, index) => (
         <span key={index} className="relative h-full shrink-0"
           style={{ width: `${(edges[index + 1] - edges[index]) * 100}%` }}
-          title={`t ${edges[index].toFixed(2)}–${edges[index + 1].toFixed(2)}: ${count.toLocaleString()} passes; ${row.target_images ? (count / target).toFixed(2) : "n/a"} per image. Mean loss: ${row.timestep_loss_means?.[index]?.toPrecision(4) ?? "unrecorded"} (${row.timestep_loss_counts?.[index] ?? 0}/${count} passes). ${unknown.toLocaleString()} historical/unknown timesteps excluded.`}>
+          title={`t ${edges[index].toFixed(2)}–${edges[index + 1].toFixed(2)}: ${count.toLocaleString()} passes; ${row.target_images ? (count / target).toFixed(2) : "n/a"} per image. Mean loss: ${row.timestep_loss_means?.[index]?.toPrecision(4) ?? "unrecorded"} (${row.timestep_loss_counts?.[index] ?? 0}/${count} passes). Stddev: ${row.timestep_loss_stddevs?.[index]?.toPrecision(4) ?? "unavailable (needs 2 observations)"}; variance cohort: ${row.timestep_loss_variance_counts?.[index] ?? 0} passes, mean ${row.timestep_loss_variance_means?.[index]?.toPrecision(4) ?? "unrecorded"}. Historical mean-only losses excluded from variance. ${unknown.toLocaleString()} historical/unknown timesteps excluded.`}>
           <span className="pointer-events-none absolute inset-x-0 bottom-0"
             style={{ height: `${density[index] / maximum * 100}%`, backgroundColor: "rgb(107,114,128)" }}>
             <span className="absolute inset-x-0 top-0"
-              style={{ height: `${count ? (row.timestep_loss_counts?.[index] ?? 0) / count * 100 : 0}%`, backgroundColor: color(index) }} />
+              style={{ height: `${count ? (row.timestep_loss_counts?.[index] ?? 0) / count * 100 : 0}%`, backgroundColor: color(index),
+                backgroundImage: row.timestep_loss_stddevs?.[index] == null
+                  ? "repeating-linear-gradient(45deg, transparent 0px, transparent 3px, rgba(255,255,255,0.35) 3px, rgba(255,255,255,0.35) 4px)" : undefined }} />
           </span>
         </span>
       ))}
@@ -88,6 +93,9 @@ export default function ConceptExposurePanel({ runId, active }: Props) {
   const losses = data.rows.flatMap((row) => row.timestep_loss_means ?? [])
     .filter((value): value is number => value != null && Number.isFinite(value));
   const lossRange: [number, number] | null = losses.length ? [Math.min(...losses), Math.max(...losses)] : null;
+  const stddevs = data.rows.flatMap((row) => row.timestep_loss_stddevs ?? [])
+    .filter((value): value is number => value != null && Number.isFinite(value));
+  const maximumStddev = Math.max(0, ...stddevs);
 
   return (
     <div className="bg-gray-900 border border-gray-700 rounded p-3 space-y-2">
@@ -112,8 +120,11 @@ export default function ConceptExposurePanel({ runId, active }: Props) {
       <p className="text-xs text-gray-500">
         {data.mode === "priority" ? "Priority entries" : "Concept tags"} · {data.total_groups ?? 0} trained{query && ` · ${data.matched_groups ?? data.rows.length} matches`}
       </p>
-      <p className="text-[10px] text-gray-500" title="Height is passes per timestep unit; bar area is proportional to recorded passes. Color is mean per-image prediction/reconstruction loss, including guidance weighting but excluding auxiliary losses, on a shared linear scale across visible rows. Earlier/unsupported losses remain unknown.">
+      <p className="text-[10px] text-gray-500" title="Height is passes per timestep unit; bar area is proportional to recorded passes. Hue is mean per-image prediction/reconstruction loss, including guidance weighting but excluding auxiliary losses. Greater sample standard deviation reduces saturation. Both scales are shared across visible rows; variance excludes historical mean-only losses.">
         Timestep: clean 0 → noisy 1 · area = passes · marks at 0.8 / 0.95 · gray = no loss
+      </p>
+      <p className="text-[10px] text-gray-500">
+        Paler = higher stddev{stddevs.length > 0 && ` (0–${maximumStddev.toPrecision(3)}, visible rows)`} · stripes = stddev unavailable
       </p>
       <p className="flex items-center gap-2 text-[10px] text-gray-500">
         Mean loss {lossRange ? <><span className="text-blue-400">{lossRange[0].toPrecision(3)}</span>
@@ -126,7 +137,7 @@ export default function ConceptExposurePanel({ runId, active }: Props) {
           {(data.rows ?? []).map((row) => (
             <div key={row.key} className="col-span-4 grid grid-cols-subgrid items-center gap-x-3 border-b border-gray-800 py-1">
               <span className="min-w-0 truncate text-gray-200" title={row.name}>{row.name}</span>
-              <TimestepHistogram row={row} edges={edges} maximum={maximum} lossRange={lossRange} />
+              <TimestepHistogram row={row} edges={edges} maximum={maximum} lossRange={lossRange} maximumStddev={maximumStddev} />
               <span className="whitespace-nowrap text-right tabular-nums text-gray-400"
                 title={`${(row.timestep_unknown_passes ?? row.sample_passes).toLocaleString()} passes have no recorded timestep; loss recorded for ${(row.timestep_loss_recorded_passes ?? 0).toLocaleString()}/${row.sample_passes.toLocaleString()} passes`}>
                 t recorded: {(row.timestep_recorded_passes ?? 0).toLocaleString()}

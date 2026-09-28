@@ -1864,8 +1864,11 @@ with marks at 0.8/0.95 and a separate recorded-pass count beside the cumulative
 total. Heights use passes per unit timestep width on a shared linear scale
 across visible rows, so colored area is proportional to recorded passes even
 with unequal bin widths. Color shows mean per-image loss on a shared linear
-scale across visible rows (blue=low, orange=high); gray area represents passes
-without loss. Bins are not interpolated. Hover intervals for exact counts and mean
+scale across visible rows (blue=low, orange=high). Greater sample standard
+deviation reduces saturation toward a pale color; its scale is also shared
+across visible rows. Gray area represents passes without loss, and stripes
+mark loss with unavailable standard deviation. Bins are not interpolated.
+Hover intervals for exact counts and mean
 passes per image; focus/hover the chart for coverage, unknown passes, and the
 total above 0.95. Row means do not guarantee that every target image saw that
 noise range.
@@ -1876,6 +1879,16 @@ resume without inventing historical losses: old exposure counts remain intact,
 and only finite, nonnegative losses with known timesteps enter the loss mean.
 The API returns `timestep_loss_counts`, nullable `timestep_loss_means`, recorded
 and unknown loss coverage, and `timestep_loss_metric`.
+
+Version 4 adds independent `timestep_loss_variance_counts`,
+`timestep_loss_variance_means`, and `timestep_loss_m2` arrays. Welford updates
+accumulate the centered sum of squared deviations, including repeated passes,
+without retaining observations. Versions 1/2/3 retain their cumulative counts
+and loss means but start a new variance cohort; historical mean-only losses
+are never treated as having zero variance. The API exposes cohort counts and
+means alongside `timestep_loss_stddevs` (sample standard deviation,
+`sqrt(M2/(n-1))`, null for n<2). Hover text identifies the cohort separately
+from the cumulative loss mean. Unknown variance does not imply low variance.
 
 The initial metric `qwen_prediction_reconstruction_v1` records Qwen's per-image
 prediction/reconstruction objective, including guidance blend/selection and
@@ -1896,6 +1909,11 @@ using the current 398 groups, 36 float sums and 36 integer counts per group
 checkpoint state. At 10,000 groups this is about 8.73 MiB / 14.49 MiB;
 retained checkpoints multiply the state increment. Actual size depends on
 number lengths and groups with recorded loss; these are estimates, not caps.
+For the same 398 groups, filled variance arrays (counts `100`, means
+`1.234567890123456`, M2 `123.4567890123456`) add a further approximately
+632 KiB to the snapshot / 984 KiB per checkpoint state. Separate cohort count
+and mean are necessary to resume mean-only history correctly; all storage
+still scales with groups rather than training iterations.
 
 
 The concept-exposure endpoint also accepts `q` (maximum 256 characters), a

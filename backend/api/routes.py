@@ -18649,7 +18649,7 @@ def get_training_concept_exposure(
         return {"enabled": False, "rows": []}
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=503, detail=f"Exposure snapshot unavailable: {exc}")
-    from core.training.concept_exposure import TIMESTEP_BIN_EDGES, LOSS_METRIC, loss_histogram
+    from core.training.concept_exposure import TIMESTEP_BIN_EDGES, LOSS_METRIC, loss_histogram, loss_moments
     edges = list(TIMESTEP_BIN_EDGES)
     rows = []
     counts = data.get("counts", {})
@@ -18666,6 +18666,7 @@ def get_training_concept_exposure(
         recorded = sum(bins)
         try:
             loss_sums, loss_counts = loss_histogram(data, key, bins)
+            variance_counts, variance_means, m2s = loss_moments(data, key, loss_counts)
         except ValueError as exc:
             raise HTTPException(status_code=503, detail=str(exc))
         loss_recorded = sum(loss_counts)
@@ -18680,7 +18681,12 @@ def get_training_concept_exposure(
                                              for total, n in zip(loss_sums, loss_counts)],
                      "timestep_loss_recorded_passes": loss_recorded,
                      "timestep_loss_unknown_passes": max(0, int(count) - loss_recorded),
-                     "timestep_loss_metric": LOSS_METRIC})
+                     "timestep_loss_metric": LOSS_METRIC,
+                     "timestep_loss_variance_counts": variance_counts,
+                     "timestep_loss_variance_means": [mean if n else None
+                                                     for mean, n in zip(variance_means, variance_counts)],
+                     "timestep_loss_stddevs": [(m2 / (n - 1)) ** 0.5 if n >= 2 else None
+                                               for m2, n in zip(m2s, variance_counts)]})
     sort_key = ((lambda row: (row["last_step"], row["sample_passes"]))
                 if order == "latest" else
                 (lambda row: (row["sample_passes"], row["last_step"])))

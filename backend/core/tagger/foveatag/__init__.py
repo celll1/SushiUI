@@ -14,6 +14,14 @@ from .benchmark import (
 from .head import EvidenceHeadOutput, EvidenceSlotMixer, EvidenceTagHead
 from .encoder import FoveaEncoder, FoveaEncoderConfig, FoveaEncoderOutput
 from .model import FoveaTagger, FoveaTaggerOutput
+from .objectives import (
+    FoveaSelfSupervisedLoss,
+    SelfSupervisedLossOutput,
+    chroma_reconstruction_loss,
+    masked_patch_reconstruction_loss,
+    overlap_correspondence_loss,
+    rgb_to_chroma,
+)
 from .siglip2_control import (
     MaskedSlotPooler,
     SigLIP2ControlOutput,
@@ -40,6 +48,12 @@ __all__ = [
     "FoveaEncoderOutput",
     "FoveaTagger",
     "FoveaTaggerOutput",
+    "FoveaSelfSupervisedLoss",
+    "SelfSupervisedLossOutput",
+    "chroma_reconstruction_loss",
+    "masked_patch_reconstruction_loss",
+    "overlap_correspondence_loss",
+    "rgb_to_chroma",
     "MaskedSlotPooler",
     "SigLIP2ControlOutput",
     "SigLIP2ControlTagger",

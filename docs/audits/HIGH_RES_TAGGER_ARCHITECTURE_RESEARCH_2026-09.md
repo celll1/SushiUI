@@ -33,11 +33,15 @@ features across enough learned cells to classify them. Whole-image upscaling
 adds cost without adding evidence and creates a particularly easy scale
 shortcut.
 
-The first implementation should train from scratch on project data and carry no
-third-party model weights. Recent encoders remain useful as benchmark teachers
-or optional initialization experiments, but none has the combination of
-licensing, weak-label localization, bounded arbitrary-resolution cost, and
-tagger-specific evidence aggregation required here.
+The target encoder is original and trained on project data, carrying no
+third-party model weights. It is not assumed that image-level tags alone can
+train a 50--100M-parameter vision backbone from random initialization; that is
+the largest risk in this proposal and is gated in Phase 2 (section 9). Phase 1
+therefore prototypes the view and head design on the existing SigLIP2 encoder.
+Recent encoders remain useful as benchmark teachers or initialization
+candidates, but none has the combination of licensing, weak-label localization,
+bounded arbitrary-resolution cost, and tagger-specific evidence aggregation
+required here.
 
 ## 2. Current failure mechanism
 
@@ -51,6 +55,13 @@ fit that budget; it does not preserve native pixels. For a square image this is
 effectively a 256 x 256 patch canvas at patch size 16, irrespective of how large
 the source was.
 
+Inference already accepts `max_num_patches` (request default 256,
+`backend/api/routes.py`; applied in
+`backend/core/tagger/siglip2_inference_manager.py`), so a larger inference
+budget can be measured without retraining. Such a measurement runs a checkpoint
+trained at 256 patches at a different budget, and must be reported as a
+train/inference budget mismatch.
+
 The encoder output is reduced to one pooled vector and then passed through one
 linear multi-label head. The optional custom pooler is also a single learned
 query. This creates two independent bottlenecks:
@@ -62,8 +73,9 @@ query. This creates two independent bottlenecks:
 
 Increasing `max_num_patches` alone is not the proposed fix. It increases
 self-attention cost with the number of retained patches, does not teach which
-small regions matter, and repeats the earlier failure mode in which training
-resolution becomes a shortcut that does not extrapolate reliably.
+small regions matter, and risks making the training resolution a shortcut that
+does not extrapolate. This risk is a hypothesis; the project has no recorded
+measurement of it, and Phase 0 should measure it on a resolution ladder.
 
 ## 3. What recent work contributes
 
@@ -74,10 +86,10 @@ expected SushiUI gains.
 | Work | Relevant result or mechanism | License finding | Verdict here |
 |---|---|---|---|
 | SigLIP2 / NaFlex (2025-02) | Variable aspect ratio and patch budget; native aspect ratio is not native-pixel preservation. | Google checkpoints and Transformers implementation are Apache-2.0. | Current baseline. Raising its patch budget is a useful ablation, not the target architecture. |
-| PS3 (CVPR 2025) | Low-resolution global encoding plus selective high-resolution regions; multi-scale high-resolution pretraining; fixed selected-token budgets can improve as source resolution rises. Its strongest routing uses local captions and box supervision. | Code package is Apache-2.0, but released PS3-SigLIP2 weights use NVIDIA's non-commercial license. | Strongest conceptual match. Reuse the principle, not the weights or implementation. Image-level tag labels require a different router objective. |
-| Perception Encoder (2025-04) | Strong global features, intermediate-layer alignment, spatial variants, and tiling-tuned variants. Released sizes still have preferred 224--512 pixel inputs. | The PE page states its checkpoints are Apache-2.0; the containing repository also includes separate non-commercial PLM material, so provenance must remain checkpoint-specific. | Permissive benchmark candidate, but tiling and fine-detail multi-label aggregation would still need to be designed. |
-| RADIOv2.5 / C-RADIOv3-v4 | Multi-resolution training, dense features, non-square inputs, and multi-teacher distillation. C-RADIOv4 incorporates newer SigLIP2, DINOv3, and SAM3 teachers. | RADIO/E-RADIO are non-commercial. C-RADIO weights use the NVIDIA Open Model License and allow commercial use, but repository code and model terms are not a simple Apache dependency. | Valuable teacher/benchmark. Heavy multi-teacher lineage and licensing complexity make it a poor default dependency. |
-| DINOv3 (2025-08) | High-quality dense features, axial RoPE, high-resolution post-training, and Gram anchoring that prevents dense-feature degradation in long training. | Custom DINOv3 license, gated weights, redistribution conditions, and use restrictions; not OSI Apache/MIT. | Excellent dense-feature benchmark or research teacher. Do not make it a required production base. |
+| PS3 (CVPR 2025) | Low-resolution global encoding plus selective high-resolution regions; multi-scale high-resolution pretraining; fixed selected-token budgets can improve as source resolution rises. Its largest reported selection gains come from local caption and box supervision. | Code package is Apache-2.0, but released PS3-SigLIP2 weights use NVIDIA's non-commercial license. | Closest mechanism to this proposal (global low-resolution plus selected high-resolution regions). Reuse the principle, not the weights or implementation. Image-level tag labels require a different router objective. |
+| Perception Encoder (2025-04) | Global contrastive features, intermediate-layer alignment, spatial variants, and tiling-tuned variants. Released sizes still have preferred 224--512 pixel inputs. | The PE page states its checkpoints are Apache-2.0; the containing repository also includes separate non-commercial PLM material, so provenance must remain checkpoint-specific. | Permissive benchmark candidate, but tiling and fine-detail multi-label aggregation would still need to be designed. |
+| RADIOv2.5 / C-RADIOv3-v4 | Multi-resolution training, dense features, non-square inputs, and multi-teacher distillation. C-RADIOv4 incorporates newer SigLIP2, DINOv3, and SAM3 teachers. | RADIO/E-RADIO are non-commercial. C-RADIO weights use the NVIDIA Open Model License and allow commercial use, but repository code and model terms are not a simple Apache dependency. | Teacher/benchmark candidate. Multi-teacher lineage and licensing complexity make it a poor default dependency. |
+| DINOv3 (2025-08) | Dense-feature objective, a RoPE variant on normalized patch coordinates with box jittering, high-resolution adaptation stage, and Gram anchoring that prevents dense-feature degradation in long training. | Custom DINOv3 license, gated weights, redistribution conditions, and use restrictions; not OSI Apache/MIT. | Dense-feature benchmark or research teacher. Do not make it a required production base. |
 | Charm (CVPR 2025) | Fixed-length multi-scale tokenization that retains aspect ratio, composition, and selected detail. | Apache-2.0 implementation. | Relevant tokenizer ablation, but evidence is from aesthetic assessment and it still depends on a pretrained ViT. |
 | Token Cropr (CVPR 2025) | End-to-end task-aware token selection; reported 1.5--4x speedups with task-dependent accuracy trade-offs. | License must be rechecked before adapting code. | Supports learned pruning after shallow features. It does not solve regions erased before tokenization. |
 
@@ -85,8 +97,8 @@ The most transferable findings are:
 
 - high-resolution learning needs local high-resolution supervision, not merely
   high-resolution inference;
-- a constant selected-region budget is a sound way to decouple inference cost
-  from source dimensions;
+- a constant selected-region budget decouples inference cost from source
+  dimensions;
 - multi-resolution training is required to prevent a resolution mode switch;
 - dense features and global classification features are different objectives;
 - routing failures must be supervised, not hidden behind the final tag loss.
@@ -142,7 +154,15 @@ Otherwise an early, incorrect router can permanently hide rare evidence. On a
 small fraction of batches, evaluate a denser candidate set and train the router
 to rank regions that improve positive-tag margins. The dense pass is a
 training-only oracle and is detached from the main classifier when producing
-router targets.
+router targets. Its cost is one local-encoder pass per dense candidate, so the
+candidate count and batch fraction must be set from the Phase 0 timing harness
+and reported with training throughput.
+
+Inference is sequential: the overview must be encoded before local views can
+be selected, and an optional refinement adds a third dependent stage. Batched
+inference therefore runs as staged batches (all overviews, then all selected
+views), and latency must be measured per stage rather than derived from the
+pixel counts below.
 
 The initial inference modes should differ only in view budget, not model weights:
 
@@ -307,7 +327,8 @@ batch-size scaling, peak VRAM, and host preprocessing time.
 4. FoveaTag overview only;
 5. FoveaTag with random local views;
 6. FoveaTag with learned routing; and
-7. one permissively usable recent encoder benchmark, preferably PE, with the
+7. one permissively usable recent encoder benchmark, such as PE (Apache-2.0
+   checkpoints), with the
    same downstream evidence head when technically possible.
 
 The router, local `2x` magnification, continuous scale feature, dense-oracle
@@ -334,8 +355,8 @@ measured on project hardware.
 | Phase | Work | Exit condition |
 |---|---|---|
 | 0 | Add the fixed benchmark, evidence-area annotations, and timing harness. Measure current 256-patch and enlarged-patch SigLIP2. | The current failure is quantified by tag group and evidence size. |
-| 1 | Prototype deterministic overview plus random multi-scale views and the evidence-slot head, without a learned router. | Local evidence can improve fine-detail tags at a known cost. |
-| 2 | Add the original shared encoder and continuous coordinate/scale contract. | Resolution-ladder extrapolation beats the Phase 1 control. |
+| 1 | On the existing SigLIP2 encoder, prototype deterministic overview plus random multi-scale views and the evidence-slot head, without a learned router. | Local evidence can improve fine-detail tags at a known cost. |
+| 2 | Add the original shared encoder and continuous coordinate/scale contract. Train it from random initialization and, as a control, compare against the same view contract and head on a pretrained permissive encoder. | Resolution-ladder extrapolation beats the Phase 1 control, and the random-initialization encoder is not materially worse than the pretrained control. Otherwise, adopt pretrained initialization and record its license/provenance decision. |
 | 3 | Add exploration-aware learned routing and the training-only dense oracle. | Learned routing beats random views at the same `K`; router recall is measurable. |
 | 4 | Add checkpoint bundles, resume, inference manager, export, API, defaults, OpenAPI, and UI. | Existing tagger lifecycle tests plus new view-contract tests pass. |
 | 5 | Optional self-supervised warm-up and external-teacher experiments. | Retain only components with isolated improvements. |

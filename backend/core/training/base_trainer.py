@@ -7153,7 +7153,13 @@ class BaseTrainer(ABC):
                 self, "sensenova_refiner_training_mode", ""
             )).strip().lower() == "refiner_only"
         )
+        progress = getattr(self, "_checkpoint_bundle_progress", None)
+        bundle_complete = (
+            isinstance(progress, tuple) and progress[0] == int(step)
+            and set(CHECKPOINT_BUNDLE_STAGES).issubset(progress[1])
+        )
         if (getattr(self, "_last_periodic_checkpoint_step", None) == step
+                and bundle_complete
                 and not refiner_delta_needs_portable_final):
             print(f"{self.log_prefix} Final checkpoint: step {step} was already "
                   f"written by the periodic interval; not writing it twice")

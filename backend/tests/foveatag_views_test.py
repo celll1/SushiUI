@@ -24,6 +24,8 @@ def test_overview_never_enlarges_and_round_trips_coordinates():
     canvas = spec.source_to_canvas(23.0, 17.0)
     source = spec.canvas_to_source(*canvas)
     assert source == (23.0, 17.0)
+    geometry = spec.normalized_geometry(100, 50)
+    assert geometry[6:] == (174 / 448, 199 / 448, 100 / 448, 50 / 448)
 
 
 def test_local_two_x_magnification_maps_128_source_pixels_to_256_canvas():

@@ -25,9 +25,10 @@ def _model(num_tags=5):
 
 
 def _geometry(batch, views=None):
-    shape = (batch, 6) if views is None else (batch, views, 6)
+    shape = (batch, 10) if views is None else (batch, views, 10)
     geometry = torch.zeros(shape)
     geometry[..., 0:4] = torch.tensor([0.5, 0.5, 1.0, 1.0])
+    geometry[..., 8:10] = 1.0
     return geometry
 
 

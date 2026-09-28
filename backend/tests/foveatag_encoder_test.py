@@ -27,8 +27,8 @@ def test_encoder_accepts_non_square_non_multiple_canvas_and_preserves_stride_16_
     model = FoveaEncoder(_tiny_config()).eval()
     images = torch.randn(2, 3, 65, 49)
     geometry = torch.tensor([
-        [0.5, 0.5, 1.0, 1.0, 0.0, 0.0],
-        [0.25, 0.75, 0.2, 0.4, -2.0, -1.0],
+        [0.5, 0.5, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0],
+        [0.25, 0.75, 0.2, 0.4, -2.0, -1.0, 0.0, 0.0, 1.0, 1.0],
     ])
 
     output = model(images, geometry)
@@ -41,7 +41,7 @@ def test_encoder_accepts_non_square_non_multiple_canvas_and_preserves_stride_16_
 
 
 def test_source_coordinates_follow_view_center_and_field_size():
-    geometry = torch.tensor([[0.5, 0.25, 0.4, 0.2, -1.0, 0.0]])
+    geometry = torch.tensor([[0.5, 0.25, 0.4, 0.2, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0]])
     coordinates = source_coordinates(
         geometry,
         2,
@@ -52,6 +52,20 @@ def test_source_coordinates_follow_view_center_and_field_size():
 
     torch.testing.assert_close(coordinates[0, 0, 0], torch.tensor([0.4, 0.2]))
     torch.testing.assert_close(coordinates[0, 1, 1], torch.tensor([0.6, 0.3]))
+
+
+def test_source_coordinates_account_for_letterbox_content_box():
+    geometry = torch.tensor([[0.5, 0.5, 1.0, 1.0, 0.0, 0.0, 0.25, 0.0, 0.5, 1.0]])
+    coordinates = source_coordinates(
+        geometry,
+        2,
+        4,
+        device=geometry.device,
+        dtype=geometry.dtype,
+    )
+
+    torch.testing.assert_close(coordinates[0, 0, 1], torch.tensor([0.25, 0.25]))
+    torch.testing.assert_close(coordinates[0, 1, 2], torch.tensor([0.75, 0.75]))
 
 
 def test_rope_is_identity_at_zero_coordinates_and_changes_nonzero_positions():

@@ -62,6 +62,13 @@ def test_manifest_build_is_exact_indexed_and_reusable(tmp_path):
 
     assert repeated == metadata
     assert metadata["domains"]["3"]["excluded"] == 1
+    assert metadata["domains"]["3"]["source_size_filter"] == {
+        "minimum_side_eligible": 9,
+        "max_source_pixels": 100_000,
+        "over_pixel_cap": 1,
+        "eligible_after_pixel_cap": 8,
+    }
+    assert metadata["domains"]["7"]["source_size_filter"]["over_pixel_cap"] == 0
     assert metadata["domains"]["3"]["train"]["count"] == 5
     assert metadata["domains"]["7"]["train"]["count"] == 6
     manifests = open_domain_manifests(output, metadata, "validation")

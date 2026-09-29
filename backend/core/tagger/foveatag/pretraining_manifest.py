@@ -245,6 +245,12 @@ def build_pretraining_manifests(
     with sqlite3.connect(uri, uri=True) as connection:
         for domain in domains:
             validation_count = int(validation_counts[domain])
+            source_size_filter = _source_size_filter_counts(
+                connection,
+                domain,
+                minimum_side=minimum_side,
+                max_source_pixels=max_source_pixels,
+            )
             selected = heapq.nsmallest(
                 validation_count,
                 _ranked_paths(
@@ -295,6 +301,7 @@ def build_pretraining_manifests(
             if validation_info["count"] != validation_count:
                 raise ValueError(f"dataset {domain} validation paths are not unique")
             result["domains"][str(domain)] = {
+                "source_size_filter": source_size_filter,
                 "eligible_after_exclusion": eligible,
                 "excluded": excluded_count,
                 "train": train_info,
@@ -334,6 +341,37 @@ def _eligible_rows(
         f"SELECT image_path FROM dataset_items WHERE {condition} ORDER BY id",
         parameters,
     )
+
+
+def _source_size_filter_counts(
+    connection: sqlite3.Connection,
+    domain: int,
+    *,
+    minimum_side: int,
+    max_source_pixels: Optional[int],
+) -> dict[str, Optional[int]]:
+    minimum_eligible = int(connection.execute(
+        "SELECT COUNT(*) FROM dataset_items "
+        "WHERE dataset_id = ? AND width >= ? AND height >= ?",
+        (domain, minimum_side, minimum_side),
+    ).fetchone()[0])
+    if max_source_pixels is None:
+        after_cap = minimum_eligible
+        over_cap = 0
+    else:
+        after_cap = int(connection.execute(
+            "SELECT COUNT(*) FROM dataset_items "
+            "WHERE dataset_id = ? AND width >= ? AND height >= ? "
+            "AND width * height <= ?",
+            (domain, minimum_side, minimum_side, max_source_pixels),
+        ).fetchone()[0])
+        over_cap = minimum_eligible - after_cap
+    return {
+        "minimum_side_eligible": minimum_eligible,
+        "max_source_pixels": max_source_pixels,
+        "over_pixel_cap": over_cap,
+        "eligible_after_pixel_cap": after_cap,
+    }
 
 
 def _ranked_paths(rows, *, excluded: set[str], seed: int, domain: int):

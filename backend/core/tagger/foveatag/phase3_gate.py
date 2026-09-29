@@ -97,17 +97,29 @@ def load_passed_phase3_gate(path: Path | str) -> dict[str, Any]:
 
 def source_native_checkpoint_sha256(gate: Mapping[str, Any]) -> str:
     """Read the unique source-native model hash from gate-bound predictions."""
-    hashes = set()
+    return source_native_checkpoint_hashes(gate)["checkpoint_sha256"]
+
+
+def source_native_checkpoint_hashes(gate: Mapping[str, Any]) -> dict[str, str]:
+    """Read the unique source-native model and metadata hashes from the gate."""
+    pairs = set()
     for row in gate.get("evidence", ()):
         if isinstance(row, Mapping) and row.get("role") == "prediction:source_native":
             prediction = _load_json(_required_file(row.get("path"), "source-native prediction"))
-            digest = prediction.get("checkpoint_sha256")
-            if not isinstance(digest, str) or len(digest) != 64:
-                raise ValueError("source-native prediction lacks a checkpoint hash")
-            hashes.add(digest)
-    if len(hashes) != 1:
+            digests = tuple(
+                prediction.get(name)
+                for name in ("checkpoint_sha256", "checkpoint_metadata_sha256")
+            )
+            if any(not isinstance(digest, str) or len(digest) != 64 for digest in digests):
+                raise ValueError("source-native prediction lacks checkpoint hashes")
+            pairs.add(digests)
+    if len(pairs) != 1:
         raise ValueError("Phase-3 gate does not bind one source-native checkpoint")
-    return next(iter(hashes))
+    model_hash, metadata_hash = next(iter(pairs))
+    return {
+        "checkpoint_sha256": model_hash,
+        "checkpoint_metadata_sha256": metadata_hash,
+    }
 
 
 def _required_file(value: Any, name: str) -> Path:

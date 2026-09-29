@@ -12,7 +12,8 @@ import os
 from pathlib import Path
 import random
 import time
-from typing import Any, Mapping, Optional, Sequence
+import threading
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 import torch
 from sqlalchemy import create_engine
@@ -45,6 +46,19 @@ from .supervised_training import FoveaSupervisedTrainer
 from .views import ViewConfig
 
 
+class FoveaRunControl:
+    """Thread-safe stop handle compatible with the existing trainer lifecycle."""
+
+    def __init__(self) -> None:
+        self._stop = threading.Event()
+
+    def request_stop(self) -> None:
+        self._stop.set()
+
+    def should_stop(self) -> bool:
+        return self._stop.is_set()
+
+
 def run_supervised_training(
     *,
     pretrained_encoder: Path,
@@ -72,6 +86,8 @@ def run_supervised_training(
     max_source_pixels: Optional[int] = 40_000_000,
     resume: Optional[Path] = None,
     stop_after_steps: Optional[int] = None,
+    progress_callback: Optional[Callable[[str, Mapping[str, Any]], None]] = None,
+    run_control: Optional[FoveaRunControl] = None,
 ) -> dict[str, Any]:
     _validate_arguments(
         input_mode=input_mode,
@@ -313,12 +329,14 @@ def run_supervised_training(
                 remaining_step_budget=(
                     None if stop_after_steps is None else stop_after_steps - steps_this_run
                 ),
+                progress_callback=progress_callback,
+                run_control=run_control,
             )
             steps_this_run += added
             if stopped:
                 sample_offset = epoch_offset
                 resume_epoch = epoch
-                status = "stopped_after_requested_steps"
+                status = stopped
                 break
 
             validation_started = time.monotonic()
@@ -339,6 +357,16 @@ def run_supervised_training(
                 "learning_rate": optimizer.param_groups[0]["lr"],
             }
             history.append(row)
+            _emit_progress(
+                progress_callback,
+                "validation",
+                {
+                    "input_mode": input_mode,
+                    "epoch": epoch,
+                    "global_step": global_step,
+                    **vars(validation),
+                },
+            )
             improved = validation.macro_f1 > best_f1
             if improved:
                 best_f1 = validation.macro_f1
@@ -449,10 +477,20 @@ def _train_epoch(
     history: list[Mapping[str, Any]],
     initial_accumulator: Optional[Mapping[str, Any]],
     remaining_step_budget: Optional[int],
-) -> tuple[dict[str, Any], int, int, int, bool, dict[str, Any]]:
+    progress_callback: Optional[Callable[[str, Mapping[str, Any]], None]] = None,
+    run_control: Optional[FoveaRunControl] = None,
+) -> tuple[dict[str, Any], int, int, int, Optional[str], dict[str, Any]]:
     accumulator = _restore_accumulator(initial_accumulator)
+    if run_control is not None and run_control.should_stop():
+        return (
+            _training_summary(accumulator), sample_offset, global_step, 0,
+            "stopped_by_request", accumulator,
+        )
     if remaining_step_budget is not None and remaining_step_budget <= 0:
-        return _training_summary(accumulator), sample_offset, global_step, 0, True, accumulator
+        return (
+            _training_summary(accumulator), sample_offset, global_step, 0,
+            "stopped_after_requested_steps", accumulator,
+        )
     loader = _loader(
         Subset(dataset, range(sample_offset, len(dataset))),
         batch_size=batch_size,
@@ -461,6 +499,12 @@ def _train_epoch(
     consumed = steps_added = 0
     segment_started = time.monotonic()
     for batch in loader:
+        if run_control is not None and run_control.should_stop():
+            accumulator["seconds"] += time.monotonic() - segment_started
+            return (
+                _training_summary(accumulator), sample_offset + consumed, global_step,
+                steps_added, "stopped_by_request", accumulator,
+            )
         requested = min(batch_size, len(dataset) - sample_offset - consumed)
         consumed += requested
         if batch is None:
@@ -484,6 +528,19 @@ def _train_epoch(
                 f"sample={current_offset}/{len(dataset)} step={global_step} loss={loss:.6f} "
                 f"samples_per_second={accumulator['samples'] / max(elapsed, 1e-9):.2f}",
                 flush=True,
+            )
+            _emit_progress(
+                progress_callback,
+                "train",
+                {
+                    "input_mode": run_contract["input_mode"],
+                    "epoch": epoch,
+                    "sample_offset": current_offset,
+                    "epoch_samples": len(dataset),
+                    "global_step": global_step,
+                    "loss": loss,
+                    "samples_per_second": accumulator["samples"] / max(elapsed, 1e-9),
+                },
             )
         if global_step % checkpoint_every_steps == 0:
             now = time.monotonic()
@@ -516,12 +573,12 @@ def _train_epoch(
             accumulator["seconds"] += time.monotonic() - segment_started
             return (
                 _training_summary(accumulator), current_offset, global_step,
-                steps_added, True, accumulator,
+                steps_added, "stopped_after_requested_steps", accumulator,
             )
     accumulator["seconds"] += time.monotonic() - segment_started
     return (
         _training_summary(accumulator), len(dataset), global_step,
-        steps_added, False, accumulator,
+        steps_added, None, accumulator,
     )
 
 
@@ -656,6 +713,15 @@ def _write_json_atomic(path: Path, value: Any) -> None:
         encoding="utf-8",
     )
     os.replace(temporary, path)
+
+
+def _emit_progress(
+    callback: Optional[Callable[[str, Mapping[str, Any]], None]],
+    event: str,
+    payload: Mapping[str, Any],
+) -> None:
+    if callback is not None:
+        callback(event, payload)
 
 
 def _validate_arguments(**values) -> None:

@@ -49,8 +49,12 @@ from .router import (
 )
 from .router_training import (
     DenseOracleBatch,
+    FoveaRouterTrainer,
+    RouterObjectiveOutput,
     RouterTrainResult,
+    RouterValidationResult,
     evaluate_dense_candidates,
+    router_objective,
     train_router_batch,
 )
 from .router_data import (
@@ -185,8 +189,12 @@ __all__ = [
     "select_training_proposals",
     "source_candidate_mask",
     "DenseOracleBatch",
+    "FoveaRouterTrainer",
+    "RouterObjectiveOutput",
     "RouterTrainResult",
+    "RouterValidationResult",
     "evaluate_dense_candidates",
+    "router_objective",
     "train_router_batch",
     "FoveaRouterBatch",
     "FoveaRouterDataset",

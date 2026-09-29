@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Iterable, Optional
 
 import torch
+from torch import nn
 
+from .benchmark import evaluate_dense_oracle_recovery
 from .encoder import FoveaEncoderOutput
 from .model import FoveaTagger
+from .router_data import FoveaRouterBatch
 from .router import (
     EvidenceRouter,
+    RouterOutput,
     dense_oracle_targets,
     router_diversity_loss,
     router_ranking_loss,
@@ -30,6 +34,26 @@ class RouterTrainResult:
     ranking: float
     diversity: float
     mean_positive_utility: float
+
+
+@dataclass(frozen=True)
+class RouterObjectiveOutput:
+    loss: torch.Tensor
+    ranking: torch.Tensor
+    diversity: torch.Tensor
+    targets: torch.Tensor
+    routing: RouterOutput
+
+
+@dataclass(frozen=True)
+class RouterValidationResult:
+    samples: int
+    candidates_per_sample: int
+    budget: int
+    mean_utility_recovery: float
+    mean_oracle_topk_recall: float
+    random_mean_utility_recovery: float
+    random_mean_oracle_topk_recall: float
 
 
 @torch.no_grad()
@@ -119,6 +143,38 @@ def train_router_batch(
     diversity_weight: float = 0.05,
 ) -> RouterTrainResult:
     """Optimize vocabulary-independent proposal scores against detached utility."""
+    objective = router_objective(
+        router,
+        oracle,
+        candidate_boxes,
+        labels,
+        loss_mask=loss_mask,
+        candidate_mask=candidate_mask,
+        diversity_weight=diversity_weight,
+    )
+    optimizer.zero_grad(set_to_none=True)
+    objective.loss.backward()
+    optimizer.step()
+    positive = objective.targets[objective.targets > 0]
+    return RouterTrainResult(
+        loss=float(objective.loss.detach()),
+        ranking=float(objective.ranking.detach()),
+        diversity=float(objective.diversity.detach()),
+        mean_positive_utility=float(positive.mean()) if positive.numel() else 0.0,
+    )
+
+
+def router_objective(
+    router: EvidenceRouter,
+    oracle: DenseOracleBatch,
+    candidate_boxes: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    loss_mask: Optional[torch.Tensor] = None,
+    candidate_mask: Optional[torch.Tensor] = None,
+    diversity_weight: float = 0.05,
+) -> RouterObjectiveOutput:
+    """Build detached dense-oracle targets and differentiable router losses."""
     if diversity_weight < 0:
         raise ValueError("diversity_weight must be non-negative")
     batch, candidates, tags = oracle.candidate_logits.shape
@@ -142,7 +198,6 @@ def train_router_batch(
         loss_mask=loss_mask,
         candidate_mask=valid,
     )
-    optimizer.zero_grad(set_to_none=True)
     routing = router(
         oracle.overview.local_map.detach(),
         oracle.overview.local_coordinates.detach(),
@@ -152,15 +207,174 @@ def train_router_batch(
     ranking = router_ranking_loss(routing.scores, targets, valid)
     diversity = router_diversity_loss(routing.slot_scores)
     loss = ranking + diversity * diversity_weight
-    loss.backward()
-    optimizer.step()
-    positive = targets[targets > 0]
-    return RouterTrainResult(
-        loss=float(loss.detach()),
-        ranking=float(ranking.detach()),
-        diversity=float(diversity.detach()),
-        mean_positive_utility=float(positive.mean()) if positive.numel() else 0.0,
+    return RouterObjectiveOutput(
+        loss=loss,
+        ranking=ranking,
+        diversity=diversity,
+        targets=targets,
+        routing=routing,
     )
+
+
+class FoveaRouterTrainer:
+    """Optimize and validate a generic router against a frozen stage-2 tagger."""
+
+    def __init__(
+        self,
+        model: FoveaTagger,
+        router: EvidenceRouter,
+        optimizer: torch.optim.Optimizer,
+        *,
+        device: torch.device | str,
+        mixed_precision: Optional[torch.dtype] = torch.bfloat16,
+        oracle_chunk_size: int = 16,
+        diversity_weight: float = 0.05,
+        max_grad_norm: Optional[float] = 1.0,
+        scheduler: Optional[Any] = None,
+    ) -> None:
+        if oracle_chunk_size <= 0:
+            raise ValueError("oracle_chunk_size must be positive")
+        if diversity_weight < 0:
+            raise ValueError("diversity_weight must be non-negative")
+        if max_grad_norm is not None and max_grad_norm <= 0:
+            raise ValueError("max_grad_norm must be positive when supplied")
+        self.model = model
+        self.router = router
+        self.optimizer = optimizer
+        self.device = torch.device(device)
+        self.mixed_precision = mixed_precision
+        self.oracle_chunk_size = oracle_chunk_size
+        self.diversity_weight = diversity_weight
+        self.max_grad_norm = max_grad_norm
+        self.scheduler = scheduler
+        self.scaler = torch.amp.GradScaler(
+            "cuda",
+            enabled=self.device.type == "cuda" and mixed_precision == torch.float16,
+        )
+
+    def train_batch(self, batch: FoveaRouterBatch) -> Optional[RouterTrainResult]:
+        self.router.train()
+        batch = batch.to(self.device, non_blocking=True)
+        self.optimizer.zero_grad(set_to_none=True)
+        with self._autocast():
+            oracle = self._oracle(batch)
+            objective = self._objective(batch, oracle)
+        if not torch.isfinite(objective.loss):
+            self.optimizer.zero_grad(set_to_none=True)
+            return None
+        self.scaler.scale(objective.loss).backward()
+        if self.max_grad_norm is not None:
+            self.scaler.unscale_(self.optimizer)
+            nn.utils.clip_grad_norm_(self.router.parameters(), self.max_grad_norm)
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
+        if self.scheduler is not None:
+            self.scheduler.step()
+        self.optimizer.zero_grad(set_to_none=True)
+        positive = objective.targets[objective.targets > 0]
+        return RouterTrainResult(
+            loss=float(objective.loss.detach()),
+            ranking=float(objective.ranking.detach()),
+            diversity=float(objective.diversity.detach()),
+            mean_positive_utility=(
+                float(positive.mean()) if positive.numel() else 0.0
+            ),
+        )
+
+    @torch.inference_mode()
+    def validate(
+        self,
+        batches: Iterable[Optional[FoveaRouterBatch]],
+        *,
+        budget: int,
+        random_seed: int = 0,
+    ) -> RouterValidationResult:
+        if budget <= 0:
+            raise ValueError("budget must be positive")
+        was_training = self.router.training
+        self.router.eval()
+        scores = []
+        targets = []
+        masks = []
+        try:
+            for batch in batches:
+                if batch is None:
+                    continue
+                batch = batch.to(self.device, non_blocking=True)
+                with self._autocast():
+                    oracle = self._oracle(batch)
+                    objective = self._objective(batch, oracle)
+                scores.append(objective.routing.scores.detach().float().cpu())
+                targets.append(objective.targets.detach().float().cpu())
+                masks.append(batch.views.local_view_mask.detach().cpu())
+        finally:
+            self.router.train(was_training)
+        if not scores:
+            raise ValueError("router validation received no samples")
+        learned_scores = torch.cat(scores)
+        oracle_targets = torch.cat(targets)
+        candidate_mask = torch.cat(masks)
+        if budget > learned_scores.shape[1]:
+            raise ValueError("budget exceeds validation candidate count")
+        learned = evaluate_dense_oracle_recovery(
+            learned_scores,
+            oracle_targets,
+            k=budget,
+            candidate_mask=candidate_mask,
+        )
+        generator = torch.Generator().manual_seed(random_seed)
+        random_scores = torch.rand(learned_scores.shape, generator=generator)
+        random_baseline = evaluate_dense_oracle_recovery(
+            random_scores,
+            oracle_targets,
+            k=budget,
+            candidate_mask=candidate_mask,
+        )
+        return RouterValidationResult(
+            samples=learned_scores.shape[0],
+            candidates_per_sample=learned_scores.shape[1],
+            budget=budget,
+            mean_utility_recovery=float(learned["mean_utility_recovery"] or 0.0),
+            mean_oracle_topk_recall=float(learned["mean_oracle_topk_recall"] or 0.0),
+            random_mean_utility_recovery=float(
+                random_baseline["mean_utility_recovery"] or 0.0
+            ),
+            random_mean_oracle_topk_recall=float(
+                random_baseline["mean_oracle_topk_recall"] or 0.0
+            ),
+        )
+
+    def _oracle(self, batch: FoveaRouterBatch) -> DenseOracleBatch:
+        views = batch.views
+        return evaluate_dense_candidates(
+            self.model,
+            views.overview_images,
+            views.overview_geometry,
+            views.local_images,
+            views.local_geometry,
+            candidate_mask=views.local_view_mask,
+            chunk_size=self.oracle_chunk_size,
+        )
+
+    def _objective(
+        self, batch: FoveaRouterBatch, oracle: DenseOracleBatch
+    ) -> RouterObjectiveOutput:
+        return router_objective(
+            self.router,
+            oracle,
+            batch.candidate_boxes,
+            batch.labels,
+            loss_mask=batch.loss_masks,
+            candidate_mask=batch.views.local_view_mask,
+            diversity_weight=self.diversity_weight,
+        )
+
+    def _autocast(self):
+        return torch.autocast(
+            device_type=self.device.type,
+            dtype=self.mixed_precision,
+            enabled=self.device.type == "cuda" and self.mixed_precision is not None,
+        )
 
 
 def _candidate_mask(

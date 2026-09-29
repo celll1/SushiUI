@@ -3,14 +3,19 @@
 import copy
 
 import torch
+from PIL import Image
 
+from core.tagger.foveatag.batch import collate_view_batches
 from core.tagger.foveatag.encoder import FoveaEncoderConfig
 from core.tagger.foveatag.model import FoveaTagger
 from core.tagger.foveatag.router import EvidenceRouter
+from core.tagger.foveatag.router_data import FoveaRouterBatch
 from core.tagger.foveatag.router_training import (
+    FoveaRouterTrainer,
     evaluate_dense_candidates,
     train_router_batch,
 )
+from core.tagger.foveatag.views import ViewConfig, build_views
 
 
 def _components():
@@ -108,4 +113,55 @@ def test_router_step_updates_only_router_from_generic_positive_utility():
         torch.equal(model_before[name], value)
         for name, value in model.state_dict().items()
     )
+    assert all(parameter.grad is None for parameter in model.parameters())
+
+
+def test_router_trainer_steps_and_reports_learned_and_random_fixed_k_recovery():
+    model, router = _components()
+    rendered = [
+        build_views(
+            Image.new("RGB", (40, 32), color),
+            ViewConfig(
+                overview_size=32,
+                local_size=16,
+                local_views=4,
+                field_levels=(0.5, 1.0),
+                scale_jitter=(1.0, 1.0),
+            ),
+            seed=index,
+            training=False,
+        )
+        for index, color in enumerate(((20, 40, 60), (60, 40, 20)))
+    ]
+    view_batch = collate_view_batches(rendered)
+    batch = FoveaRouterBatch(
+        views=view_batch,
+        candidate_boxes=view_batch.local_geometry[..., :4].clone(),
+        labels=torch.tensor([[1.0, 0.0, 1.0], [0.0, 1.0, 0.0]]),
+        loss_masks=torch.ones(2, 3),
+    )
+    optimizer = torch.optim.AdamW(router.parameters(), lr=1e-3)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.5)
+    trainer = FoveaRouterTrainer(
+        model,
+        router,
+        optimizer,
+        device="cpu",
+        mixed_precision=None,
+        oracle_chunk_size=2,
+        scheduler=scheduler,
+    )
+
+    train_result = trainer.train_batch(batch)
+    validation = trainer.validate([batch], budget=2, random_seed=11)
+    repeated = trainer.validate([batch], budget=2, random_seed=11)
+
+    assert train_result is not None and train_result.loss >= 0
+    assert optimizer.param_groups[0]["lr"] == 5e-4
+    assert validation.samples == 2
+    assert validation.candidates_per_sample == 4
+    assert validation.budget == 2
+    assert 0 <= validation.mean_utility_recovery <= 1
+    assert 0 <= validation.random_mean_utility_recovery <= 1
+    assert validation == repeated
     assert all(parameter.grad is None for parameter in model.parameters())

@@ -46,6 +46,7 @@ def _artifact(tmp_path):
             "initialization": "scratch", "external_weights": [],
             "stage": "joint_routed_finetune", "threshold": 0.5,
             "router_validation": {
+                "budget": 2,
                 "mean_utility_recovery": 0.7,
                 "random_mean_utility_recovery": 0.4,
             },
@@ -59,6 +60,7 @@ def test_joint_artifact_requires_router_to_beat_random():
             "initialization": "scratch", "external_weights": [],
             "stage": "joint_routed_finetune", "threshold": 0.5,
             "router_validation": {
+                "budget": 2,
                 "mean_utility_recovery": 0.4,
                 "random_mean_utility_recovery": 0.4,
             },
@@ -105,3 +107,13 @@ def test_routed_prediction_runner_writes_selected_regions_and_timings(tmp_path):
     assert payload["predictions"][0]["stage_ms"]["local_and_head"] >= 0
     assert payload["runtime"]["device"] == "cpu"
     assert payload["runtime"]["dtype"] == "float32"
+
+    with pytest.raises(ValueError, match="validation K"):
+        run_routed_predictions(
+            manifest_path,
+            artifact,
+            tmp_path / "unvalidated-budget.json",
+            inference_mode="balanced",
+            resolutions=("native",),
+            device="cpu",
+        )

@@ -39,7 +39,7 @@ def save_supervised_initialization(
         {
             "format_version": SUPERVISED_CHECKPOINT_FORMAT_VERSION,
             "kind": "foveatag_supervised_shared_initialization",
-            "initialization_contract": dict(initialization_contract),
+            "initialization_contract": _canonical_json(initialization_contract),
         },
     )
     return path
@@ -57,7 +57,7 @@ def load_supervised_initialization(
         raise ValueError("unsupported FoveaTag supervised initialization")
     if metadata.get("kind") != "foveatag_supervised_shared_initialization":
         raise ValueError("artifact is not a FoveaTag supervised initialization")
-    if metadata.get("initialization_contract") != dict(expected_initialization_contract):
+    if metadata.get("initialization_contract") != _canonical_json(expected_initialization_contract):
         raise ValueError("supervised initialization contract does not match")
     model.load_state_dict(load_file(str(path), device="cpu"), strict=True)
     return metadata
@@ -155,3 +155,7 @@ def _write_json_atomic(path: Path, value: Mapping[str, Any]) -> None:
     temporary = path.with_suffix(f"{path.suffix}.tmp")
     temporary.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     os.replace(temporary, path)
+
+
+def _canonical_json(value: Mapping[str, Any]) -> dict[str, Any]:
+    return json.loads(json.dumps(dict(value), ensure_ascii=False, allow_nan=False))

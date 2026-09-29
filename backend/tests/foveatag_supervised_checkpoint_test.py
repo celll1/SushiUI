@@ -17,7 +17,12 @@ def _model():
 
 def test_shared_initialization_gives_branches_identical_tensors(tmp_path):
     source = _model()
-    contract = {"encoder_sha256": "abc", "vocabulary_sha256": "def", "seed": 4}
+    contract = {
+        "encoder_sha256": "abc",
+        "vocabulary_sha256": "def",
+        "seed": 4,
+        "widths": (8, 16, 32, 48),
+    }
     path = save_supervised_initialization(
         tmp_path / "shared.safetensors",
         source,

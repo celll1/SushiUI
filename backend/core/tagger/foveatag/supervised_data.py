@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from typing import Literal, Mapping, Optional, Protocol, Sequence
 
@@ -17,7 +17,6 @@ from .views import (
     build_views,
     preserve_source_overview,
     render_overview_placebo_locals,
-    without_local_views,
 )
 
 
@@ -137,15 +136,18 @@ class FoveaSupervisedDataset(Dataset):
             policy = self.supervision_policies.get(raw.dataset_id)
             if policy is not None:
                 loss_mask = policy.apply(raw.label, loss_mask)
+        effective_view_config = (
+            replace(self.view_config, local_views=0)
+            if self.input_mode == "overview_only"
+            else self.view_config
+        )
         views = build_views(
             raw.image,
-            self.view_config,
+            effective_view_config,
             seed=sample_seed,
             training=self.training,
         )
-        if self.input_mode == "overview_only":
-            views = without_local_views(views)
-        elif self.input_mode == "overview_placebo":
+        if self.input_mode == "overview_placebo":
             views = render_overview_placebo_locals(
                 views,
                 pad_color=self.view_config.pad_color,

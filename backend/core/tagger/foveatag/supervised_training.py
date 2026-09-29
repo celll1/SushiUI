@@ -65,6 +65,23 @@ class FoveaSupervisedTrainer:
             enabled=self.device.type == "cuda" and mixed_precision == torch.float16,
         )
 
+    def train_batch(self, batch: FoveaSupervisedBatch) -> Optional[float]:
+        """Run one optimizer step for step-resumable production training."""
+        if self.gradient_accumulation_steps != 1:
+            raise RuntimeError("train_batch requires gradient_accumulation_steps=1")
+        self.model.train()
+        batch = batch.to(self.device, non_blocking=True)
+        self.optimizer.zero_grad(set_to_none=True)
+        with self._autocast():
+            logits = self._forward(batch)
+            loss = _loss_tensor(self.criterion(logits, batch.labels, batch.loss_masks))
+        if not torch.isfinite(loss):
+            self.optimizer.zero_grad(set_to_none=True)
+            return None
+        self.scaler.scale(loss).backward()
+        self._optimizer_step()
+        return float(loss.detach())
+
     def train_epoch(
         self,
         batches: Iterable[Optional[FoveaSupervisedBatch]],

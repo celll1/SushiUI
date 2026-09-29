@@ -9,7 +9,7 @@ import random
 from typing import Any, Mapping, Optional
 
 import torch
-from safetensors.torch import save_file
+from safetensors.torch import load_file, save_file
 from torch import nn
 
 
@@ -125,6 +125,31 @@ def save_pretrained_encoder(
         },
     )
     return path
+
+
+def load_pretrained_encoder(
+    path: str | Path,
+    encoder: nn.Module,
+    *,
+    expected_run_contract: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    """Load a scratch encoder artifact and reject external-weight lineage."""
+    path = Path(path)
+    metadata_path = path.with_name(f"{path.stem}_metadata.json")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if metadata.get("format_version") != PRETRAINING_CHECKPOINT_FORMAT_VERSION:
+        raise ValueError("unsupported FoveaTag pretrained encoder")
+    if metadata.get("kind") != "foveatag_scratch_encoder":
+        raise ValueError("artifact is not a FoveaTag scratch encoder")
+    if metadata.get("initialization") != "scratch" or metadata.get("external_weights") != []:
+        raise ValueError("pretrained encoder does not have pure scratch lineage")
+    if (
+        expected_run_contract is not None
+        and metadata.get("run_contract") != dict(expected_run_contract)
+    ):
+        raise ValueError("pretrained encoder run contract does not match")
+    encoder.load_state_dict(load_file(str(path), device="cpu"), strict=True)
+    return metadata
 
 
 def _move_optimizer_state_to_parameters(optimizer: torch.optim.Optimizer) -> None:

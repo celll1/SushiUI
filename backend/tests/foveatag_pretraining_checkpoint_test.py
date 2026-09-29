@@ -7,6 +7,7 @@ from safetensors.torch import load_file
 from torch import nn
 
 from core.tagger.foveatag.pretraining_checkpoint import (
+    load_pretrained_encoder,
     load_pretraining_checkpoint,
     save_pretrained_encoder,
     save_pretraining_checkpoint,
@@ -109,3 +110,36 @@ def test_encoder_artifact_excludes_decoder_and_records_scratch_lineage(tmp_path)
     metadata = json.loads((tmp_path / "encoder_metadata.json").read_text())
     assert metadata["initialization"] == "scratch"
     assert metadata["external_weights"] == []
+
+    restored = nn.Linear(2, 2)
+    loaded_metadata = load_pretrained_encoder(
+        path,
+        restored,
+        expected_run_contract={"objective": "teacher-free"},
+    )
+    assert loaded_metadata == metadata
+    for name, value in model.encoder.state_dict().items():
+        torch.testing.assert_close(restored.state_dict()[name], value)
+
+
+def test_encoder_loader_rejects_external_weight_lineage(tmp_path):
+    model = _Pretrainer()
+    path = save_pretrained_encoder(
+        tmp_path / "encoder.safetensors",
+        model.encoder,
+        run_contract={"objective": "teacher-free"},
+        epoch=1,
+        global_step=2,
+        validation={"loss": 0.5},
+    )
+    metadata_path = tmp_path / "encoder_metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["external_weights"] = ["teacher"]
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    try:
+        load_pretrained_encoder(path, nn.Linear(2, 2))
+    except ValueError as error:
+        assert "scratch lineage" in str(error)
+    else:
+        raise AssertionError("expected external-weight lineage to fail")

@@ -131,3 +131,31 @@ def test_joint_training_skips_dense_oracle_between_registered_intervals():
     assert result.router_ranking == 0.0
     for name, value in router.state_dict().items():
         torch.testing.assert_close(value, router_before[name])
+
+
+def test_joint_validation_uses_fixed_routed_budget_and_restores_modes():
+    model, router = _modules()
+    optimizer = torch.optim.AdamW(
+        [*model.parameters(), *router.parameters()],
+        lr=1e-3,
+    )
+    trainer = FoveaJointTrainer(
+        model,
+        router,
+        _MaskedBCE(),
+        optimizer,
+        device="cpu",
+        selection_budget=2,
+        random_count=1,
+        oracle_interval=4,
+        mixed_precision=None,
+    )
+    model.train()
+    router.train()
+
+    result = trainer.validate_epoch([_batch()], thresholds=(0.25, 0.5, 0.75))
+
+    assert result.samples == 2
+    assert result.known_labels == 4
+    assert result.threshold in (0.25, 0.5, 0.75)
+    assert model.training and router.training

@@ -36,6 +36,15 @@ class FoveaViewTensorBatch:
             local_view_mask=self.local_view_mask.to(device=device, non_blocking=non_blocking),
         )
 
+    def pin_memory(self) -> "FoveaViewTensorBatch":
+        return FoveaViewTensorBatch(
+            overview_images=self.overview_images.pin_memory(),
+            overview_geometry=self.overview_geometry.pin_memory(),
+            local_images=self.local_images.pin_memory(),
+            local_geometry=self.local_geometry.pin_memory(),
+            local_view_mask=self.local_view_mask.pin_memory(),
+        )
+
 
 def collate_view_batches(batches: Sequence[ViewBatch]) -> FoveaViewTensorBatch:
     """Pad local-view count while retaining exact per-view geometry and validity."""

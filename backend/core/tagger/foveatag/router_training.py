@@ -84,15 +84,16 @@ def evaluate_dense_candidates(
         raise ValueError(
             f"candidate_geometry must have shape [batch, candidates, {geometry_dim}]"
         )
-    valid = _candidate_mask(candidate_mask, batch, candidates, candidate_images.device)
+    device = overview_images.device
+    valid = _candidate_mask(candidate_mask, batch, candidates, device)
     was_training = model.training
     model.eval()
     try:
         overview = model.encoder(overview_images, overview_geometry)
-        empty_images = candidate_images.new_empty(
+        empty_images = overview_images.new_empty(
             (batch, 0, 3, candidate_images.shape[-2], candidate_images.shape[-1])
         )
-        empty_geometry = candidate_geometry.new_empty((batch, 0, geometry_dim))
+        empty_geometry = overview_geometry.new_empty((batch, 0, geometry_dim))
         overview_logits = model.classify_encoded_overview(
             overview,
             empty_images,
@@ -104,10 +105,17 @@ def evaluate_dense_candidates(
             stop = min(start + chunk_size, candidates)
             count = stop - start
             repeated_overview = _repeat_overview(overview, count)
-            images = candidate_images[:, start:stop].reshape(
+            images = candidate_images[:, start:stop].to(
+                device=device,
+                dtype=overview_images.dtype,
+                non_blocking=True,
+            ).reshape(
                 batch * count, 1, *candidate_images.shape[2:]
             )
-            geometry = candidate_geometry[:, start:stop].reshape(
+            geometry = candidate_geometry[:, start:stop].to(
+                device=device,
+                non_blocking=True,
+            ).reshape(
                 batch * count, 1, geometry_dim
             )
             mask = valid[:, start:stop].reshape(batch * count, 1)
@@ -254,7 +262,7 @@ class FoveaRouterTrainer:
 
     def train_batch(self, batch: FoveaRouterBatch) -> Optional[RouterTrainResult]:
         self.router.train()
-        batch = batch.to(self.device, non_blocking=True)
+        batch = batch.stage_for_routing(self.device, non_blocking=True)
         self.optimizer.zero_grad(set_to_none=True)
         with self._autocast():
             oracle = self._oracle(batch)
@@ -300,7 +308,7 @@ class FoveaRouterTrainer:
             for batch in batches:
                 if batch is None:
                     continue
-                batch = batch.to(self.device, non_blocking=True)
+                batch = batch.stage_for_routing(self.device, non_blocking=True)
                 with self._autocast():
                     oracle = self._oracle(batch)
                     objective = self._objective(batch, oracle)

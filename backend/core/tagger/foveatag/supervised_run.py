@@ -27,6 +27,7 @@ from .artifact import FoveaArtifactConfig, save_inference_artifact
 from .control_run import select_domain_splits
 from .encoder import FoveaEncoderConfig
 from .model import FoveaTagger
+from .phase2_gate import load_passed_phase2_gate, require_phase2_encoder
 from .pretraining_checkpoint import load_pretrained_encoder
 from .run_control import FoveaRunControl
 from .supervised_checkpoint import (
@@ -136,6 +137,7 @@ def _comparison_summary(
 
 def run_supervised_training(
     *,
+    phase2_gate: Path,
     pretrained_encoder: Path,
     vocabulary_path: Path,
     datasets_db: Path,
@@ -183,6 +185,8 @@ def run_supervised_training(
         max_source_pixels=max_source_pixels,
         stop_after_steps=stop_after_steps,
     )
+    passed_phase2_gate = load_passed_phase2_gate(phase2_gate)
+    require_phase2_encoder(passed_phase2_gate, pretrained_encoder)
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for FoveaTag Phase-3 training")
     branch_dir = comparison_dir / input_mode
@@ -275,6 +279,8 @@ def run_supervised_training(
         "kind": "foveatag_phase3_shared_initialization",
         "initialization": "scratch",
         "external_weights": [],
+        "phase2_gate": str(phase2_gate.resolve()),
+        "phase2_gate_sha256": _file_sha256(phase2_gate),
         "pretrained_encoder": str(pretrained_encoder.resolve()),
         "pretrained_encoder_sha256": _file_sha256(pretrained_encoder),
         "pretrained_encoder_metadata_sha256": _file_sha256(
@@ -843,6 +849,7 @@ def _parse_mapping(values: Sequence[str], *, cast, name: str):
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--phase2-gate", type=Path, required=True)
     parser.add_argument("--pretrained-encoder", type=Path, required=True)
     parser.add_argument("--vocabulary", type=Path, required=True)
     parser.add_argument("--datasets-db", type=Path, required=True)
@@ -878,6 +885,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parser().parse_args(argv)
     common = dict(
+        phase2_gate=args.phase2_gate,
         pretrained_encoder=args.pretrained_encoder,
         vocabulary_path=args.vocabulary,
         datasets_db=args.datasets_db,

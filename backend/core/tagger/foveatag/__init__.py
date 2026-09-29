@@ -72,6 +72,11 @@ from .router_checkpoint import (
     save_router_weights,
 )
 from .router_run import RouterRunControl, train_router_epoch
+from .phase3_gate import (
+    PHASE3_GATE_FORMAT_VERSION,
+    load_passed_phase3_gate,
+    record_phase3_gate,
+)
 from .reconstruction import (
     PatchReconstructionHead,
     expand_patch_mask,
@@ -209,6 +214,9 @@ __all__ = [
     "save_router_weights",
     "RouterRunControl",
     "train_router_epoch",
+    "PHASE3_GATE_FORMAT_VERSION",
+    "load_passed_phase3_gate",
+    "record_phase3_gate",
     "PatchReconstructionHead",
     "expand_patch_mask",
     "mask_image_patches",

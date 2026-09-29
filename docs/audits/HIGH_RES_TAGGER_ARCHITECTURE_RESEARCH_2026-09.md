@@ -569,6 +569,12 @@ The Phase 3 gate is set before the paired scratch runs, so the criterion cannot
 be adjusted to fit their result. Phase 1 can inform feasibility and cost, but
 its pretrained weights and result do not define that causal gate.
 
+Because the gate has no post-hoc numeric materiality threshold, its final
+pass/fail remains an explicit repository-owner decision. The decision artifact
+records the rationale and hashes the completed evaluation summary, manifests,
+fixed-baseline reports, all A/B/C predictions, and paired reports. Phase 4 must
+refuse a failed decision or any evidence changed after the decision.
+
 Phase 0 measurement must precede expensive training and product integration.
 Implementation of the isolated benchmark, model, and loss components may happen
 earlier, but no architectural success claim follows from unit tests alone. The

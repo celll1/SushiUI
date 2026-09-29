@@ -4,14 +4,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Mapping, Optional, Protocol, Sequence
+from typing import Literal, Mapping, Optional, Protocol, Sequence
 
 import torch
 from torch.utils.data import Dataset
 
 from ..tagger_dataset import RawTaggerSample
 from .batch import FoveaViewTensorBatch, collate_view_batches
-from .views import ViewBatch, ViewConfig, build_views, preserve_source_overview
+from .views import (
+    ViewBatch,
+    ViewConfig,
+    build_views,
+    preserve_source_overview,
+    render_overview_placebo_locals,
+    without_local_views,
+)
+
+
+FoveaInputMode = Literal["overview_only", "overview_placebo", "source_native"]
 
 
 class RawTaggerDataset(Protocol):
@@ -86,6 +96,7 @@ class FoveaSupervisedDataset(Dataset):
         training: bool = True,
         supervision_policies: Optional[Mapping[int, SupervisionPolicy]] = None,
         baseline_overview: bool = False,
+        input_mode: FoveaInputMode = "source_native",
     ) -> None:
         self.source = source
         self.view_config = view_config
@@ -93,6 +104,11 @@ class FoveaSupervisedDataset(Dataset):
         self.training = bool(training)
         self.supervision_policies = dict(supervision_policies or {})
         self.baseline_overview = bool(baseline_overview)
+        if input_mode not in {"overview_only", "overview_placebo", "source_native"}:
+            raise ValueError(f"unsupported FoveaTag input mode: {input_mode}")
+        if self.baseline_overview and input_mode != "source_native":
+            raise ValueError("baseline_overview is only valid with source_native input")
+        self.input_mode = input_mode
         self.epoch = 0
 
     def set_epoch(self, epoch: int) -> None:
@@ -117,6 +133,13 @@ class FoveaSupervisedDataset(Dataset):
             seed=sample_seed,
             training=self.training,
         )
+        if self.input_mode == "overview_only":
+            views = without_local_views(views)
+        elif self.input_mode == "overview_placebo":
+            views = render_overview_placebo_locals(
+                views,
+                pad_color=self.view_config.pad_color,
+            )
         if self.baseline_overview:
             views = preserve_source_overview(raw.image, views)
         return FoveaSupervisedSample(

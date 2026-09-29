@@ -47,9 +47,11 @@ replacement for an existing encoder, so the encoder should not inherit the
 inductive biases of a fixed-resolution pretrained model.
 
 Image-level tags alone are not expected to train the encoder end to end from
-random initialization. For a small eye or colored contact lens, the tag gradient
-is diluted across the whole image, and a learned router and an untrained encoder
-each wait on the other. Training is therefore staged (section 5.1):
+random initialization. For any compact evidence region, the tag gradient is
+diluted across the whole image, and a learned router and an untrained encoder
+each wait on the other. Eye color and colored contact lenses are evaluation
+examples, not an anatomical prior or a router specialization. Training is
+therefore staged (section 5.1):
 self-supervised pretraining, tag training on random and stratified views,
 router training from a dense-candidate teacher, then joint fine-tuning.
 
@@ -319,7 +321,9 @@ vocabulary, so vocabulary growth does not alter the image representation.
    - chroma-preserving reconstruction. Pixel- or color-space targets must keep
      color differences; a semantic-only target can discard the contact-lens
      color this project is trying to recover.
-2. **Tag training on random and stratified local views.** No learned router.
+2. **Tag training on random and spatial/scale-stratified local views.** No
+   learned router, detector, or semantic region sampler is used; the strata are
+   source-space cells and field-of-view levels only.
    The encoder and evidence head are established first. Ground-truth
    illustration tags are the main supervised source. Real-photo captions have
    mixed provenance: some were corrected by hand and some originate from an

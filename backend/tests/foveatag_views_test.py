@@ -12,8 +12,10 @@ from core.tagger.foveatag.views import (
     overview_spec,
     pil_to_tensor,
     render_view,
+    render_overview_placebo_locals,
     sample_local_specs,
     stack_view_tensors,
+    without_local_views,
 )
 
 
@@ -91,3 +93,50 @@ def test_zero_local_view_batch_retains_local_canvas_contract():
     views = build_views(image, ViewConfig(local_size=192, local_views=0), seed=0, training=False)
     _, local = stack_view_tensors(views)
     assert local.shape == (0, 3, 192, 192)
+
+
+def test_overview_placebo_retains_geometry_without_source_native_detail():
+    image = Image.new("RGB", (1024, 1024), (0, 0, 0))
+    for y in range(384, 640):
+        for x in range(384, 640):
+            value = 255 if (x + y) % 2 else 0
+            image.putpixel((x, y), (value, value, value))
+    config = ViewConfig(overview_size=64, local_size=64, local_views=1)
+    specification = local_spec(
+        center_x=512,
+        center_y=512,
+        canvas_size=64,
+        pixels_per_canvas_pixel=1.0,
+    )
+    native = build_views(
+        image,
+        config,
+        seed=0,
+        training=False,
+        specs=(specification,),
+    )
+
+    placebo = render_overview_placebo_locals(native)
+
+    assert placebo.local_specs == native.local_specs
+    assert placebo.local_views[0].size == native.local_views[0].size
+    assert native.local_views[0].getextrema()[0] == (0, 255)
+    assert placebo.local_views[0].getextrema()[0] == (128, 128)
+    assert placebo.local_views[0].tobytes() != native.local_views[0].tobytes()
+
+
+def test_without_local_views_keeps_overview_contract():
+    views = build_views(
+        Image.new("RGB", (320, 240), (1, 2, 3)),
+        ViewConfig(overview_size=64, local_size=32, local_views=2),
+        seed=0,
+        training=False,
+    )
+
+    overview_only = without_local_views(views)
+
+    assert overview_only.overview is views.overview
+    assert overview_only.overview_spec == views.overview_spec
+    assert overview_only.local_views == ()
+    assert overview_only.local_specs == ()
+    assert overview_only.local_canvas_size == 32

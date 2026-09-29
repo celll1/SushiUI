@@ -71,6 +71,7 @@ from .siglip2_control import (
     SigLIP2ViewInputs,
 )
 from .siglip2_control_data import SigLIP2ControlBatch, collate_siglip2_control_samples
+from .control_training import ControlEpochResult, SigLIP2ControlTrainer
 from .supervised_data import (
     FoveaSupervisedBatch,
     FoveaSupervisedDataset,
@@ -150,6 +151,8 @@ __all__ = [
     "SigLIP2ViewInputs",
     "SigLIP2ControlBatch",
     "collate_siglip2_control_samples",
+    "ControlEpochResult",
+    "SigLIP2ControlTrainer",
     "FoveaSupervisedBatch",
     "FoveaSupervisedDataset",
     "FoveaSupervisedSample",

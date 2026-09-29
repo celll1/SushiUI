@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
@@ -81,10 +82,14 @@ def build_phase3_comparison(
         threshold = float(provenance.get("threshold", 0.5))
         if not 0 <= threshold <= 1:
             raise ValueError(f"{mode} validation threshold is outside [0, 1]")
+        runtime = _validated_runtime(
+            payload.get("runtime"), mode=mode, expected_rows=len(prediction_set.rows)
+        )
         contracts[mode] = {
             "model_name": prediction_set.model_name,
             "prediction_rows": len(prediction_set.rows),
             "validation_threshold": threshold,
+            "runtime": runtime,
         }
     if len(shared_hashes) != 1:
         raise ValueError("Phase-3 branches do not share the same initialization")
@@ -155,6 +160,47 @@ def _present_groups(manifest: BenchmarkManifest) -> tuple[str, ...]:
     if not groups:
         raise ValueError("benchmark has no fine-detail or coarse tag groups")
     return tuple(groups)
+
+
+def _validated_runtime(
+    raw: Any, *, mode: str, expected_rows: int
+) -> dict[str, Any]:
+    if not isinstance(raw, Mapping):
+        raise ValueError(f"{mode} predictions lack runtime measurements")
+    device = raw.get("device")
+    dtype = raw.get("dtype")
+    if not isinstance(device, str) or not device or not isinstance(dtype, str) or not dtype:
+        raise ValueError(f"{mode} runtime device and dtype must be non-empty strings")
+    try:
+        row_count = int(raw.get("prediction_rows", -1))
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{mode} runtime prediction_rows must be an integer") from error
+    if row_count != expected_rows:
+        raise ValueError(f"{mode} runtime row count does not match predictions")
+    try:
+        wall_seconds = float(raw.get("wall_seconds", -1))
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{mode} runtime wall_seconds must be numeric") from error
+    if not math.isfinite(wall_seconds) or wall_seconds < 0:
+        raise ValueError(f"{mode} runtime wall_seconds must be finite and non-negative")
+    memory = {}
+    for name in ("peak_allocated_mib", "peak_reserved_mib"):
+        value = raw.get(name)
+        if value is not None:
+            try:
+                value = float(value)
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"{mode} runtime {name} must be numeric") from error
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{mode} runtime {name} must be finite and non-negative")
+        memory[name] = value
+    return {
+        "device": device,
+        "dtype": dtype,
+        "prediction_rows": expected_rows,
+        "wall_seconds": wall_seconds,
+        **memory,
+    }
 
 
 def _load_json(path: Path) -> Mapping[str, Any]:

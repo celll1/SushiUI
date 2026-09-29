@@ -66,6 +66,14 @@ def _payload(mode, positive, negative):
             "input_mode": mode,
             "threshold": 0.5,
         },
+        "runtime": {
+            "device": "cpu",
+            "dtype": "float32",
+            "prediction_rows": len(rows),
+            "wall_seconds": 1.0,
+            "peak_allocated_mib": None,
+            "peak_reserved_mib": None,
+        },
         "predictions": rows,
     }
 
@@ -91,6 +99,7 @@ def test_phase3_report_validates_pairing_and_collects_all_gate_evidence():
     assert report["gate_decision"] == "not_automated"
     assert report["contract"]["expected_prediction_rows"] == 4
     assert report["contract"]["shared_initialization_sha256"] == "shared"
+    assert report["contract"]["branches"]["source_native"]["runtime"]["wall_seconds"] == 1.0
     comparisons = report["matched_fpr_comparisons"]
     assert set(comparisons) == {
         "source_native_vs_overview_only",
@@ -109,6 +118,7 @@ def test_phase3_report_validates_pairing_and_collects_all_gate_evidence():
         ("initialization", "same initialization"),
         ("coverage", "coverage differs"),
         ("lineage", "external-weight"),
+        ("runtime", "wall_seconds"),
     ],
 )
 def test_phase3_report_rejects_confounded_comparisons(mutation, message):
@@ -123,7 +133,10 @@ def test_phase3_report_rejects_confounded_comparisons(mutation, message):
     elif mutation == "coverage":
         payloads["source_native"]["predictions"].pop()
     else:
-        payloads["source_native"]["artifact_provenance"]["external_weights"] = ["teacher"]
+        if mutation == "lineage":
+            payloads["source_native"]["artifact_provenance"]["external_weights"] = ["teacher"]
+        else:
+            payloads["source_native"]["runtime"]["wall_seconds"] = -1
     fixed = evaluate_predictions(
         manifest,
         PredictionSet.from_dict({

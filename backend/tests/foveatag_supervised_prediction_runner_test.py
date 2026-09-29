@@ -108,9 +108,16 @@ def test_prediction_runner_writes_loadable_resolution_ladder_artifact(tmp_path):
         resolutions=("native",),
         device="cpu",
     )
+    output_payload = json.loads(output.read_text(encoding="utf-8"))
     predictions = load_prediction_set(output)
 
     assert predictions.model_name == "foveatag-source_native"
     assert len(predictions.rows) == 1
     assert 0 <= predictions.rows[0].scores["detail"] <= 1
     assert predictions.rows[0].stage_ms["forward"] >= 0
+    assert output_payload["runtime"]["device"] == "cpu"
+    assert output_payload["runtime"]["dtype"] == "float32"
+    assert output_payload["runtime"]["prediction_rows"] == 1
+    assert output_payload["runtime"]["wall_seconds"] >= 0
+    assert output_payload["runtime"]["peak_allocated_mib"] is None
+    assert output_payload["runtime"]["peak_reserved_mib"] is None

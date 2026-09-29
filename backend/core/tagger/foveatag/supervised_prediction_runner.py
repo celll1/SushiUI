@@ -55,6 +55,9 @@ def run_supervised_predictions(
     amp_dtype = (
         torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     ) if device.type == "cuda" else torch.float32
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+    run_started = time.perf_counter()
 
     target_tags = sorted({tag for item in manifest.items for tag in item.positive_tags})
     tag_indices = {
@@ -150,6 +153,20 @@ def run_supervised_predictions(
             "checkpoint": str(model_path.resolve()),
             "artifact_provenance": artifact_metadata.get("provenance", {}),
             "missing_tags": [tag for tag, index in tag_indices.items() if index is None],
+            "runtime": {
+                "device": str(device),
+                "dtype": str(amp_dtype).removeprefix("torch."),
+                "prediction_rows": len(rows),
+                "wall_seconds": time.perf_counter() - run_started,
+                "peak_allocated_mib": (
+                    torch.cuda.max_memory_allocated(device) / 2**20
+                    if device.type == "cuda" else None
+                ),
+                "peak_reserved_mib": (
+                    torch.cuda.max_memory_reserved(device) / 2**20
+                    if device.type == "cuda" else None
+                ),
+            },
             "predictions": rows,
         }
         output_path = Path(output_path)

@@ -621,6 +621,10 @@ and metadata hash across all benchmarks. Router utility recovery alone cannot
 pass this gate: the owner decision also considers fine-detail and coarse-tag
 quality, extrapolation across the resolution ladder, and measured staged
 latency/VRAM.
+Gate creation and every load rebuild each routed comparison from the registered
+manifest, fixed baseline, source-native predictions, and routed predictions.
+They require one source and one routed artifact across all benchmarks, an
+inference mode matching the completed summary, and an exact evidence set.
 
 Phase 0 measurement must precede expensive training and product integration.
 Implementation of the isolated benchmark, model, and loss components may happen

@@ -201,6 +201,7 @@ def _validate_evaluation_lineage(
     contract = metadata_payload.get("run_contract")
     if not isinstance(contract, Mapping):
         raise ValueError("Phase-2 encoder metadata lacks a run contract")
+    _validate_objective_contract(contract.get("objective"))
     if evaluation.get("run_contract_sha256") != _json_sha256(contract):
         raise ValueError("Phase-2 evaluation run contract hash does not match metadata")
     if summary_payload.get("kind") != "foveatag_teacher_free_pretraining_run":
@@ -233,15 +234,38 @@ def _validate_training_validation(value: Any) -> None:
     domains = value.get("domains")
     if not isinstance(weighted, Mapping) or not isinstance(domains, Mapping) or not domains:
         raise ValueError("Phase-2 held-out training validation is incomplete")
-    for metric in ("loss", "correspondence", "reconstruction", "chroma"):
+    metrics = (
+        "loss",
+        "correspondence",
+        "reconstruction",
+        "chroma",
+        "variance",
+        "covariance",
+        "centering",
+    )
+    for metric in metrics:
         if not _finite(weighted.get(metric)):
             raise ValueError(f"Phase-2 held-out validation lacks weighted {metric}")
     for domain, row in domains.items():
         if not isinstance(row, Mapping) or int(row.get("samples", 0)) <= 0:
             raise ValueError(f"Phase-2 held-out validation domain {domain} has no samples")
-        for metric in ("loss", "correspondence", "reconstruction", "chroma"):
+        for metric in metrics:
             if not _finite(row.get(metric)):
                 raise ValueError(f"Phase-2 held-out validation domain {domain} lacks {metric}")
+
+
+def _validate_objective_contract(value: Any) -> None:
+    if not isinstance(value, Mapping):
+        raise ValueError("Phase-2 run contract lacks an objective")
+    for field in (
+        "variance_weight",
+        "covariance_weight",
+        "centering_weight",
+        "target_standard_deviation",
+        "distribution_epsilon",
+    ):
+        if not _finite(value.get(field)) or float(value[field]) <= 0:
+            raise ValueError(f"Phase-2 objective lacks positive {field}")
 
 
 def _expected_validation_manifests(

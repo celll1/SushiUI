@@ -47,6 +47,11 @@ def test_checkpoint_model_loader_requires_scratch_lineage():
             "correspondence_weight": 1.0,
             "reconstruction_weight": 1.0,
             "chroma_weight": 0.5,
+            "variance_weight": 1.0,
+            "covariance_weight": 0.01,
+            "centering_weight": 0.1,
+            "target_standard_deviation": 1.0,
+            "distribution_epsilon": 1e-4,
             "max_coordinate_distance": 0.02,
         },
     }
@@ -100,6 +105,11 @@ def test_scratch_baseline_can_reproduce_seeded_initialization():
             "correspondence_weight": 1.0,
             "reconstruction_weight": 1.0,
             "chroma_weight": 0.5,
+            "variance_weight": 1.0,
+            "covariance_weight": 0.01,
+            "centering_weight": 0.1,
+            "target_standard_deviation": 1.0,
+            "distribution_epsilon": 1e-4,
             "max_coordinate_distance": 0.02,
         },
     }

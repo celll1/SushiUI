@@ -114,6 +114,11 @@ def run_pretraining(
         correspondence_weight=1.0,
         reconstruction_weight=1.0,
         chroma_weight=0.5,
+        variance_weight=1.0,
+        covariance_weight=0.01,
+        centering_weight=0.1,
+        target_standard_deviation=1.0,
+        distribution_epsilon=1e-4,
         max_coordinate_distance=0.02,
     )
     model = FoveaPretrainer(
@@ -159,6 +164,11 @@ def run_pretraining(
             "correspondence_weight": objective.correspondence_weight,
             "reconstruction_weight": objective.reconstruction_weight,
             "chroma_weight": objective.chroma_weight,
+            "variance_weight": objective.variance_weight,
+            "covariance_weight": objective.covariance_weight,
+            "centering_weight": objective.centering_weight,
+            "target_standard_deviation": objective.target_standard_deviation,
+            "distribution_epsilon": objective.distribution_epsilon,
             "max_coordinate_distance": objective.max_coordinate_distance,
         },
         "max_source_pixels": max_source_pixels,
@@ -456,6 +466,9 @@ def _train_epoch(
                 "correspondence": float(output.losses.correspondence.detach()),
                 "reconstruction": float(output.losses.reconstruction.detach()),
                 "chroma": float(output.losses.chroma.detach()),
+                "variance": float(output.losses.variance.detach()),
+                "covariance": float(output.losses.covariance.detach()),
+                "centering": float(output.losses.centering.detach()),
                 "samples_per_second": accumulator["samples"] / max(elapsed, 1e-9),
             }
             print(
@@ -464,6 +477,9 @@ def _train_epoch(
                 f"correspondence={message['correspondence']:.6f} "
                 f"reconstruction={message['reconstruction']:.6f} "
                 f"chroma={message['chroma']:.6f} "
+                f"variance={message['variance']:.6f} "
+                f"covariance={message['covariance']:.6f} "
+                f"centering={message['centering']:.6f} "
                 f"samples_per_second={message['samples_per_second']:.2f}",
                 flush=True,
             )
@@ -586,7 +602,15 @@ def _validate(
         }
     weighted = {
         name: sum(domain_weights[int(domain)] * values[name] for domain, values in domains.items())
-        for name in ("loss", "correspondence", "reconstruction", "chroma")
+        for name in (
+            "loss",
+            "correspondence",
+            "reconstruction",
+            "chroma",
+            "variance",
+            "covariance",
+            "centering",
+        )
     }
     return {"weighted": weighted, "domains": domains}
 
@@ -630,7 +654,18 @@ def _cosine_with_warmup(optimizer, *, total_steps, warmup_steps, learning_rate):
 
 
 def _loss_sums() -> dict[str, float]:
-    return {name: 0.0 for name in ("loss", "correspondence", "reconstruction", "chroma")}
+    return {
+        name: 0.0
+        for name in (
+            "loss",
+            "correspondence",
+            "reconstruction",
+            "chroma",
+            "variance",
+            "covariance",
+            "centering",
+        )
+    }
 
 
 def _accumulate_losses(sums, losses, samples: int) -> None:

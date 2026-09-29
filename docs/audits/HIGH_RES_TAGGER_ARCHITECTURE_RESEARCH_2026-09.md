@@ -467,7 +467,7 @@ require data and GPU time:
 
 | Phase | Implemented | Still required before exit |
 |---|---|---|
-| 0 | Versioned box-free weak-label benchmark, deterministic database builder, dense-oracle recovery metric, resolution/group/stability metrics, saved predictions, per-stage timing summaries, a synthetic scratch-model GPU timing harness, data-loaded optimizer timing, and current NaFlex quality and latency at 256/512/1024 effective patches. | Repeat the initial epoch estimate below on a representative shuffled sample, then set the pretraining budget. |
+| 0 | Complete: versioned box-free weak-label benchmark, deterministic database builder, dense-oracle recovery metric, resolution/group/stability metrics, saved predictions, per-stage timing summaries, synthetic scratch-model GPU timing, representative data-loaded optimizer timing, and current NaFlex quality and latency at 256/512/1024 effective patches. | Exit condition met. The initial scratch pretraining budget is fixed below. |
 | 1 | Deterministic multi-scale views, exact source transforms, expandable evidence head, fixed/NaFlex SigLIP2 token adapter, a processor bridge that preserves overview/local view axes with separate patch budgets, and measured inference cost by local-view count. | Train and measure the encoder-swap control's quality. |
 | 2 | A 37.39M-parameter default scratch encoder, content-aware continuous 2-D RoPE, stride-16 local map, low-token global stage, masked RGB decoder, teacher-free losses, the diagnostic local-teacher projection, deterministic overlapping-view data, and an executable AdamW pretraining path. | Run convergence and held-out overlap/chroma measurements. |
 | 3 | End-to-end scratch tagger, masked classifier composition, density-gated prediction consistency, and an adapter from the existing vocabulary/loss-mask/live-refresh dataset lifecycle to deterministic FoveaTag views. | Add the production training loop and run the pre-registered comparison. |
@@ -475,7 +475,7 @@ require data and GPU time:
 | 5 | Versioned inference/resume artifacts, exclusion of diagnostic weights from inference artifacts, coordinate-aware collation, cached-overview staged inference, and per-stage wall time. | Add production manager/export, API/defaults/OpenAPI/frontend surfaces, and lifecycle tests after the go/no-go gates pass. |
 | 6 | Not started. | Run registered capacity and component ablations only after the smaller model is measured. |
 
-Eighty-five focused CPU tests cover the isolated modules. After the owner's
+Eighty-six focused CPU tests cover the isolated modules. After the owner's
 separate training run released the GPU, the synthetic measurement below was
 also run. No backend restart was performed. Quality and extrapolation
 measurements for the FoveaTag controls and scratch encoder remain pending.
@@ -517,6 +517,7 @@ state. Ten measured steps followed three warmups on the same RTX 6000 Ada.
 | character illustrations, 1,546,928 eligible images | 2 / 2 | 138.6 ms | 140.6 ms | 29.8 h | 980 MiB |
 | character illustrations | 8 / 4 | 660.5 ms | 147.6 ms | 35.5 h | 2,804 MiB |
 | character illustrations | 16 / 8 | 695.1 ms | 116.6 ms | 18.7 h | 5,246 MiB |
+| character illustrations, deterministic hashed sample | 16 / 8 | 177.5 ms | 174.2 ms | 4.77 h | 5,246 MiB |
 
 The larger-batch means contain a single roughly five-second data wait in each
 ten-step window, while their medians show that GPU compute scales well. Native
@@ -527,6 +528,18 @@ the mean-derived epoch estimates are provisional and are not yet a pretraining
 budget. The saved JSON reports preserve data wait, transfer, optimizer-step,
 loss, and memory measurements separately. The loss change over ten updates is
 only a smoke signal and is not a convergence claim.
+
+The final row replaces that provisional estimate. It uses 2,048 paths selected
+across the eligible ID range by a deterministic integer hash, ten warmup steps,
+and fifty measured steps. Prefetch was warm before measurement: data wait was
+0.25 ms mean, optimizer work was 162.2 ms mean, and end-to-end p95 was 214.1 ms.
+The initial teacher-free scratch pretraining budget is therefore **10 epochs**
+(15.47 million source images, approximately 47.7 GPU-hours at the measured
+rate). Checkpoint and held-out overlap/chroma losses are evaluated each epoch.
+Extension beyond 10 epochs requires continued held-out improvement and a gain
+in the downstream random-view tag pilot; the pre-registered cap is 20 epochs
+(approximately 95.4 GPU-hours). This fixes the budget before Phase 2 quality is
+known while allowing a bounded continuation rather than an open-ended run.
 
 ### 9.4 Current NaFlex patch-budget timing (2026-09-29)
 

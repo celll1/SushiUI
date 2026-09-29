@@ -71,6 +71,7 @@ from .router_checkpoint import (
     save_router_checkpoint,
     save_router_weights,
 )
+from .router_run import RouterRunControl, train_router_epoch
 from .reconstruction import (
     PatchReconstructionHead,
     expand_patch_mask,
@@ -206,6 +207,8 @@ __all__ = [
     "load_router_weights",
     "save_router_checkpoint",
     "save_router_weights",
+    "RouterRunControl",
+    "train_router_epoch",
     "PatchReconstructionHead",
     "expand_patch_mask",
     "mask_image_patches",

@@ -161,7 +161,7 @@ def router_ranking_loss(
         router_scores.device,
     )
     if not valid.any():
-        return router_scores.sum() * 0.0
+        return router_scores[valid].sum() * 0.0
     return F.binary_cross_entropy_with_logits(router_scores[valid], oracle_targets.detach()[valid])
 
 

@@ -44,6 +44,11 @@ def run_routed_predictions(
     tag_to_idx = vocabulary["tag_to_idx"]
     if inference_mode not in config.inference_modes:
         raise ValueError(f"unknown FoveaTag inference mode: {inference_mode}")
+    validated_budget = int(provenance["router_validation"]["budget"])
+    if config.inference_modes[inference_mode].local_views != validated_budget:
+        raise ValueError(
+            "inference mode local-view budget does not match router validation K"
+        )
 
     model = FoveaTagger(
         config.num_tags,
@@ -142,6 +147,10 @@ def run_routed_predictions(
             "checkpoint_metadata_sha256": _file_sha256(metadata_path),
             "artifact_provenance": provenance,
             "inference_mode": inference_mode,
+            "inference_contract": {
+                "overview_size": config.inference_modes[inference_mode].overview_size,
+                "local_views": config.inference_modes[inference_mode].local_views,
+            },
             "missing_tags": [tag for tag, index in tag_indices.items() if index is None],
             "runtime": {
                 "device": str(device),
@@ -195,6 +204,9 @@ def validate_joint_artifact(metadata: Mapping[str, Any]) -> Mapping[str, Any]:
         raise ValueError("joint artifact lacks router utility recovery")
     if learned <= random_baseline:
         raise ValueError("joint artifact router did not beat random views")
+    budget = utility.get("budget")
+    if not isinstance(budget, int) or isinstance(budget, bool) or budget <= 0:
+        raise ValueError("joint artifact has no valid router validation budget")
     threshold = provenance.get("threshold")
     if not isinstance(threshold, (int, float)) or not 0 <= threshold <= 1:
         raise ValueError("joint artifact has no valid threshold")

@@ -511,7 +511,9 @@ does not require human boxes and is not available at production inference.
 6. scratch FoveaTag with overview-derived placebo local views: use the same
    coordinates, local-view count, network shape, and encoded-pixel budget as
    baseline 7, but crop from the already reduced overview so no source detail
-   is restored;
+   is restored. This branch reads only the overview from the source; it samples
+   the shared local specifications without first reading and discarding native
+   local regions;
 7. scratch FoveaTag with source-native random local views, forked from the same
    self-supervised checkpoint as baselines 5 and 6 and trained on the same data
    and optimizer steps;

@@ -14,7 +14,7 @@ from core.tagger.foveatag.supervised_data import (
 )
 from core.tagger.foveatag.encoder import FoveaEncoderConfig
 from core.tagger.foveatag.model import FoveaTagger
-from core.tagger.foveatag.views import ViewConfig
+from core.tagger.foveatag.views import ViewConfig, render_view
 from core.tagger.tagger_dataset import RawTaggerSample
 
 
@@ -35,6 +35,18 @@ class _RawDataset:
 
     def label_and_mask_for_index(self, index):
         return self.sample.label.clone(), self.sample.loss_mask.clone()
+
+
+class _CountingRegionSource:
+    def __init__(self, image):
+        self.image = image
+        self.width = image.width
+        self.height = image.height
+        self.rendered = []
+
+    def render_view(self, spec, pad_color=(255, 255, 255)):
+        self.rendered.append(spec)
+        return render_view(self.image, spec, pad_color)
 
 
 def test_supervised_adapter_preserves_labels_and_epoch_changes_views():
@@ -148,6 +160,35 @@ def test_shared_view_builder_matches_dataset_branch_contract():
     assert tuple(view.tobytes() for view in sample.views.local_views) == tuple(
         view.tobytes() for view in direct.local_views
     )
+
+
+def test_placebo_and_native_share_specs_without_placebo_source_region_reads():
+    image = Image.new("RGB", (320, 240), (40, 80, 120))
+    config = ViewConfig(overview_size=64, local_size=64, local_views=2)
+    placebo_source = _CountingRegionSource(image)
+    native_source = _CountingRegionSource(image)
+
+    placebo = build_supervised_views(
+        placebo_source,
+        config,
+        seed=23,
+        training=True,
+        input_mode="overview_placebo",
+    )
+    native = build_supervised_views(
+        native_source,
+        config,
+        seed=23,
+        training=True,
+        input_mode="source_native",
+    )
+
+    assert placebo.local_specs == native.local_specs
+    assert placebo.overview_spec == native.overview_spec
+    assert placebo.overview.tobytes() == native.overview.tobytes()
+    assert len(placebo.local_views) == len(native.local_views) == 2
+    assert len(placebo_source.rendered) == 1
+    assert len(native_source.rendered) == 3
 
 
 def test_control_adapter_preserves_original_overview_for_baseline_processor():

@@ -460,7 +460,7 @@ require data and GPU time:
 
 | Phase | Implemented | Still required before exit |
 |---|---|---|
-| 0 | Versioned benchmark manifest, evidence-box validation, resolution/group metrics, saved predictions, and per-stage timing summaries. | Populate the fixed benchmark and run current SigLIP2 baselines and candidate epoch timings. |
+| 0 | Versioned benchmark manifest, evidence-box validation, resolution/group metrics, saved predictions, per-stage timing summaries, and a synthetic scratch-model GPU timing harness. | Populate the fixed benchmark, run current SigLIP2 baselines, and measure data-loaded optimizer steps and candidate epoch time. |
 | 1 | Deterministic multi-scale views, exact source transforms, expandable evidence head, and fixed/NaFlex SigLIP2 token adapter. | Train and measure the encoder-swap control. |
 | 2 | A 37.39M-parameter default scratch encoder, content-aware continuous 2-D RoPE, stride-16 local map, low-token global stage, masked RGB decoder, teacher-free losses, and the diagnostic local-teacher projection. | Add the pretraining loop, then run convergence and held-out measurements. |
 | 3 | End-to-end scratch tagger, masked classifier composition, and density-gated prediction consistency. | Connect the existing dataset/vocabulary lifecycle and run the pre-registered comparison. |
@@ -468,10 +468,33 @@ require data and GPU time:
 | 5 | Versioned inference/resume artifacts, exclusion of diagnostic weights from inference artifacts, coordinate-aware collation, cached-overview staged inference, evidence boxes, and per-stage wall time. | Add production manager/export, API/defaults/OpenAPI/frontend surfaces, and lifecycle tests after the go/no-go gates pass. |
 | 6 | Not started. | Run registered capacity and component ablations only after the smaller model is measured. |
 
-All implementation validation to date is CPU-only. Sixty-two focused tests
-cover the isolated modules. No backend restart, CUDA allocation, throughput
-measurement, quality benchmark, or VRAM measurement was performed while the
-owner's separate training run occupied the GPU.
+Sixty-five focused CPU tests cover the isolated modules. After the owner's
+separate training run released the GPU, the synthetic measurement below was
+also run. No backend restart was performed. Real-data throughput, quality, and
+extrapolation measurements remain pending.
+
+### 9.2 Initial synthetic GPU measurement (2026-09-29)
+
+`gpu_benchmark.py` measured the default scratch model on one NVIDIA RTX 6000
+Ada using PyTorch 2.10.0, CUDA 13.0, BF16, batch size 1, and 10,000 output tags.
+Each inference result uses 5 warmups and 20 measured forwards; each training
+result uses 2 warmups and 5 measured forward+BCE+backward steps. The training
+number excludes optimizer update, data loading, view rendering, and router
+selection, so it is not an epoch-time estimate. Peak memory likewise excludes
+optimizer state. The machine-readable result is
+`docs/audits/FOVEATAG_GPU_BENCHMARK_2026-09-29.json`.
+
+| Mode | Encoded MP | Forward mean / p95 | Forward+backward mean | Peak allocated / reserved |
+|---|---:|---:|---:|---:|
+| fast | 0.279 | 48.0 / 54.3 ms | 106.6 ms | 628 / 732 MiB |
+| balanced | 0.463 | 46.4 / 50.9 ms | 104.2 ms | 964 / 1,186 MiB |
+| detail | 0.725 | 46.9 / 50.2 ms | 105.9 ms | 1,415 / 1,666 MiB |
+
+The three latency means are too close to claim scaling behavior from this
+short synthetic run; batched local views can improve device utilization as the
+view count rises. Memory does increase with the view budget. These numbers show
+that the default model fits with substantial margin on this GPU, but they do
+not satisfy a phase gate or establish accuracy.
 
 ## 10. Integration surface after acceptance
 

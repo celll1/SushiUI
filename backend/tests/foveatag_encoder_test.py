@@ -93,3 +93,16 @@ def test_invalid_attention_geometry_is_rejected():
         assert "divisible by four" in str(error)
     else:
         raise AssertionError("expected invalid RoPE dimensions to fail")
+
+
+def test_float32_geometry_can_condition_bfloat16_encoder():
+    model = FoveaEncoder(_tiny_config()).to(dtype=torch.bfloat16).eval()
+    images = torch.randn(1, 3, 32, 32, dtype=torch.bfloat16)
+    geometry = torch.tensor([
+        [0.5, 0.5, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0],
+    ])
+
+    output = model(images, geometry)
+
+    assert output.local_map.dtype == torch.bfloat16
+    assert output.global_summary.dtype == torch.bfloat16

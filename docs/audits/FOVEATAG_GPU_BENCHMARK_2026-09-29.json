@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "timestamp_unix": 1790647435.472636,
+  "platform": "Windows-10-10.0.26200-SP0",
+  "torch_version": "2.10.0+cu130",
+  "cuda_version": "13.0",
+  "device": "NVIDIA RTX 6000 Ada Generation",
+  "device_total_mib": 49139.5,
+  "dtype": "bfloat16",
+  "model_parameters": 50795952,
+  "encoder_parameters": 37392032,
+  "num_tags": 10000,
+  "iterations": 20,
+  "warmup": 5,
+  "train_warmup": 2,
+  "train_steps": 5,
+  "modes": {
+    "fast": {
+      "overview_size": 384,
+      "local_views": 2,
+      "local_size": 256,
+      "encoded_megapixels": 0.278528,
+      "inference_ms_mean": 48.0357587814331,
+      "inference_ms_median": 48.259103775024414,
+      "inference_ms_p95": 54.315006256103516,
+      "train_step_ms_mean": 106.59053955078124,
+      "train_step_ms_median": 105.2168960571289,
+      "peak_allocated_mib": 627.68212890625,
+      "peak_reserved_mib": 732.0
+    },
+    "balanced": {
+      "overview_size": 448,
+      "local_views": 4,
+      "local_size": 256,
+      "encoded_megapixels": 0.462848,
+      "inference_ms_mean": 46.436041831970215,
+      "inference_ms_median": 45.691457748413086,
+      "inference_ms_p95": 50.94707107543945,
+      "train_step_ms_mean": 104.20579223632812,
+      "train_step_ms_median": 105.60102081298828,
+      "peak_allocated_mib": 964.17822265625,
+      "peak_reserved_mib": 1186.0
+    },
+    "detail": {
+      "overview_size": 448,
+      "local_views": 8,
+      "local_size": 256,
+      "encoded_megapixels": 0.724992,
+      "inference_ms_mean": 46.90465240478515,
+      "inference_ms_median": 46.19110298156738,
+      "inference_ms_p95": 50.24972915649414,
+      "train_step_ms_mean": 105.94591369628907,
+      "train_step_ms_median": 104.67715454101562,
+      "peak_allocated_mib": 1414.56982421875,
+      "peak_reserved_mib": 1666.0
+    }
+  }
+}

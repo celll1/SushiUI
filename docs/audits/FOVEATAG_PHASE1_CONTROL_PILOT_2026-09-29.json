@@ -1,0 +1,86 @@
+{
+  "format_version": 1,
+  "kind": "foveatag_siglip2_control_pilot",
+  "scope": "First non-smoke pilot; invalid as an architecture gate because the baseline head was replaced by a random 123.95M-parameter head.",
+  "encoder": "google/siglip2-so400m-patch14-384",
+  "encoder_checkpoint_sha256": "bd48dd2e60717678434c62f71941a55d54d3823db1ac9994a3c12bcd9152c626",
+  "num_tags": 107926,
+  "trainable_parameters": 123949846,
+  "network_input": {
+    "overview_canvas": 448,
+    "local_canvas": 256,
+    "local_views": 4,
+    "source_decode_cap": null
+  },
+  "training": {
+    "epochs": 1,
+    "samples": 24000,
+    "optimizer_steps": 6000,
+    "batch_size": 4,
+    "warmup_steps": 200,
+    "mean_loss": 0.0006371847054033423,
+    "seconds": 3962.9539999999106,
+    "samples_per_second": 6.056088463303016,
+    "domain_counts": {
+      "danbooru_ground_illustration": 20000,
+      "partially_curated_photo": 4000
+    },
+    "domain_sampling_weights": {
+      "danbooru_ground_illustration": 0.85,
+      "partially_curated_photo": 0.15
+    }
+  },
+  "validation": {
+    "samples": 1280,
+    "known_labels": 138136503,
+    "active_tags": 9086,
+    "mean_loss": 0.00025186457347672333,
+    "macro_f1": 0.027433853053704403,
+    "macro_precision": 0.02015874665538813,
+    "macro_recall": 0.07574371319922252,
+    "threshold": 0.4,
+    "seconds": 208.60899999993853
+  },
+  "native_benchmarks": {
+    "danbooru_ground_illustration": {
+      "fine_average_precision": 0.233686584737064,
+      "fine_f1_at_validation_threshold": 0.204564782566029,
+      "coarse_average_precision": 0.599202077380902,
+      "coarse_f1_at_validation_threshold": 0.431456996760534,
+      "matched_fpr_threshold": 0.49,
+      "matched_fpr": 0.125183204217525,
+      "baseline_fpr": 0.135563148736339,
+      "matched_recall": 0.271323187118527,
+      "baseline_recall": 0.760532958813386,
+      "fine_average_precision_delta": -0.365528848290108,
+      "mean_stage_ms": {
+        "decode": 51.5049597746937,
+        "resize": 3.17165019089156,
+        "view_render": 35.7381717568293,
+        "preprocess": 7.13098216449567,
+        "forward": 73.3069800734309
+      }
+    },
+    "partially_curated_photo": {
+      "fine_average_precision": 0.280810095200085,
+      "fine_f1_at_validation_threshold": 0.206750434653256,
+      "coarse_average_precision": 0.748635264114911,
+      "coarse_f1_at_validation_threshold": 0.562345024493157,
+      "matched_fpr_threshold": 0.62,
+      "matched_fpr": 0.196684564994732,
+      "baseline_fpr": 0.201896965877872,
+      "matched_recall": 0.313765631591505,
+      "baseline_recall": 0.819272755772096,
+      "fine_average_precision_delta": -0.440071030213558,
+      "mean_stage_ms": {
+        "decode": 47.7288750781697,
+        "resize": 4.17902685034445,
+        "view_render": 45.3696621624056,
+        "preprocess": 7.22651943068354,
+        "forward": 73.5064762560181
+      }
+    }
+  },
+  "observed_large_sources_pixels": [103520000, 97416000],
+  "decision": "Rerun Phase 1 with exact baseline overview logits and a zero-initialized local residual before judging multi-view input."
+}

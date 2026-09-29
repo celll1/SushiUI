@@ -122,6 +122,31 @@ def overview_spec(image_width: int, image_height: int, canvas_size: int) -> View
     )
 
 
+def identity_overview_spec(image_width: int, image_height: int) -> ViewSpec:
+    """Describe an unchanged source image for a strict baseline control."""
+    if image_width <= 0 or image_height <= 0:
+        raise ValueError("image dimensions must be positive")
+    return ViewSpec(
+        role="baseline-overview",
+        source_box=SourceBox(0.0, 0.0, float(image_width), float(image_height)),
+        canvas_width=image_width,
+        canvas_height=image_height,
+        content_box=(0.0, 0.0, float(image_width), float(image_height)),
+        pixels_per_canvas_pixel=1.0,
+    )
+
+
+def preserve_source_overview(image: Image.Image, views: ViewBatch) -> ViewBatch:
+    """Keep local views but restore the baseline's unmodified overview input."""
+    return ViewBatch(
+        overview=image.copy(),
+        overview_spec=identity_overview_spec(image.width, image.height),
+        local_views=views.local_views,
+        local_specs=views.local_specs,
+        local_canvas_size=views.local_canvas_size,
+    )
+
+
 def local_spec(
     *,
     center_x: float,

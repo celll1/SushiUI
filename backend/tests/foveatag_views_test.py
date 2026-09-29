@@ -8,6 +8,7 @@ from core.tagger.foveatag.views import (
     ViewConfig,
     build_views,
     local_spec,
+    identity_overview_spec,
     overview_spec,
     pil_to_tensor,
     render_view,
@@ -26,6 +27,15 @@ def test_overview_never_enlarges_and_round_trips_coordinates():
     assert source == (23.0, 17.0)
     geometry = spec.normalized_geometry(100, 50)
     assert geometry[6:] == (174 / 448, 199 / 448, 100 / 448, 50 / 448)
+
+
+def test_identity_overview_matches_unmodified_source_canvas():
+    spec = identity_overview_spec(1024, 512)
+
+    assert spec.role == "baseline-overview"
+    assert (spec.canvas_width, spec.canvas_height) == (1024, 512)
+    assert spec.content_box == (0.0, 0.0, 1024.0, 512.0)
+    assert spec.source_to_canvas(31.0, 17.0) == (31.0, 17.0)
 
 
 def test_local_two_x_magnification_maps_128_source_pixels_to_256_canvas():

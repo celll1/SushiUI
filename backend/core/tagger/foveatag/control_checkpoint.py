@@ -12,7 +12,7 @@ from torch import nn
 
 
 CONTROL_CHECKPOINT_FORMAT_VERSION = 1
-_ENCODER_PREFIX = "vision_encoder."
+_EXTERNAL_PREFIXES = ("vision_encoder.", "baseline_head.")
 
 
 def save_control_checkpoint(
@@ -27,7 +27,7 @@ def save_control_checkpoint(
     best_validation_f1: float = 0.0,
     best_threshold: float = 0.5,
 ) -> Path:
-    """Atomically save trainable control state without duplicating the encoder."""
+    """Save trainable state without duplicating the external encoder or baseline head."""
     if next_epoch < 0 or global_step < 0:
         raise ValueError("next_epoch and global_step must be non-negative")
     path = Path(path)
@@ -152,7 +152,7 @@ def _control_state(model: nn.Module) -> dict[str, torch.Tensor]:
     state = {
         name: value.detach().cpu().contiguous()
         for name, value in model.state_dict().items()
-        if not name.startswith(_ENCODER_PREFIX)
+        if not name.startswith(_EXTERNAL_PREFIXES)
     }
     if not state:
         raise ValueError("control model has no non-encoder state")
@@ -161,7 +161,7 @@ def _control_state(model: nn.Module) -> dict[str, torch.Tensor]:
 
 def _load_control_state(model: nn.Module, state: Mapping[str, torch.Tensor]) -> None:
     expected_keys = {
-        name for name in model.state_dict() if not name.startswith(_ENCODER_PREFIX)
+        name for name in model.state_dict() if not name.startswith(_EXTERNAL_PREFIXES)
     }
     if set(state) != expected_keys:
         missing = sorted(expected_keys - set(state))
@@ -173,7 +173,7 @@ def _load_control_state(model: nn.Module, state: Mapping[str, torch.Tensor]) -> 
     incompatible = model.load_state_dict(state, strict=False)
     unexpected = list(incompatible.unexpected_keys)
     non_encoder_missing = [
-        name for name in incompatible.missing_keys if not name.startswith(_ENCODER_PREFIX)
+        name for name in incompatible.missing_keys if not name.startswith(_EXTERNAL_PREFIXES)
     ]
     if unexpected or non_encoder_missing:
         raise ValueError("control weights could not be loaded strictly")

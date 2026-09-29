@@ -8,7 +8,7 @@ from typing import Optional, Tuple, Union
 import torch
 from torch import nn
 
-from .head import EvidenceHeadOutput, EvidenceTagHead
+from .head import EvidenceHeadOutput, EvidenceTagHead, ResidualEvidenceTagHead
 
 
 @dataclass(frozen=True)
@@ -86,6 +86,7 @@ class SigLIP2ControlTagger(nn.Module):
         is_naflex: bool = True,
         freeze_encoder: bool = False,
         temperature: float = 0.1,
+        baseline_head: Optional[nn.Linear] = None,
     ) -> None:
         super().__init__()
         if feature_dim <= 0:
@@ -96,11 +97,23 @@ class SigLIP2ControlTagger(nn.Module):
         self.global_pooler = MaskedSlotPooler(hidden_size, 1, pool_heads)
         self.local_pooler = MaskedSlotPooler(hidden_size, evidence_slots_per_view, pool_heads)
         self.feature_projection = nn.Linear(hidden_size, feature_dim)
-        self.evidence_head = EvidenceTagHead(
-            feature_dim,
-            num_tags,
-            temperature=temperature,
-        )
+        self.baseline_head = baseline_head
+        if baseline_head is None:
+            self.evidence_head = EvidenceTagHead(
+                feature_dim,
+                num_tags,
+                temperature=temperature,
+            )
+        else:
+            if baseline_head.in_features != hidden_size or baseline_head.out_features != num_tags:
+                raise ValueError("baseline_head dimensions must match hidden_size and num_tags")
+            for parameter in baseline_head.parameters():
+                parameter.requires_grad = False
+            self.evidence_head = ResidualEvidenceTagHead(
+                feature_dim,
+                num_tags,
+                temperature=temperature,
+            )
         if freeze_encoder:
             for parameter in self.vision_encoder.parameters():
                 parameter.requires_grad = False
@@ -110,6 +123,8 @@ class SigLIP2ControlTagger(nn.Module):
         return self.evidence_head.head
 
     def expand_head(self, new_num_tags: int) -> Tuple[nn.Parameter, Optional[nn.Parameter]]:
+        if self.baseline_head is not None and new_num_tags != self.baseline_head.out_features:
+            raise ValueError("baseline-preserving control cannot expand beyond its baseline head")
         return self.evidence_head.expand_head(new_num_tags)
 
     def forward(
@@ -120,7 +135,8 @@ class SigLIP2ControlTagger(nn.Module):
         local_view_mask: Optional[torch.Tensor] = None,
         return_details: bool = False,
     ) -> Union[torch.Tensor, SigLIP2ControlOutput]:
-        overview_tokens = self._encode(overview)
+        overview_output = self._encode_output(overview)
+        overview_tokens = _last_hidden_state(overview_output)
         overview_mask = _optional_flat_mask(overview.pixel_attention_mask, overview_tokens)
         global_summary = self.feature_projection(
             self.global_pooler(overview_tokens, overview_mask).squeeze(1)
@@ -138,7 +154,7 @@ class SigLIP2ControlTagger(nn.Module):
                 pixel_attention_mask=_flatten_optional(local.pixel_attention_mask, batch_size, view_count),
                 spatial_shapes=_flatten_optional(local.spatial_shapes, batch_size, view_count),
             )
-            local_tokens = self._encode(flat_local)
+            local_tokens = _last_hidden_state(self._encode_output(flat_local))
             local_token_mask = _optional_flat_mask(flat_local.pixel_attention_mask, local_tokens)
             pooled = self.local_pooler(local_tokens, local_token_mask)
             projected = self.feature_projection(pooled)
@@ -149,7 +165,19 @@ class SigLIP2ControlTagger(nn.Module):
             )
 
         evidence_mask = view_mask.repeat_interleave(self.evidence_slots_per_view, dim=1)
-        head_output = self.evidence_head(global_summary, evidence, evidence_mask)
+        if self.baseline_head is None:
+            head_output = self.evidence_head(global_summary, evidence, evidence_mask)
+        else:
+            pooled = getattr(overview_output, "pooler_output", None)
+            if pooled is None:
+                raise ValueError("baseline-preserving control requires encoder pooler_output")
+            baseline_logits = self.baseline_head(pooled)
+            head_output = self.evidence_head(
+                baseline_logits,
+                global_summary,
+                evidence,
+                evidence_mask,
+            )
         if not return_details:
             return head_output.logits
         indices = torch.arange(view_count, device=global_summary.device, dtype=torch.long)
@@ -162,7 +190,7 @@ class SigLIP2ControlTagger(nn.Module):
             evidence_view_indices=indices,
         )
 
-    def _encode(self, inputs: SigLIP2ViewInputs) -> torch.Tensor:
+    def _encode_output(self, inputs: SigLIP2ViewInputs):
         if self.is_naflex:
             output = self.vision_encoder(
                 pixel_values=inputs.pixel_values,
@@ -171,10 +199,15 @@ class SigLIP2ControlTagger(nn.Module):
             )
         else:
             output = self.vision_encoder(pixel_values=inputs.pixel_values)
-        tokens = getattr(output, "last_hidden_state", None)
-        if tokens is None:
-            raise ValueError("vision encoder output must expose last_hidden_state")
-        return tokens
+        _last_hidden_state(output)
+        return output
+
+
+def _last_hidden_state(output) -> torch.Tensor:
+    tokens = getattr(output, "last_hidden_state", None)
+    if tokens is None:
+        raise ValueError("vision encoder output must expose last_hidden_state")
+    return tokens
 
 
 def _token_mask(mask: Optional[torch.Tensor], tokens: torch.Tensor) -> torch.Tensor:

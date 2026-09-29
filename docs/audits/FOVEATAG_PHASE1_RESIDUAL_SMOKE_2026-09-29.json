@@ -1,0 +1,43 @@
+{
+  "format_version": 1,
+  "kind": "foveatag_siglip2_baseline_residual_smoke",
+  "scope": "Connectivity smoke only; eight optimizer steps and eight validation samples do not establish quality.",
+  "encoder": "google/siglip2-so400m-patch14-384",
+  "control_head": "baseline_zero_residual_v1",
+  "num_tags": 107926,
+  "trainable_state_elements": 68583808,
+  "external_frozen_state": [
+    "base_vision_encoder_with_trained_lora",
+    "baseline_head"
+  ],
+  "trained_lora_parameters_retained": 7962624,
+  "trained_baseline_head_parameters_retained": 124438678,
+  "network_input": {
+    "overview": "original source passed directly to the unchanged fixed-384 processor",
+    "local_canvas": 256,
+    "local_views": 4,
+    "max_source_pixels": 40000000
+  },
+  "train": {
+    "samples": 8,
+    "optimizer_steps": 8,
+    "mean_loss": 0.00007772387800741853,
+    "seconds": 1.8910000000614673
+  },
+  "validation": {
+    "samples": 8,
+    "known_labels": 863319,
+    "active_tags": 287,
+    "mean_loss": 0.00009337031724498956,
+    "macro_f1": 0.7472127949479865,
+    "macro_precision": 0.6822175211548034,
+    "macro_recall": 0.9239256678281069,
+    "threshold": 0.35,
+    "seconds": 1.6089999999385327
+  },
+  "artifact_bytes": {
+    "compact_best": 274337840,
+    "resumable_latest": 823036683
+  },
+  "result": "The strict baseline path is connected: the original source enters the unchanged fixed-384 processor, encoder/LoRA, and classifier, while only the added local residual trains. A full quality run is still required."
+}

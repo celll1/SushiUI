@@ -59,6 +59,35 @@ initialization, and a gap to them does not trigger a switch to pretrained
 weights. If the from-scratch encoder does not meet its pre-registered gate,
 work stops and the cause is measured (section 9).
 
+Three weight lineages must remain separate:
+
+1. **fixed-384 baseline**: the existing trained encoder adaptation and tag head,
+   evaluated unchanged through its original single-image input contract;
+2. **multi-view diagnostic control**: a frozen copy of that baseline evaluates
+   the original source through its unchanged fixed-384 processor and evaluates
+   fixed local canvases independently, while a new zero-initialized local
+   residual learns whether those views expose usable evidence; and
+3. **FoveaTag mainline**: the original encoder, evidence head, and router are
+   randomly initialized and trained without importing any SigLIP2 tagger
+   tensor.
+
+The diagnostic control is not an initialization proposal for the mainline. It
+answers only whether the proposed source-to-view transformation can add useful
+information to a known representation. A positive result de-risks the view
+contract; a negative result does not reject the scratch architecture because a
+fixed-resolution encoder was never trained to represent the new local-view
+distribution. Existing tagger logits are not used as scratch-model labels.
+
+The input contracts intentionally differ. The diagnostic keeps the old
+source-to-384 path unchanged so that its initial logits exactly reproduce the
+existing tagger. The mainline instead builds a bounded overview proxy, selects
+at most `K` source-coordinate regions, and reads only those regions from the
+original or tiled pyramid into fixed local canvases. It never feeds a native
+full-image patch sequence to the encoder. Consequently, the diagnostic weights
+are neither shape-compatible evidence for the final architecture nor a useful
+initialization without importing the fixed-resolution assumptions being
+replaced.
+
 ## 2. Current failure mechanism
 
 The trainable path defaults to
@@ -256,13 +285,15 @@ multiple-instance reduction over local evidence:
 ```text
 logit_t = bias_t
         + dot(global_summary, global_weight_t)
-        + temperature * logsumexp_j(dot(evidence_j, local_weight_t) / temperature)
+        + temperature * logmeanexp_j(dot(evidence_j, local_weight_t) / temperature)
 ```
 
 The local reduction lets different tags select different views. It also exposes
 the highest-contributing source rectangle for debugging. Quality and Rating keep
 their current group-aware selection rules downstream; the architecture still
-produces ordinary per-tag logits.
+produces ordinary per-tag logits. The normalization by the number of valid
+slots is required: adding views with zero local evidence must not shift every
+tag logit merely because the inference budget changed.
 
 The vocabulary head remains expandable by appending rows. Checkpoints must store
 the view contract, coordinate convention, and router budget independently of the
@@ -446,23 +477,43 @@ does not require human boxes and is not available at production inference.
    its trained resize contract;
 3. NaFlex at 256/512/1,024 patches as a diagnostic failed-architecture control,
    not as the primary baseline;
-4. the fixed-resolution encoder with naive global-plus-random-crop aggregation;
-5. FoveaTag overview only;
-6. FoveaTag with random local views;
-7. FoveaTag with learned routing; and
-8. one permissively usable recent encoder benchmark, such as PE (Apache-2.0
+4. the complete trained fixed-resolution tagger with its original source-to-384
+   overview path unchanged, plus a zero-initialized local residual fed by
+   random crops through the same frozen encoder/LoRA;
+5. scratch FoveaTag overview only;
+6. scratch FoveaTag with overview-derived placebo local views: use the same
+   coordinates, local-view count, network shape, and encoded-pixel budget as
+   baseline 7, but crop from the already reduced overview so no source detail
+   is restored;
+7. scratch FoveaTag with source-native random local views, forked from the same
+   self-supervised checkpoint as baselines 5 and 6 and trained on the same data
+   and optimizer steps;
+8. FoveaTag with learned routing; and
+9. one permissively usable recent encoder benchmark, such as PE (Apache-2.0
    checkpoints), with the
    same downstream evidence head when technically possible.
 
-Baselines 4 and 8 are **encoder-swap controls**. No pretrained weights are
-loaded into the FoveaTag encoder; instead, the whole encoder is replaced by an
-existing model, and the FoveaTag view construction and evidence head consume
-its patch-token map. The views and the head need only a spatial token map, so
-this works with any such encoder. These controls answer whether the view and
-head design helps independently of the encoder, and they give a reference
-upper bound for the from-scratch encoder. They cannot test the encoder's
-internal choices (continuous coordinate RoPE, scale features, stem design);
-those are ablated within the from-scratch encoder.
+Baselines 4 and 9 are **pretrained diagnostic controls**, not candidate
+initializations. Baseline 4 must reproduce baseline 1 before any local update:
+the same source image enters the same fixed-384 processor, trained encoder/LoRA,
+and trained classifier. Only the added local residual is new. This can show
+that selected source crops contain information usable by the old
+representation, but it retains that tagger's blind spots and cannot establish
+the value of the scratch encoder. Baseline 9 supplies a second external
+reference under the same restriction. No tensor from either control enters the
+FoveaTag mainline.
+
+The operational input-architecture comparison is baseline 5 versus 7. Both start
+from the same randomly initialized FoveaTag encoder after the same
+self-supervised pretraining; only the presence of local views differs. This
+paired scratch comparison prevents a pretrained tagger's errors or semantic
+head from deciding whether the new input scheme works. Encoder internals
+(continuous coordinate RoPE, scale features, and stem design) are ablated only
+within this scratch lineage. The stricter causal comparison is baseline 6
+versus 7: architecture, local-token count, trainable parameter count, and
+encoder work are held fixed, while only access to source-native detail changes.
+Baseline 5 remains necessary to measure whether the accuracy gain justifies the
+additional inference cost.
 
 The router, local `2x` magnification, continuous scale feature, dense-oracle
 frequency, and local `logsumexp` head each require an ablation. Local-view
@@ -493,15 +544,16 @@ measured on project hardware.
 | Phase | Work | Exit condition |
 |---|---|---|
 | 0 | Add the fixed weak-label benchmark and timing harness. Measure current 256-patch and enlarged-patch SigLIP2, and time per epoch of candidate from-scratch model sizes. | The current failure is quantified by tag group and resolution ladder; the self-supervised pretraining budget is set. |
-| 1 | Encoder-swap control: FoveaTag random multi-scale views and evidence-slot head on the existing SigLIP2 encoder, without a learned router. | The view and head design improves fine-detail tags at a known cost. The from-scratch gate for Phase 3 is written into this document before Phase 2 starts. |
+| 1 | Pretrained diagnostic control: preserve the complete trained fixed-384 source-to-logit path and add random local crops only through a zero-initialized residual. Do not reuse these weights in FoveaTag. | Measure whether the old representation can use local evidence and its cost. This is diagnostic and does not gate the scratch architecture. |
 | 2 | Original shared encoder (25--50M) with the continuous coordinate/scale contract; self-supervised pretraining (stage 1). | Pretraining losses converge, and overlap correspondence and chroma reconstruction are measured on held-out images. |
-| 3 | Tag training on random and stratified views (stage 2). | The pre-registered gate against the Phase 1 control, including resolution-ladder extrapolation, is met. If not, stop and measure the cause (pretraining objectives, model capacity, router timing, and missing semantic knowledge via the local-view teacher distillation ablation); do not switch to pretrained weights. |
+| 3 | Tag training on overview-only, overview-derived placebo-local, and source-native random/stratified views (stage 2), with all branches forked from the same scratch-pretrained checkpoint. | Source-native multi-view beats the compute-matched placebo, improves sufficiently over overview-only to justify its cost, and meets the operational gate against the untouched fixed-384 baseline, including resolution-ladder extrapolation. If not, stop and measure the cause (pretraining objectives, model capacity, router timing, and missing semantic knowledge via the local-view teacher distillation ablation); do not switch to pretrained weights. |
 | 4 | Router training from dense candidates (stage 3), then joint fine-tuning with retained random coverage (stage 4). | Learned routing beats random views at the same `K`; dense-oracle utility recovery, oracle top-`K` recall, and rare-tag results are measured. |
 | 5 | Add checkpoint bundles, resume, inference manager, export, API, defaults, OpenAPI, and UI. | Existing tagger lifecycle tests plus new view-contract tests pass. |
 | 6 | Optional capacity increase and further objective ablations. | Retain only components with isolated improvements. |
 
-The Phase 3 gate is set from Phase 0 and Phase 1 measurements before the
-from-scratch run, so the criterion cannot be adjusted to fit its result.
+The Phase 3 gate is set before the paired scratch runs, so the criterion cannot
+be adjusted to fit their result. Phase 1 can inform feasibility and cost, but
+its pretrained weights and result do not define that causal gate.
 
 Phase 0 measurement must precede expensive training and product integration.
 Implementation of the isolated benchmark, model, and loss components may happen
@@ -520,14 +572,14 @@ require data and GPU time:
 | Phase | Implemented | Still required before exit |
 |---|---|---|
 | 0 | Versioned box-free partially curated photo benchmark, deterministic Danbooru ground-illustration benchmark, dense-oracle recovery metric, resolution/group/stability metrics, saved predictions, per-stage timing summaries, synthetic scratch-model GPU timing, representative data-loaded optimizer timing, fixed-resolution agreement baselines, and diagnostic NaFlex measurements. | Complete. The scratch pretraining budget is fixed below. |
-| 1 | Deterministic multi-scale views, exact source transforms, expandable evidence head, fixed/NaFlex SigLIP2 token adapter, a processor bridge that preserves overview/local view axes, fixed-encoder inference and optimizer cost, masked-label training and streaming validation, domain-balanced ground/photo sampling with benchmark exclusion, epoch-boundary checkpoint/resume without duplicating the external encoder, deterministic benchmark prediction from compact best weights, and a pre-decode safety cap for the full-decode fallback. | Train beyond the connectivity smoke and measure benchmark quality; implement the region-readable tiled-pyramid backend before treating sources above the fallback cap as supported. |
+| 1 | Deterministic multi-scale views, exact source transforms, expandable evidence head, fixed/NaFlex SigLIP2 token adapter, a processor bridge that preserves overview/local view axes, fixed-encoder inference and optimizer cost, masked-label training and streaming validation, domain-balanced ground/photo sampling with benchmark exclusion, epoch-boundary checkpoint/resume without duplicating the external encoder or baseline head, deterministic benchmark prediction from compact best weights, matched-FPR comparison, a baseline-preserving zero-initialized local residual, and a pre-decode safety cap for the full-decode fallback. The first confounded 24,000-sample pilot and the corrected residual smoke are measured in section 9.12. | Run the corrected residual quality gate. Implement the region-readable tiled-pyramid backend before treating sources above the fallback cap as supported. |
 | 2 | A 37.39M-parameter default scratch encoder, content-aware continuous 2-D RoPE, stride-16 local map, low-token global stage, masked RGB decoder, teacher-free losses, the diagnostic local-teacher projection, deterministic overlapping-view data, and an executable AdamW pretraining path. | Run convergence and held-out overlap/chroma measurements. |
 | 3 | End-to-end scratch tagger, masked classifier composition, density-gated prediction consistency, and an adapter from the existing vocabulary/loss-mask/live-refresh dataset lifecycle to deterministic FoveaTag views. | Add the production training loop and run the pre-registered comparison. |
 | 4 | Generic scale-space router, padding mask, NMS, dense-oracle targets, ranking/diversity losses, retained random-budget selection, and box-free oracle recovery metrics. | Run dense-oracle training, choose its batch frequency from measured cost, and measure utility recovery at fixed `K`. |
 | 5 | Versioned inference/resume artifacts, exclusion of diagnostic weights from inference artifacts, coordinate-aware collation, cached-overview staged inference, and per-stage wall time. | Add the tiled-pyramid source backend, production manager/export, API/defaults/OpenAPI/frontend surfaces, and lifecycle tests after the go/no-go gates pass. |
 | 6 | Not started. | Run registered capacity and component ablations only after the smaller model is measured. |
 
-One hundred five focused CPU tests cover the isolated modules. After the owner's
+One hundred ten focused CPU tests cover the isolated modules. After the owner's
 separate training run released the GPU, the synthetic measurement below was
 also run. No backend restart was performed. Quality and extrapolation
 measurements for the FoveaTag controls and scratch encoder remain pending.
@@ -807,6 +859,85 @@ optimizer-free safetensors artifact, avoiding a second approximately 1.49 GB
 training checkpoint. The two large smoke checkpoints were removed after the
 contract was verified; the retained measurement is
 `docs/audits/FOVEATAG_PHASE1_CONTROL_SMOKE_2026-09-29.json`.
+
+### 9.12 Phase 1 fixed-encoder pilot (2026-09-29)
+
+The first non-smoke pilot froze the existing fixed-384 SigLIP2 encoder and
+trained the initially random poolers, projections, and 107,926-way evidence
+head. One epoch sampled 20,000 ground-illustration and 4,000 photo examples at
+an 85:15 expected domain ratio, batch size 4, four local views, 6,000 optimizer
+steps, and 200 warmup steps. The 1,280-image validation split was disjoint from
+training and both benchmark manifests.
+
+Training took 3,963.0 seconds (6.06 samples/s); validation took 208.6 seconds.
+The run encountered 103.5 MP and 97.4 MP sources. They did not enlarge the GPU
+token sequence, which remained one 448 overview plus four 256 local canvases,
+but Pillow decoded the complete sources before cropping. This measured the
+storage-side failure addressed by the full-decode cap and proposed tiled
+pyramid. It is not evidence for sending full-resolution token sequences to the
+network.
+
+Validation selected threshold 0.4 with macro F1 0.0274 over 9,086 active tags.
+Native-resolution benchmark results were:
+
+| Slice | Fine AP / F1 at 0.4 | Coarse AP / F1 at 0.4 | Matched-FPR threshold | Matched-FPR recall, control / baseline | Fine AP delta |
+|---|---:|---:|---:|---:|---:|
+| Danbooru ground illustration | 0.2337 / 0.2046 | 0.5992 / 0.4315 | 0.49 | 0.2713 / 0.7605 | -0.3655 |
+| Partially curated photo | 0.2808 / 0.2068 | 0.7486 / 0.5623 | 0.62 | 0.3138 / 0.8193 | -0.4401 |
+
+On the ground slice, mean per-image stage times were 51.5 ms decode, 35.7 ms
+view rendering, 7.1 ms processor work, and 73.3 ms forward. The photo values
+were 47.7, 45.4, 7.2, and 73.5 ms respectively. Aggregate reports are retained
+under `docs/audits/foveatag_control_pilot_ground/` and
+`docs/audits/foveatag_control_pilot_photo/`; the resumable run artifacts remain
+outside git under `outputs/foveatag_phase1_control_pilot_20260929/`. The compact
+machine-readable run summary is
+`docs/audits/FOVEATAG_PHASE1_CONTROL_PILOT_2026-09-29.json`.
+
+This pilot fails the quality gate but does **not** reject multi-view input. The
+comparison discarded the baseline's trained classifier and replaced it with
+123.95 million random trainable parameters, then showed only 24,000 images.
+The measured gap therefore combines view/head effects with loss of the existing
+semantic classifier. The corrected Phase 1 control must preserve the fixed-384
+overview logits exactly at initialization and add the local path as a
+zero-initialized residual. Only that residual comparison isolates whether local
+views add fine-detail information. The pilot also used an unnormalized local
+`logsumexp`; because `K` was fixed, its constant offset does not affect AP, and
+threshold search absorbs it for matched-FPR metrics. The implementation now
+uses `logmeanexp` so changing `K` cannot shift all logits.
+
+The corrected residual control is now implemented. Its frozen external state is
+the existing base vision encoder with the checkpoint's trained 7.96M LoRA
+adaptation plus its trained baseline head; the compact artifact
+contains 68.58 million trainable-state elements and initializes the local tag
+projection to zero. Its overview is the unmodified source passed through the
+original fixed-384 processor, not the FoveaTag 448 letterbox. An eight-step
+real-data smoke completed with validation
+macro F1 0.7472 at threshold 0.35, compared with 0.3019 for the earlier
+random-full-head connectivity smoke. Neither eight-sample result is a quality
+measurement, but the change confirms that the corrected path retains the
+baseline semantic classifier instead of relearning it. The retained report is
+`docs/audits/FOVEATAG_PHASE1_RESIDUAL_SMOKE_2026-09-29.json`.
+
+The 68.58M figure is optimization state for the added local path, not total
+model capacity. The checkpoint-specific comparison is:
+
+| Configuration | Existing semantic state retained | Newly trainable state | Interpretation |
+|---|---:|---:|---|
+| Existing fixed-384 SigLIP2 LoRA tagger | -- | 132.40M (124.44M classifier + 7.96M LoRA) | Current production baseline; base encoder weights are additional frozen/external state. |
+| First random-full-head control | encoder only | 123.95M | Discarded the trained 124.44M classifier, causing the confound measured above. |
+| Corrected local-residual control | base encoder + 7.96M trained LoRA + 124.44M trained classifier | 68.58M | Adds capacity: 57.36M evidence head/mixer, 10.63M slot poolers, and 0.59M projection. It is not a smaller replacement tagger. |
+
+The local residual still gives every tag a learned 512-dimensional vector
+(55.26M parameters in that matrix alone). Increasing this dimension before the
+corrected pilot would add classifier capacity without showing that capacity is
+the bottleneck. If local AP remains low while dense-oracle utility shows that
+the selected crops contain useful evidence, compare 512, 768, and 1,024 local
+dimensions at equal data and optimizer steps. For the fully scratch model, the
+37.39M figure refers only to the image encoder; the 107,926-way global/local
+classifier makes the complete tagger substantially larger. Phase 6 capacity
+growth is therefore gated on evidence of under-capacity rather than parameter
+count alone.
 
 ## 10. Integration surface after acceptance
 

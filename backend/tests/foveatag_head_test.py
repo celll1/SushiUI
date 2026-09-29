@@ -1,8 +1,10 @@
 """CPU tests for FoveaTag evidence-slot aggregation."""
 
+import math
+
 import torch
 
-from core.tagger.foveatag.head import EvidenceTagHead
+from core.tagger.foveatag.head import EvidenceTagHead, ResidualEvidenceTagHead
 
 
 def _identity_mixer(head: EvidenceTagHead) -> None:
@@ -27,9 +29,39 @@ def test_local_logsumexp_is_per_tag_and_respects_padding_mask():
         torch.tensor([[True, True, False]]),
     )
 
-    expected = 0.5 * torch.logsumexp(evidence[0, :2] / 0.5, dim=0)
+    expected = 0.5 * (
+        torch.logsumexp(evidence[0, :2] / 0.5, dim=0) - math.log(2)
+    )
     torch.testing.assert_close(output.logits[0], expected)
     assert output.best_evidence_indices.tolist() == [[0, 1]]
+
+
+def test_zero_local_scores_do_not_shift_logits_when_view_budget_changes():
+    head = EvidenceTagHead(feature_dim=2, num_tags=1, temperature=0.5)
+    _identity_mixer(head)
+    with torch.no_grad():
+        head.head.weight.zero_()
+        head.head.bias.copy_(torch.tensor([-0.75]))
+
+    one = head(torch.zeros(1, 2), torch.zeros(1, 1, 2)).logits
+    eight = head(torch.zeros(1, 2), torch.zeros(1, 8, 2)).logits
+
+    torch.testing.assert_close(one, torch.tensor([[-0.75]]))
+    torch.testing.assert_close(eight, one)
+
+
+def test_residual_head_reproduces_baseline_at_initialization():
+    head = ResidualEvidenceTagHead(feature_dim=3, num_tags=2)
+    baseline = torch.tensor([[1.25, -0.5]])
+
+    output = head(
+        baseline,
+        torch.randn(1, 3),
+        torch.randn(1, 8, 3),
+    )
+
+    torch.testing.assert_close(output.logits, baseline)
+    torch.testing.assert_close(output.local_scores, torch.zeros(1, 8, 2))
 
 
 def test_sample_with_no_valid_evidence_uses_only_global_term():

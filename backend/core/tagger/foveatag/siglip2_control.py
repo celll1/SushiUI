@@ -166,7 +166,7 @@ class SigLIP2ControlTagger(nn.Module):
         if self.is_naflex:
             output = self.vision_encoder(
                 pixel_values=inputs.pixel_values,
-                attention_mask=inputs.pixel_attention_mask,
+                pixel_attention_mask=inputs.pixel_attention_mask,
                 spatial_shapes=inputs.spatial_shapes,
             )
         else:

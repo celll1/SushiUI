@@ -69,6 +69,7 @@ from .siglip2_control import (
     SigLIP2ControlTagger,
     SigLIP2ViewInputs,
 )
+from .siglip2_control_data import SigLIP2ControlBatch, collate_siglip2_control_samples
 from .supervised_data import (
     FoveaSupervisedBatch,
     FoveaSupervisedDataset,
@@ -145,6 +146,8 @@ __all__ = [
     "SigLIP2ControlOutput",
     "SigLIP2ControlTagger",
     "SigLIP2ViewInputs",
+    "SigLIP2ControlBatch",
+    "collate_siglip2_control_samples",
     "FoveaSupervisedBatch",
     "FoveaSupervisedDataset",
     "FoveaSupervisedSample",

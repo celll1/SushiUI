@@ -461,14 +461,14 @@ require data and GPU time:
 | Phase | Implemented | Still required before exit |
 |---|---|---|
 | 0 | Versioned benchmark manifest, evidence-box validation, resolution/group metrics, saved predictions, per-stage timing summaries, a synthetic scratch-model GPU timing harness, data-loaded optimizer timing, and current NaFlex latency at 256/512/1024 effective patches. | Populate the fixed benchmark and run the SigLIP2 quality baselines. Repeat the initial epoch estimate below on a representative shuffled sample before setting the pretraining budget. |
-| 1 | Deterministic multi-scale views, exact source transforms, expandable evidence head, and fixed/NaFlex SigLIP2 token adapter. | Train and measure the encoder-swap control. |
+| 1 | Deterministic multi-scale views, exact source transforms, expandable evidence head, fixed/NaFlex SigLIP2 token adapter, and a processor bridge that preserves overview/local view axes with separate patch budgets. | Train and measure the encoder-swap control. |
 | 2 | A 37.39M-parameter default scratch encoder, content-aware continuous 2-D RoPE, stride-16 local map, low-token global stage, masked RGB decoder, teacher-free losses, the diagnostic local-teacher projection, deterministic overlapping-view data, and an executable AdamW pretraining path. | Run convergence and held-out overlap/chroma measurements. |
 | 3 | End-to-end scratch tagger, masked classifier composition, density-gated prediction consistency, and an adapter from the existing vocabulary/loss-mask/live-refresh dataset lifecycle to deterministic FoveaTag views. | Add the production training loop and run the pre-registered comparison. |
 | 4 | Generic scale-space router, padding mask, NMS, dense-oracle targets, ranking/diversity losses, and retained random-budget selection. | Run dense-oracle training, choose its batch frequency from measured cost, and measure router recall. |
 | 5 | Versioned inference/resume artifacts, exclusion of diagnostic weights from inference artifacts, coordinate-aware collation, cached-overview staged inference, evidence boxes, and per-stage wall time. | Add production manager/export, API/defaults/OpenAPI/frontend surfaces, and lifecycle tests after the go/no-go gates pass. |
 | 6 | Not started. | Run registered capacity and component ablations only after the smaller model is measured. |
 
-Seventy-five focused CPU tests cover the isolated modules. After the owner's
+Seventy-seven focused CPU tests cover the isolated modules. After the owner's
 separate training run released the GPU, the synthetic measurement below was
 also run. No backend restart was performed. Quality and extrapolation
 measurements remain pending.

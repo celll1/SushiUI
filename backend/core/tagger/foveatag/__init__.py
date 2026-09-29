@@ -60,6 +60,13 @@ from .router_data import (
     candidate_boxes_from_specs,
     collate_router_samples,
 )
+from .router_checkpoint import (
+    ROUTER_CHECKPOINT_FORMAT_VERSION,
+    load_router_checkpoint,
+    load_router_weights,
+    save_router_checkpoint,
+    save_router_weights,
+)
 from .reconstruction import (
     PatchReconstructionHead,
     expand_patch_mask,
@@ -186,6 +193,11 @@ __all__ = [
     "FoveaRouterSample",
     "candidate_boxes_from_specs",
     "collate_router_samples",
+    "ROUTER_CHECKPOINT_FORMAT_VERSION",
+    "load_router_checkpoint",
+    "load_router_weights",
+    "save_router_checkpoint",
+    "save_router_weights",
     "PatchReconstructionHead",
     "expand_patch_mask",
     "mask_image_patches",

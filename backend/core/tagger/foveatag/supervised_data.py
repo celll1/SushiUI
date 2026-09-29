@@ -22,6 +22,11 @@ from .views import (
 
 
 FoveaInputMode = Literal["overview_only", "overview_placebo", "source_native"]
+PHASE3_INPUT_MODES: tuple[FoveaInputMode, ...] = (
+    "overview_only",
+    "overview_placebo",
+    "source_native",
+)
 _UINT64_MASK = (1 << 64) - 1
 
 
@@ -105,7 +110,7 @@ class FoveaSupervisedDataset(Dataset):
         self.training = bool(training)
         self.supervision_policies = dict(supervision_policies or {})
         self.baseline_overview = bool(baseline_overview)
-        if input_mode not in {"overview_only", "overview_placebo", "source_native"}:
+        if input_mode not in PHASE3_INPUT_MODES:
             raise ValueError(f"unsupported FoveaTag input mode: {input_mode}")
         if self.baseline_overview and input_mode != "source_native":
             raise ValueError("baseline_overview is only valid with source_native input")
@@ -227,7 +232,7 @@ def build_supervised_views(
     input_mode: FoveaInputMode,
 ) -> ViewBatch:
     """Build exactly the A/B/C input contract shared by training and evaluation."""
-    if input_mode not in {"overview_only", "overview_placebo", "source_native"}:
+    if input_mode not in PHASE3_INPUT_MODES:
         raise ValueError(f"unsupported FoveaTag input mode: {input_mode}")
     effective_view_config = (
         replace(view_config, local_views=0)

@@ -13,6 +13,7 @@ from core.tagger.foveatag.pretraining import (
     collate_pretraining_samples,
     sample_overlapping_specs,
 )
+from core.tagger.foveatag.tiled_pyramid import build_cached_tiled_pyramid
 from core.tagger.foveatag.views import ViewConfig
 
 
@@ -112,3 +113,26 @@ def test_image_path_dataset_skips_oversized_source_before_decode(tmp_path):
     )
 
     assert dataset[0] is None
+
+
+def test_image_path_dataset_reads_over_cap_source_from_validated_pyramid(tmp_path):
+    path = tmp_path / "large.png"
+    Image.new("RGB", (128, 128), (20, 30, 40)).save(path)
+    cache_root = tmp_path / "cache"
+    build_cached_tiled_pyramid(
+        path,
+        cache_root,
+        tile_size=32,
+        coarsest_max_side=32,
+    )
+    dataset = FoveaImagePathDataset(
+        [path],
+        view_config=ViewConfig(overview_size=64, local_size=64, local_views=2),
+        max_source_pixels=10_000,
+        pyramid_cache_root=cache_root,
+    )
+
+    sample = dataset[0]
+    assert sample is not None
+    assert sample.first_image.shape == (3, 64, 64)
+    assert sample.second_image.shape == (3, 64, 64)

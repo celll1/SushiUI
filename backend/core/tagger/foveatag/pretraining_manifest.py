@@ -89,6 +89,7 @@ class ManifestPretrainingDataset(Dataset):
         view_config: ViewConfig,
         seed: int,
         max_source_pixels: Optional[int],
+        pyramid_cache_root: Optional[str | Path] = None,
     ) -> None:
         if not len(manifest):
             raise ValueError("manifest must not be empty")
@@ -96,6 +97,9 @@ class ManifestPretrainingDataset(Dataset):
         self.view_config = view_config
         self.seed = int(seed)
         self.max_source_pixels = max_source_pixels
+        self.pyramid_cache_root = (
+            None if pyramid_cache_root is None else str(pyramid_cache_root)
+        )
         self.epoch = 0
 
     def set_epoch(self, epoch: int) -> None:
@@ -111,6 +115,7 @@ class ManifestPretrainingDataset(Dataset):
             self.view_config,
             seed=seed,
             max_source_pixels=self.max_source_pixels,
+            pyramid_cache_root=self.pyramid_cache_root,
         )
 
 
@@ -126,6 +131,7 @@ class DomainBalancedPretrainingDataset(Dataset):
         view_config: ViewConfig,
         seed: int,
         max_source_pixels: Optional[int],
+        pyramid_cache_root: Optional[str | Path] = None,
     ) -> None:
         if epoch_samples <= 0:
             raise ValueError("epoch_samples must be positive")
@@ -149,6 +155,9 @@ class DomainBalancedPretrainingDataset(Dataset):
         self.view_config = view_config
         self.seed = int(seed)
         self.max_source_pixels = max_source_pixels
+        self.pyramid_cache_root = (
+            None if pyramid_cache_root is None else str(pyramid_cache_root)
+        )
         self.epoch = 0
 
     def set_epoch(self, epoch: int) -> None:
@@ -178,6 +187,7 @@ class DomainBalancedPretrainingDataset(Dataset):
             self.view_config,
             seed=sample_seed,
             max_source_pixels=self.max_source_pixels,
+            pyramid_cache_root=self.pyramid_cache_root,
         )
 
 

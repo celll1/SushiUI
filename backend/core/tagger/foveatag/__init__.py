@@ -177,7 +177,10 @@ from .tiled_pyramid import (
     TILED_PYRAMID_FORMAT_VERSION,
     PyramidLevel,
     TiledPyramidSource,
+    build_cached_tiled_pyramid,
     build_tiled_pyramid,
+    resolve_cached_tiled_pyramid,
+    tiled_pyramid_cache_path,
 )
 
 __all__ = [
@@ -332,5 +335,8 @@ __all__ = [
     "TILED_PYRAMID_FORMAT_VERSION",
     "PyramidLevel",
     "TiledPyramidSource",
+    "build_cached_tiled_pyramid",
     "build_tiled_pyramid",
+    "resolve_cached_tiled_pyramid",
+    "tiled_pyramid_cache_path",
 ]

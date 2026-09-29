@@ -6,7 +6,13 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from core.tagger.foveatag.tiled_pyramid import TiledPyramidSource, build_tiled_pyramid
+from core.tagger.foveatag.tiled_pyramid import (
+    TiledPyramidSource,
+    build_cached_tiled_pyramid,
+    build_tiled_pyramid,
+    resolve_cached_tiled_pyramid,
+    tiled_pyramid_cache_path,
+)
 from core.tagger.foveatag.views import ViewConfig, build_views, local_spec, render_view
 
 
@@ -97,3 +103,24 @@ def test_tiled_source_rejects_inconsistent_manifest(tmp_path):
 
     with pytest.raises(ValueError, match="level zero"):
         TiledPyramidSource(root)
+
+
+def test_cached_pyramid_has_stable_path_and_rejects_changed_source(tmp_path):
+    path = tmp_path / "source.png"
+    _gradient(96, 80).save(path)
+    cache_root = tmp_path / "cache"
+    expected = tiled_pyramid_cache_path(cache_root, path)
+
+    assert build_cached_tiled_pyramid(
+        path,
+        cache_root,
+        tile_size=32,
+        coarsest_max_side=32,
+    ) == expected
+    resolved = resolve_cached_tiled_pyramid(path, cache_root)
+    assert resolved is not None
+    assert (resolved.width, resolved.height) == (96, 80)
+
+    _gradient(97, 80).save(path)
+    with pytest.raises(ValueError, match="source changed"):
+        resolve_cached_tiled_pyramid(path, cache_root)

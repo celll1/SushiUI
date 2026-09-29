@@ -16,13 +16,15 @@ from torch.utils.data import Dataset
 from .encoder import FoveaEncoder, FoveaEncoderConfig
 from .objectives import FoveaSelfSupervisedLoss, SelfSupervisedLossOutput
 from .reconstruction import PatchReconstructionHead, mask_image_patches, random_patch_mask
+from .tiled_pyramid import resolve_cached_tiled_pyramid
 from .views import (
+    RegionImageSource,
     ViewConfig,
     ViewSpec,
     local_spec,
     overview_spec,
     pil_to_tensor,
-    render_view,
+    render_source_view,
 )
 
 
@@ -127,7 +129,7 @@ def _clamp_center(center: float, length: int, source_side: float) -> float:
 
 
 def build_pretraining_sample(
-    image: Image.Image,
+    image: Image.Image | RegionImageSource,
     config: ViewConfig,
     *,
     seed: int,
@@ -139,8 +141,8 @@ def build_pretraining_sample(
         seed=seed,
     )
     second_spec = overview_spec(image.width, image.height, config.overview_size)
-    first = render_view(image, first_spec, config.pad_color)
-    second = render_view(image, second_spec, config.pad_color)
+    first = render_source_view(image, first_spec, config.pad_color)
+    second = render_source_view(image, second_spec, config.pad_color)
     return FoveaPretrainingSample(
         first_image=pil_to_tensor(first),
         first_geometry=torch.tensor(
@@ -163,6 +165,7 @@ class FoveaImagePathDataset(Dataset):
         view_config: ViewConfig = ViewConfig(local_views=2),
         seed: int = 0,
         max_source_pixels: Optional[int] = 40_000_000,
+        pyramid_cache_root: Optional[str | Path] = None,
     ) -> None:
         if not image_paths:
             raise ValueError("image_paths must not be empty")
@@ -172,6 +175,9 @@ class FoveaImagePathDataset(Dataset):
         if max_source_pixels is not None and max_source_pixels <= 0:
             raise ValueError("max_source_pixels must be positive when provided")
         self.max_source_pixels = max_source_pixels
+        self.pyramid_cache_root = (
+            None if pyramid_cache_root is None else str(pyramid_cache_root)
+        )
         self.epoch = 0
 
     def set_epoch(self, epoch: int) -> None:
@@ -187,6 +193,7 @@ class FoveaImagePathDataset(Dataset):
             self.view_config,
             seed=sample_seed,
             max_source_pixels=self.max_source_pixels,
+            pyramid_cache_root=self.pyramid_cache_root,
         )
 
 
@@ -196,6 +203,7 @@ def load_pretraining_sample(
     *,
     seed: int,
     max_source_pixels: Optional[int] = 40_000_000,
+    pyramid_cache_root: Optional[str | Path] = None,
 ) -> Optional[FoveaPretrainingSample]:
     """Load one bounded source and produce its deterministic local/overview pair."""
     if max_source_pixels is not None and max_source_pixels <= 0:
@@ -206,7 +214,12 @@ def load_pretraining_sample(
                 max_source_pixels is not None
                 and source.width * source.height > max_source_pixels
             ):
-                return None
+                if pyramid_cache_root is None:
+                    return None
+                cached = resolve_cached_tiled_pyramid(image_path, pyramid_cache_root)
+                if cached is None:
+                    return None
+                return build_pretraining_sample(cached, view_config, seed=seed)
             image = source.convert("RGB")
             image.load()
     except (OSError, ValueError):

@@ -13,11 +13,13 @@ from torch.utils.data import Dataset
 from ..tagger_dataset import RawTaggerSample
 from .batch import FoveaViewTensorBatch, collate_view_batches
 from .views import (
+    RegionImageSource,
     ViewBatch,
     ViewConfig,
     build_views,
     preserve_source_overview,
     render_overview_placebo_locals,
+    sample_local_specs,
 )
 
 
@@ -281,7 +283,7 @@ class DomainBalancedSupervisedDataset(Dataset):
 
 
 def build_supervised_views(
-    image: Image.Image,
+    image: Image.Image | RegionImageSource,
     view_config: ViewConfig,
     *,
     seed: int,
@@ -291,23 +293,37 @@ def build_supervised_views(
     """Build exactly the A/B/C input contract shared by training and evaluation."""
     if input_mode not in PHASE3_INPUT_MODES:
         raise ValueError(f"unsupported FoveaTag input mode: {input_mode}")
-    effective_view_config = (
-        replace(view_config, local_views=0)
-        if input_mode == "overview_only"
-        else view_config
-    )
-    views = build_views(
-        image,
-        effective_view_config,
-        seed=seed,
-        training=training,
-    )
     if input_mode == "overview_placebo":
+        overview_only = build_views(
+            image,
+            replace(view_config, local_views=0),
+            seed=seed,
+            training=training,
+        )
+        views = replace(
+            overview_only,
+            local_specs=sample_local_specs(
+                image.width,
+                image.height,
+                view_config,
+                seed=seed,
+                training=training,
+            ),
+        )
         return render_overview_placebo_locals(
             views,
             pad_color=view_config.pad_color,
         )
-    return views
+    return build_views(
+        image,
+        (
+            replace(view_config, local_views=0)
+            if input_mode == "overview_only"
+            else view_config
+        ),
+        seed=seed,
+        training=training,
+    )
 
 
 def collate_supervised_samples(

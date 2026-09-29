@@ -26,16 +26,22 @@ def registered_image_paths(
     minimum_side: int,
     selection: str = "first",
     seed: int = 0,
+    max_source_pixels: Optional[int] = 40_000_000,
 ) -> tuple[list[str], int]:
     """Read a bounded path list without importing the application's DB session."""
     if limit <= 0 or minimum_side <= 0:
         raise ValueError("limit and minimum_side must be positive")
     if selection not in ("first", "hashed"):
         raise ValueError("selection must be first or hashed")
+    if max_source_pixels is not None and max_source_pixels <= 0:
+        raise ValueError("max_source_pixels must be positive when provided")
     uri = Path(database_path).resolve().as_uri() + "?mode=ro"
     with sqlite3.connect(uri, uri=True) as connection:
         condition = "dataset_id = ? AND width >= ? AND height >= ?"
-        parameters = (dataset_id, minimum_side, minimum_side)
+        parameters: tuple[int, ...] = (dataset_id, minimum_side, minimum_side)
+        if max_source_pixels is not None:
+            condition += " AND width * height <= ?"
+            parameters += (max_source_pixels,)
         total = int(connection.execute(
             f"SELECT COUNT(*) FROM dataset_items WHERE {condition}", parameters
         ).fetchone()[0])
@@ -97,6 +103,9 @@ def benchmark_pretraining(
     transfer_ms: list[float] = []
     step_ms: list[float] = []
     losses: list[float] = []
+    correspondence_losses: list[float] = []
+    reconstruction_losses: list[float] = []
+    chroma_losses: list[float] = []
     torch.cuda.reset_peak_memory_stats(device)
 
     for step in range(warmup_steps + measured_steps):
@@ -125,6 +134,9 @@ def benchmark_pretraining(
             transfer_ms.append((transferred - loaded) * 1000.0)
             step_ms.append((ended - started) * 1000.0)
             losses.append(float(output.losses.loss.detach()))
+            correspondence_losses.append(float(output.losses.correspondence.detach()))
+            reconstruction_losses.append(float(output.losses.reconstruction.detach()))
+            chroma_losses.append(float(output.losses.chroma.detach()))
 
     if not step_ms:
         raise RuntimeError("no complete benchmark steps were measured")
@@ -153,6 +165,10 @@ def benchmark_pretraining(
         "estimated_epoch_hours": statistics.fmean(combined) * epoch_steps / 3_600_000.0,
         "loss_first": losses[0],
         "loss_last": losses[-1],
+        "loss": _summary(losses),
+        "correspondence_loss": _summary(correspondence_losses),
+        "reconstruction_loss": _summary(reconstruction_losses),
+        "chroma_loss": _summary(chroma_losses),
         "peak_allocated_mib": torch.cuda.max_memory_allocated(device) / 2**20,
         "peak_reserved_mib": torch.cuda.max_memory_reserved(device) / 2**20,
         "scope": "Includes image decode, paired-view rendering, host-to-device copy, forward, backward, and AdamW update.",
@@ -165,6 +181,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--dataset-id", type=int, required=True)
     parser.add_argument("--sample-count", type=int, default=128)
     parser.add_argument("--minimum-side", type=int, default=256)
+    parser.add_argument(
+        "--max-source-megapixels",
+        type=float,
+        default=40.0,
+        help="Skip sources above this full-decode cap; use 0 to disable",
+    )
     parser.add_argument("--selection", choices=("first", "hashed"), default="first")
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--workers", type=int, default=2)
@@ -185,6 +207,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         minimum_side=args.minimum_side,
         selection=args.selection,
         seed=args.seed,
+        max_source_pixels=(
+            None
+            if args.max_source_megapixels == 0
+            else round(args.max_source_megapixels * 1_000_000)
+        ),
     )
     if len(paths) < args.batch_size:
         raise ValueError("not enough registered images satisfy the benchmark filter")
@@ -199,6 +226,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         seed=args.seed,
     )
     report["sample_selection"] = args.selection
+    report["max_source_megapixels"] = args.max_source_megapixels or None
     rendered = json.dumps(report, indent=2, sort_keys=True) + "\n"
     if args.output:
         args.output.write_text(rendered, encoding="utf-8")

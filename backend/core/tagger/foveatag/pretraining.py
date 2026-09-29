@@ -16,7 +16,14 @@ from torch.utils.data import Dataset
 from .encoder import FoveaEncoder, FoveaEncoderConfig
 from .objectives import FoveaSelfSupervisedLoss, SelfSupervisedLossOutput
 from .reconstruction import PatchReconstructionHead, mask_image_patches, random_patch_mask
-from .views import ViewConfig, ViewSpec, local_spec, pil_to_tensor, render_view
+from .views import (
+    ViewConfig,
+    ViewSpec,
+    local_spec,
+    overview_spec,
+    pil_to_tensor,
+    render_view,
+)
 
 
 @dataclass(frozen=True)
@@ -123,12 +130,13 @@ def build_pretraining_sample(
     *,
     seed: int,
 ) -> FoveaPretrainingSample:
-    first_spec, second_spec = sample_overlapping_specs(
+    first_spec, _ = sample_overlapping_specs(
         image.width,
         image.height,
         config,
         seed=seed,
     )
+    second_spec = overview_spec(image.width, image.height, config.overview_size)
     first = render_view(image, first_spec, config.pad_color)
     second = render_view(image, second_spec, config.pad_color)
     return FoveaPretrainingSample(
@@ -152,12 +160,16 @@ class FoveaImagePathDataset(Dataset):
         *,
         view_config: ViewConfig = ViewConfig(local_views=2),
         seed: int = 0,
+        max_source_pixels: Optional[int] = 40_000_000,
     ) -> None:
         if not image_paths:
             raise ValueError("image_paths must not be empty")
         self.image_paths = tuple(str(path) for path in image_paths)
         self.view_config = view_config
         self.seed = int(seed)
+        if max_source_pixels is not None and max_source_pixels <= 0:
+            raise ValueError("max_source_pixels must be positive when provided")
+        self.max_source_pixels = max_source_pixels
         self.epoch = 0
 
     def set_epoch(self, epoch: int) -> None:
@@ -169,6 +181,11 @@ class FoveaImagePathDataset(Dataset):
     def __getitem__(self, index: int) -> Optional[FoveaPretrainingSample]:
         try:
             with Image.open(self.image_paths[index]) as source:
+                if (
+                    self.max_source_pixels is not None
+                    and source.width * source.height > self.max_source_pixels
+                ):
+                    return None
                 image = source.convert("RGB")
                 image.load()
         except (OSError, ValueError):

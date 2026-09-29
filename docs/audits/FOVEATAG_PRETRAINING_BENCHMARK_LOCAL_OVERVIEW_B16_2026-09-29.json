@@ -1,0 +1,80 @@
+{
+  "batch_size": 16,
+  "chroma_loss": {
+    "count": 50,
+    "max": 0.17027197778224945,
+    "mean": 0.11312781438231469,
+    "p50": 0.10994935035705566,
+    "p95": 0.16780675947666168
+  },
+  "correspondence_loss": {
+    "count": 50,
+    "max": 0.46591246128082275,
+    "mean": 0.180148165859282,
+    "p50": 0.14152482897043228,
+    "p95": 0.3735048472881317
+  },
+  "cuda_version": "13.0",
+  "data_wait_ms": {
+    "count": 50,
+    "max": 0.461700139567256,
+    "mean": 0.2659360086545348,
+    "p50": 0.26115006767213345,
+    "p95": 0.3876001574099064
+  },
+  "device": "NVIDIA RTX 6000 Ada Generation",
+  "dtype": "bfloat16",
+  "eligible_images": 1546798,
+  "end_to_end_step_ms": {
+    "count": 50,
+    "max": 251.93020002916455,
+    "mean": 230.60627000872046,
+    "p50": 230.60455010272563,
+    "p95": 251.3965000398457
+  },
+  "estimated_epoch_hours": 6.192739209192514,
+  "format_version": 1,
+  "host_to_device_ms": {
+    "count": 50,
+    "max": 40.09420005604625,
+    "mean": 29.472377989441156,
+    "p50": 29.140150058083236,
+    "p95": 37.26029978133738
+  },
+  "kind": "foveatag_real_data_pretraining",
+  "loss": {
+    "count": 50,
+    "max": 1.119318962097168,
+    "mean": 0.6014765644073486,
+    "p50": 0.5260293185710907,
+    "p95": 1.049546241760254
+  },
+  "loss_first": 1.0975496768951416,
+  "loss_last": 0.3449224829673767,
+  "max_source_megapixels": 40.0,
+  "measured_steps": 50,
+  "model_parameters": 37687712,
+  "optimizer_step_ms": {
+    "count": 50,
+    "max": 217.3083999659866,
+    "mean": 200.86795601062477,
+    "p50": 200.09209995623678,
+    "p95": 214.16319999843836
+  },
+  "peak_allocated_mib": 10077.0107421875,
+  "peak_reserved_mib": 11544.0,
+  "reconstruction_loss": {
+    "count": 50,
+    "max": 0.6121491193771362,
+    "mean": 0.36476449280977247,
+    "p50": 0.331271693110466,
+    "p95": 0.5465013384819031
+  },
+  "sample_selection": "hashed",
+  "scope": "Includes image decode, paired-view rendering, host-to-device copy, forward, backward, and AdamW update.",
+  "seed": 20260929,
+  "selected_images": 4096,
+  "torch_version": "2.10.0+cu130",
+  "warmup_steps": 10,
+  "workers": 8
+}

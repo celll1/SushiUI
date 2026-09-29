@@ -212,6 +212,14 @@ against every source patch. It therefore predicts a small set of generic
 3. scale-space non-maximum suppression retains `K` proposals;
 4. a proposal may be refined once at the next-finer pyramid level.
 
+The proposals are deliberately category- and anatomy-agnostic. The router has
+no face detector, eye prior, object-class branch, tag embedding, or region type
+such as `face`, `text`, or `hand`. "Stratified" sampling means uniform coverage
+over source-space cells and field-of-view levels, not semantic strata. Eye
+color is only one motivating failure case; the same mechanism must discover
+any compact evidence that changes an image-level tag margin, including texture,
+accessories, text, distant objects, and details not named during design.
+
 At training time, reserve part of the budget for stratified random coverage.
 Otherwise an early, incorrect router can permanently hide rare evidence. On a
 small fraction of batches, evaluate a denser candidate set and train the router
@@ -417,7 +425,7 @@ Use it as an ablation, not the production design.
 ### Only overview plus random crops
 
 This is robust and simple, but wastes the small inference budget and gives no
-reason to sample an eye rather than a background patch. Random crops remain
+reason to sample a useful compact region rather than a background patch. Random crops remain
 necessary exploration during training.
 
 ### Replace SigLIP2 with DINOv3, PE, or C-RADIO
@@ -609,11 +617,11 @@ not satisfy a phase gate or establish accuracy.
 
 ### 9.3 Initial data-loaded pretraining measurement (2026-09-29)
 
-`pretraining_benchmark.py` runs the teacher-free path on images registered in
-`datasets.db`. It includes source-image decode, two overlapping 256-pixel local
-views at independently jittered fields of view, host-to-device transfer, BF16
-autocast forward/backward, and an AdamW update with FP32 parameters and optimizer
-state. Ten measured steps followed three warmups on the same RTX 6000 Ada.
+`pretraining_benchmark.py` originally measured source-image decode, two
+overlapping 256-pixel local views at independently jittered fields of view,
+host-to-device transfer, BF16 autocast forward/backward, and an AdamW update
+with FP32 parameters and optimizer state. Ten measured steps followed three
+warmups on the same RTX 6000 Ada.
 
 | Registered slice | Batch / workers | Mean end-to-end step | Median end-to-end step | Estimated one epoch from mean | Peak reserved VRAM |
 |---|---:|---:|---:|---:|---:|
@@ -633,13 +641,38 @@ budget. The saved JSON reports preserve data wait, transfer, optimizer-step,
 loss, and memory measurements separately. The loss change over ten updates is
 only a smoke signal and is not a convergence claim.
 
-The final row replaces that provisional estimate. It uses 2,048 paths selected
+The final row replaced that provisional estimate for the original local/local
+implementation. It uses 2,048 paths selected
 across the eligible ID range by a deterministic integer hash, ten warmup steps,
 and fifty measured steps. Prefetch was warm before measurement: data wait was
 0.25 ms mean, optimizer work was 162.2 ms mean, and end-to-end p95 was 214.1 ms.
-The initial teacher-free scratch pretraining budget is therefore **10 epochs**
-(15.47 million source images, approximately 47.7 GPU-hours at the measured
-rate). Checkpoint and held-out overlap/chroma losses are evaluated each epoch.
+The code audit before the long run found that this path did not exercise the
+bounded overview input required by the design: both branches were local crops.
+The planned objective now pairs one source-native 256-pixel local view with the
+full 448-pixel overview, reconstructs the local branch, and aligns overlapping
+source-coordinate cells. The table therefore remains historical Phase-0
+evidence and its 47.7-hour estimate is not the budget for the corrected run.
+
+The corrected path was then measured on the same GPU and deterministic hashed
+illustration sample, with a 40 MP pre-decode cap:
+
+| Batch / workers | Mean step | Estimated epoch | Peak reserved VRAM |
+|---:|---:|---:|---:|
+| 8 / 8 | 145.3 ms | 7.81 h | 5,940 MiB |
+| 16 / 8 | 230.6 ms | 6.19 h | 11,544 MiB |
+| 32 / 8 | 428.2 ms | 5.75 h | 22,552 MiB |
+
+Batch 16 is the initial long-run choice. Batch 32 saves only about 7% of epoch
+time while doubling reserved memory, leaving less margin for validation and
+future objective state. In the repeated 50-step batch-16 run, total loss moved
+from 1.0975 to 0.3449. Mean correspondence, RGB reconstruction, and chroma
+losses were 0.1801, 0.3648, and 0.1131 respectively, confirming that the
+overview/local correspondence path is active rather than silently producing a
+zero term. This remains a connectivity and cost measurement, not convergence.
+
+The initial teacher-free scratch pretraining budget remains **10 epochs**
+(15.47 million source images, approximately 61.9 GPU-hours at batch 16).
+Checkpoint and held-out overlap/chroma losses are evaluated each epoch.
 Extension beyond 10 epochs requires continued held-out improvement and a gain
 in the downstream random-view tag pilot; the pre-registered cap is 20 epochs
 (approximately 95.4 GPU-hours). This fixes the budget before Phase 2 quality is

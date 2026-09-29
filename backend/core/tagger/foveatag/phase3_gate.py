@@ -95,6 +95,21 @@ def load_passed_phase3_gate(path: Path | str) -> dict[str, Any]:
     return dict(payload)
 
 
+def source_native_checkpoint_sha256(gate: Mapping[str, Any]) -> str:
+    """Read the unique source-native model hash from gate-bound predictions."""
+    hashes = set()
+    for row in gate.get("evidence", ()):
+        if isinstance(row, Mapping) and row.get("role") == "prediction:source_native":
+            prediction = _load_json(_required_file(row.get("path"), "source-native prediction"))
+            digest = prediction.get("checkpoint_sha256")
+            if not isinstance(digest, str) or len(digest) != 64:
+                raise ValueError("source-native prediction lacks a checkpoint hash")
+            hashes.add(digest)
+    if len(hashes) != 1:
+        raise ValueError("Phase-3 gate does not bind one source-native checkpoint")
+    return next(iter(hashes))
+
+
 def _required_file(value: Any, name: str) -> Path:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{name} path is missing")

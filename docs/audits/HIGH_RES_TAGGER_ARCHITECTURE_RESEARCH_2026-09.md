@@ -573,7 +573,10 @@ Because the gate has no post-hoc numeric materiality threshold, its final
 pass/fail remains an explicit repository-owner decision. The decision artifact
 records the rationale and hashes the completed evaluation summary, manifests,
 fixed-baseline reports, all A/B/C predictions, and paired reports. Phase 4 must
-refuse a failed decision or any evidence changed after the decision.
+refuse a failed decision or any evidence changed after the decision. Each
+prediction also records the model and metadata SHA-256; the passed gate must
+resolve one identical source-native model hash across both benchmarks before
+that model can become the frozen Phase-4 teacher.
 
 Phase 0 measurement must precede expensive training and product integration.
 Implementation of the isolated benchmark, model, and loss components may happen

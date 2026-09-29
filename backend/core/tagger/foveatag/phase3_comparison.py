@@ -58,6 +58,10 @@ def build_phase3_comparison(
         shared_hashes.add(shared_hash)
         if prediction_set.model_name != f"foveatag-{mode}":
             raise ValueError(f"{mode} has an unexpected model_name")
+        for name in ("checkpoint_sha256", "checkpoint_metadata_sha256"):
+            digest = payload.get(name)
+            if not isinstance(digest, str) or len(digest) != 64:
+                raise ValueError(f"{mode} predictions lack a valid {name}")
         keys = {(row.sample_id, row.resolution) for row in prediction_set.rows}
         if keys != expected_keys:
             missing = sorted(expected_keys - keys)
@@ -83,6 +87,8 @@ def build_phase3_comparison(
             "model_name": prediction_set.model_name,
             "prediction_rows": len(prediction_set.rows),
             "validation_threshold": threshold,
+            "checkpoint_sha256": payload["checkpoint_sha256"],
+            "checkpoint_metadata_sha256": payload["checkpoint_metadata_sha256"],
             "runtime": runtime,
         }
     if len(shared_hashes) != 1:

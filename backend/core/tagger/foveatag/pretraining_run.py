@@ -447,16 +447,23 @@ def _train_epoch(
             elapsed = accumulator["seconds"] + time.monotonic() - segment_started
             message = {
                 "status": "running",
+                "loss_kind": "self_supervised",
                 "epoch": epoch,
                 "sample_offset": current_offset,
                 "epoch_samples": len(dataset),
                 "global_step": global_step,
                 "loss": float(output.losses.loss.detach()),
+                "correspondence": float(output.losses.correspondence.detach()),
+                "reconstruction": float(output.losses.reconstruction.detach()),
+                "chroma": float(output.losses.chroma.detach()),
                 "samples_per_second": accumulator["samples"] / max(elapsed, 1e-9),
             }
             print(
                 f"[FoveaTagPretrain] epoch={epoch} sample={current_offset}/{len(dataset)} "
-                f"step={global_step} loss={message['loss']:.6f} "
+                f"step={global_step} ssl_loss={message['loss']:.6f} "
+                f"correspondence={message['correspondence']:.6f} "
+                f"reconstruction={message['reconstruction']:.6f} "
+                f"chroma={message['chroma']:.6f} "
                 f"samples_per_second={message['samples_per_second']:.2f}",
                 flush=True,
             )

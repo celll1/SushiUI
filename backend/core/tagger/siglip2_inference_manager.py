@@ -338,7 +338,7 @@ class SigLIP2InferenceManager:
                 print(f"[SigLIP2InferenceManager] WARNING: per-checkpoint vocabulary "
                       f"'{_ckpt_base}_vocabulary.json' not found; falling back to "
                       f"'{os.path.basename(vocab_path)}'. Tag→idx alignment with "
-                      f"the checkpoint head cannot be verified — predictions may "
+                      f"the checkpoint head cannot be verified; predictions may "
                       f"be wrong if vocabulary changed since the checkpoint was saved.")
 
         with open(vocab_path, "r", encoding="utf-8") as fh:

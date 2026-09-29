@@ -460,7 +460,7 @@ require data and GPU time:
 
 | Phase | Implemented | Still required before exit |
 |---|---|---|
-| 0 | Versioned benchmark manifest, evidence-box validation, resolution/group metrics, saved predictions, per-stage timing summaries, a synthetic scratch-model GPU timing harness, and data-loaded optimizer timing on registered photo and illustration datasets. | Populate the fixed benchmark and run current SigLIP2 baselines. Repeat the initial epoch estimate below on a representative shuffled sample before setting the pretraining budget. |
+| 0 | Versioned benchmark manifest, evidence-box validation, resolution/group metrics, saved predictions, per-stage timing summaries, a synthetic scratch-model GPU timing harness, data-loaded optimizer timing, and current NaFlex latency at 256/512/1024 effective patches. | Populate the fixed benchmark and run the SigLIP2 quality baselines. Repeat the initial epoch estimate below on a representative shuffled sample before setting the pretraining budget. |
 | 1 | Deterministic multi-scale views, exact source transforms, expandable evidence head, and fixed/NaFlex SigLIP2 token adapter. | Train and measure the encoder-swap control. |
 | 2 | A 37.39M-parameter default scratch encoder, content-aware continuous 2-D RoPE, stride-16 local map, low-token global stage, masked RGB decoder, teacher-free losses, the diagnostic local-teacher projection, deterministic overlapping-view data, and an executable AdamW pretraining path. | Run convergence and held-out overlap/chroma measurements. |
 | 3 | End-to-end scratch tagger, masked classifier composition, density-gated prediction consistency, and an adapter from the existing vocabulary/loss-mask/live-refresh dataset lifecycle to deterministic FoveaTag views. | Add the production training loop and run the pre-registered comparison. |
@@ -468,7 +468,7 @@ require data and GPU time:
 | 5 | Versioned inference/resume artifacts, exclusion of diagnostic weights from inference artifacts, coordinate-aware collation, cached-overview staged inference, evidence boxes, and per-stage wall time. | Add production manager/export, API/defaults/OpenAPI/frontend surfaces, and lifecycle tests after the go/no-go gates pass. |
 | 6 | Not started. | Run registered capacity and component ablations only after the smaller model is measured. |
 
-Seventy-three focused CPU tests cover the isolated modules. After the owner's
+Seventy-five focused CPU tests cover the isolated modules. After the owner's
 separate training run released the GPU, the synthetic measurement below was
 also run. No backend restart was performed. Quality and extrapolation
 measurements remain pending.
@@ -520,6 +520,27 @@ the mean-derived epoch estimates are provisional and are not yet a pretraining
 budget. The saved JSON reports preserve data wait, transfer, optimizer-step,
 loss, and memory measurements separately. The loss change over ten updates is
 only a smoke signal and is not a convergence claim.
+
+### 9.4 Current NaFlex patch-budget timing (2026-09-29)
+
+The current 97,199-tag full checkpoint was measured on eight registered cosplay
+photos at batch size 1. Each budget used exactly the requested number of
+effective patches. The runner includes native decode, processor work, transfer,
+and BF16 forward, but excludes probability sorting and tag filtering.
+
+| Patch budget | Decode mean | Preprocess mean | Forward mean | End-to-end mean | Peak allocated / reserved |
+|---:|---:|---:|---:|---:|---:|
+| 256 | 53.6 ms | 14.5 ms | 20.0 ms | 88.4 ms | 3,700 / 3,870 MiB |
+| 512 | 53.2 ms | 14.7 ms | 20.3 ms | 88.5 ms | 3,704 / 4,250 MiB |
+| 1,024 | 51.4 ms | 16.2 ms | 20.0 ms | 88.0 ms | 3,714 / 4,250 MiB |
+
+This small run does not establish that larger patch budgets are free: the
+97,199-way classification head and source decode dominate single-image wall
+time, and the sample is too small for a scaling claim. It does establish the
+same-checkpoint latency/VRAM reference required before quality measurements.
+Loading this older checkpoint also exposed two compatibility defects now fixed:
+its omitted custom-pooler dimensions are recovered from tensor shapes, and the
+current Transformers NaFlex argument name `pixel_attention_mask` is used.
 
 ## 10. Integration surface after acceptance
 

@@ -5,6 +5,7 @@ import torch
 from PIL import Image
 
 from core.tagger.foveatag.supervised_data import (
+    DomainBalancedSupervisedDataset,
     FoveaSupervisedDataset,
     SupervisionPolicy,
     collate_supervised_samples,
@@ -154,3 +155,29 @@ def test_supervised_batch_runs_end_to_end_backward():
     loss.backward()
     assert logits.shape == (1, 3)
     assert model.head.weight.grad is not None
+
+
+def test_domain_balanced_sampling_is_stateless_and_changes_repeated_view_seed():
+    source = FoveaSupervisedDataset(
+        _RawDataset(),
+        view_config=ViewConfig(overview_size=64, local_size=64, local_views=2),
+        seed=10,
+    )
+    balanced = DomainBalancedSupervisedDataset(
+        source,
+        domain_indices={16: (0,), 25: (0,)},
+        domain_weights={16: 0.25, 25: 0.75},
+        epoch_samples=1000,
+        seed=7,
+    )
+
+    first = [balanced.selection(index) for index in range(1000)]
+    repeat = [balanced.selection(index) for index in range(1000)]
+
+    assert first == repeat
+    assert 200 < sum(domain == 16 for domain, _, _ in first) < 300
+    assert len({sample_seed for _, _, sample_seed in first}) == 1000
+    first_sample = balanced[0]
+    assert first_sample is not None
+    balanced.set_epoch(1)
+    assert balanced.selection(0) != first[0]

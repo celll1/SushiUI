@@ -22,6 +22,7 @@ from .views import (
 
 
 FoveaInputMode = Literal["overview_only", "overview_placebo", "source_native"]
+_UINT64_MASK = (1 << 64) - 1
 
 
 class RawTaggerDataset(Protocol):
@@ -118,10 +119,19 @@ class FoveaSupervisedDataset(Dataset):
         return len(self.source)
 
     def __getitem__(self, index: int) -> Optional[FoveaSupervisedSample]:
+        return self.sample(index)
+
+    def sample(
+        self,
+        index: int,
+        *,
+        sample_seed: Optional[int] = None,
+    ) -> Optional[FoveaSupervisedSample]:
         raw = self.source.get_raw_item(index)
         if raw is None:
             return None
-        sample_seed = self.seed + self.epoch * len(self) + index
+        if sample_seed is None:
+            sample_seed = self.seed + self.epoch * len(self) + index
         loss_mask = raw.loss_mask
         if raw.dataset_id is not None:
             policy = self.supervision_policies.get(raw.dataset_id)
@@ -149,6 +159,71 @@ class FoveaSupervisedDataset(Dataset):
         )
 
 
+class DomainBalancedSupervisedDataset(Dataset):
+    """Stateless domain-balanced sampling with distinct view seeds per draw."""
+
+    def __init__(
+        self,
+        source: FoveaSupervisedDataset,
+        domain_indices: Mapping[int, Sequence[int]],
+        domain_weights: Mapping[int, float],
+        *,
+        epoch_samples: int,
+        seed: int,
+    ) -> None:
+        if epoch_samples <= 0:
+            raise ValueError("epoch_samples must be positive")
+        if set(domain_indices) != set(domain_weights) or not domain_indices:
+            raise ValueError("domain indices and weights must contain the same domains")
+        if any(not indices for indices in domain_indices.values()):
+            raise ValueError("every supervised domain must contain samples")
+        if any(not math.isfinite(float(weight)) or weight <= 0 for weight in domain_weights.values()):
+            raise ValueError("domain weights must be finite and positive")
+        self.source = source
+        self.domain_ids = tuple(sorted(domain_indices))
+        self.domain_indices = {
+            domain: tuple(int(index) for index in domain_indices[domain])
+            for domain in self.domain_ids
+        }
+        total = sum(float(domain_weights[domain]) for domain in self.domain_ids)
+        cumulative = 0.0
+        thresholds = []
+        for domain in self.domain_ids:
+            cumulative += float(domain_weights[domain]) / total
+            thresholds.append(cumulative)
+        thresholds[-1] = 1.0
+        self.thresholds = tuple(thresholds)
+        self.epoch_samples = int(epoch_samples)
+        self.seed = int(seed)
+        self.epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+        self.source.set_epoch(epoch)
+
+    def __len__(self) -> int:
+        return self.epoch_samples
+
+    def selection(self, index: int) -> tuple[int, int, int]:
+        if index < 0 or index >= self.epoch_samples:
+            raise IndexError(index)
+        key = _splitmix64(self.seed + self.epoch * self.epoch_samples + index)
+        fraction = key / float(1 << 64)
+        position = next(
+            position for position, threshold in enumerate(self.thresholds) if fraction < threshold
+        )
+        domain = self.domain_ids[position]
+        item_key = _splitmix64(key)
+        indices = self.domain_indices[domain]
+        source_index = indices[item_key % len(indices)]
+        sample_seed = _splitmix64(item_key) & 0x7FFFFFFF
+        return domain, source_index, sample_seed
+
+    def __getitem__(self, index: int) -> Optional[FoveaSupervisedSample]:
+        _, source_index, sample_seed = self.selection(index)
+        return self.source.sample(source_index, sample_seed=sample_seed)
+
+
 def collate_supervised_samples(
     samples: Sequence[Optional[FoveaSupervisedSample]],
 ) -> Optional[FoveaSupervisedBatch]:
@@ -160,3 +235,10 @@ def collate_supervised_samples(
         labels=torch.stack([sample.label for sample in valid]),
         loss_masks=torch.stack([sample.loss_mask for sample in valid]),
     )
+
+
+def _splitmix64(value: int) -> int:
+    value = (value + 0x9E3779B97F4A7C15) & _UINT64_MASK
+    value = ((value ^ (value >> 30)) * 0xBF58476D1CE4E5B9) & _UINT64_MASK
+    value = ((value ^ (value >> 27)) * 0x94D049BB133111EB) & _UINT64_MASK
+    return (value ^ (value >> 31)) & _UINT64_MASK

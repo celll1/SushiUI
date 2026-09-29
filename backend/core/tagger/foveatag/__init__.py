@@ -70,6 +70,13 @@ from .supervised_training import (
     FoveaSupervisedTrainer,
     FoveaValidationResult,
 )
+from .supervised_checkpoint import (
+    SUPERVISED_CHECKPOINT_FORMAT_VERSION,
+    load_supervised_checkpoint,
+    load_supervised_initialization,
+    save_supervised_checkpoint,
+    save_supervised_initialization,
+)
 from .siglip2_control import (
     MaskedSlotPooler,
     SigLIP2ControlOutput,
@@ -87,6 +94,7 @@ from .control_checkpoint import (
     save_control_weights,
 )
 from .supervised_data import (
+    DomainBalancedSupervisedDataset,
     FoveaInputMode,
     FoveaSupervisedBatch,
     FoveaSupervisedDataset,
@@ -174,6 +182,11 @@ __all__ = [
     "FoveaEpochResult",
     "FoveaSupervisedTrainer",
     "FoveaValidationResult",
+    "SUPERVISED_CHECKPOINT_FORMAT_VERSION",
+    "load_supervised_checkpoint",
+    "load_supervised_initialization",
+    "save_supervised_checkpoint",
+    "save_supervised_initialization",
     "MaskedSlotPooler",
     "SigLIP2ControlOutput",
     "SigLIP2ControlTagger",
@@ -189,6 +202,7 @@ __all__ = [
     "save_control_checkpoint",
     "save_control_weights",
     "FoveaSupervisedBatch",
+    "DomainBalancedSupervisedDataset",
     "FoveaInputMode",
     "FoveaSupervisedDataset",
     "FoveaSupervisedSample",

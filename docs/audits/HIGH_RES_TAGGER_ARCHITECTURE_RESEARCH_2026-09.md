@@ -1138,6 +1138,19 @@ checkpoint retained all 192 samples in its epoch loss accumulator, optimizer
 state, RNG state, and scheduler position. It was 286,950,347 bytes and used
 11,648 MiB peak reserved VRAM.
 
+The registered convergence run's atomic checkpoint was also read back on CPU at
+step 80,000 without interrupting the live process. Its epoch 0 source offset
+was 1,280,000 and its scheduler position was exactly 80,000, matching
+`progress.json`. The retained epoch accumulator contained 1,279,994 decoded
+samples, six deterministic skips, and 80,000 optimizer steps. Its run contract
+still records scratch initialization, no external weights, batch 16,
+1,546,798 presented samples per epoch, and 10 epochs; it has no pyramid-cache
+field, as required for compatibility with the manifest frozen before that
+optional path was implemented. The cumulative loss at that checkpoint was
+0.074599: 0.002479 correspondence, 0.064534 RGB reconstruction, and 0.015171
+chroma with weight 0.5. These values are self-supervised reconstruction and
+feature correspondence losses, not the globally averaged asymmetric tag loss.
+
 A separate one-epoch lifecycle smoke used 32 training and eight validation
 samples. It completed at epoch 1 / offset 0, wrote the resumable checkpoint,
 domain-specific held-out RGB/chroma/correspondence losses, and a 211-tensor,

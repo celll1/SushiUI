@@ -325,7 +325,7 @@ class FoveaEncoder(nn.Module):
             device=value.device,
             dtype=value.dtype,
         )
-        value = value + self.local_geometry(geometry).unsqueeze(-1).unsqueeze(-1)
+        value = value + self.local_geometry(geometry.to(value.dtype)).unsqueeze(-1).unsqueeze(-1)
         for block in self.window_stage:
             value = block(value, local_coordinates)
         local_map = value
@@ -339,7 +339,7 @@ class FoveaEncoder(nn.Module):
             dtype=value.dtype,
         )
         tokens = value.flatten(2).transpose(1, 2)
-        tokens = tokens + self.global_geometry(geometry).unsqueeze(1)
+        tokens = tokens + self.global_geometry(geometry.to(tokens.dtype)).unsqueeze(1)
         flat_coordinates = global_coordinates.flatten(1, 2)
         for block in self.global_stage:
             tokens = block(tokens, flat_coordinates)

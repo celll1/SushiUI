@@ -378,13 +378,20 @@ Create a fixed, versioned validation suite with:
   character attributes;
 - source-resolution ladders made from the same images;
 - aspect-ratio extremes; and
-- at least a small manually boxed subset for measuring whether the router saw
-  the evidence. Boxes are evaluation data, not required production labels.
+- a deterministic weak-label slice built from the existing image-level tags.
+  Manual evidence boxes are not a prerequisite because their annotation cost
+  is not justified for Phase 0.
 
-Report macro average precision and F1 by tag group, tag prevalence, evidence-box
-pixel area, and source resolution. Also report calibration error, prediction
-stability across the resolution ladder, router recall at `K`, images/second,
-batch-size scaling, peak VRAM, and host preprocessing time.
+The weak benchmark fixes the manifest, tag normalization, negative cohort, and
+split assignment. It cannot establish where the visual evidence lies, and a
+missing caption tag is not a guaranteed negative; results must therefore be
+reported as weak-label measurements rather than ground truth. Report macro
+average precision and F1 by tag group, tag prevalence, and source resolution.
+Also report calibration error, prediction stability across the resolution
+ladder, dense-oracle utility recovery and oracle top-`K` recall, images/second,
+batch-size scaling, peak VRAM, and host preprocessing time. The dense oracle
+scores candidate regions with the image-level tag loss during evaluation; it
+does not require human boxes and is not available at production inference.
 
 ### 8.2 Required baselines
 
@@ -421,8 +428,8 @@ Do not integrate the new architecture into the API until measurements show:
 - no material loss on the coarse slice;
 - stable or improving results on held-out source resolutions above the training
   range;
-- router recall high enough that the classification head, rather than missing
-  views, is the dominant remaining error;
+- learned routing recovers enough of the positive dense-oracle utility at the
+  same `K` that candidate selection is not the dominant remaining error;
 - balanced inference within the owner-approved latency and VRAM budget; and
 - an explicit checkpoint license/provenance decision.
 
@@ -433,11 +440,11 @@ measured on project hardware.
 
 | Phase | Work | Exit condition |
 |---|---|---|
-| 0 | Add the fixed benchmark, evidence-area annotations, and timing harness. Measure current 256-patch and enlarged-patch SigLIP2, and time per epoch of candidate from-scratch model sizes. | The current failure is quantified by tag group and evidence size; the self-supervised pretraining budget is set. |
+| 0 | Add the fixed weak-label benchmark and timing harness. Measure current 256-patch and enlarged-patch SigLIP2, and time per epoch of candidate from-scratch model sizes. | The current failure is quantified by tag group and resolution ladder; the self-supervised pretraining budget is set. |
 | 1 | Encoder-swap control: FoveaTag random multi-scale views and evidence-slot head on the existing SigLIP2 encoder, without a learned router. | The view and head design improves fine-detail tags at a known cost. The from-scratch gate for Phase 3 is written into this document before Phase 2 starts. |
 | 2 | Original shared encoder (25--50M) with the continuous coordinate/scale contract; self-supervised pretraining (stage 1). | Pretraining losses converge, and overlap correspondence and chroma reconstruction are measured on held-out images. |
 | 3 | Tag training on random and stratified views (stage 2). | The pre-registered gate against the Phase 1 control, including resolution-ladder extrapolation, is met. If not, stop and measure the cause (pretraining objectives, model capacity, router timing, and missing semantic knowledge via the local-view teacher distillation ablation); do not switch to pretrained weights. |
-| 4 | Router training from dense candidates (stage 3), then joint fine-tuning with retained random coverage (stage 4). | Learned routing beats random views at the same `K`; router recall and rare-tag results are measured. |
+| 4 | Router training from dense candidates (stage 3), then joint fine-tuning with retained random coverage (stage 4). | Learned routing beats random views at the same `K`; dense-oracle utility recovery, oracle top-`K` recall, and rare-tag results are measured. |
 | 5 | Add checkpoint bundles, resume, inference manager, export, API, defaults, OpenAPI, and UI. | Existing tagger lifecycle tests plus new view-contract tests pass. |
 | 6 | Optional capacity increase and further objective ablations. | Retain only components with isolated improvements. |
 
@@ -460,18 +467,18 @@ require data and GPU time:
 
 | Phase | Implemented | Still required before exit |
 |---|---|---|
-| 0 | Versioned benchmark manifest, evidence-box validation, resolution/group metrics, saved predictions, per-stage timing summaries, a synthetic scratch-model GPU timing harness, data-loaded optimizer timing, and current NaFlex latency at 256/512/1024 effective patches. | Populate the fixed benchmark and run the SigLIP2 quality baselines. Repeat the initial epoch estimate below on a representative shuffled sample before setting the pretraining budget. |
+| 0 | Versioned box-free weak-label benchmark, deterministic database builder, dense-oracle recovery metric, resolution/group/stability metrics, saved predictions, per-stage timing summaries, a synthetic scratch-model GPU timing harness, data-loaded optimizer timing, and current NaFlex quality and latency at 256/512/1024 effective patches. | Repeat the initial epoch estimate below on a representative shuffled sample, then set the pretraining budget. |
 | 1 | Deterministic multi-scale views, exact source transforms, expandable evidence head, fixed/NaFlex SigLIP2 token adapter, a processor bridge that preserves overview/local view axes with separate patch budgets, and measured inference cost by local-view count. | Train and measure the encoder-swap control's quality. |
 | 2 | A 37.39M-parameter default scratch encoder, content-aware continuous 2-D RoPE, stride-16 local map, low-token global stage, masked RGB decoder, teacher-free losses, the diagnostic local-teacher projection, deterministic overlapping-view data, and an executable AdamW pretraining path. | Run convergence and held-out overlap/chroma measurements. |
 | 3 | End-to-end scratch tagger, masked classifier composition, density-gated prediction consistency, and an adapter from the existing vocabulary/loss-mask/live-refresh dataset lifecycle to deterministic FoveaTag views. | Add the production training loop and run the pre-registered comparison. |
-| 4 | Generic scale-space router, padding mask, NMS, dense-oracle targets, ranking/diversity losses, and retained random-budget selection. | Run dense-oracle training, choose its batch frequency from measured cost, and measure router recall. |
-| 5 | Versioned inference/resume artifacts, exclusion of diagnostic weights from inference artifacts, coordinate-aware collation, cached-overview staged inference, evidence boxes, and per-stage wall time. | Add production manager/export, API/defaults/OpenAPI/frontend surfaces, and lifecycle tests after the go/no-go gates pass. |
+| 4 | Generic scale-space router, padding mask, NMS, dense-oracle targets, ranking/diversity losses, retained random-budget selection, and box-free oracle recovery metrics. | Run dense-oracle training, choose its batch frequency from measured cost, and measure utility recovery at fixed `K`. |
+| 5 | Versioned inference/resume artifacts, exclusion of diagnostic weights from inference artifacts, coordinate-aware collation, cached-overview staged inference, and per-stage wall time. | Add production manager/export, API/defaults/OpenAPI/frontend surfaces, and lifecycle tests after the go/no-go gates pass. |
 | 6 | Not started. | Run registered capacity and component ablations only after the smaller model is measured. |
 
-Seventy-nine focused CPU tests cover the isolated modules. After the owner's
+Eighty-five focused CPU tests cover the isolated modules. After the owner's
 separate training run released the GPU, the synthetic measurement below was
 also run. No backend restart was performed. Quality and extrapolation
-measurements remain pending.
+measurements for the FoveaTag controls and scratch encoder remain pending.
 
 ### 9.2 Initial synthetic GPU measurement (2026-09-29)
 
@@ -560,8 +567,59 @@ The four local views are encoded together, so their forward cost is not four
 times the single-local cost. End-to-end latency rises by about 49 ms from the
 overview-only control to four local views on this sample. Native decode and PIL
 view rendering remain a larger component than the GPU forward. The quality
-gate remains open until the fixed fine-detail benchmark is annotated and this
-control is trained.
+gate remains open until this control is trained and measured on the fixed
+fine-detail benchmark.
+
+### 9.6 Fixed weak-label benchmark (2026-09-29)
+
+`weak_benchmark.py` deterministically constructed
+`docs/audits/FOVEATAG_WEAK_BENCHMARK_PHOTO_V1.json` from the registered cosplay
+photo dataset. The manifest contains 674 images, including 128 negative-cohort
+images. Eighteen fine-detail tags are represented: eleven eye colors,
+heterochromia, earrings, eyeliner, eyeshadow, lipstick, logo, and nail polish.
+The builder requested colored contacts, mascara, painted nails, and text as
+well, but those normalized tags were absent from this dataset and are recorded
+as uncovered rather than silently substituted.
+
+Each item carries the existing image-level tags and a deterministic
+source-resolution ladder; no evidence boxes are required. The manifest uses
+`evidence_mode: dense_oracle`, so later router evaluation compares selected
+candidate utility against exhaustive candidate scoring at the same `K`.
+Because caption absence is only a weak negative and tag frequency is capped by
+construction, this suite is suitable for controlled model comparisons, not
+for claiming an absolute real-world error rate.
+
+### 9.7 Weak-label SigLIP2 quality baseline (2026-09-29)
+
+The current 97,199-tag NaFlex checkpoint was evaluated on all 674 benchmark
+images at every non-upscaled ladder point and at native resolution: 3,956
+image-resolution conditions and 11,868 forwards across three patch budgets.
+The checkpoint vocabulary contained every tag used by the manifest. Metrics
+below use the checkpoint's existing threshold of 0.35; average precision is
+threshold-independent.
+
+| Patch budget | 384 fine AP / F1 | Native fine AP / F1 | Native coarse AP / F1 | Forward mean / p95 |
+|---:|---:|---:|---:|---:|
+| 256 | 0.6219 / 0.4025 | 0.6240 / 0.3964 | 0.8988 / 0.6266 | 20.0 / 25.1 ms |
+| 512 | 0.6687 / 0.4336 | 0.6770 / 0.4196 | 0.9054 / 0.6278 | 19.9 / 24.9 ms |
+| 1,024 | 0.6853 / 0.4303 | 0.7003 / 0.4202 | 0.9039 / 0.6319 | 21.0 / 24.8 ms |
+
+Increasing the patch budget improves native fine-detail macro AP by 0.0530 at
+512 and 0.0763 at 1,024 relative to 256, without a coarse-tag AP regression in
+this weak-label slice. Within a fixed patch budget, moving from the 384-pixel
+ladder point to the native source produces much less improvement. For example,
+the 1,024-patch model moves from 0.6853 to 0.7003 fine-detail AP. This supports
+the premise that a bounded global token budget, rather than source decode alone,
+limits recoverable detail. It does not yet show that FoveaTag beats the larger
+NaFlex budget at matched false-positive rate.
+
+The reports also compare every ladder score with its same-image native score.
+At 384 pixels, fine-tag mean absolute score delta / threshold agreement were
+0.0066 / 98.05% at 256 patches, 0.0141 / 95.83% at 512, and 0.0172 / 94.93% at
+1,024. The full per-resolution, per-tag, stability, and timing results are saved
+under `docs/audits/foveatag_weak_predictions/`. Decode and resize were shared
+during the sweep but copied into each prediction row as standalone stage-cost
+attribution; they must not be summed across rows to estimate total sweep time.
 
 ## 10. Integration surface after acceptance
 

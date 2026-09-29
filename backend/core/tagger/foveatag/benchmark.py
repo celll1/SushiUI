@@ -109,8 +109,6 @@ class BenchmarkItem:
         evidence = tuple(EvidenceBox.from_dict(box, item_id=sample_id) for box in raw.get("evidence", ()))
         evidenced_tags = {tag for box in evidence for tag in box.tags}
         _require(evidenced_tags <= set(fine_tags), f"item {sample_id}: evidence tags must be fine_detail_tags")
-        missing_evidence = set(fine_tags) - evidenced_tags
-        _require(not missing_evidence, f"item {sample_id}: fine tags lack evidence boxes: {sorted(missing_evidence)}")
         for box in evidence:
             _require(box.x + box.width <= width and box.y + box.height <= height, f"item {sample_id}: evidence box is outside the image")
 
@@ -136,6 +134,7 @@ class BenchmarkManifest:
     items: Tuple[BenchmarkItem, ...]
     resolution_long_sides: Tuple[int, ...]
     area_bins: Tuple[Tuple[str, float], ...] = DEFAULT_AREA_BINS
+    evidence_mode: str = "boxes"
     format_version: int = BENCHMARK_FORMAT_VERSION
 
     @classmethod
@@ -155,7 +154,25 @@ class BenchmarkManifest:
         raw_bins = raw.get("area_bins")
         bins = DEFAULT_AREA_BINS if raw_bins is None else tuple((str(row["name"]), float(row["max_fraction"])) for row in raw_bins)
         _validate_area_bins(bins)
-        return cls(name=name, items=items, resolution_long_sides=sides, area_bins=bins, format_version=version)
+        evidence_mode = str(raw.get("evidence_mode", "boxes"))
+        _require(evidence_mode in ("boxes", "dense_oracle"), "evidence_mode must be boxes or dense_oracle")
+        if evidence_mode == "boxes":
+            for item in items:
+                missing_evidence = set(item.fine_detail_tags) - {
+                    tag for box in item.evidence for tag in box.tags
+                }
+                _require(
+                    not missing_evidence,
+                    f"item {item.sample_id}: fine tags lack evidence boxes: {sorted(missing_evidence)}",
+                )
+        return cls(
+            name=name,
+            items=items,
+            resolution_long_sides=sides,
+            area_bins=bins,
+            evidence_mode=evidence_mode,
+            format_version=version,
+        )
 
     def item_by_id(self) -> Dict[str, BenchmarkItem]:
         return {item.sample_id: item for item in self.items}
@@ -279,6 +296,34 @@ def _mean(values: Iterable[Optional[float]]) -> Optional[float]:
     return sum(present) / len(present) if present else None
 
 
+def _stability_to_native(
+    rows: Sequence[PredictionRow],
+    native_by_sample: Mapping[str, PredictionRow],
+    tags: Sequence[str],
+    *,
+    threshold: float,
+) -> Dict[str, float | int | None]:
+    absolute_deltas: List[float] = []
+    agreements: List[float] = []
+    matched_samples = 0
+    for row in rows:
+        native = native_by_sample.get(row.sample_id)
+        if native is None:
+            continue
+        matched_samples += 1
+        for tag in tags:
+            score = float(row.scores.get(tag, 0.0))
+            native_score = float(native.scores.get(tag, 0.0))
+            absolute_deltas.append(abs(score - native_score))
+            agreements.append(float((score >= threshold) == (native_score >= threshold)))
+    return {
+        "matched_samples": matched_samples,
+        "score_count": len(absolute_deltas),
+        "mean_absolute_score_delta": _mean(absolute_deltas),
+        "threshold_agreement": _mean(agreements),
+    }
+
+
 def evaluate_predictions(
     manifest: BenchmarkManifest,
     predictions: PredictionSet,
@@ -297,6 +342,16 @@ def evaluate_predictions(
     for row in predictions.rows:
         rows_by_resolution.setdefault(row.resolution, []).append(row)
 
+    fine_tags = {tag for item in manifest.items for tag in item.fine_detail_tags}
+    coarse_tags = {tag for item in manifest.items for tag in item.coarse_tags}
+    tag_groups = {
+        "all": all_tags,
+        "fine_detail": sorted(fine_tags),
+        "coarse": sorted(coarse_tags),
+    }
+    native_by_sample = {
+        row.sample_id: row for row in rows_by_resolution.get("native", ())
+    }
     resolution_reports: Dict[str, Any] = {}
     for resolution, rows in sorted(rows_by_resolution.items()):
         by_sample = {row.sample_id: row for row in rows}
@@ -317,8 +372,6 @@ def evaluate_predictions(
                     **_binary_metrics(labels, scores, threshold),
                 }
 
-        fine_tags = {tag for item in manifest.items for tag in item.fine_detail_tags}
-        coarse_tags = {tag for item in manifest.items for tag in item.coarse_tags}
         groups = {
             "all": sorted(per_tag),
             "fine_detail": sorted(fine_tags & per_tag.keys()),
@@ -354,6 +407,15 @@ def evaluate_predictions(
         resolution_reports[resolution] = {
             "sample_count": len(rows),
             "groups": group_report,
+            "stability_to_native": {
+                name: _stability_to_native(
+                    rows,
+                    native_by_sample,
+                    tags,
+                    threshold=threshold,
+                )
+                for name, tags in tag_groups.items()
+            },
             "evidence_area": area_report,
             "per_tag": per_tag,
         }
@@ -364,10 +426,57 @@ def evaluate_predictions(
             timing.setdefault(stage, []).append(float(value))
     return {
         "benchmark": manifest.name,
+        "evidence_mode": manifest.evidence_mode,
         "model_name": predictions.model_name,
         "threshold": threshold,
         "resolutions": resolution_reports,
         "stage_timing_ms": {stage: _timing_summary(values) for stage, values in sorted(timing.items())},
+    }
+
+
+def evaluate_dense_oracle_recovery(
+    router_scores,
+    oracle_utilities,
+    *,
+    k: int,
+    candidate_mask=None,
+) -> Dict[str, float | int | None]:
+    """Measure how much label-derived dense-oracle utility routing recovers."""
+    import torch
+
+    if router_scores.shape != oracle_utilities.shape or router_scores.ndim != 2:
+        raise ValueError("router_scores and oracle_utilities must have equal [batch, candidates] shapes")
+    if k <= 0 or k > router_scores.shape[1]:
+        raise ValueError("k must be within the candidate count")
+    if candidate_mask is None:
+        candidate_mask = torch.ones_like(router_scores, dtype=torch.bool)
+    if candidate_mask.shape != router_scores.shape:
+        raise ValueError("candidate_mask must match scores")
+    valid = candidate_mask.to(device=router_scores.device, dtype=torch.bool)
+    if (valid.sum(dim=1) < k).any():
+        raise ValueError("each sample must have at least k valid candidates")
+    utilities = oracle_utilities.float()
+    masked_scores = router_scores.masked_fill(~valid, float("-inf"))
+    masked_utility = utilities.masked_fill(~valid, float("-inf"))
+    selected = masked_scores.topk(k, dim=1).indices
+    oracle = masked_utility.topk(k, dim=1).indices
+    chosen_utility = torch.gather(utilities.clamp_min(0), 1, selected).sum(dim=1)
+    oracle_utility = torch.gather(utilities.clamp_min(0), 1, oracle).sum(dim=1)
+    recoverable = oracle_utility > 0
+    recovery = torch.where(
+        recoverable,
+        (chosen_utility / oracle_utility.clamp_min(torch.finfo(oracle_utility.dtype).eps)).clamp(max=1),
+        torch.zeros_like(oracle_utility),
+    )
+    overlap = (selected.unsqueeze(2) == oracle.unsqueeze(1)).any(dim=2).float().mean(dim=1)
+    mean_recovery = float(recovery[recoverable].mean()) if recoverable.any() else None
+    mean_overlap = float(overlap[recoverable].mean()) if recoverable.any() else None
+    return {
+        "batch_size": router_scores.shape[0],
+        "k": k,
+        "mean_utility_recovery": mean_recovery,
+        "mean_oracle_topk_recall": mean_overlap,
+        "recoverable_samples": int(recoverable.sum()),
     }
 
 

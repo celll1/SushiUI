@@ -581,7 +581,7 @@ require data and GPU time:
 |---|---|---|
 | 0 | Versioned box-free partially curated photo benchmark, deterministic Danbooru ground-illustration benchmark, dense-oracle recovery metric, resolution/group/stability metrics, saved predictions, per-stage timing summaries, synthetic scratch-model GPU timing, representative data-loaded optimizer timing, fixed-resolution agreement baselines, and diagnostic NaFlex measurements. | Complete. The scratch pretraining budget is fixed below. |
 | 1 | Deterministic multi-scale views, exact source transforms, expandable evidence head, fixed/NaFlex SigLIP2 token adapter, a processor bridge that preserves overview/local view axes, fixed-encoder inference and optimizer cost, masked-label training and streaming validation, domain-balanced ground/photo sampling with benchmark exclusion, epoch-boundary checkpoint/resume without duplicating the external encoder or baseline head, deterministic benchmark prediction from compact best weights, matched-FPR comparison, a baseline-preserving zero-initialized local residual, and a pre-decode safety cap for the full-decode fallback. The first confounded 24,000-sample pilot and the corrected residual smoke are measured in section 9.12. | Run the corrected residual quality gate. Implement the region-readable tiled-pyramid backend before treating sources above the fallback cap as supported. |
-| 2 | A 37.39M-parameter default scratch encoder, content-aware continuous 2-D RoPE, stride-16 local map, low-token global stage, masked RGB decoder, teacher-free losses, the diagnostic local-teacher projection, deterministic overlapping-view data, and an executable AdamW pretraining path. | Run convergence and held-out overlap/chroma measurements. |
+| 2 | A 37.39M-parameter default scratch encoder, content-aware continuous 2-D RoPE, stride-16 local map, low-token global stage, masked RGB decoder, teacher-free losses, the diagnostic local-teacher projection, deterministic local/overview data, bounded indexed manifests, domain-balanced sampling, step-resumable AdamW state, held-out validation, and encoder-only scratch artifacts. | Run the pre-registered 10-epoch convergence measurement and retain the best held-out overlap/chroma checkpoint. |
 | 3 | End-to-end scratch tagger, masked classifier composition, density-gated prediction consistency, and an adapter from the existing vocabulary/loss-mask/live-refresh dataset lifecycle to deterministic FoveaTag views. | Add the production training loop and run the pre-registered comparison. |
 | 4 | Generic scale-space router, padding mask, NMS, dense-oracle targets, ranking/diversity losses, retained random-budget selection, and box-free oracle recovery metrics. | Run dense-oracle training, choose its batch frequency from measured cost, and measure utility recovery at fixed `K`. |
 | 5 | Versioned inference/resume artifacts, exclusion of diagnostic weights from inference artifacts, coordinate-aware collation, cached-overview staged inference, and per-stage wall time. | Add the tiled-pyramid source backend, production manager/export, API/defaults/OpenAPI/frontend surfaces, and lifecycle tests after the go/no-go gates pass. |
@@ -971,6 +971,33 @@ dimensions at equal data and optimizer steps. For the fully scratch model, the
 classifier makes the complete tagger substantially larger. Phase 6 capacity
 growth is therefore gated on evidence of under-capacity rather than parameter
 count alone.
+
+### 9.13 Phase 2 lifecycle smoke (2026-09-29)
+
+The long-run path no longer relies on the bounded benchmark path list. It builds
+JSONL path manifests with mmap offset indexes, so eight Windows data workers do
+not each receive a Python copy of 1.55 million path strings. Validation paths
+are selected exactly and deterministically; benchmark paths are excluded;
+training samples domains at 85% illustration and 15% photo with a stateless
+per-epoch mapping. Resume reuses the frozen manifests even if `datasets.db`
+metadata changes, while still rejecting a changed dataset, holdout, cap, seed,
+or sampling contract.
+
+The production-contract smoke built 1,544,750 illustration and 20,293 photo
+training paths plus held-out sets of 2,048 and 512. It stopped after eight
+steps at source offset 128, then resumed to step 12 and offset 192. The resumed
+checkpoint retained all 192 samples in its epoch loss accumulator, optimizer
+state, RNG state, and scheduler position. It was 286,950,347 bytes and used
+11,648 MiB peak reserved VRAM.
+
+A separate one-epoch lifecycle smoke used 32 training and eight validation
+samples. It completed at epoch 1 / offset 0, wrote the resumable checkpoint,
+domain-specific held-out RGB/chroma/correspondence losses, and a 211-tensor,
+149,589,368-byte encoder-only safetensors artifact. Its metadata records
+`initialization: scratch` and an empty external-weight list. These runs prove
+checkpoint and validation wiring only; the compact record is
+`FOVEATAG_PHASE2_PRETRAINING_SMOKE_2026-09-29.json`. The Phase 2 convergence
+gate remains open until the 10-epoch run is measured.
 
 ## 10. Integration surface after acceptance
 

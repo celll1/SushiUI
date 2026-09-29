@@ -179,19 +179,37 @@ class FoveaImagePathDataset(Dataset):
         return len(self.image_paths)
 
     def __getitem__(self, index: int) -> Optional[FoveaPretrainingSample]:
-        try:
-            with Image.open(self.image_paths[index]) as source:
-                if (
-                    self.max_source_pixels is not None
-                    and source.width * source.height > self.max_source_pixels
-                ):
-                    return None
-                image = source.convert("RGB")
-                image.load()
-        except (OSError, ValueError):
-            return None
         sample_seed = self.seed + self.epoch * len(self.image_paths) + index
-        return build_pretraining_sample(image, self.view_config, seed=sample_seed)
+        return load_pretraining_sample(
+            self.image_paths[index],
+            self.view_config,
+            seed=sample_seed,
+            max_source_pixels=self.max_source_pixels,
+        )
+
+
+def load_pretraining_sample(
+    image_path: str | Path,
+    view_config: ViewConfig,
+    *,
+    seed: int,
+    max_source_pixels: Optional[int] = 40_000_000,
+) -> Optional[FoveaPretrainingSample]:
+    """Load one bounded source and produce its deterministic local/overview pair."""
+    if max_source_pixels is not None and max_source_pixels <= 0:
+        raise ValueError("max_source_pixels must be positive when provided")
+    try:
+        with Image.open(image_path) as source:
+            if (
+                max_source_pixels is not None
+                and source.width * source.height > max_source_pixels
+            ):
+                return None
+            image = source.convert("RGB")
+            image.load()
+    except (OSError, ValueError):
+        return None
+    return build_pretraining_sample(image, view_config, seed=seed)
 
 
 def collate_pretraining_samples(

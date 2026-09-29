@@ -18,7 +18,15 @@ from .router import (
     select_proposals,
     source_candidate_mask,
 )
-from .views import SourceBox, ViewBatch, ViewConfig, build_views, local_spec, render_view
+from .views import (
+    RegionImageSource,
+    SourceBox,
+    ViewBatch,
+    ViewConfig,
+    build_views,
+    local_spec,
+    render_source_view,
+)
 
 
 @dataclass(frozen=True)
@@ -52,7 +60,7 @@ def source_field_sizes(
 
 @torch.inference_mode()
 def predict_image(
-    image: Image.Image,
+    image: Image.Image | RegionImageSource,
     model: FoveaTagger,
     router: EvidenceRouter,
     config: FoveaArtifactConfig,
@@ -136,7 +144,9 @@ def predict_image(
             _candidate_to_spec(candidates[0, index], image.width, image.height, config.views.local_size)
             for index in selected.tolist()
         )
-        local_views = tuple(render_view(image, spec, config.views.pad_color) for spec in local_specs)
+        local_views = tuple(
+            render_source_view(image, spec, config.views.pad_color) for spec in local_specs
+        )
         staged_views = ViewBatch(
             overview=overview_views.overview,
             overview_spec=overview_views.overview_spec,

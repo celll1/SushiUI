@@ -10,6 +10,7 @@ from core.tagger.foveatag.supervised_run import (
     _encoder_config,
     _train_epoch,
     _validate_arguments,
+    run_supervised_comparison,
 )
 from core.tagger.foveatag.views import ViewConfig, build_views
 
@@ -172,3 +173,74 @@ def test_train_epoch_honors_existing_lifecycle_stop_handle(tmp_path):
     assert stopped == "stopped_by_request"
     assert (offset, step, added) == (0, 0, 0)
     assert result["samples"] == 0
+
+
+def test_comparison_runner_resumes_branches_and_stops_before_next_mode(tmp_path):
+    first_resume = tmp_path / "overview_only" / "latest.pt"
+    first_resume.parent.mkdir()
+    first_resume.write_bytes(b"checkpoint")
+    calls = []
+
+    def branch_runner(**kwargs):
+        calls.append(kwargs)
+        mode = kwargs["input_mode"]
+        return {
+            "status": "complete" if mode == "overview_only" else "stopped_by_request",
+            "input_mode": mode,
+        }
+
+    events = []
+    result = run_supervised_comparison(
+        comparison_dir=tmp_path,
+        branch_runner=branch_runner,
+        progress_callback=lambda event, payload: events.append((event, payload)),
+        token="shared",
+    )
+
+    assert [call["input_mode"] for call in calls] == [
+        "overview_only", "overview_placebo",
+    ]
+    assert calls[0]["resume"] == first_resume
+    assert calls[1]["resume"] is None
+    assert all(call["token"] == "shared" for call in calls)
+    assert result["status"] == "stopped_by_request"
+    assert result["completed_modes"] == ["overview_only"]
+    assert result["active_mode"] == "overview_placebo"
+    assert [payload["input_mode"] for event, payload in events if event == "branch_start"] == [
+        "overview_only", "overview_placebo",
+    ]
+    assert (tmp_path / "comparison_summary.json").is_file()
+
+
+def test_comparison_runner_honors_stop_before_loading_a_branch(tmp_path):
+    control = FoveaRunControl()
+    control.request_stop()
+
+    result = run_supervised_comparison(
+        comparison_dir=tmp_path,
+        branch_runner=lambda **_kwargs: (_ for _ in ()).throw(AssertionError()),
+        run_control=control,
+    )
+
+    assert result["status"] == "stopped_by_request"
+    assert result["active_mode"] == "overview_only"
+    assert result["completed_modes"] == []
+
+
+def test_comparison_runner_completes_all_modes_in_registered_order(tmp_path):
+    calls = []
+
+    def branch_runner(**kwargs):
+        calls.append(kwargs["input_mode"])
+        return {"status": "complete", "input_mode": kwargs["input_mode"]}
+
+    result = run_supervised_comparison(
+        comparison_dir=tmp_path,
+        branch_runner=branch_runner,
+    )
+
+    assert calls == ["overview_only", "overview_placebo", "source_native"]
+    assert result["status"] == "complete"
+    assert result["active_mode"] is None
+    assert result["completed_modes"] == calls
+    assert result["remaining_modes"] == []

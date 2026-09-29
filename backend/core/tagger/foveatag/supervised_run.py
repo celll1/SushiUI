@@ -39,6 +39,7 @@ from .supervised_data import (
     DomainBalancedSupervisedDataset,
     FoveaInputMode,
     FoveaSupervisedDataset,
+    PHASE3_INPUT_MODES,
     SupervisionPolicy,
     collate_supervised_samples,
 )
@@ -57,6 +58,93 @@ class FoveaRunControl:
 
     def should_stop(self) -> bool:
         return self._stop.is_set()
+
+
+def run_supervised_comparison(
+    *,
+    comparison_dir: Path,
+    branch_runner: Optional[Callable[..., dict[str, Any]]] = None,
+    progress_callback: Optional[Callable[[str, Mapping[str, Any]], None]] = None,
+    run_control: Optional[FoveaRunControl] = None,
+    **training_kwargs: Any,
+) -> dict[str, Any]:
+    """Run or resume the pre-registered A/B/C branches in a fixed order."""
+    forbidden = {"comparison_dir", "input_mode", "resume"} & set(training_kwargs)
+    if forbidden:
+        raise ValueError(f"comparison runner owns arguments: {sorted(forbidden)}")
+    branch_runner = branch_runner or run_supervised_training
+    summaries: dict[str, Any] = {}
+    status = "complete"
+    active_mode: Optional[str] = None
+    comparison_dir.mkdir(parents=True, exist_ok=True)
+    for mode in PHASE3_INPUT_MODES:
+        if run_control is not None and run_control.should_stop():
+            status = "stopped_by_request"
+            active_mode = mode
+            break
+        active_mode = mode
+        resume_path = comparison_dir / mode / "latest.pt"
+        _emit_progress(
+            progress_callback,
+            "branch_start",
+            {
+                "input_mode": mode,
+                "resume": str(resume_path) if resume_path.is_file() else None,
+            },
+        )
+        _write_json_atomic(
+            comparison_dir / "comparison_summary.json",
+            _comparison_summary(
+                status="running",
+                active_mode=mode,
+                summaries=summaries,
+            ),
+        )
+        summary = branch_runner(
+            comparison_dir=comparison_dir,
+            input_mode=mode,
+            resume=resume_path if resume_path.is_file() else None,
+            progress_callback=progress_callback,
+            run_control=run_control,
+            **training_kwargs,
+        )
+        summaries[mode] = summary
+        status = str(summary.get("status", "unknown"))
+        experiment = _comparison_summary(
+            status=status,
+            active_mode=mode,
+            summaries=summaries,
+        )
+        _write_json_atomic(comparison_dir / "comparison_summary.json", experiment)
+        if status != "complete":
+            break
+    else:
+        active_mode = None
+    result = _comparison_summary(
+        status=status,
+        active_mode=active_mode,
+        summaries=summaries,
+    )
+    _write_json_atomic(comparison_dir / "comparison_summary.json", result)
+    return result
+
+
+def _comparison_summary(
+    *, status: str, active_mode: Optional[str], summaries: Mapping[str, Any]
+) -> dict[str, Any]:
+    completed = [
+        mode for mode in PHASE3_INPUT_MODES
+        if summaries.get(mode, {}).get("status") == "complete"
+    ]
+    return {
+        "format_version": 1,
+        "kind": "foveatag_phase3_supervised_comparison",
+        "status": status,
+        "active_mode": active_mode,
+        "completed_modes": completed,
+        "remaining_modes": [mode for mode in PHASE3_INPUT_MODES if mode not in completed],
+        "branches": dict(summaries),
+    }
 
 
 def run_supervised_training(
@@ -774,7 +862,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--comparison-dir", type=Path, required=True)
     parser.add_argument(
         "--input-mode",
-        choices=("overview_only", "overview_placebo", "source_native"),
+        choices=(*PHASE3_INPUT_MODES, "all"),
         required=True,
     )
     parser.add_argument("--train-count", action="append", required=True)
@@ -802,12 +890,11 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parser().parse_args(argv)
-    summary = run_supervised_training(
+    common = dict(
         pretrained_encoder=args.pretrained_encoder,
         vocabulary_path=args.vocabulary,
         datasets_db=args.datasets_db,
         comparison_dir=args.comparison_dir,
-        input_mode=args.input_mode,
         train_counts=_parse_mapping(args.train_count, cast=int, name="train-count"),
         validation_counts=_parse_mapping(
             args.validation_count, cast=int, name="validation-count"
@@ -831,9 +918,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             None if args.max_source_megapixels == 0
             else round(args.max_source_megapixels * 1_000_000)
         ),
-        resume=args.resume,
         stop_after_steps=args.stop_after_steps,
     )
+    if args.input_mode == "all":
+        if args.resume is not None:
+            raise ValueError("--resume is selected automatically when --input-mode=all")
+        summary = run_supervised_comparison(**common)
+    else:
+        summary = run_supervised_training(
+            **common,
+            input_mode=args.input_mode,
+            resume=args.resume,
+        )
     print(json.dumps(summary, indent=2, ensure_ascii=False, allow_nan=False))
     return 0
 

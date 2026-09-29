@@ -16,13 +16,7 @@ from .benchmark import (
     load_benchmark_manifest,
 )
 from .matched_fpr import compare_at_matched_fpr
-
-
-PHASE3_INPUT_MODES = (
-    "overview_only",
-    "overview_placebo",
-    "source_native",
-)
+from .supervised_data import PHASE3_INPUT_MODES
 
 
 def build_phase3_comparison(

@@ -24,10 +24,14 @@ def registered_image_paths(
     *,
     limit: int,
     minimum_side: int,
+    selection: str = "first",
+    seed: int = 0,
 ) -> tuple[list[str], int]:
     """Read a bounded path list without importing the application's DB session."""
     if limit <= 0 or minimum_side <= 0:
         raise ValueError("limit and minimum_side must be positive")
+    if selection not in ("first", "hashed"):
+        raise ValueError("selection must be first or hashed")
     uri = Path(database_path).resolve().as_uri() + "?mode=ro"
     with sqlite3.connect(uri, uri=True) as connection:
         condition = "dataset_id = ? AND width >= ? AND height >= ?"
@@ -35,9 +39,11 @@ def registered_image_paths(
         total = int(connection.execute(
             f"SELECT COUNT(*) FROM dataset_items WHERE {condition}", parameters
         ).fetchone()[0])
+        order = "id" if selection == "first" else "((id * 1103515245 + ?) & 2147483647), id"
+        order_parameters = () if selection == "first" else (seed,)
         rows = connection.execute(
-            f"SELECT image_path FROM dataset_items WHERE {condition} ORDER BY id LIMIT ?",
-            (*parameters, limit),
+            f"SELECT image_path FROM dataset_items WHERE {condition} ORDER BY {order} LIMIT ?",
+            (*parameters, *order_parameters, limit),
         ).fetchall()
     return [str(row[0]) for row in rows if row[0]], total
 
@@ -138,6 +144,7 @@ def benchmark_pretraining(
         "eligible_images": eligible_image_count,
         "warmup_steps": warmup_steps,
         "measured_steps": len(step_ms),
+        "seed": seed,
         "model_parameters": sum(parameter.numel() for parameter in model.parameters()),
         "data_wait_ms": _summary(data_ms),
         "host_to_device_ms": _summary(transfer_ms),
@@ -158,6 +165,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--dataset-id", type=int, required=True)
     parser.add_argument("--sample-count", type=int, default=128)
     parser.add_argument("--minimum-side", type=int, default=256)
+    parser.add_argument("--selection", choices=("first", "hashed"), default="first")
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--warmup-steps", type=int, default=3)
@@ -175,6 +183,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         args.dataset_id,
         limit=args.sample_count,
         minimum_side=args.minimum_side,
+        selection=args.selection,
+        seed=args.seed,
     )
     if len(paths) < args.batch_size:
         raise ValueError("not enough registered images satisfy the benchmark filter")
@@ -188,6 +198,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         learning_rate=args.learning_rate,
         seed=args.seed,
     )
+    report["sample_selection"] = args.selection
     rendered = json.dumps(report, indent=2, sort_keys=True) + "\n"
     if args.output:
         args.output.write_text(rendered, encoding="utf-8")

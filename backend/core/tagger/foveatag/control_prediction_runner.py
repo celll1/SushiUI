@@ -21,7 +21,7 @@ from .siglip2_control import SigLIP2ControlTagger
 from .siglip2_control_data import collate_siglip2_control_samples
 from .siglip2_prediction_runner import resize_benchmark_image
 from .supervised_data import FoveaSupervisedSample
-from .views import ViewConfig, build_views
+from .views import ViewConfig, build_views, preserve_source_overview
 
 
 def run_control_predictions(
@@ -44,6 +44,7 @@ def run_control_predictions(
     vocabulary = manager.vocabulary
     original = manager.model
     encoder = original.vision_encoder
+    baseline_head = original.head
     hidden_size = int(encoder.config.hidden_size)
     encoder_path = Path(manager.vision_encoder_path) if manager.vision_encoder_path else None
     manager.model = None
@@ -61,6 +62,7 @@ def run_control_predictions(
             _file_sha256(encoder_path) if encoder_path is not None and encoder_path.is_file() else None
         ),
         "is_naflex": is_naflex,
+        "control_head": "baseline_zero_residual_v1",
     }
     model = SigLIP2ControlTagger(
         encoder,
@@ -70,6 +72,7 @@ def run_control_predictions(
         evidence_slots_per_view=2,
         is_naflex=is_naflex,
         freeze_encoder=True,
+        baseline_head=baseline_head,
     ).to("cuda").eval()
     metadata = load_control_weights(
         control_weights,
@@ -114,6 +117,7 @@ def run_control_predictions(
                     seed=_view_seed(item.sample_id, resolution),
                     training=False,
                 )
+                views = preserve_source_overview(image, views)
                 render_ms = (time.perf_counter() - render_started) * 1000.0
                 preprocess_started = time.perf_counter()
                 sample = FoveaSupervisedSample(
@@ -162,7 +166,10 @@ def run_control_predictions(
                     }
                 )
             if (item_index + 1) % 100 == 0 or item_index + 1 == len(manifest.items):
-                print(f"[FoveaTagControl] predicted {item_index + 1}/{len(manifest.items)} images")
+                print(
+                    f"[FoveaTagControl] predicted {item_index + 1}/{len(manifest.items)} images",
+                    flush=True,
+                )
         payload = {
             "format_version": PREDICTION_FORMAT_VERSION,
             "model_name": f"foveatag-control-random-{local_views}",

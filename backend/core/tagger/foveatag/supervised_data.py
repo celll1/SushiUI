@@ -11,7 +11,7 @@ from torch.utils.data import Dataset
 
 from ..tagger_dataset import RawTaggerSample
 from .batch import FoveaViewTensorBatch, collate_view_batches
-from .views import ViewBatch, ViewConfig, build_views
+from .views import ViewBatch, ViewConfig, build_views, preserve_source_overview
 
 
 class RawTaggerDataset(Protocol):
@@ -85,12 +85,14 @@ class FoveaSupervisedDataset(Dataset):
         seed: int = 0,
         training: bool = True,
         supervision_policies: Optional[Mapping[int, SupervisionPolicy]] = None,
+        baseline_overview: bool = False,
     ) -> None:
         self.source = source
         self.view_config = view_config
         self.seed = int(seed)
         self.training = bool(training)
         self.supervision_policies = dict(supervision_policies or {})
+        self.baseline_overview = bool(baseline_overview)
         self.epoch = 0
 
     def set_epoch(self, epoch: int) -> None:
@@ -109,13 +111,16 @@ class FoveaSupervisedDataset(Dataset):
             policy = self.supervision_policies.get(raw.dataset_id)
             if policy is not None:
                 loss_mask = policy.apply(raw.label, loss_mask)
+        views = build_views(
+            raw.image,
+            self.view_config,
+            seed=sample_seed,
+            training=self.training,
+        )
+        if self.baseline_overview:
+            views = preserve_source_overview(raw.image, views)
         return FoveaSupervisedSample(
-            views=build_views(
-                raw.image,
-                self.view_config,
-                seed=sample_seed,
-                training=self.training,
-            ),
+            views=views,
             label=raw.label,
             loss_mask=loss_mask,
         )

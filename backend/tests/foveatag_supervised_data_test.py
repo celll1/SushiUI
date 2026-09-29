@@ -77,6 +77,21 @@ def test_supervised_adapter_applies_mixed_provenance_policy():
     assert torch.equal(sample.loss_mask, torch.tensor([0.25, 0.0, 0.25]))
 
 
+def test_control_adapter_preserves_original_overview_for_baseline_processor():
+    dataset = FoveaSupervisedDataset(
+        _RawDataset(),
+        view_config=ViewConfig(overview_size=64, local_size=64, local_views=2),
+        baseline_overview=True,
+    )
+
+    sample = dataset[0]
+
+    assert sample is not None
+    assert sample.views.overview.size == (320, 240)
+    assert sample.views.overview_spec.role == "baseline-overview"
+    assert all(view.size == (64, 64) for view in sample.views.local_views)
+
+
 @pytest.mark.parametrize("loss_weight", [-0.1, float("nan"), float("inf")])
 def test_supervision_policy_rejects_invalid_loss_weight(loss_weight):
     with pytest.raises(ValueError, match="finite and non-negative"):

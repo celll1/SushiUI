@@ -30,7 +30,10 @@ class FakeFixedEncoder(nn.Module):
 
     def forward(self, *, pixel_values):
         features = self.projection(pixel_values).flatten(2).transpose(1, 2)
-        return SimpleNamespace(last_hidden_state=features)
+        return SimpleNamespace(
+            last_hidden_state=features,
+            pooler_output=features.mean(dim=1),
+        )
 
 
 def test_control_model_flattens_views_and_returns_source_view_indices():
@@ -129,3 +132,26 @@ def test_fixed_resolution_encoder_path_uses_image_tensors():
     logits = model(overview, local)
 
     assert logits.shape == (1, 2)
+
+
+def test_baseline_preserving_control_is_exact_before_local_training():
+    encoder = FakeFixedEncoder()
+    baseline_head = nn.Linear(8, 2)
+    model = SigLIP2ControlTagger(
+        encoder,
+        hidden_size=8,
+        feature_dim=4,
+        num_tags=2,
+        pool_heads=2,
+        is_naflex=False,
+        baseline_head=baseline_head,
+    )
+    overview = SigLIP2ViewInputs(torch.randn(1, 3, 8, 8))
+    local = SigLIP2ViewInputs(torch.randn(1, 4, 3, 4, 4))
+
+    with torch.no_grad():
+        expected = baseline_head(encoder(pixel_values=overview.pixel_values).pooler_output)
+        actual = model(overview, local)
+
+    torch.testing.assert_close(actual, expected)
+    assert not any(parameter.requires_grad for parameter in model.baseline_head.parameters())

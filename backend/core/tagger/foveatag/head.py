@@ -107,6 +107,8 @@ class EvidenceTagHead(nn.Module):
                 masked_scores / self.temperature,
                 dim=1,
             )
+            valid_counts = mask.sum(dim=1).clamp_min(1).to(local_term.dtype)
+            local_term = local_term - self.temperature * valid_counts.log().unsqueeze(1)
             local_term = torch.where(valid_samples.unsqueeze(-1), local_term, 0.0)
             best_indices = masked_scores.argmax(dim=1)
             best_indices = torch.where(
@@ -143,6 +145,97 @@ class EvidenceTagHead(nn.Module):
         self.head = expanded
         self.num_tags = new_num_tags
         return expanded.weight, expanded.bias
+
+
+class ResidualEvidenceTagHead(nn.Module):
+    """Add zero-initialized local evidence to fixed baseline logits."""
+
+    def __init__(
+        self,
+        feature_dim: int,
+        num_tags: int,
+        *,
+        temperature: float = 0.1,
+        mixer_hidden_dim: Optional[int] = None,
+    ) -> None:
+        super().__init__()
+        if feature_dim <= 0 or num_tags <= 0:
+            raise ValueError("feature_dim and num_tags must be positive")
+        if temperature <= 0:
+            raise ValueError("temperature must be positive")
+        self.feature_dim = feature_dim
+        self.num_tags = num_tags
+        self.temperature = float(temperature)
+        self.mixer = EvidenceSlotMixer(feature_dim, mixer_hidden_dim)
+        self.head = nn.Linear(feature_dim, num_tags, bias=False)
+        nn.init.zeros_(self.head.weight)
+
+    def forward(
+        self,
+        baseline_logits: torch.Tensor,
+        global_summary: torch.Tensor,
+        evidence: torch.Tensor,
+        evidence_mask: Optional[torch.Tensor] = None,
+    ) -> EvidenceHeadOutput:
+        _validate_features(global_summary, evidence, self.feature_dim)
+        batch_size, slot_count, _ = evidence.shape
+        if baseline_logits.shape != (batch_size, self.num_tags):
+            raise ValueError(
+                f"baseline_logits must have shape [{batch_size}, {self.num_tags}]"
+            )
+        mask = _validate_mask(evidence_mask, batch_size, slot_count, evidence.device)
+        mixed = self.mixer(global_summary, evidence)
+        local_scores = self.head(mixed)
+        if slot_count == 0:
+            local_term = baseline_logits.new_zeros(baseline_logits.shape)
+            best_indices = torch.full(
+                baseline_logits.shape,
+                -1,
+                dtype=torch.long,
+                device=baseline_logits.device,
+            )
+        else:
+            masked_scores = local_scores.masked_fill(~mask.unsqueeze(-1), -torch.inf)
+            valid_samples = mask.any(dim=1)
+            local_term = self.temperature * torch.logsumexp(
+                masked_scores / self.temperature,
+                dim=1,
+            )
+            valid_counts = mask.sum(dim=1).clamp_min(1).to(local_term.dtype)
+            local_term = local_term - self.temperature * valid_counts.log().unsqueeze(1)
+            local_term = torch.where(valid_samples.unsqueeze(-1), local_term, 0.0)
+            best_indices = masked_scores.argmax(dim=1)
+            best_indices = torch.where(
+                valid_samples.unsqueeze(-1),
+                best_indices,
+                torch.full_like(best_indices, -1),
+            )
+        return EvidenceHeadOutput(
+            logits=baseline_logits + local_term,
+            local_scores=local_scores,
+            best_evidence_indices=best_indices,
+            mixed_evidence=mixed,
+        )
+
+    def expand_head(self, new_num_tags: int) -> Tuple[nn.Parameter, None]:
+        if new_num_tags < self.num_tags:
+            raise ValueError("ResidualEvidenceTagHead cannot shrink its vocabulary")
+        if new_num_tags == self.num_tags:
+            return self.head.weight, None
+        old_head = self.head
+        expanded = nn.Linear(
+            old_head.in_features,
+            new_num_tags,
+            bias=False,
+            device=old_head.weight.device,
+            dtype=old_head.weight.dtype,
+        )
+        nn.init.zeros_(expanded.weight)
+        with torch.no_grad():
+            expanded.weight[: self.num_tags].copy_(old_head.weight)
+        self.head = expanded
+        self.num_tags = new_num_tags
+        return expanded.weight, None
 
 
 def _validate_features(

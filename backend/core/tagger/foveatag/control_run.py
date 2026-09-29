@@ -193,6 +193,7 @@ def run_control_training(
         seed=seed,
         training=True,
         supervision_policies=policies,
+        baseline_overview=True,
     )
     validation_dataset = FoveaSupervisedDataset(
         raw_dataset,
@@ -200,6 +201,7 @@ def run_control_training(
         seed=seed,
         training=False,
         supervision_policies=policies,
+        baseline_overview=True,
     )
 
     manager = SigLIP2InferenceManager()
@@ -209,6 +211,7 @@ def run_control_training(
     encoder_path = Path(manager.vision_encoder_path) if manager.vision_encoder_path else None
     original = manager.model
     encoder = original.vision_encoder
+    baseline_head = original.head
     hidden_size = int(encoder.config.hidden_size)
     manager.model = None
     del original
@@ -223,6 +226,7 @@ def run_control_training(
         evidence_slots_per_view=2,
         is_naflex=is_naflex,
         freeze_encoder=True,
+        baseline_head=baseline_head,
     ).to("cuda")
     optimizer = torch.optim.AdamW(
         (parameter for parameter in model.parameters() if parameter.requires_grad),
@@ -270,6 +274,7 @@ def run_control_training(
             _file_sha256(encoder_path) if encoder_path is not None and encoder_path.is_file() else None
         ),
         "is_naflex": is_naflex,
+        "control_head": "baseline_zero_residual_v1",
     }
     start_epoch = global_step = 0
     best_f1 = 0.0

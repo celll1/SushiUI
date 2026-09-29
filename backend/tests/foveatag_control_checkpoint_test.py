@@ -17,6 +17,8 @@ class _Control(nn.Module):
         super().__init__()
         self.vision_encoder = nn.Linear(2, 2)
         self.vision_encoder.requires_grad_(False)
+        self.baseline_head = nn.Linear(2, 2)
+        self.baseline_head.requires_grad_(False)
         self.head = nn.Linear(2, 2)
 
 
@@ -28,6 +30,7 @@ def test_control_checkpoint_round_trip_excludes_external_encoder(tmp_path):
     optimizer.step()
     original_head = model.head.weight.detach().clone()
     original_encoder = model.vision_encoder.weight.detach().clone()
+    original_baseline = model.baseline_head.weight.detach().clone()
     provenance = {"checkpoint": "fixed.safetensors", "vocabulary": "fixed.json"}
 
     path = save_control_checkpoint(
@@ -42,10 +45,12 @@ def test_control_checkpoint_round_trip_excludes_external_encoder(tmp_path):
     )
     saved = torch.load(path, map_location="cpu", weights_only=False)
     assert all(not key.startswith("vision_encoder.") for key in saved["control_model"])
+    assert all(not key.startswith("baseline_head.") for key in saved["control_model"])
 
     with torch.no_grad():
         model.head.weight.zero_()
         model.vision_encoder.weight.add_(1)
+        model.baseline_head.weight.add_(1)
     payload = load_control_checkpoint(
         path,
         model,
@@ -57,6 +62,7 @@ def test_control_checkpoint_round_trip_excludes_external_encoder(tmp_path):
     assert payload["global_step"] == 19
     torch.testing.assert_close(model.head.weight, original_head)
     torch.testing.assert_close(model.vision_encoder.weight, original_encoder + 1)
+    torch.testing.assert_close(model.baseline_head.weight, original_baseline + 1)
 
 
 def test_control_checkpoint_rejects_encoder_provenance_mismatch(tmp_path):

@@ -18,16 +18,22 @@ class FoveaViewTensorBatch:
     local_geometry: torch.Tensor
     local_view_mask: torch.Tensor
 
-    def to(self, device: torch.device | str, *, dtype: torch.dtype | None = None) -> "FoveaViewTensorBatch":
-        image_options = {"device": device}
+    def to(
+        self,
+        device: torch.device | str,
+        *,
+        dtype: torch.dtype | None = None,
+        non_blocking: bool = False,
+    ) -> "FoveaViewTensorBatch":
+        image_options = {"device": device, "non_blocking": non_blocking}
         if dtype is not None:
             image_options["dtype"] = dtype
         return FoveaViewTensorBatch(
             overview_images=self.overview_images.to(**image_options),
-            overview_geometry=self.overview_geometry.to(device=device),
+            overview_geometry=self.overview_geometry.to(device=device, non_blocking=non_blocking),
             local_images=self.local_images.to(**image_options),
-            local_geometry=self.local_geometry.to(device=device),
-            local_view_mask=self.local_view_mask.to(device=device),
+            local_geometry=self.local_geometry.to(device=device, non_blocking=non_blocking),
+            local_view_mask=self.local_view_mask.to(device=device, non_blocking=non_blocking),
         )
 
 

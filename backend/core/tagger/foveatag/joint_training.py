@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Iterable, Optional, Sequence
 
 import torch
 from torch import nn
 
 from .batch import FoveaViewTensorBatch
 from .model import FoveaTagger
-from .router import EvidenceRouter, select_training_proposals
+from .router import EvidenceRouter, select_proposals, select_training_proposals
 from .router_data import FoveaRouterBatch
 from .router_training import evaluate_dense_candidates, router_objective
-from .supervised_training import _loss_tensor
+from .supervised_training import FoveaValidationResult, _loss_tensor, _threshold_metrics
 
 
 @dataclass(frozen=True)
@@ -181,6 +181,114 @@ class FoveaJointTrainer:
             router_diversity=float(diversity.detach()),
             oracle_used=use_oracle,
             selected_views=int(selected_views.local_view_mask.sum().item()),
+        )
+
+    @torch.inference_mode()
+    def validate_epoch(
+        self,
+        batches: Iterable[Optional[FoveaRouterBatch]],
+        *,
+        thresholds: Sequence[float] = tuple(value / 20 for value in range(1, 20)),
+    ) -> FoveaValidationResult:
+        if not thresholds or any(not 0 < value < 1 for value in thresholds):
+            raise ValueError("validation thresholds must be within (0, 1)")
+        threshold_values = tuple(float(value) for value in thresholds)
+        model_was_training = self.model.training
+        router_was_training = self.router.training
+        self.model.eval()
+        self.router.eval()
+        batch_count = sample_count = known_count = 0
+        loss_total = 0.0
+        true_positive = false_positive = false_negative = positive_support = None
+        try:
+            for batch in batches:
+                if batch is None:
+                    continue
+                batch = batch.to(self.device, non_blocking=True)
+                with self._autocast():
+                    logits = self._routed_logits(batch)
+                    loss = _loss_tensor(
+                        self.criterion(logits, batch.labels, batch.loss_masks)
+                    )
+                if not torch.isfinite(loss):
+                    continue
+                known = batch.loss_masks > 0
+                labels = batch.labels >= 0.5
+                probabilities = logits.sigmoid()
+                threshold_tensor = probabilities.new_tensor(threshold_values).view(-1, 1, 1)
+                predicted = probabilities.unsqueeze(0) >= threshold_tensor
+                known_expanded = known.unsqueeze(0)
+                labels_expanded = labels.unsqueeze(0)
+                batch_tp = (predicted & labels_expanded & known_expanded).sum(dim=1).cpu()
+                batch_fp = (predicted & ~labels_expanded & known_expanded).sum(dim=1).cpu()
+                batch_fn = (~predicted & labels_expanded & known_expanded).sum(dim=1).cpu()
+                batch_support = (labels & known).sum(dim=0).cpu()
+                if true_positive is None:
+                    true_positive = batch_tp
+                    false_positive = batch_fp
+                    false_negative = batch_fn
+                    positive_support = batch_support
+                else:
+                    true_positive += batch_tp
+                    false_positive += batch_fp
+                    false_negative += batch_fn
+                    positive_support += batch_support
+                batch_count += 1
+                samples = int(batch.labels.shape[0])
+                sample_count += samples
+                known_count += int(known.sum().item())
+                loss_total += float(loss) * samples
+        finally:
+            self.model.train(model_was_training)
+            self.router.train(router_was_training)
+        if true_positive is None or known_count == 0:
+            raise RuntimeError("joint validation produced no finite labeled batches")
+        metrics = _threshold_metrics(
+            true_positive,
+            false_positive,
+            false_negative,
+            positive_support,
+        )
+        best_index = max(
+            range(len(threshold_values)),
+            key=lambda index: (metrics["f1"][index], -threshold_values[index]),
+        )
+        return FoveaValidationResult(
+            batches=batch_count,
+            samples=sample_count,
+            known_labels=known_count,
+            active_tags=int((positive_support > 0).sum().item()),
+            mean_loss=loss_total / sample_count,
+            macro_f1=float(metrics["f1"][best_index]),
+            macro_precision=float(metrics["precision"][best_index]),
+            macro_recall=float(metrics["recall"][best_index]),
+            threshold=threshold_values[best_index],
+        )
+
+    def _routed_logits(self, batch: FoveaRouterBatch) -> torch.Tensor:
+        overview = self.model.encoder(
+            batch.views.overview_images,
+            batch.views.overview_geometry,
+        )
+        routing = self.router(
+            overview.local_map,
+            overview.local_coordinates,
+            batch.candidate_boxes,
+            batch.views.local_view_mask,
+        )
+        selected = select_proposals(
+            routing.scores,
+            batch.candidate_boxes,
+            budget=self.selection_budget,
+            nms_iou=self.nms_iou,
+            candidate_mask=batch.views.local_view_mask,
+        )
+        selected_views = gather_selected_views(batch.views, selected)
+        return self.model.classify_encoded_overview(
+            overview,
+            selected_views.local_images,
+            selected_views.local_geometry,
+            local_view_mask=selected_views.local_view_mask,
         )
 
     def _autocast(self):

@@ -99,6 +99,24 @@ def test_dataset_scan_preserves_filtered_samples(tmp_path):
     session.close()
 
 
+def test_raw_dataset_rejects_source_above_decode_cap(tmp_path):
+    factory = _dataset_session(tmp_path)
+    session = factory()
+    vocabulary = TagVocabulary()
+    vocabulary.add_tags(["structured_tag"])
+    dataset = TaggerDataset(
+        [7],
+        vocabulary,
+        session,
+        processor=None,
+        caption_types=["main"],
+        max_source_pixels=63,
+    )
+
+    assert dataset.get_raw_item(0) is None
+    session.close()
+
+
 def test_lr_scan_uses_the_same_filtered_caption_rules(tmp_path, monkeypatch):
     factory = _dataset_session(tmp_path)
     monkeypatch.setattr(database, "DatasetsSessionLocal", factory)

@@ -124,6 +124,7 @@ def run_control_training(
     warmup_steps: int,
     log_every: int,
     seed: int,
+    max_source_pixels: Optional[int] = 40_000_000,
     resume: Optional[Path] = None,
 ) -> dict[str, Any]:
     if min(epochs, epoch_samples, batch_size) <= 0:
@@ -132,6 +133,8 @@ def run_control_training(
         raise ValueError("optimizer settings must be non-negative with a positive learning rate")
     if log_every <= 0:
         raise ValueError("log_every must be positive")
+    if max_source_pixels is not None and max_source_pixels <= 0:
+        raise ValueError("max_source_pixels must be positive when provided")
     output_dir.mkdir(parents=True, exist_ok=True)
     vocabulary_path = _checkpoint_vocabulary(checkpoint, vocabulary_path)
     vocabulary = TagVocabulary.from_dict(
@@ -155,6 +158,7 @@ def run_control_training(
             vocabulary,
             session,
             processor=None,
+            max_source_pixels=max_source_pixels,
         )
     finally:
         session.close()
@@ -387,6 +391,7 @@ def run_control_training(
             "epoch_samples": epoch_samples,
             "batch_size": batch_size,
             "local_views": local_views,
+            "max_source_pixels": max_source_pixels,
             "warmup_steps": effective_warmup,
             "best_validation_f1": best_f1,
             "best_threshold": best_threshold,
@@ -469,7 +474,10 @@ def _logged_batches(loader, *, epoch: int, phase: str, every: int):
     total = len(loader)
     for index, batch in enumerate(loader, start=1):
         if index == 1 or index % every == 0 or index == total:
-            print(f"[FoveaTagControl] epoch={epoch} phase={phase} batch={index}/{total}")
+            print(
+                f"[FoveaTagControl] epoch={epoch} phase={phase} batch={index}/{total}",
+                flush=True,
+            )
         yield batch
 
 
@@ -493,6 +501,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--warmup-steps", type=int, default=100)
     parser.add_argument("--log-every", type=int, default=100)
+    parser.add_argument(
+        "--max-source-megapixels",
+        type=float,
+        default=40.0,
+        help="Skip sources above this full-decode cap; use 0 to disable",
+    )
     parser.add_argument("--seed", type=int, default=20260929)
     parser.add_argument("--resume", type=Path)
     return parser
@@ -520,6 +534,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         warmup_steps=args.warmup_steps,
         log_every=args.log_every,
         seed=args.seed,
+        max_source_pixels=(
+            round(args.max_source_megapixels * 1_000_000)
+            if args.max_source_megapixels > 0
+            else None
+        ),
         resume=args.resume,
     )
     print(json.dumps(summary, indent=2, ensure_ascii=False))

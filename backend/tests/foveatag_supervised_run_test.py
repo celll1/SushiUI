@@ -6,6 +6,7 @@ from torch import nn
 
 from core.tagger.foveatag.supervised_data import FoveaSupervisedSample
 from core.tagger.foveatag.supervised_run import (
+    FoveaRunControl,
     _encoder_config,
     _train_epoch,
     _validate_arguments,
@@ -141,3 +142,33 @@ def test_branch_arguments_require_compute_matched_local_budget():
         assert "local_views" in str(error)
     else:
         raise AssertionError("expected zero local candidate budget to fail")
+
+
+def test_train_epoch_honors_existing_lifecycle_stop_handle(tmp_path):
+    trainer = _Trainer()
+    control = FoveaRunControl()
+    control.request_stop()
+
+    result, offset, step, added, stopped, _accumulator = _train_epoch(
+        trainer,
+        _Samples(5),
+        epoch=0,
+        sample_offset=0,
+        batch_size=2,
+        workers=0,
+        checkpoint_every_steps=10,
+        log_every=10,
+        global_step=0,
+        output_dir=tmp_path,
+        best_f1=0.0,
+        best_threshold=0.5,
+        run_contract={"input_mode": "overview_only"},
+        history=[],
+        initial_accumulator=None,
+        remaining_step_budget=None,
+        run_control=control,
+    )
+
+    assert stopped == "stopped_by_request"
+    assert (offset, step, added) == (0, 0, 0)
+    assert result["samples"] == 0

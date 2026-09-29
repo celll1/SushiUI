@@ -754,6 +754,16 @@ the minimum-side count, over-cap count, and post-cap count per domain in their
 contract. Images above the cap remain excluded until a later dataset adapter
 can resolve and validate prebuilt tiled-pyramid caches without full decode.
 
+The first cache boundary is now implemented without changing the active run:
+a normalized absolute source path maps to a deterministic cache directory, and
+cache resolution requires the original path, byte length, and nanosecond mtime
+recorded at pyramid creation. `FoveaImagePathDataset` can use that source for an
+over-cap item and renders the local and overview tensors through the same
+coordinate-preserving `RegionImageSource` path as staged inference. Missing or
+stale caches still skip the item before pixel decode. Indexed Phase-2 manifests
+do not yet admit those cached over-cap paths, so the current long run and its
+resume contract remain unchanged.
+
 ### 9.4 Diagnostic NaFlex patch-budget timing (2026-09-29)
 
 The available 97,199-tag NaFlex checkpoint was measured on eight registered cosplay

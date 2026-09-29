@@ -46,8 +46,23 @@ class TiledPyramidSource:
         if min(self.width, self.height, self.tile_size) <= 0:
             raise ValueError("tiled-pyramid dimensions must be positive")
         self.source_sha256 = str(payload["source"]["sha256"])
+        self.source_path = Path(str(payload["source"].get("path", ""))).resolve()
+        self.source_bytes = payload["source"].get("bytes")
+        self.source_mtime_ns = payload["source"].get("mtime_ns")
         self.levels = tuple(PyramidLevel(**row) for row in payload["levels"])
         self._validate_levels()
+
+    def validate_source(self, image_path: str | Path) -> None:
+        path = Path(image_path).resolve()
+        if path != self.source_path:
+            raise ValueError("tiled-pyramid cache belongs to a different source path")
+        stat = path.stat()
+        if self.source_bytes is None or self.source_mtime_ns is None:
+            raise ValueError("tiled-pyramid cache lacks cheap source identity")
+        if stat.st_size != int(self.source_bytes) or stat.st_mtime_ns != int(
+            self.source_mtime_ns
+        ):
+            raise ValueError("tiled-pyramid source changed after cache creation")
 
     def render_view(
         self,
@@ -179,6 +194,7 @@ def build_tiled_pyramid(
     if output_dir.exists():
         raise FileExistsError(f"tiled-pyramid output already exists: {output_dir}")
     output_dir.parent.mkdir(parents=True, exist_ok=True)
+    source_stat = image_path.stat()
     source_sha256 = _file_sha256(image_path)
     with Image.open(image_path) as opened:
         if max_source_pixels is not None and opened.width * opened.height > max_source_pixels:
@@ -220,6 +236,12 @@ def build_tiled_pyramid(
                 _BICUBIC,
             )
             level_index += 1
+        final_stat = image_path.stat()
+        if (
+            final_stat.st_size != source_stat.st_size
+            or final_stat.st_mtime_ns != source_stat.st_mtime_ns
+        ):
+            raise RuntimeError("source changed while its tiled pyramid was being built")
         manifest = {
             "format_version": TILED_PYRAMID_FORMAT_VERSION,
             "kind": "foveatag_tiled_pyramid",
@@ -227,6 +249,8 @@ def build_tiled_pyramid(
                 "path": str(image_path.resolve()),
                 "width": source_width,
                 "height": source_height,
+                "bytes": source_stat.st_size,
+                "mtime_ns": source_stat.st_mtime_ns,
                 "sha256": source_sha256,
             },
             "tile_size": tile_size,
@@ -239,6 +263,43 @@ def build_tiled_pyramid(
         )
         os.replace(temporary_root, output_dir)
     return output_dir
+
+
+def tiled_pyramid_cache_path(
+    cache_root: str | Path, image_path: str | Path
+) -> Path:
+    """Map a source path to a stable cache location without decoding it."""
+    normalized = os.path.normcase(str(Path(image_path).resolve()))
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return Path(cache_root) / digest[:2] / digest
+
+
+def build_cached_tiled_pyramid(
+    image_path: str | Path,
+    cache_root: str | Path,
+    *,
+    tile_size: int = 512,
+    coarsest_max_side: int = 512,
+    max_source_pixels: Optional[int] = None,
+) -> Path:
+    return build_tiled_pyramid(
+        image_path,
+        tiled_pyramid_cache_path(cache_root, image_path),
+        tile_size=tile_size,
+        coarsest_max_side=coarsest_max_side,
+        max_source_pixels=max_source_pixels,
+    )
+
+
+def resolve_cached_tiled_pyramid(
+    image_path: str | Path, cache_root: str | Path
+) -> Optional[TiledPyramidSource]:
+    root = tiled_pyramid_cache_path(cache_root, image_path)
+    if not (root / "manifest.json").is_file():
+        return None
+    source = TiledPyramidSource(root)
+    source.validate_source(image_path)
+    return source
 
 
 def _file_sha256(path: Path) -> str:

@@ -7,6 +7,7 @@ from core.tagger.foveatag.benchmark import (
     PredictionSet,
     StageTimer,
     evaluate_predictions,
+    evaluate_dense_oracle_recovery,
 )
 
 
@@ -66,6 +67,21 @@ def test_manifest_rejects_fine_tag_without_evidence():
         BenchmarkManifest.from_dict(raw)
 
 
+def test_dense_oracle_manifest_allows_box_free_fine_tags():
+    raw = {
+        "format_version": 1,
+        "name": "automatic",
+        "evidence_mode": "dense_oracle",
+        "items": [{
+            "sample_id": "a", "image_path": "a.png", "width": 10, "height": 10,
+            "positive_tags": ["blue_eyes"], "fine_detail_tags": ["blue_eyes"],
+            "coarse_tags": [], "evidence": [],
+        }],
+    }
+    manifest = BenchmarkManifest.from_dict(raw)
+    assert manifest.evidence_mode == "dense_oracle"
+
+
 def test_evaluation_reports_group_area_resolution_and_stage_timing():
     predictions = PredictionSet.from_dict({
         "format_version": 1,
@@ -86,6 +102,31 @@ def test_evaluation_reports_group_area_resolution_and_stage_timing():
     }
 
 
+def test_evaluation_reports_stability_against_native_scores():
+    predictions = PredictionSet.from_dict({
+        "format_version": 1,
+        "model_name": "fixture",
+        "predictions": [
+            {"sample_id": "a", "resolution": "384", "scores": {"blue_eyes": 0.4, "1girl": 0.8}},
+            {"sample_id": "a", "resolution": "native", "scores": {"blue_eyes": 0.8, "1girl": 0.7}},
+            {"sample_id": "b", "resolution": "384", "scores": {"blue_eyes": 0.1, "1girl": 0.7}},
+            {"sample_id": "b", "resolution": "native", "scores": {"blue_eyes": 0.2, "1girl": 0.9}},
+        ],
+    })
+
+    report = evaluate_predictions(_manifest(), predictions, threshold=0.5)
+    stability = report["resolutions"]["384"]["stability_to_native"]
+    assert stability["fine_detail"] == {
+        "matched_samples": 2,
+        "score_count": 2,
+        "mean_absolute_score_delta": pytest.approx(0.25),
+        "threshold_agreement": pytest.approx(0.5),
+    }
+    assert report["resolutions"]["native"]["stability_to_native"]["all"][
+        "mean_absolute_score_delta"
+    ] == 0.0
+
+
 def test_stage_timer_records_named_stages():
     timer = StageTimer()
     with timer.stage("preprocess"):
@@ -93,3 +134,28 @@ def test_stage_timer_records_named_stages():
     summary = timer.summary()
     assert summary["preprocess"]["count"] == 1
     assert summary["preprocess"]["mean"] >= 0
+
+
+def test_dense_oracle_recovery_reports_utility_and_topk_overlap():
+    import torch
+
+    report = evaluate_dense_oracle_recovery(
+        torch.tensor([[0.9, 0.8, 0.1], [0.1, 0.8, 0.7]]),
+        torch.tensor([[3.0, 1.0, 2.0], [0.0, 2.0, 1.0]]),
+        k=2,
+    )
+    assert report["mean_utility_recovery"] == pytest.approx(0.9)
+    assert report["mean_oracle_topk_recall"] == pytest.approx(0.75)
+
+
+def test_dense_oracle_recovery_excludes_samples_without_positive_utility():
+    import torch
+
+    report = evaluate_dense_oracle_recovery(
+        torch.tensor([[0.9, 0.1], [0.1, 0.9]]),
+        torch.tensor([[0, 0], [2, 1]]),
+        k=1,
+    )
+    assert report["recoverable_samples"] == 1
+    assert report["mean_utility_recovery"] == pytest.approx(0.5)
+    assert report["mean_oracle_topk_recall"] == 0.0

@@ -8,6 +8,7 @@ from .benchmark import (
     PredictionSet,
     StageTimer,
     evaluate_predictions,
+    evaluate_dense_oracle_recovery,
     load_benchmark_manifest,
     load_prediction_set,
 )
@@ -96,6 +97,7 @@ __all__ = [
     "PredictionSet",
     "StageTimer",
     "evaluate_predictions",
+    "evaluate_dense_oracle_recovery",
     "load_benchmark_manifest",
     "load_prediction_set",
     "EvidenceHeadOutput",

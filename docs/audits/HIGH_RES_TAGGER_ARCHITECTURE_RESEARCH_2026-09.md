@@ -587,6 +587,9 @@ masked-local and overview correspondence, variance, pairwise cosine, and rank
 with the same-seed untrained initialization. There is no post-hoc automatic
 rank threshold: the reviewer records the reason for accepting or rejecting the
 measured representation, and any changed evidence invalidates the decision.
+The bounded feature-health token budget is distributed deterministically over
+every held-out batch. It is not filled from the first batch alone, which would
+make the collapse evidence depend on one narrow prefix of each domain.
 Gate creation and every downstream gate load re-parse the encoder metadata and
 completed summary rather than trusting paths copied into the evaluation or a
 handwritten pass JSON. They require the same run

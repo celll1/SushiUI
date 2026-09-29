@@ -40,3 +40,26 @@ def test_feature_health_rejects_wrong_shape():
     health = FeatureHealthAccumulator(3)
     with pytest.raises(ValueError, match="shape"):
         health.update(torch.zeros(2, 4, 3, 3))
+
+
+def test_feature_health_spreads_budget_across_expected_updates():
+    health = FeatureHealthAccumulator(3, max_tokens=6, expected_updates=3)
+    for index in range(3):
+        features = torch.zeros(1, 3, 2, 2)
+        features[:, index] = 1.0
+        health.update(features, update_index=index)
+
+    result = health.finalize()
+    assert result["tokens"] == 6
+    assert result["effective_rank"] == pytest.approx(2.0)
+    assert result["mean_pairwise_cosine"] < 0.3
+
+
+def test_feature_health_requires_ordered_indexes_for_spread_sampling():
+    health = FeatureHealthAccumulator(3, max_tokens=6, expected_updates=3)
+    features = torch.zeros(1, 3, 2, 2)
+    with pytest.raises(ValueError, match="required"):
+        health.update(features)
+    health.update(features, update_index=0)
+    with pytest.raises(ValueError, match="increase"):
+        health.update(features, update_index=0)

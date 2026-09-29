@@ -16,6 +16,7 @@ from core.tagger.foveatag.phase4_gate import (
     load_passed_phase4_gate,
     record_phase4_gate,
     routed_checkpoint_hashes,
+    validate_phase4_artifact,
 )
 
 
@@ -25,7 +26,12 @@ def _write(path, value):
     return path.resolve()
 
 
-def _summary(tmp_path):
+def _summary(
+    tmp_path,
+    *,
+    routed_checkpoint_sha="c" * 64,
+    routed_metadata_sha="d" * 64,
+):
     manifest_payload = {
         "format_version": 1,
         "name": "ground",
@@ -118,8 +124,8 @@ def _summary(tmp_path):
     routed_payload = {
         "format_version": 1,
         "model_name": "foveatag-routed-fast",
-        "checkpoint_sha256": "c" * 64,
-        "checkpoint_metadata_sha256": "d" * 64,
+        "checkpoint_sha256": routed_checkpoint_sha,
+        "checkpoint_metadata_sha256": routed_metadata_sha,
         "artifact_provenance": {
             "initialization": "scratch",
             "external_weights": [],
@@ -257,3 +263,41 @@ def test_phase4_gate_loader_rejects_handwritten_incomplete_evidence(tmp_path):
 
     with pytest.raises(ValueError, match="evidence set does not match"):
         load_passed_phase4_gate(gate)
+
+
+def test_phase4_gate_validates_the_exact_final_artifact(tmp_path):
+    artifact = tmp_path / "joint.safetensors"
+    artifact.write_bytes(b"joint model")
+    metadata = _write(tmp_path / "joint_metadata.json", {
+        "provenance": {
+            "initialization": "scratch",
+            "external_weights": [],
+            "stage": "joint_routed_finetune",
+            "threshold": 0.5,
+            "router_validation": {
+                "budget": 2,
+                "mean_utility_recovery": 0.7,
+                "random_mean_utility_recovery": 0.4,
+            },
+        }
+    })
+    summary = _summary(
+        tmp_path,
+        routed_checkpoint_sha=hashlib.sha256(artifact.read_bytes()).hexdigest(),
+        routed_metadata_sha=hashlib.sha256(metadata.read_bytes()).hexdigest(),
+    )
+    gate_path = record_phase4_gate(
+        summary,
+        tmp_path / "gate.json",
+        decision="pass",
+        rationale="exact routed artifact passed",
+        decided_by="owner",
+    )
+
+    gate, loaded_metadata = validate_phase4_artifact(gate_path, artifact)
+    assert gate["decision"] == "pass"
+    assert loaded_metadata["provenance"]["stage"] == "joint_routed_finetune"
+
+    artifact.write_bytes(b"changed")
+    with pytest.raises(ValueError, match="artifact does not match"):
+        validate_phase4_artifact(gate_path, artifact)

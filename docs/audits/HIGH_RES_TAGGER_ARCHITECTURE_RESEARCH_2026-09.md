@@ -625,6 +625,10 @@ Gate creation and every load rebuild each routed comparison from the registered
 manifest, fixed baseline, source-native predictions, and routed predictions.
 They require one source and one routed artifact across all benchmarks, an
 inference mode matching the completed summary, and an exact evidence set.
+The production boundary must call `validate_phase4_artifact`; it reloads the
+passed gate, compares the candidate joint weights and metadata hashes with the
+accepted routed predictions, and revalidates pure-scratch joint provenance and
+learned-over-random router utility before returning the artifact metadata.
 
 Phase 0 measurement must precede expensive training and product integration.
 Implementation of the isolated benchmark, model, and loss components may happen

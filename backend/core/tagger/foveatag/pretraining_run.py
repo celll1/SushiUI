@@ -18,6 +18,7 @@ import torch
 from torch.utils.data import DataLoader, Subset
 
 from .encoder import FoveaEncoderConfig
+from .feature_health import FeatureHealthAccumulator
 from .objectives import FoveaSelfSupervisedLoss
 from .pretraining import FoveaPretrainer, collate_pretraining_samples
 from .pretraining_checkpoint import (
@@ -536,6 +537,8 @@ def _validate(
         loader = _loader(dataset, batch_size=batch_size, workers=workers, shuffle=False)
         generator = torch.Generator(device=device).manual_seed(seed + domain * 65537)
         sums = _loss_sums()
+        local_health = FeatureHealthAccumulator(model.encoder.config.widths[2])
+        overview_health = FeatureHealthAccumulator(model.encoder.config.widths[2])
         samples = skipped = consumed = 0
         for batch in loader:
             requested = min(batch_size, len(dataset) - consumed)
@@ -548,12 +551,18 @@ def _validate(
                 output = model(batch, generator=generator)
             actual = batch.first_images.shape[0]
             _accumulate_losses(sums, output.losses, actual)
+            local_health.update(output.first_features)
+            overview_health.update(output.second_features)
             samples += actual
             skipped += requested - actual
         domains[str(domain)] = {
             "samples": samples,
             "skipped": skipped,
             **_mean_losses(sums, samples),
+            "feature_health": {
+                "masked_local": local_health.finalize(),
+                "overview": overview_health.finalize(),
+            },
         }
     weighted = {
         name: sum(domain_weights[int(domain)] * values[name] for domain, values in domains.items())

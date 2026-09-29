@@ -33,6 +33,10 @@ class RawTaggerSample:
     source_path: Optional[str] = None
 
 
+class SourcePixelLimitError(ValueError):
+    pass
+
+
 class TaggerDataset(Dataset):
     """PyTorch Dataset for tagger training.
 
@@ -55,6 +59,7 @@ class TaggerDataset(Dataset):
         comma_resolver=None,
         quality_masking_mode: str = "intra_group",
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        max_source_pixels: Optional[int] = None,
     ) -> None:
         """
         Parameters
@@ -85,10 +90,15 @@ class TaggerDataset(Dataset):
                            positive Quality tags train as negatives.  Correct
                            only when intra-group labels are truly mutually
                            exclusive and prevalences are balanced.
+        max_source_pixels : optional pre-decode safety cap. Images above the
+                         cap are skipped before their pixel payload is loaded.
         """
+        if max_source_pixels is not None and max_source_pixels <= 0:
+            raise ValueError("max_source_pixels must be positive when provided")
         self.vocabulary = vocabulary
         self.processor = processor
         self.num_tags = vocabulary.num_tags
+        self.max_source_pixels = max_source_pixels
         self._alias_resolver = alias_resolver
         self._comma_resolver = comma_resolver
         if quality_masking_mode not in ("intra_group", "cross_group"):
@@ -345,7 +355,10 @@ class TaggerDataset(Dataset):
         if self._refresh_enabled and self._refresh_gen_path:
             tags = self._apply_tag_refresh(idx, tags)
         try:
-            image = _load_image(image_path)
+            image = _load_image(image_path, max_pixels=self.max_source_pixels)
+        except SourcePixelLimitError as e:
+            print(f"[TaggerDataset] Skipping oversized image {image_path}: {e}")
+            return None
         except Exception as e:
             print(f"[TaggerDataset] Skipping corrupt image {image_path}: {e}")
             return None
@@ -415,8 +428,15 @@ def tagger_collate_fn(batch):
 
 
 
-def _load_image(path: str) -> Image.Image:
+def _load_image(path: str, *, max_pixels: Optional[int] = None) -> Image.Image:
     img = Image.open(path)
+    source_pixels = img.width * img.height
+    if max_pixels is not None and source_pixels > max_pixels:
+        img.close()
+        raise SourcePixelLimitError(
+            f"source has {source_pixels:,} pixels, above the "
+            f"configured {max_pixels:,}-pixel decode cap"
+        )
     img.load()  # force full decode here so truncation raises OSError before reaching the processor
     if img.mode == "RGBA":
         bg = Image.new("RGB", img.size, (255, 255, 255))

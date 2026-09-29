@@ -26,6 +26,13 @@ preserve source pixels for eyes, contact lenses, jewelry, text, and other small
 evidence. A shared encoder and a multi-instance classification head combine the
 views without forming attention over every source-image patch.
 
+Arbitrary source resolution does not mean an unbounded model input or an
+unbounded full-image decode. The production input contract is a bounded
+overview proxy followed by at most `K` region reads from the original or an
+aligned tiled pyramid. Extremely large sources use a configurable raw-decode
+cap; they must be served by that region-readable representation or skipped,
+not silently reduced to the overview and treated as if local evidence survived.
+
 Do not upscale the complete image. Permit magnification only for selected local
 views, initially at `1x` and `2x` field-of-view levels. Upscaling cannot create
 missing information, but a bounded local magnification can place existing small
@@ -143,6 +150,17 @@ without materializing every level at once:
 All local views use a common canvas, initially 256 square. Coordinate transforms
 remain exact so an evidence slot can be mapped back to the source image.
 
+The storage-side contract has two paths. Ordinary sources below a configurable
+pixel cap may use the existing full-decode fallback. Sources above the cap use
+a persistent tiled pyramid: a bounded proxy supplies the overview and router,
+then only the selected source rectangles are decoded from the closest pyramid
+level. Header dimensions are read before decoding. If no region-readable form
+exists during training, the sample is skipped and the skip is recorded;
+downscaling the sole copy to fit the cap is not an acceptable fallback because
+it defeats the fine-detail objective. The prototype control runner initially uses a 40 MP
+full-decode cap; this is an operational safety value to tune from decode and
+coverage measurements, not an architectural resolution limit.
+
 Training must not always contain an untouched native view. For each item, sample
 the pyramid's base pixel density log-uniformly from a bounded range, include the
 overview, and draw local views from at least two field-of-view levels. Source
@@ -179,6 +197,13 @@ be selected, and an optional refinement adds a third dependent stage. Batched
 inference therefore runs as staged batches (all overviews, then all selected
 views), and latency must be measured per stage rather than derived from the
 pixel counts below.
+
+No stage concatenates all source patches into one attention sequence. With
+`T_o` overview tokens, `T_l` tokens per local canvas, and fixed budget `K`,
+ordinary self-attention is `O(T_o^2 + K T_l^2)`, rather than quadratic in the
+source pixel count or in one combined high-resolution sequence. View rendering
+and local encoding grow approximately linearly with `K`; `T_o`, `T_l`, and `K`
+are independently capped in both training and inference.
 
 The initial inference modes should differ only in view budget, not model weights:
 
@@ -495,14 +520,14 @@ require data and GPU time:
 | Phase | Implemented | Still required before exit |
 |---|---|---|
 | 0 | Versioned box-free partially curated photo benchmark, deterministic Danbooru ground-illustration benchmark, dense-oracle recovery metric, resolution/group/stability metrics, saved predictions, per-stage timing summaries, synthetic scratch-model GPU timing, representative data-loaded optimizer timing, fixed-resolution agreement baselines, and diagnostic NaFlex measurements. | Complete. The scratch pretraining budget is fixed below. |
-| 1 | Deterministic multi-scale views, exact source transforms, expandable evidence head, fixed/NaFlex SigLIP2 token adapter, a processor bridge that preserves overview/local view axes, fixed-encoder inference and optimizer cost, masked-label training and streaming validation, domain-balanced ground/photo sampling with benchmark exclusion, epoch-boundary checkpoint/resume without duplicating the external encoder, and deterministic benchmark prediction from compact best weights. | Train beyond the connectivity smoke and measure benchmark quality. |
+| 1 | Deterministic multi-scale views, exact source transforms, expandable evidence head, fixed/NaFlex SigLIP2 token adapter, a processor bridge that preserves overview/local view axes, fixed-encoder inference and optimizer cost, masked-label training and streaming validation, domain-balanced ground/photo sampling with benchmark exclusion, epoch-boundary checkpoint/resume without duplicating the external encoder, deterministic benchmark prediction from compact best weights, and a pre-decode safety cap for the full-decode fallback. | Train beyond the connectivity smoke and measure benchmark quality; implement the region-readable tiled-pyramid backend before treating sources above the fallback cap as supported. |
 | 2 | A 37.39M-parameter default scratch encoder, content-aware continuous 2-D RoPE, stride-16 local map, low-token global stage, masked RGB decoder, teacher-free losses, the diagnostic local-teacher projection, deterministic overlapping-view data, and an executable AdamW pretraining path. | Run convergence and held-out overlap/chroma measurements. |
 | 3 | End-to-end scratch tagger, masked classifier composition, density-gated prediction consistency, and an adapter from the existing vocabulary/loss-mask/live-refresh dataset lifecycle to deterministic FoveaTag views. | Add the production training loop and run the pre-registered comparison. |
 | 4 | Generic scale-space router, padding mask, NMS, dense-oracle targets, ranking/diversity losses, retained random-budget selection, and box-free oracle recovery metrics. | Run dense-oracle training, choose its batch frequency from measured cost, and measure utility recovery at fixed `K`. |
-| 5 | Versioned inference/resume artifacts, exclusion of diagnostic weights from inference artifacts, coordinate-aware collation, cached-overview staged inference, and per-stage wall time. | Add production manager/export, API/defaults/OpenAPI/frontend surfaces, and lifecycle tests after the go/no-go gates pass. |
+| 5 | Versioned inference/resume artifacts, exclusion of diagnostic weights from inference artifacts, coordinate-aware collation, cached-overview staged inference, and per-stage wall time. | Add the tiled-pyramid source backend, production manager/export, API/defaults/OpenAPI/frontend surfaces, and lifecycle tests after the go/no-go gates pass. |
 | 6 | Not started. | Run registered capacity and component ablations only after the smaller model is measured. |
 
-One hundred focused CPU tests cover the isolated modules. After the owner's
+One hundred five focused CPU tests cover the isolated modules. After the owner's
 separate training run released the GPU, the synthetic measurement below was
 also run. No backend restart was performed. Quality and extrapolation
 measurements for the FoveaTag controls and scratch encoder remain pending.

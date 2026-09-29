@@ -460,18 +460,18 @@ require data and GPU time:
 
 | Phase | Implemented | Still required before exit |
 |---|---|---|
-| 0 | Versioned benchmark manifest, evidence-box validation, resolution/group metrics, saved predictions, per-stage timing summaries, and a synthetic scratch-model GPU timing harness. | Populate the fixed benchmark, run current SigLIP2 baselines, and measure data-loaded optimizer steps and candidate epoch time. |
+| 0 | Versioned benchmark manifest, evidence-box validation, resolution/group metrics, saved predictions, per-stage timing summaries, a synthetic scratch-model GPU timing harness, and data-loaded optimizer timing on registered photo and illustration datasets. | Populate the fixed benchmark and run current SigLIP2 baselines. Repeat the initial epoch estimate below on a representative shuffled sample before setting the pretraining budget. |
 | 1 | Deterministic multi-scale views, exact source transforms, expandable evidence head, and fixed/NaFlex SigLIP2 token adapter. | Train and measure the encoder-swap control. |
-| 2 | A 37.39M-parameter default scratch encoder, content-aware continuous 2-D RoPE, stride-16 local map, low-token global stage, masked RGB decoder, teacher-free losses, and the diagnostic local-teacher projection. | Add the pretraining loop, then run convergence and held-out measurements. |
+| 2 | A 37.39M-parameter default scratch encoder, content-aware continuous 2-D RoPE, stride-16 local map, low-token global stage, masked RGB decoder, teacher-free losses, the diagnostic local-teacher projection, deterministic overlapping-view data, and an executable AdamW pretraining path. | Run convergence and held-out overlap/chroma measurements. |
 | 3 | End-to-end scratch tagger, masked classifier composition, and density-gated prediction consistency. | Connect the existing dataset/vocabulary lifecycle and run the pre-registered comparison. |
 | 4 | Generic scale-space router, padding mask, NMS, dense-oracle targets, ranking/diversity losses, and retained random-budget selection. | Run dense-oracle training, choose its batch frequency from measured cost, and measure router recall. |
 | 5 | Versioned inference/resume artifacts, exclusion of diagnostic weights from inference artifacts, coordinate-aware collation, cached-overview staged inference, evidence boxes, and per-stage wall time. | Add production manager/export, API/defaults/OpenAPI/frontend surfaces, and lifecycle tests after the go/no-go gates pass. |
 | 6 | Not started. | Run registered capacity and component ablations only after the smaller model is measured. |
 
-Sixty-five focused CPU tests cover the isolated modules. After the owner's
+Seventy focused CPU tests cover the isolated modules. After the owner's
 separate training run released the GPU, the synthetic measurement below was
-also run. No backend restart was performed. Real-data throughput, quality, and
-extrapolation measurements remain pending.
+also run. No backend restart was performed. Quality and extrapolation
+measurements remain pending.
 
 ### 9.2 Initial synthetic GPU measurement (2026-09-29)
 
@@ -495,6 +495,31 @@ short synthetic run; batched local views can improve device utilization as the
 view count rises. Memory does increase with the view budget. These numbers show
 that the default model fits with substantial margin on this GPU, but they do
 not satisfy a phase gate or establish accuracy.
+
+### 9.3 Initial data-loaded pretraining measurement (2026-09-29)
+
+`pretraining_benchmark.py` runs the teacher-free path on images registered in
+`datasets.db`. It includes source-image decode, two overlapping 256-pixel local
+views at independently jittered fields of view, host-to-device transfer, BF16
+autocast forward/backward, and an AdamW update with FP32 parameters and optimizer
+state. Ten measured steps followed three warmups on the same RTX 6000 Ada.
+
+| Registered slice | Batch / workers | Mean end-to-end step | Median end-to-end step | Estimated one epoch from mean | Peak reserved VRAM |
+|---|---:|---:|---:|---:|---:|
+| cosplay photos, 21,499 eligible images | 2 / 2 | 127.0 ms | 128.9 ms | 0.38 h | 980 MiB |
+| character illustrations, 1,546,928 eligible images | 2 / 2 | 138.6 ms | 140.6 ms | 29.8 h | 980 MiB |
+| character illustrations | 8 / 4 | 660.5 ms | 147.6 ms | 35.5 h | 2,804 MiB |
+| character illustrations | 16 / 8 | 695.1 ms | 116.6 ms | 18.7 h | 5,246 MiB |
+
+The larger-batch means contain a single roughly five-second data wait in each
+ten-step window, while their medians show that GPU compute scales well. Native
+image decode and view production, especially for very large source files, can
+therefore dominate wall time even when average GPU work is cheap. The sample is
+the first bounded database window rather than a shuffled population sample, so
+the mean-derived epoch estimates are provisional and are not yet a pretraining
+budget. The saved JSON reports preserve data wait, transfer, optimizer-step,
+loss, and memory measurements separately. The loss change over ten updates is
+only a smoke signal and is not a convergence claim.
 
 ## 10. Integration surface after acceptance
 

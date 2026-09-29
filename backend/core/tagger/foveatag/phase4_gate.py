@@ -179,6 +179,26 @@ def routed_checkpoint_hashes(gate: Mapping[str, Any]) -> dict[str, str]:
     }
 
 
+def validate_phase4_artifact(
+    gate_path: Path | str, artifact_path: Path | str
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Require the exact routed artifact accepted by a passed Phase-4 gate."""
+    gate = load_passed_phase4_gate(gate_path)
+    expected = routed_checkpoint_hashes(gate)
+    artifact = _required_file(str(artifact_path), "Phase-4 routed artifact")
+    metadata_path = artifact.with_name(f"{artifact.stem}_metadata.json")
+    metadata_path = _required_file(str(metadata_path), "Phase-4 routed artifact metadata")
+    if _file_sha256(artifact) != expected["checkpoint_sha256"]:
+        raise ValueError("routed artifact does not match the passed Phase-4 gate")
+    if _file_sha256(metadata_path) != expected["checkpoint_metadata_sha256"]:
+        raise ValueError("routed artifact metadata does not match the passed Phase-4 gate")
+    metadata = dict(_load_json(metadata_path))
+    from .routed_prediction_runner import validate_joint_artifact
+
+    validate_joint_artifact(metadata)
+    return gate, metadata
+
+
 def _required_file(value: Any, name: str) -> Path:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{name} path is missing")

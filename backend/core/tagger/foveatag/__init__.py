@@ -102,6 +102,7 @@ from .phase4_gate import (
     load_passed_phase4_gate,
     record_phase4_gate,
     routed_checkpoint_hashes,
+    validate_phase4_artifact,
 )
 from .reconstruction import (
     PatchReconstructionHead,
@@ -270,6 +271,7 @@ __all__ = [
     "load_passed_phase4_gate",
     "record_phase4_gate",
     "routed_checkpoint_hashes",
+    "validate_phase4_artifact",
     "PatchReconstructionHead",
     "expand_patch_mask",
     "mask_image_patches",

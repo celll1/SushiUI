@@ -223,6 +223,22 @@ def run_supervised_training(
     )
     if not validation_indices:
         raise ValueError("validation split must not be empty")
+    shared_data_contract = _build_shared_data_contract(
+        datasets_db=datasets_db,
+        raw_dataset=raw_dataset,
+        train_indices=train_indices,
+        validation_indices=validation_indices,
+        available=available,
+        holdout_manifests=holdout_manifests,
+        train_counts=train_counts,
+        validation_counts=validation_counts,
+        seed=seed,
+        max_source_pixels=max_source_pixels,
+    )
+    shared_data_contract_sha256 = _bind_shared_data_contract(
+        comparison_dir,
+        shared_data_contract,
+    )
     domain_indices = {
         domain: tuple(
             index for index in train_indices
@@ -294,6 +310,7 @@ def run_supervised_training(
             pretrained_encoder.with_name(f"{pretrained_encoder.stem}_metadata.json")
         ),
         "vocabulary_sha256": _file_sha256(vocabulary_path),
+        "shared_data_contract_sha256": shared_data_contract_sha256,
         "seed": seed,
         "model": artifact_config.to_dict(),
     }
@@ -345,6 +362,7 @@ def run_supervised_training(
         "kind": "foveatag_phase3_supervised_branch",
         "input_mode": input_mode,
         "shared_initialization_sha256": shared_initialization_sha256,
+        "shared_data_contract_sha256": shared_data_contract_sha256,
         "datasets_db": str(datasets_db.resolve()),
         "train_counts": {str(key): int(value) for key, value in sorted(train_counts.items())},
         "validation_counts": {
@@ -437,6 +455,19 @@ def run_supervised_training(
                 status = stopped
                 break
 
+            _require_unchanged_shared_data(
+                shared_data_contract,
+                datasets_db=datasets_db,
+                raw_dataset=raw_dataset,
+                train_indices=train_indices,
+                validation_indices=validation_indices,
+                available=available,
+                holdout_manifests=holdout_manifests,
+                train_counts=train_counts,
+                validation_counts=validation_counts,
+                seed=seed,
+                max_source_pixels=max_source_pixels,
+            )
             validation_started = time.monotonic()
             validation = trainer.validate_epoch(
                 _loader(
@@ -478,6 +509,7 @@ def run_supervised_training(
                         "initialization": "scratch",
                         "external_weights": [],
                         "shared_initialization_sha256": shared_initialization_sha256,
+                        "shared_data_contract_sha256": shared_data_contract_sha256,
                         "input_mode": input_mode,
                         "epoch": epoch,
                         "global_step": global_step,
@@ -794,6 +826,103 @@ def _holdout_contract(manifests: Sequence[Path]) -> tuple[list[str], set[str]]:
             paths.append(str(item["image_path"]))
             fine_tags.update(str(tag) for tag in item.get("fine_detail_tags", []))
     return paths, fine_tags
+
+
+def _build_shared_data_contract(
+    *,
+    datasets_db: Path,
+    raw_dataset: TaggerDataset,
+    train_indices: Sequence[int],
+    validation_indices: Sequence[int],
+    available: Mapping[int, int],
+    holdout_manifests: Sequence[Path],
+    train_counts: Mapping[int, int],
+    validation_counts: Mapping[int, int],
+    seed: int,
+    max_source_pixels: Optional[int],
+) -> dict[str, Any]:
+    return {
+        "format_version": 1,
+        "kind": "foveatag_phase3_shared_data",
+        "database": _file_identity(datasets_db),
+        "holdout_manifests": [
+            {
+                **_file_identity(path),
+                "sha256": _file_sha256(path),
+            }
+            for path in holdout_manifests
+        ],
+        "seed": int(seed),
+        "max_source_pixels": max_source_pixels,
+        "requested_train_counts": {
+            str(key): int(value) for key, value in sorted(train_counts.items())
+        },
+        "requested_validation_counts": {
+            str(key): int(value) for key, value in sorted(validation_counts.items())
+        },
+        "available_after_holdout": {
+            str(key): int(value) for key, value in sorted(available.items())
+        },
+        "train": _selected_sources_contract(raw_dataset, train_indices),
+        "validation": _selected_sources_contract(raw_dataset, validation_indices),
+    }
+
+
+def _selected_sources_contract(
+    raw_dataset: TaggerDataset,
+    indices: Sequence[int],
+) -> dict[str, Any]:
+    digest = hashlib.sha256()
+    for index in indices:
+        source = Path(raw_dataset.source_path_for_index(index))
+        stat = source.stat()
+        record = [
+            raw_dataset.dataset_id_for_index(index),
+            str(source.resolve()),
+            stat.st_size,
+            stat.st_mtime_ns,
+            sorted(set(raw_dataset.tag_names_for_index(index))),
+        ]
+        digest.update(
+            json.dumps(record, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+        digest.update(b"\n")
+    return {
+        "count": len(indices),
+        "ordered_sources_and_supervision_sha256": digest.hexdigest(),
+    }
+
+
+def _file_identity(path: Path) -> dict[str, Any]:
+    resolved = path.resolve()
+    stat = resolved.stat()
+    return {
+        "path": str(resolved),
+        "bytes": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def _bind_shared_data_contract(
+    comparison_dir: Path,
+    contract: Mapping[str, Any],
+) -> str:
+    path = comparison_dir / "shared_data_contract.json"
+    if path.is_file():
+        existing = json.loads(path.read_text(encoding="utf-8"))
+        if existing != contract:
+            raise ValueError("Phase-3 branch does not match the shared data contract")
+    else:
+        _write_json_atomic(path, contract)
+    return _file_sha256(path)
+
+
+def _require_unchanged_shared_data(
+    expected: Mapping[str, Any],
+    **contract_arguments: Any,
+) -> None:
+    if _build_shared_data_contract(**contract_arguments) != expected:
+        raise RuntimeError("Phase-3 training data changed while a branch was running")
 
 
 def _file_sha256(path: Path) -> str:

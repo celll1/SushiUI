@@ -7,7 +7,9 @@ from torch import nn
 from core.tagger.foveatag.supervised_data import FoveaSupervisedSample
 from core.tagger.foveatag.supervised_run import (
     FoveaRunControl,
+    _bind_shared_data_contract,
     _encoder_config,
+    _selected_sources_contract,
     _train_epoch,
     _validate_arguments,
     run_supervised_comparison,
@@ -54,6 +56,57 @@ class _Trainer:
         self.optimizer.step()
         self.scheduler.step()
         return float(loss.detach())
+
+
+class _RawSources:
+    def __init__(self, paths):
+        self.paths = paths
+
+    def source_path_for_index(self, index):
+        return str(self.paths[index])
+
+    def dataset_id_for_index(self, index):
+        return 29 if index < 2 else 16
+
+    def tag_names_for_index(self, index):
+        return (f"tag-{index}", "shared")
+
+
+def test_selected_source_contract_binds_order_content_and_file_identity(tmp_path):
+    paths = []
+    for index in range(3):
+        path = tmp_path / f"{index}.png"
+        path.write_bytes(bytes([index]))
+        paths.append(path)
+    dataset = _RawSources(paths)
+
+    first = _selected_sources_contract(dataset, [0, 1, 2])
+    reordered = _selected_sources_contract(dataset, [1, 0, 2])
+    paths[1].write_bytes(b"changed")
+    changed = _selected_sources_contract(dataset, [0, 1, 2])
+
+    assert first["count"] == 3
+    assert first["ordered_sources_and_supervision_sha256"] != reordered[
+        "ordered_sources_and_supervision_sha256"
+    ]
+    assert first["ordered_sources_and_supervision_sha256"] != changed[
+        "ordered_sources_and_supervision_sha256"
+    ]
+
+
+def test_shared_data_contract_is_immutable_across_branches(tmp_path):
+    contract = {"format_version": 1, "kind": "foveatag_phase3_shared_data", "seed": 3}
+
+    digest = _bind_shared_data_contract(tmp_path, contract)
+
+    assert len(digest) == 64
+    assert _bind_shared_data_contract(tmp_path, contract) == digest
+    try:
+        _bind_shared_data_contract(tmp_path, {**contract, "seed": 4})
+    except ValueError as error:
+        assert "shared data contract" in str(error)
+    else:
+        raise AssertionError("expected changed Phase-3 data to fail")
 
 
 def test_train_epoch_stops_at_exact_resumable_sample_offset(tmp_path):

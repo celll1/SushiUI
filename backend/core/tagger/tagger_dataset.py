@@ -384,6 +384,13 @@ class TaggerDataset(Dataset):
     def source_path_for_index(self, idx: int) -> str:
         return self._samples[idx][0]
 
+    def tag_names_for_index(self, idx: int) -> Tuple[str, ...]:
+        """Return the canonical supervision tags without decoding the image."""
+        _image_path, tags = self._samples[idx]
+        if self._refresh_enabled and self._refresh_gen_path:
+            tags = self._apply_tag_refresh(idx, tags)
+        return tuple(tags)
+
 
     def _build_label_and_mask(
         self, tags: List[str]

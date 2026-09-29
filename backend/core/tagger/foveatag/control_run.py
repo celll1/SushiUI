@@ -441,7 +441,9 @@ def _file_sha256(path: Path) -> str:
 
 
 def _path_key(path: str) -> str:
-    return os.path.normcase(os.path.realpath(path))
+    # Database paths are identities here; resolving every entry touches storage
+    # metadata and made million-item split construction prohibitively slow.
+    return os.path.normcase(os.path.abspath(path))
 
 
 def _parse_domain_values(values: Sequence[str], name: str) -> dict[int, float]:

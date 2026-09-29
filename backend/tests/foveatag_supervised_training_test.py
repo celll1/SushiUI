@@ -139,3 +139,23 @@ def test_supervised_trainer_steps_scheduler_with_optimizer():
 
     assert scheduler.last_epoch == 2
     assert optimizer.param_groups[0]["lr"] == 0.025
+
+
+def test_supervised_trainer_train_batch_is_one_resumable_step():
+    model = _Fovea()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.5)
+    trainer = FoveaSupervisedTrainer(
+        model,
+        _MaskedBCE(),
+        optimizer,
+        device="cpu",
+        mixed_precision=None,
+        scheduler=scheduler,
+    )
+
+    loss = trainer.train_batch(_batch(1.0))
+
+    assert loss is not None and loss > 0
+    assert scheduler.last_epoch == 1
+    assert optimizer.param_groups[0]["lr"] == 0.05

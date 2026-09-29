@@ -745,6 +745,15 @@ in the downstream random-view tag pilot; the pre-registered cap is 20 epochs
 (approximately 95.4 GPU-hours). This fixes the budget before Phase 2 quality is
 known while allowing a bounded continuation rather than an open-ended run.
 
+The registered 40 MP filter excludes 23 of 21,499 minimum-side-eligible photo
+rows and 130 of 1,546,928 illustration rows in the current database. The
+resulting 21,476 and 1,546,798 rows reconcile exactly with the manifest counts
+before benchmark-path exclusion. The active run's immutable manifest predates
+this telemetry field and is not modified in place; newly built manifests record
+the minimum-side count, over-cap count, and post-cap count per domain in their
+contract. Images above the cap remain excluded until a later dataset adapter
+can resolve and validate prebuilt tiled-pyramid caches without full decode.
+
 ### 9.4 Diagnostic NaFlex patch-budget timing (2026-09-29)
 
 The available 97,199-tag NaFlex checkpoint was measured on eight registered cosplay

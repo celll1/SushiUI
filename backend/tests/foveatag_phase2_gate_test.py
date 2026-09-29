@@ -204,3 +204,40 @@ def test_phase2_gate_rejects_unregistered_validation_manifest(tmp_path):
             rationale="invalid",
             decided_by="owner",
         )
+
+
+def test_phase2_gate_loader_rejects_handwritten_incomplete_evidence(tmp_path):
+    evaluation, _encoder, _manifest = _evaluation(tmp_path)
+    gate = tmp_path / "handwritten_gate.json"
+    gate.write_text(json.dumps({
+        "format_version": 1,
+        "kind": "foveatag_phase2_gate_decision",
+        "decision": "pass",
+        "rationale": "claims to pass without binding the encoder",
+        "decided_by": "owner",
+        "evidence": [{
+            "role": "encoder_evaluation",
+            "path": str(evaluation),
+            "sha256": _sha(evaluation),
+        }],
+    }), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="evidence set does not match"):
+        load_passed_phase2_gate(gate)
+
+
+def test_phase2_gate_loader_revalidates_evaluation_roles(tmp_path):
+    gate = record_phase2_gate(
+        _evaluation(tmp_path)[0],
+        tmp_path / "gate.json",
+        decision="pass",
+        rationale="valid before role tampering",
+        decided_by="owner",
+    )
+    payload = json.loads(gate.read_text(encoding="utf-8"))
+    encoder_row = next(row for row in payload["evidence"] if row["role"] == "encoder")
+    encoder_row["role"] = "untrusted_encoder"
+    gate.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="evidence set does not match"):
+        load_passed_phase2_gate(gate)

@@ -28,6 +28,26 @@ def record_phase2_gate(
         raise ValueError("rationale and decided_by must be non-empty")
     evaluation_path = Path(evaluation_path).resolve()
     evaluation = _load_json(evaluation_path)
+    evidence = _validated_evaluation_evidence(evaluation_path, evaluation)
+    payload = {
+        "format_version": PHASE2_GATE_FORMAT_VERSION,
+        "kind": "foveatag_phase2_gate_decision",
+        "decision": decision,
+        "rationale": rationale.strip(),
+        "decided_by": decided_by.strip(),
+        "evidence": [
+            {"role": role, "path": str(path), "sha256": _file_sha256(path)}
+            for path, role in sorted(evidence.items(), key=lambda item: str(item[0]))
+        ],
+    }
+    output = Path(output_path)
+    _write_json_atomic(output, payload)
+    return output
+
+
+def _validated_evaluation_evidence(
+    evaluation_path: Path, evaluation: Mapping[str, Any]
+) -> dict[Path, str]:
     if evaluation.get("format_version") != 1:
         raise ValueError("unsupported Phase-2 evaluation format")
     if evaluation.get("kind") != "foveatag_phase2_encoder_evaluation":
@@ -89,20 +109,7 @@ def record_phase2_gate(
         evidence[path] = f"validation_{row.get('role', 'unknown')}:{row.get('domain')}"
     if seen_manifests != set(expected_manifests):
         raise ValueError("Phase-2 evaluation does not cover every registered validation manifest")
-    payload = {
-        "format_version": PHASE2_GATE_FORMAT_VERSION,
-        "kind": "foveatag_phase2_gate_decision",
-        "decision": decision,
-        "rationale": rationale.strip(),
-        "decided_by": decided_by.strip(),
-        "evidence": [
-            {"role": role, "path": str(path), "sha256": _file_sha256(path)}
-            for path, role in sorted(evidence.items(), key=lambda item: str(item[0]))
-        ],
-    }
-    output = Path(output_path)
-    _write_json_atomic(output, payload)
-    return output
+    return evidence
 
 
 def load_passed_phase2_gate(path: Path | str) -> dict[str, Any]:
@@ -120,13 +127,31 @@ def load_passed_phase2_gate(path: Path | str) -> dict[str, Any]:
     evidence = payload.get("evidence")
     if not isinstance(evidence, list) or not evidence:
         raise ValueError("Phase-2 gate has no evidence hashes")
+    resolved_evidence: dict[Path, str] = {}
+    evaluation_paths = []
     for row in evidence:
         if not isinstance(row, Mapping):
             raise ValueError("Phase-2 gate evidence row is invalid")
         evidence_path = _required_file(row.get("path"), "gate evidence")
+        role = row.get("role")
+        if not isinstance(role, str) or not role:
+            raise ValueError("Phase-2 gate evidence role is invalid")
+        if evidence_path in resolved_evidence:
+            raise ValueError(f"Phase-2 gate contains duplicate evidence: {evidence_path}")
         expected = row.get("sha256")
         if not isinstance(expected, str) or _file_sha256(evidence_path) != expected:
             raise ValueError(f"Phase-2 gate evidence changed: {evidence_path}")
+        resolved_evidence[evidence_path] = role
+        if role == "encoder_evaluation":
+            evaluation_paths.append(evidence_path)
+    if len(evaluation_paths) != 1:
+        raise ValueError("Phase-2 gate must bind one encoder evaluation")
+    evaluation_path = evaluation_paths[0]
+    expected_evidence = _validated_evaluation_evidence(
+        evaluation_path, _load_json(evaluation_path)
+    )
+    if resolved_evidence != expected_evidence:
+        raise ValueError("Phase-2 gate evidence set does not match the encoder evaluation")
     return dict(payload)
 
 

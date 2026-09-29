@@ -143,6 +143,26 @@ def test_control_evaluation_preflights_training_completion(tmp_path):
         )
 
 
+def test_control_evaluation_preflights_every_benchmark_before_prediction(tmp_path):
+    training, encoder, vocabulary, _weights, manifest, baseline = _inputs(tmp_path)
+    wrong_baseline = _write(tmp_path / "wrong_baseline.json", {
+        "benchmark": "different-benchmark",
+    })
+
+    with pytest.raises(ValueError, match="fixed baseline benchmark does not match"):
+        run_control_evaluation(
+            training_dir=training,
+            encoder_checkpoint=encoder,
+            vocabulary=vocabulary,
+            output_dir=tmp_path / "evaluation",
+            benchmarks=[
+                ControlBenchmark("ground", manifest, baseline),
+                ControlBenchmark("wrong", manifest, wrong_baseline),
+            ],
+            prediction_runner=lambda *_args, **_kwargs: pytest.fail("must not run"),
+        )
+
+
 def test_control_evaluation_rejects_changed_external_encoder(tmp_path):
     training, encoder, vocabulary, _weights, manifest, baseline = _inputs(tmp_path)
     encoder.write_bytes(b"changed")

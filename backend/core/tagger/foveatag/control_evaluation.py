@@ -79,6 +79,25 @@ def run_control_evaluation(
         lineage_paths["base_vision_encoder"] = Path(str(base_encoder))
     lineage_evidence = file_evidence(lineage_paths)
 
+    prepared = {}
+    for benchmark in benchmarks:
+        manifest = load_benchmark_manifest(benchmark.manifest)
+        baseline = _load_json(benchmark.fixed_baseline_report)
+        if baseline.get("benchmark") != manifest.name:
+            raise ValueError(
+                f"fixed baseline benchmark does not match {benchmark.name} manifest"
+            )
+        benchmark_paths = {
+            "manifest": benchmark.manifest,
+            "fixed_baseline_report": benchmark.fixed_baseline_report,
+        }
+        prepared[benchmark.name] = (
+            manifest,
+            baseline,
+            benchmark_paths,
+            file_evidence(benchmark_paths),
+        )
+
     reports: dict[str, Any] = {}
     for benchmark in benchmarks:
         benchmark_dir = output_dir / benchmark.name
@@ -86,17 +105,7 @@ def run_control_evaluation(
             output_dir / "summary.json",
             _summary("running", benchmark.name, reports),
         )
-        manifest = load_benchmark_manifest(benchmark.manifest)
-        baseline = _load_json(benchmark.fixed_baseline_report)
-        benchmark_paths = {
-            "manifest": benchmark.manifest,
-            "fixed_baseline_report": benchmark.fixed_baseline_report,
-        }
-        benchmark_evidence = file_evidence(benchmark_paths)
-        if baseline.get("benchmark") != manifest.name:
-            raise ValueError(
-                f"fixed baseline benchmark does not match {benchmark.name} manifest"
-            )
+        manifest, baseline, benchmark_paths, benchmark_evidence = prepared[benchmark.name]
         prediction_path = benchmark_dir / "control_predictions.json"
         prediction_runner(
             benchmark.manifest,

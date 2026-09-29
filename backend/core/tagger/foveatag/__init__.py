@@ -53,6 +53,13 @@ from .router_training import (
     evaluate_dense_candidates,
     train_router_batch,
 )
+from .router_data import (
+    FoveaRouterBatch,
+    FoveaRouterDataset,
+    FoveaRouterSample,
+    candidate_boxes_from_specs,
+    collate_router_samples,
+)
 from .reconstruction import (
     PatchReconstructionHead,
     expand_patch_mask,
@@ -174,6 +181,11 @@ __all__ = [
     "RouterTrainResult",
     "evaluate_dense_candidates",
     "train_router_batch",
+    "FoveaRouterBatch",
+    "FoveaRouterDataset",
+    "FoveaRouterSample",
+    "candidate_boxes_from_specs",
+    "collate_router_samples",
     "PatchReconstructionHead",
     "expand_patch_mask",
     "mask_image_patches",

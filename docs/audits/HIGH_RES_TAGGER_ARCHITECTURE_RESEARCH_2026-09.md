@@ -587,8 +587,9 @@ masked-local and overview correspondence, variance, pairwise cosine, and rank
 with the same-seed untrained initialization. There is no post-hoc automatic
 rank threshold: the reviewer records the reason for accepting or rejecting the
 measured representation, and any changed evidence invalidates the decision.
-Gate creation re-parses the encoder metadata and completed summary rather than
-trusting paths copied into the evaluation JSON. It requires the same run
+Gate creation and every downstream gate load re-parse the encoder metadata and
+completed summary rather than trusting paths copied into the evaluation or a
+handwritten pass JSON. They require the same run
 contract, best held-out loss, epoch and step identity, finite correspondence,
 reconstruction and chroma metrics, and exactly the validation manifests named
 by that contract.

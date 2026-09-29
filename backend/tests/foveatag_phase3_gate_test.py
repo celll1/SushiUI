@@ -7,6 +7,7 @@ import pytest
 from core.tagger.foveatag.phase3_gate import (
     load_passed_phase3_gate,
     record_phase3_gate,
+    source_native_checkpoint_sha256,
 )
 
 
@@ -21,7 +22,10 @@ def _summary(tmp_path):
     baseline = _write(tmp_path / "baseline.json", {"baseline": 1})
     report = _write(tmp_path / "comparison.json", {"comparison": 1})
     predictions = {
-        mode: str(_write(tmp_path / f"{mode}.json", {"mode": mode}))
+        mode: str(_write(tmp_path / f"{mode}.json", {
+            "mode": mode,
+            "checkpoint_sha256": "a" * 64,
+        }))
         for mode in ("overview_only", "overview_placebo", "source_native")
     }
     return _write(tmp_path / "summary.json", {
@@ -55,6 +59,7 @@ def test_passed_gate_is_bound_to_all_evaluation_evidence(tmp_path):
         "evaluation_summary", "manifest", "comparison_report",
         "prediction:source_native",
     }
+    assert source_native_checkpoint_sha256(payload) == "a" * 64
 
 
 def test_failed_gate_cannot_authorize_phase4(tmp_path):

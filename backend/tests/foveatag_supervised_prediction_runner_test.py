@@ -121,3 +121,5 @@ def test_prediction_runner_writes_loadable_resolution_ladder_artifact(tmp_path):
     assert output_payload["runtime"]["wall_seconds"] >= 0
     assert output_payload["runtime"]["peak_allocated_mib"] is None
     assert output_payload["runtime"]["peak_reserved_mib"] is None
+    assert len(output_payload["checkpoint_sha256"]) == 64
+    assert len(output_payload["checkpoint_metadata_sha256"]) == 64

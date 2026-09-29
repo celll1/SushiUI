@@ -74,6 +74,8 @@ def _payload(mode, positive, negative):
             "peak_allocated_mib": None,
             "peak_reserved_mib": None,
         },
+        "checkpoint_sha256": "a" * 64,
+        "checkpoint_metadata_sha256": "b" * 64,
         "predictions": rows,
     }
 

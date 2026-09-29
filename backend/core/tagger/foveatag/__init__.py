@@ -77,6 +77,11 @@ from .joint_training import (
     FoveaJointTrainResult,
     gather_selected_views,
 )
+from .joint_checkpoint import (
+    JOINT_CHECKPOINT_FORMAT_VERSION,
+    load_joint_checkpoint,
+    save_joint_checkpoint,
+)
 from .phase3_gate import (
     PHASE3_GATE_FORMAT_VERSION,
     load_passed_phase3_gate,
@@ -224,6 +229,9 @@ __all__ = [
     "FoveaJointTrainer",
     "FoveaJointTrainResult",
     "gather_selected_views",
+    "JOINT_CHECKPOINT_FORMAT_VERSION",
+    "load_joint_checkpoint",
+    "save_joint_checkpoint",
     "PHASE3_GATE_FORMAT_VERSION",
     "load_passed_phase3_gate",
     "record_phase3_gate",

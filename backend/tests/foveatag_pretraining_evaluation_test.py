@@ -9,6 +9,7 @@ from core.tagger.foveatag.encoder import FoveaEncoderConfig
 from core.tagger.foveatag.pretraining import FoveaPretrainer
 from core.tagger.foveatag.pretraining_evaluation import (
     _model_from_payload,
+    _new_model,
     _verify_validation_manifests,
 )
 
@@ -76,3 +77,31 @@ def test_validation_manifest_verifier_checks_content_and_index(tmp_path):
     path.write_bytes(b'"changed.png"\n')
     with pytest.raises(ValueError, match="hash changed"):
         _verify_validation_manifests(tmp_path, metadata)
+
+
+def test_scratch_baseline_can_reproduce_seeded_initialization():
+    config = _tiny_config()
+    contract = {
+        "encoder": {
+            "widths": config.widths,
+            "depths": config.depths,
+            "window_size": config.window_size,
+            "attention_heads": config.attention_heads,
+            "mlp_ratio": config.mlp_ratio,
+            "geometry_dim": config.geometry_dim,
+            "scale_dropout": config.scale_dropout,
+        },
+        "mask_ratio": 0.4,
+        "objective": {
+            "correspondence_weight": 1.0,
+            "reconstruction_weight": 1.0,
+            "chroma_weight": 0.5,
+            "max_coordinate_distance": 0.02,
+        },
+    }
+    torch.manual_seed(17)
+    first = _new_model(contract)
+    torch.manual_seed(17)
+    second = _new_model(contract)
+
+    torch.testing.assert_close(first.encoder.stem_conv.weight, second.encoder.stem_conv.weight)

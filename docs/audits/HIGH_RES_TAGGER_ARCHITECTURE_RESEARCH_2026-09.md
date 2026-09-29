@@ -1236,6 +1236,19 @@ the paper studies global embeddings and substantially larger image batches,
 these weights are a bounded-pilot starting point rather than a transferred
 quality claim.
 
+A 1,000-step bounded pilot then trained on 16,000 samples and evaluated the
+same fixed 512-photo and 2,048-illustration validation sets. Relative to the
+same-seed scratch encoder, mean pairwise cosine fell in all four domain/view
+pairs: 0.913 to 0.842 and 0.977 to 0.617 for photo local/overview, and 0.869 to
+0.749 and 0.960 to 0.529 for illustration local/overview. Effective rank rose
+from 1.85--2.00 to 2.98--3.53. Training sustained 62.0 samples/s and reserved
+11,538 MiB, close to the rejected objective's full-epoch 63.4 samples/s. This
+passes the bounded health gate for starting a replacement measurement, but is
+not Phase 2 acceptance: rank remains low relative to 384 channels, and the
+pilot's 100-step warmup and one-epoch cosine schedule are deliberately shorter
+than the long-run contract. Hashes and component losses are recorded in
+`FOVEATAG_PHASE2_ANTICOLLAPSE_PILOT_2026-09-29.json`.
+
 ### 9.14 Phase 3 throughput protocol (2026-09-29)
 
 `supervised_benchmark.py` measures the three registered Phase 3 input modes in

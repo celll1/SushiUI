@@ -100,6 +100,7 @@ from .supervised_data import (
     FoveaSupervisedDataset,
     FoveaSupervisedSample,
     SupervisionPolicy,
+    build_supervised_views,
     collate_supervised_samples,
 )
 from .views import (
@@ -207,6 +208,7 @@ __all__ = [
     "FoveaSupervisedDataset",
     "FoveaSupervisedSample",
     "SupervisionPolicy",
+    "build_supervised_views",
     "collate_supervised_samples",
     "SourceBox",
     "ViewBatch",

@@ -7,6 +7,7 @@ import math
 from typing import Literal, Mapping, Optional, Protocol, Sequence
 
 import torch
+from PIL import Image
 from torch.utils.data import Dataset
 
 from ..tagger_dataset import RawTaggerSample
@@ -136,22 +137,13 @@ class FoveaSupervisedDataset(Dataset):
             policy = self.supervision_policies.get(raw.dataset_id)
             if policy is not None:
                 loss_mask = policy.apply(raw.label, loss_mask)
-        effective_view_config = (
-            replace(self.view_config, local_views=0)
-            if self.input_mode == "overview_only"
-            else self.view_config
-        )
-        views = build_views(
+        views = build_supervised_views(
             raw.image,
-            effective_view_config,
+            self.view_config,
             seed=sample_seed,
             training=self.training,
+            input_mode=self.input_mode,
         )
-        if self.input_mode == "overview_placebo":
-            views = render_overview_placebo_locals(
-                views,
-                pad_color=self.view_config.pad_color,
-            )
         if self.baseline_overview:
             views = preserve_source_overview(raw.image, views)
         return FoveaSupervisedSample(
@@ -224,6 +216,36 @@ class DomainBalancedSupervisedDataset(Dataset):
     def __getitem__(self, index: int) -> Optional[FoveaSupervisedSample]:
         _, source_index, sample_seed = self.selection(index)
         return self.source.sample(source_index, sample_seed=sample_seed)
+
+
+def build_supervised_views(
+    image: Image.Image,
+    view_config: ViewConfig,
+    *,
+    seed: int,
+    training: bool,
+    input_mode: FoveaInputMode,
+) -> ViewBatch:
+    """Build exactly the A/B/C input contract shared by training and evaluation."""
+    if input_mode not in {"overview_only", "overview_placebo", "source_native"}:
+        raise ValueError(f"unsupported FoveaTag input mode: {input_mode}")
+    effective_view_config = (
+        replace(view_config, local_views=0)
+        if input_mode == "overview_only"
+        else view_config
+    )
+    views = build_views(
+        image,
+        effective_view_config,
+        seed=seed,
+        training=training,
+    )
+    if input_mode == "overview_placebo":
+        return render_overview_placebo_locals(
+            views,
+            pad_color=view_config.pad_color,
+        )
+    return views
 
 
 def collate_supervised_samples(

@@ -8,6 +8,7 @@ from core.tagger.foveatag.supervised_data import (
     DomainBalancedSupervisedDataset,
     FoveaSupervisedDataset,
     SupervisionPolicy,
+    build_supervised_views,
     collate_supervised_samples,
 )
 from core.tagger.foveatag.encoder import FoveaEncoderConfig
@@ -99,6 +100,33 @@ def test_supervised_adapter_selects_explicit_input_branch(input_mode, expected_v
 def test_supervised_adapter_rejects_unknown_input_mode():
     with pytest.raises(ValueError, match="unsupported FoveaTag input mode"):
         FoveaSupervisedDataset(_RawDataset(), input_mode="unsupported")
+
+
+def test_shared_view_builder_matches_dataset_branch_contract():
+    source = _RawDataset()
+    config = ViewConfig(overview_size=64, local_size=64, local_views=2)
+    dataset = FoveaSupervisedDataset(
+        source,
+        view_config=config,
+        seed=10,
+        training=False,
+        input_mode="overview_placebo",
+    )
+
+    sample = dataset[0]
+    direct = build_supervised_views(
+        source.sample.image,
+        config,
+        seed=10,
+        training=False,
+        input_mode="overview_placebo",
+    )
+
+    assert sample is not None
+    assert sample.views.local_specs == direct.local_specs
+    assert tuple(view.tobytes() for view in sample.views.local_views) == tuple(
+        view.tobytes() for view in direct.local_views
+    )
 
 
 def test_control_adapter_preserves_original_overview_for_baseline_processor():

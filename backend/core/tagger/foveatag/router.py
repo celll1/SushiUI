@@ -115,19 +115,31 @@ def nearest_source_features(
 
 def dense_oracle_targets(
     candidate_tag_scores: torch.Tensor,
+    overview_tag_scores: torch.Tensor,
     positive_labels: torch.Tensor,
+    loss_mask: Optional[torch.Tensor] = None,
     candidate_mask: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    """Detach dense-head evidence and convert positive-tag contributions to [0, 1]."""
+    """Convert vocabulary-agnostic positive-margin improvements to [0, 1]."""
     if candidate_tag_scores.ndim != 3:
         raise ValueError("candidate_tag_scores must have shape [batch, candidates, tags]")
     batch, candidates, tags = candidate_tag_scores.shape
+    if overview_tag_scores.shape != (batch, tags):
+        raise ValueError("overview_tag_scores must have shape [batch, tags]")
     if positive_labels.shape != (batch, tags):
         raise ValueError("positive_labels must have shape [batch, tags]")
+    if loss_mask is not None and loss_mask.shape != (batch, tags):
+        raise ValueError("loss_mask must have shape [batch, tags]")
     valid = _candidate_mask(candidate_mask, batch, candidates, candidate_tag_scores.device)
     positives = positive_labels.to(device=candidate_tag_scores.device, dtype=torch.bool)
-    scores = candidate_tag_scores.detach().masked_fill(~positives[:, None], -torch.inf)
-    values = scores.max(dim=-1).values
+    if loss_mask is not None:
+        positives &= loss_mask.to(device=candidate_tag_scores.device) > 0
+    improvements = (
+        candidate_tag_scores.detach()
+        - overview_tag_scores.detach().to(candidate_tag_scores.device)[:, None]
+    )
+    improvements = improvements.masked_fill(~positives[:, None], -torch.inf)
+    values = improvements.max(dim=-1).values
     has_positive = positives.any(dim=-1)
     values = torch.where(has_positive[:, None] & valid, values, torch.zeros_like(values))
     values = F.relu(values)

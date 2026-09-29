@@ -374,6 +374,13 @@ class TaggerDataset(Dataset):
     def dataset_id_for_index(self, idx: int) -> int:
         return int(self._sample_dataset_ids[idx])
 
+    def label_and_mask_for_index(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Build supervision metadata without decoding the source image."""
+        _image_path, tags = self._samples[idx]
+        if self._refresh_enabled and self._refresh_gen_path:
+            tags = self._apply_tag_refresh(idx, tags)
+        return self._build_label_and_mask(tags)
+
     def source_path_for_index(self, idx: int) -> str:
         return self._samples[idx][0]
 

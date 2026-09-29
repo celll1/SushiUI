@@ -35,6 +35,10 @@ class RawTaggerDataset(Protocol):
 
     def get_raw_item(self, index: int) -> Optional[RawTaggerSample]: ...
 
+    def label_and_mask_for_index(
+        self, index: int
+    ) -> tuple[torch.Tensor, torch.Tensor]: ...
+
 
 @dataclass(frozen=True)
 class FoveaSupervisedSample:
@@ -68,6 +72,59 @@ class SupervisionPolicy:
                 raise ValueError("positive_only_indices exceed the label dimension")
             adjusted[indices] *= label[indices]
         return adjusted
+
+
+def supervision_mask_statistics(
+    source: RawTaggerDataset,
+    domain_indices: Mapping[int, Sequence[int]],
+    policies: Mapping[int, SupervisionPolicy],
+    *,
+    max_samples_per_domain: int = 512,
+) -> dict[str, object]:
+    """Measure how multiplicative masks scale the global-mean tag loss."""
+    if max_samples_per_domain <= 0:
+        raise ValueError("max_samples_per_domain must be positive")
+    domains = {}
+    expected_tags = None
+    for domain, indices in sorted(domain_indices.items()):
+        if not indices:
+            raise ValueError(f"supervision diagnostics domain {domain} is empty")
+        count = min(len(indices), max_samples_per_domain)
+        selected = [indices[position * len(indices) // count] for position in range(count)]
+        active = mask_sum = positives = weighted_positives = 0.0
+        for index in selected:
+            label, mask = source.label_and_mask_for_index(int(index))
+            if label.shape != mask.shape or label.ndim != 1:
+                raise ValueError("labels and loss masks must be equal one-dimensional tensors")
+            if expected_tags is None:
+                expected_tags = label.numel()
+            elif label.numel() != expected_tags:
+                raise ValueError("supervision diagnostics observed changing vocabulary size")
+            policy = policies.get(domain)
+            if policy is not None:
+                mask = policy.apply(label, mask)
+            if not torch.isfinite(mask).all() or (mask < 0).any():
+                raise ValueError("loss masks must be finite and non-negative")
+            active += float((mask > 0).sum())
+            mask_sum += float(mask.sum())
+            positives += float(((label >= 0.5) & (mask > 0)).sum())
+            weighted_positives += float((label * mask).sum())
+        denominator = count * int(expected_tags)
+        domains[str(domain)] = {
+            "sampled": count,
+            "available": len(indices),
+            "active_label_fraction": active / denominator,
+            "mean_mask_weight": mask_sum / denominator,
+            "mean_active_weight": mask_sum / active if active else 0.0,
+            "active_positives_per_sample": positives / count,
+            "weighted_positives_per_sample": weighted_positives / count,
+        }
+    return {
+        "reduction": "multiply_mask_then_mean_all_batch_tag_elements",
+        "max_samples_per_domain": max_samples_per_domain,
+        "num_tags": expected_tags,
+        "domains": domains,
+    }
 
 
 @dataclass(frozen=True)

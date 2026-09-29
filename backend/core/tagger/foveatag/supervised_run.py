@@ -333,20 +333,58 @@ def run_supervised_training(
             initialization_contract=initialization_contract,
         )
     shared_initialization_sha256 = _file_sha256(shared_initialization)
+    total_steps = epochs * math.ceil(epoch_samples / batch_size)
+    criterion = AsymmetricLossOptimized()
+
+    shared_training_contract = {
+        "format_version": 1,
+        "kind": "foveatag_phase3_shared_training",
+        "input_modes": list(PHASE3_INPUT_MODES),
+        "shared_initialization_sha256": shared_initialization_sha256,
+        "shared_data_contract_sha256": shared_data_contract_sha256,
+        "epochs": int(epochs),
+        "epoch_samples": int(epoch_samples),
+        "batch_size": int(batch_size),
+        "workers": int(workers),
+        "views": asdict(view_config),
+        "optimizer": {
+            "kind": "adamw",
+            "learning_rate": float(learning_rate),
+            "weight_decay": float(weight_decay),
+            "warmup_steps": min(warmup_steps, max(total_steps - 1, 0)),
+            "total_steps": total_steps,
+            "scheduler": "linear_warmup_then_cosine",
+        },
+        "classification_loss": {
+            "kind": "asymmetric_loss",
+            "gamma_negative": criterion.gamma_neg,
+            "gamma_positive": criterion.gamma_pos,
+            "negative_clip": criterion.clip,
+            "epsilon": criterion.eps,
+            "detach_focal_weight": criterion.disable_torch_grad_focal_loss,
+            "reduction": criterion.reduction,
+        },
+        "photo_dataset_id": photo_dataset_id,
+        "photo_loss_weight": float(photo_loss_weight),
+        "seed": int(seed),
+        "max_source_pixels": max_source_pixels,
+    }
+    shared_training_contract_sha256 = _bind_shared_training_contract(
+        comparison_dir,
+        shared_training_contract,
+    )
 
     device = torch.device("cuda")
     model.to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=learning_rate, weight_decay=weight_decay
     )
-    total_steps = epochs * math.ceil(epoch_samples / batch_size)
     scheduler = _cosine_with_warmup(
         optimizer,
         total_steps=total_steps,
         warmup_steps=warmup_steps,
         learning_rate=learning_rate,
     )
-    criterion = AsymmetricLossOptimized()
     amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     trainer = FoveaSupervisedTrainer(
         model,
@@ -363,6 +401,7 @@ def run_supervised_training(
         "input_mode": input_mode,
         "shared_initialization_sha256": shared_initialization_sha256,
         "shared_data_contract_sha256": shared_data_contract_sha256,
+        "shared_training_contract_sha256": shared_training_contract_sha256,
         "datasets_db": str(datasets_db.resolve()),
         "train_counts": {str(key): int(value) for key, value in sorted(train_counts.items())},
         "validation_counts": {
@@ -510,6 +549,7 @@ def run_supervised_training(
                         "external_weights": [],
                         "shared_initialization_sha256": shared_initialization_sha256,
                         "shared_data_contract_sha256": shared_data_contract_sha256,
+                        "shared_training_contract_sha256": shared_training_contract_sha256,
                         "input_mode": input_mode,
                         "epoch": epoch,
                         "global_step": global_step,
@@ -907,11 +947,34 @@ def _bind_shared_data_contract(
     comparison_dir: Path,
     contract: Mapping[str, Any],
 ) -> str:
-    path = comparison_dir / "shared_data_contract.json"
+    return _bind_shared_contract(
+        comparison_dir / "shared_data_contract.json",
+        contract,
+        mismatch="Phase-3 branch does not match the shared data contract",
+    )
+
+
+def _bind_shared_training_contract(
+    comparison_dir: Path,
+    contract: Mapping[str, Any],
+) -> str:
+    return _bind_shared_contract(
+        comparison_dir / "shared_training_contract.json",
+        contract,
+        mismatch="Phase-3 branch does not match the shared training contract",
+    )
+
+
+def _bind_shared_contract(
+    path: Path,
+    contract: Mapping[str, Any],
+    *,
+    mismatch: str,
+) -> str:
     if path.is_file():
         existing = json.loads(path.read_text(encoding="utf-8"))
         if existing != contract:
-            raise ValueError("Phase-3 branch does not match the shared data contract")
+            raise ValueError(mismatch)
     else:
         _write_json_atomic(path, contract)
     return _file_sha256(path)

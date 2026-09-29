@@ -8,6 +8,7 @@ from core.tagger.foveatag.supervised_data import FoveaSupervisedSample
 from core.tagger.foveatag.supervised_run import (
     FoveaRunControl,
     _bind_shared_data_contract,
+    _bind_shared_training_contract,
     _encoder_config,
     _selected_sources_contract,
     _train_epoch,
@@ -107,6 +108,26 @@ def test_shared_data_contract_is_immutable_across_branches(tmp_path):
         assert "shared data contract" in str(error)
     else:
         raise AssertionError("expected changed Phase-3 data to fail")
+
+
+def test_shared_training_contract_is_immutable_across_branches(tmp_path):
+    contract = {
+        "format_version": 1,
+        "kind": "foveatag_phase3_shared_training",
+        "optimizer": {"learning_rate": 1e-4},
+    }
+
+    digest = _bind_shared_training_contract(tmp_path, contract)
+
+    assert len(digest) == 64
+    assert _bind_shared_training_contract(tmp_path, contract) == digest
+    changed = {**contract, "optimizer": {"learning_rate": 2e-4}}
+    try:
+        _bind_shared_training_contract(tmp_path, changed)
+    except ValueError as error:
+        assert "shared training contract" in str(error)
+    else:
+        raise AssertionError("expected changed Phase-3 training settings to fail")
 
 
 def test_train_epoch_stops_at_exact_resumable_sample_offset(tmp_path):

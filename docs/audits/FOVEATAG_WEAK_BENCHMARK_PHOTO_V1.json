@@ -16883,6 +16883,7 @@
     "seed": 20260929,
     "positive_per_tag": 32,
     "negative_count": 128,
+    "label_provenance": "mixed_tagger_and_partial_manual_correction",
     "requested_fine_tags": [
       "aqua eyes",
       "black eyes",

@@ -43,9 +43,6 @@ def run_siglip2_predictions(
         raise ValueError("patch_budgets must contain positive values")
     manager = SigLIP2InferenceManager()
     manager.load_model(str(checkpoint), str(vocabulary))
-    if not manager.is_naflex:
-        manager.unload()
-        raise ValueError("patch-budget predictions require a NaFlex checkpoint")
     target_tags = sorted({tag for item in manifest.items for tag in item.positive_tags})
     tag_indices = {
         tag: manager.vocabulary["tag_to_idx"].get(tag)
@@ -55,7 +52,8 @@ def run_siglip2_predictions(
     present_indices = torch.tensor(
         [tag_indices[tag] for tag in present_tags], device=manager.device, dtype=torch.long
     )
-    rows = {budget: [] for budget in patch_budgets}
+    run_keys: Sequence[int | str] = patch_budgets if manager.is_naflex else ("fixed",)
+    rows = {key: [] for key in run_keys}
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     device = torch.device(manager.device)
@@ -72,17 +70,20 @@ def run_siglip2_predictions(
                     source_image, item, resolution, width, height
                 )
                 resize_ms = (time.perf_counter() - resize_started) * 1000.0
-                for budget in patch_budgets:
+                for key in run_keys:
                     preprocess_started = time.perf_counter()
-                    inputs = manager.processor(
-                        images=image,
-                        return_tensors="pt",
-                        max_num_patches=budget,
-                    )
+                    processor_kwargs = {"images": image, "return_tensors": "pt"}
+                    if manager.is_naflex:
+                        processor_kwargs["max_num_patches"] = key
+                    inputs = manager.processor(**processor_kwargs)
                     preprocess_ms = (time.perf_counter() - preprocess_started) * 1000.0
                     pixel_values = inputs["pixel_values"].to(device, non_blocking=True)
-                    attention_mask = inputs["pixel_attention_mask"].to(device, non_blocking=True)
-                    spatial_shapes = inputs["spatial_shapes"].to(device, non_blocking=True)
+                    attention_mask = inputs.get("pixel_attention_mask")
+                    spatial_shapes = inputs.get("spatial_shapes")
+                    if attention_mask is not None:
+                        attention_mask = attention_mask.to(device, non_blocking=True)
+                    if spatial_shapes is not None:
+                        spatial_shapes = spatial_shapes.to(device, non_blocking=True)
                     torch.cuda.synchronize(device)
                     forward_started = time.perf_counter()
                     with torch.no_grad(), torch.autocast(
@@ -99,7 +100,7 @@ def run_siglip2_predictions(
                     for tag, index in tag_indices.items():
                         if index is None:
                             scores[tag] = 0.0
-                    rows[budget].append({
+                    rows[key].append({
                         "sample_id": item.sample_id,
                         "resolution": resolution,
                         "scores": scores,
@@ -111,16 +112,18 @@ def run_siglip2_predictions(
                         },
                     })
         written = []
-        for budget in patch_budgets:
+        for key in run_keys:
+            is_fixed = key == "fixed"
             payload = {
                 "format_version": PREDICTION_FORMAT_VERSION,
-                "model_name": f"siglip2-naflex-p{budget}",
+                "model_name": "siglip2-fixed" if is_fixed else f"siglip2-naflex-p{key}",
                 "checkpoint": str(Path(checkpoint).resolve()),
-                "patch_budget": budget,
+                "patch_budget": None if is_fixed else key,
                 "missing_tags": [tag for tag, index in tag_indices.items() if index is None],
-                "predictions": rows[budget],
+                "predictions": rows[key],
             }
-            path = output_dir / f"siglip2_naflex_p{budget}_predictions.json"
+            filename = "siglip2_fixed_predictions.json" if is_fixed else f"siglip2_naflex_p{key}_predictions.json"
+            path = output_dir / filename
             path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
             written.append(path)
         return written

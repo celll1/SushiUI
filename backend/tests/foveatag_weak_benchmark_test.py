@@ -37,15 +37,25 @@ def test_weak_benchmark_loads_tags_and_selects_deterministically(tmp_path):
         )
 
     records = load_weak_records(database, 7)
+    hashed = load_weak_records(
+        database, 7, limit=2, selection="hashed", seed=9
+    )
+    assert len(hashed) == 2
+    assert hashed == load_weak_records(
+        database, 7, limit=2, selection="hashed", seed=9
+    )
     first, summary = build_weak_benchmark(
-        records, dataset_id=7, name="weak", positive_per_tag=1, negative_count=1, seed=9
+        records, dataset_id=7, name="weak", positive_per_tag=1, negative_count=1,
+        seed=9, label_provenance="fixture_ground",
     )
     second, _ = build_weak_benchmark(
-        records, dataset_id=7, name="weak", positive_per_tag=1, negative_count=1, seed=9
+        records, dataset_id=7, name="weak", positive_per_tag=1, negative_count=1,
+        seed=9, label_provenance="fixture_ground",
     )
     manifest = BenchmarkManifest.from_dict(first)
     assert first == second
     assert manifest.evidence_mode == "dense_oracle"
+    assert manifest.provenance["label_provenance"] == "fixture_ground"
     assert summary["fine_tag_coverage"] == {"blue eyes": 1, "red eyes": 1}
     assert "colored contact lenses" in summary["uncovered_fine_tags"]
     assert first["provenance"]["uncovered_fine_tags"] == summary["uncovered_fine_tags"]

@@ -1,0 +1,29 @@
+{
+  "checkpoint": "D:\\celll1\\webui_cl\\tagger_models\\cca72ce1-7420-4164-9f24-c30ae77cdf2f\\best_f1.safetensors",
+  "cuda_version": "13.0",
+  "device": "NVIDIA RTX 6000 Ada Generation",
+  "dtype": "bfloat16",
+  "encoder_input_contract": "fixed",
+  "format_version": 1,
+  "kind": "foveatag_siglip2_control_training",
+  "local_patch_budget": 256,
+  "local_views": 4,
+  "loss_first": 0.043869152665138245,
+  "loss_last": 0.027031369507312775,
+  "measured_steps": 8,
+  "num_tags": 107926,
+  "overview_patch_budget": 784,
+  "peak_allocated_mib": 4241.04345703125,
+  "peak_reserved_mib": 4750.0,
+  "scope": "Prebuilt real-image views; includes transfer, frozen encoder forward, masked ASL backward, clipping, and AdamW update.",
+  "step_ms": {
+    "count": 8,
+    "max": 94.8214998934418,
+    "mean": 93.39847497176379,
+    "p50": 93.39405002538115,
+    "p95": 94.8214998934418
+  },
+  "torch_version": "2.10.0+cu130",
+  "trainable_parameters": 123949846,
+  "warmup_steps": 2
+}

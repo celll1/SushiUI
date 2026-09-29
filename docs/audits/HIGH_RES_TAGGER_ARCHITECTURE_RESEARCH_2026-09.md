@@ -1,12 +1,12 @@
 # High-resolution tagger architecture research
 
-Status: **proposed and unimplemented**
+Status: **isolated prototype; Phase 0 complete, Phase 1 in progress**
 
 Date: 2026-09-29
 
 Scope: a successor to the trainable SigLIP2 tagger for fine-detail, multi-label
-classification at arbitrary source resolutions. This document makes no measured
-quality, latency, or memory claim about SushiUI.
+classification at arbitrary source resolutions. Measurements in section 9 are
+specific to the listed checkpoints, datasets, and RTX 6000 Ada.
 
 ## 1. Decision
 
@@ -54,8 +54,8 @@ work stops and the cause is measured (section 9).
 
 ## 2. Current failure mechanism
 
-The current trainable path uses
-`google/siglip2-so400m-patch16-naflex` by default
+The trainable path defaults to
+`google/siglip2-so400m-patch16-naflex`
 (`backend/core/tagger/siglip2_tagger_model.py`). Each dataset item calls the
 processor once, without an explicit patch budget
 (`backend/core/tagger/tagger_dataset.py`). The upstream processor default is 256
@@ -63,6 +63,13 @@ patches. NaFlex retains aspect ratio, but it still resizes the complete image to
 fit that budget; it does not preserve native pixels. For a square image this is
 effectively a 256 x 256 patch canvas at patch size 16, irrespective of how large
 the source was.
+
+That default is not the strongest project result. The owner's prior tagger
+training found NaFlex materially weaker than resizing every input to the fixed
+SigLIP2 resolution, especially for extrapolation. Fixed-resolution checkpoints
+based on `google/siglip2-so400m-patch14-384` are therefore the primary existing
+baseline. NaFlex remains useful only for isolating whether extra global patches
+recover detail; it must not stand in for the model FoveaTag has to beat.
 
 Inference already accepts `max_num_patches` (request default 256,
 `backend/api/routes.py`; applied in
@@ -94,7 +101,7 @@ expected SushiUI gains.
 
 | Work | Relevant result or mechanism | License finding | Verdict here |
 |---|---|---|---|
-| SigLIP2 / NaFlex (2025-02) | Variable aspect ratio and patch budget; native aspect ratio is not native-pixel preservation. | Google checkpoints and Transformers implementation are Apache-2.0. | Current baseline. Raising its patch budget is a useful ablation, not the target architecture. |
+| SigLIP2 / NaFlex (2025-02) | Variable aspect ratio and patch budget; native aspect ratio is not native-pixel preservation. | Google checkpoints and Transformers implementation are Apache-2.0. | Diagnostic failed-route control. Raising its patch budget is a useful ablation, not the target architecture or primary baseline. |
 | PS3 (CVPR 2025) | Low-resolution global encoding plus selective high-resolution regions; multi-scale high-resolution pretraining; fixed selected-token budgets can improve as source resolution rises. Its largest reported selection gains come from local caption and box supervision. | Code package is Apache-2.0, but released PS3-SigLIP2 weights use NVIDIA's non-commercial license. | Closest mechanism to this proposal (global low-resolution plus selected high-resolution regions). Reuse the principle, not the weights or implementation. Image-level tag labels require a different router objective. |
 | Perception Encoder (2025-04) | Global contrastive features, intermediate-layer alignment, spatial variants, and tiling-tuned variants. Released sizes still have preferred 224--512 pixel inputs. | The PE page states its checkpoints are Apache-2.0; the containing repository also includes separate non-commercial PLM material, so provenance must remain checkpoint-specific. | Permissive benchmark candidate, but tiling and fine-detail multi-label aggregation would still need to be designed. |
 | RADIOv2.5 / C-RADIOv3-v4 | Multi-resolution training, dense features, non-square inputs, and multi-teacher distillation. C-RADIOv4 incorporates newer SigLIP2, DINOv3, and SAM3 teachers. | RADIO/E-RADIO are non-commercial. C-RADIO weights use the NVIDIA Open Model License and allow commercial use, but repository code and model terms are not a simple Apache dependency. | Teacher/benchmark candidate. Multi-teacher lineage and licensing complexity make it a poor default dependency. |
@@ -249,7 +256,15 @@ vocabulary, so vocabulary growth does not alter the image representation.
      color differences; a semantic-only target can discard the contact-lens
      color this project is trying to recover.
 2. **Tag training on random and stratified local views.** No learned router.
-   The encoder and evidence head are established first.
+   The encoder and evidence head are established first. Ground-truth
+   illustration tags are the main supervised source. Real-photo captions have
+   mixed provenance: some were corrected by hand and some originate from an
+   earlier tagger, but the corrected subset is not identified exhaustively.
+   Photo samples are therefore domain-balanced rather than allowed to vanish
+   inside the much larger illustration corpus, and use a separately reported
+   loss weight. Fine-detail photo negatives are masked unless their provenance
+   is known; observed positives remain weak supervision. Unlabeled photo views
+   still participate in the self-supervised and cross-view objectives.
 3. **Router training from dense candidates.** The stage-2 head evaluates a dense
    candidate set, and the regions that contribute to positive-tag margins become
    router targets.
@@ -377,15 +392,19 @@ Create a fixed, versioned validation suite with:
 - coarse tags that must not regress, including count, scene, pose, and broad
   character attributes;
 - source-resolution ladders made from the same images;
-- aspect-ratio extremes; and
+- aspect-ratio extremes;
+- a Danbooru-derived illustration slice whose image-level tags are treated as
+  ground labels for the illustration domain; and
 - a deterministic weak-label slice built from the existing image-level tags.
   Manual evidence boxes are not a prerequisite because their annotation cost
   is not justified for Phase 0.
 
-The weak benchmark fixes the manifest, tag normalization, negative cohort, and
-split assignment. It cannot establish where the visual evidence lies, and a
-missing caption tag is not a guaranteed negative; results must therefore be
-reported as weak-label measurements rather than ground truth. Report macro
+The photo benchmark fixes the manifest, tag normalization, negative cohort, and
+split assignment. Its captions have mixed provenance: part was manually
+corrected, but the checked subset and completeness are not recorded per item.
+It cannot establish where the visual evidence lies, and a missing caption tag
+is not a guaranteed negative. Results are therefore partially curated
+weak-label measurements, not complete ground truth. Report macro
 average precision and F1 by tag group, tag prevalence, and source resolution.
 Also report calibration error, prediction stability across the resolution
 ladder, dense-oracle utility recovery and oracle top-`K` recall, images/second,
@@ -395,17 +414,22 @@ does not require human boxes and is not available at production inference.
 
 ### 8.2 Required baselines
 
-1. current SigLIP2 NaFlex at 256 patches;
-2. the same checkpoint at larger patch budgets;
-3. current encoder with naive global-plus-random-crop aggregation;
-4. FoveaTag overview only;
-5. FoveaTag with random local views;
-6. FoveaTag with learned routing; and
-7. one permissively usable recent encoder benchmark, such as PE (Apache-2.0
+1. the strongest existing fixed-resolution SigLIP2 tagger at its trained input
+   size; this is the primary production baseline because earlier project
+   training found materially better accuracy and extrapolation than NaFlex;
+2. that fixed-resolution checkpoint over the source-resolution ladder, retaining
+   its trained resize contract;
+3. NaFlex at 256/512/1,024 patches as a diagnostic failed-architecture control,
+   not as the primary baseline;
+4. the fixed-resolution encoder with naive global-plus-random-crop aggregation;
+5. FoveaTag overview only;
+6. FoveaTag with random local views;
+7. FoveaTag with learned routing; and
+8. one permissively usable recent encoder benchmark, such as PE (Apache-2.0
    checkpoints), with the
    same downstream evidence head when technically possible.
 
-Baselines 3 and 7 are **encoder-swap controls**. No pretrained weights are
+Baselines 4 and 8 are **encoder-swap controls**. No pretrained weights are
 loaded into the FoveaTag encoder; instead, the whole encoder is replaced by an
 existing model, and the FoveaTag view construction and evidence head consume
 its patch-token map. The views and the head need only a spatial token map, so
@@ -424,7 +448,10 @@ pretraining at equal images presented and optimizer steps.
 
 Do not integrate the new architecture into the API until measurements show:
 
-- a material gain on the fine-detail slice at matched false-positive rate;
+- a material gain on the ground-illustration fine-detail slice at matched
+  false-positive rate;
+- no regression on the partially curated photo slice, reported separately and
+  treated as supporting rather than decisive evidence;
 - no material loss on the coarse slice;
 - stable or improving results on held-out source resolutions above the training
   range;
@@ -467,15 +494,15 @@ require data and GPU time:
 
 | Phase | Implemented | Still required before exit |
 |---|---|---|
-| 0 | Complete: versioned box-free weak-label benchmark, deterministic database builder, dense-oracle recovery metric, resolution/group/stability metrics, saved predictions, per-stage timing summaries, synthetic scratch-model GPU timing, representative data-loaded optimizer timing, and current NaFlex quality and latency at 256/512/1024 effective patches. | Exit condition met. The initial scratch pretraining budget is fixed below. |
-| 1 | Deterministic multi-scale views, exact source transforms, expandable evidence head, fixed/NaFlex SigLIP2 token adapter, a processor bridge that preserves overview/local view axes with separate patch budgets, measured inference cost by local-view count, and a masked-label training loop with accumulation, AMP, clipping, and frozen-encoder eval mode. | Connect checkpoint/resume and epoch validation, then train and measure the encoder-swap control's quality. |
+| 0 | Versioned box-free partially curated photo benchmark, deterministic Danbooru ground-illustration benchmark, dense-oracle recovery metric, resolution/group/stability metrics, saved predictions, per-stage timing summaries, synthetic scratch-model GPU timing, representative data-loaded optimizer timing, fixed-resolution agreement baselines, and diagnostic NaFlex measurements. | Complete. The scratch pretraining budget is fixed below. |
+| 1 | Deterministic multi-scale views, exact source transforms, expandable evidence head, fixed/NaFlex SigLIP2 token adapter, a processor bridge that preserves overview/local view axes, fixed-encoder inference and optimizer cost, and a masked-label training loop with accumulation, AMP, clipping, and frozen-encoder eval mode. | Connect checkpoint/resume and epoch validation, then train and measure quality. |
 | 2 | A 37.39M-parameter default scratch encoder, content-aware continuous 2-D RoPE, stride-16 local map, low-token global stage, masked RGB decoder, teacher-free losses, the diagnostic local-teacher projection, deterministic overlapping-view data, and an executable AdamW pretraining path. | Run convergence and held-out overlap/chroma measurements. |
 | 3 | End-to-end scratch tagger, masked classifier composition, density-gated prediction consistency, and an adapter from the existing vocabulary/loss-mask/live-refresh dataset lifecycle to deterministic FoveaTag views. | Add the production training loop and run the pre-registered comparison. |
 | 4 | Generic scale-space router, padding mask, NMS, dense-oracle targets, ranking/diversity losses, retained random-budget selection, and box-free oracle recovery metrics. | Run dense-oracle training, choose its batch frequency from measured cost, and measure utility recovery at fixed `K`. |
 | 5 | Versioned inference/resume artifacts, exclusion of diagnostic weights from inference artifacts, coordinate-aware collation, cached-overview staged inference, and per-stage wall time. | Add production manager/export, API/defaults/OpenAPI/frontend surfaces, and lifecycle tests after the go/no-go gates pass. |
 | 6 | Not started. | Run registered capacity and component ablations only after the smaller model is measured. |
 
-Eighty-seven focused CPU tests cover the isolated modules. After the owner's
+Ninety-two focused CPU tests cover the isolated modules. After the owner's
 separate training run released the GPU, the synthetic measurement below was
 also run. No backend restart was performed. Quality and extrapolation
 measurements for the FoveaTag controls and scratch encoder remain pending.
@@ -541,9 +568,9 @@ in the downstream random-view tag pilot; the pre-registered cap is 20 epochs
 (approximately 95.4 GPU-hours). This fixes the budget before Phase 2 quality is
 known while allowing a bounded continuation rather than an open-ended run.
 
-### 9.4 Current NaFlex patch-budget timing (2026-09-29)
+### 9.4 Diagnostic NaFlex patch-budget timing (2026-09-29)
 
-The current 97,199-tag full checkpoint was measured on eight registered cosplay
+The available 97,199-tag NaFlex checkpoint was measured on eight registered cosplay
 photos at batch size 1. Each budget used exactly the requested number of
 effective patches. The runner includes native decode, processor work, transfer,
 and BF16 forward, but excludes probability sorting and tag filtering.
@@ -554,7 +581,11 @@ and BF16 forward, but excludes probability sorting and tag filtering.
 | 512 | 53.2 ms | 14.7 ms | 20.3 ms | 88.5 ms | 3,704 / 4,250 MiB |
 | 1,024 | 51.4 ms | 16.2 ms | 20.0 ms | 88.0 ms | 3,714 / 4,250 MiB |
 
-This small run does not establish that larger patch budgets are free: the
+This is a diagnostic of the previously underperforming NaFlex route, not the
+primary quality baseline. Earlier project training found that the
+fixed-resolution resize model generalized better; FoveaTag exists in part to
+retain that behavior while recovering local detail. This small run does not
+establish that larger patch budgets are free: the
 97,199-way classification head and source decode dominate single-image wall
 time, and the sample is too small for a scaling claim. It does establish the
 same-checkpoint latency/VRAM reference required before quality measurements.
@@ -562,9 +593,9 @@ Loading this older checkpoint also exposed two compatibility defects now fixed:
 its omitted custom-pooler dimensions are recovered from tensor shapes, and the
 current Transformers NaFlex argument name `pixel_attention_mask` is used.
 
-### 9.5 Phase 1 encoder-swap control timing (2026-09-29)
+### 9.5 Preliminary NaFlex encoder-swap timing (2026-09-29)
 
-The same current NaFlex encoder was reused with a 512-dimensional FoveaTag
+The same NaFlex encoder was reused with a 512-dimensional FoveaTag
 evidence head and 97,199 output tags. The overview budget was 784 patches and
 each local view used 256 patches. Eight cosplay photos were measured at batch
 size 1; the encoder was frozen and the newly initialized head was used only to
@@ -576,14 +607,16 @@ measure execution cost, not quality.
 | 1 | 1,040 | 93.3 ms | 2.8 ms | 34.4 ms | 131.0 ms | 2,434 MiB |
 | 4 | 1,808 | 112.5 ms | 4.7 ms | 37.4 ms | 155.3 ms | 2,434 MiB |
 
-The four local views are encoded together, so their forward cost is not four
+These numbers only bound the multi-view implementation cost and do not select
+the Phase 1 encoder. The fixed-resolution encoder must be used for the primary
+control. The four local views are encoded together, so their forward cost is not four
 times the single-local cost. End-to-end latency rises by about 49 ms from the
 overview-only control to four local views on this sample. Native decode and PIL
 view rendering remain a larger component than the GPU forward. The quality
 gate remains open until this control is trained and measured on the fixed
 fine-detail benchmark.
 
-### 9.6 Fixed weak-label benchmark (2026-09-29)
+### 9.6 Fixed partially curated photo benchmark (2026-09-29)
 
 `weak_benchmark.py` deterministically constructed
 `docs/audits/FOVEATAG_WEAK_BENCHMARK_PHOTO_V1.json` from the registered cosplay
@@ -598,13 +631,15 @@ Each item carries the existing image-level tags and a deterministic
 source-resolution ladder; no evidence boxes are required. The manifest uses
 `evidence_mode: dense_oracle`, so later router evaluation compares selected
 candidate utility against exhaustive candidate scoring at the same `K`.
-Because caption absence is only a weak negative and tag frequency is capped by
-construction, this suite is suitable for controlled model comparisons, not
-for claiming an absolute real-world error rate.
+Some source captions were manually corrected, while others retain prior-tagger
+labels; the database does not identify the checked subset. Because correction
+coverage is unknown, caption absence is only a weak negative, and tag frequency
+is capped by construction, this suite is suitable for controlled supporting
+comparisons but not for claiming an absolute real-world error rate.
 
-### 9.7 Weak-label SigLIP2 quality baseline (2026-09-29)
+### 9.7 Weak-label NaFlex diagnostic (2026-09-29)
 
-The current 97,199-tag NaFlex checkpoint was evaluated on all 674 benchmark
+The available 97,199-tag NaFlex checkpoint was evaluated on all 674 benchmark
 images at every non-upscaled ladder point and at native resolution: 3,956
 image-resolution conditions and 11,868 forwards across three patch budgets.
 The checkpoint vocabulary contained every tag used by the manifest. Metrics
@@ -617,14 +652,16 @@ threshold-independent.
 | 512 | 0.6687 / 0.4336 | 0.6770 / 0.4196 | 0.9054 / 0.6278 | 19.9 / 24.9 ms |
 | 1,024 | 0.6853 / 0.4303 | 0.7003 / 0.4202 | 0.9039 / 0.6319 | 21.0 / 24.8 ms |
 
-Increasing the patch budget improves native fine-detail macro AP by 0.0530 at
+These results do not establish the production baseline because the checkpoint
+belongs to the NaFlex training route that previously underperformed the fixed
+resize route. Increasing the patch budget improves native fine-detail macro AP by 0.0530 at
 512 and 0.0763 at 1,024 relative to 256, without a coarse-tag AP regression in
 this weak-label slice. Within a fixed patch budget, moving from the 384-pixel
 ladder point to the native source produces much less improvement. For example,
 the 1,024-patch model moves from 0.6853 to 0.7003 fine-detail AP. This supports
 the premise that a bounded global token budget, rather than source decode alone,
-limits recoverable detail. It does not yet show that FoveaTag beats the larger
-NaFlex budget at matched false-positive rate.
+limits recoverable detail inside NaFlex. It is not the FoveaTag acceptance
+floor; section 9.8 supplies that floor.
 
 The reports also compare every ladder score with its same-image native score.
 At 384 pixels, fine-tag mean absolute score delta / threshold agreement were
@@ -633,6 +670,95 @@ At 384 pixels, fine-tag mean absolute score delta / threshold agreement were
 under `docs/audits/foveatag_weak_predictions/`. Decode and resize were shared
 during the sweep but copied into each prediction row as standalone stage-cost
 attribution; they must not be summed across rows to estimate total sweep time.
+
+### 9.8 Primary fixed-resolution SigLIP2 baseline (2026-09-29)
+
+After correcting the baseline choice, the strongest available fixed-resolution
+checkpoint was evaluated on the same 674-image ladder. It uses
+`google/siglip2-so400m-patch14-384`, 107,926 tags, and its recorded best
+threshold of 0.41. Every ladder input is processed through the checkpoint's
+trained fixed-384 resize contract.
+
+| Input ladder point | Fine AP / F1 | Coarse AP / F1 | Fine score delta to native / threshold agreement |
+|---:|---:|---:|---:|
+| 384 | 0.7040 / 0.5641 | 0.9229 / 0.7351 | 0.0284 / 94.26% |
+| 512 | 0.7086 / 0.5570 | 0.9198 / 0.7379 | 0.0212 / 95.62% |
+| 768 | 0.7196 / 0.5483 | 0.9248 / 0.7362 | 0.0089 / 98.12% |
+| native | **0.7209 / 0.5382** | **0.9236 / 0.7332** | 0 / 100% |
+
+On the partially curated photo labels, the native fixed-resolution result exceeds the diagnostic NaFlex checkpoint
+even at 1,024 patches: fine AP is 0.7209 versus 0.7003, fine F1 is 0.5382 versus
+0.4202, coarse AP is 0.9236 versus 0.9039, and coarse F1 is 0.7332 versus
+0.6319. This agrees with the owner's earlier training result and makes the
+fixed-resolution checkpoint the operational photo agreement reference. It is
+not by itself the Phase 3 quality gate. The values are operational model
+comparisons, not a controlled architecture ablation:
+the checkpoints differ in training duration, vocabulary, pooling, and training
+method and some benchmark labels may descend from either model family. The
+decisive matched-FPR gate is set on the ground-illustration slice; this photo
+slice must be reported separately and must not regress. A gain over NaFlex
+alone is insufficient.
+
+Fixed-model forward mean / p95 was 30.3 / 37.4 ms over 3,956 conditions. The
+complete weak-label report is
+`docs/audits/foveatag_fixed_predictions/siglip2_fixed_report.json`.
+
+### 9.9 Fixed-encoder Phase 1 cost (2026-09-29)
+
+The Phase 1 multi-view control was rerun with the primary fixed-384 encoder and
+107,926 output tags. Eight real photos were measured at batch size 1. The
+overview-only, one-local, and four-local forward means were 30.5, 59.9, and
+72.4 ms; end-to-end means including decode and PIL view construction were
+113.9, 152.9, and 179.2 ms. Four-local inference reserved 2,622 MiB.
+
+An actual BF16 optimization smoke then used four local views, a frozen encoder,
+masked ASL, gradient clipping, and AdamW over the 123.95M trainable pooler,
+projection, and evidence-head parameters. After two warmups, eight measured
+steps averaged 93.4 ms (94.8 ms max) and reserved 4,750 MiB. Views were prepared
+before timing, and the single synthetic positive label only exercises the full
+107,926-way loss; the observed loss change is not a quality or convergence
+result. These measurements establish that the correct fixed-encoder control
+fits the project GPU. The saved reports are
+`docs/audits/FOVEATAG_SIGLIP2_FIXED_CONTROL_BENCHMARK_2026-09-29.json` and
+`docs/audits/FOVEATAG_SIGLIP2_FIXED_CONTROL_TRAINING_BENCHMARK_2026-09-29.json`.
+
+### 9.10 Danbooru ground-illustration baseline (2026-09-29)
+
+The decisive illustration-domain slice is
+`docs/audits/FOVEATAG_GROUND_BENCHMARK_DANBOORU_V1.json`. It was selected
+deterministically from a bounded 200,000-row scan of registered dataset 29 and
+contains 2,921 images: 512 negative-cohort images and up to 128 positives for
+each of 19 covered fine-detail tags. The registered Danbooru tags are treated
+as ground labels for this illustration-domain benchmark. They do not establish
+photo-domain accuracy; the separate 674-photo slice remains the supporting
+extrapolation and no-regression check. Colored-contact, contact-lens,
+painted-nail, and text tags were requested but absent after normalization, so
+the manifest records them as uncovered.
+
+The primary fixed-384 checkpoint was evaluated at its recorded threshold of
+0.41 over 16,100 non-upscaled image-resolution conditions. Every condition
+still enters the checkpoint through its trained fixed-384 processor contract.
+
+| Input ladder point | Fine AP / F1 | Coarse AP / F1 |
+|---:|---:|---:|
+| 384 | 0.5878 / 0.5091 | 0.7653 / 0.6525 |
+| 512 | 0.5920 / 0.5128 | 0.7705 / 0.6578 |
+| 768 | 0.5967 / 0.5084 | 0.7740 / 0.6591 |
+| 1,024 | 0.5934 / 0.5055 | 0.7703 / 0.6556 |
+| 1,536 | 0.6043 / 0.5084 | 0.7771 / 0.6560 |
+| native | 0.5992 / 0.5042 | 0.7760 / 0.6584 |
+
+The eye-color subset moves only from 0.5929 to 0.6005 macro AP between the
+384 and native inputs. At the checkpoint threshold, its mean false-positive
+rate rises from 0.1661 to 0.1832. `blue eyes` illustrates why later comparisons
+must use matched false-positive rate: at 384 it has AP 0.6975 and recall 0.9783,
+but FPR 0.3841. These figures set the fixed-model reference; they are not a
+FoveaTag result. FoveaTag must improve the ground fine-detail slice at matched
+FPR, then preserve the separately reported photo slice.
+
+Fixed-model forward mean / p95 was 31.1 / 38.7 ms. The retained report is
+`docs/audits/foveatag_ground_fixed_predictions/siglip2_fixed_report.json`.
+The 21 MB per-condition prediction intermediate was removed after aggregation.
 
 ## 10. Integration surface after acceptance
 

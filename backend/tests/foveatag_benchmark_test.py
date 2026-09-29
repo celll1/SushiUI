@@ -93,6 +93,7 @@ def test_evaluation_reports_group_area_resolution_and_stage_timing():
     })
 
     report = evaluate_predictions(_manifest(), predictions, threshold=0.5)
+    assert report["label_provenance"] == "unspecified"
     at_384 = report["resolutions"]["384"]
     assert at_384["groups"]["fine_detail"]["macro_average_precision"] == 1.0
     assert at_384["groups"]["fine_detail"]["macro_f1"] == 1.0

@@ -1,10 +1,12 @@
 """CPU tests for the existing-dataset to FoveaTag bridge."""
 
+import pytest
 import torch
 from PIL import Image
 
 from core.tagger.foveatag.supervised_data import (
     FoveaSupervisedDataset,
+    SupervisionPolicy,
     collate_supervised_samples,
 )
 from core.tagger.foveatag.encoder import FoveaEncoderConfig
@@ -19,6 +21,7 @@ class _RawDataset:
             image=Image.new("RGB", (320, 240), (40, 80, 120)),
             label=torch.tensor([1.0, 0.0, 1.0]),
             loss_mask=torch.tensor([1.0, 0.0, 1.0]),
+            dataset_id=16,
         )
 
     def __len__(self):
@@ -59,6 +62,25 @@ def test_supervised_collate_filters_failures_and_retains_masks():
     assert torch.equal(batch.labels, torch.tensor([[1.0, 0.0, 1.0]]))
     assert torch.equal(batch.loss_masks, torch.tensor([[1.0, 0.0, 1.0]]))
     assert collate_supervised_samples([None]) is None
+
+
+def test_supervised_adapter_applies_mixed_provenance_policy():
+    dataset = FoveaSupervisedDataset(
+        _RawDataset(),
+        view_config=ViewConfig(overview_size=64, local_size=64, local_views=0),
+        supervision_policies={
+            16: SupervisionPolicy(loss_weight=0.25, positive_only_indices=(0, 1))
+        },
+    )
+    sample = dataset[0]
+    assert sample is not None
+    assert torch.equal(sample.loss_mask, torch.tensor([0.25, 0.0, 0.25]))
+
+
+@pytest.mark.parametrize("loss_weight", [-0.1, float("nan"), float("inf")])
+def test_supervision_policy_rejects_invalid_loss_weight(loss_weight):
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        SupervisionPolicy(loss_weight=loss_weight)
 
 
 def test_supervised_batch_runs_end_to_end_backward():

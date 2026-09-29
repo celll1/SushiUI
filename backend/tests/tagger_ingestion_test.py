@@ -90,6 +90,11 @@ def test_dataset_scan_preserves_filtered_samples(tmp_path):
             ["structured tag", "fallback tag", "second tag"],
         )
     ]
+    assert dataset.dataset_id_for_index(0) == 7
+    raw = dataset.get_raw_item(0)
+    assert raw is not None
+    assert raw.dataset_id == 7
+    assert raw.source_path == str(tmp_path / "valid.png")
     session.close()
 
 

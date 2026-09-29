@@ -880,6 +880,23 @@ fits the project GPU. The saved reports are
 `docs/audits/FOVEATAG_SIGLIP2_FIXED_CONTROL_BENCHMARK_2026-09-29.json` and
 `docs/audits/FOVEATAG_SIGLIP2_FIXED_CONTROL_TRAINING_BENCHMARK_2026-09-29.json`.
 
+The `4.39e-2` to `2.70e-2` loss in that timing smoke is not a different ASL
+definition from the existing trainer. Both paths instantiate
+`AsymmetricLossOptimized` with `gamma_neg=4`, `gamma_pos=1`, `clip=0.05`, and
+global batch-by-tag mean reduction. The timing model discarded the trained
+classifier, initialized a new 123.95M-parameter evidence head, then ran only two
+warmup and eight measured updates on an artificial target containing one
+positive and 107,925 negatives. At zero logits, one ASL negative contributes
+about `2.45e-2`, so a loss in the `1e-2` range is expected before the random
+classifier learns negative priors. It is not comparable with the `1e-4` range
+from a converged SigLIP tagger. The real-data random-head pilot reached
+`6.37e-4` after 6,000 optimizer steps, while the baseline-preserving residual
+smoke started at `7.77e-5` because its existing classifier was already trained.
+The ongoing Phase 2 values are also incomparable: they are the weighted sum of
+correspondence, masked reconstruction, and chroma reconstruction losses, not
+ASL. Phase 3 must compare loss only at matched initialization, targets, masks,
+and training step; AP/F1 remains the model-quality criterion.
+
 ### 9.10 Danbooru ground-illustration baseline (2026-09-29)
 
 The decisive illustration-domain slice is

@@ -59,6 +59,7 @@ def predict_image(
     *,
     mode: str = "balanced",
     nms_iou: float = 0.5,
+    mixed_precision: Optional[torch.dtype] = None,
 ) -> FoveaInferenceResult:
     """Run the three dependent stages and report their wall-clock costs separately."""
     if mode not in config.inference_modes:
@@ -84,10 +85,15 @@ def predict_image(
         )
         overview_views = build_views(image, view_config, seed=0, training=False)
         overview_batch = collate_view_batches([overview_views]).to(device, dtype=dtype)
-        overview = model.encoder(
-            overview_batch.overview_images,
-            overview_batch.overview_geometry,
-        )
+        with torch.autocast(
+            device_type=device.type,
+            dtype=mixed_precision,
+            enabled=device.type == "cuda" and mixed_precision is not None,
+        ):
+            overview = model.encoder(
+                overview_batch.overview_images,
+                overview_batch.overview_geometry,
+            )
         _synchronize(device)
         timings["overview"] = _elapsed_ms(overview_started)
 
@@ -101,12 +107,17 @@ def predict_image(
         candidates = build_scale_space_candidates(overview.local_coordinates, field_sizes)
         candidate_mask = source_candidate_mask(candidates)
         if mode_config.local_views:
-            routing = router(
-                overview.local_map,
-                overview.local_coordinates,
-                candidates,
-                candidate_mask,
-            )
+            with torch.autocast(
+                device_type=device.type,
+                dtype=mixed_precision,
+                enabled=device.type == "cuda" and mixed_precision is not None,
+            ):
+                routing = router(
+                    overview.local_map,
+                    overview.local_coordinates,
+                    candidates,
+                    candidate_mask,
+                )
             selected = select_proposals(
                 routing.scores,
                 candidates,
@@ -134,13 +145,18 @@ def predict_image(
             local_canvas_size=config.views.local_size,
         )
         local_batch = collate_view_batches([staged_views]).to(device, dtype=dtype)
-        details = model.classify_encoded_overview(
-            overview,
-            local_batch.local_images,
-            local_batch.local_geometry,
-            local_view_mask=local_batch.local_view_mask,
-            return_details=True,
-        )
+        with torch.autocast(
+            device_type=device.type,
+            dtype=mixed_precision,
+            enabled=device.type == "cuda" and mixed_precision is not None,
+        ):
+            details = model.classify_encoded_overview(
+                overview,
+                local_batch.local_images,
+                local_batch.local_geometry,
+                local_view_mask=local_batch.local_view_mask,
+                return_details=True,
+            )
         _synchronize(device)
         timings["local_and_head"] = _elapsed_ms(local_started)
         evidence_boxes = _tag_evidence_boxes(details, local_specs)

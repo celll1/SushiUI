@@ -1008,6 +1008,13 @@ per-epoch mapping. Resume reuses the frozen manifests even if `datasets.db`
 metadata changes, while still rejecting a changed dataset, holdout, cap, seed,
 or sampling contract.
 
+The Phase 2 loop also accepts the same thread-safe stop control used by the
+later supervised and router stages. It checks the control after each optimizer
+step and writes the exact epoch offset, accumulated losses, optimizer,
+scheduler, and RNG state before returning `stopped_by_request`. This supplies
+the backend trainer lifecycle without making FoveaTag selectable before its
+quality gates pass.
+
 The production-contract smoke built 1,544,750 illustration and 20,293 photo
 training paths plus held-out sets of 2,048 and 512. It stopped after eight
 steps at source offset 128, then resumed to step 12 and offset 192. The resumed

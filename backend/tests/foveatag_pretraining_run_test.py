@@ -8,8 +8,10 @@ from core.tagger.foveatag.pretraining_run import (
     _normalized_domain_weights,
     _parse_mapping,
     _restore_accumulator,
+    _train_epoch,
     _training_summary,
 )
+from core.tagger.foveatag.run_control import FoveaRunControl
 
 
 def test_epoch_accumulator_survives_segment_resume():
@@ -68,3 +70,48 @@ def test_warmup_cosine_scheduler_is_step_resumable():
 
     assert restored.last_epoch == scheduler.last_epoch == 7
     assert restored_optimizer.param_groups[0]["lr"] == expected_lr
+
+
+def test_shared_run_control_is_thread_safe_and_sticky():
+    control = FoveaRunControl()
+
+    assert not control.should_stop()
+    control.request_stop()
+    assert control.should_stop()
+    control.request_stop()
+    assert control.should_stop()
+
+
+def test_pretraining_epoch_honors_stop_before_loading_data(tmp_path):
+    control = FoveaRunControl()
+    control.request_stop()
+
+    result, offset, step, added, stopped, accumulator = _train_epoch(
+        None,
+        None,
+        None,
+        [object()] * 10,
+        epoch=2,
+        sample_offset=4,
+        batch_size=2,
+        workers=0,
+        amp_dtype=torch.bfloat16,
+        device=torch.device("cpu"),
+        checkpoint_every_steps=5,
+        log_every=1,
+        global_step=17,
+        output_dir=tmp_path,
+        best_validation_loss=1.0,
+        run_contract={},
+        history=[],
+        initial_accumulator=None,
+        remaining_step_budget=None,
+        run_control=control,
+    )
+
+    assert stopped
+    assert offset == 4
+    assert step == 17
+    assert added == 0
+    assert result["optimizer_steps"] == 0
+    assert accumulator["samples"] == 0

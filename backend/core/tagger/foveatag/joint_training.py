@@ -87,7 +87,7 @@ class FoveaJointTrainer:
             raise ValueError("global_step must be non-negative")
         self.model.train()
         self.router.train()
-        batch = batch.to(self.device, non_blocking=True)
+        batch = batch.stage_for_routing(self.device, non_blocking=True)
         use_oracle = global_step % self.oracle_interval == 0
         oracle = None
         if use_oracle:
@@ -126,6 +126,7 @@ class FoveaJointTrainer:
                 generator=generator,
             )
             selected_views = gather_selected_views(batch.views, selected)
+            selected_views = selected_views.to(self.device, non_blocking=True)
             logits = self.model.classify_encoded_overview(
                 overview,
                 selected_views.local_images,
@@ -204,7 +205,7 @@ class FoveaJointTrainer:
             for batch in batches:
                 if batch is None:
                     continue
-                batch = batch.to(self.device, non_blocking=True)
+                batch = batch.stage_for_routing(self.device, non_blocking=True)
                 with self._autocast():
                     logits = self._routed_logits(batch)
                     loss = _loss_tensor(
@@ -284,6 +285,7 @@ class FoveaJointTrainer:
             candidate_mask=batch.views.local_view_mask,
         )
         selected_views = gather_selected_views(batch.views, selected)
+        selected_views = selected_views.to(self.device, non_blocking=True)
         return self.model.classify_encoded_overview(
             overview,
             selected_views.local_images,
@@ -313,10 +315,13 @@ def gather_selected_views(
         raise ValueError("selected candidate index is out of range")
     valid = selected >= 0
     safe = selected.clamp_min(0)
-    image_indices = safe[..., None, None, None].expand(
+    local_safe = safe.to(views.local_images.device)
+    image_indices = local_safe[..., None, None, None].expand(
         -1, -1, *views.local_images.shape[2:]
     )
-    geometry_indices = safe[..., None].expand(-1, -1, views.local_geometry.shape[-1])
+    geometry_indices = local_safe[..., None].expand(
+        -1, -1, views.local_geometry.shape[-1]
+    )
     local_images = torch.gather(views.local_images, 1, image_indices)
     local_geometry = torch.gather(views.local_geometry, 1, geometry_indices)
     source_valid = torch.gather(views.local_view_mask, 1, safe)

@@ -51,6 +51,45 @@ class FoveaRouterBatch:
             loss_masks=self.loss_masks.to(device=device, non_blocking=non_blocking),
         )
 
+    def stage_for_routing(
+        self,
+        device: torch.device | str,
+        *,
+        dtype: Optional[torch.dtype] = None,
+        non_blocking: bool = False,
+    ) -> "FoveaRouterBatch":
+        """Move overview and routing metadata while retaining local pixels on CPU."""
+        image_options = {"device": device, "non_blocking": non_blocking}
+        if dtype is not None:
+            image_options["dtype"] = dtype
+        views = FoveaViewTensorBatch(
+            overview_images=self.views.overview_images.to(**image_options),
+            overview_geometry=self.views.overview_geometry.to(
+                device=device, non_blocking=non_blocking
+            ),
+            local_images=self.views.local_images,
+            local_geometry=self.views.local_geometry,
+            local_view_mask=self.views.local_view_mask.to(
+                device=device, non_blocking=non_blocking
+            ),
+        )
+        return FoveaRouterBatch(
+            views=views,
+            candidate_boxes=self.candidate_boxes.to(
+                device=device, dtype=dtype, non_blocking=non_blocking
+            ),
+            labels=self.labels.to(device=device, non_blocking=non_blocking),
+            loss_masks=self.loss_masks.to(device=device, non_blocking=non_blocking),
+        )
+
+    def pin_memory(self) -> "FoveaRouterBatch":
+        return FoveaRouterBatch(
+            views=self.views.pin_memory(),
+            candidate_boxes=self.candidate_boxes.pin_memory(),
+            labels=self.labels.pin_memory(),
+            loss_masks=self.loss_masks.pin_memory(),
+        )
+
 
 class FoveaRouterDataset(Dataset):
     """Render deterministic spatial/scale candidates without semantic priors."""

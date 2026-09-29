@@ -100,3 +100,28 @@ def test_router_candidate_sampling_is_epoch_deterministic():
 
     torch.testing.assert_close(first, second)
     assert not torch.equal(first, next_epoch)
+
+
+def test_staged_router_transfer_keeps_dense_local_pixels_on_host():
+    dataset = FoveaRouterDataset(
+        _RawDataset(),
+        view_config=ViewConfig(
+            overview_size=16,
+            local_size=8,
+            local_views=4,
+            field_levels=(0.5, 1.0),
+            scale_jitter=(1.0, 1.0),
+        ),
+        candidate_count=4,
+        training=False,
+    )
+    batch = collate_router_samples([dataset[0]])
+
+    staged = batch.stage_for_routing("meta")
+
+    assert staged.views.overview_images.device.type == "meta"
+    assert staged.candidate_boxes.device.type == "meta"
+    assert staged.labels.device.type == "meta"
+    assert staged.views.local_view_mask.device.type == "meta"
+    assert staged.views.local_images.device.type == "cpu"
+    assert staged.views.local_geometry.device.type == "cpu"

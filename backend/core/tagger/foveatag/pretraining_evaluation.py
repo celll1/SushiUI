@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import json
 import os
 from pathlib import Path
+import random
 from typing import Any, Mapping
 
 import torch
@@ -26,6 +28,7 @@ def evaluate_pretraining_checkpoint(
     *,
     batch_size: int | None = None,
     workers: int = 8,
+    include_scratch_baseline: bool = True,
 ) -> dict[str, Any]:
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for FoveaTag Phase-2 evaluation")
@@ -35,6 +38,12 @@ def evaluate_pretraining_checkpoint(
     if _file_sha256(checkpoint) != checkpoint_sha256:
         raise RuntimeError("checkpoint changed while it was being loaded")
     model, contract = _model_from_payload(payload)
+    progress = {
+        "global_step": int(payload["global_step"]),
+        "epoch": int(payload["epoch"]),
+        "sample_offset": int(payload["sample_offset"]),
+    }
+    del payload
     resolved_batch_size = int(batch_size or contract["batch_size"])
     if resolved_batch_size <= 0 or workers < 0:
         raise ValueError("batch_size must be positive and workers must be non-negative")
@@ -62,6 +71,31 @@ def evaluate_pretraining_checkpoint(
         amp_dtype=amp_dtype,
         device=device,
     )
+    del model
+    gc.collect()
+    torch.cuda.empty_cache()
+    scratch_validation = None
+    if include_scratch_baseline:
+        seed = int(contract["seed"])
+        random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        scratch_model = _new_model(contract).to(device)
+        scratch_validation = _validate(
+            scratch_model,
+            manifests,
+            domain_weights=domain_weights,
+            view_config=ViewConfig(**contract["views"]),
+            seed=seed,
+            batch_size=resolved_batch_size,
+            workers=workers,
+            max_source_pixels=contract["max_source_pixels"],
+            amp_dtype=amp_dtype,
+            device=device,
+        )
+        del scratch_model
+        gc.collect()
+        torch.cuda.empty_cache()
     if _file_sha256(checkpoint) != checkpoint_sha256:
         raise RuntimeError("checkpoint changed during evaluation")
     result = {
@@ -69,12 +103,11 @@ def evaluate_pretraining_checkpoint(
         "kind": "foveatag_phase2_checkpoint_evaluation",
         "checkpoint": str(checkpoint.resolve()),
         "checkpoint_sha256": checkpoint_sha256,
-        "global_step": int(payload["global_step"]),
-        "epoch": int(payload["epoch"]),
-        "sample_offset": int(payload["sample_offset"]),
+        **progress,
         "run_contract_sha256": _json_sha256(contract),
         "dtype": str(amp_dtype).removeprefix("torch."),
         "validation": validation,
+        "scratch_initialization_validation": scratch_validation,
     }
     _write_json_atomic(Path(output_path), result)
     return result
@@ -88,13 +121,17 @@ def _model_from_payload(payload: Mapping[str, Any]) -> tuple[FoveaPretrainer, di
     contract = dict(payload["run_contract"])
     if contract.get("initialization") != "scratch" or contract.get("external_weights") != []:
         raise ValueError("checkpoint does not have pure-scratch lineage")
-    model = FoveaPretrainer(
+    model = _new_model(contract)
+    model.load_state_dict(payload["model"], strict=True)
+    return model, contract
+
+
+def _new_model(contract: Mapping[str, Any]) -> FoveaPretrainer:
+    return FoveaPretrainer(
         FoveaEncoderConfig(**contract["encoder"]),
         mask_ratio=float(contract["mask_ratio"]),
         objective=FoveaSelfSupervisedLoss(**contract["objective"]),
     )
-    model.load_state_dict(payload["model"], strict=True)
-    return model, contract
 
 
 def _verify_validation_manifests(
@@ -139,12 +176,14 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--batch-size", type=int)
     parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--no-scratch-baseline", action="store_true")
     args = parser.parse_args()
     result = evaluate_pretraining_checkpoint(
         args.checkpoint,
         args.output,
         batch_size=args.batch_size,
         workers=args.workers,
+        include_scratch_baseline=not args.no_scratch_baseline,
     )
     print(json.dumps(result, indent=2, ensure_ascii=False))
 

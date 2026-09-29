@@ -89,6 +89,12 @@ from .phase3_gate import (
     source_native_checkpoint_hashes,
     source_native_checkpoint_sha256,
 )
+from .phase4_gate import (
+    PHASE4_GATE_FORMAT_VERSION,
+    load_passed_phase4_gate,
+    record_phase4_gate,
+    routed_checkpoint_hashes,
+)
 from .reconstruction import (
     PatchReconstructionHead,
     expand_patch_mask,
@@ -237,6 +243,10 @@ __all__ = [
     "record_phase3_gate",
     "source_native_checkpoint_hashes",
     "source_native_checkpoint_sha256",
+    "PHASE4_GATE_FORMAT_VERSION",
+    "load_passed_phase4_gate",
+    "record_phase4_gate",
+    "routed_checkpoint_hashes",
     "PatchReconstructionHead",
     "expand_patch_mask",
     "mask_image_patches",

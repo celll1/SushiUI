@@ -578,6 +578,16 @@ prediction also records the model and metadata SHA-256; the passed gate must
 resolve one identical source-native model hash across both benchmarks before
 that model can become the frozen Phase-4 teacher.
 
+Phase 4 has a second explicit repository-owner gate before any production
+trainer, manager, API, or UI integration. Its decision artifact hashes the
+complete Phase-4 evaluation summary and, for every registered benchmark, the
+manifest, fixed baseline, freshly generated source/routed predictions, and
+comparison report. A passed decision must resolve one identical routed model
+and metadata hash across all benchmarks. Router utility recovery alone cannot
+pass this gate: the owner decision also considers fine-detail and coarse-tag
+quality, extrapolation across the resolution ladder, and measured staged
+latency/VRAM.
+
 Phase 0 measurement must precede expensive training and product integration.
 Implementation of the isolated benchmark, model, and loss components may happen
 earlier, but no architectural success claim follows from unit tests alone. The

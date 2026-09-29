@@ -225,7 +225,9 @@ accessories, text, distant objects, and details not named during design.
 At training time, reserve part of the budget for stratified random coverage.
 Otherwise an early, incorrect router can permanently hide rare evidence. On a
 small fraction of batches, evaluate a denser candidate set and train the router
-to rank regions that improve positive-tag margins. The dense pass is a
+to rank regions by positive-tag margin improvement relative to the overview-only
+prediction. Absolute local confidence is not the target, and unknown labels are
+masked before tag identities are reduced into one candidate utility. The dense pass is a
 training-only oracle and is detached from the main classifier when producing
 router targets. Its cost is one local-encoder pass per dense candidate, so the
 candidate count and batch fraction must be set from the Phase 0 timing harness
@@ -591,7 +593,7 @@ require data and GPU time:
 | 5 | Versioned inference/resume artifacts, exclusion of diagnostic weights from inference artifacts, coordinate-aware collation, cached-overview staged inference, and per-stage wall time. | Add the tiled-pyramid source backend, production manager/export, API/defaults/OpenAPI/frontend surfaces, and lifecycle tests after the go/no-go gates pass. |
 | 6 | Not started. | Run registered capacity and component ablations only after the smaller model is measured. |
 
-One hundred thirty-six focused CPU tests cover the isolated modules. After the owner's
+More than one hundred focused CPU tests cover the isolated modules. After the owner's
 separate training run released the GPU, the synthetic measurement below was
 also run. No backend restart was performed. Quality and extrapolation
 measurements for the FoveaTag controls and scratch encoder remain pending.

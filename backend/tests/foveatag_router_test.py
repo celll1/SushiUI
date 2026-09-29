@@ -43,7 +43,8 @@ def test_router_scores_candidates_without_vocabulary_axis():
 
 def test_dense_oracle_uses_only_positive_tags_and_is_detached():
     scores = torch.tensor([[[1.0, 10.0], [3.0, 0.0]]], requires_grad=True)
-    targets = dense_oracle_targets(scores, torch.tensor([[True, False]]))
+    overview = torch.tensor([[0.0, 0.0]], requires_grad=True)
+    targets = dense_oracle_targets(scores, overview, torch.tensor([[True, False]]))
 
     torch.testing.assert_close(targets, torch.tensor([[1 / 3, 1.0]]))
     assert not targets.requires_grad
@@ -55,13 +56,44 @@ def test_dense_oracle_is_invariant_to_tag_identity():
     scores = torch.tensor([
         [[1.0, 8.0, 2.0], [4.0, 3.0, 0.5], [2.0, 7.0, 6.0]],
     ])
+    overview = torch.tensor([[0.5, 1.0, 0.25]])
     positives = torch.tensor([[True, False, True]])
     permutation = torch.tensor([2, 0, 1])
 
-    original = dense_oracle_targets(scores, positives)
-    renamed = dense_oracle_targets(scores[..., permutation], positives[..., permutation])
+    original = dense_oracle_targets(scores, overview, positives)
+    renamed = dense_oracle_targets(
+        scores[..., permutation],
+        overview[..., permutation],
+        positives[..., permutation],
+    )
 
     torch.testing.assert_close(renamed, original)
+
+
+def test_dense_oracle_scores_incremental_evidence_not_absolute_confidence():
+    candidate_scores = torch.tensor([[[8.0, 0.0], [4.0, 0.0]]])
+    overview_scores = torch.tensor([[7.5, 0.0]])
+    positives = torch.tensor([[True, False]])
+
+    targets = dense_oracle_targets(candidate_scores, overview_scores, positives)
+
+    torch.testing.assert_close(targets, torch.tensor([[1.0, 0.0]]))
+
+
+def test_dense_oracle_respects_unknown_label_mask():
+    candidate_scores = torch.tensor([[[1.0, 10.0], [3.0, 0.0]]])
+    overview_scores = torch.zeros(1, 2)
+    positives = torch.tensor([[True, True]])
+    loss_mask = torch.tensor([[1.0, 0.0]])
+
+    targets = dense_oracle_targets(
+        candidate_scores,
+        overview_scores,
+        positives,
+        loss_mask=loss_mask,
+    )
+
+    torch.testing.assert_close(targets, torch.tensor([[1 / 3, 1.0]]))
 
 
 def test_scale_space_nms_suppresses_overlapping_boxes():

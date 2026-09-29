@@ -16,7 +16,12 @@ def test_registered_paths_uses_read_only_database(tmp_path):
         )
         connection.executemany(
             "INSERT INTO dataset_items VALUES (?, ?, ?, ?, ?)",
-            [(2, 7, "b.png", 512, 512), (1, 7, "a.png", 128, 512), (3, 8, "c.png", 1024, 1024)],
+            [
+                (2, 7, "b.png", 512, 512),
+                (1, 7, "a.png", 128, 512),
+                (3, 8, "c.png", 1024, 1024),
+                (4, 7, "huge.png", 10000, 10000),
+            ],
         )
 
     paths, total = registered_image_paths(database, 7, limit=4, minimum_side=256)

@@ -1,5 +1,7 @@
 """CPU tests for the FoveaTag teacher-free pretraining path."""
 
+import math
+
 import torch
 from PIL import Image
 
@@ -41,7 +43,7 @@ def test_overlapping_specs_share_source_area_and_vary_by_seed():
 
 
 def test_pretrainer_runs_backward_on_collated_views():
-    config = ViewConfig(overview_size=64, local_size=64, local_views=2)
+    config = ViewConfig(overview_size=96, local_size=64, local_views=2)
     image = Image.new("RGB", (320, 240), (60, 100, 180))
     batch = collate_pretraining_samples([
         build_pretraining_sample(image, config, seed=1),
@@ -52,6 +54,23 @@ def test_pretrainer_runs_backward_on_collated_views():
     output = model(batch)
     output.losses.loss.backward()
 
+    assert batch.first_images.shape == (2, 3, 64, 64)
+    assert batch.second_images.shape == (2, 3, 96, 96)
+    torch.testing.assert_close(
+        batch.second_geometry[0],
+        torch.tensor([
+            0.5,
+            0.5,
+            1.0,
+            1.0,
+            0.0,
+            math.log2(320 / 96),
+            0.0,
+            0.125,
+            1.0,
+            0.75,
+        ]),
+    )
     assert output.reconstruction_mask.shape == (2, 4, 4)
     assert output.reconstruction_mask.sum().item() == 16
     assert torch.isfinite(output.losses.loss)
@@ -79,3 +98,15 @@ def test_image_path_dataset_is_epoch_deterministic_and_skips_corrupt(tmp_path):
     assert changed is not None
     assert not torch.equal(first.first_geometry, changed.first_geometry)
     assert collate_pretraining_samples([None]) is None
+
+
+def test_image_path_dataset_skips_oversized_source_before_decode(tmp_path):
+    path = tmp_path / "large.png"
+    Image.new("RGB", (128, 128), (20, 30, 40)).save(path)
+    dataset = FoveaImagePathDataset(
+        [path],
+        view_config=ViewConfig(overview_size=64, local_size=64, local_views=2),
+        max_source_pixels=10_000,
+    )
+
+    assert dataset[0] is None

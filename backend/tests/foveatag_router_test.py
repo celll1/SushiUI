@@ -51,6 +51,19 @@ def test_dense_oracle_uses_only_positive_tags_and_is_detached():
     assert loss > 0
 
 
+def test_dense_oracle_is_invariant_to_tag_identity():
+    scores = torch.tensor([
+        [[1.0, 8.0, 2.0], [4.0, 3.0, 0.5], [2.0, 7.0, 6.0]],
+    ])
+    positives = torch.tensor([[True, False, True]])
+    permutation = torch.tensor([2, 0, 1])
+
+    original = dense_oracle_targets(scores, positives)
+    renamed = dense_oracle_targets(scores[..., permutation], positives[..., permutation])
+
+    torch.testing.assert_close(renamed, original)
+
+
 def test_scale_space_nms_suppresses_overlapping_boxes():
     scores = torch.tensor([[3.0, 2.0, 1.0]])
     boxes = torch.tensor([[[0.5, 0.5, 0.4, 0.4], [0.51, 0.5, 0.4, 0.4], [0.1, 0.1, 0.1, 0.1]]])

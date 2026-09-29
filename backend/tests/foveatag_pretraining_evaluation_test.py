@@ -12,6 +12,7 @@ from core.tagger.foveatag.pretraining_evaluation import (
     _completed_run_summary,
     _model_from_payload,
     _new_model,
+    _pyramid_cache_root,
     _verify_validation_manifests,
 )
 
@@ -107,6 +108,14 @@ def test_scratch_baseline_can_reproduce_seeded_initialization():
     second = _new_model(contract)
 
     torch.testing.assert_close(first.encoder.stem_conv.weight, second.encoder.stem_conv.weight)
+
+
+def test_evaluation_resolves_cache_root_from_manifest_contract():
+    assert _pyramid_cache_root({}) is None
+    assert _pyramid_cache_root({"manifest_request": {}}) is None
+    assert _pyramid_cache_root({
+        "manifest_request": {"pyramid_cache": {"root": "cache-root"}}
+    }) == "cache-root"
 
 
 def test_encoder_evaluation_requires_completed_run_and_best_artifact(tmp_path):

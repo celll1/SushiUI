@@ -7,6 +7,7 @@ import pytest
 from PIL import Image
 
 from core.tagger.foveatag.tiled_pyramid import (
+    TILED_PYRAMID_FORMAT_VERSION,
     TiledPyramidSource,
     build_cached_tiled_pyramid,
     build_tiled_pyramid,
@@ -94,7 +95,7 @@ def test_tiled_source_rejects_inconsistent_manifest(tmp_path):
     root = tmp_path / "bad"
     root.mkdir()
     (root / "manifest.json").write_text(json.dumps({
-        "format_version": 1,
+        "format_version": TILED_PYRAMID_FORMAT_VERSION,
         "kind": "foveatag_tiled_pyramid",
         "source": {"width": 32, "height": 32, "sha256": "x"},
         "tile_size": 16,
@@ -103,6 +104,23 @@ def test_tiled_source_rejects_inconsistent_manifest(tmp_path):
 
     with pytest.raises(ValueError, match="level zero"):
         TiledPyramidSource(root)
+
+
+def test_tiled_source_rejects_changed_tile_content(tmp_path):
+    path = tmp_path / "source.png"
+    _gradient(96, 80).save(path)
+    pyramid = build_tiled_pyramid(
+        path,
+        tmp_path / "pyramid",
+        tile_size=32,
+        coarsest_max_side=32,
+    )
+    source = TiledPyramidSource(pyramid)
+    tile_path = pyramid / "level_0" / "0_0.png"
+    Image.new("RGB", (32, 32), (1, 2, 3)).save(tile_path)
+
+    with pytest.raises(ValueError, match="tile hash changed"):
+        source._read_tile(0, 0, 0)
 
 
 def test_cached_pyramid_has_stable_path_and_rejects_changed_source(tmp_path):

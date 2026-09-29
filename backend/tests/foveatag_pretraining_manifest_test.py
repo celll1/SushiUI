@@ -13,6 +13,7 @@ from core.tagger.foveatag.pretraining_manifest import (
     build_pretraining_manifests,
     open_domain_manifests,
 )
+from core.tagger.foveatag.tiled_pyramid import build_cached_tiled_pyramid
 from core.tagger.foveatag.views import ViewConfig
 
 
@@ -67,6 +68,8 @@ def test_manifest_build_is_exact_indexed_and_reusable(tmp_path):
         "max_source_pixels": 100_000,
         "over_pixel_cap": 1,
         "eligible_after_pixel_cap": 8,
+        "cached_over_pixel_cap": 0,
+        "eligible_after_pixel_policy": 8,
     }
     assert metadata["domains"]["7"]["source_size_filter"]["over_pixel_cap"] == 0
     assert metadata["domains"]["3"]["train"]["count"] == 5
@@ -74,6 +77,7 @@ def test_manifest_build_is_exact_indexed_and_reusable(tmp_path):
     manifests = open_domain_manifests(output, metadata, "validation")
     assert all(len(manifest) == 2 for manifest in manifests.values())
     assert len(set(manifests[3][index] for index in range(2))) == 2
+    assert "pyramid_cache" not in metadata["request"]
     restored = pickle.loads(pickle.dumps(manifests[3]))
     assert restored[0] == manifests[3][0]
     assert json.loads((output / "manifest_metadata.json").read_text())["request"]["seed"] == 11
@@ -92,6 +96,65 @@ def test_manifest_build_is_exact_indexed_and_reusable(tmp_path):
         reuse_existing=True,
     )
     assert resumed == metadata
+
+
+def test_manifest_admits_only_validated_cached_over_cap_paths(tmp_path):
+    database, _paths = _database(tmp_path)
+    huge = tmp_path / "huge.png"
+    Image.new("RGB", (400, 400), (1, 2, 3)).save(huge)
+    cache_root = tmp_path / "cache"
+    build_cached_tiled_pyramid(
+        huge,
+        cache_root,
+        tile_size=64,
+        coarsest_max_side=64,
+    )
+    unrelated = tmp_path / "unrelated.png"
+    Image.new("RGB", (400, 400), (4, 5, 6)).save(unrelated)
+    build_cached_tiled_pyramid(
+        unrelated,
+        cache_root,
+        tile_size=64,
+        coarsest_max_side=64,
+    )
+    Image.new("RGB", (401, 400), (7, 8, 9)).save(unrelated)
+    output = tmp_path / "cached_manifests"
+    metadata = build_pretraining_manifests(
+        database,
+        output,
+        dataset_ids=(3,),
+        validation_counts={3: 2},
+        minimum_side=32,
+        max_source_pixels=100_000,
+        pyramid_cache_root=cache_root,
+        seed=13,
+    )
+
+    size_filter = metadata["domains"]["3"]["source_size_filter"]
+    assert size_filter["over_pixel_cap"] == 1
+    assert size_filter["cached_over_pixel_cap"] == 1
+    assert size_filter["eligible_after_pixel_policy"] == 9
+    assert metadata["request"]["pyramid_cache"]["count"] == 1
+    manifests = {
+        split: open_domain_manifests(output, metadata, split)[3]
+        for split in ("train", "validation")
+    }
+    located = [
+        (manifest, index)
+        for manifest in manifests.values()
+        for index in range(len(manifest))
+        if manifest[index] == str(huge)
+    ]
+    assert len(located) == 1
+    manifest, index = located[0]
+    dataset = ManifestPretrainingDataset(
+        manifest,
+        view_config=ViewConfig(overview_size=64, local_size=64),
+        seed=13,
+        max_source_pixels=100_000,
+        pyramid_cache_root=cache_root,
+    )
+    assert dataset[index] is not None
 
 
 def test_balanced_dataset_is_deterministic_and_category_agnostic(tmp_path):

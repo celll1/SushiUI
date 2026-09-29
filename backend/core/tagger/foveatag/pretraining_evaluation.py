@@ -74,6 +74,7 @@ def evaluate_pretraining_checkpoint(
         batch_size=resolved_batch_size,
         workers=workers,
         max_source_pixels=contract["max_source_pixels"],
+        pyramid_cache_root=_pyramid_cache_root(contract),
         amp_dtype=amp_dtype,
         device=device,
     )
@@ -96,6 +97,7 @@ def evaluate_pretraining_checkpoint(
             batch_size=resolved_batch_size,
             workers=workers,
             max_source_pixels=contract["max_source_pixels"],
+            pyramid_cache_root=_pyramid_cache_root(contract),
             amp_dtype=amp_dtype,
             device=device,
         )
@@ -163,6 +165,7 @@ def evaluate_pretrained_encoder(
         "batch_size": resolved_batch_size,
         "workers": workers,
         "max_source_pixels": contract["max_source_pixels"],
+        "pyramid_cache_root": _pyramid_cache_root(contract),
         "mask_ratio": float(contract["mask_ratio"]),
         "max_coordinate_distance": float(contract["objective"]["max_coordinate_distance"]),
         "amp_dtype": amp_dtype,
@@ -249,6 +252,7 @@ def _validate_encoder(
     batch_size: int,
     workers: int,
     max_source_pixels: int | None,
+    pyramid_cache_root: str | None,
     mask_ratio: float,
     max_coordinate_distance: float,
     amp_dtype: torch.dtype,
@@ -262,6 +266,7 @@ def _validate_encoder(
             view_config=view_config,
             seed=seed + domain * 1009,
             max_source_pixels=max_source_pixels,
+            pyramid_cache_root=pyramid_cache_root,
         )
         loader = _loader(dataset, batch_size=batch_size, workers=workers, shuffle=False)
         generator = torch.Generator(device=device).manual_seed(seed + domain * 65537)
@@ -339,6 +344,14 @@ def _new_model(contract: Mapping[str, Any]) -> FoveaPretrainer:
         mask_ratio=float(contract["mask_ratio"]),
         objective=FoveaSelfSupervisedLoss(**contract["objective"]),
     )
+
+
+def _pyramid_cache_root(contract: Mapping[str, Any]) -> str | None:
+    request = contract.get("manifest_request")
+    if not isinstance(request, Mapping):
+        return None
+    cache = request.get("pyramid_cache")
+    return str(cache["root"]) if isinstance(cache, Mapping) else None
 
 
 def _verify_validation_manifests(

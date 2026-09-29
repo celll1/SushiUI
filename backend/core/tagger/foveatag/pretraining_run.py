@@ -56,6 +56,7 @@ def run_pretraining(
     seed: int,
     minimum_side: int = 256,
     max_source_pixels: Optional[int] = 40_000_000,
+    pyramid_cache_root: Optional[Path] = None,
     resume: Optional[Path] = None,
     stop_after_steps: Optional[int] = None,
     run_control: Optional[FoveaRunControl] = None,
@@ -91,6 +92,7 @@ def run_pretraining(
         excluded_paths=excluded_paths,
         minimum_side=minimum_side,
         max_source_pixels=max_source_pixels,
+        pyramid_cache_root=pyramid_cache_root,
         seed=seed,
         reuse_existing=resume is not None,
     )
@@ -98,6 +100,9 @@ def run_pretraining(
     validation_manifests = open_domain_manifests(
         manifest_dir, manifest_metadata, "validation"
     )
+    resolved_pyramid_cache_root = (
+        manifest_metadata["request"].get("pyramid_cache") or {}
+    ).get("root")
 
     random.seed(seed)
     torch.manual_seed(seed)
@@ -165,6 +170,7 @@ def run_pretraining(
         view_config=view_config,
         seed=seed,
         max_source_pixels=max_source_pixels,
+        pyramid_cache_root=resolved_pyramid_cache_root,
     )
     start_epoch = 0
     sample_offset = 0
@@ -257,6 +263,7 @@ def run_pretraining(
             batch_size=batch_size,
             workers=workers,
             max_source_pixels=max_source_pixels,
+            pyramid_cache_root=resolved_pyramid_cache_root,
             amp_dtype=amp_dtype,
             device=device,
         )
@@ -522,6 +529,7 @@ def _validate(
     batch_size: int,
     workers: int,
     max_source_pixels: Optional[int],
+    pyramid_cache_root: Optional[str | Path],
     amp_dtype: torch.dtype,
     device: torch.device,
 ) -> dict[str, Any]:
@@ -533,6 +541,7 @@ def _validate(
             view_config=view_config,
             seed=seed + domain * 1009,
             max_source_pixels=max_source_pixels,
+            pyramid_cache_root=pyramid_cache_root,
         )
         loader = _loader(dataset, batch_size=batch_size, workers=workers, shuffle=False)
         generator = torch.Generator(device=device).manual_seed(seed + domain * 65537)
@@ -751,6 +760,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=20260929)
     parser.add_argument("--minimum-side", type=int, default=256)
     parser.add_argument("--max-source-megapixels", type=float, default=40.0)
+    parser.add_argument("--pyramid-cache-root", type=Path)
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--stop-after-steps", type=int)
     return parser
@@ -783,6 +793,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if args.max_source_megapixels == 0
             else round(args.max_source_megapixels * 1_000_000)
         ),
+        pyramid_cache_root=args.pyramid_cache_root,
         resume=args.resume,
         stop_after_steps=args.stop_after_steps,
     )

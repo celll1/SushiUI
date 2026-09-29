@@ -28,6 +28,7 @@ from .inference import FoveaInferenceResult, predict_image, source_field_sizes
 from .encoder import FoveaEncoder, FoveaEncoderConfig, FoveaEncoderOutput
 from .distillation import DistillationOutput, LocalSigLIP2DistillationHead, pool_to_source_anchors
 from .model import FoveaTagger, FoveaTaggerOutput
+from .feature_health import FeatureHealthAccumulator
 from .objectives import (
     FoveaSelfSupervisedLoss,
     SelfSupervisedLossOutput,
@@ -198,6 +199,7 @@ __all__ = [
     "pool_to_source_anchors",
     "FoveaTagger",
     "FoveaTaggerOutput",
+    "FeatureHealthAccumulator",
     "FoveaSelfSupervisedLoss",
     "SelfSupervisedLossOutput",
     "chroma_reconstruction_loss",

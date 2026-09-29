@@ -73,6 +73,8 @@ def test_pretrainer_runs_backward_on_collated_views():
     )
     assert output.reconstruction_mask.shape == (2, 4, 4)
     assert output.reconstruction_mask.sum().item() == 16
+    assert output.first_features.shape[:2] == (2, 16)
+    assert output.second_features.shape[:2] == (2, 16)
     assert torch.isfinite(output.losses.loss)
     assert model.encoder.stem_conv.weight.grad is not None
 

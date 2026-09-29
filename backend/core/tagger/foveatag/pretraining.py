@@ -63,6 +63,8 @@ class FoveaPretrainingBatch:
 class FoveaPretrainingOutput:
     losses: SelfSupervisedLossOutput
     reconstruction_mask: torch.Tensor
+    first_features: torch.Tensor
+    second_features: torch.Tensor
 
 
 def sample_overlapping_specs(
@@ -277,4 +279,9 @@ class FoveaPretrainer(nn.Module):
             batch.first_images,
             pixel_mask,
         )
-        return FoveaPretrainingOutput(losses=losses, reconstruction_mask=patch_mask)
+        return FoveaPretrainingOutput(
+            losses=losses,
+            reconstruction_mask=patch_mask,
+            first_features=first.local_map,
+            second_features=second.local_map,
+        )

@@ -1,13 +1,16 @@
 """CPU contracts for the FoveaTag Phase-0 benchmark."""
 
+import hashlib
+
 import pytest
 
 from core.tagger.foveatag.benchmark import (
     BenchmarkManifest,
     PredictionSet,
     StageTimer,
-    evaluate_predictions,
     evaluate_dense_oracle_recovery,
+    evaluate_predictions,
+    file_evidence,
 )
 
 
@@ -135,6 +138,26 @@ def test_stage_timer_records_named_stages():
     summary = timer.summary()
     assert summary["preprocess"]["count"] == 1
     assert summary["preprocess"]["mean"] >= 0
+
+
+def test_file_evidence_hashes_resolved_inputs_in_role_order(tmp_path):
+    manifest = tmp_path / "manifest.json"
+    predictions = tmp_path / "predictions.json"
+    manifest.write_bytes(b"manifest")
+    predictions.write_bytes(b"predictions")
+
+    assert file_evidence({"predictions": predictions, "manifest": manifest}) == [
+        {
+            "role": "manifest",
+            "path": str(manifest.resolve()),
+            "sha256": hashlib.sha256(b"manifest").hexdigest(),
+        },
+        {
+            "role": "predictions",
+            "path": str(predictions.resolve()),
+            "sha256": hashlib.sha256(b"predictions").hexdigest(),
+        },
+    ]
 
 
 def test_dense_oracle_recovery_reports_utility_and_topk_overlap():

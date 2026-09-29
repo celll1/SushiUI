@@ -8,6 +8,7 @@ files can be validated and compared while another workload owns the GPU.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import statistics
@@ -260,6 +261,18 @@ def load_benchmark_manifest(path: Path | str) -> BenchmarkManifest:
 def load_prediction_set(path: Path | str) -> PredictionSet:
     with Path(path).open("r", encoding="utf-8") as handle:
         return PredictionSet.from_dict(json.load(handle))
+
+
+def file_evidence(paths: Mapping[str, Path | str]) -> list[dict[str, str]]:
+    rows = []
+    for role, value in sorted(paths.items()):
+        path = Path(value).resolve()
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        rows.append({"role": role, "path": str(path), "sha256": digest.hexdigest()})
+    return rows
 
 
 def _average_precision(labels: Sequence[int], scores: Sequence[float]) -> Optional[float]:
@@ -543,11 +556,18 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parser().parse_args(argv)
+    evidence_paths = {"manifest": args.manifest}
+    if args.command == "evaluate":
+        evidence_paths["predictions"] = args.predictions
+    evidence = file_evidence(evidence_paths)
     manifest = load_benchmark_manifest(args.manifest)
     if args.command == "validate":
         print(json.dumps({"name": manifest.name, "items": len(manifest.items)}, indent=2))
         return 0
     report = evaluate_predictions(manifest, load_prediction_set(args.predictions), threshold=args.threshold)
+    if file_evidence(evidence_paths) != evidence:
+        raise RuntimeError("benchmark inputs changed during evaluation")
+    report["evidence"] = evidence
     rendered = json.dumps(report, indent=2, sort_keys=True)
     if args.output:
         args.output.write_text(rendered + "\n", encoding="utf-8")

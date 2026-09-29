@@ -11,6 +11,7 @@ from .benchmark import (
     BenchmarkManifest,
     PredictionSet,
     evaluate_predictions,
+    file_evidence,
     load_benchmark_manifest,
     load_prediction_set,
 )
@@ -137,12 +138,21 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parser().parse_args(argv)
+    evidence_paths = {
+        "manifest": args.manifest,
+        "fixed_baseline_report": args.baseline_report,
+        "candidate_predictions": args.candidate_predictions,
+    }
+    evidence = file_evidence(evidence_paths)
     report = compare_at_matched_fpr(
         load_benchmark_manifest(args.manifest),
         json.loads(args.baseline_report.read_text(encoding="utf-8")),
         load_prediction_set(args.candidate_predictions),
         group=args.group,
     )
+    if file_evidence(evidence_paths) != evidence:
+        raise RuntimeError("matched-FPR inputs changed during comparison")
+    report["evidence"] = evidence
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     return 0

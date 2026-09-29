@@ -18,8 +18,8 @@ class FakeNaFlexEncoder(nn.Module):
         self.projection = nn.Linear(input_dim, hidden_size)
         self.calls = []
 
-    def forward(self, *, pixel_values, attention_mask, spatial_shapes):
-        self.calls.append((pixel_values.shape, attention_mask, spatial_shapes))
+    def forward(self, *, pixel_values, pixel_attention_mask, spatial_shapes):
+        self.calls.append((pixel_values.shape, pixel_attention_mask, spatial_shapes))
         return SimpleNamespace(last_hidden_state=self.projection(pixel_values))
 
 

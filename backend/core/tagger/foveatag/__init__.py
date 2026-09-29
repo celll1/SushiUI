@@ -47,6 +47,12 @@ from .router import (
     select_training_proposals,
     source_candidate_mask,
 )
+from .router_training import (
+    DenseOracleBatch,
+    RouterTrainResult,
+    evaluate_dense_candidates,
+    train_router_batch,
+)
 from .reconstruction import (
     PatchReconstructionHead,
     expand_patch_mask,
@@ -164,6 +170,10 @@ __all__ = [
     "select_proposals",
     "select_training_proposals",
     "source_candidate_mask",
+    "DenseOracleBatch",
+    "RouterTrainResult",
+    "evaluate_dense_candidates",
+    "train_router_batch",
     "PatchReconstructionHead",
     "expand_patch_mask",
     "mask_image_patches",

@@ -125,3 +125,16 @@ def test_diversity_penalty_is_lower_for_separate_slot_distributions():
     separate = torch.tensor([[[10.0, 0.0], [0.0, 10.0]]])
 
     assert router_diversity_loss(separate) < router_diversity_loss(collapsed)
+
+
+def test_ranking_loss_is_finite_differentiable_zero_when_all_candidates_are_masked():
+    scores = torch.full((1, 2), -torch.inf, requires_grad=True)
+    loss = router_ranking_loss(
+        scores,
+        torch.zeros_like(scores),
+        candidate_mask=torch.zeros_like(scores, dtype=torch.bool),
+    )
+    loss.backward()
+
+    assert loss.item() == 0.0
+    assert torch.isfinite(scores.grad).all()

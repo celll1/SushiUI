@@ -276,6 +276,49 @@ def run_control_training(
         "is_naflex": is_naflex,
         "control_head": "baseline_zero_residual_v1",
     }
+    database_stat = datasets_db.stat()
+    run_contract = {
+        "format_version": 1,
+        "kind": "foveatag_phase1_control_run",
+        "datasets_db": str(datasets_db.resolve()),
+        "datasets_db_size": database_stat.st_size,
+        "datasets_db_mtime_ns": database_stat.st_mtime_ns,
+        "train_counts": {str(key): int(value) for key, value in sorted(train_counts.items())},
+        "validation_counts": {
+            str(key): int(value) for key, value in sorted(validation_counts.items())
+        },
+        "domain_weights": {
+            str(key): float(value) for key, value in sorted(domain_weights.items())
+        },
+        "holdout_manifests": [
+            {
+                "path": str(path.resolve()),
+                "sha256": _file_sha256(path),
+            }
+            for path in holdout_manifests
+        ],
+        "photo_dataset_id": photo_dataset_id,
+        "photo_loss_weight": float(photo_loss_weight),
+        "fine_detail_positive_only_tags": len(fine_indices),
+        "epochs": int(epochs),
+        "epoch_samples": int(epoch_samples),
+        "batch_size": int(batch_size),
+        "local_views": int(local_views),
+        "learning_rate": float(learning_rate),
+        "weight_decay": float(weight_decay),
+        "warmup_steps": int(effective_warmup),
+        "seed": int(seed),
+        "max_source_pixels": max_source_pixels,
+        "loss": {
+            "kind": "asymmetric_loss",
+            "gamma_negative": criterion.gamma_neg,
+            "gamma_positive": criterion.gamma_pos,
+            "negative_clip": criterion.clip,
+            "epsilon": criterion.eps,
+            "detach_focal_weight": criterion.disable_torch_grad_focal_loss,
+            "reduction": criterion.reduction,
+        },
+    }
     start_epoch = global_step = 0
     best_f1 = 0.0
     best_threshold = 0.5
@@ -286,6 +329,7 @@ def run_control_training(
             model,
             optimizer,
             expected_encoder_provenance=provenance,
+            expected_run_contract=run_contract,
             scheduler=scheduler,
         )
         start_epoch = int(payload["next_epoch"])
@@ -361,6 +405,7 @@ def run_control_training(
                 "next_epoch": epoch + 1,
                 "global_step": global_step,
                 "encoder_provenance": provenance,
+                "run_contract": run_contract,
                 "scheduler": scheduler,
                 "best_validation_f1": best_f1,
                 "best_threshold": best_threshold,
@@ -373,6 +418,7 @@ def run_control_training(
                     output_dir / "best_f1.safetensors",
                     model,
                     encoder_provenance=provenance,
+                    run_contract=run_contract,
                     epoch=epoch,
                     global_step=global_step,
                     validation_f1=best_f1,
@@ -383,6 +429,7 @@ def run_control_training(
             "format_version": 1,
             "kind": "foveatag_siglip2_control_run",
             "encoder_provenance": provenance,
+            "run_contract": run_contract,
             "datasets_db": str(datasets_db.resolve()),
             "train_counts": {str(key): value for key, value in train_counts.items()},
             "validation_counts": {str(key): value for key, value in validation_counts.items()},

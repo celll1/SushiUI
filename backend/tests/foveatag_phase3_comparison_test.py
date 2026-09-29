@@ -64,6 +64,7 @@ def _payload(mode, positive, negative):
             "external_weights": [],
             "shared_initialization_sha256": "shared",
             "shared_data_contract_sha256": "d" * 64,
+            "shared_training_contract_sha256": "f" * 64,
             "input_mode": mode,
             "threshold": 0.5,
         },
@@ -103,6 +104,7 @@ def test_phase3_report_validates_pairing_and_collects_all_gate_evidence():
     assert report["contract"]["expected_prediction_rows"] == 4
     assert report["contract"]["shared_initialization_sha256"] == "shared"
     assert report["contract"]["shared_data_contract_sha256"] == "d" * 64
+    assert report["contract"]["shared_training_contract_sha256"] == "f" * 64
     assert report["contract"]["branches"]["source_native"]["runtime"]["wall_seconds"] == 1.0
     comparisons = report["matched_fpr_comparisons"]
     assert set(comparisons) == {
@@ -121,6 +123,7 @@ def test_phase3_report_validates_pairing_and_collects_all_gate_evidence():
     [
         ("initialization", "same initialization"),
         ("data", "same data contract"),
+        ("training", "same training contract"),
         ("coverage", "coverage differs"),
         ("lineage", "external-weight"),
         ("runtime", "wall_seconds"),
@@ -137,6 +140,8 @@ def test_phase3_report_rejects_confounded_comparisons(mutation, message):
         payloads["source_native"]["artifact_provenance"]["shared_initialization_sha256"] = "other"
     elif mutation == "data":
         payloads["source_native"]["artifact_provenance"]["shared_data_contract_sha256"] = "e" * 64
+    elif mutation == "training":
+        payloads["source_native"]["artifact_provenance"]["shared_training_contract_sha256"] = "0" * 64
     elif mutation == "coverage":
         payloads["source_native"]["predictions"].pop()
     else:

@@ -123,6 +123,7 @@ def _artifacts(tmp_path, *, learned=0.7, random_baseline=0.4):
                 "external_weights": [],
                 "shared_initialization_sha256": "shared",
                 "shared_data_contract_sha256": "d" * 64,
+                "shared_training_contract_sha256": "f" * 64,
                 "input_mode": mode,
                 "threshold": 0.5,
             },

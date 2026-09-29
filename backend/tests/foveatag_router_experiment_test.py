@@ -113,6 +113,7 @@ def _teacher_and_gate(tmp_path):
                 "external_weights": [],
                 "shared_initialization_sha256": "shared",
                 "shared_data_contract_sha256": "d" * 64,
+                "shared_training_contract_sha256": "f" * 64,
                 "input_mode": mode,
                 "threshold": 0.5,
             },

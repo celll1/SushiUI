@@ -116,7 +116,7 @@ class ManifestPretrainingDataset(Dataset):
             self.view_config,
             seed=seed,
             max_source_pixels=self.max_source_pixels,
-            pyramid_cache_root=self.pyramid_cache_root,
+            pyramid_cache_root=getattr(self, "pyramid_cache_root", None),
         )
 
 
@@ -188,7 +188,7 @@ class DomainBalancedPretrainingDataset(Dataset):
             self.view_config,
             seed=sample_seed,
             max_source_pixels=self.max_source_pixels,
-            pyramid_cache_root=self.pyramid_cache_root,
+            pyramid_cache_root=getattr(self, "pyramid_cache_root", None),
         )
 
 

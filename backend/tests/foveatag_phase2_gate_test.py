@@ -16,6 +16,11 @@ def _sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _json_sha(value):
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _health():
     metrics = {
         "tokens": 32,
@@ -37,14 +42,62 @@ def _health():
 def _evaluation(tmp_path):
     encoder = tmp_path / "best_encoder.safetensors"
     metadata = tmp_path / "best_encoder_metadata.json"
-    manifest = tmp_path / "validation.jsonl"
-    index = tmp_path / "validation.jsonl.idx"
+    manifest_dir = tmp_path / "manifests"
+    manifest_dir.mkdir()
+    manifest = manifest_dir / "validation.jsonl"
+    index = manifest_dir / "validation.jsonl.idx"
     run_summary = tmp_path / "summary.json"
     encoder.write_bytes(b"encoder")
-    metadata.write_text("{}", encoding="utf-8")
     manifest.write_text('"image.png"\n', encoding="utf-8")
     index.write_bytes(bytes(8))
-    run_summary.write_text('{"status":"complete"}', encoding="utf-8")
+    contract = {
+        "epochs": 1,
+        "manifest_domains": {
+            "25": {
+                "validation": {
+                    "path": manifest.name,
+                    "index_path": index.name,
+                    "count": 1,
+                    "sha256": _sha(manifest),
+                }
+            }
+        },
+    }
+    validation = {
+        "weighted": {
+            "loss": 0.25,
+            "correspondence": 0.1,
+            "reconstruction": 0.12,
+            "chroma": 0.06,
+        },
+        "domains": {
+            "25": {
+                "samples": 1,
+                "skipped": 0,
+                "loss": 0.25,
+                "correspondence": 0.1,
+                "reconstruction": 0.12,
+                "chroma": 0.06,
+            }
+        },
+    }
+    metadata.write_text(json.dumps({
+        "format_version": 1,
+        "kind": "foveatag_scratch_encoder",
+        "initialization": "scratch",
+        "external_weights": [],
+        "run_contract": contract,
+        "epoch": 0,
+        "global_step": 10,
+        "validation": validation,
+    }), encoding="utf-8")
+    run_summary.write_text(json.dumps({
+        "kind": "foveatag_teacher_free_pretraining_run",
+        "status": "complete",
+        "epoch": 1,
+        "run_contract": contract,
+        "best_validation_loss": 0.25,
+    }), encoding="utf-8")
     evaluation = tmp_path / "evaluation.json"
     evaluation.write_text(json.dumps({
         "format_version": 1,
@@ -55,6 +108,10 @@ def _evaluation(tmp_path):
         "encoder_metadata_sha256": _sha(metadata),
         "run_summary": str(run_summary),
         "run_summary_sha256": _sha(run_summary),
+        "epoch": 0,
+        "global_step": 10,
+        "run_contract_sha256": _json_sha(contract),
+        "training_validation": validation,
         "encoder_validation": _health(),
         "scratch_initialization_validation": _health(),
         "validation_manifests": [
@@ -103,6 +160,43 @@ def test_phase2_gate_requires_scratch_reference(tmp_path):
     evaluation.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(ValueError, match="scratch initialization"):
+        record_phase2_gate(
+            evaluation,
+            tmp_path / "gate.json",
+            decision="pass",
+            rationale="invalid",
+            decided_by="owner",
+        )
+
+
+def test_phase2_gate_rejects_evaluation_not_matching_encoder_metadata(tmp_path):
+    evaluation, _encoder, _manifest = _evaluation(tmp_path)
+    payload = json.loads(evaluation.read_text(encoding="utf-8"))
+    payload["training_validation"]["weighted"]["chroma"] = 0.01
+    evaluation.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="does not match encoder metadata"):
+        record_phase2_gate(
+            evaluation,
+            tmp_path / "gate.json",
+            decision="pass",
+            rationale="invalid",
+            decided_by="owner",
+        )
+
+
+def test_phase2_gate_rejects_unregistered_validation_manifest(tmp_path):
+    evaluation, _encoder, _manifest = _evaluation(tmp_path)
+    payload = json.loads(evaluation.read_text(encoding="utf-8"))
+    replacement = tmp_path / "replacement.jsonl"
+    replacement.write_text('"other.png"\n', encoding="utf-8")
+    payload["validation_manifests"][0].update({
+        "path": str(replacement),
+        "sha256": _sha(replacement),
+    })
+    evaluation.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="path does not match run contract"):
         record_phase2_gate(
             evaluation,
             tmp_path / "gate.json",

@@ -28,6 +28,8 @@ def record_phase2_gate(
         raise ValueError("rationale and decided_by must be non-empty")
     evaluation_path = Path(evaluation_path).resolve()
     evaluation = _load_json(evaluation_path)
+    if evaluation.get("format_version") != 1:
+        raise ValueError("unsupported Phase-2 evaluation format")
     if evaluation.get("kind") != "foveatag_phase2_encoder_evaluation":
         raise ValueError("artifact is not a Phase-2 encoder evaluation")
     _validate_health(evaluation.get("encoder_validation"), "trained encoder")
@@ -40,23 +42,53 @@ def record_phase2_gate(
     metadata = _verified_evaluation_file(
         evaluation, "encoder_metadata", "encoder_metadata_sha256"
     )
-    evidence[encoder] = "encoder"
-    evidence[metadata] = "encoder_metadata"
     run_summary = _verified_evaluation_file(
         evaluation, "run_summary", "run_summary_sha256"
     )
+    metadata_payload = _load_json(metadata)
+    summary_payload = _load_json(run_summary)
+    _validate_evaluation_lineage(
+        evaluation,
+        encoder=encoder,
+        metadata=metadata,
+        metadata_payload=metadata_payload,
+        run_summary=run_summary,
+        summary_payload=summary_payload,
+    )
+    evidence[encoder] = "encoder"
+    evidence[metadata] = "encoder_metadata"
     evidence[run_summary] = "run_summary"
     manifest_rows = evaluation.get("validation_manifests")
     if not isinstance(manifest_rows, list) or not manifest_rows:
         raise ValueError("Phase-2 evaluation has no validation manifest evidence")
+    expected_manifests = _expected_validation_manifests(
+        encoder.parent / "manifests", metadata_payload
+    )
+    seen_manifests: set[tuple[int, str]] = set()
     for row in manifest_rows:
         if not isinstance(row, Mapping):
             raise ValueError("validation manifest evidence row is invalid")
+        try:
+            key = (int(row.get("domain")), str(row.get("role")))
+        except (TypeError, ValueError) as error:
+            raise ValueError("validation manifest evidence identity is invalid") from error
+        if key in seen_manifests or key not in expected_manifests:
+            raise ValueError(f"unexpected or duplicate validation manifest evidence: {key}")
         path = _required_file(row.get("path"), "validation manifest evidence")
         expected = row.get("sha256")
         if not isinstance(expected, str) or _file_sha256(path) != expected:
             raise ValueError(f"validation manifest evidence changed: {path}")
+        expected_path, contract_hash, expected_bytes = expected_manifests[key]
+        if path != expected_path:
+            raise ValueError(f"validation manifest path does not match run contract: {path}")
+        if contract_hash is not None and expected != contract_hash:
+            raise ValueError(f"validation manifest hash does not match run contract: {path}")
+        if expected_bytes is not None and path.stat().st_size != expected_bytes:
+            raise ValueError(f"validation manifest index size does not match run contract: {path}")
+        seen_manifests.add(key)
         evidence[path] = f"validation_{row.get('role', 'unknown')}:{row.get('domain')}"
+    if seen_manifests != set(expected_manifests):
+        raise ValueError("Phase-2 evaluation does not cover every registered validation manifest")
     payload = {
         "format_version": PHASE2_GATE_FORMAT_VERSION,
         "kind": "foveatag_phase2_gate_decision",
@@ -111,6 +143,105 @@ def require_phase2_encoder(gate: Mapping[str, Any], encoder_path: Path | str) ->
             raise ValueError(f"Phase-2 gate does not bind one {role}")
         if Path(rows[0]["path"]).resolve() != path or rows[0].get("sha256") != digest:
             raise ValueError(f"Phase-2 gate does not bind the supplied {role}")
+
+
+def _validate_evaluation_lineage(
+    evaluation: Mapping[str, Any],
+    *,
+    encoder: Path,
+    metadata: Path,
+    metadata_payload: Mapping[str, Any],
+    run_summary: Path,
+    summary_payload: Mapping[str, Any],
+) -> None:
+    expected_metadata = encoder.with_name(f"{encoder.stem}_metadata.json")
+    if metadata != expected_metadata:
+        raise ValueError("Phase-2 evaluation metadata is not paired with its encoder")
+    if run_summary != encoder.parent / "summary.json":
+        raise ValueError("Phase-2 evaluation summary is not paired with its encoder")
+    if metadata_payload.get("format_version") != 1:
+        raise ValueError("unsupported Phase-2 encoder metadata format")
+    if metadata_payload.get("kind") != "foveatag_scratch_encoder":
+        raise ValueError("Phase-2 encoder metadata has the wrong kind")
+    if (
+        metadata_payload.get("initialization") != "scratch"
+        or metadata_payload.get("external_weights") != []
+    ):
+        raise ValueError("Phase-2 encoder metadata does not have pure-scratch lineage")
+    contract = metadata_payload.get("run_contract")
+    if not isinstance(contract, Mapping):
+        raise ValueError("Phase-2 encoder metadata lacks a run contract")
+    if evaluation.get("run_contract_sha256") != _json_sha256(contract):
+        raise ValueError("Phase-2 evaluation run contract hash does not match metadata")
+    if summary_payload.get("kind") != "foveatag_teacher_free_pretraining_run":
+        raise ValueError("Phase-2 run summary has the wrong kind")
+    if summary_payload.get("status") != "complete":
+        raise ValueError("Phase-2 run summary is not complete")
+    if summary_payload.get("run_contract") != dict(contract):
+        raise ValueError("Phase-2 run summary contract does not match encoder metadata")
+    if int(summary_payload.get("epoch", -1)) != int(contract.get("epochs", -2)):
+        raise ValueError("Phase-2 run summary did not complete every registered epoch")
+    for field in ("epoch", "global_step"):
+        if int(evaluation.get(field, -1)) != int(metadata_payload.get(field, -2)):
+            raise ValueError(f"Phase-2 evaluation {field} does not match encoder metadata")
+    training_validation = evaluation.get("training_validation")
+    if training_validation != metadata_payload.get("validation"):
+        raise ValueError("Phase-2 training validation does not match encoder metadata")
+    _validate_training_validation(training_validation)
+    weighted = training_validation["weighted"]
+    best_loss = summary_payload.get("best_validation_loss")
+    if not _finite(best_loss) or not math.isclose(
+        float(weighted["loss"]), float(best_loss), rel_tol=1e-12, abs_tol=1e-12
+    ):
+        raise ValueError("Phase-2 encoder is not the completed run's best checkpoint")
+
+
+def _validate_training_validation(value: Any) -> None:
+    if not isinstance(value, Mapping):
+        raise ValueError("Phase-2 evaluation lacks held-out training validation")
+    weighted = value.get("weighted")
+    domains = value.get("domains")
+    if not isinstance(weighted, Mapping) or not isinstance(domains, Mapping) or not domains:
+        raise ValueError("Phase-2 held-out training validation is incomplete")
+    for metric in ("loss", "correspondence", "reconstruction", "chroma"):
+        if not _finite(weighted.get(metric)):
+            raise ValueError(f"Phase-2 held-out validation lacks weighted {metric}")
+    for domain, row in domains.items():
+        if not isinstance(row, Mapping) or int(row.get("samples", 0)) <= 0:
+            raise ValueError(f"Phase-2 held-out validation domain {domain} has no samples")
+        for metric in ("loss", "correspondence", "reconstruction", "chroma"):
+            if not _finite(row.get(metric)):
+                raise ValueError(f"Phase-2 held-out validation domain {domain} lacks {metric}")
+
+
+def _expected_validation_manifests(
+    manifest_dir: Path, metadata: Mapping[str, Any]
+) -> dict[tuple[int, str], tuple[Path, Optional[str], Optional[int]]]:
+    contract = metadata.get("run_contract")
+    domains = contract.get("manifest_domains") if isinstance(contract, Mapping) else None
+    if not isinstance(domains, Mapping) or not domains:
+        raise ValueError("Phase-2 run contract lacks validation manifests")
+    expected = {}
+    for domain, details in domains.items():
+        if not isinstance(details, Mapping) or not isinstance(details.get("validation"), Mapping):
+            raise ValueError(f"Phase-2 validation manifest contract is invalid: {domain}")
+        validation = details["validation"]
+        count = int(validation.get("count", -1))
+        digest = validation.get("sha256")
+        if count <= 0 or not isinstance(digest, str) or not digest:
+            raise ValueError(f"Phase-2 validation manifest contract is incomplete: {domain}")
+        domain_id = int(domain)
+        expected[(domain_id, "paths")] = (
+            (manifest_dir / str(validation.get("path", ""))).resolve(),
+            digest,
+            None,
+        )
+        expected[(domain_id, "index")] = (
+            (manifest_dir / str(validation.get("index_path", ""))).resolve(),
+            None,
+            count * 8,
+        )
+    return expected
 
 
 def _validate_health(value: Any, name: str) -> None:
@@ -172,6 +303,11 @@ def _file_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _json_sha256(value: Mapping[str, Any]) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _load_json(path: Path) -> Mapping[str, Any]:

@@ -28,8 +28,10 @@ def run_supervised_predictions(
     output_path: Path | str,
     *,
     resolutions: Optional[Sequence[str]] = None,
+    device: torch.device | str = "cuda",
 ) -> Path:
-    if not torch.cuda.is_available():
+    device = torch.device(device)
+    if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for FoveaTag benchmark prediction")
     manifest = load_benchmark_manifest(manifest_path)
     model_path = Path(model_path)
@@ -49,9 +51,10 @@ def run_supervised_predictions(
         temperature=config.temperature,
     )
     load_inference_artifact(model_path, model)
-    device = torch.device("cuda")
     model.to(device).eval()
-    amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    amp_dtype = (
+        torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    ) if device.type == "cuda" else torch.float32
 
     target_tags = sorted({tag for item in manifest.items for tag in item.positive_tags})
     tag_indices = {
@@ -99,11 +102,13 @@ def run_supervised_predictions(
                 batch = collate_view_batches([views]).to(
                     device, dtype=amp_dtype, non_blocking=True
                 )
-                torch.cuda.synchronize(device)
+                _synchronize(device)
                 transfer_ms = (time.perf_counter() - transfer_started) * 1000.0
                 forward_started = time.perf_counter()
                 with torch.inference_mode(), torch.autocast(
-                    device_type="cuda", dtype=amp_dtype
+                    device_type=device.type,
+                    dtype=amp_dtype,
+                    enabled=device.type == "cuda",
                 ):
                     logits = model(
                         batch.overview_images,
@@ -113,7 +118,7 @@ def run_supervised_predictions(
                         local_view_mask=batch.local_view_mask,
                     )[0]
                 probabilities = logits.sigmoid()
-                torch.cuda.synchronize(device)
+                _synchronize(device)
                 forward_ms = (time.perf_counter() - forward_started) * 1000.0
                 selected = probabilities.index_select(0, present_indices).float().cpu().tolist()
                 scores = dict(zip(present_tags, selected))
@@ -159,7 +164,8 @@ def run_supervised_predictions(
     finally:
         del model
         gc.collect()
-        torch.cuda.empty_cache()
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
 
 
 def _artifact_input_mode(metadata: Mapping[str, Any]) -> FoveaInputMode:
@@ -192,6 +198,11 @@ def _view_seed(sample_id: str, resolution: str) -> int:
         f"{sample_id}\0{resolution}".encode("utf-8"), digest_size=8
     ).digest()
     return int.from_bytes(digest, "little")
+
+
+def _synchronize(device: torch.device) -> None:
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
 
 
 def _parser() -> argparse.ArgumentParser:

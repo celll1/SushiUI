@@ -1081,6 +1081,11 @@ launched through `core.tagger.foveatag.control_plan`, which verifies that plan's
 file hashes, database identity, ASL contract, and optimizer-step arithmetic
 before passing its values directly to the training or evaluation runner. This
 avoids maintaining a second handwritten set of command-line values.
+The plan was revalidated while Phase 2 occupied the GPU: all three external
+model artifacts, the 14.00 GB database identity, both holdout manifests, both
+fixed-baseline reports, and the optimizer-step arithmetic passed. Its output
+directory did not yet exist, so the registered run has neither been partially
+executed nor shadowed by an unregistered result.
 
 The 68.58M figure is optimization state for the added local path, not total
 model capacity. The checkpoint-specific comparison is:

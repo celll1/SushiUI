@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "source_commit": "792e671200a3f6d9ab434b5c6c58d292b511233c",
+  "model": "FoveaTagger",
+  "configuration": {
+    "num_tags": 107926,
+    "feature_dim": 512,
+    "evidence_slots_per_view": 2,
+    "pool_heads": 8,
+    "encoder_config": "FoveaEncoderConfig defaults"
+  },
+  "parameters": {
+    "total": 151170102,
+    "trainable": 151170102,
+    "encoder": 37392032,
+    "local_pooler": 592896,
+    "local_projection": 197120,
+    "global_projection": 262656,
+    "evidence_head": 112725398,
+    "evidence_head_mixer": 2101248,
+    "evidence_head_classifier": 110624150
+  },
+  "comparison": {
+    "existing_siglip2_tagger_known_trainable": 132400000,
+    "existing_siglip2_classifier": 124440000,
+    "existing_siglip2_lora": 7960000,
+    "foveatag_minus_existing_known_trainable": 18770102,
+    "foveatag_over_existing_known_trainable_ratio": 1.1417681419939577,
+    "scope_note": "The SigLIP2 base encoder is additional frozen external state and is not included in its known trainable count. FoveaTag is fully trainable and has no external encoder state."
+  },
+  "weight_storage_bytes": {
+    "float32": 604680408,
+    "bfloat16_or_float16": 302340204
+  }
+}

@@ -1008,6 +1008,7 @@ model capacity. The checkpoint-specific comparison is:
 | Existing fixed-384 SigLIP2 LoRA tagger | -- | 132.40M (124.44M classifier + 7.96M LoRA) | Current production baseline; base encoder weights are additional frozen/external state. |
 | First random-full-head control | encoder only | 123.95M | Discarded the trained 124.44M classifier, causing the confound measured above. |
 | Corrected local-residual control | base encoder + 7.96M trained LoRA + 124.44M trained classifier | 68.58M | Adds capacity: 57.36M evidence head/mixer, 10.63M slot poolers, and 0.59M projection. It is not a smaller replacement tagger. |
+| Full-scratch FoveaTag, 107,926 tags | none | 151.17M | Complete trainable model: 37.39M encoder, 0.59M local pooler, 0.46M projections, and 112.73M evidence head. It has no frozen external encoder. |
 
 The local residual still gives every tag a learned 512-dimensional vector
 (55.26M parameters in that matrix alone). Increasing this dimension before the
@@ -1015,10 +1016,18 @@ corrected pilot would add classifier capacity without showing that capacity is
 the bottleneck. If local AP remains low while dense-oracle utility shows that
 the selected crops contain useful evidence, compare 512, 768, and 1,024 local
 dimensions at equal data and optimizer steps. For the fully scratch model, the
-37.39M figure refers only to the image encoder; the 107,926-way global/local
-classifier makes the complete tagger substantially larger. Phase 6 capacity
-growth is therefore gated on evidence of under-capacity rather than parameter
-count alone.
+37.39M figure refers only to the image encoder. The exact default model with
+107,926 tags has 151,170,102 trainable parameters: 37,392,032 in the encoder,
+592,896 in the local slot pooler, 459,776 in the two projections, and
+112,725,398 in the evidence head. The head consists of a 2,101,248-parameter
+mixer and a 110,624,150-parameter 1,024-to-107,926 linear classifier including
+bias. This is 18,770,102 parameters, or 14.2%, above the existing tagger's known
+132.40M trainable state. The comparison remains conservative about total
+capacity because the existing tagger also carries its frozen external SigLIP2
+base encoder, whereas every FoveaTag parameter is trained from scratch. The
+exact measurement is retained in
+`docs/audits/FOVEATAG_CAPACITY_2026-09-29.json`. Phase 6 capacity growth is
+therefore gated on measured under-capacity rather than the encoder-only count.
 
 ### 9.13 Phase 2 lifecycle smoke (2026-09-29)
 

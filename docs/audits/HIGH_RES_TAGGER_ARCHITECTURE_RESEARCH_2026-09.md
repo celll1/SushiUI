@@ -1140,6 +1140,21 @@ exact measurement is retained in
 `docs/audits/FOVEATAG_CAPACITY_2026-09-29.json`. Phase 6 capacity growth is
 therefore gated on measured under-capacity rather than the encoder-only count.
 
+The existing fixed-384 run is also much larger than the Phase 1 diagnostic.
+Its saved configuration names 16 dataset domains containing about 3.70 million
+registered items, batch 32, 20 planned epochs, and dynamic tag refresh,
+Danbooru injection, and vocabulary expansion. The retained checkpoint reached
+epoch 13 / step 1,179,633; the best checkpoint was epoch 10 / step 949,537.
+These numbers are a scale and coverage reference, not a Phase 3 budget: the
+eligible fixed snapshot is smaller than the registered count, and FoveaTag has
+different per-sample compute and trains every parameter. In particular, the
+24,000-sample Phase 1 run must not silently become the main scratch-tagger
+budget, and a two-domain gate run must be described as a subset rather than as
+the same data used by the existing tagger. The exact Phase 3 budget is chosen
+from measured supervised throughput before branch A reports quality, then
+frozen for A/B/C by the shared training contract. The machine-readable reference
+is `docs/audits/FOVEATAG_EXISTING_TAGGER_TRAINING_REFERENCE_2026-09-29.json`.
+
 ### 9.13 Phase 2 lifecycle smoke (2026-09-29)
 
 The long-run path no longer relies on the bounded benchmark path list. It builds

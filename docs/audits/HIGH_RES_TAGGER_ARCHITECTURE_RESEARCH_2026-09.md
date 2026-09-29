@@ -1034,7 +1034,11 @@ fine matched-FPR, and coarse matched-FPR reports with input hashes. This is a
 pretrained feasibility/cost diagnostic, not a gate or initialization source
 for the scratch architecture. The complete pre-run contract, including external
 artifact and benchmark hashes, is retained in
-`docs/audits/FOVEATAG_PHASE1_RESIDUAL_PLAN_2026-09-29.json`.
+`docs/audits/FOVEATAG_PHASE1_RESIDUAL_PLAN_2026-09-29.json`. The diagnostic is
+launched through `core.tagger.foveatag.control_plan`, which verifies that plan's
+file hashes, database identity, ASL contract, and optimizer-step arithmetic
+before passing its values directly to the training or evaluation runner. This
+avoids maintaining a second handwritten set of command-line values.
 
 The 68.58M figure is optimization state for the added local path, not total
 model capacity. The checkpoint-specific comparison is:

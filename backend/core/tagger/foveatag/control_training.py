@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Sequence
 
 import torch
 from torch import nn
@@ -18,6 +18,19 @@ class ControlEpochResult:
     optimizer_steps: int
     samples: int
     mean_loss: float
+
+
+@dataclass(frozen=True)
+class ControlValidationResult:
+    batches: int
+    samples: int
+    known_labels: int
+    active_tags: int
+    mean_loss: float
+    macro_f1: float
+    macro_precision: float
+    macro_recall: float
+    threshold: float
 
 
 class SigLIP2ControlTrainer:
@@ -117,3 +130,120 @@ class SigLIP2ControlTrainer:
         self.scaler.step(self.optimizer)
         self.scaler.update()
         self.optimizer.zero_grad(set_to_none=True)
+
+    @torch.inference_mode()
+    def validate_epoch(
+        self,
+        batches: Iterable[Optional[SigLIP2ControlBatch]],
+        *,
+        thresholds: Sequence[float] = tuple(value / 20 for value in range(1, 20)),
+    ) -> ControlValidationResult:
+        """Evaluate masked labels and choose a macro-F1 threshold in one pass."""
+        if not thresholds or any(not 0 < value < 1 for value in thresholds):
+            raise ValueError("validation thresholds must be within (0, 1)")
+        threshold_values = tuple(float(value) for value in thresholds)
+        was_training = self.model.training
+        vision_encoder = getattr(self.model, "vision_encoder", None)
+        vision_was_training = vision_encoder.training if vision_encoder is not None else None
+        self.model.eval()
+        batch_count = sample_count = known_count = 0
+        loss_total = 0.0
+        true_positive = false_positive = false_negative = positive_support = None
+        try:
+            for batch in batches:
+                if batch is None:
+                    continue
+                batch = batch.to(self.device, non_blocking=True)
+                with torch.autocast(
+                    device_type=self.device.type,
+                    dtype=self.mixed_precision,
+                    enabled=self.device.type == "cuda" and self.mixed_precision is not None,
+                ):
+                    logits = self.model(
+                        batch.overview,
+                        batch.local,
+                        local_view_mask=batch.local_view_mask,
+                    )
+                    loss = self.criterion(logits, batch.labels, batch.loss_masks)
+                if not torch.isfinite(loss):
+                    continue
+
+                known = batch.loss_masks > 0
+                labels = batch.labels >= 0.5
+                known_in_batch = int(known.sum().item())
+                probabilities = logits.sigmoid()
+                threshold_tensor = probabilities.new_tensor(threshold_values).view(-1, 1, 1)
+                predicted = probabilities.unsqueeze(0) >= threshold_tensor
+                known_expanded = known.unsqueeze(0)
+                labels_expanded = labels.unsqueeze(0)
+                batch_tp = (predicted & labels_expanded & known_expanded).sum(dim=1).cpu()
+                batch_fp = (predicted & ~labels_expanded & known_expanded).sum(dim=1).cpu()
+                batch_fn = (~predicted & labels_expanded & known_expanded).sum(dim=1).cpu()
+                batch_support = (labels & known).sum(dim=0).cpu()
+                if true_positive is None:
+                    true_positive = batch_tp
+                    false_positive = batch_fp
+                    false_negative = batch_fn
+                    positive_support = batch_support
+                else:
+                    true_positive += batch_tp
+                    false_positive += batch_fp
+                    false_negative += batch_fn
+                    positive_support += batch_support
+
+                batch_count += 1
+                samples = int(batch.labels.shape[0])
+                sample_count += samples
+                known_count += known_in_batch
+                loss_total += float(loss) * samples
+        finally:
+            self.model.train(was_training)
+            if vision_encoder is not None and vision_was_training is not None:
+                vision_encoder.train(vision_was_training)
+
+        if true_positive is None or known_count == 0:
+            raise RuntimeError("validation produced no finite labeled batches")
+        metrics = _threshold_metrics(
+            true_positive,
+            false_positive,
+            false_negative,
+            positive_support,
+        )
+        best_index = max(
+            range(len(threshold_values)),
+            key=lambda index: (metrics["f1"][index], -threshold_values[index]),
+        )
+        return ControlValidationResult(
+            batches=batch_count,
+            samples=sample_count,
+            known_labels=known_count,
+            active_tags=int((positive_support > 0).sum().item()),
+            mean_loss=loss_total / sample_count,
+            macro_f1=float(metrics["f1"][best_index]),
+            macro_precision=float(metrics["precision"][best_index]),
+            macro_recall=float(metrics["recall"][best_index]),
+            threshold=threshold_values[best_index],
+        )
+
+
+def _threshold_metrics(
+    true_positive: torch.Tensor,
+    false_positive: torch.Tensor,
+    false_negative: torch.Tensor,
+    positive_support: torch.Tensor,
+) -> dict[str, torch.Tensor]:
+    active = positive_support > 0
+    if not active.any():
+        zeros = torch.zeros(true_positive.shape[0], dtype=torch.float64)
+        return {"f1": zeros, "precision": zeros.clone(), "recall": zeros.clone()}
+    tp = true_positive[:, active].to(torch.float64)
+    fp = false_positive[:, active].to(torch.float64)
+    fn = false_negative[:, active].to(torch.float64)
+    precision = tp / (tp + fp).clamp_min(1)
+    recall = tp / (tp + fn).clamp_min(1)
+    f1 = 2 * precision * recall / (precision + recall).clamp_min(torch.finfo(torch.float64).eps)
+    return {
+        "f1": f1.mean(dim=1),
+        "precision": precision.mean(dim=1),
+        "recall": recall.mean(dim=1),
+    }

@@ -72,6 +72,12 @@ from .siglip2_control import (
 )
 from .siglip2_control_data import SigLIP2ControlBatch, collate_siglip2_control_samples
 from .control_training import ControlEpochResult, SigLIP2ControlTrainer
+from .control_training import ControlValidationResult
+from .control_checkpoint import (
+    CONTROL_CHECKPOINT_FORMAT_VERSION,
+    load_control_checkpoint,
+    save_control_checkpoint,
+)
 from .supervised_data import (
     FoveaSupervisedBatch,
     FoveaSupervisedDataset,
@@ -153,7 +159,11 @@ __all__ = [
     "SigLIP2ControlBatch",
     "collate_siglip2_control_samples",
     "ControlEpochResult",
+    "ControlValidationResult",
     "SigLIP2ControlTrainer",
+    "CONTROL_CHECKPOINT_FORMAT_VERSION",
+    "load_control_checkpoint",
+    "save_control_checkpoint",
     "FoveaSupervisedBatch",
     "FoveaSupervisedDataset",
     "FoveaSupervisedSample",

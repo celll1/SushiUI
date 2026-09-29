@@ -1,0 +1,102 @@
+{
+  "format_version": 1,
+  "kind": "foveatag_phase1_residual_diagnostic_plan",
+  "purpose": "Pretrained feasibility and cost diagnostic; never an initialization source or gate for scratch FoveaTag.",
+  "model": {
+    "control_head": "baseline_zero_residual_v1",
+    "checkpoint": {
+      "path": "D:\\celll1\\webui_cl\\tagger_models\\cca72ce1-7420-4164-9f24-c30ae77cdf2f\\best_f1.safetensors",
+      "bytes": 529631328,
+      "sha256": "bd48dd2e60717678434c62f71941a55d54d3823db1ac9994a3c12bcd9152c626"
+    },
+    "vocabulary": {
+      "path": "D:\\celll1\\webui_cl\\tagger_models\\cca72ce1-7420-4164-9f24-c30ae77cdf2f\\best_f1_vocabulary.json",
+      "bytes": 14552455,
+      "sha256": "c78e64970fb0970cb008d64886179ef96a98b976cb9341352c83ae289002b7e6"
+    },
+    "base_vision_encoder": {
+      "path": "D:\\celll1\\webui_cl\\tagger_models\\cca72ce1-7420-4164-9f24-c30ae77cdf2f\\base_model.safetensors",
+      "bytes": 1712951440,
+      "sha256": "ae4affb00458b0359895485826e40ee4838bc61c86421865f49a3a9949245db7"
+    }
+  },
+  "data": {
+    "datasets_db": {
+      "path": "D:\\celll1\\webui_cl\\datasets.db",
+      "bytes": 14004772864,
+      "mtime_ns": 1790343324126131300
+    },
+    "train_counts": {
+      "29": 20000,
+      "16": 4000
+    },
+    "validation_counts": {
+      "29": 1024,
+      "16": 256
+    },
+    "domain_weights": {
+      "29": 0.85,
+      "16": 0.15
+    },
+    "photo_dataset_id": 16,
+    "photo_loss_weight": 0.25,
+    "holdout_manifests": [
+      {
+        "repo_path": "docs/audits/FOVEATAG_GROUND_BENCHMARK_DANBOORU_V1.json",
+        "bytes": 1421630,
+        "sha256": "876c16b382ccfad7d6f3d7cb2934cdb434e2cab321ab4a23da976d2a7acefe77"
+      },
+      {
+        "repo_path": "docs/audits/FOVEATAG_WEAK_BENCHMARK_PHOTO_V1.json",
+        "bytes": 396715,
+        "sha256": "061fc372d470796d72ae69ea4dc8bac5c50ff20f9e8a4ad5cfe3ebecd675edfe"
+      }
+    ]
+  },
+  "training": {
+    "epochs": 1,
+    "epoch_samples": 24000,
+    "batch_size": 4,
+    "optimizer_steps": 6000,
+    "local_views": 4,
+    "learning_rate": 0.0001,
+    "weight_decay": 0.0001,
+    "warmup_steps": 200,
+    "seed": 20260929,
+    "max_source_pixels": 40000000,
+    "loss": {
+      "kind": "asymmetric_loss",
+      "gamma_negative": 4.0,
+      "gamma_positive": 1.0,
+      "negative_clip": 0.05,
+      "epsilon": 0.000001,
+      "detach_focal_weight": false,
+      "reduction": "mean"
+    }
+  },
+  "evaluation": {
+    "groups": [
+      "fine_detail",
+      "coarse"
+    ],
+    "resolution_ladder": "all manifest resolutions",
+    "benchmarks": [
+      {
+        "name": "ground",
+        "manifest_repo_path": "docs/audits/FOVEATAG_GROUND_BENCHMARK_DANBOORU_V1.json",
+        "fixed_baseline_report_repo_path": "docs/audits/foveatag_ground_fixed_predictions/siglip2_fixed_report.json",
+        "fixed_baseline_report_sha256": "623ab6d3184d3a1a0a5de1db2d7222aecd05b7b37400f1dc9923401bec4887e3"
+      },
+      {
+        "name": "photo",
+        "manifest_repo_path": "docs/audits/FOVEATAG_WEAK_BENCHMARK_PHOTO_V1.json",
+        "fixed_baseline_report_repo_path": "docs/audits/foveatag_fixed_predictions/siglip2_fixed_report.json",
+        "fixed_baseline_report_sha256": "90ee90d545a88e137b384433331dd19eb33f848be130d47f5e3536001e596d5b"
+      }
+    ]
+  },
+  "outputs": {
+    "training_dir": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase1_residual_diagnostic_20260929",
+    "evaluation_dir": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase1_residual_diagnostic_20260929\\evaluation"
+  }
+}

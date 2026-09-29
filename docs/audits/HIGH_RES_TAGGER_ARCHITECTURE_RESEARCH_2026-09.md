@@ -1032,7 +1032,9 @@ hash before using the GPU, then regenerates predictions over the complete
 resolution ladders of both registered benchmark manifests and writes normal,
 fine matched-FPR, and coarse matched-FPR reports with input hashes. This is a
 pretrained feasibility/cost diagnostic, not a gate or initialization source
-for the scratch architecture.
+for the scratch architecture. The complete pre-run contract, including external
+artifact and benchmark hashes, is retained in
+`docs/audits/FOVEATAG_PHASE1_RESIDUAL_PLAN_2026-09-29.json`.
 
 The 68.58M figure is optimization state for the added local path, not total
 model capacity. The checkpoint-specific comparison is:

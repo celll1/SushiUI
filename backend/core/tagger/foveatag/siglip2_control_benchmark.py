@@ -70,9 +70,7 @@ def benchmark_control_views(
     load_result = manager.load_model(str(checkpoint), str(vocabulary))
     torch.cuda.synchronize()
     load_seconds = time.perf_counter() - load_started
-    if not manager.is_naflex:
-        manager.unload()
-        raise ValueError("this benchmark requires a NaFlex checkpoint")
+    is_naflex = manager.is_naflex
 
     original = manager.model
     encoder = original.vision_encoder
@@ -87,7 +85,7 @@ def benchmark_control_views(
         feature_dim=512,
         num_tags=load_result["num_tags"],
         evidence_slots_per_view=2,
-        is_naflex=True,
+        is_naflex=is_naflex,
         freeze_encoder=True,
     ).to("cuda").eval()
 
@@ -100,7 +98,7 @@ def benchmark_control_views(
                 warm_batch = collate_siglip2_control_samples(
                     [warm_sample],
                     processor=manager.processor,
-                    is_naflex=True,
+                    is_naflex=is_naflex,
                     overview_patch_budget=overview_patch_budget,
                     local_patch_budget=local_patch_budget,
                 )
@@ -117,7 +115,7 @@ def benchmark_control_views(
                 batch = collate_siglip2_control_samples(
                     [sample],
                     processor=manager.processor,
-                    is_naflex=True,
+                    is_naflex=is_naflex,
                     overview_patch_budget=overview_patch_budget,
                     local_patch_budget=local_patch_budget,
                 )
@@ -141,7 +139,10 @@ def benchmark_control_views(
                     rows.setdefault(name, []).append(value)
             results[str(local_views)] = {
                 "images": len(image_paths),
-                "encoded_patches": overview_patch_budget + local_views * local_patch_budget,
+                "encoded_patches": (
+                    overview_patch_budget + local_views * local_patch_budget
+                    if is_naflex else None
+                ),
                 "stage_ms": {name: timing_summary(values) for name, values in rows.items()},
                 "images_per_second": 1000.0 / statistics.fmean(rows["end_to_end"]),
                 "peak_allocated_mib": torch.cuda.max_memory_allocated() / 2**20,
@@ -155,6 +156,7 @@ def benchmark_control_views(
             "load_seconds": load_seconds,
             "overview_patch_budget": overview_patch_budget,
             "local_patch_budget": local_patch_budget,
+            "encoder_input_contract": "naflex" if is_naflex else "fixed",
             "device": torch.cuda.get_device_properties(0).name,
             "torch_version": torch.__version__,
             "cuda_version": torch.version.cuda,

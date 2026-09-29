@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Protocol, Sequence
+import math
+from typing import Mapping, Optional, Protocol, Sequence
 
 import torch
 from torch.utils.data import Dataset
@@ -24,6 +25,33 @@ class FoveaSupervisedSample:
     views: ViewBatch
     label: torch.Tensor
     loss_mask: torch.Tensor
+
+
+@dataclass(frozen=True)
+class SupervisionPolicy:
+    """Per-dataset confidence policy for mixed-provenance labels."""
+
+    loss_weight: float = 1.0
+    positive_only_indices: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.loss_weight) or self.loss_weight < 0:
+            raise ValueError("loss_weight must be finite and non-negative")
+        if any(index < 0 for index in self.positive_only_indices):
+            raise ValueError("positive_only_indices must be non-negative")
+
+    def apply(self, label: torch.Tensor, loss_mask: torch.Tensor) -> torch.Tensor:
+        adjusted = loss_mask.clone().mul_(self.loss_weight)
+        if self.positive_only_indices:
+            indices = torch.tensor(
+                self.positive_only_indices,
+                dtype=torch.long,
+                device=label.device,
+            )
+            if int(indices.max()) >= label.numel():
+                raise ValueError("positive_only_indices exceed the label dimension")
+            adjusted[indices] *= label[indices]
+        return adjusted
 
 
 @dataclass(frozen=True)
@@ -56,11 +84,13 @@ class FoveaSupervisedDataset(Dataset):
         view_config: ViewConfig = ViewConfig(),
         seed: int = 0,
         training: bool = True,
+        supervision_policies: Optional[Mapping[int, SupervisionPolicy]] = None,
     ) -> None:
         self.source = source
         self.view_config = view_config
         self.seed = int(seed)
         self.training = bool(training)
+        self.supervision_policies = dict(supervision_policies or {})
         self.epoch = 0
 
     def set_epoch(self, epoch: int) -> None:
@@ -74,6 +104,11 @@ class FoveaSupervisedDataset(Dataset):
         if raw is None:
             return None
         sample_seed = self.seed + self.epoch * len(self) + index
+        loss_mask = raw.loss_mask
+        if raw.dataset_id is not None:
+            policy = self.supervision_policies.get(raw.dataset_id)
+            if policy is not None:
+                loss_mask = policy.apply(raw.label, loss_mask)
         return FoveaSupervisedSample(
             views=build_views(
                 raw.image,
@@ -82,7 +117,7 @@ class FoveaSupervisedDataset(Dataset):
                 training=self.training,
             ),
             label=raw.label,
-            loss_mask=raw.loss_mask,
+            loss_mask=loss_mask,
         )
 
 

@@ -135,6 +135,7 @@ class BenchmarkManifest:
     resolution_long_sides: Tuple[int, ...]
     area_bins: Tuple[Tuple[str, float], ...] = DEFAULT_AREA_BINS
     evidence_mode: str = "boxes"
+    provenance: Mapping[str, Any] = field(default_factory=dict)
     format_version: int = BENCHMARK_FORMAT_VERSION
 
     @classmethod
@@ -156,6 +157,8 @@ class BenchmarkManifest:
         _validate_area_bins(bins)
         evidence_mode = str(raw.get("evidence_mode", "boxes"))
         _require(evidence_mode in ("boxes", "dense_oracle"), "evidence_mode must be boxes or dense_oracle")
+        provenance = raw.get("provenance", {})
+        _require(isinstance(provenance, Mapping), "provenance must be an object")
         if evidence_mode == "boxes":
             for item in items:
                 missing_evidence = set(item.fine_detail_tags) - {
@@ -171,6 +174,7 @@ class BenchmarkManifest:
             resolution_long_sides=sides,
             area_bins=bins,
             evidence_mode=evidence_mode,
+            provenance=dict(provenance),
             format_version=version,
         )
 
@@ -427,6 +431,7 @@ def evaluate_predictions(
     return {
         "benchmark": manifest.name,
         "evidence_mode": manifest.evidence_mode,
+        "label_provenance": manifest.provenance.get("label_provenance", "unspecified"),
         "model_name": predictions.model_name,
         "threshold": threshold,
         "resolutions": resolution_reports,

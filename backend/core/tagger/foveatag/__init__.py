@@ -76,6 +76,7 @@ from .supervised_data import (
     FoveaSupervisedBatch,
     FoveaSupervisedDataset,
     FoveaSupervisedSample,
+    SupervisionPolicy,
     collate_supervised_samples,
 )
 from .views import SourceBox, ViewBatch, ViewConfig, ViewSpec, build_views, sample_local_specs
@@ -156,6 +157,7 @@ __all__ = [
     "FoveaSupervisedBatch",
     "FoveaSupervisedDataset",
     "FoveaSupervisedSample",
+    "SupervisionPolicy",
     "collate_supervised_samples",
     "SourceBox",
     "ViewBatch",

@@ -29,6 +29,8 @@ class RawTaggerSample:
     image: Image.Image
     label: torch.Tensor
     loss_mask: torch.Tensor
+    dataset_id: Optional[int] = None
+    source_path: Optional[str] = None
 
 
 class TaggerDataset(Dataset):
@@ -111,6 +113,7 @@ class TaggerDataset(Dataset):
         # __getitem__ never needs it.
         self._item_ids: Optional["np.ndarray"] = None
         self._item_ids_list: List[int] = []
+        self._sample_dataset_ids_list: List[int] = []
         # Live tag-refresh (Option B). Paths/flag are set by the trainer after
         # construction (before the first DataLoader spawn) and DO travel into the
         # worker pickle; the reader/mmap below are worker-local and rebuilt there.
@@ -257,12 +260,15 @@ class TaggerDataset(Dataset):
                         (item_path_map[item_id], [_tag_pool.setdefault(t, t) for t in tags])
                     )
                     self._item_ids_list.append(item_id)
+                    self._sample_dataset_ids_list.append(dataset_id)
 
             print(f"[TaggerDataset]   {len(self._samples)} samples so far")
 
         # Finalise the sample-idx -> item_id map for the live tag-refresh detector.
         self._item_ids = np.asarray(self._item_ids_list, dtype=np.int64)
         self._item_ids_list = []  # free the Python list; numpy array is the source
+        self._sample_dataset_ids = np.asarray(self._sample_dataset_ids_list, dtype=np.int32)
+        self._sample_dataset_ids_list = []
 
     def _extract_tags(self, caption) -> List[str]:
         return resolve_caption_tags(
@@ -282,6 +288,7 @@ class TaggerDataset(Dataset):
         state = self.__dict__.copy()
         state.pop("_item_ids", None)        # detector-only (main process)
         state.pop("_item_ids_list", None)
+        state.pop("_sample_dataset_ids_list", None)
         state["_refresh_reader"] = None     # rebuilt lazily in the worker
         return state
 
@@ -289,6 +296,7 @@ class TaggerDataset(Dataset):
         self.__dict__.update(state)
         self._item_ids = None
         self._item_ids_list = []
+        self._sample_dataset_ids_list = []
         self._refresh_reader = None
 
     def _apply_tag_refresh(self, idx: int, tags: List[str]) -> List[str]:
@@ -342,7 +350,16 @@ class TaggerDataset(Dataset):
             print(f"[TaggerDataset] Skipping corrupt image {image_path}: {e}")
             return None
         label, loss_mask = self._build_label_and_mask(tags)
-        return RawTaggerSample(image=image, label=label, loss_mask=loss_mask)
+        return RawTaggerSample(
+            image=image,
+            label=label,
+            loss_mask=loss_mask,
+            dataset_id=int(self._sample_dataset_ids[idx]),
+            source_path=image_path,
+        )
+
+    def dataset_id_for_index(self, idx: int) -> int:
+        return int(self._sample_dataset_ids[idx])
 
 
     def _build_label_and_mask(

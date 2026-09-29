@@ -52,21 +52,35 @@ def load_weak_records(
     fine_tags: Iterable[str] = DEFAULT_FINE_TAGS,
     coarse_tags: Iterable[str] = DEFAULT_COARSE_TAGS,
     require_files: bool = True,
+    limit: Optional[int] = None,
+    selection: str = "first",
+    seed: int = 0,
 ) -> list[WeakBenchmarkRecord]:
+    if limit is not None and limit <= 0:
+        raise ValueError("limit must be positive when supplied")
+    if selection not in ("first", "hashed"):
+        raise ValueError("selection must be first or hashed")
     fine = {normalize_tag(tag) for tag in fine_tags}
     coarse = {normalize_tag(tag) for tag in coarse_tags}
     uri = Path(database_path).resolve().as_uri() + "?mode=ro"
-    query = """
+    order = "i.id, c.id" if selection == "first" else "((i.id * 1103515245 + ?) & 2147483647), i.id, c.id"
+    limit_clause = " LIMIT ?" if limit is not None else ""
+    query = f"""
         SELECT i.id, i.image_path, i.width, i.height, c.tag_data, c.content
         FROM dataset_items AS i
         JOIN dataset_captions AS c ON c.item_id = i.id
         WHERE i.dataset_id = ? AND c.is_tags_format = 1
-        ORDER BY i.id, c.id
+        ORDER BY {order}{limit_clause}
     """
+    parameters: list[int] = [dataset_id]
+    if selection == "hashed":
+        parameters.append(seed)
+    if limit is not None:
+        parameters.append(limit)
     aggregated: dict[int, dict[str, Any]] = {}
     with sqlite3.connect(uri, uri=True) as connection:
         for item_id, image_path, width, height, tag_data, content in connection.execute(
-            query, (dataset_id,)
+            query, parameters
         ):
             if not image_path or not width or not height:
                 continue
@@ -107,6 +121,7 @@ def build_weak_benchmark(
     negative_count: int = 128,
     seed: int = 0,
     requested_fine_tags: Iterable[str] = DEFAULT_FINE_TAGS,
+    label_provenance: str = "unspecified",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if positive_per_tag <= 0 or negative_count < 0:
         raise ValueError("positive_per_tag must be positive and negative_count non-negative")
@@ -150,6 +165,7 @@ def build_weak_benchmark(
             "seed": seed,
             "positive_per_tag": positive_per_tag,
             "negative_count": negative_count,
+            "label_provenance": label_provenance,
             "requested_fine_tags": requested_tags,
             "uncovered_fine_tags": sorted(set(requested_tags) - set(available_tags)),
         },
@@ -173,13 +189,24 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--positive-per-tag", type=int, default=32)
     parser.add_argument("--negative-count", type=int, default=128)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--scan-limit", type=int)
+    parser.add_argument("--selection", choices=("first", "hashed"), default="first")
+    parser.add_argument("--skip-file-check", action="store_true")
+    parser.add_argument("--label-provenance", default="unspecified")
     parser.add_argument("--output", type=Path, required=True)
     return parser
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parser().parse_args(argv)
-    records = load_weak_records(args.datasets_db, args.dataset_id)
+    records = load_weak_records(
+        args.datasets_db,
+        args.dataset_id,
+        require_files=not args.skip_file_check,
+        limit=args.scan_limit,
+        selection=args.selection,
+        seed=args.seed,
+    )
     manifest, summary = build_weak_benchmark(
         records,
         dataset_id=args.dataset_id,
@@ -187,6 +214,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         positive_per_tag=args.positive_per_tag,
         negative_count=args.negative_count,
         seed=args.seed,
+        label_provenance=args.label_provenance,
     )
     args.output.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(json.dumps(summary, indent=2, ensure_ascii=False))

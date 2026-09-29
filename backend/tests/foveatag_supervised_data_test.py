@@ -10,6 +10,7 @@ from core.tagger.foveatag.supervised_data import (
     SupervisionPolicy,
     build_supervised_views,
     collate_supervised_samples,
+    supervision_mask_statistics,
 )
 from core.tagger.foveatag.encoder import FoveaEncoderConfig
 from core.tagger.foveatag.model import FoveaTagger
@@ -31,6 +32,9 @@ class _RawDataset:
 
     def get_raw_item(self, index):
         return self.sample if index == 0 else None
+
+    def label_and_mask_for_index(self, index):
+        return self.sample.label.clone(), self.sample.loss_mask.clone()
 
 
 def test_supervised_adapter_preserves_labels_and_epoch_changes_views():
@@ -77,6 +81,23 @@ def test_supervised_adapter_applies_mixed_provenance_policy():
     sample = dataset[0]
     assert sample is not None
     assert torch.equal(sample.loss_mask, torch.tensor([0.25, 0.0, 0.25]))
+
+
+def test_supervision_statistics_report_global_mean_mask_dilution():
+    statistics = supervision_mask_statistics(
+        _RawDataset(),
+        {16: (0, 1)},
+        {16: SupervisionPolicy(loss_weight=0.25, positive_only_indices=(0, 1))},
+        max_samples_per_domain=1,
+    )
+
+    domain = statistics["domains"]["16"]
+    assert statistics["reduction"] == "multiply_mask_then_mean_all_batch_tag_elements"
+    assert statistics["num_tags"] == 3
+    assert domain["active_label_fraction"] == pytest.approx(2 / 3)
+    assert domain["mean_mask_weight"] == pytest.approx(1 / 6)
+    assert domain["mean_active_weight"] == pytest.approx(0.25)
+    assert domain["active_positives_per_sample"] == 2
 
 
 @pytest.mark.parametrize(

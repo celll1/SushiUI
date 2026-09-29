@@ -43,6 +43,7 @@ from .supervised_data import (
     PHASE3_INPUT_MODES,
     SupervisionPolicy,
     collate_supervised_samples,
+    supervision_mask_statistics,
 )
 from .supervised_training import FoveaSupervisedTrainer
 from .views import ViewConfig
@@ -238,6 +239,12 @@ def run_supervised_training(
             loss_weight=photo_loss_weight,
             positive_only_indices=fine_indices,
         )
+    mask_statistics = supervision_mask_statistics(
+        raw_dataset,
+        domain_indices,
+        policies,
+        max_samples_per_domain=512,
+    )
     view_config = ViewConfig(overview_size=448, local_size=256, local_views=local_views)
     train_source = FoveaSupervisedDataset(
         raw_dataset,
@@ -349,6 +356,16 @@ def run_supervised_training(
         "holdout_manifests": [str(path.resolve()) for path in holdout_manifests],
         "photo_dataset_id": photo_dataset_id,
         "photo_loss_weight": photo_loss_weight,
+        "classification_loss": {
+            "kind": "asymmetric_loss",
+            "gamma_negative": criterion.gamma_neg,
+            "gamma_positive": criterion.gamma_pos,
+            "negative_clip": criterion.clip,
+            "epsilon": criterion.eps,
+            "detach_focal_weight": criterion.disable_torch_grad_focal_loss,
+            "reduction": criterion.reduction,
+            "mask_semantics": mask_statistics,
+        },
         "fine_detail_positive_only_tags": len(fine_indices),
         "epochs": epochs,
         "epoch_samples": epoch_samples,

@@ -343,6 +343,11 @@ vocabulary, so vocabulary growth does not alter the image representation.
    loss weight. Fine-detail photo negatives are masked unless their provenance
    is known; observed positives remain weak supervision. Unlabeled photo views
    still participate in the self-supervised and cross-view objectives.
+   The existing ASL reduction multiplies the mask and then averages over every
+   batch-by-tag element; it does not renormalize by active mask weight. Phase 3
+   records active-label fraction, mean mask weight, and weighted positive count
+   from a bounded deterministic sample of each domain. This keeps the historical
+   loss definition while making any extra photo-gradient dilution measurable.
 3. **Router training from dense candidates.** The stage-2 head evaluates a dense
    candidate set, and the regions that contribute to positive-tag margins become
    router targets.

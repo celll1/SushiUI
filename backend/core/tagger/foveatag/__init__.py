@@ -158,6 +158,7 @@ from .supervised_data import (
     SupervisionPolicy,
     build_supervised_views,
     collate_supervised_samples,
+    supervision_mask_statistics,
 )
 from .views import (
     RegionImageSource,
@@ -315,6 +316,7 @@ __all__ = [
     "SupervisionPolicy",
     "build_supervised_views",
     "collate_supervised_samples",
+    "supervision_mask_statistics",
     "SourceBox",
     "RegionImageSource",
     "ViewBatch",

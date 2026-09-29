@@ -606,6 +606,11 @@ refuse a failed decision or any evidence changed after the decision. Each
 prediction also records the model and metadata SHA-256; the passed gate must
 resolve one identical source-native model hash across both benchmarks before
 that model can become the frozen Phase-4 teacher.
+Gate creation and every load rebuild each paired report from its registered
+manifest, fixed baseline, and exact three branch predictions. The rebuilt
+report must be data-equivalent to the saved JSON, every benchmark must name the
+same source-native artifact, and the gate evidence set may contain neither
+omissions nor handwritten substitutes.
 
 Phase 4 has a second explicit repository-owner gate before any production
 trainer, manager, API, or UI integration. Its decision artifact hashes the

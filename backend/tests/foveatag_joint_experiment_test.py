@@ -10,6 +10,11 @@ from PIL import Image
 from torch import nn
 
 from core.tagger.foveatag.artifact import FoveaArtifactConfig, save_inference_artifact
+from core.tagger.foveatag.benchmark import (
+    BenchmarkManifest,
+    PredictionSet,
+    evaluate_predictions,
+)
 from core.tagger.foveatag.encoder import FoveaEncoderConfig
 from core.tagger.foveatag.joint_experiment import (
     _prepare_output_dir,
@@ -19,6 +24,7 @@ from core.tagger.foveatag.joint_experiment import (
     validate_joint_sources,
 )
 from core.tagger.foveatag.model import FoveaTagger
+from core.tagger.foveatag.phase3_comparison import build_phase3_comparison
 from core.tagger.foveatag.phase3_gate import record_phase3_gate
 from core.tagger.foveatag.router import EvidenceRouter
 from core.tagger.foveatag.router_checkpoint import save_router_weights
@@ -77,20 +83,96 @@ def _artifacts(tmp_path, *, learned=0.7, random_baseline=0.4):
         },
     )
     source_metadata = source.with_name("source_metadata.json")
-    manifest = _write(tmp_path / "manifest.json", {"manifest": 1})
-    baseline = _write(tmp_path / "baseline.json", {"baseline": 1})
-    report = _write(tmp_path / "report.json", {"report": 1})
+    manifest_payload = {
+        "format_version": 1,
+        "name": "ground",
+        "evidence_mode": "dense_oracle",
+        "items": [
+            {
+                "sample_id": "positive",
+                "image_path": "positive.png",
+                "width": 32,
+                "height": 32,
+                "positive_tags": ["detail", "scene"],
+                "fine_detail_tags": ["detail"],
+                "coarse_tags": ["scene"],
+                "evidence": [],
+            },
+            {
+                "sample_id": "negative",
+                "image_path": "negative.png",
+                "width": 32,
+                "height": 32,
+                "positive_tags": [],
+                "fine_detail_tags": [],
+                "coarse_tags": [],
+                "evidence": [],
+            },
+        ],
+    }
+    manifest = _write(tmp_path / "manifest.json", manifest_payload)
+    manifest_value = BenchmarkManifest.from_dict(manifest_payload)
     predictions = {}
+    prediction_payloads = {}
     for mode in ("overview_only", "overview_placebo", "source_native"):
-        predictions[mode] = str(_write(tmp_path / f"{mode}.json", {
+        payload = {
+            "format_version": 1,
+            "model_name": f"foveatag-{mode}",
+            "artifact_provenance": {
+                "initialization": "scratch",
+                "external_weights": [],
+                "shared_initialization_sha256": "shared",
+                "input_mode": mode,
+                "threshold": 0.5,
+            },
+            "runtime": {
+                "device": "cpu",
+                "dtype": "float32",
+                "prediction_rows": 2,
+                "wall_seconds": 1.0,
+                "peak_allocated_mib": None,
+                "peak_reserved_mib": None,
+            },
             "checkpoint_sha256": _sha256(source) if mode == "source_native" else "a" * 64,
             "checkpoint_metadata_sha256": (
                 _sha256(source_metadata) if mode == "source_native" else "b" * 64
             ),
-        }))
+            "predictions": [
+                {
+                    "sample_id": "positive",
+                    "resolution": "native",
+                    "scores": {"detail": 0.9, "scene": 0.9},
+                    "stage_ms": {"forward": 1.0},
+                },
+                {
+                    "sample_id": "negative",
+                    "resolution": "native",
+                    "scores": {"detail": 0.1, "scene": 0.1},
+                    "stage_ms": {"forward": 1.0},
+                },
+            ],
+        }
+        prediction_payloads[mode] = payload
+        predictions[mode] = str(_write(tmp_path / f"{mode}.json", payload))
+    baseline_payload = evaluate_predictions(
+        manifest_value,
+        PredictionSet.from_dict({
+            "format_version": 1,
+            "model_name": "fixed-384",
+            "predictions": prediction_payloads["overview_only"]["predictions"],
+        }),
+    )
+    baseline = _write(tmp_path / "baseline.json", baseline_payload)
+    report = _write(
+        tmp_path / "report.json",
+        build_phase3_comparison(manifest_value, prediction_payloads, baseline_payload),
+    )
     evaluation = _write(tmp_path / "evaluation.json", {
+        "format_version": 1,
         "kind": "foveatag_phase3_evaluation",
         "status": "complete",
+        "active_benchmark": None,
+        "completed_benchmarks": ["ground"],
         "benchmarks": {
             "ground": {
                 "manifest": str(manifest),

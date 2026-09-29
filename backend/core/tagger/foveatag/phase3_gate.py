@@ -9,6 +9,10 @@ import os
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
+from .benchmark import load_benchmark_manifest
+from .phase3_comparison import build_phase3_comparison
+from .supervised_data import PHASE3_INPUT_MODES
+
 
 PHASE3_GATE_FORMAT_VERSION = 1
 
@@ -28,26 +32,7 @@ def record_phase3_gate(
         raise ValueError("rationale and decided_by must be non-empty")
     summary_path = Path(evaluation_summary_path).resolve()
     summary = _load_json(summary_path)
-    if summary.get("kind") != "foveatag_phase3_evaluation":
-        raise ValueError("artifact is not a Phase-3 evaluation summary")
-    if summary.get("status") != "complete":
-        raise ValueError("Phase-3 evaluation is not complete")
-    benchmarks = summary.get("benchmarks")
-    if not isinstance(benchmarks, Mapping) or not benchmarks:
-        raise ValueError("Phase-3 evaluation summary has no benchmarks")
-    evidence = {summary_path: "evaluation_summary"}
-    for name, raw in benchmarks.items():
-        if not isinstance(raw, Mapping):
-            raise ValueError(f"benchmark {name} summary is invalid")
-        for field in ("manifest", "fixed_baseline_report", "comparison_report"):
-            evidence[_required_file(raw.get(field), f"benchmark {name} {field}")] = field
-        predictions = raw.get("predictions")
-        if not isinstance(predictions, Mapping) or not predictions:
-            raise ValueError(f"benchmark {name} has no branch predictions")
-        for mode, path in predictions.items():
-            evidence[_required_file(path, f"benchmark {name} prediction {mode}")] = (
-                f"prediction:{mode}"
-            )
+    evidence = _validated_evaluation_evidence(summary_path, summary)
     rows = [
         {
             "role": role,
@@ -69,6 +54,72 @@ def record_phase3_gate(
     return output
 
 
+def _validated_evaluation_evidence(
+    summary_path: Path, summary: Mapping[str, Any]
+) -> dict[Path, str]:
+    if summary.get("format_version") != 1:
+        raise ValueError("unsupported Phase-3 evaluation format")
+    if summary.get("kind") != "foveatag_phase3_evaluation":
+        raise ValueError("artifact is not a Phase-3 evaluation summary")
+    if summary.get("status") != "complete":
+        raise ValueError("Phase-3 evaluation is not complete")
+    if summary.get("active_benchmark") is not None:
+        raise ValueError("completed Phase-3 evaluation still has an active benchmark")
+    benchmarks = summary.get("benchmarks")
+    if not isinstance(benchmarks, Mapping) or not benchmarks:
+        raise ValueError("Phase-3 evaluation summary has no benchmarks")
+    completed = summary.get("completed_benchmarks")
+    if not isinstance(completed, list) or completed != list(benchmarks):
+        raise ValueError("Phase-3 completed benchmark list does not match its reports")
+    evidence = {summary_path: "evaluation_summary"}
+    source_native_hashes = set()
+    for name, raw in benchmarks.items():
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"benchmark {name} summary is invalid")
+        manifest_path = _required_file(raw.get("manifest"), f"benchmark {name} manifest")
+        baseline_path = _required_file(
+            raw.get("fixed_baseline_report"),
+            f"benchmark {name} fixed_baseline_report",
+        )
+        report_path = _required_file(
+            raw.get("comparison_report"), f"benchmark {name} comparison_report"
+        )
+        predictions = raw.get("predictions")
+        if not isinstance(predictions, Mapping) or set(predictions) != set(PHASE3_INPUT_MODES):
+            raise ValueError(f"benchmark {name} must contain every Phase-3 branch prediction")
+        prediction_paths = {
+            mode: _required_file(
+                predictions[mode], f"benchmark {name} prediction {mode}"
+            )
+            for mode in PHASE3_INPUT_MODES
+        }
+        prediction_payloads = {
+            mode: _load_json(path) for mode, path in prediction_paths.items()
+        }
+        rebuilt = build_phase3_comparison(
+            load_benchmark_manifest(manifest_path),
+            prediction_payloads,
+            _load_json(baseline_path),
+        )
+        if rebuilt.get("benchmark") != name:
+            raise ValueError(f"benchmark {name} summary name does not match its manifest")
+        if _load_json(report_path) != rebuilt:
+            raise ValueError(f"benchmark {name} comparison report does not match its inputs")
+        source = prediction_payloads["source_native"]
+        source_native_hashes.add((
+            source.get("checkpoint_sha256"),
+            source.get("checkpoint_metadata_sha256"),
+        ))
+        evidence[manifest_path] = "manifest"
+        evidence[baseline_path] = "fixed_baseline_report"
+        evidence[report_path] = "comparison_report"
+        for mode, path in prediction_paths.items():
+            evidence[path] = f"prediction:{mode}"
+    if len(source_native_hashes) != 1:
+        raise ValueError("Phase-3 benchmarks do not use one source-native checkpoint")
+    return evidence
+
+
 def load_passed_phase3_gate(path: Path | str) -> dict[str, Any]:
     """Require a pass decision and reject evidence changed after that decision."""
     payload = _load_json(Path(path))
@@ -85,13 +136,31 @@ def load_passed_phase3_gate(path: Path | str) -> dict[str, Any]:
     evidence = payload.get("evidence")
     if not isinstance(evidence, list) or not evidence:
         raise ValueError("Phase-3 gate has no evidence hashes")
+    resolved_evidence: dict[Path, str] = {}
+    summary_paths = []
     for row in evidence:
         if not isinstance(row, Mapping):
             raise ValueError("Phase-3 gate evidence row is invalid")
         evidence_path = _required_file(row.get("path"), "gate evidence")
+        role = row.get("role")
+        if not isinstance(role, str) or not role:
+            raise ValueError("Phase-3 gate evidence role is invalid")
+        if evidence_path in resolved_evidence:
+            raise ValueError(f"Phase-3 gate contains duplicate evidence: {evidence_path}")
         expected = row.get("sha256")
         if not isinstance(expected, str) or _file_sha256(evidence_path) != expected:
             raise ValueError(f"Phase-3 gate evidence changed: {evidence_path}")
+        resolved_evidence[evidence_path] = role
+        if role == "evaluation_summary":
+            summary_paths.append(evidence_path)
+    if len(summary_paths) != 1:
+        raise ValueError("Phase-3 gate must bind one evaluation summary")
+    summary_path = summary_paths[0]
+    expected_evidence = _validated_evaluation_evidence(
+        summary_path, _load_json(summary_path)
+    )
+    if resolved_evidence != expected_evidence:
+        raise ValueError("Phase-3 gate evidence set does not match the evaluation")
     return dict(payload)
 
 

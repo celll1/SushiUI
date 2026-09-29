@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 
 import torch
 from safetensors.torch import load_file, save_file
@@ -24,6 +24,7 @@ def save_control_checkpoint(
     global_step: int,
     encoder_provenance: Mapping[str, Any],
     run_contract: Optional[Mapping[str, Any]] = None,
+    history: Optional[Sequence[Mapping[str, Any]]] = None,
     scheduler: Optional[Any] = None,
     best_validation_f1: float = 0.0,
     best_threshold: float = 0.5,
@@ -44,6 +45,7 @@ def save_control_checkpoint(
         "best_threshold": float(best_threshold),
         "encoder_provenance": dict(encoder_provenance),
         "run_contract": dict(run_contract) if run_contract is not None else None,
+        "history": [dict(row) for row in history] if history is not None else [],
         "control_model": _control_state(model),
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict() if scheduler is not None else None,

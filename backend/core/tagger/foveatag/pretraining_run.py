@@ -546,10 +546,14 @@ def _validate(
         loader = _loader(dataset, batch_size=batch_size, workers=workers, shuffle=False)
         generator = torch.Generator(device=device).manual_seed(seed + domain * 65537)
         sums = _loss_sums()
-        local_health = FeatureHealthAccumulator(model.encoder.config.widths[2])
-        overview_health = FeatureHealthAccumulator(model.encoder.config.widths[2])
+        local_health = FeatureHealthAccumulator(
+            model.encoder.config.widths[2], expected_updates=len(loader)
+        )
+        overview_health = FeatureHealthAccumulator(
+            model.encoder.config.widths[2], expected_updates=len(loader)
+        )
         samples = skipped = consumed = 0
-        for batch in loader:
+        for batch_index, batch in enumerate(loader):
             requested = min(batch_size, len(dataset) - consumed)
             consumed += requested
             if batch is None:
@@ -560,8 +564,8 @@ def _validate(
                 output = model(batch, generator=generator)
             actual = batch.first_images.shape[0]
             _accumulate_losses(sums, output.losses, actual)
-            local_health.update(output.first_features)
-            overview_health.update(output.second_features)
+            local_health.update(output.first_features, update_index=batch_index)
+            overview_health.update(output.second_features, update_index=batch_index)
             samples += actual
             skipped += requested - actual
         domains[str(domain)] = {

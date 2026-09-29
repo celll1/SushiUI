@@ -270,11 +270,15 @@ def _validate_encoder(
         )
         loader = _loader(dataset, batch_size=batch_size, workers=workers, shuffle=False)
         generator = torch.Generator(device=device).manual_seed(seed + domain * 65537)
-        local_health = FeatureHealthAccumulator(encoder.config.widths[2])
-        overview_health = FeatureHealthAccumulator(encoder.config.widths[2])
+        local_health = FeatureHealthAccumulator(
+            encoder.config.widths[2], expected_updates=len(loader)
+        )
+        overview_health = FeatureHealthAccumulator(
+            encoder.config.widths[2], expected_updates=len(loader)
+        )
         correspondence_sum = 0.0
         samples = skipped = consumed = 0
-        for batch in loader:
+        for batch_index, batch in enumerate(loader):
             requested = min(batch_size, len(dataset) - consumed)
             consumed += requested
             if batch is None:
@@ -303,8 +307,8 @@ def _validate_encoder(
                 )
             actual = batch.first_images.shape[0]
             correspondence_sum += float(correspondence) * actual
-            local_health.update(local.local_map)
-            overview_health.update(overview.local_map)
+            local_health.update(local.local_map, update_index=batch_index)
+            overview_health.update(overview.local_map, update_index=batch_index)
             samples += actual
             skipped += requested - actual
         if not samples:

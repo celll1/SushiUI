@@ -40,6 +40,7 @@ def build_phase3_comparison(
         tag for item in manifest.items for tag in item.positive_tags
     }
     shared_hashes = set()
+    shared_data_hashes = set()
     contracts = {}
     for mode, prediction_set in predictions.items():
         payload = prediction_payloads[mode]
@@ -56,6 +57,10 @@ def build_phase3_comparison(
         if not isinstance(shared_hash, str) or not shared_hash:
             raise ValueError(f"{mode} lacks the shared initialization hash")
         shared_hashes.add(shared_hash)
+        shared_data_hash = provenance.get("shared_data_contract_sha256")
+        if not isinstance(shared_data_hash, str) or len(shared_data_hash) != 64:
+            raise ValueError(f"{mode} lacks a valid shared data contract hash")
+        shared_data_hashes.add(shared_data_hash)
         if prediction_set.model_name != f"foveatag-{mode}":
             raise ValueError(f"{mode} has an unexpected model_name")
         for name in ("checkpoint_sha256", "checkpoint_metadata_sha256"):
@@ -93,6 +98,8 @@ def build_phase3_comparison(
         }
     if len(shared_hashes) != 1:
         raise ValueError("Phase-3 branches do not share the same initialization")
+    if len(shared_data_hashes) != 1:
+        raise ValueError("Phase-3 branches do not share the same data contract")
     if fixed_baseline_report.get("benchmark") != manifest.name:
         raise ValueError("fixed baseline report belongs to a different benchmark")
 
@@ -139,6 +146,7 @@ def build_phase3_comparison(
             "initialization": "scratch",
             "external_weights": [],
             "shared_initialization_sha256": next(iter(shared_hashes)),
+            "shared_data_contract_sha256": next(iter(shared_data_hashes)),
             "expected_prediction_rows": len(expected_keys),
             "branches": contracts,
         },

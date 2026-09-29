@@ -76,7 +76,9 @@ from .control_training import ControlValidationResult
 from .control_checkpoint import (
     CONTROL_CHECKPOINT_FORMAT_VERSION,
     load_control_checkpoint,
+    load_control_weights,
     save_control_checkpoint,
+    save_control_weights,
 )
 from .supervised_data import (
     FoveaSupervisedBatch,
@@ -163,7 +165,9 @@ __all__ = [
     "SigLIP2ControlTrainer",
     "CONTROL_CHECKPOINT_FORMAT_VERSION",
     "load_control_checkpoint",
+    "load_control_weights",
     "save_control_checkpoint",
+    "save_control_weights",
     "FoveaSupervisedBatch",
     "FoveaSupervisedDataset",
     "FoveaSupervisedSample",

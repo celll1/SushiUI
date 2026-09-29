@@ -46,6 +46,7 @@ class SigLIP2ControlTrainer:
         mixed_precision: Optional[torch.dtype] = torch.bfloat16,
         gradient_accumulation_steps: int = 1,
         max_grad_norm: Optional[float] = 1.0,
+        scheduler: Optional[object] = None,
     ) -> None:
         if gradient_accumulation_steps <= 0:
             raise ValueError("gradient_accumulation_steps must be positive")
@@ -58,6 +59,7 @@ class SigLIP2ControlTrainer:
         self.mixed_precision = mixed_precision
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.max_grad_norm = max_grad_norm
+        self.scheduler = scheduler
         self.scaler = torch.amp.GradScaler(
             "cuda",
             enabled=self.device.type == "cuda" and mixed_precision == torch.float16,
@@ -129,6 +131,8 @@ class SigLIP2ControlTrainer:
             )
         self.scaler.step(self.optimizer)
         self.scaler.update()
+        if self.scheduler is not None:
+            self.scheduler.step()
         self.optimizer.zero_grad(set_to_none=True)
 
     @torch.inference_mode()

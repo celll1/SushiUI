@@ -361,6 +361,9 @@ class TaggerDataset(Dataset):
     def dataset_id_for_index(self, idx: int) -> int:
         return int(self._sample_dataset_ids[idx])
 
+    def source_path_for_index(self, idx: int) -> str:
+        return self._samples[idx][0]
+
 
     def _build_label_and_mask(
         self, tags: List[str]

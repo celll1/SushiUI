@@ -91,6 +91,7 @@ def test_dataset_scan_preserves_filtered_samples(tmp_path):
         )
     ]
     assert dataset.dataset_id_for_index(0) == 7
+    assert dataset.source_path_for_index(0) == str(tmp_path / "valid.png")
     raw = dataset.get_raw_item(0)
     assert raw is not None
     assert raw.dataset_id == 7

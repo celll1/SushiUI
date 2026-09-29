@@ -1262,6 +1262,18 @@ from it. Component losses, hashes, and resume state are recorded in
 `FOVEATAG_PHASE2_ANTICOLLAPSE_STEP5000_2026-09-29.json`. This authorizes
 continued measurement but is not the Phase 2 acceptance decision.
 
+The replacement run completed epoch 0 at step 96,675 after presenting
+1,546,798 samples (eight deterministic decode skips). Fixed validation measured
+weighted loss 0.166735. Effective rank was 103.58/127.60 for photo
+masked-local/overview and 80.04/159.64 for illustration masked-local/overview,
+with channel standard-deviation means 0.896--1.232. Mean pairwise cosine was
+0.815--0.943. This is not the rejected objective's rank-one failure: its epoch-0
+rank was 1.05--1.24 with cosine about 0.998. The run therefore continues under
+the registered ten-epoch contract. The best encoder, metadata, history hashes,
+component losses, and per-domain health metrics are recorded in
+`FOVEATAG_PHASE2_ANTICOLLAPSE_EPOCH0_2026-09-30.json`; this remains an interim
+health result rather than Phase 2 acceptance.
+
 ### 9.14 Phase 3 throughput protocol (2026-09-29)
 
 `supervised_benchmark.py` measures the three registered Phase 3 input modes in

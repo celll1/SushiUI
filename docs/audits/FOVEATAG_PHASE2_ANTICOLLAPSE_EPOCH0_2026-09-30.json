@@ -1,0 +1,80 @@
+{
+  "format_version": 1,
+  "kind": "foveatag_phase2_anticollapse_epoch_boundary",
+  "status": "continue_measurement",
+  "run": {
+    "output_dir": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase2_anticollapse_pretrain_20260929",
+    "initialization": "scratch",
+    "external_weights": [],
+    "epoch": 0,
+    "global_step": 96675,
+    "presented_samples": 1546798,
+    "decoded_samples": 1546790,
+    "skipped_samples": 8,
+    "samples_per_second": 63.24528506173014
+  },
+  "validation": {
+    "weighted": {
+      "loss": 0.16673546851379797,
+      "correspondence": 0.03781792920199223,
+      "reconstruction": 0.07166035047266632,
+      "chroma": 0.015962092730842415,
+      "variance": 0.011489230694610341,
+      "covariance": 3.2980068886652587,
+      "centering": 0.048068439569033214
+    },
+    "domains": {
+      "16": {
+        "role": "partially_curated_photo",
+        "samples": 512,
+        "masked_local": {
+          "mean_pairwise_cosine": 0.9233151717193518,
+          "effective_rank": 103.57913264138053,
+          "effective_rank_fraction": 0.26973732458692845,
+          "channel_std_mean": 1.0781820973433767
+        },
+        "overview": {
+          "mean_pairwise_cosine": 0.8576592281009786,
+          "effective_rank": 127.60188156330722,
+          "effective_rank_fraction": 0.33229656657111256,
+          "channel_std_mean": 0.9985887225036051
+        }
+      },
+      "25": {
+        "role": "danbooru_ground_illustration",
+        "samples": 2048,
+        "masked_local": {
+          "mean_pairwise_cosine": 0.9425138951652378,
+          "effective_rank": 80.0439509227262,
+          "effective_rank_fraction": 0.20844778886126614,
+          "channel_std_mean": 0.8955393179575638
+        },
+        "overview": {
+          "mean_pairwise_cosine": 0.8151197572635974,
+          "effective_rank": 159.6447065915452,
+          "effective_rank_fraction": 0.4157414234154823,
+          "channel_std_mean": 1.2318847193295437
+        }
+      }
+    }
+  },
+  "artifacts": {
+    "history": {
+      "path": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase2_anticollapse_pretrain_20260929\\history.json",
+      "sha256": "0916ea925a5908590549543dce621e3aa7674a29d99acbb3ec4cb0c03ce747ac"
+    },
+    "best_encoder": {
+      "path": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase2_anticollapse_pretrain_20260929\\best_encoder.safetensors",
+      "sha256": "fa8c4628d33a4b9460d039638bc968bfde055ee6705f09fcf88a00d4952de8fa"
+    },
+    "best_encoder_metadata": {
+      "path": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase2_anticollapse_pretrain_20260929\\best_encoder_metadata.json",
+      "sha256": "41cacc8d07dac03e6f32f8577ea267e66353fb81eda9c2d102141e061f4f9a53"
+    }
+  },
+  "decision": {
+    "collapse_detected": false,
+    "phase2_accepted": false,
+    "reason": "All four fixed-validation domain/view pairs retain non-zero channel variance and effective rank 80.04-159.64 rather than the rejected objective's 1.05-1.24. Continue the registered ten-epoch measurement; acceptance remains contingent on the final hash-bound gate."
+  }
+}

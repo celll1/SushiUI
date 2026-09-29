@@ -58,3 +58,31 @@ def test_control_trainer_accumulates_and_keeps_frozen_encoder_in_eval_mode():
     assert result.mean_loss > 0
     assert not model.vision_encoder.training
     assert not torch.equal(before, model.head.weight)
+
+
+def test_control_trainer_validates_masks_and_restores_module_modes():
+    model = _Control()
+    optimizer = torch.optim.SGD(model.head.parameters(), lr=0.1)
+    trainer = SigLIP2ControlTrainer(
+        model,
+        _MaskedBCE(),
+        optimizer,
+        device="cpu",
+        mixed_precision=None,
+    )
+    trainer.train_epoch([_batch(1.0)])
+
+    result = trainer.validate_epoch(
+        [_batch(1.0), None, _batch(2.0)],
+        thresholds=(0.25, 0.5, 0.75),
+    )
+
+    assert result.batches == 2
+    assert result.samples == 2
+    assert result.known_labels == 4
+    assert result.active_tags == 1
+    assert result.mean_loss > 0
+    assert 0 <= result.macro_f1 <= 1
+    assert result.threshold in (0.25, 0.5, 0.75)
+    assert model.training
+    assert not model.vision_encoder.training

@@ -63,7 +63,13 @@ from .pretraining import (
     collate_pretraining_samples,
     sample_overlapping_specs,
 )
+from .pretraining_checkpoint import load_pretrained_encoder
 from .training import FoveaTagTrainingLoss, TagTrainingLossOutput, prediction_consistency_loss
+from .supervised_training import (
+    FoveaEpochResult,
+    FoveaSupervisedTrainer,
+    FoveaValidationResult,
+)
 from .siglip2_control import (
     MaskedSlotPooler,
     SigLIP2ControlOutput,
@@ -161,9 +167,13 @@ __all__ = [
     "build_pretraining_sample",
     "collate_pretraining_samples",
     "sample_overlapping_specs",
+    "load_pretrained_encoder",
     "FoveaTagTrainingLoss",
     "TagTrainingLossOutput",
     "prediction_consistency_loss",
+    "FoveaEpochResult",
+    "FoveaSupervisedTrainer",
+    "FoveaValidationResult",
     "MaskedSlotPooler",
     "SigLIP2ControlOutput",
     "SigLIP2ControlTagger",

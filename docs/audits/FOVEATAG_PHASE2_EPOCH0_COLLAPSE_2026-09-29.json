@@ -1,0 +1,60 @@
+{
+  "format_version": 1,
+  "kind": "foveatag_phase2_epoch0_collapse_audit",
+  "decision": "reject_objective_and_stop_before_epoch_1",
+  "reason": "The trained encoder reduced held-out loss while moving both views closer to a rank-one, near-unit-cosine representation than the same-seed scratch initialization.",
+  "run": {
+    "initialization": "scratch",
+    "external_weights": [],
+    "completed_epochs": 1,
+    "global_step": 96675,
+    "presented_samples": 1546798,
+    "decoded_samples": 1546790,
+    "skipped_samples": 8,
+    "checkpoint_sha256": "fe448c4fbe6511adfa5325abccd662e8bfd4d3c6823e09db92eac0f6293b4ba7",
+    "best_encoder_sha256": "006520a608c58098a503b31560d01edce60da7fc86b2cb5c951755106c9e5735",
+    "best_encoder_metadata_sha256": "892c92bf06ecc03767233e28e2dbfa70625e5ec3304b6dc5fe105326fc8f8650"
+  },
+  "evaluation": {
+    "external_path": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase2_scratch_pretrain_20260929\\epoch0_checkpoint_evaluation.json",
+    "sha256": "e7e2c8e924a063985dd36149df058da862a631699df54c1bad0237107a18170a",
+    "checkpoint_sha256": "fe448c4fbe6511adfa5325abccd662e8bfd4d3c6823e09db92eac0f6293b4ba7",
+    "trained_weighted_loss": 0.04918588958462351,
+    "scratch_weighted_loss": 1.2772976687643676,
+    "domains": {
+      "16": {
+        "trained": {
+          "masked_local_pairwise_cosine": 0.9983424584999367,
+          "masked_local_effective_rank": 1.0543150041751874,
+          "overview_pairwise_cosine": 0.998289621717942,
+          "overview_effective_rank": 1.242447089066732
+        },
+        "scratch": {
+          "masked_local_pairwise_cosine": 0.9128433254699966,
+          "masked_local_effective_rank": 1.9985107345293947,
+          "overview_pairwise_cosine": 0.9766743416154001,
+          "overview_effective_rank": 1.8524625337979068
+        }
+      },
+      "25": {
+        "trained": {
+          "masked_local_pairwise_cosine": 0.9982874395573742,
+          "masked_local_effective_rank": 1.0534816779340508,
+          "overview_pairwise_cosine": 0.9985782670734754,
+          "overview_effective_rank": 1.1546714434359808
+        },
+        "scratch": {
+          "masked_local_pairwise_cosine": 0.8691382542734075,
+          "masked_local_effective_rank": 1.9972426794310678,
+          "overview_pairwise_cosine": 0.9596209913283986,
+          "overview_effective_rank": 1.9050826951287183
+        }
+      }
+    }
+  },
+  "interpretation": [
+    "The current cosine correspondence term admits a constant-feature optimum.",
+    "The per-cell masked RGB decoder can reduce reconstruction loss through low-rank color and texture prediction without preserving a useful semantic representation.",
+    "The original ten-epoch run is not resumed until the objective has an explicit anti-collapse term and a bounded pilot improves feature health relative to this same-seed reference."
+  ]
+}

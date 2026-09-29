@@ -1206,6 +1206,19 @@ checkpoint and validation wiring only; the compact record is
 `FOVEATAG_PHASE2_PRETRAINING_SMOKE_2026-09-29.json`. The Phase 2 convergence
 gate remains open until the 10-epoch run is measured.
 
+The first registered epoch completed 1,546,798 presented samples at step
+96,675. Held-out weighted loss fell to 0.049186, but the representation gate
+failed: masked-local and overview mean pairwise cosine reached 0.9983--0.9986,
+while effective rank fell to 1.05--1.24 out of 384 channels. A matched
+same-seed scratch evaluation measured cosine 0.8691--0.9767 and effective rank
+1.85--2.00, so the trained encoder moved measurably closer to rank-one collapse
+rather than merely inheriting an unusual initial scale. The run was stopped at
+its exact epoch boundary before spending nine more epochs. The hash-bound
+metrics and artifact identities are retained in
+`FOVEATAG_PHASE2_EPOCH0_COLLAPSE_2026-09-29.json`. Phase 2 now requires an
+explicit anti-collapse objective and a bounded pilot that improves both views
+relative to this reference before a replacement long run is registered.
+
 ### 9.14 Phase 3 throughput protocol (2026-09-29)
 
 `supervised_benchmark.py` measures the three registered Phase 3 input modes in

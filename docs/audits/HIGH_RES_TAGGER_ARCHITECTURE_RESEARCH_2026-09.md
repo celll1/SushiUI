@@ -1249,6 +1249,19 @@ pilot's 100-step warmup and one-epoch cosine schedule are deliberately shorter
 than the long-run contract. Hashes and component losses are recorded in
 `FOVEATAG_PHASE2_ANTICOLLAPSE_PILOT_2026-09-29.json`.
 
+The replacement 10-epoch run was then started from scratch with the registered
+5,000-step warmup. Its first atomic checkpoint retained epoch 0 offset 80,000,
+step 5,000, 79,999 decoded samples, one deterministic skip, and matching
+optimizer/scheduler position. A fixed-validation diagnostic at that warmup
+boundary measured effective rank 7.54/9.32 for photo local/overview and
+10.84/12.06 for illustration local/overview; all four exceed the same-seed
+scratch range of 1.85--2.00. Mean pairwise cosine was 0.647--0.776 rather than
+the rejected run's approximately 0.998. The exact checkpoint is retained as a
+hard-link snapshot while `latest.pt` advances, and the registered run resumes
+from it. Component losses, hashes, and resume state are recorded in
+`FOVEATAG_PHASE2_ANTICOLLAPSE_STEP5000_2026-09-29.json`. This authorizes
+continued measurement but is not the Phase 2 acceptance decision.
+
 ### 9.14 Phase 3 throughput protocol (2026-09-29)
 
 `supervised_benchmark.py` measures the three registered Phase 3 input modes in

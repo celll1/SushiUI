@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 import random
 import time
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 import torch
 from torch.utils.data import DataLoader, Subset
@@ -58,6 +58,7 @@ def run_pretraining(
     resume: Optional[Path] = None,
     stop_after_steps: Optional[int] = None,
     run_control: Optional[FoveaRunControl] = None,
+    progress_callback: Optional[Callable[[str, Mapping[str, Any]], None]] = None,
 ) -> dict[str, Any]:
     _validate_run_arguments(
         dataset_ids=dataset_ids,
@@ -194,6 +195,13 @@ def run_pretraining(
     run_started = time.monotonic()
     status = "complete"
     resume_epoch = start_epoch
+    _emit_progress(progress_callback, "run", {
+        "status": "running",
+        "epoch": start_epoch,
+        "sample_offset": sample_offset,
+        "global_step": global_step,
+        "total_steps": total_steps,
+    })
     for epoch in range(start_epoch, epochs):
         train_dataset.set_epoch(epoch)
         epoch_offset = sample_offset if epoch == start_epoch else 0
@@ -220,6 +228,7 @@ def run_pretraining(
                 None if stop_after_steps is None else stop_after_steps - steps_this_run
             ),
             run_control=run_control,
+            progress_callback=progress_callback,
         )
         steps_this_run += steps_added
         if stopped:
@@ -233,6 +242,11 @@ def run_pretraining(
             break
 
         validation_started = time.monotonic()
+        _emit_progress(progress_callback, "validation", {
+            "status": "running",
+            "epoch": epoch,
+            "global_step": global_step,
+        })
         validation = _validate(
             model,
             validation_manifests,
@@ -254,6 +268,10 @@ def run_pretraining(
             "learning_rate": optimizer.param_groups[0]["lr"],
         }
         history.append(row)
+        _emit_progress(progress_callback, "validation", {
+            "status": "complete",
+            **row,
+        })
         improved = validation["weighted"]["loss"] < best_validation_loss
         if improved:
             best_validation_loss = validation["weighted"]["loss"]
@@ -330,6 +348,13 @@ def run_pretraining(
     del model, optimizer, scheduler
     gc.collect()
     torch.cuda.empty_cache()
+    _emit_progress(progress_callback, "run", {
+        "status": status,
+        "epoch": resume_epoch,
+        "sample_offset": sample_offset,
+        "global_step": global_step,
+        "steps_this_run": steps_this_run,
+    })
     return summary
 
 
@@ -355,11 +380,18 @@ def _train_epoch(
     initial_accumulator: Optional[Mapping[str, Any]],
     remaining_step_budget: Optional[int],
     run_control: Optional[FoveaRunControl],
+    progress_callback: Optional[Callable[[str, Mapping[str, Any]], None]] = None,
 ) -> tuple[dict[str, Any], int, int, int, bool, dict[str, Any]]:
     accumulator = _restore_accumulator(initial_accumulator)
     if (
         remaining_step_budget is not None and remaining_step_budget <= 0
     ) or (run_control is not None and run_control.should_stop()):
+        _emit_progress(progress_callback, "train", {
+            "status": "stopped",
+            "epoch": epoch,
+            "sample_offset": sample_offset,
+            "global_step": global_step,
+        })
         return (
             _training_summary(accumulator),
             sample_offset,
@@ -405,12 +437,22 @@ def _train_epoch(
         current_offset = sample_offset + consumed
         if global_step == 1 or global_step % log_every == 0:
             elapsed = accumulator["seconds"] + time.monotonic() - segment_started
+            message = {
+                "status": "running",
+                "epoch": epoch,
+                "sample_offset": current_offset,
+                "epoch_samples": len(dataset),
+                "global_step": global_step,
+                "loss": float(output.losses.loss.detach()),
+                "samples_per_second": accumulator["samples"] / max(elapsed, 1e-9),
+            }
             print(
                 f"[FoveaTagPretrain] epoch={epoch} sample={current_offset}/{len(dataset)} "
-                f"step={global_step} loss={float(output.losses.loss.detach()):.6f} "
-                f"samples_per_second={accumulator['samples'] / max(elapsed, 1e-9):.2f}",
+                f"step={global_step} loss={message['loss']:.6f} "
+                f"samples_per_second={message['samples_per_second']:.2f}",
                 flush=True,
             )
+            _emit_progress(progress_callback, "train", message)
         if global_step % checkpoint_every_steps == 0:
             now = time.monotonic()
             accumulator["seconds"] += now - segment_started
@@ -442,6 +484,13 @@ def _train_epoch(
             remaining_step_budget is not None and steps_added >= remaining_step_budget
         ) or (run_control is not None and run_control.should_stop()):
             accumulator["seconds"] += time.monotonic() - segment_started
+            _emit_progress(progress_callback, "train", {
+                "status": "stopped",
+                "epoch": epoch,
+                "sample_offset": current_offset,
+                "epoch_samples": len(dataset),
+                "global_step": global_step,
+            })
             return (
                 _training_summary(accumulator),
                 current_offset,
@@ -658,6 +707,19 @@ def _write_json_atomic(path: Path, value: Any) -> None:
         encoding="utf-8",
     )
     os.replace(temporary, path)
+
+
+def _emit_progress(
+    callback: Optional[Callable[[str, Mapping[str, Any]], None]],
+    event: str,
+    payload: Mapping[str, Any],
+) -> None:
+    if callback is None:
+        return
+    try:
+        callback(event, payload)
+    except Exception:
+        pass
 
 
 def _parser() -> argparse.ArgumentParser:

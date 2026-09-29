@@ -1013,7 +1013,9 @@ later supervised and router stages. It checks the control after each optimizer
 step and writes the exact epoch offset, accumulated losses, optimizer,
 scheduler, and RNG state before returning `stopped_by_request`. This supplies
 the backend trainer lifecycle without making FoveaTag selectable before its
-quality gates pass.
+quality gates pass. The loop also emits guarded `run`, `train`, and `validation`
+callbacks with exact epoch, source offset, and global-step progress; a reporting
+failure cannot interrupt training or checkpoint creation.
 
 The production-contract smoke built 1,544,750 illustration and 20,293 photo
 training paths plus held-out sets of 2,048 and 512. It stopped after eight

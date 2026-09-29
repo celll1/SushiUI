@@ -2,6 +2,7 @@
 
 import math
 
+import pytest
 import torch
 from PIL import Image
 
@@ -13,7 +14,10 @@ from core.tagger.foveatag.pretraining import (
     collate_pretraining_samples,
     sample_overlapping_specs,
 )
-from core.tagger.foveatag.tiled_pyramid import build_cached_tiled_pyramid
+from core.tagger.foveatag.tiled_pyramid import (
+    build_cached_tiled_pyramid,
+    tiled_pyramid_cache_path,
+)
 from core.tagger.foveatag.views import ViewConfig
 
 
@@ -136,3 +140,26 @@ def test_image_path_dataset_reads_over_cap_source_from_validated_pyramid(tmp_pat
     assert sample is not None
     assert sample.first_image.shape == (3, 64, 64)
     assert sample.second_image.shape == (3, 64, 64)
+
+
+def test_image_path_dataset_rejects_mutated_bound_pyramid(tmp_path):
+    path = tmp_path / "large.png"
+    Image.new("RGB", (128, 128), (20, 30, 40)).save(path)
+    cache_root = tmp_path / "cache"
+    build_cached_tiled_pyramid(
+        path,
+        cache_root,
+        tile_size=32,
+        coarsest_max_side=32,
+    )
+    tile = tiled_pyramid_cache_path(cache_root, path) / "level_1" / "0_0.png"
+    Image.new("RGB", (32, 32), (1, 2, 3)).save(tile)
+    dataset = FoveaImagePathDataset(
+        [path],
+        view_config=ViewConfig(overview_size=64, local_size=64, local_views=2),
+        max_source_pixels=10_000,
+        pyramid_cache_root=cache_root,
+    )
+
+    with pytest.raises(ValueError, match="tile hash changed"):
+        dataset[0]

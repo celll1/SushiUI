@@ -15,6 +15,7 @@ from typing import Any, Mapping, Optional, Sequence
 from torch.utils.data import Dataset
 
 from .pretraining import FoveaPretrainingSample, load_pretraining_sample
+from .tiled_pyramid import TiledPyramidSource, tiled_pyramid_cache_path
 from .views import ViewConfig
 
 
@@ -200,6 +201,7 @@ def build_pretraining_manifests(
     excluded_paths: Sequence[str] = (),
     minimum_side: int = 256,
     max_source_pixels: Optional[int] = 40_000_000,
+    pyramid_cache_root: Optional[str | Path] = None,
     seed: int = 0,
     reuse_existing: bool = False,
 ) -> dict[str, Any]:
@@ -217,6 +219,27 @@ def build_pretraining_manifests(
         raise ValueError("max_source_pixels must be positive when provided")
     stat = database_path.stat()
     excluded = {_path_key(path) for path in excluded_paths}
+    cached_source_keys: set[str] = set()
+    pyramid_cache_contract = None
+    if pyramid_cache_root is not None:
+        cache_index, resolved_cache_root = _pyramid_cache_index(pyramid_cache_root)
+        cached_source_keys = _relevant_cached_source_keys(
+            database_path,
+            domains=domains,
+            minimum_side=minimum_side,
+            max_source_pixels=max_source_pixels,
+            available_keys=set(cache_index),
+        )
+        entries = []
+        for key in sorted(cached_source_keys):
+            source, digest = cache_index[key]
+            source.validate_source(source.source_path)
+            entries.append(f"{key}\0{digest}")
+        pyramid_cache_contract = {
+            "root": str(resolved_cache_root),
+            "count": len(entries),
+            "entries_sha256": _sequence_hash(entries),
+        }
     request = {
         "format_version": MANIFEST_FORMAT_VERSION,
         "database_path": str(database_path),
@@ -230,6 +253,8 @@ def build_pretraining_manifests(
         "excluded_path_count": len(excluded),
         "excluded_path_hash": _sequence_hash(sorted(excluded)),
     }
+    if pyramid_cache_contract is not None:
+        request["pyramid_cache"] = pyramid_cache_contract
     metadata_path = output_dir / "manifest_metadata.json"
     if metadata_path.is_file():
         existing = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -260,6 +285,7 @@ def build_pretraining_manifests(
                 domain,
                 minimum_side=minimum_side,
                 max_source_pixels=max_source_pixels,
+                cached_source_keys=cached_source_keys,
             )
             selected = heapq.nsmallest(
                 validation_count,
@@ -269,6 +295,7 @@ def build_pretraining_manifests(
                         domain,
                         minimum_side=minimum_side,
                         max_source_pixels=max_source_pixels,
+                        cached_source_keys=cached_source_keys,
                     ),
                     excluded=excluded,
                     seed=seed,
@@ -291,6 +318,7 @@ def build_pretraining_manifests(
                     domain,
                     minimum_side=minimum_side,
                     max_source_pixels=max_source_pixels,
+                    cached_source_keys=cached_source_keys,
                 ):
                     path = str(row[0])
                     key = _path_key(path)
@@ -341,16 +369,29 @@ def _eligible_rows(
     *,
     minimum_side: int,
     max_source_pixels: Optional[int],
+    cached_source_keys: set[str],
 ):
     condition = "dataset_id = ? AND width >= ? AND height >= ?"
     parameters: tuple[int, ...] = (domain, minimum_side, minimum_side)
     if max_source_pixels is not None:
         condition += " AND width * height <= ?"
         parameters += (max_source_pixels,)
-    return connection.execute(
+    rows = connection.execute(
         f"SELECT image_path FROM dataset_items WHERE {condition} ORDER BY id",
         parameters,
     )
+    yield from rows
+    if max_source_pixels is None or not cached_source_keys:
+        return
+    oversized = connection.execute(
+        "SELECT image_path FROM dataset_items "
+        "WHERE dataset_id = ? AND width >= ? AND height >= ? "
+        "AND width * height > ? ORDER BY id",
+        (domain, minimum_side, minimum_side, max_source_pixels),
+    )
+    for row in oversized:
+        if _path_key(str(row[0])) in cached_source_keys:
+            yield row
 
 
 def _source_size_filter_counts(
@@ -359,6 +400,7 @@ def _source_size_filter_counts(
     *,
     minimum_side: int,
     max_source_pixels: Optional[int],
+    cached_source_keys: set[str],
 ) -> dict[str, Optional[int]]:
     minimum_eligible = int(connection.execute(
         "SELECT COUNT(*) FROM dataset_items "
@@ -376,12 +418,78 @@ def _source_size_filter_counts(
             (domain, minimum_side, minimum_side, max_source_pixels),
         ).fetchone()[0])
         over_cap = minimum_eligible - after_cap
+    cached_over_cap = 0
+    if max_source_pixels is not None and cached_source_keys:
+        rows = connection.execute(
+            "SELECT image_path FROM dataset_items "
+            "WHERE dataset_id = ? AND width >= ? AND height >= ? "
+            "AND width * height > ?",
+            (domain, minimum_side, minimum_side, max_source_pixels),
+        )
+        cached_over_cap = sum(
+            _path_key(str(row[0])) in cached_source_keys for row in rows
+        )
     return {
         "minimum_side_eligible": minimum_eligible,
         "max_source_pixels": max_source_pixels,
         "over_pixel_cap": over_cap,
         "eligible_after_pixel_cap": after_cap,
+        "cached_over_pixel_cap": cached_over_cap,
+        "eligible_after_pixel_policy": after_cap + cached_over_cap,
     }
+
+
+def _pyramid_cache_index(
+    cache_root: str | Path,
+) -> tuple[dict[str, tuple[TiledPyramidSource, str]], Path]:
+    root = Path(cache_root).resolve()
+    if not root.is_dir():
+        raise FileNotFoundError(f"pyramid cache root is missing: {root}")
+    sources = {}
+    for manifest in sorted(root.glob("*/*/manifest.json")):
+        source = TiledPyramidSource(manifest.parent)
+        expected = tiled_pyramid_cache_path(root, source.source_path).resolve()
+        if manifest.parent.resolve() != expected:
+            raise ValueError(f"pyramid cache is outside its deterministic location: {manifest}")
+        key = _path_key(str(source.source_path))
+        if key in sources:
+            raise ValueError(f"pyramid cache contains duplicate source: {source.source_path}")
+        sources[key] = (source, _file_sha256(manifest))
+    return sources, root
+
+
+def _relevant_cached_source_keys(
+    database_path: Path,
+    *,
+    domains: Sequence[int],
+    minimum_side: int,
+    max_source_pixels: Optional[int],
+    available_keys: set[str],
+) -> set[str]:
+    if max_source_pixels is None or not available_keys:
+        return set()
+    relevant = set()
+    uri = database_path.as_uri() + "?mode=ro"
+    with sqlite3.connect(uri, uri=True) as connection:
+        for domain in domains:
+            rows = connection.execute(
+                "SELECT image_path FROM dataset_items "
+                "WHERE dataset_id = ? AND width >= ? AND height >= ? "
+                "AND width * height > ?",
+                (domain, minimum_side, minimum_side, max_source_pixels),
+            )
+            relevant.update(
+                key for row in rows if (key := _path_key(str(row[0]))) in available_keys
+            )
+    return relevant
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _ranked_paths(rows, *, excluded: set[str], seed: int, domain: int):

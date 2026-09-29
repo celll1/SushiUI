@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 import hashlib
+from io import BytesIO
 import json
 import math
 import os
@@ -17,7 +18,7 @@ from PIL import Image
 from .views import ViewSpec
 
 
-TILED_PYRAMID_FORMAT_VERSION = 1
+TILED_PYRAMID_FORMAT_VERSION = 2
 _BICUBIC = Image.Resampling.BICUBIC
 
 
@@ -50,6 +51,10 @@ class TiledPyramidSource:
         self.source_bytes = payload["source"].get("bytes")
         self.source_mtime_ns = payload["source"].get("mtime_ns")
         self.levels = tuple(PyramidLevel(**row) for row in payload["levels"])
+        raw_tile_sha256 = payload.get("tile_sha256")
+        self.tile_sha256 = {
+            str(path): str(digest) for path, digest in raw_tile_sha256.items()
+        } if isinstance(raw_tile_sha256, dict) else {}
         self._validate_levels()
 
     def validate_source(self, image_path: str | Path) -> None:
@@ -151,8 +156,13 @@ class TiledPyramidSource:
 
     @lru_cache(maxsize=32)
     def _read_tile(self, level: int, column: int, row: int) -> Image.Image:
-        path = self.root / f"level_{level}" / f"{column}_{row}.png"
-        with Image.open(path) as source:
+        relative_path = f"level_{level}/{column}_{row}.png"
+        path = self.root / Path(relative_path)
+        encoded = path.read_bytes()
+        actual = hashlib.sha256(encoded).hexdigest()
+        if actual != self.tile_sha256[relative_path]:
+            raise ValueError(f"tiled-pyramid tile hash changed: {relative_path}")
+        with Image.open(BytesIO(encoded)) as source:
             tile = source.convert("RGB")
             tile.load()
         return tile
@@ -174,6 +184,20 @@ class TiledPyramidSource:
             ):
                 raise ValueError("tiled-pyramid levels must use aligned 2x reduction")
             previous = level
+        expected_tiles = {
+            f"level_{level.index}/{column}_{row}.png"
+            for level in self.levels
+            for row in range(level.rows)
+            for column in range(level.columns)
+        }
+        if set(self.tile_sha256) != expected_tiles:
+            raise ValueError("tiled-pyramid tile hashes do not match its level grids")
+        if any(
+            len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+            for digest in self.tile_sha256.values()
+        ):
+            raise ValueError("tiled-pyramid tile hash is malformed")
 
 
 def build_tiled_pyramid(
@@ -236,6 +260,10 @@ def build_tiled_pyramid(
                 _BICUBIC,
             )
             level_index += 1
+        tile_sha256 = {
+            path.relative_to(temporary_root).as_posix(): _file_sha256(path)
+            for path in sorted(temporary_root.glob("level_*/*.png"))
+        }
         final_stat = image_path.stat()
         if (
             final_stat.st_size != source_stat.st_size
@@ -256,6 +284,7 @@ def build_tiled_pyramid(
             "tile_size": tile_size,
             "encoding": "lossless_png_rgb",
             "levels": levels,
+            "tile_sha256": tile_sha256,
         }
         (temporary_root / "manifest.json").write_text(
             json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",

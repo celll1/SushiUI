@@ -210,20 +210,25 @@ def load_pretraining_sample(
         raise ValueError("max_source_pixels must be positive when provided")
     try:
         with Image.open(image_path) as source:
-            if (
+            over_cap = (
                 max_source_pixels is not None
                 and source.width * source.height > max_source_pixels
-            ):
-                if pyramid_cache_root is None:
-                    return None
-                cached = resolve_cached_tiled_pyramid(image_path, pyramid_cache_root)
-                if cached is None:
-                    return None
-                return build_pretraining_sample(cached, view_config, seed=seed)
-            image = source.convert("RGB")
-            image.load()
+            )
+            if over_cap:
+                image = None
+            else:
+                image = source.convert("RGB")
+                image.load()
     except (OSError, ValueError):
         return None
+    if over_cap:
+        if pyramid_cache_root is None:
+            return None
+        cached = resolve_cached_tiled_pyramid(image_path, pyramid_cache_root)
+        if cached is None:
+            return None
+        return build_pretraining_sample(cached, view_config, seed=seed)
+    assert image is not None
     return build_pretraining_sample(image, view_config, seed=seed)
 
 

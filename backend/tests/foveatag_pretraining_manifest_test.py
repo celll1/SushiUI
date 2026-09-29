@@ -211,3 +211,36 @@ def test_validation_manifest_dataset_loads_fixed_pairs(tmp_path):
     repeated = dataset[0]
     assert first is not None and repeated is not None
     assert first.first_geometry.equal(repeated.first_geometry)
+
+
+def test_pre_pyramid_dataset_objects_default_missing_cache_field_to_none(tmp_path):
+    database, _ = _database(tmp_path)
+    output = tmp_path / "manifests"
+    metadata = build_pretraining_manifests(
+        database,
+        output,
+        dataset_ids=(3,),
+        validation_counts={3: 1},
+        minimum_side=32,
+        seed=17,
+    )
+    manifests = open_domain_manifests(output, metadata, "train")
+    indexed = ManifestPretrainingDataset(
+        manifests[3],
+        view_config=ViewConfig(overview_size=64, local_size=64),
+        seed=17,
+        max_source_pixels=40_000_000,
+    )
+    balanced = DomainBalancedPretrainingDataset(
+        manifests,
+        {3: 1.0},
+        epoch_samples=1,
+        view_config=ViewConfig(overview_size=64, local_size=64),
+        seed=17,
+        max_source_pixels=40_000_000,
+    )
+    del indexed.pyramid_cache_root
+    del balanced.pyramid_cache_root
+
+    assert indexed[0] is not None
+    assert balanced[0] is not None

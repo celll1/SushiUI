@@ -31,6 +31,7 @@ from .pretraining_manifest import (
     build_pretraining_manifests,
     open_domain_manifests,
 )
+from .run_control import FoveaRunControl
 from .views import ViewConfig
 
 
@@ -56,6 +57,7 @@ def run_pretraining(
     max_source_pixels: Optional[int] = 40_000_000,
     resume: Optional[Path] = None,
     stop_after_steps: Optional[int] = None,
+    run_control: Optional[FoveaRunControl] = None,
 ) -> dict[str, Any]:
     _validate_run_arguments(
         dataset_ids=dataset_ids,
@@ -217,12 +219,17 @@ def run_pretraining(
             remaining_step_budget=(
                 None if stop_after_steps is None else stop_after_steps - steps_this_run
             ),
+            run_control=run_control,
         )
         steps_this_run += steps_added
         if stopped:
             sample_offset = epoch_offset
             resume_epoch = epoch
-            status = "stopped_after_requested_steps"
+            status = (
+                "stopped_by_request"
+                if run_control is not None and run_control.should_stop()
+                else "stopped_after_requested_steps"
+            )
             break
 
         validation_started = time.monotonic()
@@ -347,9 +354,12 @@ def _train_epoch(
     history: list[Mapping[str, Any]],
     initial_accumulator: Optional[Mapping[str, Any]],
     remaining_step_budget: Optional[int],
+    run_control: Optional[FoveaRunControl],
 ) -> tuple[dict[str, Any], int, int, int, bool, dict[str, Any]]:
     accumulator = _restore_accumulator(initial_accumulator)
-    if remaining_step_budget is not None and remaining_step_budget <= 0:
+    if (
+        remaining_step_budget is not None and remaining_step_budget <= 0
+    ) or (run_control is not None and run_control.should_stop()):
         return (
             _training_summary(accumulator),
             sample_offset,
@@ -428,7 +438,9 @@ def _train_epoch(
                     "losses": _mean_losses(accumulator["sums"], accumulator["samples"]),
                 },
             )
-        if remaining_step_budget is not None and steps_added >= remaining_step_budget:
+        if (
+            remaining_step_budget is not None and steps_added >= remaining_step_budget
+        ) or (run_control is not None and run_control.should_stop()):
             accumulator["seconds"] += time.monotonic() - segment_started
             return (
                 _training_summary(accumulator),

@@ -33,9 +33,9 @@ from .router_checkpoint import (
 from .router_data import FoveaRouterDataset
 from .router_run import _loader, train_router_epoch
 from .router_training import FoveaRouterTrainer
+from .run_control import FoveaRunControl
 from .supervised_data import DomainBalancedSupervisedDataset, SupervisionPolicy
 from .supervised_run import (
-    FoveaRunControl,
     _cosine_with_warmup,
     _file_sha256,
     _holdout_contract,

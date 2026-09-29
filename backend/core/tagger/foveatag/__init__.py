@@ -72,6 +72,7 @@ from .router_checkpoint import (
     save_router_weights,
 )
 from .router_run import RouterRunControl, train_router_epoch
+from .run_control import FoveaRunControl
 from .joint_training import (
     FoveaJointTrainer,
     FoveaJointTrainResult,
@@ -231,6 +232,7 @@ __all__ = [
     "save_router_checkpoint",
     "save_router_weights",
     "RouterRunControl",
+    "FoveaRunControl",
     "train_router_epoch",
     "FoveaJointTrainer",
     "FoveaJointTrainResult",

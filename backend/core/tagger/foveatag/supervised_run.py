@@ -12,7 +12,6 @@ import os
 from pathlib import Path
 import random
 import time
-import threading
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 import torch
@@ -29,6 +28,7 @@ from .control_run import select_domain_splits
 from .encoder import FoveaEncoderConfig
 from .model import FoveaTagger
 from .pretraining_checkpoint import load_pretrained_encoder
+from .run_control import FoveaRunControl
 from .supervised_checkpoint import (
     load_supervised_checkpoint,
     load_supervised_initialization,
@@ -45,19 +45,6 @@ from .supervised_data import (
 )
 from .supervised_training import FoveaSupervisedTrainer
 from .views import ViewConfig
-
-
-class FoveaRunControl:
-    """Thread-safe stop handle compatible with the existing trainer lifecycle."""
-
-    def __init__(self) -> None:
-        self._stop = threading.Event()
-
-    def request_stop(self) -> None:
-        self._stop.set()
-
-    def should_stop(self) -> bool:
-        return self._stop.is_set()
 
 
 def run_supervised_comparison(

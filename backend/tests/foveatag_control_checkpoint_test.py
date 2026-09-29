@@ -6,7 +6,9 @@ from torch import nn
 
 from core.tagger.foveatag.control_checkpoint import (
     load_control_checkpoint,
+    load_control_weights,
     save_control_checkpoint,
+    save_control_weights,
 )
 
 
@@ -76,3 +78,30 @@ def test_control_checkpoint_rejects_encoder_provenance_mismatch(tmp_path):
             optimizer,
             expected_encoder_provenance={"checkpoint": "other.safetensors"},
         )
+
+
+def test_control_weights_round_trip_uses_compact_inference_artifact(tmp_path):
+    model = _Control()
+    provenance = {"checkpoint": "fixed.safetensors"}
+    original_head = model.head.weight.detach().clone()
+    path = save_control_weights(
+        tmp_path / "best_f1.safetensors",
+        model,
+        encoder_provenance=provenance,
+        epoch=2,
+        global_step=31,
+        validation_f1=0.4,
+        threshold=0.25,
+    )
+    with torch.no_grad():
+        model.head.weight.zero_()
+
+    metadata = load_control_weights(
+        path,
+        model,
+        expected_encoder_provenance=provenance,
+    )
+
+    assert metadata["epoch"] == 2
+    assert metadata["global_step"] == 31
+    torch.testing.assert_close(model.head.weight, original_head)

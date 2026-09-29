@@ -1,0 +1,44 @@
+{
+  "format_version": 1,
+  "kind": "foveatag_siglip2_control_smoke",
+  "scope": "Connectivity smoke only; eight optimizer steps and eight validation samples do not establish quality.",
+  "encoder": "google/siglip2-so400m-patch14-384",
+  "num_tags": 107926,
+  "trainable_parameters": 123949846,
+  "local_views": 4,
+  "train": {
+    "samples": 8,
+    "optimizer_steps": 8,
+    "mean_loss": 0.026684566168114543
+  },
+  "validation": {
+    "samples": 8,
+    "known_labels": 863319,
+    "active_tags": 287,
+    "mean_loss": 0.02569214382674545,
+    "macro_f1": 0.30189930085400474,
+    "macro_precision": 0.19314750290360047,
+    "macro_recall": 1.0,
+    "threshold": 0.05
+  },
+  "domains": {
+    "29": {
+      "role": "danbooru_ground_illustration",
+      "sampling_weight": 0.75
+    },
+    "16": {
+      "role": "partially_curated_photo",
+      "sampling_weight": 0.25,
+      "loss_weight": 0.25,
+      "fine_detail_negatives": "masked"
+    }
+  },
+  "holdout_exclusion": {
+    "ground_manifest": "docs/audits/FOVEATAG_GROUND_BENCHMARK_DANBOORU_V1.json",
+    "photo_manifest": "docs/audits/FOVEATAG_WEAK_BENCHMARK_PHOTO_V1.json",
+    "eligible_after_exclusion": {
+      "29": 287657,
+      "16": 20168
+    }
+  }
+}

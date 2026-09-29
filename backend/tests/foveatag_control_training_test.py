@@ -86,3 +86,22 @@ def test_control_trainer_validates_masks_and_restores_module_modes():
     assert result.threshold in (0.25, 0.5, 0.75)
     assert model.training
     assert not model.vision_encoder.training
+
+
+def test_control_trainer_steps_scheduler_with_optimizer():
+    model = _Control()
+    optimizer = torch.optim.SGD(model.head.parameters(), lr=0.1)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.5)
+    trainer = SigLIP2ControlTrainer(
+        model,
+        _MaskedBCE(),
+        optimizer,
+        device="cpu",
+        mixed_precision=None,
+        scheduler=scheduler,
+    )
+
+    trainer.train_epoch([_batch(1.0), _batch(2.0)])
+
+    assert scheduler.last_epoch == 2
+    assert optimizer.param_groups[0]["lr"] == 0.025

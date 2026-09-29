@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 import torch
+from safetensors.torch import load_file, save_file
 from torch import nn
 
 
@@ -77,23 +78,7 @@ def load_control_checkpoint(
     saved_state = payload.get("control_model")
     if not isinstance(saved_state, Mapping):
         raise ValueError("control checkpoint has no model state")
-    expected_keys = {
-        name for name in model.state_dict() if not name.startswith(_ENCODER_PREFIX)
-    }
-    if set(saved_state) != expected_keys:
-        missing = sorted(expected_keys - set(saved_state))
-        unexpected = sorted(set(saved_state) - expected_keys)
-        raise ValueError(
-            f"control checkpoint state mismatch; missing={missing[:5]}, "
-            f"unexpected={unexpected[:5]}"
-        )
-    incompatible = model.load_state_dict(saved_state, strict=False)
-    unexpected = list(incompatible.unexpected_keys)
-    non_encoder_missing = [
-        name for name in incompatible.missing_keys if not name.startswith(_ENCODER_PREFIX)
-    ]
-    if unexpected or non_encoder_missing:
-        raise ValueError("control checkpoint could not be loaded strictly")
+    _load_control_state(model, saved_state)
 
     optimizer.load_state_dict(payload["optimizer"])
     _move_optimizer_state_to_parameters(optimizer)
@@ -107,6 +92,62 @@ def load_control_checkpoint(
     return payload
 
 
+def save_control_weights(
+    path: os.PathLike[str] | str,
+    model: nn.Module,
+    *,
+    encoder_provenance: Mapping[str, Any],
+    epoch: int,
+    global_step: int,
+    validation_f1: float,
+    threshold: float,
+) -> Path:
+    """Save the best inference-time control state without optimizer tensors."""
+    path = Path(path)
+    if path.suffix != ".safetensors":
+        raise ValueError("control weights path must end in .safetensors")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(f"{path.suffix}.tmp")
+    save_file(_control_state(model), str(temporary))
+    os.replace(temporary, path)
+    _write_json(
+        _metadata_path(path),
+        {
+            "format_version": CONTROL_CHECKPOINT_FORMAT_VERSION,
+            "kind": "foveatag_siglip2_control_weights",
+            "encoder_provenance": dict(encoder_provenance),
+            "epoch": int(epoch),
+            "global_step": int(global_step),
+            "validation_f1": float(validation_f1),
+            "threshold": float(threshold),
+        },
+    )
+    return path
+
+
+def load_control_weights(
+    path: os.PathLike[str] | str,
+    model: nn.Module,
+    *,
+    expected_encoder_provenance: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    path = Path(path)
+    metadata = _read_json(_metadata_path(path))
+    if metadata.get("format_version") != CONTROL_CHECKPOINT_FORMAT_VERSION:
+        raise ValueError("unsupported FoveaTag control weights")
+    if metadata.get("kind") != "foveatag_siglip2_control_weights":
+        raise ValueError("artifact is not FoveaTag SigLIP2 control weights")
+    saved_provenance = metadata.get("encoder_provenance")
+    if (
+        expected_encoder_provenance is not None
+        and dict(saved_provenance or {}) != dict(expected_encoder_provenance)
+    ):
+        raise ValueError("control weights encoder provenance does not match")
+    state = load_file(str(path), device="cpu")
+    _load_control_state(model, state)
+    return metadata
+
+
 def _control_state(model: nn.Module) -> dict[str, torch.Tensor]:
     state = {
         name: value.detach().cpu().contiguous()
@@ -118,8 +159,46 @@ def _control_state(model: nn.Module) -> dict[str, torch.Tensor]:
     return state
 
 
+def _load_control_state(model: nn.Module, state: Mapping[str, torch.Tensor]) -> None:
+    expected_keys = {
+        name for name in model.state_dict() if not name.startswith(_ENCODER_PREFIX)
+    }
+    if set(state) != expected_keys:
+        missing = sorted(expected_keys - set(state))
+        unexpected = sorted(set(state) - expected_keys)
+        raise ValueError(
+            f"control weights state mismatch; missing={missing[:5]}, "
+            f"unexpected={unexpected[:5]}"
+        )
+    incompatible = model.load_state_dict(state, strict=False)
+    unexpected = list(incompatible.unexpected_keys)
+    non_encoder_missing = [
+        name for name in incompatible.missing_keys if not name.startswith(_ENCODER_PREFIX)
+    ]
+    if unexpected or non_encoder_missing:
+        raise ValueError("control weights could not be loaded strictly")
+
+
 def _move_optimizer_state_to_parameters(optimizer: torch.optim.Optimizer) -> None:
     for parameter, state in optimizer.state.items():
         for name, value in state.items():
             if torch.is_tensor(value):
                 state[name] = value.to(parameter.device)
+
+
+def _metadata_path(path: Path) -> Path:
+    return path.with_name(f"{path.stem}_metadata.json")
+
+
+def _write_json(path: Path, value: Mapping[str, Any]) -> None:
+    import json
+
+    temporary = path.with_suffix(f"{path.suffix}.tmp")
+    temporary.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    import json
+
+    return json.loads(path.read_text(encoding="utf-8"))

@@ -336,6 +336,10 @@ def run_control_training(
         global_step = int(payload["global_step"])
         best_f1 = float(payload.get("best_validation_f1", 0.0))
         best_threshold = float(payload.get("best_threshold", 0.5))
+        saved_history = payload.get("history")
+        if not isinstance(saved_history, list) or len(saved_history) != start_epoch:
+            raise ValueError("control checkpoint history does not match next_epoch")
+        history = [dict(row) for row in saved_history]
 
     sampler_generator = torch.Generator()
     sampler = WeightedRandomSampler(
@@ -406,6 +410,7 @@ def run_control_training(
                 "global_step": global_step,
                 "encoder_provenance": provenance,
                 "run_contract": run_contract,
+                "history": history,
                 "scheduler": scheduler,
                 "best_validation_f1": best_f1,
                 "best_threshold": best_threshold,

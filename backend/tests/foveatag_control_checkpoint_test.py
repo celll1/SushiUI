@@ -42,6 +42,7 @@ def test_control_checkpoint_round_trip_excludes_external_encoder(tmp_path):
         global_step=19,
         encoder_provenance=provenance,
         run_contract=run_contract,
+        history=[{"epoch": 0}, {"epoch": 1}, {"epoch": 2}],
         best_validation_f1=0.42,
         best_threshold=0.35,
     )
@@ -64,6 +65,7 @@ def test_control_checkpoint_round_trip_excludes_external_encoder(tmp_path):
     assert payload["next_epoch"] == 3
     assert payload["global_step"] == 19
     assert payload["run_contract"] == run_contract
+    assert payload["history"] == [{"epoch": 0}, {"epoch": 1}, {"epoch": 2}]
     torch.testing.assert_close(model.head.weight, original_head)
     torch.testing.assert_close(model.vision_encoder.weight, original_encoder + 1)
     torch.testing.assert_close(model.baseline_head.weight, original_baseline + 1)

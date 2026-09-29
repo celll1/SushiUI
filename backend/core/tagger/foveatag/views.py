@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Protocol, Sequence, Tuple, runtime_checkable
 
 import numpy as np
 import torch
@@ -101,6 +101,20 @@ class ViewConfig:
         low, high = self.scale_jitter
         if not (0 < low <= high):
             raise ValueError("scale_jitter must be a positive ordered range")
+
+
+@runtime_checkable
+class RegionImageSource(Protocol):
+    """Image dimensions plus bounded rendering from source coordinates."""
+
+    width: int
+    height: int
+
+    def render_view(
+        self,
+        spec: ViewSpec,
+        pad_color: Tuple[int, int, int] = (255, 255, 255),
+    ) -> Image.Image: ...
 
 
 def overview_spec(image_width: int, image_height: int, canvas_size: int) -> ViewSpec:
@@ -243,6 +257,19 @@ def render_view(image: Image.Image, spec: ViewSpec, pad_color: Tuple[int, int, i
     return canvas
 
 
+def render_source_view(
+    source: Image.Image | RegionImageSource,
+    spec: ViewSpec,
+    pad_color: Tuple[int, int, int] = (255, 255, 255),
+) -> Image.Image:
+    """Render from either an in-memory image or a region-readable source."""
+    if isinstance(source, Image.Image):
+        return render_view(source, spec, pad_color)
+    if not isinstance(source, RegionImageSource):
+        raise TypeError("source must be a PIL image or RegionImageSource")
+    return source.render_view(spec, pad_color)
+
+
 def pil_to_tensor(image: Image.Image) -> torch.Tensor:
     """Convert RGB PIL input to contiguous float32 CHW in [0, 1]."""
     array = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
@@ -308,7 +335,7 @@ def sample_local_specs(
 
 
 def build_views(
-    image: Image.Image,
+    image: Image.Image | RegionImageSource,
     config: ViewConfig,
     *,
     seed: int,
@@ -320,8 +347,10 @@ def build_views(
     local_specs = tuple(specs) if specs is not None else sample_local_specs(
         image.width, image.height, config, seed=seed, training=training,
     )
-    overview = render_view(image, ov_spec, config.pad_color)
-    locals_rendered = tuple(render_view(image, spec, config.pad_color) for spec in local_specs)
+    overview = render_source_view(image, ov_spec, config.pad_color)
+    locals_rendered = tuple(
+        render_source_view(image, spec, config.pad_color) for spec in local_specs
+    )
     return ViewBatch(
         overview=overview,
         overview_spec=ov_spec,

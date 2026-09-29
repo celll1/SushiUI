@@ -8,7 +8,19 @@ from core.tagger.foveatag.encoder import FoveaEncoderConfig
 from core.tagger.foveatag.inference import predict_image, source_field_sizes
 from core.tagger.foveatag.model import FoveaTagger
 from core.tagger.foveatag.router import EvidenceRouter
-from core.tagger.foveatag.views import ViewConfig
+from core.tagger.foveatag.views import ViewConfig, render_view
+
+
+class _CountingRegionSource:
+    def __init__(self, image):
+        self.image = image
+        self.width = image.width
+        self.height = image.height
+        self.specs = []
+
+    def render_view(self, spec, pad_color=(255, 255, 255)):
+        self.specs.append(spec)
+        return render_view(self.image, spec, pad_color)
 
 
 def _components(local_views=2):
@@ -85,3 +97,15 @@ def test_predict_image_restores_training_modes():
     router.train()
     predict_image(Image.new("RGB", (32, 32)), model, router, config, mode="test")
     assert model.training and router.training
+
+
+def test_predict_image_reads_only_overview_and_selected_region_views():
+    config, model, router = _components(local_views=2)
+    source = _CountingRegionSource(Image.new("RGB", (96, 64), (10, 20, 30)))
+
+    result = predict_image(source, model, router, config, mode="test")
+
+    assert len(source.specs) == 3
+    assert source.specs[0].role == "overview"
+    assert all(spec.role == "routed-local" for spec in source.specs[1:])
+    assert len(result.selected_boxes) == 2

@@ -154,14 +154,22 @@ from .supervised_data import (
     collate_supervised_samples,
 )
 from .views import (
+    RegionImageSource,
     SourceBox,
     ViewBatch,
     ViewConfig,
     ViewSpec,
     build_views,
     render_overview_placebo_locals,
+    render_source_view,
     sample_local_specs,
     without_local_views,
+)
+from .tiled_pyramid import (
+    TILED_PYRAMID_FORMAT_VERSION,
+    PyramidLevel,
+    TiledPyramidSource,
+    build_tiled_pyramid,
 )
 
 __all__ = [
@@ -298,11 +306,17 @@ __all__ = [
     "build_supervised_views",
     "collate_supervised_samples",
     "SourceBox",
+    "RegionImageSource",
     "ViewBatch",
     "ViewConfig",
     "ViewSpec",
     "build_views",
     "render_overview_placebo_locals",
+    "render_source_view",
     "sample_local_specs",
     "without_local_views",
+    "TILED_PYRAMID_FORMAT_VERSION",
+    "PyramidLevel",
+    "TiledPyramidSource",
+    "build_tiled_pyramid",
 ]

@@ -36,6 +36,8 @@ def run_control_predictions(
 ) -> Path:
     manifest = load_benchmark_manifest(manifest_path)
     encoder_checkpoint = Path(encoder_checkpoint)
+    control_weights = Path(control_weights).resolve()
+    artifact_hashes = _control_artifact_hashes(control_weights)
     vocabulary_path = _checkpoint_vocabulary(encoder_checkpoint, Path(vocabulary_path))
     manager = SigLIP2InferenceManager()
     manager.load_model(str(encoder_checkpoint), str(vocabulary_path))
@@ -170,10 +172,13 @@ def run_control_predictions(
                     f"[FoveaTagControl] predicted {item_index + 1}/{len(manifest.items)} images",
                     flush=True,
                 )
+        if _control_artifact_hashes(control_weights) != artifact_hashes:
+            raise RuntimeError("control artifact changed during prediction")
         payload = {
             "format_version": PREDICTION_FORMAT_VERSION,
             "model_name": f"foveatag-control-random-{local_views}",
-            "checkpoint": str(Path(control_weights).resolve()),
+            "checkpoint": str(control_weights),
+            **artifact_hashes,
             "control_metadata": metadata,
             "missing_tags": [tag for tag, index in tag_indices.items() if index is None],
             "predictions": rows,
@@ -197,6 +202,14 @@ def _view_seed(sample_id: str, resolution: str) -> int:
         f"{sample_id}\0{resolution}".encode("utf-8"), digest_size=8
     ).digest()
     return int.from_bytes(digest, "little")
+
+
+def _control_artifact_hashes(path: Path) -> dict[str, str]:
+    metadata = path.with_name(f"{path.stem}_metadata.json")
+    return {
+        "checkpoint_sha256": _file_sha256(path),
+        "checkpoint_metadata_sha256": _file_sha256(metadata),
+    }
 
 
 def _parser() -> argparse.ArgumentParser:

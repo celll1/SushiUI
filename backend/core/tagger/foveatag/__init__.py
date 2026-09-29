@@ -81,13 +81,23 @@ from .control_checkpoint import (
     save_control_weights,
 )
 from .supervised_data import (
+    FoveaInputMode,
     FoveaSupervisedBatch,
     FoveaSupervisedDataset,
     FoveaSupervisedSample,
     SupervisionPolicy,
     collate_supervised_samples,
 )
-from .views import SourceBox, ViewBatch, ViewConfig, ViewSpec, build_views, sample_local_specs
+from .views import (
+    SourceBox,
+    ViewBatch,
+    ViewConfig,
+    ViewSpec,
+    build_views,
+    render_overview_placebo_locals,
+    sample_local_specs,
+    without_local_views,
+)
 
 __all__ = [
     "BENCHMARK_FORMAT_VERSION",
@@ -169,6 +179,7 @@ __all__ = [
     "save_control_checkpoint",
     "save_control_weights",
     "FoveaSupervisedBatch",
+    "FoveaInputMode",
     "FoveaSupervisedDataset",
     "FoveaSupervisedSample",
     "SupervisionPolicy",
@@ -178,5 +189,7 @@ __all__ = [
     "ViewConfig",
     "ViewSpec",
     "build_views",
+    "render_overview_placebo_locals",
     "sample_local_specs",
+    "without_local_views",
 ]

@@ -77,6 +77,29 @@ def test_supervised_adapter_applies_mixed_provenance_policy():
     assert torch.equal(sample.loss_mask, torch.tensor([0.25, 0.0, 0.25]))
 
 
+@pytest.mark.parametrize(
+    ("input_mode", "expected_views"),
+    [("overview_only", 0), ("overview_placebo", 2), ("source_native", 2)],
+)
+def test_supervised_adapter_selects_explicit_input_branch(input_mode, expected_views):
+    dataset = FoveaSupervisedDataset(
+        _RawDataset(),
+        view_config=ViewConfig(overview_size=64, local_size=64, local_views=2),
+        input_mode=input_mode,
+    )
+
+    sample = dataset[0]
+
+    assert sample is not None
+    assert len(sample.views.local_views) == expected_views
+    assert len(sample.views.local_specs) == expected_views
+
+
+def test_supervised_adapter_rejects_unknown_input_mode():
+    with pytest.raises(ValueError, match="unsupported FoveaTag input mode"):
+        FoveaSupervisedDataset(_RawDataset(), input_mode="unsupported")
+
+
 def test_control_adapter_preserves_original_overview_for_baseline_processor():
     dataset = FoveaSupervisedDataset(
         _RawDataset(),

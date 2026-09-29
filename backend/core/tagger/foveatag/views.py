@@ -147,6 +147,54 @@ def preserve_source_overview(image: Image.Image, views: ViewBatch) -> ViewBatch:
     )
 
 
+def without_local_views(views: ViewBatch) -> ViewBatch:
+    """Keep the overview while removing all local evidence inputs."""
+    return ViewBatch(
+        overview=views.overview,
+        overview_spec=views.overview_spec,
+        local_views=(),
+        local_specs=(),
+        local_canvas_size=views.local_canvas_size,
+    )
+
+
+def render_overview_placebo_locals(
+    views: ViewBatch,
+    *,
+    pad_color: Tuple[int, int, int] = (255, 255, 255),
+) -> ViewBatch:
+    """Re-render local boxes from the overview canvas, never the source image.
+
+    Candidate geometry is retained in source coordinates, so this control has
+    the same view count and tensor shapes as source-native local processing.
+    """
+    placebo_views: List[Image.Image] = []
+    overview_specification = views.overview_spec
+    for specification in views.local_specs:
+        source_box = specification.source_box
+        left, top = overview_specification.source_to_canvas(source_box.x, source_box.y)
+        right, bottom = overview_specification.source_to_canvas(
+            source_box.x + source_box.width,
+            source_box.y + source_box.height,
+        )
+        proxy_specification = ViewSpec(
+            role="overview-placebo-local",
+            source_box=SourceBox(left, top, right - left, bottom - top),
+            canvas_width=specification.canvas_width,
+            canvas_height=specification.canvas_height,
+            content_box=specification.content_box,
+            pixels_per_canvas_pixel=(right - left) / specification.canvas_width,
+        )
+        placebo_views.append(render_view(views.overview, proxy_specification, pad_color))
+    return ViewBatch(
+        overview=views.overview,
+        overview_spec=views.overview_spec,
+        local_views=tuple(placebo_views),
+        local_specs=views.local_specs,
+        local_canvas_size=views.local_canvas_size,
+    )
+
+
 def local_spec(
     *,
     center_x: float,

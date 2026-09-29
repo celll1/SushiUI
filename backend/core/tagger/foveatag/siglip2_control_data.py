@@ -68,37 +68,58 @@ def collate_siglip2_control_samples(
     if len(view_counts) != 1:
         raise ValueError("SigLIP2 control samples must have equal local-view counts")
     view_count = view_counts.pop()
-    if view_count <= 0:
-        raise ValueError("SigLIP2 control requires at least one local view")
 
     overview_kwargs = {
         "images": [sample.views.overview for sample in valid],
         "return_tensors": "pt",
     }
-    local_kwargs = {
-        "images": [image for sample in valid for image in sample.views.local_views],
-        "return_tensors": "pt",
-    }
     if is_naflex:
         overview_kwargs["max_num_patches"] = overview_patch_budget
-        local_kwargs["max_num_patches"] = local_patch_budget
     overview_raw = processor(**overview_kwargs)
-    local_raw = processor(**local_kwargs)
     batch_size = len(valid)
 
     overview = _view_inputs(overview_raw, is_naflex=is_naflex)
-    flat_local = _view_inputs(local_raw, is_naflex=is_naflex)
-    local = SigLIP2ViewInputs(
-        pixel_values=flat_local.pixel_values.reshape(
-            batch_size, view_count, *flat_local.pixel_values.shape[1:]
-        ),
-        pixel_attention_mask=_reshape_optional(
-            flat_local.pixel_attention_mask, batch_size, view_count
-        ),
-        spatial_shapes=_reshape_optional(
-            flat_local.spatial_shapes, batch_size, view_count
-        ),
-    )
+    if view_count:
+        local_kwargs = {
+            "images": [image for sample in valid for image in sample.views.local_views],
+            "return_tensors": "pt",
+        }
+        if is_naflex:
+            local_kwargs["max_num_patches"] = local_patch_budget
+        local_raw = processor(**local_kwargs)
+        flat_local = _view_inputs(local_raw, is_naflex=is_naflex)
+        local = SigLIP2ViewInputs(
+            pixel_values=flat_local.pixel_values.reshape(
+                batch_size, view_count, *flat_local.pixel_values.shape[1:]
+            ),
+            pixel_attention_mask=_reshape_optional(
+                flat_local.pixel_attention_mask, batch_size, view_count
+            ),
+            spatial_shapes=_reshape_optional(
+                flat_local.spatial_shapes, batch_size, view_count
+            ),
+        )
+    else:
+        if is_naflex:
+            pixel_shape = (
+                batch_size,
+                0,
+                local_patch_budget,
+                overview.pixel_values.shape[-1],
+            )
+            local = SigLIP2ViewInputs(
+                pixel_values=overview.pixel_values.new_empty(pixel_shape),
+                pixel_attention_mask=torch.empty(
+                    (batch_size, 0, local_patch_budget), dtype=torch.int32
+                ),
+                spatial_shapes=torch.empty((batch_size, 0, 2), dtype=torch.long),
+            )
+        else:
+            local = SigLIP2ViewInputs(
+                pixel_values=overview.pixel_values.new_empty(
+                    (batch_size, 0, *overview.pixel_values.shape[1:])
+                )
+            )
     return SigLIP2ControlBatch(
         overview=overview,
         local=local,

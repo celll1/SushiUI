@@ -461,14 +461,14 @@ require data and GPU time:
 | Phase | Implemented | Still required before exit |
 |---|---|---|
 | 0 | Versioned benchmark manifest, evidence-box validation, resolution/group metrics, saved predictions, per-stage timing summaries, a synthetic scratch-model GPU timing harness, data-loaded optimizer timing, and current NaFlex latency at 256/512/1024 effective patches. | Populate the fixed benchmark and run the SigLIP2 quality baselines. Repeat the initial epoch estimate below on a representative shuffled sample before setting the pretraining budget. |
-| 1 | Deterministic multi-scale views, exact source transforms, expandable evidence head, fixed/NaFlex SigLIP2 token adapter, and a processor bridge that preserves overview/local view axes with separate patch budgets. | Train and measure the encoder-swap control. |
+| 1 | Deterministic multi-scale views, exact source transforms, expandable evidence head, fixed/NaFlex SigLIP2 token adapter, a processor bridge that preserves overview/local view axes with separate patch budgets, and measured inference cost by local-view count. | Train and measure the encoder-swap control's quality. |
 | 2 | A 37.39M-parameter default scratch encoder, content-aware continuous 2-D RoPE, stride-16 local map, low-token global stage, masked RGB decoder, teacher-free losses, the diagnostic local-teacher projection, deterministic overlapping-view data, and an executable AdamW pretraining path. | Run convergence and held-out overlap/chroma measurements. |
 | 3 | End-to-end scratch tagger, masked classifier composition, density-gated prediction consistency, and an adapter from the existing vocabulary/loss-mask/live-refresh dataset lifecycle to deterministic FoveaTag views. | Add the production training loop and run the pre-registered comparison. |
 | 4 | Generic scale-space router, padding mask, NMS, dense-oracle targets, ranking/diversity losses, and retained random-budget selection. | Run dense-oracle training, choose its batch frequency from measured cost, and measure router recall. |
 | 5 | Versioned inference/resume artifacts, exclusion of diagnostic weights from inference artifacts, coordinate-aware collation, cached-overview staged inference, evidence boxes, and per-stage wall time. | Add production manager/export, API/defaults/OpenAPI/frontend surfaces, and lifecycle tests after the go/no-go gates pass. |
 | 6 | Not started. | Run registered capacity and component ablations only after the smaller model is measured. |
 
-Seventy-seven focused CPU tests cover the isolated modules. After the owner's
+Seventy-nine focused CPU tests cover the isolated modules. After the owner's
 separate training run released the GPU, the synthetic measurement below was
 also run. No backend restart was performed. Quality and extrapolation
 measurements remain pending.
@@ -541,6 +541,27 @@ same-checkpoint latency/VRAM reference required before quality measurements.
 Loading this older checkpoint also exposed two compatibility defects now fixed:
 its omitted custom-pooler dimensions are recovered from tensor shapes, and the
 current Transformers NaFlex argument name `pixel_attention_mask` is used.
+
+### 9.5 Phase 1 encoder-swap control timing (2026-09-29)
+
+The same current NaFlex encoder was reused with a 512-dimensional FoveaTag
+evidence head and 97,199 output tags. The overview budget was 784 patches and
+each local view used 256 patches. Eight cosplay photos were measured at batch
+size 1; the encoder was frozen and the newly initialized head was used only to
+measure execution cost, not quality.
+
+| Local views | Total encoded patches | View render mean | Processor mean | Forward mean | End-to-end mean | Peak reserved VRAM |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 784 | 86.0 ms | 2.2 ms | 17.4 ms | 105.9 ms | 2,430 MiB |
+| 1 | 1,040 | 93.3 ms | 2.8 ms | 34.4 ms | 131.0 ms | 2,434 MiB |
+| 4 | 1,808 | 112.5 ms | 4.7 ms | 37.4 ms | 155.3 ms | 2,434 MiB |
+
+The four local views are encoded together, so their forward cost is not four
+times the single-local cost. End-to-end latency rises by about 49 ms from the
+overview-only control to four local views on this sample. Native decode and PIL
+view rendering remain a larger component than the GPU forward. The quality
+gate remains open until the fixed fine-detail benchmark is annotated and this
+control is trained.
 
 ## 10. Integration surface after acceptance
 

@@ -68,3 +68,29 @@ def test_fixed_control_collate_omits_naflex_auxiliary_inputs():
     assert batch.local.pixel_values.shape == (1, 2, 3, 32, 32)
     assert batch.local.pixel_attention_mask is None
     assert processor.budgets == [None, None]
+
+
+def test_overview_only_control_skips_local_processor_call():
+    processor = _Processor(naflex=True)
+    sample = _sample(4)
+    sample = FoveaSupervisedSample(
+        views=build_views(
+            Image.new("RGB", (160, 120)),
+            ViewConfig(overview_size=64, local_size=32, local_views=0),
+            seed=4,
+            training=False,
+        ),
+        label=sample.label,
+        loss_mask=sample.loss_mask,
+    )
+    batch = collate_siglip2_control_samples(
+        [sample],
+        processor=processor,
+        is_naflex=True,
+        overview_patch_budget=12,
+        local_patch_budget=7,
+    )
+    assert batch is not None
+    assert batch.local.pixel_values.shape == (1, 0, 7, 6)
+    assert batch.local_view_mask.shape == (1, 0)
+    assert processor.budgets == [12]

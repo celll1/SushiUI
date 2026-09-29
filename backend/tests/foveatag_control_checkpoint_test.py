@@ -32,6 +32,7 @@ def test_control_checkpoint_round_trip_excludes_external_encoder(tmp_path):
     original_encoder = model.vision_encoder.weight.detach().clone()
     original_baseline = model.baseline_head.weight.detach().clone()
     provenance = {"checkpoint": "fixed.safetensors", "vocabulary": "fixed.json"}
+    run_contract = {"dataset": "ground", "seed": 7}
 
     path = save_control_checkpoint(
         tmp_path / "control.pt",
@@ -40,6 +41,7 @@ def test_control_checkpoint_round_trip_excludes_external_encoder(tmp_path):
         next_epoch=3,
         global_step=19,
         encoder_provenance=provenance,
+        run_contract=run_contract,
         best_validation_f1=0.42,
         best_threshold=0.35,
     )
@@ -56,10 +58,12 @@ def test_control_checkpoint_round_trip_excludes_external_encoder(tmp_path):
         model,
         optimizer,
         expected_encoder_provenance=provenance,
+        expected_run_contract=run_contract,
     )
 
     assert payload["next_epoch"] == 3
     assert payload["global_step"] == 19
+    assert payload["run_contract"] == run_contract
     torch.testing.assert_close(model.head.weight, original_head)
     torch.testing.assert_close(model.vision_encoder.weight, original_encoder + 1)
     torch.testing.assert_close(model.baseline_head.weight, original_baseline + 1)
@@ -86,14 +90,38 @@ def test_control_checkpoint_rejects_encoder_provenance_mismatch(tmp_path):
         )
 
 
+def test_control_checkpoint_rejects_run_contract_mismatch(tmp_path):
+    model = _Control()
+    optimizer = torch.optim.SGD(model.head.parameters(), lr=0.1)
+    path = save_control_checkpoint(
+        tmp_path / "control.pt",
+        model,
+        optimizer,
+        next_epoch=1,
+        global_step=0,
+        encoder_provenance={"checkpoint": "fixed.safetensors"},
+        run_contract={"seed": 7},
+    )
+
+    with pytest.raises(ValueError, match="run contract does not match"):
+        load_control_checkpoint(
+            path,
+            model,
+            optimizer,
+            expected_run_contract={"seed": 8},
+        )
+
+
 def test_control_weights_round_trip_uses_compact_inference_artifact(tmp_path):
     model = _Control()
     provenance = {"checkpoint": "fixed.safetensors"}
+    run_contract = {"dataset": "ground", "seed": 7}
     original_head = model.head.weight.detach().clone()
     path = save_control_weights(
         tmp_path / "best_f1.safetensors",
         model,
         encoder_provenance=provenance,
+        run_contract=run_contract,
         epoch=2,
         global_step=31,
         validation_f1=0.4,
@@ -106,8 +134,10 @@ def test_control_weights_round_trip_uses_compact_inference_artifact(tmp_path):
         path,
         model,
         expected_encoder_provenance=provenance,
+        expected_run_contract=run_contract,
     )
 
     assert metadata["epoch"] == 2
     assert metadata["global_step"] == 31
+    assert metadata["run_contract"] == run_contract
     torch.testing.assert_close(model.head.weight, original_head)

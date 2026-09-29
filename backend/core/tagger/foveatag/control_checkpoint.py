@@ -23,6 +23,7 @@ def save_control_checkpoint(
     next_epoch: int,
     global_step: int,
     encoder_provenance: Mapping[str, Any],
+    run_contract: Optional[Mapping[str, Any]] = None,
     scheduler: Optional[Any] = None,
     best_validation_f1: float = 0.0,
     best_threshold: float = 0.5,
@@ -42,6 +43,7 @@ def save_control_checkpoint(
         "best_validation_f1": float(best_validation_f1),
         "best_threshold": float(best_threshold),
         "encoder_provenance": dict(encoder_provenance),
+        "run_contract": dict(run_contract) if run_contract is not None else None,
         "control_model": _control_state(model),
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict() if scheduler is not None else None,
@@ -58,6 +60,7 @@ def load_control_checkpoint(
     optimizer: torch.optim.Optimizer,
     *,
     expected_encoder_provenance: Optional[Mapping[str, Any]] = None,
+    expected_run_contract: Optional[Mapping[str, Any]] = None,
     scheduler: Optional[Any] = None,
 ) -> dict[str, Any]:
     """Restore a control at an epoch boundary and verify its external encoder."""
@@ -74,6 +77,12 @@ def load_control_checkpoint(
         and dict(saved_provenance) != dict(expected_encoder_provenance)
     ):
         raise ValueError("control checkpoint encoder provenance does not match")
+    if expected_run_contract is not None:
+        saved_contract = payload.get("run_contract")
+        if not isinstance(saved_contract, Mapping):
+            raise ValueError("control checkpoint has no run contract")
+        if dict(saved_contract) != dict(expected_run_contract):
+            raise ValueError("control checkpoint run contract does not match")
 
     saved_state = payload.get("control_model")
     if not isinstance(saved_state, Mapping):
@@ -97,6 +106,7 @@ def save_control_weights(
     model: nn.Module,
     *,
     encoder_provenance: Mapping[str, Any],
+    run_contract: Optional[Mapping[str, Any]] = None,
     epoch: int,
     global_step: int,
     validation_f1: float,
@@ -116,6 +126,7 @@ def save_control_weights(
             "format_version": CONTROL_CHECKPOINT_FORMAT_VERSION,
             "kind": "foveatag_siglip2_control_weights",
             "encoder_provenance": dict(encoder_provenance),
+            "run_contract": dict(run_contract) if run_contract is not None else None,
             "epoch": int(epoch),
             "global_step": int(global_step),
             "validation_f1": float(validation_f1),
@@ -130,6 +141,7 @@ def load_control_weights(
     model: nn.Module,
     *,
     expected_encoder_provenance: Optional[Mapping[str, Any]] = None,
+    expected_run_contract: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     path = Path(path)
     metadata = _read_json(_metadata_path(path))
@@ -143,6 +155,12 @@ def load_control_weights(
         and dict(saved_provenance or {}) != dict(expected_encoder_provenance)
     ):
         raise ValueError("control weights encoder provenance does not match")
+    if expected_run_contract is not None:
+        saved_contract = metadata.get("run_contract")
+        if not isinstance(saved_contract, Mapping):
+            raise ValueError("control weights have no run contract")
+        if dict(saved_contract) != dict(expected_run_contract):
+            raise ValueError("control weights run contract does not match")
     state = load_file(str(path), device="cpu")
     _load_control_state(model, state)
     return metadata

@@ -1,6 +1,7 @@
 """Contracts for post-run Phase-2 checkpoint evaluation."""
 
 import hashlib
+import json
 
 import pytest
 import torch
@@ -8,6 +9,7 @@ import torch
 from core.tagger.foveatag.encoder import FoveaEncoderConfig
 from core.tagger.foveatag.pretraining import FoveaPretrainer
 from core.tagger.foveatag.pretraining_evaluation import (
+    _completed_run_summary,
     _model_from_payload,
     _new_model,
     _verify_validation_manifests,
@@ -105,3 +107,24 @@ def test_scratch_baseline_can_reproduce_seeded_initialization():
     second = _new_model(contract)
 
     torch.testing.assert_close(first.encoder.stem_conv.weight, second.encoder.stem_conv.weight)
+
+
+def test_encoder_evaluation_requires_completed_run_and_best_artifact(tmp_path):
+    contract = {"epochs": 2, "token": "same"}
+    metadata = {"validation": {"weighted": {"loss": 0.25}}}
+    summary = tmp_path / "summary.json"
+    summary.write_text(json.dumps({
+        "kind": "foveatag_teacher_free_pretraining_run",
+        "status": "complete",
+        "epoch": 2,
+        "run_contract": contract,
+        "best_validation_loss": 0.25,
+    }), encoding="utf-8")
+
+    result = _completed_run_summary(summary, contract, metadata)
+    assert result["epoch"] == 2
+    payload = json.loads(summary.read_text(encoding="utf-8"))
+    payload["status"] = "stopped_by_request"
+    summary.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="not complete"):
+        _completed_run_summary(summary, contract, metadata)

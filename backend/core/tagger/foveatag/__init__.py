@@ -91,6 +91,12 @@ from .phase3_gate import (
     source_native_checkpoint_hashes,
     source_native_checkpoint_sha256,
 )
+from .phase2_gate import (
+    PHASE2_GATE_FORMAT_VERSION,
+    load_passed_phase2_gate,
+    record_phase2_gate,
+    require_phase2_encoder,
+)
 from .phase4_gate import (
     PHASE4_GATE_FORMAT_VERSION,
     load_passed_phase4_gate,
@@ -251,6 +257,10 @@ __all__ = [
     "load_joint_checkpoint",
     "save_joint_checkpoint",
     "PHASE3_GATE_FORMAT_VERSION",
+    "PHASE2_GATE_FORMAT_VERSION",
+    "load_passed_phase2_gate",
+    "record_phase2_gate",
+    "require_phase2_encoder",
     "load_passed_phase3_gate",
     "record_phase3_gate",
     "source_native_checkpoint_hashes",

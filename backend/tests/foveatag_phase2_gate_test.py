@@ -114,6 +114,7 @@ def _evaluation(tmp_path):
         "training_validation": validation,
         "encoder_validation": _health(),
         "scratch_initialization_validation": _health(),
+        "scratch_encoder_sha256": "a" * 64,
         "validation_manifests": [
             {"domain": 25, "role": "paths", "path": str(manifest), "sha256": _sha(manifest)},
             {"domain": 25, "role": "index", "path": str(index), "sha256": _sha(index)},
@@ -160,6 +161,22 @@ def test_phase2_gate_requires_scratch_reference(tmp_path):
     evaluation.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(ValueError, match="scratch initialization"):
+        record_phase2_gate(
+            evaluation,
+            tmp_path / "gate.json",
+            decision="pass",
+            rationale="invalid",
+            decided_by="owner",
+        )
+
+
+def test_phase2_gate_requires_scratch_reference_fingerprint(tmp_path):
+    evaluation, _encoder, _manifest = _evaluation(tmp_path)
+    payload = json.loads(evaluation.read_text(encoding="utf-8"))
+    payload.pop("scratch_encoder_sha256")
+    evaluation.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="fingerprint"):
         record_phase2_gate(
             evaluation,
             tmp_path / "gate.json",

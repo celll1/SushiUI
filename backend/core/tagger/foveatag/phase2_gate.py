@@ -57,6 +57,11 @@ def _validated_evaluation_evidence(
         evaluation.get("scratch_initialization_validation"),
         "scratch initialization",
     )
+    scratch_hash = evaluation.get("scratch_encoder_sha256")
+    if not isinstance(scratch_hash, str) or len(scratch_hash) != 64 or any(
+        character not in "0123456789abcdef" for character in scratch_hash
+    ):
+        raise ValueError("Phase-2 evaluation lacks a scratch encoder fingerprint")
     evidence = {evaluation_path: "encoder_evaluation"}
     encoder = _verified_evaluation_file(evaluation, "encoder", "encoder_sha256")
     metadata = _verified_evaluation_file(

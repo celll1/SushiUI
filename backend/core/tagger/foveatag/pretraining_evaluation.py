@@ -82,12 +82,15 @@ def evaluate_pretraining_checkpoint(
     gc.collect()
     torch.cuda.empty_cache()
     scratch_validation = None
+    scratch_encoder_sha256 = None
     if include_scratch_baseline:
         seed = int(contract["seed"])
         random.seed(seed)
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
-        scratch_model = _new_model(contract).to(device)
+        scratch_model = _new_model(contract)
+        scratch_encoder_sha256 = _module_state_sha256(scratch_model.encoder)
+        scratch_model.to(device)
         scratch_validation = _validate(
             scratch_model,
             manifests,
@@ -116,6 +119,7 @@ def evaluate_pretraining_checkpoint(
         "dtype": str(amp_dtype).removeprefix("torch."),
         "validation": validation,
         "scratch_initialization_validation": scratch_validation,
+        "scratch_encoder_sha256": scratch_encoder_sha256,
     }
     _write_json_atomic(Path(output_path), result)
     return result
@@ -176,12 +180,15 @@ def evaluate_pretrained_encoder(
     gc.collect()
     torch.cuda.empty_cache()
     scratch = None
+    scratch_encoder_sha256 = None
     if include_scratch_baseline:
         seed = int(contract["seed"])
         random.seed(seed)
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
-        scratch_encoder = FoveaEncoder(config).to(device)
+        scratch_encoder = FoveaEncoder(config)
+        scratch_encoder_sha256 = _module_state_sha256(scratch_encoder)
+        scratch_encoder.to(device)
         scratch = _validate_encoder(scratch_encoder, manifests, **validation_kwargs)
         del scratch_encoder
         gc.collect()
@@ -208,6 +215,7 @@ def evaluate_pretrained_encoder(
         "training_validation": metadata["validation"],
         "encoder_validation": trained,
         "scratch_initialization_validation": scratch,
+        "scratch_encoder_sha256": scratch_encoder_sha256,
         "validation_manifests": _validation_manifest_evidence(
             manifest_dir, manifest_metadata
         ),
@@ -356,6 +364,20 @@ def _pyramid_cache_root(contract: Mapping[str, Any]) -> str | None:
         return None
     cache = request.get("pyramid_cache")
     return str(cache["root"]) if isinstance(cache, Mapping) else None
+
+
+def _module_state_sha256(module: torch.nn.Module) -> str:
+    digest = hashlib.sha256()
+    for name, value in sorted(module.state_dict().items()):
+        tensor = value.detach().to(device="cpu").contiguous()
+        descriptor = json.dumps(
+            [name, str(tensor.dtype), list(tensor.shape)],
+            separators=(",", ":"),
+        ).encode("utf-8")
+        digest.update(len(descriptor).to_bytes(8, "little"))
+        digest.update(descriptor)
+        digest.update(tensor.view(torch.uint8).numpy().tobytes())
+    return digest.hexdigest()
 
 
 def _verify_validation_manifests(

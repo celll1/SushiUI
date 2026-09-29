@@ -6,13 +6,14 @@ import json
 import pytest
 import torch
 
-from core.tagger.foveatag.encoder import FoveaEncoderConfig
+from core.tagger.foveatag.encoder import FoveaEncoder, FoveaEncoderConfig
 from core.tagger.foveatag.pretraining import FoveaPretrainer
 from core.tagger.foveatag.pretraining_evaluation import (
     _completed_run_summary,
     _model_from_payload,
     _new_model,
     _pyramid_cache_root,
+    _module_state_sha256,
     _verify_validation_manifests,
 )
 
@@ -108,6 +109,19 @@ def test_scratch_baseline_can_reproduce_seeded_initialization():
     second = _new_model(contract)
 
     torch.testing.assert_close(first.encoder.stem_conv.weight, second.encoder.stem_conv.weight)
+
+
+def test_scratch_encoder_fingerprint_is_canonical_and_weight_sensitive():
+    config = _tiny_config()
+    torch.manual_seed(17)
+    first = FoveaPretrainer(config).encoder
+    torch.manual_seed(17)
+    reference = FoveaEncoder(config)
+
+    assert _module_state_sha256(first) == _module_state_sha256(reference)
+    with torch.no_grad():
+        reference.stem_conv.weight.view(-1)[0] += 1
+    assert _module_state_sha256(first) != _module_state_sha256(reference)
 
 
 def test_evaluation_resolves_cache_root_from_manifest_contract():

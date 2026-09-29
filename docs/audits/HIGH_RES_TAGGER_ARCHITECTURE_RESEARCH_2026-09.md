@@ -590,6 +590,9 @@ measured representation, and any changed evidence invalidates the decision.
 The bounded feature-health token budget is distributed deterministically over
 every held-out batch. It is not filled from the first batch alone, which would
 make the collapse evidence depend on one narrow prefix of each domain.
+The evaluation also records a canonical SHA-256 over the same-seed scratch
+encoder's named tensors, dtypes, shapes, and bytes, so the exact untrained
+reference is identifiable rather than implied only by a seed value.
 Gate creation and every downstream gate load re-parse the encoder metadata and
 completed summary rather than trusting paths copied into the evaluation or a
 handwritten pass JSON. They require the same run

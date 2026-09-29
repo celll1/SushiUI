@@ -106,6 +106,9 @@ def benchmark_pretraining(
     correspondence_losses: list[float] = []
     reconstruction_losses: list[float] = []
     chroma_losses: list[float] = []
+    variance_losses: list[float] = []
+    covariance_losses: list[float] = []
+    centering_losses: list[float] = []
     torch.cuda.reset_peak_memory_stats(device)
 
     for step in range(warmup_steps + measured_steps):
@@ -137,6 +140,9 @@ def benchmark_pretraining(
             correspondence_losses.append(float(output.losses.correspondence.detach()))
             reconstruction_losses.append(float(output.losses.reconstruction.detach()))
             chroma_losses.append(float(output.losses.chroma.detach()))
+            variance_losses.append(float(output.losses.variance.detach()))
+            covariance_losses.append(float(output.losses.covariance.detach()))
+            centering_losses.append(float(output.losses.centering.detach()))
 
     if not step_ms:
         raise RuntimeError("no complete benchmark steps were measured")
@@ -169,6 +175,9 @@ def benchmark_pretraining(
         "correspondence_loss": _summary(correspondence_losses),
         "reconstruction_loss": _summary(reconstruction_losses),
         "chroma_loss": _summary(chroma_losses),
+        "variance_loss": _summary(variance_losses),
+        "covariance_loss": _summary(covariance_losses),
+        "centering_loss": _summary(centering_losses),
         "peak_allocated_mib": torch.cuda.max_memory_allocated(device) / 2**20,
         "peak_reserved_mib": torch.cuda.max_memory_reserved(device) / 2**20,
         "scope": "Includes image decode, paired-view rendering, host-to-device copy, forward, backward, and AdamW update.",

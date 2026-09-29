@@ -1219,6 +1219,23 @@ metrics and artifact identities are retained in
 explicit anti-collapse objective and a bounded pilot that improves both views
 relative to this reference before a replacement long run is registered.
 
+The replacement objective adds variance and covariance regularization adapted
+from [VICReg](https://arxiv.org/abs/2105.04906) directly to both stride-16
+feature maps. Each map is flattened across batch and space, giving 4,096 local
+and 12,544 overview observations at batch 16 despite the small image batch.
+The variance hinge has target standard deviation 1 and epsilon `1e-4`; the
+off-diagonal covariance penalty is normalized by channel count. Weights 1.0
+and 0.01 follow the smaller VICReg regularizer scale reported when adding the
+terms to an existing objective. An additional 0.1-weight mean-square centering
+term addresses the large common feature bias observed in this run; this term
+is a FoveaTag adaptation, not part of the cited formulation. The existing
+correspondence, reconstruction, and chroma weights remain 1.0, 1.0, and 0.5.
+Every term is logged separately, and the Phase 2 gate now rejects checkpoints
+whose run contract or validation record omits the anti-collapse terms. Because
+the paper studies global embeddings and substantially larger image batches,
+these weights are a bounded-pilot starting point rather than a transferred
+quality claim.
+
 ### 9.14 Phase 3 throughput protocol (2026-09-29)
 
 `supervised_benchmark.py` measures the three registered Phase 3 input modes in

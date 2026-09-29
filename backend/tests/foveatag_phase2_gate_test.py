@@ -52,6 +52,17 @@ def _evaluation(tmp_path):
     index.write_bytes(bytes(8))
     contract = {
         "epochs": 1,
+        "objective": {
+            "correspondence_weight": 1.0,
+            "reconstruction_weight": 1.0,
+            "chroma_weight": 0.5,
+            "variance_weight": 1.0,
+            "covariance_weight": 0.01,
+            "centering_weight": 0.1,
+            "target_standard_deviation": 1.0,
+            "distribution_epsilon": 1e-4,
+            "max_coordinate_distance": 0.02,
+        },
         "manifest_domains": {
             "25": {
                 "validation": {
@@ -69,6 +80,9 @@ def _evaluation(tmp_path):
             "correspondence": 0.1,
             "reconstruction": 0.12,
             "chroma": 0.06,
+            "variance": 0.05,
+            "covariance": 0.02,
+            "centering": 0.03,
         },
         "domains": {
             "25": {
@@ -78,6 +92,9 @@ def _evaluation(tmp_path):
                 "correspondence": 0.1,
                 "reconstruction": 0.12,
                 "chroma": 0.06,
+                "variance": 0.05,
+                "covariance": 0.02,
+                "centering": 0.03,
             }
         },
     }
@@ -193,6 +210,34 @@ def test_phase2_gate_rejects_evaluation_not_matching_encoder_metadata(tmp_path):
     evaluation.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(ValueError, match="does not match encoder metadata"):
+        record_phase2_gate(
+            evaluation,
+            tmp_path / "gate.json",
+            decision="pass",
+            rationale="invalid",
+            decided_by="owner",
+        )
+
+
+def test_phase2_gate_rejects_objective_without_anti_collapse_terms(tmp_path):
+    evaluation, _encoder, _manifest = _evaluation(tmp_path)
+    payload = json.loads(evaluation.read_text(encoding="utf-8"))
+    metadata_path = tmp_path / "best_encoder_metadata.json"
+    summary_path = tmp_path / "summary.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    metadata["run_contract"]["objective"].pop("variance_weight")
+    summary["run_contract"] = metadata["run_contract"]
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    payload.update({
+        "encoder_metadata_sha256": _sha(metadata_path),
+        "run_summary_sha256": _sha(summary_path),
+        "run_contract_sha256": _json_sha(metadata["run_contract"]),
+    })
+    evaluation.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="variance_weight"):
         record_phase2_gate(
             evaluation,
             tmp_path / "gate.json",

@@ -102,12 +102,62 @@ def chroma_reconstruction_loss(
     return error[selected].mean()
 
 
+def feature_distribution_regularization(
+    first_features: torch.Tensor,
+    second_features: torch.Tensor,
+    *,
+    target_standard_deviation: float = 1.0,
+    epsilon: float = 1e-4,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return VICReg-style variance/covariance plus explicit feature centering."""
+    if first_features.ndim != 4 or second_features.ndim != 4:
+        raise ValueError("features must have shape [batch, channels, height, width]")
+    if first_features.shape[1] != second_features.shape[1]:
+        raise ValueError("feature channel dimensions must match")
+    if target_standard_deviation <= 0 or epsilon <= 0:
+        raise ValueError("distribution targets must be positive")
+    terms = [
+        _feature_distribution_terms(
+            features,
+            target_standard_deviation=target_standard_deviation,
+            epsilon=epsilon,
+        )
+        for features in (first_features, second_features)
+    ]
+    return tuple(torch.stack(values).mean() for values in zip(*terms))
+
+
+def _feature_distribution_terms(
+    features: torch.Tensor,
+    *,
+    target_standard_deviation: float,
+    epsilon: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    tokens = features.permute(0, 2, 3, 1).reshape(-1, features.shape[1]).float()
+    if tokens.shape[0] <= 1:
+        zero = tokens.sum() * 0.0
+        return zero, zero, zero
+    mean = tokens.mean(dim=0)
+    centered = tokens - mean
+    standard_deviation = torch.sqrt(centered.var(dim=0, unbiased=True) + epsilon)
+    variance = F.relu(target_standard_deviation - standard_deviation).mean()
+    covariance_matrix = centered.T @ centered / (tokens.shape[0] - 1)
+    covariance = (
+        covariance_matrix.square().sum() - covariance_matrix.diagonal().square().sum()
+    ) / covariance_matrix.shape[0]
+    centering = mean.square().mean()
+    return variance, covariance, centering
+
+
 @dataclass(frozen=True)
 class SelfSupervisedLossOutput:
     loss: torch.Tensor
     correspondence: torch.Tensor
     reconstruction: torch.Tensor
     chroma: torch.Tensor
+    variance: torch.Tensor
+    covariance: torch.Tensor
+    centering: torch.Tensor
 
 
 class FoveaSelfSupervisedLoss(nn.Module):
@@ -117,14 +167,33 @@ class FoveaSelfSupervisedLoss(nn.Module):
         correspondence_weight: float = 1.0,
         reconstruction_weight: float = 1.0,
         chroma_weight: float = 0.5,
+        variance_weight: float = 1.0,
+        covariance_weight: float = 0.01,
+        centering_weight: float = 0.1,
+        target_standard_deviation: float = 1.0,
+        distribution_epsilon: float = 1e-4,
         max_coordinate_distance: float = 0.02,
     ) -> None:
         super().__init__()
-        if min(correspondence_weight, reconstruction_weight, chroma_weight) < 0:
+        if min(
+            correspondence_weight,
+            reconstruction_weight,
+            chroma_weight,
+            variance_weight,
+            covariance_weight,
+            centering_weight,
+        ) < 0:
             raise ValueError("loss weights must be non-negative")
+        if target_standard_deviation <= 0 or distribution_epsilon <= 0:
+            raise ValueError("distribution targets must be positive")
         self.correspondence_weight = correspondence_weight
         self.reconstruction_weight = reconstruction_weight
         self.chroma_weight = chroma_weight
+        self.variance_weight = variance_weight
+        self.covariance_weight = covariance_weight
+        self.centering_weight = centering_weight
+        self.target_standard_deviation = target_standard_deviation
+        self.distribution_epsilon = distribution_epsilon
         self.max_coordinate_distance = max_coordinate_distance
 
     def forward(
@@ -154,12 +223,29 @@ class FoveaSelfSupervisedLoss(nn.Module):
             target_rgb,
             reconstruction_mask,
         )
+        variance, covariance, centering = feature_distribution_regularization(
+            first_features,
+            second_features,
+            target_standard_deviation=self.target_standard_deviation,
+            epsilon=self.distribution_epsilon,
+        )
         loss = (
             correspondence * self.correspondence_weight
             + reconstruction * self.reconstruction_weight
             + chroma * self.chroma_weight
+            + variance * self.variance_weight
+            + covariance * self.covariance_weight
+            + centering * self.centering_weight
         )
-        return SelfSupervisedLossOutput(loss, correspondence, reconstruction, chroma)
+        return SelfSupervisedLossOutput(
+            loss,
+            correspondence,
+            reconstruction,
+            chroma,
+            variance,
+            covariance,
+            centering,
+        )
 
 
 def _validate_feature_map(features: torch.Tensor, coordinates: torch.Tensor, name: str) -> None:

@@ -52,6 +52,16 @@ from .reconstruction import (
     mask_image_patches,
     random_patch_mask,
 )
+from .pretraining import (
+    FoveaImagePathDataset,
+    FoveaPretrainer,
+    FoveaPretrainingBatch,
+    FoveaPretrainingOutput,
+    FoveaPretrainingSample,
+    build_pretraining_sample,
+    collate_pretraining_samples,
+    sample_overlapping_specs,
+)
 from .training import FoveaTagTrainingLoss, TagTrainingLossOutput, prediction_consistency_loss
 from .siglip2_control import (
     MaskedSlotPooler,
@@ -114,6 +124,14 @@ __all__ = [
     "expand_patch_mask",
     "mask_image_patches",
     "random_patch_mask",
+    "FoveaImagePathDataset",
+    "FoveaPretrainer",
+    "FoveaPretrainingBatch",
+    "FoveaPretrainingOutput",
+    "FoveaPretrainingSample",
+    "build_pretraining_sample",
+    "collate_pretraining_samples",
+    "sample_overlapping_specs",
     "FoveaTagTrainingLoss",
     "TagTrainingLossOutput",
     "prediction_consistency_loss",

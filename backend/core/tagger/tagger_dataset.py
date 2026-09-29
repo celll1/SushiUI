@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import time
+from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -21,6 +22,13 @@ from transformers import AutoProcessor
 from .tag_labels import build_label_and_mask
 from .tag_parsing import resolve_caption_tags
 from .tag_vocabulary import TagVocabulary
+
+
+@dataclass(frozen=True)
+class RawTaggerSample:
+    image: Image.Image
+    label: torch.Tensor
+    loss_mask: torch.Tensor
 
 
 class TaggerDataset(Dataset):
@@ -39,7 +47,7 @@ class TaggerDataset(Dataset):
         dataset_ids: List[int],
         vocabulary: TagVocabulary,
         datasets_db,
-        processor: AutoProcessor,
+        processor: Optional[AutoProcessor],
         caption_types: Optional[List[str]] = None,
         alias_resolver=None,
         comma_resolver=None,
@@ -52,7 +60,8 @@ class TaggerDataset(Dataset):
         dataset_ids    : list of Dataset.id to include
         vocabulary     : TagVocabulary built from the same datasets
         datasets_db    : SQLAlchemy session for datasets.db
-        processor      : SigLIP2 AutoProcessor (handles NaFlex preprocessing)
+        processor      : SigLIP2 AutoProcessor, or None when an architecture
+                         adapter consumes ``get_raw_item``
         caption_types  : restrict to these caption_type values (None = all tags-format)
         alias_resolver : optional TagAliasResolver; when provided, deprecated
                          tags are resolved to canonical form during label construction
@@ -87,9 +96,13 @@ class TaggerDataset(Dataset):
         self.quality_masking_mode = quality_masking_mode
         print(f"[TaggerDataset] Quality masking mode: {quality_masking_mode}")
 
-        _probe = processor(images=[Image.new("RGB", (64, 64))], return_tensors="pt")
-        self.is_naflex = "pixel_attention_mask" in _probe and "spatial_shapes" in _probe
-        print(f"[TaggerDataset] Processor mode: {'NaFlex' if self.is_naflex else 'standard (fixed resolution)'}")
+        if processor is None:
+            self.is_naflex = False
+            print("[TaggerDataset] Processor mode: deferred to architecture adapter")
+        else:
+            _probe = processor(images=[Image.new("RGB", (64, 64))], return_tensors="pt")
+            self.is_naflex = "pixel_attention_mask" in _probe and "spatial_shapes" in _probe
+            print(f"[TaggerDataset] Processor mode: {'NaFlex' if self.is_naflex else 'standard (fixed resolution)'}")
 
         self._samples: List[Tuple[str, List[str]]] = []  # (image_path, [tag, ...])
         # item_id aligned to _samples (sample idx -> item_id). Built during
@@ -295,15 +308,17 @@ class TaggerDataset(Dataset):
         return ov if ov is not None else tags
 
     def __getitem__(self, idx: int):
-        image_path, tags = self._samples[idx]
-        if self._refresh_enabled and self._refresh_gen_path:
-            tags = self._apply_tag_refresh(idx, tags)
+        raw = self.get_raw_item(idx)
+        if raw is None:
+            return None
+        if self.processor is None:
+            raise RuntimeError("processor=None requires an architecture-specific dataset adapter")
         try:
-            image = _load_image(image_path)
-            inputs = self.processor(images=[image], return_tensors="pt")
+            inputs = self.processor(images=[raw.image], return_tensors="pt")
         except Exception as e:
-            print(f"[TaggerDataset] Skipping corrupt image {image_path}: {e}")
-            return None  # filtered out by tagger_collate_fn
+            image_path = self._samples[idx][0]
+            print(f"[TaggerDataset] Skipping image rejected by processor {image_path}: {e}")
+            return None
 
         if self.is_naflex:
             pixel_values         = inputs["pixel_values"].squeeze(0)          # [num_patches, patch_dim]
@@ -314,8 +329,20 @@ class TaggerDataset(Dataset):
             pixel_attention_mask = torch.zeros(0, dtype=torch.int32)          # sentinel → [B, 0] after collate
             spatial_shapes       = torch.zeros(0, dtype=torch.int64)          # sentinel
 
+        return pixel_values, pixel_attention_mask, spatial_shapes, raw.label, raw.loss_mask
+
+    def get_raw_item(self, idx: int) -> Optional[RawTaggerSample]:
+        """Decode one source image while retaining the existing label lifecycle."""
+        image_path, tags = self._samples[idx]
+        if self._refresh_enabled and self._refresh_gen_path:
+            tags = self._apply_tag_refresh(idx, tags)
+        try:
+            image = _load_image(image_path)
+        except Exception as e:
+            print(f"[TaggerDataset] Skipping corrupt image {image_path}: {e}")
+            return None
         label, loss_mask = self._build_label_and_mask(tags)
-        return pixel_values, pixel_attention_mask, spatial_shapes, label, loss_mask
+        return RawTaggerSample(image=image, label=label, loss_mask=loss_mask)
 
 
     def _build_label_and_mask(

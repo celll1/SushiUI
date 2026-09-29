@@ -5,6 +5,7 @@ import torch
 
 from core.tagger.foveatag.pretraining_run import (
     _cosine_with_warmup,
+    _emit_progress,
     _normalized_domain_weights,
     _parse_mapping,
     _restore_accumulator,
@@ -85,6 +86,7 @@ def test_shared_run_control_is_thread_safe_and_sticky():
 def test_pretraining_epoch_honors_stop_before_loading_data(tmp_path):
     control = FoveaRunControl()
     control.request_stop()
+    events = []
 
     result, offset, step, added, stopped, accumulator = _train_epoch(
         None,
@@ -107,6 +109,7 @@ def test_pretraining_epoch_honors_stop_before_loading_data(tmp_path):
         initial_accumulator=None,
         remaining_step_budget=None,
         run_control=control,
+        progress_callback=lambda event, payload: events.append((event, dict(payload))),
     )
 
     assert stopped
@@ -115,3 +118,16 @@ def test_pretraining_epoch_honors_stop_before_loading_data(tmp_path):
     assert added == 0
     assert result["optimizer_steps"] == 0
     assert accumulator["samples"] == 0
+    assert events == [("train", {
+        "status": "stopped",
+        "epoch": 2,
+        "sample_offset": 4,
+        "global_step": 17,
+    })]
+
+
+def test_progress_reporter_failure_does_not_escape():
+    def fail(_event, _payload):
+        raise RuntimeError("reporter unavailable")
+
+    _emit_progress(fail, "train", {"global_step": 3})

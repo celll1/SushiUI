@@ -9,11 +9,15 @@ from torch import nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from core.tagger.siglip2_tagger_model import CustomAttentionPooling, SigLIP2TaggerModel
+from core.tagger.siglip2_tagger_model import (
+    CustomAttentionPooling,
+    SigLIP2TaggerModel,
+    _infer_pooler_dimensions,
+)
 
 
 class _IdentityEncoder(nn.Module):
-    def forward(self, pixel_values, attention_mask=None, spatial_shapes=None):
+    def forward(self, pixel_values, pixel_attention_mask=None, spatial_shapes=None):
         return SimpleNamespace(last_hidden_state=pixel_values)
 
 
@@ -59,3 +63,19 @@ def test_naflex_tagger_forwards_mask_to_custom_pooler():
         logits_b = model(x_b, m_b, spatial_shapes=None)
 
     assert torch.allclose(logits_a, logits_b, atol=1e-6)
+
+
+def test_old_checkpoint_pooler_dimensions_are_inferred_from_weights():
+    assert _infer_pooler_dimensions(
+        None,
+        None,
+        {
+            "custom_pooler.query": (1, 1, 2048),
+            "custom_pooler.proj_v.weight": (4096, 1152),
+        },
+    ) == (2048, 4096)
+    assert _infer_pooler_dimensions(
+        2048,
+        None,
+        {"custom_pooler.proj_v.weight": (2048, 1152)},
+    ) == (2048, None)

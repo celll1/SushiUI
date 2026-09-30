@@ -957,6 +957,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "is_v_prediction": False,
                     "transformer_variant": model_result.get("transformer_variant", "bf16"),
                     "text_encoder_variant": model_result.get("text_encoder_variant", "bf16"),
+                    "dit_rewiring_spec": getattr(model_result["transformer"], "_residual_unet_spec", None),
                 }
                 self._save_last_model(source_type, source, pipeline_type)
                 print("[Pipeline] Qwen-Image 2.1 model loaded successfully")
@@ -6874,6 +6875,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             work, canvas_img, mask_img,
             progress_callback=progress_callback, step_callback=step_callback,
         )
+        if "dit_rewiring_actual" in work:
+            params["dit_rewiring_actual"] = work["dit_rewiring_actual"]
+        else:
+            params.pop("dit_rewiring_actual", None)
         if "qwen_image_21_partition_actual" in work:
             params["qwen_image_21_partition_actual"] = work["qwen_image_21_partition_actual"]
         else:

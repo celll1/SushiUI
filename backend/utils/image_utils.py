@@ -345,7 +345,7 @@ def save_image_with_metadata(
     if params.get("sensenova_kv_cache_streaming", False):
         metadata.add_text("sensenova_kv_cache_streaming", "True")
 
-    for key in ("qwen_image_21_partition", "qwen_image_21_partition_actual"):
+    for key in ("qwen_image_21_partition", "qwen_image_21_partition_actual", "dit_rewiring_actual"):
         if params.get(key) is not None:
             import json
             metadata.add_text(key, json.dumps(params[key], ensure_ascii=False))

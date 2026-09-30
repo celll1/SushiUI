@@ -120,13 +120,46 @@ class QwenImage21Mixin:
         self._unload_lora_qwen21()
         if not configs:
             return 0
-        result = self._qwen21_lora_session.load(configs, self._qwen21_lora_components())
+        from copy import deepcopy
+        import weakref
+        from core.adapters import AdapterIncompatible
+        from core.rewiring.spec import read_checkpoint_metadata
+        from core.models.qwen_image_21.residual_unet import restore_topology, validate_topology_identity
+        model = self.qwen_image_21_components["transformer"]
+        base_topology = getattr(model, "_residual_unet_spec", None)
+        files = self._qwen21_lora_session.parse(configs)
+        declarations = []
+        try:
+            for file in files:
+                topology = read_checkpoint_metadata(file.metadata)
+                if topology is not None:
+                    topology = validate_topology_identity(topology, dict(model.config))
+                declarations.append(topology)
+            required = declarations[0] if declarations else base_topology
+            if any(value != required for value in declarations):
+                raise ValueError("Selected LoRAs require different residual topologies")
+            if base_topology is not None and required != base_topology:
+                raise ValueError("LoRA topology does not match the loaded checkpoint")
+            if required is not None and (getattr(model, "_qwen_partition_global_payload", None) is not None
+                    or any(file.metadata.get("qwen_partition_global_adapter") for file in files)):
+                raise ValueError("Residual topology excludes partition-global adapters")
+        except ValueError as exc:
+            raise AdapterIncompatible(str(exc), code="lora_rewiring_incompatible") from exc
+        result = self._qwen21_lora_session.load(files, self._qwen21_lora_components())
+        restore_topology(model, required)
+        self._qwen21_topology_restore = (weakref.ref(model), deepcopy(base_topology))
         self._qwen21_loaded_files = [file for file, _counts in result.files]
         return result.applied
 
     def _unload_lora_qwen21(self):
         self._qwen21_loaded_files = []
-        return self._qwen21_lora_session.unload(self._qwen21_lora_components())
+        try:
+            return self._qwen21_lora_session.unload(self._qwen21_lora_components())
+        finally:
+            saved = self.__dict__.pop("_qwen21_topology_restore", None)
+            if saved is not None and saved[0]() is not None:
+                from core.models.qwen_image_21.residual_unet import restore_topology
+                restore_topology(saved[0](), saved[1])
 
     def _qwen_image_21_pipe(self):
         components = self.qwen_image_21_components
@@ -210,6 +243,20 @@ class QwenImage21Mixin:
         executor = None
         try:
             self._load_lora_qwen21(params.get("loras") or [])
+            model = self.qwen_image_21_components["transformer"]
+            topology = getattr(model, "_residual_unet_spec", None)
+            if topology is not None:
+                from api.error_handlers import ValidationError
+                from core.rewiring.spec import digest, preview_plan
+                if plan is not None or images or reference_guides or style_transfers:
+                    raise ValidationError("Residual U-Net generation currently requires full-frame txt2img without references or styles")
+                try:
+                    preview_plan(topology, height // 16, width // 16)
+                except ValueError as exc:
+                    raise ValidationError(str(exc)) from exc
+                params["dit_rewiring_actual"] = {"spec": topology, "spec_sha256": digest(topology), "kv_cache": False}
+            else:
+                params.pop("dit_rewiring_actual", None)
             partition_kwargs = {}
             before_step = self._qwen21_lora_session.set_step
             if plan is not None:
@@ -260,7 +307,7 @@ class QwenImage21Mixin:
                 height=height, width=width, num_inference_steps=steps,
                 generator=generator, callback_on_step_end=callback,
                 callback_on_step_end_tensor_inputs=["latents", "pred_original_sample"],
-                use_kv_cache=bool(params.get("qwen_image_21_kv_cache", True)),
+                use_kv_cache=topology is None and bool(params.get("qwen_image_21_kv_cache", True)),
                 reference_guides=reference_guides,
                 style_transfers=style_transfers,
                 style_combine_mode=str(params.get("style_combine_mode", "stack") or "stack"),

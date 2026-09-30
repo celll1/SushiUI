@@ -5,6 +5,7 @@ import Card from "./Card";
 import Button from "./Button";
 import Select from "./Select";
 import MiniMaxH3ReferenceBankPanel from "./MiniMaxH3ReferenceBankPanel";
+import DiTRewiringSummary from "./DiTRewiringSummary";
 import { ChevronDown, ChevronUp, Folder } from "lucide-react";
 import { useStartup } from "@/contexts/StartupContext";
 import { getModels, loadModel } from "@/utils/api";
@@ -231,7 +232,8 @@ export default function ModelSelector({
                   v-prediction
                 </span>
               )}
-              {loadedHybridSummary && (
+              {currentModel.dit_rewiring_spec && <DiTRewiringSummary spec={currentModel.dit_rewiring_spec} />}
+            {loadedHybridSummary && (
                 <span className="rounded bg-amber-600/80 px-2 py-0.5 text-[10px] text-white">
                   merged
                 </span>

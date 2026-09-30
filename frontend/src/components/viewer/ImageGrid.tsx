@@ -1681,6 +1681,14 @@ export default function ImageGrid() {
                 )}
 
                 {/* Generation timing (informational) */}
+                {selectedImage.parameters?.dit_rewiring_actual && (
+                  <details className="mt-3 text-xs text-gray-300">
+                    <summary className="cursor-pointer">Residual U-Net used for this image</summary>
+                    <pre className="mt-2 whitespace-pre-wrap break-all">{typeof selectedImage.parameters.dit_rewiring_actual === "string"
+                      ? selectedImage.parameters.dit_rewiring_actual
+                      : JSON.stringify(selectedImage.parameters.dit_rewiring_actual, null, 2)}</pre>
+                  </details>
+                )}
                 {selectedImage.parameters?.qwen_image_21_partition_actual && (
                   <div className="border-t border-gray-700 pt-3 text-xs">
                     <span className="text-gray-400 font-medium">Qwen partition layout:</span>

@@ -164,6 +164,110 @@ class Ideogram4RuntimeContracts(unittest.TestCase):
             self.assertEqual(preflight_checkpoint(dense),(None,{}))
         self.assertFalse(torch.cuda.is_initialized())
 
+    def test_training_pair_resolution_atomic_lora_resume_and_dual_loss(self):
+        from core.models.ideogram4.residual_unet import configure_training_topology,restore_topology,native_config
+        from core.training.adapters.ideogram4_adapter import Ideogram4LoRAAdapter
+        from core.training.lora_trainer import LoRATrainer
+        from core.training.ops import ideogram4_ops
+        from core.rewiring.spec import checkpoint_metadata
+        from safetensors.torch import save_file
+        uncond=deepcopy(self.model);config={}
+        restore_topology(self.model,self.spec)
+        with self.assertRaisesRegex(ValueError,"topologies disagree"):
+            configure_training_topology(self.model,config,unconditional_transformer=uncond)
+        self.assertEqual(config,{})
+        restore_topology(uncond,self.spec)
+        self.assertEqual(configure_training_topology(self.model,config,unconditional_transformer=uncond),self.spec)
+        for key in ("repa_enable","tread_enable","blockskip_enable","dit_partition_training_enabled"):
+            with self.assertRaisesRegex(ValueError,key):
+                configure_training_topology(self.model,dict(config,**{key:True}),unconditional_transformer=uncond)
+        restore_topology(self.model,None);restore_topology(uncond,None)
+        config={}
+        self.assertEqual(configure_training_topology(self.model,config,unconditional_transformer=uncond,
+            resume_spec=self.spec,install=False),self.spec)
+        self.assertEqual(config,{})
+        incompatible=type(uncond)(**dict(native_config(uncond),num_layers=8))
+        with self.assertRaises(ValueError):
+            configure_training_topology(self.model,config,unconditional_transformer=incompatible,resume_spec=self.spec)
+        self.assertEqual(config,{});self.assertFalse(hasattr(self.model,"_residual_unet_spec"))
+        trainer=SimpleNamespace(transformer=self.model,transformer_uncond=uncond,config={},is_ideogram4=True,
+            ideogram4_train_uncond=True,log_prefix="[IdeogramResumeTest]",lora_rank=2,lora_alpha=2,
+            adapter_algorithm="lora",weight_decompose=False,adapter_config={})
+        self.model.requires_grad_(False);uncond.requires_grad_(False)
+        adapter=Ideogram4LoRAAdapter(trainer,2,2,scope={"attn":True,"mlp":True,"mod":False})
+        layers={};adapter.apply_lora_to_unet(layers);trainer.lora_layers=layers
+        before={f"{name}.{key}":value.detach().clone() for name,layer in layers.items()
+                for key,value in layer.branch_tensors().items()}
+        tensors={key:value+0.01 for key,value in before.items()}
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/"resume.safetensors"
+            metadata={"model_type":"ideogram4","step":"17","train_uncond":"True",**checkpoint_metadata(self.spec)}
+            save_file({"unrelated":torch.ones(1)},str(path),metadata=metadata)
+            with self.assertRaisesRegex(ValueError,"missing required tensor"):LoRATrainer.load_checkpoint(trainer,str(path))
+            self.assertEqual(trainer.config,{})
+            for model in (self.model,uncond):self.assertFalse(hasattr(model,"_residual_unet_spec"))
+            for name,layer in layers.items():
+                for key,value in layer.branch_tensors().items():torch.testing.assert_close(value,before[f"{name}.{key}"],rtol=0,atol=0)
+            save_file(tensors,str(path),metadata=metadata)
+            self.assertEqual(LoRATrainer.load_checkpoint(trainer,str(path)),17)
+            for model in (self.model,uncond):self.assertEqual(model._residual_unet_spec,self.spec)
+            for name,layer in layers.items():
+                for key,value in layer.branch_tensors().items():torch.testing.assert_close(value,tensors[f"{name}.{key}"],rtol=0,atol=0)
+            trainer.transformer_uncond=None
+            with self.assertRaisesRegex(ValueError,"requires a loaded unconditional"):
+                LoRATrainer.load_checkpoint(trainer,str(path))
+            trainer.transformer_uncond=uncond
+            trainer.ideogram4_train_uncond=False
+            with self.assertRaisesRegex(ValueError,"train_uncond"):LoRATrainer.load_checkpoint(trainer,str(path))
+            trainer.ideogram4_train_uncond=True
+            save_file(tensors,str(path),metadata={"model_type":"ideogram4"})
+            with self.assertRaisesRegex(ValueError,"disagree"):LoRATrainer.load_checkpoint(trainer,str(path))
+        self.model.enable_gradient_checkpointing();uncond.enable_gradient_checkpointing()
+        trainer.device=torch.device("cpu");trainer.training_dtype=torch.float32;trainer.mixed_precision=False
+        trainer.reconstruction_loss_weight=0.1;trainer.ideogram4_uncond_loss_weight=0.5
+        features=torch.randn(2,3,5,4);mask=torch.tensor([[1,1,1,0,0],[1]*5])
+        loss,pred,recon=ideogram4_ops.train_step(trainer,self.images[:,5:].detach(),features,mask,
+            timesteps=self.times,latent_h=8,latent_w=12)
+        self.assertTrue(torch.isfinite(loss));self.assertTrue(torch.isfinite(pred));self.assertTrue(torch.isfinite(recon))
+        loss.backward()
+        for prefix in ("lora_unet_","lora_uncond_"):
+            grads=[value.grad for name,layer in layers.items() if name.startswith(prefix)
+                   for value in layer.parameters() if value.requires_grad]
+            self.assertTrue(grads);self.assertTrue(all(g is not None and torch.isfinite(g).all() for g in grads))
+            self.assertTrue(any(torch.count_nonzero(g) for g in grads))
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_training_loaders_resolve_before_checkpointing(self):
+        from core.models.ideogram4.residual_unet import restore_topology
+        from core.training.ops import ideogram4_ops
+        restore_topology(self.model,self.spec);uncond=deepcopy(self.model)
+        components={"transformer":self.model,"unconditional_transformer":uncond,"vae":torch.nn.Linear(1,1),
+                    "text_encoder":torch.nn.Linear(1,1),"tokenizer":object(),"scheduler":object()}
+        checkpoints=[]
+        def enable(model):
+            def apply():
+                self.assertEqual(trainer.config["dit_rewiring_spec"],self.spec)
+                checkpoints.append(model);model.enable_gradient_checkpointing_orig()
+            return apply
+        for model in (self.model,uncond):model.enable_gradient_checkpointing_orig=model.enable_gradient_checkpointing
+        with tempfile.TemporaryDirectory() as folder:
+            file=Path(folder)/"model.safetensors";file.touch()
+            for source in (str(Path(folder)/"directory"),str(file)):
+                trainer=SimpleNamespace(model_path=source,config={"ideogram4_train_uncond":True},log_prefix="[IdeogramLoadTest]",
+                    weight_dtype=torch.float32,vae_dtype=torch.float32,device=torch.device("cpu"),
+                    gradient_checkpointing=True,blocks_to_swap=0,use_flash_attention=False)
+                with patch("core.models.ideogram4.ideogram4_loader.load_ideogram4_components",return_value=components) as directory, \
+                     patch("core.models.ideogram4.ideogram4_loader.load_ideogram4_single_file",return_value=components) as single, \
+                     patch.object(self.model,"enable_gradient_checkpointing",side_effect=enable(self.model)), \
+                     patch.object(uncond,"enable_gradient_checkpointing",side_effect=enable(uncond)):
+                    ideogram4_ops.load_components(trainer)
+                    self.assertEqual(single.call_count,int(source==str(file)))
+                    self.assertEqual(directory.call_count,int(source!=str(file)))
+                self.assertEqual(trainer.config["dit_rewiring_spec"],self.spec)
+                self.assertTrue(all(not value.requires_grad for model in (self.model,uncond) for value in model.parameters()))
+        self.assertEqual(len(checkpoints),4)
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_metadata_identity_native_grid_and_feature_refusals(self):
         from core.models.ideogram4.residual_unet import restore_topology,model_topology_metadata,native_config
         restore_topology(self.model,self.spec)

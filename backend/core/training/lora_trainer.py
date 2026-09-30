@@ -329,6 +329,15 @@ class LoRATrainer(BaseTrainer):
         elif getattr(self, "is_minit2i", False):
             from core.models.minit2i.residual_unet import configure_training_topology
             configure_topology = configure_training_topology
+        elif getattr(self, "is_ideogram4", False):
+            from functools import partial
+            from core.models.ideogram4.residual_unet import configure_training_topology
+            if "train_uncond" in metadata and metadata["train_uncond"] != str(bool(getattr(self,"ideogram4_train_uncond",False))):
+                raise ValueError("Ideogram 4 resume train_uncond does not match this run")
+            if getattr(self,"ideogram4_train_uncond",False) and getattr(self,"transformer_uncond",None) is None:
+                raise ValueError("Ideogram 4 train_uncond requires a loaded unconditional transformer")
+            configure_topology = partial(configure_training_topology,
+                unconditional_transformer=getattr(self,"transformer_uncond",None))
         if configure_topology is not None:
             from core.rewiring.spec import read_checkpoint_metadata
             resume_topology = read_checkpoint_metadata(metadata)

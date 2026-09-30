@@ -3494,6 +3494,47 @@ paths:
                   runtime_architectures:
                     type: array
                     items: {type: string}
+  /models/rewiring/inspect:
+    post:
+      tags: [models]
+      summary: Inspect native topology and checkpoint rewiring without loading weights
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [model_path]
+              properties:
+                model_path:
+                  type: string
+                  minLength: 1
+                  example: models/qwen-image-21
+      responses:
+        '200':
+          description: Native layout, checkpoint topology and resolved default preset
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [architecture, streams, base_config_sha256, block_layout_sha256, topology, default_spec, latent_scale_factor, pixel_alignment]
+                properties:
+                  architecture: {type: string}
+                  streams: {type: array, items: {type: object}}
+                  base_config_sha256: {type: string}
+                  block_layout_sha256: {type: string}
+                  topology_sha256: {type: string, nullable: true}
+                  topology:
+                    allOf: [{$ref: '#/components/schemas/DiTRewiringSpec'}]
+                    nullable: true
+                  default_spec:
+                    allOf: [{$ref: '#/components/schemas/DiTRewiringSpec'}]
+                    nullable: true
+                  latent_scale_factor: {type: integer}
+                  pixel_alignment: {type: integer}
+        '422':
+          description: Unsupported model or incompatible artifact topology
   /models/rewiring/validate:
     post:
       tags: [models]

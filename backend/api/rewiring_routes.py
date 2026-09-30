@@ -3,6 +3,7 @@ from copy import deepcopy
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
+from safetensors import SafetensorError
 
 from api.param_defaults import DIT_REWIRING_PRESETS
 from core.rewiring.spec import digest, preview_plan, validate_spec
@@ -29,4 +30,18 @@ def validate_rewiring(request: RewiringPreviewRequest):
         return {"spec": spec, "spec_sha256": digest(spec),
                 "plan": preview_plan(spec, request.token_height, request.token_width)}
     except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class RewiringInspectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    model_path: str = Field(min_length=1)
+
+
+@router.post("/models/rewiring/inspect")
+def inspect_rewiring(request: RewiringInspectRequest):
+    from core.rewiring.inspect import inspect_model
+    try:
+        return inspect_model(request.model_path)
+    except (ValueError, OSError, SafetensorError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

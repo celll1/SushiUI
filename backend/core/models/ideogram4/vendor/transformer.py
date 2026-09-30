@@ -576,66 +576,59 @@ class Ideogram4Transformer2DModel(ModelMixin, ConfigMixin, AttentionMixin, PeftA
         image_indicator_embedding = self.embed_image_indicator((indicator == OUTPUT_IMAGE_INDICATOR).to(torch.long))
         hidden_states = hidden_states + image_indicator_embedding
 
-        cos, sin = self.rotary_emb(position_ids)
-        cos = cos.to(hidden_states.dtype)
-        sin = sin.to(hidden_states.dtype)
-        image_rotary_emb = (cos, sin)
-
-        # Block-diagonal mask from segment ids: tokens only attend within their segment. Shared by every block.
-        attention_mask = (segment_ids.unsqueeze(2) == segment_ids.unsqueeze(1)).unsqueeze(1)
-
-        # Optional block-swap offloader (set by pipeline.py for VRAM optimization):
-        # streams each block's weights between CPU and GPU around its forward.
-        offloader = getattr(self, "_block_offloader", None)
-
-        # REPA tap (training-only): drop what a previous forward stashed, so a
-        # step whose tap does not fire reads None rather than stale tokens. The
-        # FBCache branch below deliberately never writes it (inference-only).
-        repa_tap_depth = self._repa_tap_depth
-        if repa_tap_depth is not None:
-            self._repa_tap_out = None
-
-        # First Block Cache (FBCache): OFF by default (_fbcache is None -> byte-identical,
-        # including the block-swap wait/submit and gradient-checkpointing paths below). When a
-        # FirstBlockCache is attached by the Ideogram4 denoise loop, run only layers[0], take its
-        # residual on the single evolving image/hidden tensor as the indicator, and either reuse
-        # the cached full residual (skip layers[1:]) or run them and refresh the cache. Only
-        # hidden_states evolves through the layer list (attention_mask / image_rotary_emb /
-        # adaln_input are read-only per-step context), so one image tensor is both indicator and
-        # cache. Mutually exclusive with Spectrum and Block Swap (guarded in the pipeline), so this
-        # branch never runs alongside _block_offloader.
-        fbcache = getattr(self, "_fbcache", None)
-        if fbcache is not None:
-            fbcache_step = getattr(self, "_fbcache_step", 0)
-            original = hidden_states
-            first_out = self.layers[0](hidden_states, attention_mask, image_rotary_emb, adaln_input, segment_ids)
-            indicator_residual = first_out - original
-            if fbcache.use_cache(indicator_residual, fbcache_step):
-                # Cache hit: reuse the full-transformer residual, skip layers[1:].
-                hidden_states = original + fbcache.get()
-            else:
-                # Cache miss: run remaining layers from first_out, refresh the cached residual.
-                hidden_states = first_out
-                for block in self.layers[1:]:
-                    hidden_states = block(hidden_states, attention_mask, image_rotary_emb, adaln_input, segment_ids)
-                fbcache.store(hidden_states - original)
+        if getattr(self, "_residual_unet_spec", None) is not None:
+            from core.models.ideogram4.residual_unet import run_rewired_ideogram4
+            hidden_states = run_rewired_ideogram4(
+                self, hidden_states, position_ids, segment_ids, indicator, adaln_input)
         else:
-            for block_idx, block in enumerate(self.layers):
-                if offloader is not None:
-                    offloader.wait_for_block(block_idx)
-                if torch.is_grad_enabled() and self.gradient_checkpointing:
-                    hidden_states = self._gradient_checkpointing_func(
-                        block, hidden_states, attention_mask, image_rotary_emb, adaln_input, segment_ids
-                    )
+            cos, sin = self.rotary_emb(position_ids)
+            cos = cos.to(hidden_states.dtype)
+            sin = sin.to(hidden_states.dtype)
+            image_rotary_emb = (cos, sin)
+
+            # Block-diagonal mask from segment ids: tokens only attend within their segment. Shared by every block.
+            attention_mask = (segment_ids.unsqueeze(2) == segment_ids.unsqueeze(1)).unsqueeze(1)
+
+            # Optional block-swap offloader (set by pipeline.py for VRAM optimization):
+            # streams each block's weights between CPU and GPU around its forward.
+            offloader = getattr(self, "_block_offloader", None)
+
+            # Clear stale REPA output when the requested tap may not fire.
+            repa_tap_depth = self._repa_tap_depth
+            if repa_tap_depth is not None:
+                self._repa_tap_out = None
+
+            # FBCache owns a whole-stream residual and cannot run with block swap.
+            fbcache = getattr(self, "_fbcache", None)
+            if fbcache is not None:
+                fbcache_step = getattr(self, "_fbcache_step", 0)
+                original = hidden_states
+                first_out = self.layers[0](hidden_states, attention_mask, image_rotary_emb, adaln_input, segment_ids)
+                indicator_residual = first_out - original
+                if fbcache.use_cache(indicator_residual, fbcache_step):
+                    # Cache hit: reuse the full-transformer residual, skip layers[1:].
+                    hidden_states = original + fbcache.get()
                 else:
-                    hidden_states = block(hidden_states, attention_mask, image_rotary_emb, adaln_input, segment_ids)
-                # Assignment rather than a forward hook: the tap is then the
-                # tensor the loss differentiates, with no hook ordering or
-                # checkpoint recompute semantics to reason about.
-                if block_idx == repa_tap_depth:
-                    self._repa_tap_out = hidden_states
-                if offloader is not None:
-                    offloader.submit_move_blocks_forward(block_idx)
+                    # Cache miss: run remaining layers from first_out, refresh the cached residual.
+                    hidden_states = first_out
+                    for block in self.layers[1:]:
+                        hidden_states = block(hidden_states, attention_mask, image_rotary_emb, adaln_input, segment_ids)
+                    fbcache.store(hidden_states - original)
+            else:
+                for block_idx, block in enumerate(self.layers):
+                    if offloader is not None:
+                        offloader.wait_for_block(block_idx)
+                    if torch.is_grad_enabled() and self.gradient_checkpointing:
+                        hidden_states = self._gradient_checkpointing_func(
+                            block, hidden_states, attention_mask, image_rotary_emb, adaln_input, segment_ids
+                        )
+                    else:
+                        hidden_states = block(hidden_states, attention_mask, image_rotary_emb, adaln_input, segment_ids)
+                    # Keep the REPA tap on the tensor differentiated by the loss.
+                    if block_idx == repa_tap_depth:
+                        self._repa_tap_out = hidden_states
+                    if offloader is not None:
+                        offloader.submit_move_blocks_forward(block_idx)
 
         output = self.final_layer(hidden_states, conditioning=adaln_input)
 

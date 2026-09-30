@@ -72,6 +72,92 @@ class MiniT2IRuntimeContracts(unittest.TestCase):
         torch.testing.assert_close(self.forward(img=self.images.permute(0,2,3,1)),output)
         self.assertFalse(torch.cuda.is_initialized())
 
+    def test_generation_adapter_topology_and_grid_preflight(self):
+        from copy import deepcopy
+        from core.pipeline_backends.minit2i import MiniT2IMixin
+        from core.models.minit2i.residual_unet import restore_topology, native_config
+        from core.training.adapters.minit2i_adapter import MiniT2ILoRAAdapter
+        from core.rewiring.spec import checkpoint_metadata
+        from core.adapters import AdapterIncompatible
+        from safetensors.torch import save_file
+        class Manager(MiniT2IMixin):
+            def __init__(manager,model):manager.minit2i_components={"transformer":model}
+            def _minit2i_resolve_lora_path(manager,path):return str(path)
+        base=deepcopy(self.model);manager=Manager(base)
+        original=base.model.net.double_blocks[0].img_qkv
+        adapter=MiniT2ILoRAAdapter(SimpleNamespace(transformer=self.model,config={}),2,2,
+            scope={"attn":True,"mlp":True,"txt_embed":False})
+        self.model.requires_grad_(False);layers={};adapter.apply_lora_to_unet(layers)
+        with torch.no_grad():
+            for layer in layers.values():
+                for value in layer.branch_tensors().values():value.add_(0.01)
+        tensors={f"{name}.{key}":value.detach().contiguous()
+                 for name,layer in layers.items() for key,value in layer.branch_tensors().items()}
+        restore_topology(self.model,self.spec);expected=self.forward().detach()
+        cfg=dict(height=128,width=192,is_latent=True,vae_scale_factor=8)
+        with tempfile.TemporaryDirectory() as folder:
+            good=Path(folder)/"good.safetensors";dense=Path(folder)/"dense.safetensors"
+            save_file(tensors,str(good),metadata={"model_type":"minit2i",**checkpoint_metadata(self.spec)})
+            save_file(tensors,str(dense),metadata={"model_type":"minit2i"})
+            request=lambda paths:[{"path":str(path),"strength":1.0} for path in paths]
+            with self.assertRaises(AdapterIncompatible):manager._minit2i_prepare_loras(request([good,dense]))
+            self.assertIs(base.model.net.double_blocks[0].img_qkv,original)
+            params={"loras":request([good])}
+            files=manager._minit2i_rewiring_preflight(params,cfg)
+            self.assertEqual(params["dit_rewiring_actual"]["spec"],self.spec)
+            self.assertFalse(hasattr(base,"_residual_unet_spec"))
+            manager._apply_te_lora_minit2i(files)
+            self.assertGreater(manager._load_lora_minit2i(files),0)
+            self.assertEqual(base.model.net._residual_unet_spec,self.spec)
+            with patch.object(self,"model",base):torch.testing.assert_close(self.forward(),expected)
+            manager._minit2i_prepare_loras([])
+            self.assertIs(base.model.net.double_blocks[0].img_qkv,original)
+            self.assertFalse(hasattr(base,"_residual_unet_spec"))
+            restore_topology(base,self.spec)
+            with self.assertRaises(AdapterIncompatible):manager._minit2i_prepare_loras(request([dense]))
+            for options,message in (({"nag_enable":True},"NAG"),
+                    ({"style_transfer":{"image":True}},"style injection"),
+                    ({"fbcache_enable":True,"fbcache_threshold":0.1},"FBCache"),
+                    ({"prompt":"(blurry:-1)"},"NegPip")):
+                with self.assertRaisesRegex(Exception,message):manager._minit2i_rewiring_preflight(options,cfg)
+            with self.assertRaisesRegex(Exception,"divisible"):
+                manager._minit2i_rewiring_preflight({},dict(cfg,height=144))
+            manager._minit2i_rewiring_preflight({},dict(cfg,height=16,width=24,is_latent=False))
+            restore_topology(base,None)
+            files=manager._minit2i_prepare_loras(request([good]));manager._load_lora_minit2i(files)
+            replacement=type(base)(**native_config(base));manager.minit2i_components["transformer"]=replacement
+            manager._unload_lora_minit2i()
+            self.assertFalse(hasattr(base,"_residual_unet_spec"))
+            self.assertFalse(hasattr(base.model.net,"_residual_unet_spec"))
+            self.assertFalse(hasattr(replacement,"_residual_unet_spec"))
+            params={"dit_rewiring_actual":{}}
+            manager._minit2i_rewiring_preflight(params,cfg)
+            self.assertNotIn("dit_rewiring_actual",params)
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_generation_entries_validate_before_residency_or_encoding(self):
+        from core.pipeline_backends.minit2i import MiniT2IMixin
+        from core.models.minit2i.residual_unet import restore_topology
+        from PIL import Image
+        class Manager(MiniT2IMixin):
+            def __init__(manager):
+                manager.device=torch.device("cpu")
+                manager.minit2i_components={"transformer":self.model,"vae_type":"sdxl",
+                    "vae_scale_factor":8,"scheduler":SimpleNamespace(config=SimpleNamespace(num_inference_steps=2))}
+        manager=Manager();restore_topology(self.model,self.spec)
+        image=Image.new("RGB",(192,128));mask=Image.new("L",image.size)
+        calls=[(manager._generate_txt2img_minit2i,()),(manager._generate_img2img_minit2i,(image,)),
+               (manager._generate_inpaint_minit2i,(image,mask))]
+        with patch.object(manager,"_minit2i_kh_setup",side_effect=RuntimeError("stop before staging")) as setup:
+            for generate,args in calls:
+                params={"width":192,"height":128,"seed":1}
+                with self.assertRaisesRegex(RuntimeError,"stop before staging"):generate(params,*args)
+                self.assertEqual(params["dit_rewiring_actual"]["spec"],self.spec)
+                before=setup.call_count
+                with self.assertRaisesRegex(Exception,"NAG"):generate(dict(params,nag_enable=True),*args)
+                self.assertEqual(setup.call_count,before)
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_training_inheritance_lora_resume_and_production_train_step(self):
         from core.models.minit2i.residual_unet import configure_training_topology,restore_topology
         from core.training.adapters.minit2i_adapter import MiniT2ILoRAAdapter

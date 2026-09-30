@@ -10,6 +10,7 @@ from core.adapters import is_adapter_covered
 from core.models.common.convrot_int8_linear import ConvRotInt8Linear, materialize_convrot_linears
 from core.models.common.quantized_export import DEFAULT_EXPORT_SHARD_BYTES, ShardWriter
 from core.models.qwen_image_21.artifact import artifact_metadata
+from core.models.qwen_image_21.residual_unet import model_topology_metadata
 from core.models.qwen_image_21.partition_global import (
     global_adapter_metadata, prepare_training_global_adapter,
 )
@@ -122,6 +123,7 @@ class QwenImage21LoRAAdapter(BaseLoRAAdapter):
             None,
         )
         metadata.update(global_adapter_metadata(global_adapter, getattr(self.trainer, "config", {})))
+        metadata.update(model_topology_metadata(self.trainer.transformer))
         return metadata
 
 
@@ -216,6 +218,7 @@ class QwenImage21FullParameterAdapter(BaseFullParameterAdapter):
         metadata = artifact_metadata(
             "training_bundle" if train_te else "transformer", config
         )
+        metadata.update(model_topology_metadata(self.trainer.transformer))
         companion_path = str(getattr(
             self.trainer, "qwen_image_21_companion_path", self.trainer.model_path
         ))

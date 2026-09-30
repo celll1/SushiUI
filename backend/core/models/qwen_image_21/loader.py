@@ -121,6 +121,12 @@ def load_qwen_image_21_components(
             "transformer", "training_bundle"
         }:
             raise ValueError(f"{model_path}: not a Qwen-Image 2.1 training checkpoint")
+        from core.rewiring.artifacts import read_artifact_topology
+        from .residual_unet import restore_topology, validate_topology_identity
+        topology = read_artifact_topology(model_path)
+        config = json.loads(metadata.get("config") or "{}")
+        if topology is not None:
+            topology = validate_topology_identity(topology, config)
         companion_path = metadata.get("companion_path")
         if not companion_path or os.path.abspath(companion_path) == os.path.abspath(model_path):
             raise ValueError(
@@ -155,6 +161,7 @@ def load_qwen_image_21_components(
             stash_partition_global_payload(transformer, transformer_state, metadata)
             transformer = _finish_load(transformer, transformer_state, "Qwen-Image 2.1 transformer")
             transformer.to(dtype=torch_dtype)
+            restore_topology(transformer, topology)
             if load_text_encoder:
                 te_config_path = (
                     components["manifest"].text_encoder_config

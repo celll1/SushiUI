@@ -54,3 +54,31 @@ def run_rewired_qwen(model, hidden, modulation, rotary, mask, target_mask,
 
     return run_rewired_stream(hidden, spec, "main", height, width, prefix,
                               (rotary, mask, target_mask, key_valid), execute, coarse_context)
+
+
+def native_config(config):
+    from .artifact import DEFAULT_TRANSFORMER_CONFIG
+    return {key: config.get(key, value) for key, value in DEFAULT_TRANSFORMER_CONFIG.items()}
+
+
+def validate_topology_identity(spec, config):
+    from core.rewiring.spec import validate_model_identity
+    resolved = native_config(config)
+    if resolved["causal_condition"] is not True:
+        raise ValueError("Qwen rewiring currently requires native causal modulation")
+    return validate_model_identity(spec, "qwen_image_21",
+        [{"name": "main", "block_count": resolved["num_layers"]}], resolved)
+
+
+def restore_topology(model, spec):
+    if spec is not None:
+        model._residual_unet_spec = validate_topology_identity(spec, dict(model.config))
+    else:
+        model.__dict__.pop("_residual_unet_spec", None)
+
+
+def model_topology_metadata(model):
+    from core.rewiring.spec import checkpoint_metadata
+    spec = getattr(model, "_residual_unet_spec", None)
+    return {} if spec is None else checkpoint_metadata(
+        validate_topology_identity(spec, dict(model.config)))

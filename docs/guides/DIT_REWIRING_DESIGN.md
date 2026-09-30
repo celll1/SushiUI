@@ -12,9 +12,9 @@ artifact, supported training, LoRA generation and model/editor inspection
 integration with CPU contract checks. Ideogram 4 retains its LoRA-only training
 boundary; SenseNova residual training requires batch_size 1.
 ACE-Step has temporal native execution, checkpoint persistence, inherited
-training/LoRA resume and generation adapter scopes with CPU contracts; standalone
-companion resolution, public temporal configuration and editor discovery remain
-pending.
+training/LoRA resume and generation adapter scopes with CPU contracts. Standalone
+component references and full-resume dispatch are connected; public temporal
+configuration and editor discovery remain pending.
 GPU acceptance is restricted to Qwen-Image 2.1 by owner instruction; other models
 receive provisional implementation and CPU verification. Further architectures
 still require native execution/artifact adapters and capability gates.
@@ -1829,3 +1829,42 @@ companion resolution/full resume orchestration, generation grid preflight and
 metadata reporting, public configure/presets and temporal editor discovery remain
 pending. ACE-Step remains outside public runtime capabilities; GPU validation
 stays exclusively Qwen-Image 2.1.
+
+
+## ACE-Step standalone full artifact sources and resume dispatch (CPU milestone)
+
+Native component loading records the exact frozen VAE/text-encoder file paths,
+original component root and tokenizer source on the DiT owner. Full checkpoint
+exports retain these in versioned acestep_components metadata, alongside native
+wrapper config and topology. Re-export after standalone loading preserves the
+same references. Local paths are absolute; the existing tokenizer hub fallback
+remains a source identifier. These are external references, not embedded frozen
+component tensors, and their declared paths must remain available.
+
+File and directory resolution prefer explicit sources over nearby flat-tree
+heuristics. Invalid schema/missing fields, unavailable root/files, wrong path
+kinds and missing absolute tokenizer directories refuse before DiT construction.
+Legacy artifacts without declarations keep the existing ancestor-tree behavior;
+headerless layout probes also retain that behavior, while actual tensor loading
+still checks the safetensors header. No fallback substitutes another nearby VAE
+or encoder when an explicit source is broken.
+
+The generic model detector recognizes full ACE-Step metadata only with native
+wrapper markers, including the trainer's net prefix. Full-parameter resume now
+dispatches the selected artifact into the same native training component loader
+instead of falling through the image-model branches. Existing topology inheritance
+then applies to the reconstructed owner/decoder.
+
+CPU tests use actual reduced native DiT weights/config/topology and mocked frozen
+companion builders/tokenizer to verify exact declared paths, identical restored
+DiT tensors and re-exported references. Separate contracts exercise the real
+full-resume dispatcher, declared-source refusal before allocation, legacy flat
+folders and explicit-reference priority for both file/directory selection. This
+does not verify actual Oobleck/Qwen3/tokenizer weights or an entire resumed job.
+
+Changed backend files compile and import. Shared residual, legacy ACE-Step LoRA
+and existing quantized-export CPU suites pass 165 cases and 48 subtests with CUDA
+uninitialized. Public configure/presets, temporal editor discovery, generation
+grid preflight/metadata and complete CPU audio workflow seams remain pending.
+ACE-Step is still outside public runtime capabilities; GPU verification remains
+Qwen-Image 2.1 only.

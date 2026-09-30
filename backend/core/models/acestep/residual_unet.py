@@ -151,6 +151,8 @@ def run_rewired_decoder(model, hidden, positions, timestep_proj, encoder_hidden,
 def export_metadata(model):
     import json
     metadata = model_topology_metadata(model)
+    from .component_sources import export_sources
+    metadata.update(export_sources(model))
     config = getattr(model, "config", None)
     if config is not None and hasattr(config, "to_dict"):
         raw = config.to_dict()

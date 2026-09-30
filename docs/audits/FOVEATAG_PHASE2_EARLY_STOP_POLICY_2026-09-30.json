@@ -1,0 +1,38 @@
+{
+  "format_version": 1,
+  "kind": "foveatag_phase2_early_stop_policy",
+  "status": "registered_before_epoch_1_validation",
+  "run": {
+    "output_dir": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase2_anticollapse_pretrain_20260929",
+    "run_contract_sha256": "7a7f0964f8a2834d9f646f1ed972b86563b8ddbc8d72e6d0ea4bf11dabd12b0a",
+    "planned_epochs": 10,
+    "seed": 20260929
+  },
+  "evaluation_unit": "completed_epoch_fixed_validation",
+  "minimum_completed_epochs": 5,
+  "plateau": {
+    "patience_epochs": 2,
+    "weighted_loss_minimum_relative_improvement": 0.005,
+    "component_minimum_relative_improvement": 0.01,
+    "components": [
+      "correspondence",
+      "reconstruction",
+      "chroma"
+    ],
+    "definition": "For each of two consecutive completed epochs, weighted validation loss improves by less than 0.5% relative to the best preceding epoch and none of the three task losses improves by at least 1% relative to its best preceding value."
+  },
+  "health_floor": {
+    "scope": "every validation domain and both masked_local and overview views of the selected best encoder",
+    "minimum_channel_std_mean": 0.5,
+    "maximum_mean_pairwise_cosine": 0.97,
+    "minimum_effective_rank_fraction": 0.1,
+    "maximum_effective_rank_drop_from_best_healthy_fraction": 0.25
+  },
+  "decision": {
+    "continue": "Continue through ten epochs while fewer than five epochs are complete, either plateau condition is false, or a later epoch restores material improvement.",
+    "early_stop_candidate": "After at least five completed epochs, stop at an epoch boundary only when both consecutive plateau epochs and every health floor pass.",
+    "health_failure": "A failed health floor is a Phase-2 failure or review condition, never a successful early stop.",
+    "reversibility": "Retain the full resumable checkpoint so a Phase-3 failure can resume the original ten-epoch schedule."
+  },
+  "gate_change": "The current gate still requires all ten registered epochs. It may accept an early stop only after it verifies this policy hash, the bound run-contract hash, the complete fixed-validation history, the best-encoder identity, and the plateau and health conditions."
+}

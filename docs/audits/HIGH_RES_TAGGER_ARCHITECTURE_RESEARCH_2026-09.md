@@ -769,6 +769,23 @@ in the downstream random-view tag pilot; the pre-registered cap is 20 epochs
 (approximately 95.4 GPU-hours). This fixes the budget before Phase 2 quality is
 known while allowing a bounded continuation rather than an open-ended run.
 
+The replacement anti-collapse run also has an early-stop policy registered
+before its epoch-1 validation result. It cannot stop before five complete
+epochs. After that point, two consecutive complete epochs must each improve
+weighted fixed-validation loss by less than 0.5% relative to the preceding
+best, and none of correspondence, RGB reconstruction, or chroma may improve by
+at least 1% relative to its preceding best. The selected best encoder must, in
+every domain and both views, retain channel standard deviation at least 0.5,
+mean pairwise cosine at most 0.97, and effective-rank fraction at least 0.10;
+effective rank may not fall more than 25% from the best healthy epoch. A health
+failure is a failed/reviewed run, not a successful early stop. The resumable
+checkpoint is retained so a downstream Phase-3 failure can resume the original
+ten-epoch schedule. Exact semantics and the bound run-contract hash are in
+`FOVEATAG_PHASE2_EARLY_STOP_POLICY_2026-09-30.json`. The current gate continues
+to require ten epochs until an early-stop candidate exists and the gate is
+changed to verify this policy and its complete evidence rather than merely
+accepting an incomplete summary.
+
 The registered 40 MP filter excludes 23 of 21,499 minimum-side-eligible photo
 rows and 130 of 1,546,928 illustration rows in the current database. The
 resulting 21,476 and 1,546,798 rows reconcile exactly with the manifest counts

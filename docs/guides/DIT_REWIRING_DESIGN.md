@@ -286,3 +286,19 @@ end, per the owner's instruction; agent verification is static review.
   removed on unload; incompatible stacks must report a useful refusal.
 - Confirm ordinary models retain their native sequence and unsupported
   architectures do not offer an unverified conversion option.
+
+## Krea native execution foundation
+
+The Krea 2 native single-stream forward has an internal residual adapter. It
+validates the config identity and origin-based row-major image coordinates,
+preserves the text prefix/padding mask, rebuilds coarse RoPE and masks, and
+calls native blocks through their existing checkpointing path. Style injection
+and REPA taps are refused. No parameters are added, and ordinary forwards retain
+the original block loop.
+
+Three CPU contracts exercise a seven-block native GQA model with nested regions:
+image/text token counts and mask preservation, checkpointed output/gradient
+equivalence, and incompatible coordinates/config/REPA refusal. This is a native
+execution foundation only. Krea is not advertised in runtime capabilities until
+artifact restoration, generation/training integration and real-model API checks
+are complete; Qwen remains the sole exposed conversion architecture.

@@ -556,19 +556,23 @@ class Krea2Transformer2DModel(ModelMixin, ConfigMixin):
         if repa_tap_depth is not None:
             self._repa_tap_out = None
 
-        for block_idx, block in enumerate(self.transformer_blocks):
-            if torch.is_grad_enabled() and self.gradient_checkpointing:
-                hidden_states = self._gradient_checkpointing_func(
-                    block, hidden_states, temb_mod, image_rotary_emb, attention_mask
-                )
-            else:
-                hidden_states = block(hidden_states, temb_mod, image_rotary_emb, attention_mask)
-            # Assignment rather than a forward hook: the tap is then the tensor
-            # the loss differentiates, with no hook ordering or checkpoint
-            # recompute semantics to reason about. Sliced the same way as the
-            # post-loop line below, so the tap is image tokens only.
-            if block_idx == repa_tap_depth:
-                self._repa_tap_out = hidden_states[:, text_seq_len:]
+        rewiring = getattr(self, "_residual_unet_spec", None)
+        if rewiring is not None:
+            from ..residual_unet import run_rewired_krea
+            hidden_states = run_rewired_krea(
+                self, hidden_states, temb_mod, image_rotary_emb, attention_mask,
+                position_ids, text_seq_len, rewiring)
+        else:
+            for block_idx, block in enumerate(self.transformer_blocks):
+                if torch.is_grad_enabled() and self.gradient_checkpointing:
+                    hidden_states = self._gradient_checkpointing_func(
+                        block, hidden_states, temb_mod, image_rotary_emb, attention_mask
+                    )
+                else:
+                    hidden_states = block(hidden_states, temb_mod, image_rotary_emb, attention_mask)
+                # Direct assignment keeps REPA attached to the differentiable image tokens.
+                if block_idx == repa_tap_depth:
+                    self._repa_tap_out = hidden_states[:, text_seq_len:]
 
         hidden_states = hidden_states[:, text_seq_len:]
         output = self.final_layer(hidden_states, temb)

@@ -1036,3 +1036,52 @@ performance and quality remain unverified; GPU acceptance is Qwen 2.1 only.
 All 75 aggregate rewiring contracts and 104 existing Lens/VAE regression cases
 pass (179 total). Changed files compile/import with CUDA untouched, and the
 OpenAPI runtime capability example matches the actual schema response.
+
+
+## MiniT2I native execution foundation
+
+MiniT2I now has an internal residual adapter at the MMJiT net forward entry,
+which is also used by the wrapper's pred_velocity. The wrapper/net share the
+validated topology; clearing it restores the original dense branch without
+rebinding forward or changing any learned module/parameter. Native config is
+canonicalized from MMJiTConfig fields, including pixel/latent patch geometry,
+text preamble depth, CFG interval and denoiser/sampling declarations. Native
+absolute-position width and rotary head width must be divisible by four; image
+and text hidden widths must agree because the native final layer concatenates
+them. These are native execution constraints, not resizing rules.
+
+The native learned mask token replaces masked text features before both text
+projection and pooled conditioning. Text preamble blocks run at original text
+length, with native attention backend/mode propagation and optional non-reentrant
+checkpointing. Full-grid patch embedding and absolute sin/cos positions are added
+once; their hidden representation is pooled with the image states. Joint blocks
+use native text RoPE and native coarse integer image RoPE for each region grid.
+Evolving text states survive region exits, while image states restore through the
+shared FP32 identity-delta path. Native final projection and unpatchify run after
+the full image grid has been restored, retaining x0 output and the wrapper's
+existing velocity conversion. Block-swap wait/submit callbacks keep native block
+indices; the text preamble is outside the swapped/resized stream.
+
+REPA, FBCache, TREAD, block skipping, active style and NAG/NegPip hooks are refused
+for rewired execution. Inputs require complete native patches, valid batch/text
+mask/timestep geometry and divisible region grids. Pixel-space and latent-space
+models use the same residual transport over their actual patch grid.
+
+CPU contracts use seven real native double blocks, two text preamble blocks,
+16 hidden channels, two twelve-dimensional heads, five text tokens and an 8x12
+image patch grid. Image lengths are 96/24/6/6/6/24/96. They verify the first
+block's full-grid absolute embedding, native per-block grid arguments, consecutive
+evolving text states, all seven offloader wait/submit pairs, unchanged parameter
+identities, x0/velocity and BCHW/BHWC behavior, and dense restoration. Native
+checkpointed and direct outputs/finite gradients agree. Both pixel (patch16 RGB)
+and latent (patch2 four-channel) models execute, and the published l16 head width
+52 follows the existing native attention padding route. This does not establish
+GPU offload, throughput or quality.
+
+MiniT2I remains outside public runtime capabilities. Artifact metadata restore,
+training configure/inheritance/resume, generation adapter scopes, preset/model
+inspection and editor exposure remain to be connected. GPU validation remains
+Qwen 2.1 only.
+
+All 78 aggregate residual contracts and 39 existing MiniT2I LoRA/CFG cases pass
+(117 total). Changed files compile and import with CUDA untouched.

@@ -196,7 +196,7 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
             onChange={e => setPixels(p => ({ ...p, [axis]: Number(e.target.value) }))} />
         </label>)}
         {info?.temporal_geometry ? <span>{timeGrid ? `${timeGrid.native} native tokens → ${timeGrid.padded} transport tokens (${timeGrid.padded - timeGrid.native} tail tokens)` : "…"}; final audio length is preserved.</span>
-          : <span>latent grid: {info ? `${pixels.height / (info.video_geometry?.height_scale_factor ?? info.latent_scale_factor)} × ${pixels.width / (info.video_geometry?.width_scale_factor ?? info.latent_scale_factor)}` : "…"}</span>}
+          : <span>Base token grid: {info ? `${pixels.height / (info.video_geometry?.height_scale_factor ?? info.latent_scale_factor)} × ${pixels.width / (info.video_geometry?.width_scale_factor ?? info.latent_scale_factor)}` : "…"}</span>}
       </div>
       {plan && <DiTRewiringGraph spec={validatedSpec ?? current} plan={plan} selected={region?.id} onSelect={selectRegion}
         onBoundaryChange={configuring ? (id, side, value) => editRegion(id, { [side]: value }) : undefined} />}

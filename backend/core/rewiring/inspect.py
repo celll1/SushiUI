@@ -33,6 +33,9 @@ def _native_adapter(architecture):
     if architecture == "lens":
         from core.models.lens import residual_unet as adapter
         return adapter, 16, 16
+    if architecture == "sensenova":
+        from core.models.sensenova import residual_unet as adapter
+        return adapter, 32, 32
     raise ValueError("Residual inspection requires a supported native DiT artifact")
 
 
@@ -113,6 +116,9 @@ def inspect_model(model_path):
             if metadata.get("component") not in {"transformer", "training_bundle"}:
                 raise ValueError("Residual inspection requires a Qwen-Image 2.1 model artifact")
             config = json.loads(metadata.get("config") or "{}")
+        elif architecture == "sensenova":
+            from core.models.sensenova.residual_unet import inspect_artifact
+            config, topology, sensenova_stride = inspect_artifact(path)
         elif architecture == "anima":
             if not is_anima_state_dict_keys(keys):
                 raise ValueError("Residual inspection requires an Anima DiT artifact, not adapter weights")
@@ -185,7 +191,9 @@ def inspect_model(model_path):
     if topology is not None:
         topology = adapter.validate_topology_identity(topology, config)
     count_key = {"anima": "num_blocks", "zimage": "n_layers", "minit2i": "depth_double"}.get(architecture, "num_layers")
-    block_count = config[count_key]
+    block_count = config["llm_config"]["num_hidden_layers"] if architecture == "sensenova" else config[count_key]
+    if architecture == "sensenova":
+        token_scale = alignment = sensenova_stride
     if type(block_count) is not int or not 3 <= block_count <= 4096:
         raise ValueError("Native stream block count must be an integer between 3 and 4096")
     streams = [{"name": "main", "block_count": block_count}]

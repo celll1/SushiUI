@@ -26,7 +26,7 @@ export default function DiTRewiringSummary({ spec, tokenStride }: { spec: DiTRew
   }, [spec, width, height, tokenStride]);
   return <details className="mt-2 rounded border border-emerald-800 p-2 text-xs">
     <summary className="cursor-pointer text-emerald-300">Residual U-Net / {spec.regions.length} regions / checkpoint topology</summary>
-    <p className="my-2 text-gray-400">Read-only restored topology. Preview at {width}×{height}px; image dimensions follow the generation request. KV caching is disabled during rewired execution.</p>
+    <p className="my-2 text-gray-400">Read-only restored topology. Preview at {width}×{height}px; image dimensions follow the generation request. Image-token KV caching is disabled during rewired execution; immutable prefix KV remains available.</p>
     {plan && <DiTRewiringGraph spec={spec} plan={plan} />}
     {spec.regions.map(region => <p key={region.id} className="mt-1 text-gray-300">
       {region.stream} / {region.id}: [{region.start_block}, {region.end_block}) / parent {region.parent ?? "full grid"} / downsample {region.down_factor.join("×")} / residual skip {region.start_block} → {region.end_block}

@@ -211,6 +211,146 @@ class SenseNovaRuntimeContracts(unittest.TestCase):
         self.assertEqual(len(streamer.calls), 7)
         self.assertFalse(torch.cuda.is_initialized())
 
+    def test_public_default_and_custom_training_configuration(self):
+        from core.models.sensenova.vendor.configuration_neo_chat import NEOChatConfig
+        from core.models.sensenova.vendor.modeling_qwen3 import Qwen3Model
+        from core.models.sensenova.residual_unet import (
+            native_config, default_topology, configure_training_topology, restore_topology)
+        from core.rewiring.spec import preview_plan
+        raw = self.full_native_config()
+        config = NEOChatConfig(**raw)
+        config.llm_config._attn_implementation = "eager"
+        owner = SimpleNamespace(config=config, language_model=SimpleNamespace(model=Qwen3Model(config.llm_config)))
+        canonical = native_config(config)
+        self.assertEqual(native_config(canonical), canonical)
+        expected = default_topology(config)
+        self.assertEqual(expected, default_topology(canonical))
+        plan = preview_plan(expected, 32, 32)
+        self.assertEqual([sum(block["tokens"] == n for block in plan["blocks"])
+                          for n in (1024, 256, 64)], [8, 30, 4])
+        settings = {"dit_rewiring_mode": "configure"}
+        self.assertEqual(configure_training_topology(owner, settings, install=False), expected)
+        self.assertFalse(hasattr(owner, "_residual_unet_spec"))
+        self.assertEqual(settings, {"dit_rewiring_mode": "configure"})
+        self.assertEqual(configure_training_topology(owner, settings), expected)
+        self.assertEqual(owner.language_model.model._residual_unet_spec, expected)
+        self.assertEqual(configure_training_topology(owner, {}, resuming=True), expected)
+        changed = deepcopy(expected); changed["regions"][1]["end_block"] += 1
+        with self.assertRaisesRegex(ValueError, "without edits"):
+            configure_training_topology(owner, {"dit_rewiring_mode": "configure",
+                "dit_rewiring_spec": changed}, resuming=True)
+        self.assertEqual(owner._residual_unet_spec, expected)
+        self.assertIsNone(default_topology(self.owner.config))
+        with self.assertRaisesRegex(ValueError, "No rewiring preset"):
+            configure_training_topology(self.owner, {"dit_rewiring_mode": "configure"})
+        explicit = {"dit_rewiring_mode": "configure", "dit_rewiring_spec": self.spec}
+        self.assertEqual(configure_training_topology(self.owner, explicit), self.spec)
+        self.assertTrue(torch.isfinite(self.forward().last_hidden_state).all())
+        restore_topology(self.owner, None)
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_header_inspection_presets_shards_refiner_and_api(self):
+        import asyncio, json, tempfile
+        import httpx
+        from fastapi import FastAPI
+        from safetensors.torch import save_file
+        from api.rewiring_routes import router
+        from core.models.sensenova import loader
+        from core.models.sensenova.residual_unet import default_topology, native_config
+        from core.models.common.single_file_format import save_single_file_state
+        from core.rewiring.inspect import inspect_model
+        from core.rewiring.spec import checkpoint_metadata, digest
+        raw = self.full_native_config()
+        topology = default_topology(raw)
+        keys = {f"transformer.language_model.model.layers.{i}.self_attn.q_proj_mot_gen.weight":
+                torch.zeros(1) for i in range(42)}
+        keys["transformer.fm_modules.fm_head.header_probe"] = torch.zeros(1)
+        metadata = {"model_type": "sensenova", "sensenova_config": json.dumps(raw),
+                    **checkpoint_metadata(topology)}
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); single = root / "native.safetensors"
+            save_file(keys, str(single), metadata=metadata)
+            sharded = save_single_file_state(keys, metadata, str(root / "sharded.safetensors"),
+                max_shard_bytes=100)
+            with patch.object(loader, "read_state_dict", side_effect=AssertionError("Tensor loading forbidden")), \
+                 patch.object(loader, "NEOChatModel", side_effect=AssertionError("Model allocation forbidden")):
+                info = inspect_model(single)
+                self.assertEqual(info, inspect_model(sharded))
+                self.assertEqual(info, inspect_model(root / "sharded.safetensors"))
+                self.assertEqual(info["streams"], [{"name": "main", "block_count": 42}])
+                self.assertEqual(info["base_config_sha256"], digest(native_config(raw)))
+                self.assertEqual(info["topology"], topology)
+                self.assertEqual(info["default_spec"], topology)
+                self.assertEqual(info["latent_scale_factor"], 32)
+                delta = root / "refiner.safetensors"
+                save_file({"transformer.fm_modules.fm_refiner.header_probe": torch.zeros(1)}, str(delta),
+                    metadata={**metadata, "sensenova_checkpoint_kind": loader.SENSENOVA_REFINER_DELTA_KIND,
+                              "sensenova_refiner_base_model_path": single.name})
+                self.assertEqual(info, inspect_model(delta))
+                app = FastAPI(); app.include_router(router, prefix="/api/v1")
+                async def check():
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                        schema = (await client.get("/api/v1/schema/dit-rewiring")).json()
+                        self.assertIn("sensenova", schema["runtime_architectures"])
+                        self.assertEqual(schema["presets"]["sensenova"]["block_count"], 42)
+                        for path in (single, sharded, delta):
+                            response = await client.post("/api/v1/models/rewiring/inspect", json={"model_path": str(path)})
+                            self.assertEqual(response.status_code, 200, response.text)
+                            self.assertEqual(response.json(), info)
+                        preview = await client.post("/api/v1/models/rewiring/validate", json={
+                            "spec": info["default_spec"], "token_height": 32, "token_width": 32})
+                        self.assertEqual(preview.status_code, 200, preview.text)
+                        self.assertEqual(sum(block["tokens"] == 64 for block in preview.json()["plan"]["blocks"]), 4)
+                        bad = root / "bad.safetensors"
+                        cases = [({"adapter.lora_down.weight": torch.ones(1)}, metadata),
+                            (keys, {"model_type": "sensenova"}),
+                            (keys, {"model_type": "sensenova", "sensenova_config": json.dumps({"llm_config": {}})}),
+                            (keys, {"model_type": "sensenova", "sensenova_config": json.dumps(native_config(raw)),
+                                    **checkpoint_metadata(topology)}),
+                            (keys, {"model_type": "sensenova", "sensenova_config": json.dumps(dict(raw, llm_config={}))})]
+                        for tensors, declaration in cases:
+                            save_file(tensors, str(bad), metadata=declaration)
+                            response = await client.post("/api/v1/models/rewiring/inspect", json={"model_path": str(bad)})
+                            self.assertEqual(response.status_code, 422, response.text)
+                asyncio.run(check())
+                custom_raw = deepcopy(raw); custom_raw["llm_config"]["num_hidden_layers"] = 7
+                custom = root / "custom.safetensors"
+                save_file({key: value for key, value in keys.items()
+                           if "fm_head" in key or any(f"layers.{i}." in key for i in range(7))}, str(custom),
+                          metadata={"model_type": "sensenova", "sensenova_config": json.dumps(custom_raw)})
+                custom_info = inspect_model(custom)
+                self.assertIsNone(custom_info["topology"]); self.assertIsNone(custom_info["default_spec"])
+                self.assertEqual(custom_info["initial_spec"]["streams"][0]["block_count"], 7)
+                latent_raw = dict(raw, gen_patch_size=8, gen_in_channels=16)
+                latent = root / "latent.safetensors"
+                latent_metadata = {"model_type": "sensenova", "sensenova_config": json.dumps(latent_raw),
+                    "component.vae.channels": "16", "component.vae.scale_factor": "8"}
+                save_file(keys, str(latent), metadata=latent_metadata)
+                self.assertEqual(inspect_model(latent)["latent_scale_factor"], 64)
+                for value in ("0", "missing", "8.5"):
+                    save_file(keys, str(latent), metadata={**latent_metadata, "component.vae.scale_factor": value})
+                    with self.assertRaises(ValueError): inspect_model(latent)
+                save_file(keys, str(latent), metadata={**latent_metadata, "component.vae.channels": "3"})
+                with self.assertRaises(ValueError): inspect_model(latent)
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_pipeline_model_info_reports_native_and_swapped_grid(self):
+        from core.pipeline import DiffusionPipelineManager
+        from core.model_loader import ModelLoader
+        from core.models.sensenova.residual_unet import restore_topology
+        backend, root = self.generation_backend()
+        restore_topology(root, self.spec)
+        manager = DiffusionPipelineManager(); manager.device = "cpu"
+        components = dict(backend.sensenova_components, type="sensenova")
+        for scale in (1, 8):
+            root.gen_vae_scale_factor = scale
+            with patch.object(ModelLoader, "load_model", return_value=components), \
+                 patch.object(manager, "_save_last_model"), patch.object(torch.cuda, "is_available", return_value=False):
+                manager._load_model_locked("safetensors", f"cpu-sensenova-test-{scale}.safetensors")
+            self.assertEqual(manager.current_model_info["dit_rewiring_spec"], self.spec)
+            self.assertEqual(manager.current_model_info["dit_rewiring_token_stride"], 32 * scale)
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_native_transport_positions_hooks_parameter_identity_and_cache(self):
         from core.models.sensenova.residual_unet import restore_topology, model_topology_metadata
         from core.rewiring.spec import read_checkpoint_metadata

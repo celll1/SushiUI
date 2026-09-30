@@ -6,9 +6,11 @@ checkpointed residual execution, metadata-driven generation, LoRA/full training,
 checkpoint restore and adapter-stack compatibility checks. Actual 1024px API
 workflows verify generation, training samples, saved artifacts and resume, both
 resident and with block swap. The graphical editor is connected and statically
-reviewed; the owner will perform consolidated frontend checks. Krea 2, Anima, Z-Image and Flux2
-have native execution/artifact/training/LoRA generation integration, model/editor
-inspection and CPU contract checks.
+reviewed; the owner will perform consolidated frontend checks. Krea 2, Anima,
+Z-Image, Flux2, Lens, MiniT2I, Ideogram 4 and SenseNova have native execution,
+artifact, supported training, LoRA generation and model/editor inspection
+integration with CPU contract checks. Ideogram 4 retains its LoRA-only training
+boundary; SenseNova residual training requires batch_size 1.
 GPU acceptance is restricted to Qwen-Image 2.1 by owner instruction; other models
 receive provisional implementation and CPU verification. Further architectures
 still require native execution/artifact adapters and capability gates.
@@ -1558,3 +1560,48 @@ Public SenseNova configure/defaults, inspection/model-info and editor capability
 exposure remain pending. GPU validation stays exclusively Qwen-Image 2.1;
 other architectures receive provisional implementation and CPU checks. Frontend
 build/type checks remain with the owner for consolidated manual validation.
+
+
+## SenseNova configure, presets and editor discovery (CPU milestone)
+
+SenseNova joins the public runtime capability list after native execution,
+artifact persistence, inherited training/resume and generation adapter lifetime
+have connected. Configure-with-null now resolves the backend-owned 42-block
+preset: outer [4,38), inner [19,23), eight full-resolution blocks, thirty
+half-resolution blocks and four quarter-resolution blocks. Other native layer
+counts require an explicit topology; the editor returns a single-region starting
+spec for those custom layouts. Canonical native config is idempotent for identity,
+preset and preview consumers; artifact declarations still require raw native
+NEOChat config so an identity summary cannot masquerade as a reconstructible
+model config.
+
+Read-only inspection validates actual block-index headers, generation-head and
+projection markers against the embedded native layer count. It supports complete
+single/sharded artifacts, missing stems resolved to sibling indices and refiner
+deltas whose complete base supplies the geometry. This is a structural header
+check, not a full tensor-shape or quantization acceptance check. Native pixel
+tokens span 32px; latent artifacts require explicit matching VAE channels and
+positive spatial compression. The editor uses generation-patch times VAE-scale
+and refuses unknown geometry instead of inventing a preview scale.
+
+Model info now supplies the restored graph and actual pixel stride for both
+native and swapped generation grids. The existing frontend capability fetch
+opens the shared graphical editor for SenseNova, with the same intervals, skip
+connections and per-level token counts. The read-only summary clarifies that
+immutable prefix KV remains available during residual execution. No frontend
+build or type check is run; owner browser/build/type validation is outstanding.
+
+CPU evidence includes actual 42-layer configuration/default selection and resume
+identity checks, explicit seven-layer configuration/forward execution, header-only
+single/shard/refiner inspection with tensor/model loading forbidden, real ASGI
+schema/inspect/preview requests, malformed/missing artifact metadata refusals,
+VAE scale/channel refusals and PipelineManager model-info propagation. Shared
+residual and related SenseNova regressions pass (216 tests; the known baseline
+img2txt capability expectation is deselected). OpenAPI schema examples match the
+actual capability response; changed backend files compile and import without
+initializing CUDA. The final raw-config artifact guard is checked again with the
+native, artifact, inspection and schema contracts (29 passing tests).
+
+This remains provisional CPU-verified SenseNova support. GPU performance and
+quality verification are exclusively Qwen-Image 2.1. Further DiT architectures
+and the final full-scope acceptance audit remain unfinished.

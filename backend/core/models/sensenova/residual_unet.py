@@ -37,7 +37,23 @@ def _decoder_config(config):
 def native_config(config):
     from .vendor.configuration_neo_chat import NEOChatConfig
     if isinstance(config, dict):
-        config = NEOChatConfig(**config)
+        if "merge_size" in config and "vision_config" not in config:
+            from types import SimpleNamespace
+            merge = config.get("merge_size")
+            patch = config.get("gen_patch_size")
+            channels = config.get("gen_in_channels")
+            if (type(merge) is not int or merge < 1 or type(patch) is not int
+                    or patch < 4 or patch % 4 or patch % merge or type(channels) is not int
+                    or channels < 1 or type(config.get("use_pixel_head")) is not bool
+                    or not isinstance(config.get("llm_config"), dict)):
+                raise ValueError("SenseNova canonical generation geometry is invalid")
+            return dict(llm_config=_decoder_config(SimpleNamespace(**config["llm_config"])),
+                        gen_patch_size=patch, gen_in_channels=channels, merge_size=merge,
+                        use_pixel_head=config["use_pixel_head"])
+        try:
+            config = NEOChatConfig(**config)
+        except Exception as exc:
+            raise ValueError("SenseNova native NEOChat config is invalid") from exc
     if not isinstance(config, NEOChatConfig) or config.is_moe_llm:
         raise ValueError("SenseNova residual transport requires the dense native NEOChat config")
     ratio = config.downsample_ratio
@@ -58,6 +74,18 @@ def validate_topology_identity(spec, config):
     resolved = native_config(config)
     return validate_model_identity(spec, "sensenova",
         [{"name": "main", "block_count": resolved["llm_config"]["num_hidden_layers"]}], resolved)
+
+
+def default_topology(config):
+    from api.param_defaults import DIT_REWIRING_PRESETS
+    from core.rewiring.spec import OPERATORS, build_spec
+    resolved = native_config(config)
+    preset = DIT_REWIRING_PRESETS["sensenova"]
+    count = resolved["llm_config"]["num_hidden_layers"]
+    if count != preset["block_count"]:
+        return None
+    return build_spec("sensenova", [{"name": "main", "block_count": count}],
+                      [dict(region, **OPERATORS) for region in preset["regions"]], resolved)
 
 
 def restore_topology(model, spec):
@@ -191,8 +219,9 @@ def preflight_checkpoint(path, *, _seen=None):
         if not isinstance(declaration, str) or not declaration.strip():
             raise ValueError("Rewired SenseNova requires embedded native sensenova_config JSON")
         config = json.loads(declaration)
-        if not isinstance(config, dict):
-            raise ValueError("SenseNova native checkpoint config must be an object")
+        if (not isinstance(config, dict) or not isinstance(config.get("llm_config"), dict)
+                or "architectures" not in config["llm_config"]):
+            raise ValueError("SenseNova checkpoint requires raw native NEOChat config")
         validate_topology_identity(spec, config)
     if metadata.get("sensenova_checkpoint_kind") == SENSENOVA_REFINER_DELTA_KIND:
         base = str(metadata.get("sensenova_refiner_base_model_path") or "").strip()
@@ -220,6 +249,67 @@ def preflight_checkpoint(path, *, _seen=None):
                 key.endswith("self_attn.q_proj_mot_gen.weight") for key in keys):
             raise ValueError("Rewired SenseNova requires complete native model blocks, not adapter weights")
     return spec
+
+
+def inspect_artifact(path):
+    import json
+    import re
+    from pathlib import Path
+    from safetensors import safe_open
+    from core.models.common.single_file_format import parse_component_metadata
+    from .loader import sensenova_checkpoint_metadata, SENSENOVA_REFINER_DELTA_KIND
+    source = Path(path)
+    if not source.is_file() and Path(str(source) + ".index.json").is_file():
+        source = Path(str(source) + ".index.json")
+    topology = preflight_checkpoint(source)
+    metadata = sensenova_checkpoint_metadata(str(source))
+    declaration = metadata.get("sensenova_config")
+    if not isinstance(declaration, str) or not declaration.strip():
+        raise ValueError("SenseNova inspection requires embedded native config")
+    config = json.loads(declaration)
+    if (not isinstance(config, dict) or not isinstance(config.get("llm_config"), dict)
+            or type(config["llm_config"].get("num_hidden_layers")) is not int
+            or "architectures" not in config["llm_config"]):
+        raise ValueError("SenseNova inspection requires an explicit native block count")
+    resolved = native_config(config)
+    if metadata.get("sensenova_checkpoint_kind") == SENSENOVA_REFINER_DELTA_KIND:
+        base = Path(metadata["sensenova_refiner_base_model_path"])
+        if not base.is_absolute():
+            base = source.parent / base
+        base_config, _, stride = inspect_artifact(base)
+        if native_config(base_config) != resolved:
+            raise ValueError("SenseNova refiner and base generation geometry disagree")
+        return config, topology, stride
+    if str(source).endswith(".safetensors.index.json"):
+        with source.open(encoding="utf-8") as handle:
+            keys = list(json.load(handle)["weight_map"])
+    else:
+        with safe_open(str(source), framework="pt", device="cpu") as handle:
+            keys = list(handle.keys())
+    prefix = "transformer.language_model.model.layers."
+    blocks = {int(match.group(1)) for key in keys
+              if (match := re.match(re.escape(prefix) + r"(\d+)\.", key))}
+    count = resolved["llm_config"]["num_hidden_layers"]
+    if (blocks != set(range(count)) or not any(
+            key.startswith("transformer.fm_modules.fm_head.") for key in keys) or not any(
+            key.endswith("self_attn.q_proj_mot_gen.weight") for key in keys)):
+        raise ValueError("SenseNova inspection requires complete native blocks and generation head")
+    vae = parse_component_metadata(metadata).get("vae") or {}
+    if config.get("gen_patch_size") is None and config.get("gen_in_channels") is None:
+        if vae:
+            raise ValueError("SenseNova pixel config cannot declare a swapped VAE")
+        scale = 1
+    else:
+        if config.get("gen_patch_size") is None or config.get("gen_in_channels") is None:
+            raise ValueError("SenseNova latent config requires both generation patch and channels")
+        scale = vae.get("scale_factor")
+        try:
+            channels = int(vae.get("channels", ""))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("SenseNova editor requires declared VAE channels") from exc
+        if type(scale) is not int or scale < 1 or channels != resolved["gen_in_channels"]:
+            raise ValueError("SenseNova editor requires matching VAE channels and positive spatial compression")
+    return config, topology, resolved["gen_patch_size"] * scale
 
 
 def export_topology_metadata(model, config_dict, *, base_path=None, export_metadata=None):
@@ -255,7 +345,7 @@ def configure_training_topology(model, config, *, resuming=False, pending_adapte
     view = SimpleNamespace(config=native, _residual_unet_spec=existing)
     staged = dict(config)
     resolved = resolve_training_topology(view, staged, "sensenova", validate_topology_identity,
-        lambda owner, spec: None, resuming=resuming, pending_adapter_resume=pending_adapter_resume,
+        lambda owner, spec: None, default_topology, resuming=resuming, pending_adapter_resume=pending_adapter_resume,
         resume_spec=resume_spec, install=False)
     if resolved is not None:
         validate_owner_topology(resolved, model)

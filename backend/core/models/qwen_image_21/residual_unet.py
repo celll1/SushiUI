@@ -82,3 +82,48 @@ def model_topology_metadata(model):
     spec = getattr(model, "_residual_unet_spec", None)
     return {} if spec is None else checkpoint_metadata(
         validate_topology_identity(spec, dict(model.config)))
+
+
+_NO_RESUME_SPEC = object()
+
+
+def configure_training_topology(model, config, *, resuming=False, pending_adapter_resume=False,
+                                resume_spec=_NO_RESUME_SPEC):
+    from copy import deepcopy
+    from api.param_defaults import DIT_REWIRING_PRESETS
+    from core.rewiring.spec import OPERATORS, build_spec
+    from core.rewiring.training import validate_training_features, validate_training_rewiring
+
+    mode, requested = validate_training_rewiring(config, "qwen_image_21")
+    existing = getattr(model, "_residual_unet_spec", None)
+    if mode == "configure" and requested is None:
+        preset = deepcopy(DIT_REWIRING_PRESETS["qwen_image_21"])
+        if preset["block_count"] != len(model.transformer_blocks):
+            raise ValueError("No rewiring preset for this Qwen block count; supply an explicit spec")
+        regions = [dict(region, **OPERATORS) for region in preset["regions"]]
+        requested = build_spec("qwen_image_21", [{"name":"main", "block_count":preset["block_count"]}],
+                               regions, native_config(dict(model.config)))
+    if requested is not None:
+        requested = validate_topology_identity(requested, dict(model.config))
+    if resume_spec is not _NO_RESUME_SPEC:
+        if resume_spec is not None:
+            resume_spec = validate_topology_identity(resume_spec, dict(model.config))
+        if existing is not None and existing != resume_spec:
+            raise ValueError("Resume checkpoint and base topology disagree")
+        inherited = resume_spec
+    else:
+        inherited = requested if pending_adapter_resume and existing is None else existing
+    if mode == "inherit":
+        if requested is not None and requested != inherited:
+            raise ValueError("Explicit inherited topology does not match checkpoint")
+        resolved = inherited
+    else:
+        resolved = requested
+        if (resuming or resume_spec is not _NO_RESUME_SPEC) and resolved != inherited:
+            raise ValueError("Resume requires the checkpoint topology without edits")
+    if resolved is not None:
+        validate_training_features(config)
+    restore_topology(model, resolved)
+    config["dit_rewiring_mode"] = mode
+    config["dit_rewiring_spec"] = resolved
+    return resolved

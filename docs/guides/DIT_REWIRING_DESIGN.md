@@ -2,8 +2,9 @@
 
 Status: accepted implementation contract. Canonical topology validation and
 side-effect-free preview APIs are implemented. Qwen-Image 2.1 has an internal
-forward path with checkpointed backward verification. Public generation/training
-configuration, adapter-stack restoration, and the graphical editor are pending.
+forward path with checkpointed backward verification. Training request/YAML
+configuration is connected for Qwen LoRA/full runs. Generation capability
+reporting, adapter-stack restoration, and the graphical editor are pending.
 Full Qwen artifact save/restore is connected; production acceptance remains pending. Other
 architectures require individual capability gates.
 
@@ -135,3 +136,14 @@ Tiny actual Qwen full-writer/load-transformer round trips cover single and shard
 files, exact parameter restoration, numerically matching forward output, config
 mismatch, and a tampered shard. LoRA stack application, full-size GPU artifacts,
 training-bundle companion restoration, and training resume remain unverified.
+
+Training accepts `dit_rewiring_mode` (`inherit` or `configure`) and an optional
+`dit_rewiring_spec`, with defaults in `TRAINING_DEFAULTS`. Configure with no spec
+resolves the native-layout preset after loading; inherit with a spec asserts exact
+agreement. API requests and YAML preflight validate the structure. Qwen component
+loading installs the resolved topology, and LoRA resume checks its metadata before
+loading weights. Full resume prohibits topology edits. Sampling a rewired training
+model disables KV caching. Current gates refuse partition training/global adapters,
+TREAD, REPA, and block skipping. CPU contracts cover request/YAML parity, default
+resolution, inheritance, resume comparison, and refusal without model mutation.
+Actual trainer steps, persisted run/resume state and UI round trips remain pending.

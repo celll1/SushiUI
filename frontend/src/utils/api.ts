@@ -7252,6 +7252,8 @@ export interface TrainingRunCreateRequest {
   activation_offload_pinned_budget_mb?: number;
   dit_gradient_checkpointing_blocks?: number | null;
   dit_partition_gradient_checkpointing_blocks?: number | null;
+  dit_rewiring_mode?: "inherit" | "configure";
+  dit_rewiring_spec?: Record<string, unknown> | null;
   dit_partition_training_enabled?: boolean;
   dit_partition_mode?: "fixed" | "token_threshold";
   dit_partition_fixed_count?: 2 | 4;

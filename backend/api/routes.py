@@ -15564,6 +15564,26 @@ class TrainingRunCreateRequest(BaseModel):
     dit_partition_gradient_checkpointing_blocks: Optional[int] = Field(
         default=TRAINING_DEFAULTS["dit_partition_gradient_checkpointing_blocks"], ge=0
     )
+    dit_rewiring_mode: Literal["inherit", "configure"] = TRAINING_DEFAULTS["dit_rewiring_mode"]
+    dit_rewiring_spec: Optional[Dict[str, Any]] = TRAINING_DEFAULTS["dit_rewiring_spec"]
+
+    @field_validator("dit_rewiring_spec")
+    @classmethod
+    def _rewiring_spec_valid(cls, value):
+        if value is None:
+            return value
+        from core.rewiring.spec import validate_spec
+        return validate_spec(value)
+
+    @model_validator(mode="after")
+    def _rewiring_training_method_valid(self):
+        if self.dit_rewiring_mode == "configure" or self.dit_rewiring_spec is not None:
+            if self.training_method not in {"lora", "full_finetune"}:
+                raise ValueError("Residual rewiring currently supports lora and full_finetune training")
+            from core.rewiring.training import validate_training_features
+            validate_training_features(self.model_dump())
+        return self
+
     dit_partition_training_enabled: bool = TRAINING_DEFAULTS["dit_partition_training_enabled"]
     dit_partition_mode: Literal["fixed", "token_threshold"] = TRAINING_DEFAULTS["dit_partition_mode"]
     dit_partition_fixed_count: Literal[2, 4] = TRAINING_DEFAULTS["dit_partition_fixed_count"]

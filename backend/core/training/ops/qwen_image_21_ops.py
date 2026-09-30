@@ -331,6 +331,12 @@ def load_components(trainer) -> None:
         trainer.model_path, torch_dtype=trainer.weight_dtype, load_text_encoder=True
     )
     trainer.transformer = components["transformer"]
+    from core.models.qwen_image_21.residual_unet import configure_training_topology
+    is_resume = bool(getattr(trainer, "resume_from_checkpoint", None))
+    configure_training_topology(
+        trainer.transformer, trainer.config,
+        resuming=is_resume and bool(components.get("checkpoint_path")),
+        pending_adapter_resume=is_resume and not components.get("checkpoint_path"))
     trainer.transformer_original = trainer.transformer
     trainer.vae = components["vae"].to(dtype=trainer.vae_dtype)
     trainer.text_encoder = components["text_encoder"]
@@ -1152,7 +1158,7 @@ def generate_sample(
                 num_inference_steps=int(num_inference_steps),
                 generator=generator,
                 callback_on_step_end=callback,
-                use_kv_cache=True,
+                use_kv_cache=getattr(trainer.transformer, "_residual_unet_spec", None) is None,
             )
         return result.images[0]
     finally:

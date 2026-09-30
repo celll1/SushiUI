@@ -474,6 +474,11 @@ def _build_train_section(
         ):
             train[key] = p.get(key, _TD[key])
 
+    from core.rewiring.training import validate_training_rewiring
+    mode, topology = validate_training_rewiring(p, arch)
+    train["dit_rewiring_mode"] = mode
+    train["dit_rewiring_spec"] = topology
+
     train["dit_gradient_checkpointing_blocks"] = p.get(
         "dit_gradient_checkpointing_blocks", _TD["dit_gradient_checkpointing_blocks"])
     canonical_partition_checkpoint = p.get(

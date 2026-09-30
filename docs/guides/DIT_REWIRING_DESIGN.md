@@ -1174,3 +1174,42 @@ MiniT2I public presets, inspection and editor exposure remain pending.
 
 The MiniT2I residual and existing adapter round-trip suites pass all 20 CPU
 cases; changed-file compile and real imports leave CUDA uninitialized.
+
+## MiniT2I public topology configuration and inspection
+
+MiniT2I is now included in `/schema/dit-rewiring` runtime capabilities. Existing
+frontend capability gating exposes its training graph editor; loaded model info
+supplies checkpoint topology and native patch/VAE token stride to the generation
+summary. Frontend verification is static only; owner build/type/browser checks
+remain deferred to the consolidated manual pass.
+
+`param_defaults.py` owns separate native-depth presets:
+
+| Layout | Outer interval | Deep interval | Full / half / quarter-grid blocks |
+| --- | --- | --- | --- |
+| B16, 17 double blocks | [4,13) | [6,10) | 8 / 5 / 4 |
+| L16, 23 double blocks | [4,19) | [9,13) | 8 / 11 / 4 |
+
+Both retain four blocks at the deepest grid; text preamble blocks remain native
+and outside the image transport stream. Other depths require an explicit graph.
+CPU native forwards execute both presets and public training configuration
+resolves the same graph as the editor inspection API.
+
+Inspection supports native config directories and single/index/missing-stem
+SushiUI files using headers only. It requires native image embedding keys and
+contiguous actual double-block indices agreeing with saved config, rejects LoRA
+files presented as base models, validates topology identity, and derives pixel
+alignment/token stride from patch size and the existing native VAE registry.
+Pixel, SDXL and Flux1 declarations are covered. Dense files without explicit
+native config/block count are refused instead of guessing a variant.
+
+CPU ASGI tests exercise schema, inspection and graphical-plan validation without
+allocating models or reading tensors. Public MiniT2I support remains provisional:
+no MiniT2I GPU throughput, image-quality or GPU training acceptance is claimed.
+GPU acceptance remains restricted to Qwen-Image 2.1.
+
+Validation: 123 aggregate residual/MiniT2I LoRA/CFG tests passed; the sole
+remaining assertion expected the previous capability list. After updating that
+API assertion, its targeted rerun passed (124 covered cases in total).
+Changed-file compile, real imports and OpenAPI capability agreement pass, with
+CUDA uninitialized throughout.

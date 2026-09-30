@@ -24,6 +24,9 @@ def _native_adapter(architecture):
     if architecture == "flux2":
         from core.models.flux2 import residual_unet as adapter
         return adapter, 16, 16
+    if architecture == "minit2i":
+        from core.models.minit2i import residual_unet as adapter
+        return adapter, 16, 16
     if architecture == "lens":
         from core.models.lens import residual_unet as adapter
         return adapter, 16, 16
@@ -57,15 +60,18 @@ def inspect_model(model_path):
                             "Krea2Transformer2DModel": "krea2",
                             "ZImageTransformer2DModel": "zimage",
                             "Flux2Transformer2DModel": "flux2",
-                            "LensTransformer2DModel": "lens"}.get(class_name)
+                            "LensTransformer2DModel": "lens",
+                            "MiniT2IMMJiTModel": "minit2i"}.get(class_name)
             _native_adapter(architecture)
             topology = read_directory_topology(transformer_dir)
-            if architecture == "lens":
+            if architecture in ("lens", "minit2i"):
                 native_keys = []
                 for source in transformer_dir.glob("*.safetensors"):
                     with safe_open(str(source), framework="pt", device="cpu") as handle:
                         native_keys.extend(handle.keys())
-                if "img_in.weight" not in native_keys:
+                if architecture == "minit2i" and "model.net.img_embedder.proj1.weight" not in native_keys:
+                    raise ValueError("MiniT2I directory inspection requires native model weights")
+                if architecture == "lens" and "img_in.weight" not in native_keys:
                     raise ValueError("Lens directory inspection requires native model weights")
     else:
         if not path.exists() and Path(str(path)+".index.json").exists():
@@ -123,6 +129,16 @@ def inspect_model(model_path):
                 raise ValueError("Flux2 file inspection requires native config metadata")
             if count_flux2_blocks(native_keys) != (config.get("num_layers"), config.get("num_single_layers")):
                 raise ValueError("Flux2 native config and checkpoint block counts disagree")
+        elif architecture == "minit2i":
+            native_keys = [key.removeprefix("transformer.") for key in keys]
+            if "model.net.img_embedder.proj1.weight" not in native_keys:
+                raise ValueError("Residual inspection requires a MiniT2I model artifact, not adapter weights")
+            declaration = metadata.get("mmjit_config")
+            if not isinstance(declaration, str):
+                raise ValueError("MiniT2I file inspection requires native mmjit_config metadata")
+            config = json.loads(declaration)
+            if not isinstance(config, dict) or "depth_double" not in config:
+                raise ValueError("MiniT2I inspection requires an explicit native block count")
         elif architecture == "lens":
             native_keys = [key.removeprefix("net.") for key in keys]
             if "img_in.weight" not in native_keys:
@@ -146,9 +162,19 @@ def inspect_model(model_path):
                   if (match := re.match(r"^transformer_blocks\.(\d+)\.", key))}
         if len(blocks) != config["num_layers"] or blocks != set(range(len(blocks))):
             raise ValueError("Lens native config and checkpoint block counts disagree")
+    if architecture == "minit2i":
+        import re
+        blocks = {int(match.group(1)) for key in native_keys
+                  if (match := re.match(r"^model\.net\.double_blocks\.(\d+)\.", key))}
+        if len(blocks) != config["depth_double"] or blocks != set(range(len(blocks))):
+            raise ValueError("MiniT2I native config and checkpoint block counts disagree")
+        from core.models.minit2i.minit2i_vae import is_latent_vae, VAE_SCALE_FACTOR
+        if config["vae_type"] != "none" and not is_latent_vae(config["vae_type"]):
+            raise ValueError("MiniT2I editor requires a known native VAE scale")
+        token_scale = alignment = config["patch_size"] * (1 if config["vae_type"] == "none" else VAE_SCALE_FACTOR)
     if topology is not None:
         topology = adapter.validate_topology_identity(topology, config)
-    count_key = {"anima": "num_blocks", "zimage": "n_layers"}.get(architecture, "num_layers")
+    count_key = {"anima": "num_blocks", "zimage": "n_layers", "minit2i": "depth_double"}.get(architecture, "num_layers")
     block_count = config[count_key]
     if type(block_count) is not int or not 3 <= block_count <= 4096:
         raise ValueError("Native stream block count must be an integer between 3 and 4096")

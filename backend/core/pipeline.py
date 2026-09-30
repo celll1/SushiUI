@@ -890,6 +890,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "is_v_prediction": False,  # flow matching, x0 prediction
                     "model_hash": model_hash,
                     "variant": self.minit2i_components.get("variant"),
+                    "dit_rewiring_spec": getattr(model_result["transformer"], "_residual_unet_spec", None),
+                    "dit_rewiring_token_stride": model_result["transformer"].mmjit_config.patch_size * (
+                        model_result.get("vae_scale_factor", 8) if model_result.get("vae_type", "none") != "none" else 1),
                 }
                 self.current_model_info.update(
                     self._fold_component_latent_identity(model_result, "minit2i"))

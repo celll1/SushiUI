@@ -268,6 +268,112 @@ class Ideogram4RuntimeContracts(unittest.TestCase):
         self.assertEqual(len(checkpoints),4)
         self.assertFalse(torch.cuda.is_initialized())
 
+    def test_generation_dual_lora_topology_scope_and_partial_reload(self):
+        from core.pipeline_backends.ideogram4 import Ideogram4Mixin
+        from core.models.ideogram4.residual_unet import restore_topology,native_config
+        from core.training.adapters.ideogram4_adapter import Ideogram4LoRAAdapter
+        from core.rewiring.spec import checkpoint_metadata
+        from core.adapters import AdapterIncompatible,CompositeAdapterLayer
+        from safetensors.torch import save_file
+        class Manager(Ideogram4Mixin):
+            def __init__(manager,cond,uncond):manager.ideogram4_components={"transformer":cond,"unconditional_transformer":uncond}
+            def _ideogram4_resolve_lora_path(manager,path):return str(path)
+        cond=deepcopy(self.model);uncond=deepcopy(self.model);manager=Manager(cond,uncond)
+        original=cond.layers[0].attention.to_q;original_u=uncond.layers[0].attention.to_q
+        trained_uncond=deepcopy(self.model)
+        trainer=SimpleNamespace(transformer=self.model,transformer_uncond=trained_uncond,
+            ideogram4_train_uncond=True,config={})
+        adapter=Ideogram4LoRAAdapter(trainer,2,2,scope={"attn":True,"mlp":True,"mod":False})
+        self.model.requires_grad_(False);trained_uncond.requires_grad_(False)
+        layers={};adapter.apply_lora_to_unet(layers)
+        with torch.no_grad():
+            for layer in layers.values():
+                for value in layer.branch_tensors().values():value.add_(0.01)
+        tensors={f"{name}.{key}":value.detach().contiguous() for name,layer in layers.items()
+                 for key,value in layer.branch_tensors().items()}
+        restore_topology(self.model,self.spec);restore_topology(trained_uncond,self.spec)
+        expected=self.forward().detach()
+        with patch.object(self,"model",trained_uncond):expected_u=self.forward().detach()
+        cfg={"grid_h":8,"grid_w":12}
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);good=root/"good.safetensors";dense=root/"dense.safetensors"
+            bad=root/"bad.safetensors";different=root/"different.safetensors"
+            metadata={"model_type":"ideogram4",**checkpoint_metadata(self.spec)}
+            save_file(tensors,str(good),metadata=metadata)
+            save_file(tensors,str(dense),metadata={"model_type":"ideogram4"})
+            alternate=build_spec("ideogram4",self.spec["streams"],self.spec["regions"][:1],native_config(cond))
+            save_file(tensors,str(different),metadata={"model_type":"ideogram4",**checkpoint_metadata(alternate)})
+            save_file({**tensors,"lora_uncond_ghost.lora_down.weight":torch.ones(2,24),
+                       "lora_uncond_ghost.lora_up.weight":torch.ones(24,2)},str(bad),metadata=metadata)
+            request=lambda paths:[{"path":str(path),"strength":1.0} for path in paths]
+            for paths in ([good,dense],[good,different],[bad]):
+                with self.assertRaises(RuntimeError):manager._load_lora_ideogram4(request(paths))
+                self.assertIs(cond.layers[0].attention.to_q,original)
+                self.assertIs(uncond.layers[0].attention.to_q,original_u)
+                self.assertFalse(hasattr(cond,"_residual_unet_spec"));self.assertFalse(hasattr(uncond,"_residual_unet_spec"))
+            params={"loras":request([good])};files=manager._ideogram4_rewiring_preflight(params,cfg)
+            self.assertEqual(params["dit_rewiring_actual"]["spec"],self.spec)
+            self.assertFalse(hasattr(cond,"_residual_unet_spec"))
+            with patch.object(manager._ideogram4_lora_session,"parse",side_effect=AssertionError("duplicate parsing")):
+                self.assertGreater(manager._load_lora_ideogram4(request([good]),parsed_files=files),0)
+            for model,output in ((cond,expected),(uncond,expected_u)):
+                self.assertEqual(model._residual_unet_spec,self.spec)
+                with patch.object(self,"model",model):torch.testing.assert_close(self.forward(),output,rtol=0,atol=0)
+            manager._load_lora_ideogram4([])
+            self.assertIs(cond.layers[0].attention.to_q,original);self.assertIs(uncond.layers[0].attention.to_q,original_u)
+            for model in (cond,uncond):restore_topology(model,self.spec)
+            with self.assertRaises(AdapterIncompatible):manager._load_lora_ideogram4(request([dense]))
+            manager._load_lora_ideogram4(request([good]));manager._unload_lora_ideogram4()
+            for model in (cond,uncond):self.assertEqual(model._residual_unet_spec,self.spec);restore_topology(model,None)
+            manager._load_lora_ideogram4(request([good]))
+            with patch.object(manager._ideogram4_lora_session,"unload",side_effect=RuntimeError("restore failed")):
+                with self.assertRaisesRegex(RuntimeError,"restore failed"):manager._unload_lora_ideogram4()
+            for model in (cond,uncond):self.assertFalse(hasattr(model,"_residual_unet_spec"))
+            manager._unload_lora_ideogram4()
+            self.assertIs(cond.layers[0].attention.to_q,original);self.assertIs(uncond.layers[0].attention.to_q,original_u)
+            manager._load_lora_ideogram4(request([good]))
+            replacement=type(cond)(**native_config(cond));manager.ideogram4_components["transformer"]=replacement
+            manager._unload_lora_ideogram4()
+            self.assertFalse(any(isinstance(module,CompositeAdapterLayer) for module in replacement.modules()))
+            self.assertFalse(hasattr(replacement,"_residual_unet_spec"));self.assertFalse(hasattr(cond,"_residual_unet_spec"))
+            self.assertFalse(hasattr(uncond,"_residual_unet_spec"));self.assertIs(uncond.layers[0].attention.to_q,original_u)
+            manager.ideogram4_components["unconditional_transformer"]=None
+            with self.assertRaisesRegex(AdapterIncompatible,"both transformers"):
+                manager._ideogram4_rewiring_preflight({"loras":request([good])},cfg)
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_generation_entries_preflight_before_residency_and_encoding(self):
+        from core.pipeline_backends.ideogram4 import Ideogram4Mixin
+        from core.models.ideogram4.residual_unet import restore_topology
+        from core.rewiring.spec import digest
+        from PIL import Image
+        class Manager(Ideogram4Mixin):
+            def __init__(manager):
+                manager.device=torch.device("cpu")
+                manager.ideogram4_components={"transformer":self.model,"unconditional_transformer":deepcopy(self.model),"scheduler":object()}
+        manager=Manager()
+        for model in (self.model,manager.ideogram4_components["unconditional_transformer"]):restore_topology(model,self.spec)
+        image=Image.new("RGB",(192,128));mask=Image.new("L",image.size)
+        calls=[(manager._generate_txt2img_ideogram4,()),(manager._generate_img2img_ideogram4,(image,)),
+               (manager._generate_inpaint_ideogram4,(image,mask))]
+        with patch("core.keep_hot.compute_model_key",side_effect=RuntimeError("stop before residency")) as setup:
+            for generate,args in calls:
+                params={"width":512,"height":384,"seed":1}
+                with self.assertRaisesRegex(RuntimeError,"stop before residency"):generate(params,*args)
+                self.assertEqual(params["dit_rewiring_actual"],{"spec":self.spec,"spec_sha256":digest(self.spec),"kv_cache":False})
+                for options,message in (({"nag_enable":True},"NAG"),({"style_transfer":{"image":True}},"style injection"),
+                        ({"ref_images":["reference.png"]},"reference image grids"),
+                        ({"fbcache_enable":True,"fbcache_threshold":0.1},"FBCache"),
+                        ({"prompt":"(blurry:-1)"},"NegPip"),({"height":400},"divisible")):
+                    before=setup.call_count
+                    with self.assertRaisesRegex(Exception,message):generate(dict(params,**options),*args)
+                    self.assertEqual(setup.call_count,before)
+        for model in (self.model,manager.ideogram4_components["unconditional_transformer"]):restore_topology(model,None)
+        params={"dit_rewiring_actual":{}}
+        manager._ideogram4_rewiring_preflight(params,{"grid_h":8,"grid_w":12})
+        self.assertNotIn("dit_rewiring_actual",params)
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_metadata_identity_native_grid_and_feature_refusals(self):
         from core.models.ideogram4.residual_unet import restore_topology,model_topology_metadata,native_config
         restore_topology(self.model,self.spec)

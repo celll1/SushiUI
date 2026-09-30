@@ -1,10 +1,10 @@
 # SigLIP2とFoveaTagに対応する軽量captionerの実装設計
 
-2026-10-01。状態: **実装前の設計**。本書のモデル構成、API、数値は提案であり、
+2026-10-01。状態: **SigLIP2基盤実装済み、製品接続は未実装**。本書の初期モデル構成、API、実験値は提案であり、
 品質や速度の実測結果ではない。既存のSigLIP2 taggerを画像encoderとして共有し、
 画像の空間特徴と明示的なタグ概念から、短い自然言語captionを生成する専用decoderを学習する。
 蓄積済みのimage、tags、captionの組を教師データとして使う。
-別ブランチで開発中のFoveaTagも共通feature providerを通して接続する。
+別ブランチで開発中のFoveaTagはmain統合後のfuture planとし、現在の実装対象に含めない。
 依頼中の「ForbeTags」は、確認できたFoveaTagを指すものとして本書では扱う。
 
 目標は、ロード済みモデルで1画像の全文出力を数秒以内、できれば1秒以内に収めること。
@@ -110,7 +110,11 @@ paddingはresamplerでmaskし、batch内の他画像のpatch数で結果が変�
 現在のONNX成果物がlogitsしか公開しない場合、caption能力なしを返す。
 内部node名の探索でhiddenを取り出さず、将来のversioned feature exportで対応する。
 
-## FoveaTagの接続設計
+## FoveaTagのfuture plan
+
+FoveaTagはmainへ未統合のため、本節は将来の接続検討だけを扱う。
+SigLIP2の実装開始・完了条件にFoveaTagのコード、学習進捗、品質gateを含めない。
+現在のcaptionerにFoveaTagをimportせず、FoveaTag providerの実装はmain統合後に改めて設計を照合する。
 
 2026-10-01に`codex/tagger-hires-architecture-design`の`61ee6049`を読み、
 `backend/core/tagger/foveatag/{encoder,model,head,inference,batch}.py`と
@@ -187,8 +191,8 @@ slot/view/box対応、router更新時のcache失効を検証する。
 FoveaTag本体の品質gate通過とcaptionerの品質・速度gateは別々に記録する。
 decoder構造、tokenizer、concept処理コードは共有できるが、初期版の学習済みbundleはbackend別にする。
 両backendを混合して学習する場合は、その比率、provider別projection、backend別評価を別実験として保存する。
-provider契約は最初から共通化し、FoveaTag接続と学習は固定checkpointおよび
-安定したfeature contractが用意できた時点で第二実装段階として行う。
+SigLIP2のfeature recordはarchitecture固有の名称を避けるが、evidence拡張は本節の将来案とする。
+FoveaTag接続と学習はmain統合、固定checkpoint、安定したfeature contractが揃ってから着手する。
 
 ## 概念入力の契約
 
@@ -200,7 +204,7 @@ category allowlistはGeneralを初期候補とし、Character等はデータ品�
 Artist、Quality、Rating、メタタグは初期caption入力から除外する。
 選択は許可語彙のscore上位64件、tieはcanonical name順とする。
 表示用thresholdで低score情報を全部落とさず、score embeddingから記述要否を学習させる。
-全concept欠落時もvalid maskを持つempty tokenで処理できるようにする。
+全concept欠落時はconcept paddingをすべてmaskし、visual/global memoryだけで処理する。
 
 conceptは`E_tag(id) + MLP(score) + E_category + E_source`で表現する。
 scoreでembedding全体を単に乗算すると、低scoreの概念identityまで消すため初期方式にしない。
@@ -353,12 +357,39 @@ decoderだけの時間を全体速度と呼ばない。
 4. held-out品質とbranchアブレーションを行い、構成を選ぶ。tagger update互換性は失敗を明示する。
 5. OpenAPI、default source、推論と学習API、GPU調停、UI、dataset保存を接続する。
    predictがencoderを一回だけ呼ぶことと、cancel/reload/unload競合を検証する。
-6. FoveaTagの固定checkpointに共通providerを接続し、overview/evidence/geometryの
-   アブレーション、mode別速度、router/cache互換性を検証する。
-7. full bundleで品質・warm p95・容量を測定してから、必要ならONNX/INT8を追加する。
+6. SigLIP2のfull bundleで品質・warm p95・容量を測定してから、必要ならONNX/INT8を追加する。
    export後も本文品質、EOS、mask、cache、dtype差分を再検証する。
+
+FoveaTagはこの順序から独立したfuture planであり、SigLIP2のgate通過後かつmain統合後に検討する。
 
 backend編集時はrepo venvで変更ファイルのpy_compileと実importを両方行う。
 GPUを占有中ならAGENTS.mdのCUDA trigger stubを使い、serverは直接起動しない。
 frontend build/type-checkはrepo ownerが行う。
-本書のコミットは設計書のみで、モデル学習、benchmark、API変更を実施した証拠にはならない。
+## SigLIP2の実装進捗
+
+初期基盤として次を実装した。
+
+- taggerの`forward_features()`。旧forwardのlogits戻り値と通常/custom pooler、LoRAの分類経路を維持。
+- `core/captioner/features.py`。eval中のPyTorch taggerからno_gradで一回の特徴取得を行い、
+  NaFlexと固定解像度のmaskと正規化row-major座標を生成。live training状態は拒否。
+- `core/captioner/concepts.py`。category filter、canonical nameによるtie処理、Top-K、
+  predicted/provided/merged、unknown/excluded/truncation警告、語彙hash。
+  category tableは既存CATEGORY_ORDERにUnknownを加えたもの。modelのnum_categoriesを同じ表に合わせる。
+- `core/captioner/model.py`。座標projection、query resampler、global/concept memory、
+  weight tyingしたTransformer、PAD除外/EOS付きteacher loss、request局所KV cache付きgreedy生成。
+- `backend/tests/compact_captioner_test.py`。CPUで実transformers tiny SigLIP2を用いた特徴一致、
+  座標/padding、concept入力、causal/逐次cache一致、EOS/長さ制限/cancel、人工caption overfitを検証。
+
+この段階の生成はtoken IDsであり、実datasetから学習した自然文モデルはまだ存在しない。
+CaptionConfigの構造値はすべて明示引数とし、API defaultや公開schemaはまだ追加しない。
+checkpoint/tagger hashによるロード拒否、alias辞書の製品接続、tokenizer、dataset snapshot、
+feature cache、concept dropout、run管理、API/UI、保存/exportは後続実装である。
+FeatureProvider自体はGPU調停lockやmodel lifetimeを所有せず、管理層が導入されるまでは
+並行reload/unloadする本番managerへ接続しない。
+
+初期基盤と既存tagger回帰のCPUテスト19件が通過し、fp32/bf16/fp16でloss/backward/生成を確認した。
+変更backendのpy_compileと実importも通過した。これは小型人工例での動作検証である。
+検証時はCPUのみを使い、CUDA context未初期化をassertする。実checkpointのロード、GPU学習、
+速度benchmark、server restartは行わず、別ワークツリーのVRAM利用と競合させない。
+worktree間でin-process lockは共有できないため、将来のGPU実測開始前には他作業のGPU利用と調整する。
+この基盤検証は実caption品質や1秒目標達成の証拠にはならない。

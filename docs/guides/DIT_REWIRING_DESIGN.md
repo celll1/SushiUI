@@ -685,3 +685,45 @@ selection, cross-graph selection, independent regions on a previously dense
 stream, stream-specific endpoint dragging and parent choices in consolidated UI
 verification once a multiple-stream native integration is available. This editor
 work does not claim that a new architecture's native runtime is implemented.
+
+
+## Flux2 native execution foundation
+
+Flux2 now has an internal double/single native residual adapter. Each stream
+restores its full image grid before handing text/image states to the next stream;
+only the contiguous image tail is pooled, and evolving text states are retained.
+Native timestep/guidance modulation, projections, normalization and output heads
+are used. Per-batch timesteps/guidance are preserved rather than truncating to the
+first item. The block-swap wrapper routes rewired models through this native path
+and keeps the existing dense branch unchanged.
+
+Image positions require one shared row-major 2D grid in four axes (T,H,W,L).
+SushiUI's constant T/linear L layout and diffusers' constant T/L layout are
+accepted. Coarse grids preserve T, rebuild integer H/W, and either rebuild linear
+L or preserve its constant value. Text positions/rotary frequencies remain
+unchanged. Reference KV caching, reference token grids, extra attention arguments,
+NAG/NegPip/style processors, FBCache, token/block skipping and REPA are refused.
+The native guidance vector itself remains supported.
+
+Installing a topology replaces only the model instance's forward binding; no
+installed diffusers file or parameter is changed. Removing it restores the exact
+prior binding/descriptor. A deep-copied rewired model owns its own forward and can
+be restored independently. The shared offloader uses double indices followed by
+single indices, and native checkpointing receives the actual block and tensors.
+
+CPU contracts use the installed real Flux2Transformer2DModel with three double
+and seven single blocks, two heads/eight-dimensional heads, four-channel packed
+inputs, five text tokens and a rectangular 8x12 image grid. They verify double
+image lengths 96/24/96, single lengths 96/24/6/6/6/24/96, text-frequency identity,
+all ten wait/submit pairs, unchanged parameter identities, wrapper/root output
+identity, checkpointed/noncheckpointed finite gradient equivalence, independent
+clone restoration, dense forward restoration and feature/grid refusals. All 54
+aggregate CPU contracts and changed-file compile/real imports pass with CUDA
+untouched.
+
+This remains internal: native config/artifact persistence and loader restoration,
+training configuration/resume, generation adapter scopes, presets and model/editor
+discovery must be connected before Flux2 joins public capabilities. Legacy dense
+wrapper paths are not accepted by this new-path CPU check. No Flux2 GPU workflow,
+performance or quality evidence is claimed. Only Qwen-Image 2.1 receives actual
+GPU acceptance under the owner's instruction.

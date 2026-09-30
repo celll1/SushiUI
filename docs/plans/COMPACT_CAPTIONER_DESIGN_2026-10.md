@@ -417,7 +417,12 @@ Captioner tabの学習UIはdatasetごとに入力tags列と正解の自然文列
 runの開始・停止・再開、2秒ごとの状態とevents取得、checkpoint選択、推論exportを接続した。
 画面を閉じても学習は継続し、再度runを選ぶと保存された状態を取得する。
 checkpointとexportをpreviewのbundle pathへ渡し、利用者がロードしてsampleを確認できる。
-専用のsample APIと永続的なbatch管理は未実装である。
+専用のsample API `/captioner-training/runs/{run_id}/sample`を接続した。
+runに属するcheckpointから一時的なdecoderをロードし、既存の一致するPyTorch taggerを借用して
+登録dataset画像のcaptionを返す。通常のpreview用captionerは差し替えない。
+sampleにもGPU admissionとrequest cancelを適用し、workerの終了・一時decoderの解放までslotを保持する。
+成功sampleはrun eventsへ保存し、UIのpreview欄へ表示する。sidecarは自動保存しない。
+永続的なbatch管理は未実装である。
 GPU trainerの初期allocationは既存coordinatorでgenerationと排他する。
 worktree間のGPU調整と実training runのpause/offload検証はまだ必要である。
 実datasetから学習した自然文モデルはまだ存在せず、品質によるbest選択も未実装である。
@@ -443,3 +448,5 @@ worktree間でin-process lockは共有できないため、将来のGPU実測開
 小型の実trainerを使うCPU REST検証で、run作成・開始、checkpoint保存、進捗取得、
 optimizerなしexportとbundle再ロードを確認した。captioner関連のCPUテスト43件が通過した。
 学習UIはコードを読み合わせたが、build/type-checkと画面の動作確認は未検証である。
+専用sampleのencoder呼出し一回、通常previewの状態維持、結果eventの保存、cancel後の一時decoder解放、
+破損bundleの拒否をCPUで確認した。captioner関連のCPUテスト46件が通過した。

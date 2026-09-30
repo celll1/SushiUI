@@ -145,6 +145,7 @@ export default function CaptionerPanel() {
         <button className={input} disabled={busy || row.saved || !row.preview.caption.trim() || row.preview.dataset_id === undefined || !captionType.trim()} onClick={() => void save(index)}>確認済みcaptionを保存</button>
       </>}
     </section>)}
-    <CaptionerTrainingPanel onSelectBundle={setPath} />
+    <CaptionerTrainingPanel onSelectBundle={setPath} onSample={preview => setResults(old => [...old,
+      {key: `sample ${preview.run_id} · ${preview.checkpoint} · ${preview.item_id} · ${crypto.randomUUID()}`, preview}])} />
   </div>;
 }

@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   CaptionerDatasetConfig, CaptionerRunDefaults, CaptionerTaggerConfig, CaptionerTrainingConfig,
   CaptionerTrainingEvent, CaptionerTrainingRun, CaptionTypeInfo, Dataset,
+  CaptionerOptions, CaptionerPreview, cancelCaptionerRequest, getCaptionerDefaults, sampleCaptionerRun,
   createCaptionerRun, exportCaptionerRun, getCaptionerRun, getCaptionerRunDefaults,
   getCaptionerRunEvents, getCaptionerTrainingDefaults, getDatasetCaptionTypes,
   listCaptionerRuns, listDatasets, startCaptionerRun, stopCaptionerRun,
@@ -17,7 +18,9 @@ const message = (error: unknown) => {
 };
 const activeStatus = (status: string) => ["starting", "running", "stopping"].includes(status);
 
-export default function CaptionerTrainingPanel({onSelectBundle}: {onSelectBundle: (path: string) => void}) {
+export default function CaptionerTrainingPanel({onSelectBundle, onSample}: {
+  onSelectBundle: (path: string) => void; onSample: (preview: CaptionerPreview) => void;
+}) {
   const [defaults, setDefaults] = useState<CaptionerRunDefaults | null>(null);
   const [tagger, setTagger] = useState<CaptionerTaggerConfig | null>(null);
   const [configText, setConfigText] = useState("");
@@ -37,6 +40,11 @@ export default function CaptionerTrainingPanel({onSelectBundle}: {onSelectBundle
   const [exported, setExported] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [sampleOptions, setSampleOptions] = useState<CaptionerOptions | null>(null);
+  const [sampleDataset, setSampleDataset] = useState("");
+  const [sampleItem, setSampleItem] = useState("");
+  const [sampleTags, setSampleTags] = useState("");
+  const sampleRequest = useRef<string | null>(null);
   const selected = runs.find(run => run.run_id === selectedId);
   const previewCheckpoint = selected && (checkpoint
     ? selected.checkpoints.find(path => path.split(/[\\/]/).pop() === checkpoint)
@@ -44,16 +52,22 @@ export default function CaptionerTrainingPanel({onSelectBundle}: {onSelectBundle
 
   useEffect(() => {
     let mounted = true;
-    Promise.all([getCaptionerRunDefaults(), getCaptionerTrainingDefaults(), listCaptionerRuns(), listDatasets()])
-      .then(([d, cfg, data, ds]) => {
+    Promise.all([getCaptionerRunDefaults(), getCaptionerTrainingDefaults(), listCaptionerRuns(), listDatasets(), getCaptionerDefaults()])
+      .then(([d, cfg, data, ds, inference]) => {
         if (!mounted) return;
         setDefaults(d); setRunName(d.run_name); setOutput(d.output_dir ?? "");
         setTagger({checkpoint_path: "", vocab_path: "", vision_encoder_path: d.vision_encoder_path,
           lora_rank: d.lora_rank, lora_alpha: d.lora_alpha});
         setConfigText(JSON.stringify(cfg, null, 2)); setRuns(data.runs); setDatasets(ds.datasets);
         setCheckpoint(d.checkpoint);
+        setSampleOptions({tag_source: inference.tag_source, tags: inference.tags,
+          max_new_tokens: inference.max_new_tokens, device: inference.device});
+        setSampleTags(inference.tags.join("\n"));
       }).catch(e => {if (mounted) setError(message(e));});
-    return () => {mounted = false;};
+    return () => {
+      mounted = false;
+      if (sampleRequest.current) void cancelCaptionerRequest(sampleRequest.current).catch(() => {});
+    };
   }, []);
 
   useEffect(() => {
@@ -102,6 +116,19 @@ export default function CaptionerTrainingPanel({onSelectBundle}: {onSelectBundle
     const run = await createCaptionerRun({run_name: runName, output_dir: output.trim() || null,
       tagger, dataset_configs: datasetConfigs, config});
     updateRun(run); setSelectedId(run.run_id);
+  };
+  const sample = async () => {
+    if (!selected || !sampleOptions) return;
+    const item = Number(sampleItem), dataset = Number(sampleDataset);
+    if (!Number.isSafeInteger(item) || item < 1 || !dataset) throw new Error("正しいdatasetとitem IDを選択してください");
+    const id = crypto.randomUUID();
+    sampleRequest.current = id;
+    try {
+      const preview = await sampleCaptionerRun(selected.run_id, checkpoint, dataset, item, id,
+        {...sampleOptions, max_new_tokens: Math.min(sampleOptions.max_new_tokens, selected.config.max_length),
+          tags: sampleOptions.tag_source === "predicted" ? [] : sampleTags.split("\n").map(t => t.trim()).filter(Boolean)});
+      onSample(preview);
+    } finally {sampleRequest.current = null;}
   };
   const toggle = (values: string[], value: string) => values.includes(value)
     ? values.filter(v => v !== value) : [...values, value];
@@ -188,6 +215,26 @@ export default function CaptionerTrainingPanel({onSelectBundle}: {onSelectBundle
         <button className={input} disabled={!previewCheckpoint || busy} onClick={() => {if (previewCheckpoint) onSelectBundle(previewCheckpoint);}}>checkpointをpreview欄へ</button>
       </div>
       {exported && <p className="text-xs break-all">Export: {exported} <button className={input} onClick={() => onSelectBundle(exported)}>preview欄へ</button></p>}
+      {sampleOptions && <div className="rounded border border-gray-800 p-2 space-y-2">
+        <p className="text-xs">選択checkpointからsampleを生成します。左側に同じPyTorch taggerをロードし、deviceを一致させてください。preview用captionerは差し替えません。</p>
+        <div className="flex flex-wrap gap-2">
+          <select aria-label="Sample dataset" className={input} disabled={busy} value={sampleDataset} onChange={e => setSampleDataset(e.target.value)}>
+            <option value="">datasetを選択</option>{datasets.map(ds => <option key={ds.id} value={ds.id}>{ds.name} (#{ds.id})</option>)}
+          </select>
+          <input aria-label="Sample item id" className={`${input} w-28`} disabled={busy} value={sampleItem} onChange={e => setSampleItem(e.target.value)} placeholder="item ID" />
+          <select aria-label="Sample tag source" className={input} disabled={busy} value={sampleOptions.tag_source} onChange={e => setSampleOptions({...sampleOptions, tag_source: e.target.value as CaptionerOptions["tag_source"]})}>
+            <option value="predicted">predicted</option><option value="provided">provided</option><option value="merged">merged</option>
+          </select>
+          <select aria-label="Sample device" className={input} disabled={busy} value={sampleOptions.device} onChange={e => setSampleOptions({...sampleOptions, device: e.target.value as CaptionerOptions["device"]})}>
+            <option value="cpu">cpu</option><option value="cuda:0">cuda:0</option>
+          </select>
+          <label>Tokens <input className={`${input} w-24`} type="number" min={1} max={selected.config.max_length} disabled={busy} value={Math.min(sampleOptions.max_new_tokens, selected.config.max_length)} onChange={e => setSampleOptions({...sampleOptions, max_new_tokens: Number(e.target.value)})} /></label>
+          <button className={input} disabled={busy || !selected.checkpoints.length || !sampleDataset || !sampleItem} onClick={() => void action(sample)}>sampleを生成</button>
+          <button className={input} disabled={!sampleRequest.current} onClick={() => {if (sampleRequest.current) void cancelCaptionerRequest(sampleRequest.current).catch(e => setError(message(e)));}}>sampleをキャンセル</button>
+        </div>
+        {sampleOptions.tag_source !== "predicted" && <textarea aria-label="Sample tags one per line" className={`${input} w-full`} disabled={busy} value={sampleTags} onChange={e => setSampleTags(e.target.value)} placeholder="入力タグ（1行に1タグ）" />}
+        <p className="text-xs text-gray-400">生成結果は上のpreview欄に表示し、run eventsにも保存します。sidecarへの保存は確認後に行ってください。</p>
+      </div>}
       <details><summary>固定された設定</summary><pre className="overflow-x-auto text-xs">{JSON.stringify({tagger: selected.tagger, dataset_configs: selected.dataset_configs, config: selected.config}, null, 2)}</pre></details>
       <p className="text-xs">最新進捗（2秒ごとに取得）</p>
       <pre className="overflow-x-auto text-xs">{JSON.stringify(selected.progress, null, 2)}</pre>

@@ -24,6 +24,8 @@ export interface CaptionerPreview {
   dataset_id?: number;
   item_id?: number;
   dataset_revision?: number;
+  run_id?: string;
+  checkpoint?: string;
   termination: "eos" | "length_limit";
   token_count: number;
   warnings: string[];
@@ -163,6 +165,10 @@ export const getCaptionerRunEvents = async (runId: string, afterId: number, limi
   (await api.get(`/captioner-training/runs/${runId}/events`, {params: {after_id: afterId, limit}})).data;
 export const exportCaptionerRun = async (runId: string, checkpoint: string): Promise<{path: string}> =>
   (await api.post(`/captioner-training/runs/${runId}/export`, {checkpoint})).data;
+export const sampleCaptionerRun = async (runId: string, checkpoint: string, datasetId: number,
+  itemId: number, requestId: string, options: CaptionerOptions): Promise<CaptionerPreview> =>
+  (await api.post(`/captioner-training/runs/${runId}/sample`, {checkpoint, dataset_id: datasetId,
+    item_id: itemId, request_id: requestId, ...options})).data;
 import { wsClient } from "./websocket";
 import { resolveGlobalAttentionImpl, resolveGlobalAttentionMethod, resolveGlobalAttentionType } from "./attentionSettings";
 import { trainingFeatureUnsupportedReason } from "./trainingCapabilities";

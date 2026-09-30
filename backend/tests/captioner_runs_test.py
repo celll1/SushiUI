@@ -44,11 +44,11 @@ def test_defaults_strict_types_and_extra_fields():
 def test_training_openapi_parity():
     import yaml
     from api.captioner_training_routes import (router, CaptionerDatasetConfig,
-        CaptionerTaggerConfig, CaptionerExportRequest)
+        CaptionerTaggerConfig, CaptionerExportRequest, CaptionerSampleRequest)
     spec = yaml.safe_load((Path(__file__).resolve().parents[2] / "openapi.yaml").read_text(encoding="utf-8"))
     schemas = spec["components"]["schemas"]
     for model in (CaptionerTrainingConfig, CaptionerRunCreateRequest, CaptionerRunStartRequest,
-                  CaptionerDatasetConfig, CaptionerTaggerConfig, CaptionerExportRequest):
+                  CaptionerDatasetConfig, CaptionerTaggerConfig, CaptionerExportRequest, CaptionerSampleRequest):
         runtime = model.model_json_schema()
         declared = schemas[model.__name__]
         assert set(runtime["properties"]) == set(declared["properties"])

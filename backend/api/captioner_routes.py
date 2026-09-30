@@ -87,7 +87,7 @@ def _caption_error(exc, manager, *, loading=False):
         return ValidationError("ONNX taggers do not expose caption features", code="captioner_unsupported_backend")
     if manager.tagger.model is None:
         return ValidationError("Load a PyTorch SigLIP2 tagger first", code="captioner_tagger_not_loaded")
-    if "match" in str(exc):
+    if "tagger" in str(exc).lower() and "match" in str(exc).lower():
         return ValidationError(str(exc), code="captioner_tagger_mismatch")
     return ValidationError(str(exc), code="captioner_invalid_artifact" if loading else "captioner_invalid_input")
 
@@ -144,20 +144,33 @@ async def _caption_slot(device):
         model_state_coordinator.end_generation()
 
 
-async def _predict_caption(http_request, request_id, image_bytes, *, tag_source, tags, max_new_tokens, device):
-    manager = get_caption_manager()
+async def _predict_caption(http_request, request_id, image_bytes, *, tag_source, tags, max_new_tokens, device,
+                           manager=None, bundle_path=None):
+    manager = manager if manager is not None else get_caption_manager()
     stop = threading.Event()
     with _request_lock:
         if str(request_id) in _requests:
             raise APIError("Caption request id is already active", status_code=409, code="captioner_request_busy")
         _requests[str(request_id)] = stop
     try:
-        if not (await asyncio.to_thread(manager.status))["loaded"]:
+        if bundle_path is None and not (await asyncio.to_thread(manager.status))["loaded"]:
             raise ValidationError("Load a captioner bundle first", code="captioner_not_loaded")
         async with _caption_slot(device):
-            worker = asyncio.create_task(asyncio.to_thread(manager.predict, image_bytes,
-                tag_source=tag_source, tags=tags, max_new_tokens=max_new_tokens,
-                device=device, cancelled=stop.is_set))
+            def predict():
+                try:
+                    if bundle_path is not None:
+                        if stop.is_set():
+                            raise InterruptedError("Caption generation cancelled")
+                        try:
+                            manager.load(bundle_path)
+                        except (ValueError, OSError) as exc:
+                            raise _caption_error(exc, manager, loading=True) from exc
+                    return manager.predict(image_bytes, tag_source=tag_source, tags=tags,
+                        max_new_tokens=max_new_tokens, device=device, cancelled=stop.is_set)
+                finally:
+                    if bundle_path is not None:
+                        manager.unload()
+            worker = asyncio.create_task(asyncio.to_thread(predict))
             async def watch_disconnect():
                 while not worker.done():
                     if await http_request.is_disconnected():
@@ -210,14 +223,15 @@ async def predict_caption(request: Request, image: UploadFile = File(...), reque
                                  max_new_tokens=max_new_tokens, device=device)
 
 
-@router.post("/captioner/predict-item", response_model=CaptionerPredictionResponse)
-async def predict_caption_item(http_request: Request, request: CaptionerItemPredictRequest):
-    def read_item():
+def read_caption_image(dataset_id, item_id, session_factory=None):
+    if session_factory is None:
         from database import DatasetsSessionLocal
-        with DatasetsSessionLocal() as db:
-            dataset = db.query(Dataset).filter(Dataset.id == request.dataset_id).one_or_none()
-            item = db.query(DatasetItem).filter(DatasetItem.id == request.item_id,
-                DatasetItem.dataset_id == request.dataset_id).one_or_none()
+        session_factory = DatasetsSessionLocal
+    try:
+        with session_factory() as db:
+            dataset = db.query(Dataset).filter(Dataset.id == dataset_id).one_or_none()
+            item = db.query(DatasetItem).filter(DatasetItem.id == item_id,
+                DatasetItem.dataset_id == dataset_id).one_or_none()
             if dataset is None or item is None or item.item_type in {"audio", "video"}:
                 raise NotFoundError("Dataset image item not found", code="captioner_item_not_found")
             root = Path(dataset.path).resolve()
@@ -230,10 +244,13 @@ async def predict_caption_item(http_request: Request, request: CaptionerItemPred
             if len(content) > CAPTIONER_DEFAULTS["max_image_bytes"]:
                 raise APIError("Caption image is too large", status_code=413, code="captioner_image_too_large")
             return content, dataset.revision
-    try:
-        content, revision = await asyncio.to_thread(read_item)
     except OSError as exc:
         raise NotFoundError(str(exc), code="captioner_item_not_found") from exc
+
+
+@router.post("/captioner/predict-item", response_model=CaptionerPredictionResponse)
+async def predict_caption_item(http_request: Request, request: CaptionerItemPredictRequest):
+    content, revision = await asyncio.to_thread(read_caption_image, request.dataset_id, request.item_id)
     result = await _predict_caption(http_request, request.request_id, content, tag_source=request.tag_source,
         tags=request.tags, max_new_tokens=request.max_new_tokens, device=request.device)
     return {**result, "dataset_id": request.dataset_id, "item_id": request.item_id, "dataset_revision": revision}

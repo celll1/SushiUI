@@ -493,3 +493,47 @@ additional GPU run is needed for header discovery or read-only preview geometry.
 Positive stochastic block dropout is now refused by the shared request/YAML/runtime
 feature gate, before model loading or adapter mutation. This closes the gap between
 the planned feature boundary and Anima's native forward refusal.
+
+
+## Z-Image native execution foundation
+
+Z-Image has an internal residual adapter for its main joint block stack. Native
+noise/context refiners retain their full sequences. The actual image prefix is
+pooled; learned image-padding slots, caption-padding slots, caption tokens and
+ragged-batch padding remain outside the spatial grid and evolve through every
+joint block. The adapter transports the image prefix to the shared runtime's
+image-tail layout, restores native order for each block, and returns the full
+native sequence before the output head. Coarse RoPE retains each caption's native
+temporal offset and uses integer spatial positions; auxiliary frequencies/masks
+remain unchanged.
+
+The provisional boundary supports single-frame images with one grid per batch,
+including different caption lengths and image padding. It refuses NAG/NegPip,
+style injection, FBCache, TREAD, stochastic block skipping and REPA contexts.
+Native main-block checkpointing and offloader wait/submit ordering are retained.
+Constructor geometry is exposed without adding parameters. Absolute helper
+imports and checks against the actual attention class also support the loader's
+standalone module identity.
+
+Rewired training through BatchedZImageWrapperOptimized delegates to the native
+list forward, giving generation and training identical learned-padding and
+position semantics. Its ordinary dense execution retains the optimized path.
+A fixed caption-width expansion in that dense path now uses the input's actual
+width, allowing the nonstandard CPU fixture geometry; the standard 2560-wide
+model's expression remains equivalent. This conversion does not establish GPU
+activation-offload equivalence or throughput.
+
+Six new CPU contracts use a randomized seven-block native model: image and
+auxiliary token counts/masks/frequencies (with ragged captions and image padding),
+checkpointed output/gradient equivalence, wrapper/native equality and gradients,
+feature/grid/config refusals, file-loaded alias compatibility, and an independent
+constant-residual update that preserves every token's order. All 42 aggregate
+rewiring contracts pass. Five existing Z-Image LoRA round-trip checks and the
+scaled/scaleless loader and quantized Comfy-layout refusal checks pass; changed
+files compile/import with CUDA untouched.
+
+This remains an internal foundation. Artifact metadata restoration, training
+configuration/resume, generation LoRA topology scopes and model/editor discovery
+must be connected before Z-Image joins the public runtime capability list. No
+Z-Image GPU generation/training, performance or quality evidence is claimed; GPU
+acceptance remains restricted to Qwen-Image 2.1.

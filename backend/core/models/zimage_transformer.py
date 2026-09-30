@@ -455,6 +455,12 @@ class ZImageTransformer2DModel(nn.Module):
         self.all_f_patch_size = all_f_patch_size
         self.dim = dim
         self.n_heads = n_heads
+        self.n_layers = n_layers
+        self.n_refiner_layers = n_refiner_layers
+        self.n_kv_heads = n_kv_heads
+        self.norm_eps = norm_eps
+        self.qk_norm = qk_norm
+        self.cap_feat_dim = cap_feat_dim
         self.rope_theta = rope_theta
         self.t_scale = t_scale
 
@@ -510,6 +516,11 @@ class ZImageTransformer2DModel(nn.Module):
 
         # Gradient checkpointing flag
         self.gradient_checkpointing = False
+
+    @property
+    def config(self):
+        from core.models.zimage_residual_unet import native_config
+        return native_config(self)
 
     def enable_gradient_checkpointing(self):
         """Enable gradient checkpointing for memory-efficient training."""
@@ -654,6 +665,11 @@ class ZImageTransformer2DModel(nn.Module):
     ):
         assert patch_size in self.all_patch_size
         assert f_patch_size in self.all_f_patch_size
+
+        rewiring = getattr(self, "_residual_unet_spec", None)
+        if rewiring is not None:
+            from core.models.zimage_residual_unet import validate_forward
+            validate_forward(self, rewiring, x, patch_size, f_patch_size)
 
         bsz = len(x)
         device = x[0].device
@@ -806,7 +822,11 @@ class ZImageTransformer2DModel(nn.Module):
         # Mutually exclusive with Spectrum and Block Swap (guarded in the pipeline), so this branch
         # never runs alongside _block_offloader.
         fbcache = getattr(self, "_fbcache", None)
-        if fbcache is not None:
+        if rewiring is not None:
+            from core.models.zimage_residual_unet import run_rewired_zimage
+            unified = run_rewired_zimage(self, unified, adaln_input, unified_freqs_cis,
+                unified_attn_mask, x_size, x_pos_ids, patch_size, rewiring)
+        elif fbcache is not None:
             fbcache_step = getattr(self, "_fbcache_step", 0)
             original = unified
             first_out = self.layers[0](unified, unified_attn_mask, unified_freqs_cis, adaln_input)

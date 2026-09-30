@@ -18,6 +18,9 @@ def _native_adapter(architecture):
     if architecture == "anima":
         from core.models.anima import residual_unet as adapter
         return adapter, 16, 16
+    if architecture == "zimage":
+        from core.models import zimage_residual_unet as adapter
+        return adapter, 16, 16
     raise ValueError("Residual inspection requires a supported native DiT artifact")
 
 
@@ -45,7 +48,8 @@ def inspect_model(model_path):
             if not isinstance(class_name, str):
                 raise ValueError("Native model class must be a string")
             architecture = {"QwenImage21Transformer2DModel": "qwen_image_21",
-                            "Krea2Transformer2DModel": "krea2"}.get(class_name)
+                            "Krea2Transformer2DModel": "krea2",
+                            "ZImageTransformer2DModel": "zimage"}.get(class_name)
             _native_adapter(architecture)
             topology = read_directory_topology(transformer_dir)
     else:
@@ -81,6 +85,13 @@ def inspect_model(model_path):
                 raise ValueError("Residual inspection requires an Anima DiT artifact, not adapter weights")
             from core.models.anima.residual_unet import preflight_artifact
             topology, config = preflight_artifact(path)
+        elif architecture == "zimage":
+            if not any(key.startswith(("all_x_embedder.", "transformer.all_x_embedder.", "x_embedder.")) for key in keys):
+                raise ValueError("Residual inspection requires a Z-Image model artifact, not adapter weights")
+            from core.models.zimage_residual_unet import preflight_artifact
+            topology, config = preflight_artifact(path)
+            if config is None:
+                raise ValueError("Z-Image file inspection requires native config metadata")
         else:
             if not metadata.get("krea2_config"):
                 raise ValueError("Residual inspection requires a Krea model config declaration")
@@ -92,7 +103,8 @@ def inspect_model(model_path):
     config = adapter.native_config(config)
     if topology is not None:
         topology = adapter.validate_topology_identity(topology, config)
-    block_count = config["num_blocks" if architecture == "anima" else "num_layers"]
+    count_key = {"anima": "num_blocks", "zimage": "n_layers"}.get(architecture, "num_layers")
+    block_count = config[count_key]
     if type(block_count) is not int or not 3 <= block_count <= 4096:
         raise ValueError("Native stream block count must be an integer between 3 and 4096")
     streams = [{"name": "main", "block_count": block_count}]
@@ -101,6 +113,8 @@ def inspect_model(model_path):
         if type(patch) is not int or patch < 1:
             raise ValueError("Anima spatial patch size must be a positive integer")
         token_scale = alignment = patch * 8
+    if architecture == "zimage" and (2 not in config["all_patch_size"] or 1 not in config["all_f_patch_size"]):
+        raise ValueError("Z-Image editor requires the native 2-1 generation patch bank")
     from api.param_defaults import DIT_REWIRING_REGION_DEFAULTS
     edges = DIT_REWIRING_REGION_DEFAULTS["edge_blocks"]
     initial = build_spec(architecture, streams, [dict(

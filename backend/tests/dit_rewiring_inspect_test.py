@@ -174,6 +174,71 @@ class InspectionContracts(unittest.TestCase):
                 asyncio.run(check())
         self.assertFalse(torch.cuda.is_initialized())
 
+
+    def test_zimage_file_shard_directory_and_public_inspection_without_weights(self):
+        import httpx
+        from fastapi import FastAPI
+        import safetensors
+        from core.models.zimage_residual_unet import native_config, default_topology, configure_training_topology
+        from types import SimpleNamespace
+        from core.models.common.single_file_format import save_single_file_state
+        config = native_config({})
+        topology = default_topology(config)
+        original = safetensors.safe_open
+        class HeaderOnly:
+            def __init__(self,*args,**kwargs): self.handle=original(*args,**kwargs)
+            def __enter__(self): self.handle.__enter__(); return self
+            def __exit__(self,*args): return self.handle.__exit__(*args)
+            def metadata(self): return self.handle.metadata()
+            def keys(self): return self.handle.keys()
+            def get_tensor(self,*args): raise AssertionError("Tensor loading forbidden")
+        metadata = {"model_type":"zimage", "transformer_config":json.dumps(config), **checkpoint_metadata(topology)}
+        weights = {"all_x_embedder.2-1.weight":torch.ones(2,2), "layers.0.attention.to_q.weight":torch.ones(2,2)}
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); source=root/"model.safetensors"
+            save_file(weights,str(source),metadata=metadata)
+            (root/"config.json").write_text(json.dumps({**config,"_class_name":"ZImageTransformer2DModel"}),encoding="utf-8")
+            shard_dir=root/"sharded"; shard_dir.mkdir()
+            index=save_single_file_state(weights,metadata,str(shard_dir/"model.safetensors"),max_shard_bytes=16)
+            with patch("core.rewiring.inspect.safe_open",HeaderOnly), patch("core.rewiring.artifacts.safe_open",HeaderOnly), \
+                 patch.object(safetensors,"safe_open",HeaderOnly):
+                info=inspect_model(str(source))
+                self.assertEqual(info,inspect_model(str(root)))
+                self.assertEqual(info,inspect_model(str(index)))
+                self.assertEqual(info,inspect_model(str(shard_dir/"model.safetensors")))
+                self.assertEqual(info["architecture"],"zimage")
+                self.assertEqual(info["streams"],[{"name":"main","block_count":30}])
+                self.assertEqual(info["default_spec"],topology)
+                app=FastAPI(); app.include_router(router,prefix="/api/v1")
+                async def check():
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url="http://test") as client:
+                        schema=(await client.get("/api/v1/schema/dit-rewiring")).json()
+                        self.assertIn("zimage",schema["runtime_architectures"])
+                        self.assertEqual(schema["presets"]["zimage"]["regions"][1]["end_block"],17)
+                        reply=await client.post("/api/v1/models/rewiring/inspect",json={"model_path":str(source)})
+                        self.assertEqual(reply.status_code,200,reply.text)
+                        self.assertEqual(reply.json(),info)
+                        for value in (None, 2, [True], [0]):
+                            invalid=root/"invalid_config.safetensors"
+                            save_file(weights,str(invalid),metadata={"model_type":"zimage",
+                                "transformer_config":json.dumps(dict(config,all_patch_size=value))})
+                            refused=await client.post("/api/v1/models/rewiring/inspect",json={"model_path":str(invalid)})
+                            self.assertEqual(refused.status_code,422,refused.text)
+                asyncio.run(check())
+                adapter=root/"adapter.safetensors"
+                save_file({"lora_transformer_layers_0_attention_to_q.lora_down.weight":torch.ones(2,2)},str(adapter),metadata=metadata)
+                with self.assertRaisesRegex(ValueError,"not adapter weights"): inspect_model(str(adapter))
+                legacy=root/"legacy.safetensors"; save_file(weights,str(legacy),metadata={"model_type":"zimage"})
+                with self.assertRaisesRegex(ValueError,"native config metadata"): inspect_model(str(legacy))
+                custom=root/"custom.safetensors"; custom_config=dict(config,n_layers=7)
+                save_file(weights,str(custom),metadata={"model_type":"zimage","transformer_config":json.dumps(custom_config)})
+                custom_info=inspect_model(str(custom))
+                self.assertIsNone(custom_info["default_spec"])
+                model=SimpleNamespace(**custom_config,config=custom_config)
+                self.assertEqual(configure_training_topology(model,{"dit_rewiring_mode":"configure",
+                    "dit_rewiring_spec":custom_info["initial_spec"]}),custom_info["initial_spec"])
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_anima_inspection_keeps_native_stack_and_cuda_unloaded(self):
         import subprocess
         from core.models.anima.config import ANIMA_DIT_CONFIG

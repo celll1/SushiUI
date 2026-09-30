@@ -21,7 +21,14 @@ def native_config(config):
     values = {key: model.get(key, value) if isinstance(model, dict) else getattr(model, key, value)
               for key, value in fields.items()}
     for key in ("all_patch_size", "all_f_patch_size", "axes_dims", "axes_lens"):
-        values[key] = list(values[key])
+        sequence = values[key]
+        if not isinstance(sequence, (list, tuple)) or not sequence or any(type(value) is not int or value < 1 for value in sequence):
+            raise ValueError(f"Z-Image {key} must contain positive integers")
+        values[key] = list(sequence)
+    if len(values["all_patch_size"]) != len(values["all_f_patch_size"]):
+        raise ValueError("Z-Image patch banks must have paired spatial/temporal factors")
+    if len(values["axes_dims"]) != 3 or len(values["axes_lens"]) != 3:
+        raise ValueError("Z-Image native RoPE requires three axes")
     return values
 
 
@@ -155,5 +162,23 @@ def configure_training_topology(model, config, *, resuming=False, pending_adapte
                                 resume_spec=NO_RESUME_SPEC, install=True):
     from core.rewiring.training import resolve_training_topology
     return resolve_training_topology(native_model(model), config, "zimage",
-        validate_topology_identity, restore_topology, resuming=resuming,
+        validate_topology_identity, restore_topology, default_topology, resuming=resuming,
         pending_adapter_resume=pending_adapter_resume, resume_spec=resume_spec, install=install)
+
+
+def default_topology(config):
+    from copy import deepcopy
+    from api.param_defaults import DIT_REWIRING_PRESETS
+    from core.rewiring.spec import OPERATORS, build_spec
+    preset = deepcopy(DIT_REWIRING_PRESETS["zimage"])
+    resolved = native_config(config)
+    if resolved["n_layers"] != preset["block_count"]:
+        return None
+    return validate_topology_identity(build_spec("zimage",
+        [{"name": "main", "block_count": preset["block_count"]}],
+        [dict(region, **OPERATORS) for region in preset["regions"]], resolved), config)
+
+
+def generation_token_stride(vae):
+    blocks = getattr(getattr(vae, "config", None), "block_out_channels", None)
+    return (2 ** (len(blocks) - 1) if blocks else 8) * 2

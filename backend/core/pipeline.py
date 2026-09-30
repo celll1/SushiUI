@@ -1361,6 +1361,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     print(f"[Pipeline] Model hash: {model_hash[:16]}...")
 
                 zimage_vae_type = model_result.get("vae_type", "flux")
+                from core.models.zimage_residual_unet import generation_token_stride
 
                 self.current_model_info = {
                     "source_type": source_type,
@@ -1368,7 +1369,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "type": model_type,
                     "is_v_prediction": is_v_prediction,
                     "model_hash": model_hash,
-                    "vae_type": zimage_vae_type  # "flux" (16ch) or "sdxl" (4ch)
+                    "vae_type": zimage_vae_type,
+                    "dit_rewiring_spec": getattr(model_result["transformer"], "_residual_unet_spec", None),
+                    "dit_rewiring_token_stride": generation_token_stride(model_result.get("vae")),
                 }
                 self.current_model_info.update(
                     self._fold_component_latent_identity(model_result, "zimage"))

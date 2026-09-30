@@ -624,3 +624,35 @@ checked. This is not a full Z-Image generation/API/GPU acceptance result. All 48
 aggregate CPU contracts and 17 existing Z-Image LoRA/DoRA quantization guard tests
 pass; changed modules compile/import without CUDA initialization. Public Z-Image
 configuration/defaults and model/editor discovery remain pending.
+
+
+## Z-Image public topology configuration and inspection
+
+Z-Image now joins the public residual runtime capability list after its native
+CPU execution, artifact, training/resume and generation-adapter contracts. This
+is a provisional integration under the owner's Qwen-only GPU acceptance scope.
+The SSOT preset for the standard 30 main blocks has outer [4,26) and inner
+[13,17): eight full-resolution blocks, eighteen half-axis blocks and four
+quarter-axis blocks. Both refiner stacks retain native resolution. Main-stream
+image-token-linear work is 42.5% of dense; this excludes refiners, captions,
+padding and attention and is not measured speed or total FLOPs.
+
+File/shard inspection reads metadata and keys only, accepts full Z-Image model
+artifacts and rejects adapter-only keys. Files require declared native constructor
+config; legacy files without it retain existing dense loading but cannot yet seed
+the graphical editor. Native config directories are inspectable, but SushiUI's
+existing Z-Image directory loader remains unsupported; full saves use files or
+shard indices. Nonstandard block counts get an explicit editable initial region
+and no guessed standard preset. Generation remains bound to the native 2-1 bank.
+
+The capability response automatically enables the existing dynamic training
+editor; no additional frontend defaults are hardcoded. Loaded model info supplies
+the installed spec and the actual VAE-based pixel/token stride for the read-only
+summary. CPU checks exercise the public schema/inspect routes, single/sharded/
+sibling-index/directory inspection with tensor reads forbidden, LoRA-only refusal,
+standard preset and public request/YAML configuration. The frontend is reviewed
+statically; build/type checking and browser checks remain with the owner.
+
+All 50 aggregate CPU contracts pass, including API 422 refusal for malformed
+native array config. Changed files compile/import and OpenAPI parses with CUDA
+untouched. No further GPU run was performed for this provisional Z-Image surface.

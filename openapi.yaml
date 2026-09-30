@@ -3496,14 +3496,15 @@ paths:
                     type: array
                     description: Implemented backend architectures; topology and workflow compatibility are validated per request
                     items: {type: string}
-                    example: [qwen_image_21, krea2, anima]
+                    example: [qwen_image_21, krea2, anima, zimage]
   /models/rewiring/inspect:
     post:
       tags: [models]
       summary: Inspect native topology and checkpoint rewiring without loading weights
       description: >-
-        Reads Qwen-Image 2.1 and Krea 2 configs and checkpoint headers, including
-        transformer-only directories. Inspection and presets do not imply runtime
+        Reads Qwen-Image 2.1, Krea 2, Anima and Z-Image configs and checkpoint
+        headers, including transformer-only directories. Z-Image file inspection
+        requires a native constructor config declaration. Inspection and presets do not imply runtime
         support; consult /schema/dit-rewiring runtime_architectures.
       requestBody:
         required: true
@@ -25740,7 +25741,7 @@ components:
           example: configure
           description: >-
             Inherit the checkpoint topology, or configure a new residual U-Net.
-            Supported on Qwen-Image 2.1, Krea 2 and Anima. Resume requires the same topology.
+            Supported on Qwen-Image 2.1, Krea 2, Anima and Z-Image. Resume requires the same topology.
             Incompatible with token/block skipping and positive stochastic block dropout.
         dit_rewiring_spec:
           allOf:

@@ -218,11 +218,13 @@ class ZImageRuntimeContracts(unittest.TestCase):
         config = {}
         self.assertEqual(configure_training_topology(wrapper, config), self.spec)
         self.assertEqual(configure_training_topology(wrapper, config, resuming=True), self.spec)
-        with self.assertRaisesRegex(ValueError, "not yet supported"):
-            validate_training_rewiring(config, "zimage")
-        with self.assertRaisesRegex(ValueError, "not yet supported"):
+        self.assertEqual(validate_training_rewiring(config, "zimage"), ("inherit", self.spec))
+        self.assertEqual(configure_training_topology(wrapper, {"dit_rewiring_mode": "configure",
+                                                   "dit_rewiring_spec": self.spec}), self.spec)
+        changed = {**self.spec, "regions": [self.spec["regions"][0]]}
+        with self.assertRaisesRegex(ValueError, "without edits"):
             configure_training_topology(wrapper, {"dit_rewiring_mode": "configure",
-                                                   "dit_rewiring_spec": self.spec})
+                "dit_rewiring_spec": changed}, resuming=True)
         with self.assertRaisesRegex(ValueError, "block_skip_rate"):
             configure_training_topology(wrapper, {**config, "block_skip_rate": 0.1})
         self.assertEqual(self.model._residual_unet_spec, self.spec)
@@ -260,6 +262,32 @@ class ZImageRuntimeContracts(unittest.TestCase):
                 LoRATrainer.load_checkpoint(trainer, str(path))
             self.assertEqual(self.model._residual_unet_spec, self.spec)
         self.assertFalse(torch.cuda.is_initialized())
+
+
+    def test_default_preset_public_training_request_and_native_geometry(self):
+        from collections import Counter
+        from types import SimpleNamespace
+        from core.models.zimage_residual_unet import native_config, default_topology, configure_training_topology, generation_token_stride
+        from core.rewiring.spec import preview_plan
+        from api.routes import TrainingRunCreateRequest
+        from core.training.training_config import _build_train_section
+        config = native_config({})
+        model = SimpleNamespace(**config, config=config)
+        request = TrainingRunCreateRequest(training_method="lora", base_model_path="zimage",
+                                          total_steps=1, dit_rewiring_mode="configure")
+        section = _build_train_section(request.model_dump(), total_steps=1, epochs=None,
+                                      train_unet=True, train_text_encoder=False, arch="zimage")
+        spec = configure_training_topology(model, section)
+        self.assertEqual(spec, default_topology(config))
+        self.assertEqual(Counter(b["tokens"] for b in preview_plan(spec,64,64)["blocks"]),
+                         {4096:8, 1024:18, 256:4})
+        self.assertIsNone(default_topology(dict(config,n_layers=7)))
+        with self.assertRaisesRegex(ValueError,"No rewiring preset"):
+            configure_training_topology(self.model, {"dit_rewiring_mode":"configure"})
+        self.assertEqual(generation_token_stride(SimpleNamespace(config=SimpleNamespace(block_out_channels=[1,2,3]))),8)
+        with self.assertRaisesRegex(ValueError,"block_skip_rate"):
+            TrainingRunCreateRequest(training_method="lora", base_model_path="zimage",
+                total_steps=1, dit_rewiring_mode="configure", block_skip_rate=0.1)
 
     def test_native_shapes_auxiliary_masks_rope_and_offloader(self):
         count = sum(p.numel() for p in self.model.parameters())

@@ -517,9 +517,8 @@ class ZImageMixin:
             prompts = prompt if isinstance(prompt, list) else [prompt]
             if any(prompt_has_negative_weight(value) for value in prompts):
                 raise ValidationError("Z-Image residual U-Net generation does not support NegPip")
-        vae = self.zimage_components.get("vae")
-        blocks = getattr(getattr(vae, "config", None), "block_out_channels", None)
-        stride = (2 ** (len(blocks) - 1) if blocks else 8) * 2
+        from core.models.zimage_residual_unet import generation_token_stride
+        stride = generation_token_stride(self.zimage_components.get("vae"))
         try:
             if 2 not in transformer.all_patch_size or 1 not in transformer.all_f_patch_size:
                 raise ValueError("Z-Image generation requires the native 2-1 patch bank")

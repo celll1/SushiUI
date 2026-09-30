@@ -244,3 +244,81 @@ class MiniMaxH3WrapperResidualContracts(unittest.TestCase):
             got = self.wrapper(**{**args,'timestep_indices':times})
         for a,b in ((got[0],expected[0][:,permutation]),(got[1],expected[1])):
             torch.testing.assert_close(a,b,rtol=0,atol=0)
+
+    def test_actual_native_sampler_runs_nested_grid_and_preserves_condition_rows(self):
+        from core.models.minimax_h3.h3_pipeline_ops import denoise
+        from core.models.minimax_h3.vendor import MiniMaxH3Scheduler
+        layout = build_packed_layout(4,3,16,24,3,keyframe_anchors=('first',))
+        video = torch.randn(384,16); audio = torch.randn(6,6)
+        anchor = video[:96].clone()
+        observed = []
+        hooks = [b.register_forward_pre_hook(lambda module,args:observed.append(args[0].shape[1]))
+                 for b in self.inner.transformer_blocks]
+        try:
+            with torch.no_grad():
+                result = denoise(self.wrapper,MiniMaxH3Scheduler(),MiniMaxH3Scheduler(),
+                    prompt_embeds=torch.randn(1,4,10), layout=layout,
+                    video_rows=video, audio_rows=audio, num_inference_steps=4, device='cpu')
+        finally:
+            for hook in hooks: hook.remove()
+        self.assertEqual(observed, [106+n for n in (288,72,18,18,18,72,288)]*3)
+        self.assertTrue(torch.equal(result[0][:96],anchor))
+        self.assertEqual(result[0].shape,video.shape);self.assertEqual(result[1].shape,audio.shape)
+        self.assertTrue(all(torch.isfinite(value).all() for value in result))
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_sampler_rejects_forecasters_and_missing_geometry_before_scheduler_mutation(self):
+        from unittest.mock import patch
+        from core.models.minimax_h3.h3_pipeline_ops import denoise
+        from core.models.minimax_h3.vendor import MiniMaxH3Scheduler
+        layout = build_packed_layout(4,3,16,24,3)
+        scheduler = MiniMaxH3Scheduler()
+        args = dict(prompt_embeds=torch.randn(1,4,10), layout=layout,
+            video_rows=torch.randn(288,16),audio_rows=torch.randn(6,6),num_inference_steps=4,device='cpu')
+        with patch.object(scheduler,'set_shift',side_effect=AssertionError('scheduler mutated')):
+            for params in ({'spectrum_enable':True},{'fbcache_enable':True,'fbcache_threshold':.1}):
+                with self.assertRaisesRegex(ValueError,'Spectrum and FBCache'):
+                    denoise(self.wrapper,scheduler,MiniMaxH3Scheduler(),**args,spectrum_params=params)
+            bad = dict(layout);bad.pop('target_video_grid')
+            with self.assertRaisesRegex(ValueError,'target geometry'):
+                denoise(self.wrapper,scheduler,MiniMaxH3Scheduler(),**{**args,'layout':bad})
+
+    def test_actual_training_step_runs_native_nested_av_loss_and_updates_weights(self):
+        from types import SimpleNamespace
+        from core.training.ops.minimax_h3_ops import train_step
+        metrics = {}
+        trainer = SimpleNamespace(device=torch.device('cpu'),training_dtype=torch.float32,
+            transformer=self.wrapper,audio_loss_weight=.7,reconstruction_loss_weight=0.,
+            log_extra_metric=lambda name,value:metrics.update({name:float(value)}))
+        self.inner.enable_gradient_checkpointing()
+        before = self.inner.transformer_blocks[3].attn.to_q.weight.detach().clone()
+        optimizer = torch.optim.AdamW(self.inner.parameters(),lr=1e-3)
+        loss,pred,recon = train_step(trainer,torch.randn(1,4,3,16,24),torch.randn(1,4,10),
+            dict(num_text_tokens=torch.tensor([4]),audio_latents=torch.randn(1,6,6),
+                 audio_present=torch.tensor([True]),
+                 audio_valid_rows=torch.tensor([[True,True,True,True,False,False]])),
+            timesteps=torch.tensor([.4]))
+        self.assertTrue(torch.isfinite(loss));self.assertGreater(float(loss),0)
+        self.assertEqual(float(loss.detach()),float(pred));self.assertEqual(recon,0.)
+        self.assertEqual(metrics['h3_audio_present'],1.)
+        self.assertGreater(metrics['h3_video_loss'],0);self.assertGreater(metrics['h3_audio_loss'],0)
+        loss.backward()
+        optimizer.step()
+        self.assertFalse(torch.equal(before,self.inner.transformer_blocks[3].attn.to_q.weight))
+        self.assertTrue(all(p.grad is not None and torch.isfinite(p.grad).all()
+                            for b in self.inner.transformer_blocks for p in b.parameters()))
+        self.assertEqual(trainer._minimax_h3_layout_cache[(4,3,16,24,3,'cpu')]['target_video_grid'],
+                         dict(frames=3,height=8,width=12,start_row=10))
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_ref2va_native_target_geometry_excludes_variable_reference_banks(self):
+        from core.models.minimax_h3.h3_pipeline_ops import build_ref2va_packed_layout
+        from core.models.minimax_h3.residual_unet import forward_kwargs
+        layout = build_ref2va_packed_layout([1,1,1,1],[('video',False),('audio',False)],
+            [(2,8,12)],[4],3,16,24,3,pinned_video_frames=(1,))
+        grid = forward_kwargs(self.wrapper,layout)['residual_video_grid']
+        self.assertEqual((grid['frames'],grid['height'],grid['width']),(3,8,12))
+        self.assertEqual(grid['target_indices'].numel(),288)
+        self.assertEqual(int(grid['target_indices'][0]),layout['sequence_length']-288)
+        self.assertTrue(torch.isin(grid['target_indices'],layout['video_indices']).all())
+        self.assertNotEqual(int(layout['video_indices'][0]),int(grid['target_indices'][0]))

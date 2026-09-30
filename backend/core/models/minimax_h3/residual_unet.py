@@ -130,3 +130,26 @@ def run_native_blocks(wrapper, hidden, temb, state):
     result = run_rewired_stream(layout.pack(hidden), graph, 'main', layout.frames*layout.height,
         layout.width, layout.prefix, with_rotary(layout.context), execute, coarsen, grid_groups=layout.frames)
     return layout.unpack(result)
+
+
+def forward_kwargs(transformer, layout):
+    """Use target geometry recorded by the native layout builder, never modality guesses."""
+    inner = getattr(transformer, 'transformer', transformer)
+    if getattr(inner, '_residual_unet_spec', None) is None:
+        return {}
+    from core.models.minimax_h3_block_loop_wrapper import MiniMaxH3BlockLoopWrapper
+    if not isinstance(transformer, MiniMaxH3BlockLoopWrapper):
+        raise ValueError('MiniMax-H3 residual generation/training requires its native execution wrapper')
+    grid = layout.get('target_video_grid')
+    if not isinstance(grid, dict) or set(grid) != {'frames', 'height', 'width', 'start_row'}:
+        raise ValueError('MiniMax-H3 residual execution requires native layout target geometry')
+    if any(type(value) is not int for value in grid.values()) or any(grid[key] < 1 for key in ('frames','height','width')):
+        raise ValueError('MiniMax-H3 native layout target geometry is invalid')
+    count = grid['frames'] * grid['height'] * grid['width']
+    start = grid['start_row']
+    positions = layout['position_ids']
+    if start < 0 or start + count != positions.shape[0] or positions.shape[0] != layout['sequence_length']:
+        raise ValueError('MiniMax-H3 native layout target geometry disagrees with packed sequence')
+    target = torch.arange(start, start+count, device=positions.device)
+    return {'residual_video_grid':dict(frames=grid['frames'], height=grid['height'],
+                                     width=grid['width'], target_indices=target)}

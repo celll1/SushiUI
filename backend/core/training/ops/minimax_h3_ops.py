@@ -838,6 +838,8 @@ def train_step(
     # would override those casts and change the function from the one generation
     # runs. The LoRA layers cast their fp32 masters to the activation dtype
     # themselves for the same reason (see MiniMaxH3LoRALinearLayer).
+    from core.models.minimax_h3.residual_unet import forward_kwargs
+    residual_kwargs = forward_kwargs(trainer.transformer, layout)
     video_velocity, audio_velocity = trainer.transformer(
         hidden_states=video_rows,
         # fp32: `audio_proj_in` is one of the model's `_keep_in_fp32_modules`, so
@@ -854,6 +856,7 @@ def train_step(
         audio_indices=layout["audio_indices"],
         text_indices=layout["text_indices"],
         return_dict=False,
+        **residual_kwargs,
     )
 
     if profile_vram:

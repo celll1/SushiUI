@@ -65,6 +65,91 @@ tags:
     description: Developer-mode diagnostics (VRAM inspection)
 
 paths:
+  /captioner-training/runs:
+    get:
+      tags: [captioner]
+      summary: List persisted captioner training runs
+      responses:
+        '200': {description: Runs with inactive transient states reported as interrupted}
+    post:
+      tags: [captioner]
+      summary: Create a pending captioner run without loading models
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerRunCreateRequest'}
+            example:
+              tagger: {checkpoint_path: models/tagger/model.safetensors, vocab_path: models/tagger/vocabulary.json}
+              dataset_configs: [{dataset_id: 1, input_tag_caption_types: [tags], target_caption_types: [natural_language], filters: {}}]
+              config: {device: cpu, epochs: 10, batch_size: 8}
+      responses:
+        '200': {description: Persisted pending run with assigned output directory}
+        '400': {description: Invalid configuration, dataset selection or missing tagger files}
+        '409': {description: Output directory already exists or is owned by another run}
+  /captioner-training/runs/{run_id}:
+    get:
+      tags: [captioner]
+      summary: Read persisted captioner run and checkpoint paths
+      parameters:
+        - {name: run_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Run state and immutable configuration}
+        '404': {description: Run not found}
+  /captioner-training/runs/{run_id}/start:
+    post:
+      tags: [captioner]
+      summary: Start or resume one captioner training thread
+      description: Loads a private frozen tagger on CPU before GPU admission. Only one captioner worker is active per process. Resume configuration is immutable.
+      parameters:
+        - {name: run_id, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerRunStartRequest'}
+            example: {resume: true, checkpoint: ''}
+      responses:
+        '200': {description: Started run; poll its state and events}
+        '400': {description: Invalid resume checkpoint or no resumable checkpoint}
+        '404': {description: Run not found}
+        '409': {description: Captioner worker already active or run must resume instead of starting fresh}
+  /captioner-training/runs/{run_id}/stop:
+    post:
+      tags: [captioner]
+      summary: Request a checkpointed stop at the next batch boundary
+      parameters:
+        - {name: run_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Stopping or already terminal run}
+        '404': {description: Run not found}
+  /captioner-training/runs/{run_id}/events:
+    get:
+      tags: [captioner]
+      summary: Read durable training metrics, preparation coverage and checkpoint events
+      parameters:
+        - {name: run_id, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: after_id, in: query, schema: {type: integer, minimum: 0, default: 0}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 5000, default: 500}}
+      responses:
+        '200': {description: Ascending event id rows with resume sequence and event payload}
+        '404': {description: Run not found}
+  /captioner-training/runs/{run_id}/export:
+    post:
+      tags: [captioner]
+      summary: Export a verified optimizer-free inference bundle
+      parameters:
+        - {name: run_id, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerExportRequest'}
+            example: {checkpoint: ''}
+      responses:
+        '200': {description: New immutable export directory}
+        '400': {description: Checkpoint missing, corrupt or outside run output directory}
+        '404': {description: Run not found}
   /captioner/load:
     post:
       tags: [captioner]
@@ -11369,6 +11454,81 @@ components:
       bearerFormat: JWT
 
   schemas:
+    CaptionerTaggerConfig:
+      type: object
+      additionalProperties: false
+      required: [checkpoint_path, vocab_path]
+      properties:
+        checkpoint_path: {type: string, minLength: 1}
+        vocab_path: {type: string, minLength: 1}
+        vision_encoder_path: {type: string, default: ''}
+        lora_rank: {type: integer, minimum: 1, default: 32}
+        lora_alpha: {type: number, exclusiveMinimum: true, minimum: 0, default: 16.0}
+    CaptionerDatasetConfig:
+      type: object
+      additionalProperties: false
+      required: [dataset_id, input_tag_caption_types, target_caption_types, filters]
+      properties:
+        dataset_id: {type: integer, minimum: 1}
+        input_tag_caption_types: {type: array, items: {type: string}}
+        target_caption_types: {type: array, minItems: 1, items: {type: string}}
+        filters: {type: object, additionalProperties: true, description: 'item_ids, min_width and min_height only'}
+    CaptionerRunCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [tagger, dataset_configs, config]
+      properties:
+        run_name: {type: string, minLength: 1, default: captioner}
+        output_dir: {type: string, nullable: true, default: null, description: New exclusive directory; otherwise assigned below training/captioner}
+        tagger: {$ref: '#/components/schemas/CaptionerTaggerConfig'}
+        dataset_configs: {type: array, minItems: 1, items: {$ref: '#/components/schemas/CaptionerDatasetConfig'}}
+        config: {$ref: '#/components/schemas/CaptionerTrainingConfig'}
+    CaptionerRunStartRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        resume: {type: boolean, default: false}
+        checkpoint: {type: string, default: '', description: Owned checkpoint directory name; empty selects latest}
+    CaptionerExportRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        checkpoint: {type: string, default: '', description: Owned checkpoint directory name; empty selects latest}
+    CaptionerTrainingConfig:
+      type: object
+      additionalProperties: false
+      properties:
+        device: {type: string, default: cpu}
+        max_num_patches: {type: integer, default: 256}
+        allowed_categories: {type: array, items: {type: string}, default: [General]}
+        max_concepts: {type: integer, default: 64}
+        hidden_dim: {type: integer, default: 384}
+        heads: {type: integer, default: 6}
+        layers: {type: integer, default: 4}
+        ffn_dim: {type: integer, default: 1536}
+        visual_queries: {type: integer, default: 32}
+        max_length: {type: integer, default: 96}
+        dropout: {type: number, default: 0.1}
+        vocab_size: {type: integer, default: 8192}
+        tokenizer_min_frequency: {type: integer, default: 2}
+        learning_rate: {type: number, default: 0.0003}
+        weight_decay: {type: number, default: 0.01}
+        warmup_ratio: {type: number, default: 0.05}
+        epochs: {type: integer, default: 10}
+        batch_size: {type: integer, default: 8}
+        label_smoothing: {type: number, default: 0.05}
+        max_grad_norm: {type: number, default: 1.0}
+        seed: {type: integer, default: 42}
+        val_ratio: {type: number, default: 0.05}
+        test_ratio: {type: number, default: 0.05}
+        near_duplicate_distance: {type: integer, default: 4}
+        concept_dropout: {type: number, default: 0.15}
+        all_concept_dropout: {type: number, default: 0.1}
+        source_weights: {type: object, additionalProperties: {type: number}, default: {predicted: 0.7, provided: 0.2, merged: 0.1}}
+        cache_max_gb: {type: number, default: 20.0}
+        save_every_steps: {type: integer, default: 100}
+        use_tag_aliases: {type: boolean, default: true}
+        language: {type: string, default: en}
     CaptionerStatusResponse:
       type: object
       required: [loaded]

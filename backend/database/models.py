@@ -1147,6 +1147,46 @@ class TrainingMetrics(TrainingBase):
 
 
 
+class CaptionerTrainingRun(TrainingBase):
+    __tablename__ = "captioner_training_runs"
+    run_id = Column(String, primary_key=True)
+    run_name = Column(String, nullable=False)
+    output_dir = Column(String, unique=True, nullable=False)
+    status = Column(String, nullable=False)
+    config = Column(JSON, nullable=False)
+    tagger_config = Column(JSON, nullable=False)
+    dataset_configs = Column(JSON, nullable=False)
+    aliases = Column(JSON, nullable=False)
+    progress = Column(JSON, nullable=False)
+    checkpoints = Column(JSON, nullable=False)
+    resume_seq = Column(Integer, nullable=False)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=get_local_now)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
+    def to_dict(self):
+        return {"run_id": self.run_id, "run_name": self.run_name, "output_dir": self.output_dir,
+                "status": self.status, "config": self.config, "tagger": self.tagger_config,
+                "dataset_configs": self.dataset_configs, "progress": self.progress,
+                "checkpoints": self.checkpoints, "resume_seq": self.resume_seq, "error": self.error,
+                "alias_count": len(self.aliases),
+                "created_at": self.created_at.isoformat() if self.created_at else None,
+                "updated_at": self.updated_at.isoformat() if self.updated_at else None}
+
+
+class CaptionerTrainingEvent(TrainingBase):
+    __tablename__ = "captioner_training_events"
+    id = Column(Integer, primary_key=True)
+    run_id = Column(String, ForeignKey("captioner_training_runs.run_id"), nullable=False, index=True)
+    resume_seq = Column(Integer, nullable=False)
+    payload = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=get_local_now)
+
+    def to_dict(self):
+        return {"id": self.id, "run_id": self.run_id, "resume_seq": self.resume_seq,
+                "payload": self.payload, "timestamp": self.created_at.isoformat()}
+
+
 class TaggerTrainingRun(TrainingBase):
     """Training run for SigLIP2-based image tagger."""
     __tablename__ = "tagger_training_runs"

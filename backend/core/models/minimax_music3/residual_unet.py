@@ -206,3 +206,40 @@ def capture_generation_observation(pipeline, params, model):
     if actual is None or actual['spec_sha256'] != digest(model._residual_unet_spec):
         raise ValueError('MiniMax Music 3 generation did not observe its completed flow chunks')
     params['dit_rewiring_actual'] = deepcopy(actual)
+
+
+def temporal_geometry(condition_config):
+    from .vendor.condition_embedder_minimax_music3 import MiniMaxMusic3ConditionEncoder
+    from .defaults import CHUNK_FRAMES
+    parameters = inspect.signature(MiniMaxMusic3ConditionEncoder.__init__).parameters
+    values = {name:condition_config.get(name, parameters[name].default) for name in
+              ('input_sampling_rate','input_hop_length','output_sampling_rate','output_hop_length')}
+    if any(type(value) is not int or value < 1 for value in values.values()):
+        raise ValueError('MiniMax Music 3 native conditioning rates/hops must be positive integers')
+    frames = max(1,int(CHUNK_FRAMES * values['output_sampling_rate'] / values['input_sampling_rate']
+                       * values['input_hop_length'] / values['output_hop_length']))
+    return dict(frame_rate=values['output_sampling_rate']/values['output_hop_length'],
+                patch_size=1, preview_frames=frames, grid_policy=GRID_POLICY)
+
+
+def model_info(components):
+    model = components.get('transformer')
+    graph = getattr(model, '_residual_unet_spec', None)
+    info = dict(dit_rewiring_spec=None)
+    if graph is None:
+        return info
+    model_topology_metadata(model)
+    condition_config = components.get('condition_encoder_config')
+    if condition_config is None:
+        condition_config = getattr(components.get('condition_encoder'), 'config', None)
+    if not isinstance(condition_config, dict):
+        raise ValueError('MiniMax Music 3 restored topology requires native conditioning geometry')
+    config = native_config(model.config)
+    from .vendor.condition_embedder_minimax_music3 import MiniMaxMusic3ConditionEncoder
+    parameters = inspect.signature(MiniMaxMusic3ConditionEncoder.__init__).parameters
+    out_dim = condition_config.get('out_dim', parameters['out_dim'].default)
+    if type(out_dim) is not int or out_dim != config['condition_dim']:
+        raise ValueError('MiniMax Music 3 flow and condition encoder channels disagree')
+    info['dit_rewiring_spec'] = deepcopy(graph)
+    info['dit_rewiring_temporal_geometry'] = temporal_geometry(condition_config)
+    return info

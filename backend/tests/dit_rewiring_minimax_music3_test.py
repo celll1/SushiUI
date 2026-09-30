@@ -373,3 +373,42 @@ class MiniMaxMusic3ResidualContracts(unittest.TestCase):
                 manager._generate_txt2aud_minimax_music3(params)
             self.assertNotIn('dit_rewiring_actual',params)
         self.assertFalse(torch.cuda.is_initialized())
+
+    def test_loaded_model_info_exposes_native_flow_chunk_geometry(self):
+        import tempfile
+        from core.models.minimax_music3.residual_unet import model_info,temporal_geometry
+        from core import pipeline as pipeline_module
+        restore_topology(self.model,self.spec)
+        condition=self.flow_pipeline().condition_encoder
+        components=dict(type='minimax_music3',transformer=self.model,
+            condition_encoder=condition,condition_encoder_config=dict(condition.config),
+            text_encoder_path='/fixture/official/language_model')
+        info=model_info(components)
+        self.assertEqual(info['dit_rewiring_spec'],self.spec)
+        self.assertEqual(info['dit_rewiring_temporal_geometry'],
+            dict(frame_rate=13.,patch_size=1,preview_frames=260,grid_policy='zero_token_tail_v1'))
+        info['dit_rewiring_spec']['regions'][0]['id']='detached'
+        self.assertEqual(self.model._residual_unet_spec,self.spec)
+        default=temporal_geometry({})
+        self.assertEqual(default['frame_rate'],44100/512)
+        self.assertEqual(default['preview_frames'],689)
+        for bad in (0,-1,True,1.5):
+            with self.assertRaisesRegex(ValueError,'rates/hops'):
+                temporal_geometry({'input_hop_length':bad})
+        with self.assertRaisesRegex(ValueError,'channels disagree'):
+            model_info({**components,'condition_encoder_config':{'out_dim':8}})
+        with self.assertRaisesRegex(ValueError,'conditioning geometry'):
+            model_info({'transformer':self.model})
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(pipeline_module,'LAST_MODEL_CONFIG_FILE',Path(folder)/'last_model.json'), \
+             patch.object(pipeline_module.ModelLoader,'load_model',return_value=components):
+            manager=pipeline_module.DiffusionPipelineManager()
+            manager._load_model_locked('diffusers',str(Path(folder)/'music3'))
+            self.assertTrue(manager.is_minimax_music3_model)
+            self.assertEqual(manager.current_model_info['dit_rewiring_spec'],self.spec)
+            self.assertEqual(manager.current_model_info['dit_rewiring_temporal_geometry'],
+                             info['dit_rewiring_temporal_geometry'])
+        restore_topology(self.model,None)
+        self.assertEqual(model_info(components),{'dit_rewiring_spec':None})
+        self.assertEqual(model_info({}),{'dit_rewiring_spec':None})
+        self.assertFalse(torch.cuda.is_initialized())

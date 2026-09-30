@@ -1236,6 +1236,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     FALLBACK_FRAME_RATE, FALLBACK_NUM_CHANNELS_LATENTS, FALLBACK_SAMPLING_RATE,
                 )
 
+                from core.models.minimax_music3.residual_unet import model_info as residual_model_info
+
                 self.current_model_info = {
                     "source_type": source_type,
                     "source": source,
@@ -1243,6 +1245,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "is_v_prediction": False,  # flow matching, velocity prediction (flow stage only)
                     "model_hash": model_hash,
                     "is_audio": True,
+                    **residual_model_info(self.minimax_music3_components),
                     "sample_rate": self.minimax_music3_components.get("sample_rate", FALLBACK_SAMPLING_RATE),
                     "frame_rate": self.minimax_music3_components.get("frame_rate", FALLBACK_FRAME_RATE),
                     "latent_channels": self.minimax_music3_components.get(

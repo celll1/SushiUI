@@ -19235,12 +19235,12 @@ components:
         cumulative region factors; require_divisible never extends the grid.
         Legacy checkpoint identities without the policy field retain require_divisible.
       properties:
-        frame_rate: {type: integer, minimum: 1, example: 25}
+        frame_rate: {type: number, minimum: 0, exclusiveMinimum: true, example: 25}
         patch_size: {type: integer, minimum: 1, example: 2}
         preview_frames:
           type: integer
           minimum: 1
-          description: Initial preview clip length resolved from audio generation defaults.
+          description: Initial native audio preview frames, resolved from generation defaults or the native flow chunk geometry.
           example: 750
         grid_policy:
           type: string

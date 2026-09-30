@@ -164,6 +164,20 @@ def load_components(trainer) -> None:
           f"audio_latents_per_second={trainer.ltx2_audio_latents_per_second:.4f}, "
           f"use_cross_timestep={trainer.ltx2_use_cross_timestep}")
 
+    from core.models.ltx2.residual_unet import configure_training_topology
+    from core.rewiring.training import NO_RESUME_SPEC
+    resume_path = getattr(trainer, "resume_from_checkpoint", None)
+    resume_spec = NO_RESUME_SPEC
+    if resume_path and getattr(trainer, "_manages_own_resume", False):
+        from core.rewiring.artifacts import read_artifact_topology
+        from core.training.lora_trainer import resolve_lora_resume_checkpoint
+        checkpoint = resolve_lora_resume_checkpoint(trainer, resume_path)
+        if checkpoint is not None:
+            resume_spec = read_artifact_topology(checkpoint)
+    configure_training_topology(trainer.transformer, trainer.config, trainer=trainer,
+        resuming=bool(resume_path and Path(trainer.model_path).resolve() == Path(resume_path).resolve()),
+        resume_spec=resume_spec)
+
     setup_attention_backend(trainer, trainer.attention_backend)
 
     # Cast VAE to the desired dtype.

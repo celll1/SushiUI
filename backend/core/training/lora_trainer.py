@@ -40,6 +40,31 @@ def require_trainable_algebra(trainer, arch) -> None:
                                config.get("fp8_base_dtype") or None)
 
 
+def resolve_lora_resume_checkpoint(trainer, requested):
+    """Resolve the same adapter artifact for load-time preflight and resume."""
+    if not requested:
+        return None
+    if str(requested).lower() == "latest":
+        candidates = list(trainer.output_dir.glob(f"{trainer.run_name}_step_*.safetensors"))
+        from .base_trainer import _checkpoint_step_from_name
+        candidates = [path for path in candidates
+                      if path.name.removeprefix(f"{trainer.run_name}_step_")
+                      .removesuffix(".safetensors").isdigit()
+                      and _checkpoint_step_from_name(path.name) is not None]
+        checkpoint = max(candidates, key=lambda path: _checkpoint_step_from_name(path.name)) if candidates else None
+        if checkpoint is None:
+            if list(trainer.output_dir.glob(f"{trainer.run_name}_step_*_state.json")):
+                raise RuntimeError("LoRA resume state exists but no weight checkpoint remains")
+            return None
+    else:
+        checkpoint = trainer.output_dir / requested
+        if not checkpoint.is_file():
+            checkpoint = Path(requested)
+        if not checkpoint.is_file():
+            raise FileNotFoundError(f"LoRA resume checkpoint does not exist: {requested}")
+    return checkpoint
+
+
 class LoRATrainer(BaseTrainer):
     """
     LoRA Trainer for SD/SDXL/Z-Image models.
@@ -177,25 +202,10 @@ class LoRATrainer(BaseTrainer):
             return
         if self._loaded_checkpoint_path:
             return
-        if str(requested).lower() == "latest":
-            candidates = list(self.output_dir.glob(f"{self.run_name}_step_*.safetensors"))
-            from .base_trainer import _checkpoint_step_from_name
-            candidates = [path for path in candidates
-                          if path.name.removeprefix(f"{self.run_name}_step_")
-                          .removesuffix(".safetensors").isdigit()
-                          and _checkpoint_step_from_name(path.name) is not None]
-            checkpoint = max(candidates, key=lambda path: _checkpoint_step_from_name(path.name)) if candidates else None
-            if checkpoint is None:
-                if list(self.output_dir.glob(f"{self.run_name}_step_*_state.json")):
-                    raise RuntimeError("LoRA resume state exists but no weight checkpoint remains")
-                print(f"{self.log_prefix} Resume: no LoRA checkpoint found; starting fresh")
-                return
-        else:
-            checkpoint = self.output_dir / requested
-            if not checkpoint.is_file():
-                checkpoint = Path(requested)
-            if not checkpoint.is_file():
-                raise FileNotFoundError(f"LoRA resume checkpoint does not exist: {requested}")
+        checkpoint = resolve_lora_resume_checkpoint(self, requested)
+        if checkpoint is None:
+            print(f"{self.log_prefix} Resume: no LoRA checkpoint found; starting fresh")
+            return
         step = self.load_checkpoint(str(checkpoint))
         from .base_trainer import _checkpoint_step_from_name
         expected = _checkpoint_step_from_name(checkpoint.name)
@@ -344,6 +354,10 @@ class LoRATrainer(BaseTrainer):
         elif getattr(self, "is_acestep", False):
             from core.models.acestep.residual_unet import configure_training_topology
             configure_topology = configure_training_topology
+        elif getattr(self, "is_ltx2", False):
+            from functools import partial
+            from core.models.ltx2.residual_unet import configure_training_topology
+            configure_topology = partial(configure_training_topology, trainer=self)
         if configure_topology is not None:
             from core.rewiring.spec import read_checkpoint_metadata
             resume_topology = read_checkpoint_metadata(metadata)

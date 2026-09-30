@@ -220,6 +220,150 @@ class Ltx2RuntimeContracts(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,"native AV transformer"):load_ltx2_transformer_checkpoint(str(path))
         self.assertFalse(torch.cuda.is_initialized())
 
+    def test_resume_preflight_and_load_share_latest_and_relative_resolution(self):
+        import tempfile
+        from types import SimpleNamespace
+        from core.training.lora_trainer import resolve_lora_resume_checkpoint
+        with tempfile.TemporaryDirectory() as folder:
+            trainer=SimpleNamespace(output_dir=Path(folder),run_name="clip")
+            self.assertIsNone(resolve_lora_resume_checkpoint(trainer,"latest"))
+            for name in ("clip_step_9.safetensors","clip_step_12.safetensors","clip_step_bad.safetensors",
+                         "other_step_20.safetensors"):
+                (Path(folder)/name).touch()
+            expected=Path(folder)/"clip_step_12.safetensors"
+            self.assertEqual(resolve_lora_resume_checkpoint(trainer,"latest"),expected)
+            self.assertEqual(resolve_lora_resume_checkpoint(trainer,expected.name),expected)
+            self.assertEqual(resolve_lora_resume_checkpoint(trainer,str(expected)),expected)
+            with self.assertRaises(FileNotFoundError):resolve_lora_resume_checkpoint(trainer,"missing.safetensors")
+
+    def test_training_inheritance_resume_refusals_and_wrapper_ownership(self):
+        from types import SimpleNamespace
+        from core.models.ltx2.residual_unet import configure_training_topology, restore_topology
+        from core.training.ops.ltx2_ops import setup_wrapper
+        config={}
+        self.assertEqual(configure_training_topology(self.model,config),self.spec)
+        self.assertEqual(config["dit_rewiring_spec"],self.spec)
+        untouched={}
+        with self.assertRaisesRegex(ValueError,"topology disagree"):
+            configure_training_topology(self.model,untouched,resume_spec=None,install=False)
+        self.assertEqual(untouched,{})
+        for key in ("tread_enable","blockskip_enable","repa_enable"):
+            with self.subTest(key=key),self.assertRaises(ValueError):
+                configure_training_topology(self.model,{key:True})
+        restore_topology(self.inner,None)
+        with self.assertRaisesRegex(ValueError,"wrapper or trainer"):
+            configure_training_topology(self.inner,{},resume_spec=self.spec)
+        self.assertFalse(hasattr(self.inner,"_residual_unet_spec"))
+        pipeline=SimpleNamespace(transformer=self.inner)
+        trainer=SimpleNamespace(transformer=self.inner,ltx2_pipeline=pipeline,is_ltx2=True,config={})
+        self.assertEqual(configure_training_topology(self.inner,trainer.config,
+            resume_spec=self.spec,trainer=trainer,install=False),self.spec)
+        self.assertIs(trainer.transformer,self.inner)
+        configure_training_topology(self.inner,trainer.config,resume_spec=self.spec,trainer=trainer)
+        self.assertIs(trainer.transformer_original,self.inner)
+        self.assertIs(trainer.transformer,pipeline.transformer)
+        setup_wrapper(trainer)
+        self.assertIs(trainer.transformer.transformer,self.inner)
+        self.assertIs(trainer.transformer,trainer.ltx2_block_loop_wrapper)
+        self.assertEqual(trainer.config["dit_rewiring_spec"],self.spec)
+        before=self.forward()
+        actual=self.forward(model=trainer.transformer)
+        for a,b in zip(before,actual):torch.testing.assert_close(a,b,rtol=0,atol=0)
+
+    def test_native_training_step_updates_full_and_lora_weights_on_cpu(self):
+        from types import SimpleNamespace
+        from core.models.ltx2.residual_unet import configure_training_topology
+        from core.training.ops.ltx2_ops import train_step
+        from core.training.adapters.ltx2_adapter import Ltx2FullParameterAdapter,Ltx2LoRAAdapter
+        for method in ("full","lora"):
+            with self.subTest(method=method):
+                model=deepcopy(self.model)
+                trainer=SimpleNamespace(transformer=model,config={},device=torch.device("cpu"),
+                    training_dtype=torch.float32,mixed_precision=False,reconstruction_loss_weight=.25,
+                    ltx2_audio_in_channels=4,ltx2_audio_latents_per_second=5.,ltx2_use_cross_timestep=True,
+                    text_encoder=None,vae=None,train_unet=True,timestep_sampler=None)
+                configure_training_topology(model,trainer.config,trainer=trainer)
+                if method == "full":Ltx2FullParameterAdapter(trainer).prepare_models_for_training()
+                else:
+                    model.requires_grad_(False)
+                    layers={}
+                    Ltx2LoRAAdapter(trainer,2,2,torch.float32).apply_lora_to_unet(layers)
+                    model.train()
+                model.enable_gradient_checkpointing()
+                parameters=[value for value in model.parameters() if value.requires_grad]
+                optimizer=torch.optim.AdamW(parameters,lr=1e-3)
+                before=[value.detach().clone() for value in parameters]
+                grids=[]
+                hooks=[block.register_forward_pre_hook(lambda module,args,kwargs:
+                    grids.append(kwargs["hidden_states"].shape[1]),with_kwargs=True)
+                    for block in model.transformer_blocks]
+                try:
+                    loss,pred,recon=train_step(trainer,torch.randn(2,8,3,8,12),self.encoder.detach(),
+                        dict(audio_text_embedding=self.audio_encoder.detach(),mask=torch.ones(2,4),
+                             fps=torch.tensor([24.,30.])),timesteps=torch.tensor([.3,.6]))
+                    self.assertTrue(torch.isfinite(loss));self.assertGreater(pred.item(),0)
+                    self.assertGreater(recon.item(),0)
+                    self.assertEqual(grids,[288,72,18,18,18,72,288])
+                    loss.backward()
+                finally:
+                    for hook in hooks:hook.remove()
+                gradients=[value.grad for value in parameters if value.grad is not None]
+                self.assertTrue(gradients)
+                self.assertTrue(all(torch.isfinite(value).all() for value in gradients))
+                self.assertTrue(any(torch.count_nonzero(value).item() for value in gradients))
+                optimizer.step()
+                self.assertTrue(any(not torch.equal(value,old) for value,old in zip(parameters,before)))
+                self.assertEqual(model._residual_unet_spec,self.spec)
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_real_lora_resume_installs_wrapper_and_rejects_dense_mismatch_atomically(self):
+        import tempfile
+        from types import SimpleNamespace
+        from safetensors.torch import save_file,load_file
+        from safetensors import safe_open
+        from core.models.ltx2.residual_unet import restore_topology
+        from core.training.adapters.ltx2_adapter import Ltx2LoRAAdapter
+        from core.training.lora_trainer import LoRATrainer
+        trainer=SimpleNamespace(transformer=self.model,config={},is_ltx2=True,log_prefix="[CPU]",
+            lora_rank=2,lora_alpha=2,lora_layers={},ltx2_pipeline=SimpleNamespace(transformer=self.model))
+        adapter=Ltx2LoRAAdapter(trainer,2,2,torch.float32)
+        trainer.adapter=adapter
+        adapter.apply_lora_to_unet(trainer.lora_layers)
+        with torch.no_grad():
+            for layer in trainer.lora_layers.values():
+                for value in layer.branch_tensors().values():value.fill_(.03)
+        expected=self.forward()
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/"video.safetensors"
+            adapter.save_checkpoint(trainer.lora_layers,3,1,path)
+            with safe_open(str(path),framework="pt") as handle:metadata=handle.metadata()
+            bad=Path(folder)/"dense.safetensors"
+            save_file(load_file(str(path)),str(bad),metadata={key:value for key,value in metadata.items()
+                      if not key.startswith("sushi.rewire.")})
+            snapshots={name:{key:value.detach().clone() for key,value in layer.branch_tensors().items()}
+                       for name,layer in trainer.lora_layers.items()}
+            with patch("safetensors.torch.load_file",side_effect=AssertionError("No adapter tensors")):
+                with self.assertRaisesRegex(ValueError,"topology disagree"):
+                    LoRATrainer.load_checkpoint(trainer,str(bad))
+            self.assertEqual(self.inner._residual_unet_spec,self.spec)
+            for name,layer in trainer.lora_layers.items():
+                for key,value in layer.branch_tensors().items():
+                    torch.testing.assert_close(value,snapshots[name][key],rtol=0,atol=0)
+            restore_topology(self.inner,None)
+            trainer.transformer=self.inner
+            trainer.ltx2_pipeline.transformer=self.inner
+            with torch.no_grad():
+                for layer in trainer.lora_layers.values():
+                    for value in layer.branch_tensors().values():value.zero_()
+            self.assertEqual(LoRATrainer.load_checkpoint(trainer,str(path)),3)
+            self.assertEqual(trainer.transformer._residual_unet_spec,self.spec)
+            self.assertIs(trainer.transformer,trainer.ltx2_pipeline.transformer)
+            self.assertIs(trainer.transformer.transformer,self.inner)
+            self.assertEqual(trainer.config["dit_rewiring_spec"],self.spec)
+            actual=self.forward(model=trainer.transformer)
+            for a,b in zip(expected,actual):torch.testing.assert_close(a,b,rtol=0,atol=0)
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_directory_loader_restores_graph_before_companions(self):
         import json, tempfile
         from types import SimpleNamespace

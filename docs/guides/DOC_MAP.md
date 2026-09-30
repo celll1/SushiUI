@@ -60,6 +60,7 @@ machine-local working material.
 | [docs/guides/SDXL_REGULARIZATION.md](SDXL_REGULARIZATION.md) | SD/SDXL regularization behavior. |
 | [docs/guides/SENSENOVA_TRAINING_DESIGN.md](SENSENOVA_TRAINING_DESIGN.md) | SenseNova training contract and measured validation boundary. |
 | [docs/guides/TAGGER.md](TAGGER.md) | Legacy WD and trainable SigLIP2 tagger ownership, safety, and resume contracts. |
+| [docs/plans/COMPACT_CAPTIONER_DESIGN_2026-10.md](../plans/COMPACT_CAPTIONER_DESIGN_2026-10.md) | Proposed SigLIP2 and FoveaTag feature providers, explicit tag concepts, compact caption decoder, training artifacts, API integration, and quality/latency acceptance gates. |
 | [docs/plans/CONCEPT_BATCH_ORDER_DESIGN_2026-09.md](../plans/CONCEPT_BATCH_ORDER_DESIGN_2026-09.md) | Character/Artist concept batch ordering, caption matching, replay, and resume contract. |
 | [docs/plans/RESUME_DATASET_REBASE_DESIGN_2026-09.md](../plans/RESUME_DATASET_REBASE_DESIGN_2026-09.md) | Proposed mid-epoch batch-plan revision after adding or deselecting training datasets. |
 | [docs/plans/STYLE_EMBEDDING_DESIGN_2026-09.md](../plans/STYLE_EMBEDDING_DESIGN_2026-09.md) | Standalone artist-supervised style encoder: training, HSIC comparison, UI, and CPU inference; generation conditioning remains planned. |

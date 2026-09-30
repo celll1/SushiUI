@@ -1179,6 +1179,13 @@ class ModelLoader:
         the original is dropped, so a caller must not reuse it afterwards.
         """
         from core.models.zimage_transformer import ZImageTransformer2DModel
+        from core.models.zimage_residual_unet import preflight_artifact, validate_topology_identity, restore_topology
+        topology = None
+        if Path(path).is_file() or Path(str(path)+".index.json").is_file():
+            topology, _declared_config = preflight_artifact(path)
+            if topology is not None:
+                validate_topology_identity(topology, dict(transformer_config,
+                    n_layers=n_layers, in_channels=in_channels))
 
         print("[ModelLoader] Creating Z-Image transformer...")
         with torch.device("meta"):
@@ -1272,6 +1279,7 @@ class ModelLoader:
             state_dict = cast_float8_tensors(state_dict, torch_dtype)
 
         transformer.load_state_dict(state_dict, strict=True, assign=True)
+        restore_topology(transformer, topology)
         return transformer
 
     @staticmethod
@@ -1412,8 +1420,12 @@ class ModelLoader:
         Returns:
             Dict containing transformer, vae, text_encoder, tokenizer, scheduler
         """
+        if not os.path.exists(file_path) and Path(str(file_path)+".index.json").is_file():
+            file_path = str(file_path)+".index.json"
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"Z-Image Comfy safetensors not found: {file_path}")
+        from core.models.zimage_residual_unet import preflight_artifact
+        _topology, declared_transformer_config = preflight_artifact(file_path)
 
         print(f"[ModelLoader] Loading Z-Image from Comfy safetensors: {file_path}")
         print(f"[ModelLoader] Base components will be downloaded from: {base_model_repo}")
@@ -1475,6 +1487,8 @@ class ModelLoader:
             transformer_config_path = os.path.join(base_model_path, "transformer", "config.json")
             with open(transformer_config_path, 'r') as f:
                 transformer_config = json.load(f)
+            if declared_transformer_config is not None:
+                transformer_config = declared_transformer_config
 
             # Step 3: Detect actual layer count from safetensors file. Read once
             # via the shared reader so a sharded <stem>.safetensors.index.json
@@ -1527,23 +1541,9 @@ class ModelLoader:
             # If it has 16 input channels, use FLUX VAE (standard Z-Image)
             actual_in_channels = transformer_config["in_channels"]  # Default from config (16)
 
-            # Get patch size from config for x_embedder shape calculation
-            # all_patch_size can be [patch_h, patch_w] = [4, 4] or single value [4]
-            all_patch_size = transformer_config["all_patch_size"]
-            if isinstance(all_patch_size, (list, tuple)):
-                if len(all_patch_size) == 2:
-                    patch_h, patch_w = all_patch_size
-                elif len(all_patch_size) == 1:
-                    patch_h = patch_w = all_patch_size[0]
-                else:
-                    patch_h = patch_w = 4  # Default fallback
-            else:
-                patch_h = patch_w = all_patch_size  # Single integer
-            patch_product = patch_h * patch_w  # 16 for standard Z-Image (4x4)
-            # NOTE: no f_patch factor here, unlike subapps/fp8_quantize/quantize_transformer_fp8.py's
-            # _zimage_config, which multiplies by all_f_patch_size[0]. The two agree numerically
-            # only while all_f_patch_size == (1,), true of every published Z-Image config today.
-            # Keep both formulas in sync if that ever changes.
+            # Comfy's single embedder uses the first native patch bank.
+            patch_h = patch_w = transformer_config["all_patch_size"][0]
+            patch_product = patch_h * patch_w * transformer_config["all_f_patch_size"][0]
 
             # Try to detect from state_dict (x_embedder weight shape)
             # ComfyUI format: x_embedder.weight shape is [dim, in_channels * patch_h * patch_w]
@@ -1552,6 +1552,10 @@ class ModelLoader:
             for key in comfy_state_dict.keys():
                 if "x_embedder" in key and "weight" in key:
                     weight_shape = comfy_state_dict[key].shape
+                    if key.startswith("all_x_embedder."):
+                        spatial, temporal = map(int, key.split(".")[1].split("-"))
+                        patch_h = patch_w = spatial
+                        patch_product = spatial * spatial * temporal
                     if len(weight_shape) == 2:
                         # 2D weight: [dim, in_channels * patch_h * patch_w]
                         flattened_in = weight_shape[1]
@@ -2677,13 +2681,15 @@ class ModelLoader:
         Returns:
             Dict containing transformer, vae, text_encoder, tokenizer, scheduler
         """
+        if not os.path.exists(model_path) and Path(str(model_path)+".index.json").is_file():
+            model_path = str(model_path)+".index.json"
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Z-Image model directory not found: {model_path}")
 
         print(f"[ModelLoader] Loading Z-Image from: {model_path}")
 
         # Check if model_path is a single safetensors file (Comfy format) or directory (diffusers format)
-        is_single_file = os.path.isfile(model_path) and model_path.endswith('.safetensors')
+        is_single_file = os.path.isfile(model_path) and model_path.endswith((".safetensors", ".safetensors.index.json"))
 
         if is_single_file:
             print(f"[ModelLoader] Detected Comfy format safetensors, delegating to Comfy loader")

@@ -231,6 +231,7 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
         """Native forward plus explicit target geometry for residual execution."""
         residual_state = None
         if getattr(self.transformer, '_residual_unet_spec', None) is not None:
+            self.transformer.__dict__.pop('_residual_unet_last_grid', None)
             from core.models.minimax_h3.residual_unet import preflight_forward
             residual_state = preflight_forward(self, hidden_states, audio_hidden_states,
                 encoder_hidden_states, timestep, timestep_indices, token_tags, position_ids,
@@ -456,6 +457,9 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
             video_output = t.proj_out(hidden_states).index_select(1, video_indices)
             audio_output = t.audio_proj_out(hidden_states).index_select(1, audio_indices)
 
+        if residual_state is not None:
+            from core.models.minimax_h3.residual_unet import record_execution
+            record_execution(t, residual_state, video_indices.numel(), audio_indices.numel(), text_indices.numel())
         if not return_dict:
             return (video_output, audio_output)
         return MiniMaxH3TransformerOutput(sample=video_output, audio_sample=audio_output)

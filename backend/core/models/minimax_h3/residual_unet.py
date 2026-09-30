@@ -260,3 +260,38 @@ def inspect_artifact(path):
     if graph is not None:
         graph = validate_topology_identity(graph,config)
     return config,graph
+
+
+def begin_generation_observation(model, params):
+    params.pop('dit_rewiring_actual', None)
+    inner = getattr(model, 'transformer', model)
+    inner.__dict__.pop('_residual_unet_last_grid', None)
+
+
+def record_execution(model, state, video_tokens, audio_tokens, text_tokens):
+    from core.rewiring.spec import digest
+    graph, layout = state
+    inner = getattr(model, 'transformer', model)
+    inner._residual_unet_last_grid = dict(spec_sha256=digest(graph),
+        video_grid=[layout.frames, layout.height, layout.width], prefix_tokens=layout.prefix,
+        condition_video_tokens=video_tokens-layout.frames*layout.height*layout.width,
+        audio_tokens=audio_tokens, text_tokens=text_tokens)
+
+
+def generation_metadata(model):
+    from core.rewiring.spec import digest
+    inner = getattr(model, 'transformer', model)
+    graph = resolve_generation_topology(model, [])
+    if graph is None:
+        return None
+    observed = getattr(inner, '_residual_unet_last_grid', None)
+    if observed is None or observed['spec_sha256'] != digest(graph):
+        raise ValueError('MiniMax-H3 generation did not observe the current residual graph')
+    frames, height, width = observed['video_grid']
+    preview_plan(graph, height, width)
+    return dict(spec=deepcopy(graph), spec_sha256=digest(graph), grid_policy=GRID_POLICY,
+        video_geometry=video_geometry(inner.config), native_video_grid=[frames,height,width],
+        native_video_tokens=frames*height*width, native_audio_tokens=observed['audio_tokens'],
+        native_text_tokens=observed['text_tokens'], native_prefix_tokens=observed['prefix_tokens'],
+        native_condition_video_tokens=observed['condition_video_tokens'],
+        audio_grid_policy='native_unscaled', kv_cache=False)

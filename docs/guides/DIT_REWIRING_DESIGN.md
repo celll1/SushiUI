@@ -2491,7 +2491,33 @@ subtests; after adding native-loader and reload contracts, the MiniMax-H3 native
 DiT-reload and hybrid-lifecycle checks pass 69 cases and 14 subtests. Backend
 modules compile/import, OpenAPI parses, and CUDA stays uninitialized.
 
-This remains CPU/provisional support for MiniMax-H3. Output execution metadata,
-additional native full artifact formats, remaining architectures and consolidated
-owner frontend/workflow acceptance require completion. GPU validation remains
+This remains CPU/provisional support for MiniMax-H3. Additional native full
+artifact formats, remaining architectures and consolidated owner frontend/workflow
+acceptance require completion. GPU validation remains
 restricted to Qwen-Image 2.1.
+
+
+### MiniMax-H3 successful execution metadata (CPU)
+
+The native wrapper records target frame/height/width and packed prefix, reference
+video, audio and text token counts only after both output heads succeed. Failed
+forwards clear the prior observation; metadata extraction refuses an unobserved
+or changed graph. Captured graph dictionaries are detached from the live model.
+The common generation path snapshots this record before LoRA teardown, then
+attaches `dit_rewiring_actual` only after successful video/audio decode. Inpaint
+and outpaint propagate it from their subrequests after successful compositing.
+Both wrapper requests and common generation clear previous caller metadata.
+The shared video writer persists the record in its existing JSON sidecar.
+
+The real tiny native CPU forward observes 3x8x12 target tokens, 96 reference
+video tokens, 6 audio tokens and 4 text tokens; its packed prefix remains 106
+rows at every depth. Tests cover graph changes, failed output heads, detached
+snapshots, dense restoration and actual software video encoding/JSON readback.
+Together with native load/reload and hybrid lifecycle checks, 71 tests and 14
+subtests pass; changed backend modules compile and import with CUDA untouched.
+These fixtures validate execution and persistence, not MiniMax-H3 visual quality,
+throughput or a full production generation/decode workflow.
+
+GPU measurements and acceptance runs remain limited to Qwen-Image 2.1, per the
+owner's resource constraint. Other model implementations use CPU contracts and
+static inspection; their quality and throughput are explicitly unmeasured.

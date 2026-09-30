@@ -567,3 +567,28 @@ are covered. All 43 aggregate contracts pass, as do the existing Z-Image quantiz
 loader matrix/refusal checks and changed-module compile/import checks without CUDA
 initialization. Public training/generation scopes and editor discovery are still
 pending for Z-Image; it carries no GPU inference/training or quality claim.
+
+
+## Z-Image checkpoint training inheritance
+
+The component loader resolves topology after latent-space changes and before
+attention/checkpointing setup and weight freezing. It unwraps the batched training
+wrapper, so the native inference and training model share one installed topology.
+The LoRA resume path validates metadata without mutation before reading/applying
+branch weights, then installs topology only after every branch succeeds.
+
+Internal native resolvers may inherit a topology from a restored model or a
+validated resume artifact even before public configuration support is advertised.
+This exception applies only to `inherit`; request-level validation and new
+`configure` requests retain the runtime capability gate. An explicit inherited
+spec still has to match the model/resume declaration, constructor identity and
+feature constraints. It cannot create a new topology on a dense model.
+
+CPU contracts cover repeated wrapper inheritance, incompatible block dropping,
+actual component-loader ordering and freezing, and 36 real LoRA branches restored
+from a saved file. Missing branch weights leave weights/config/topology untouched;
+a dense resume declaration against a rewired base is rejected. Public Z-Image
+configuration/defaults, generation LoRA topology lifetime and editor discovery
+remain pending. All 45 aggregate CPU contracts and changed-file compile/real
+imports pass with CUDA untouched. No Z-Image GPU workflow or performance/quality
+claim is made.

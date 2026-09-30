@@ -3,7 +3,7 @@ from .capability import RUNTIME_ARCHITECTURES
 from .spec import validate_spec
 
 
-def validate_training_rewiring(config, architecture):
+def validate_training_rewiring(config, architecture, *, checkpoint_inheritance=False):
     from api.param_defaults import TRAINING_DEFAULTS
     mode = config.get("dit_rewiring_mode", TRAINING_DEFAULTS["dit_rewiring_mode"])
     if mode not in ("inherit", "configure"):
@@ -12,7 +12,7 @@ def validate_training_rewiring(config, architecture):
     if spec is not None:
         spec = validate_spec(spec)
     if mode == "configure" or spec is not None:
-        if architecture not in RUNTIME_ARCHITECTURES:
+        if architecture not in RUNTIME_ARCHITECTURES and not (mode == "inherit" and checkpoint_inheritance):
             raise ValueError(f"Residual rewiring is not yet supported for {architecture}")
         if spec is not None and spec["architecture"] != architecture:
             raise ValueError("Training topology architecture mismatch")
@@ -38,8 +38,10 @@ def resolve_training_topology(model, config, architecture, validate_topology_ide
                               restore_topology, default_topology=None, *, resuming=False,
                               pending_adapter_resume=False, resume_spec=NO_RESUME_SPEC,
                               install=True):
-    mode, requested = validate_training_rewiring(config, architecture)
     existing = getattr(model, "_residual_unet_spec", None)
+    mode, requested = validate_training_rewiring(config, architecture,
+        checkpoint_inheritance=existing is not None or
+        (resume_spec is not NO_RESUME_SPEC and resume_spec is not None))
     if mode == "configure" and requested is None:
         requested = None if default_topology is None else default_topology(dict(model.config))
         if requested is None:

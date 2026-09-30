@@ -3496,14 +3496,16 @@ paths:
                     type: array
                     description: Implemented backend architectures; topology and workflow compatibility are validated per request
                     items: {type: string}
-                    example: [qwen_image_21, krea2, anima, zimage, flux2, lens, minit2i, ideogram4, sensenova, acestep, ltx2]
+                    example: [qwen_image_21, krea2, anima, zimage, flux2, lens, minit2i, ideogram4, sensenova, acestep, ltx2, minimax_h3]
   /models/rewiring/inspect:
     post:
       tags: [models]
       summary: Inspect native topology and checkpoint rewiring without loading weights
       description: >-
         Reads Qwen-Image 2.1, Krea 2, Anima, Z-Image, Flux2, Lens, MiniT2I,
-        Ideogram 4, SenseNova, ACE-Step and LTX-2 configs and checkpoint headers. LTX-2
+        Ideogram 4, SenseNova, ACE-Step, LTX-2 and MiniMax-H3 configs and checkpoint headers. MiniMax-H3
+        reads its Comfy-style DiT header and companion native config; references and audio
+        remain native while its target-video grid is pooled spatially per frame. LTX-2
         exposes per-frame spatial scales; its time and audio grids remain native. ACE-Step
         exposes a temporal-only main stream; custom files require embedded native
         config, while published layouts must match the known native header geometry.
@@ -19217,10 +19219,10 @@ components:
       required: [temporal_scale_factor, height_scale_factor, width_scale_factor, grid_policy]
       description: Native pixel-to-token scales for frame-local video residual execution. Time and audio tokens are never pooled; preview token grids describe one frame.
       properties:
-        temporal_scale_factor: {type: integer, minimum: 1, example: 8}
+        temporal_scale_factor: {type: integer, nullable: true, minimum: 1, example: 8, description: "Null for a causal temporal mapping without one constant pixel-to-latent ratio, such as MiniMax-H3. Actual latent frames are preserved."}
         height_scale_factor: {type: integer, minimum: 1, example: 32}
         width_scale_factor: {type: integer, minimum: 1, example: 32}
-        grid_policy: {type: string, enum: [independent_spatial_frames_v1]}
+        grid_policy: {type: string, enum: [independent_spatial_frames_v1, packed_target_spatial_frames_v1]}
 
     DiTRewiringTemporalGeometry:
       type: object

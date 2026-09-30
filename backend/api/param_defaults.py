@@ -23,6 +23,15 @@ DIT_REWIRING_REGION_DEFAULTS: Dict[str, Any] = {"edge_blocks": 1, "down_factor":
     "temporal_down_factor": [2, 1]}
 
 DIT_REWIRING_PRESETS: Dict[str, Any] = {
+    "minimax_h3": {
+        "block_count": 50,
+        "regions": [
+            {"id": "r0", "stream": "main", "parent": None,
+             "start_block": 4, "end_block": 46, "down_factor": [2, 2]},
+            {"id": "r1", "stream": "main", "parent": "r0",
+             "start_block": 23, "end_block": 27, "down_factor": [2, 2]},
+        ],
+    },
     "ltx2": {
         "block_count": 48,
         "regions": [

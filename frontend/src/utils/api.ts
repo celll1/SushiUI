@@ -9527,8 +9527,8 @@ export function temporalRewiringGrid(spec: DiTRewiringSpec, frames: number,
   return { native, padded: Math.ceil(native / alignment) * alignment };
 }
 export interface DiTRewiringVideoGeometry {
-  temporal_scale_factor: number; height_scale_factor: number; width_scale_factor: number;
-  grid_policy: "independent_spatial_frames_v1";
+  temporal_scale_factor: number | null; height_scale_factor: number; width_scale_factor: number;
+  grid_policy: "independent_spatial_frames_v1" | "packed_target_spatial_frames_v1";
 }
 export interface DiTRewiringModelInfo {
   architecture: string; streams: DiTRewiringSpec["streams"];

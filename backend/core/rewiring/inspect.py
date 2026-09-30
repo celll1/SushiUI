@@ -9,6 +9,9 @@ from .spec import OPERATORS, build_spec, digest
 
 
 def _native_adapter(architecture):
+    if architecture == "minimax_h3":
+        from core.models.minimax_h3 import residual_unet as adapter
+        return adapter, 32, 32
     if architecture == "ltx2":
         from core.models.ltx2 import residual_unet as adapter
         return adapter, 32, 32
@@ -56,6 +59,11 @@ def inspect_model(model_path):
         from core.models.acestep.loader import detect_acestep_layout
         layout = detect_acestep_layout(str(path))
         if layout is not None:
+            path = Path(layout["dit"])
+    if path.is_dir():
+        from core.models.minimax_h3.loader import detect_minimax_h3_layout
+        layout = detect_minimax_h3_layout(str(path))
+        if layout is not None and layout.get("dit"):
             path = Path(layout["dit"])
     if path.is_dir():
         if (path / "manifest.json").is_file():
@@ -124,6 +132,8 @@ def inspect_model(model_path):
                 metadata = handle.metadata() or {}
                 keys = list(handle.keys())
         architecture = metadata.get("model_type")
+        if architecture is None and {"video_patch_proj.weight", "audio_patch_proj.weight", "condition_proj.weight", "blocks.0.attn.qkv_proj.weight"}.issubset(keys):
+            architecture = "minimax_h3"
         if architecture is None and any(key.startswith(("transformer_blocks.", "single_transformer_blocks.",
                 "model.diffusion_model.transformer_blocks.", "model.diffusion_model.single_transformer_blocks.")) for key in keys):
             from core.models.flux2.single_file import count_flux2_blocks
@@ -136,7 +146,10 @@ def inspect_model(model_path):
                 key.removeprefix("net.") for key in keys):
             architecture = "acestep"
         _native_adapter(architecture)
-        if architecture == "ltx2":
+        if architecture == "minimax_h3":
+            from core.models.minimax_h3.residual_unet import inspect_artifact
+            config, topology = inspect_artifact(path)
+        elif architecture == "ltx2":
             from core.models.ltx2.residual_unet import preflight_checkpoint
             topology, config = preflight_checkpoint(path)
             if config is None:
@@ -239,6 +252,11 @@ def inspect_model(model_path):
         if type(patch) is not int or patch < 1:
             raise ValueError("Anima spatial patch size must be a positive integer")
         token_scale = alignment = patch * 8
+    if architecture == "minimax_h3":
+        geometry = adapter.video_geometry(config)
+        import math
+        token_scale = geometry["height_scale_factor"]
+        alignment = math.lcm(geometry["height_scale_factor"], geometry["width_scale_factor"])
     if architecture == "ltx2":
         token_scale = config["vae_scale_factors"][1]
         import math
@@ -258,7 +276,7 @@ def inspect_model(model_path):
                 topology=topology, topology_sha256=None if topology is None else digest(topology),
                 default_spec=adapter.default_topology(config), initial_spec=initial,
                 latent_scale_factor=token_scale, pixel_alignment=alignment)
-    if architecture == "ltx2":
+    if architecture in ("ltx2", "minimax_h3"):
         info["video_geometry"] = adapter.video_geometry(config)
     if architecture == "acestep":
         info["temporal_geometry"] = adapter.temporal_geometry(config)

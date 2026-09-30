@@ -1147,11 +1147,16 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                         print(f"[Pipeline] Hash compute skipped: {e}")
 
                 from core.models.minimax_h3.hybrid_spec import hybrid_model_info_fields
+                from core.models.minimax_h3.residual_unet import video_geometry
                 from core.models.minimax_h3.loader import minimax_h3_te_model_info_fields
                 self.current_model_info = {
                     "source_type": source_type,
                     "source": source,
                     "type": "minimax_h3",
+                    "dit_rewiring_spec": getattr(self.minimax_h3_components["transformer"], "_residual_unet_spec", None),
+                    "dit_rewiring_video_geometry": video_geometry(
+                        self.minimax_h3_components["transformer"].config,
+                        self.minimax_h3_components.get("vae_scale_factor_spatial")),
                     "is_v_prediction": False,  # flow matching, velocity prediction
                     "model_hash": model_hash,
                     "is_video": True,
@@ -1638,6 +1643,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         merge leaves the live transformer, TE, VAEs and schedulers untouched.
         """
         from core.models.minimax_h3.hybrid_spec import hybrid_model_info_fields
+        from core.models.minimax_h3.residual_unet import video_geometry
         from core.models.minimax_h3.loader import minimax_h3_te_model_info_fields
         from core.models.minimax_h3.reload import build_dit_only_reload
 
@@ -1647,6 +1653,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             **({} if hybrid is None else {"hybrid": hybrid}))
         if replacement is None:
             return False
+        residual_geometry = video_geometry(
+            replacement["transformer"].config, replacement.get("vae_scale_factor_spatial"))
 
         model_hash = ""
         if os.path.exists(source):
@@ -1677,6 +1685,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             "source_type": source_type,
             "source": source,
             "type": "minimax_h3",
+            "dit_rewiring_spec": getattr(replacement["transformer"], "_residual_unet_spec", None),
+            "dit_rewiring_video_geometry": residual_geometry,
             "is_v_prediction": False,
             "model_hash": model_hash,
             "is_video": True,

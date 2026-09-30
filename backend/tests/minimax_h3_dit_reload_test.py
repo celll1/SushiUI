@@ -291,7 +291,7 @@ def test_pipeline_swap_updates_model_state_after_success(monkeypatch):
     from core import pipeline as pipeline_module
 
     current = _components()
-    replacement = dict(current, transformer=object(), transformer_config=object())
+    replacement = dict(current, transformer=SimpleNamespace(config={}), transformer_config={})
     monkeypatch.setattr(
         h3_reload, "build_dit_only_reload",
         lambda components, current_source, source: replacement,
@@ -319,3 +319,6 @@ def test_pipeline_swap_updates_model_state_after_success(monkeypatch):
     assert manager.current_model == "safetensors:new.safetensors"
     assert manager.current_model_info["source"] == "new.safetensors"
     assert manager._runtime_int8_converted is False
+
+    assert manager.current_model_info["dit_rewiring_spec"] is None
+    assert manager.current_model_info["dit_rewiring_video_geometry"]["grid_policy"] == "packed_target_spatial_frames_v1"

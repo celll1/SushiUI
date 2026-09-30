@@ -6,7 +6,7 @@ import { previewDiTRewiring, temporalRewiringGrid } from "@/utils/api";
 import type { DiTRewiringPlan, DiTRewiringSpec, DiTRewiringTemporalGeometry, DiTRewiringVideoGeometry } from "@/utils/api";
 import DiTRewiringGraph from "./DiTRewiringGraph";
 
-export default function DiTRewiringSummary({ spec, tokenStride, temporalGeometry, videoGeometry }: { spec: DiTRewiringSpec; tokenStride?: number; temporalGeometry?: DiTRewiringTemporalGeometry, DiTRewiringVideoGeometry }) {
+export default function DiTRewiringSummary({ spec, tokenStride, temporalGeometry, videoGeometry }: { spec: DiTRewiringSpec; tokenStride?: number; temporalGeometry?: DiTRewiringTemporalGeometry; videoGeometry?: DiTRewiringVideoGeometry }) {
   const { generationDefaults } = useStartup();
   const [plan, setPlan] = useState<DiTRewiringPlan | null>(null);
   const [error, setError] = useState<string | null>(null);

@@ -76,20 +76,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     setParams(prev => ({ ...DEFAULT_PARAMS, ...(trainingDefaults as Partial<TrainingRunCreateRequest>) }));
   }, [trainingDefaults, editRunId]);
 
-  // Edit mode gets no such replacement -- it would overwrite the run's own
-  // values with defaults -- so a control added AFTER a run was created had
-  // nothing to render: its key is in neither the run's YAML nor DEFAULT_PARAMS,
-  // and the input came up empty. That is not "unset"; the backend resolves
-  // TRAINING_DEFAULTS for an absent key, so the empty box stated something
-  // untrue about the run. Run 121's config predates the three SenseNova preview
-  // controls and showed exactly that.
-  //
-  // Back-fill only what the restore left undefined, so a value the YAML does
-  // carry always wins, and only preview keys: cfg_uncond_drop_rate and its
-  // deprecated twin distinguish "the caller said nothing" from an explicit 0.0,
-  // and filling one in would convert one into the other. No sample key carries
-  // that distinction. Order-independent -- the restore below merges by key, so
-  // it does not matter whether the defaults or the run's params land first.
+  // Back-fill absent preview/topology keys from API defaults; saved values win.
+  // Other keys can distinguish omission from an explicit value.
   useEffect(() => {
     if (!editRunId || !trainingDefaults) return;
     setParams(prev => {
@@ -97,7 +85,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       let changed = false;
       for (const [key, value] of Object.entries(trainingDefaults as Record<string, unknown>)) {
         if (key === "sample_prompts") continue;
-        if (!key.startsWith("sample_") && !key.startsWith("sensenova_sample_")) continue;
+        if (!key.startsWith("sample_") && !key.startsWith("sensenova_sample_")
+          && key !== "dit_rewiring_mode" && key !== "dit_rewiring_spec") continue;
         if (next[key] === undefined && value !== undefined) {
           next[key] = value;
           changed = true;

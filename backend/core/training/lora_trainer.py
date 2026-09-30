@@ -358,6 +358,10 @@ class LoRATrainer(BaseTrainer):
             from functools import partial
             from core.models.ltx2.residual_unet import configure_training_topology
             configure_topology = partial(configure_training_topology, trainer=self)
+        elif getattr(self, "is_minimax_h3", False):
+            from functools import partial
+            from core.models.minimax_h3.residual_unet import configure_training_topology
+            configure_topology = partial(configure_training_topology, trainer=self)
         if configure_topology is not None:
             from core.rewiring.spec import read_checkpoint_metadata
             resume_topology = read_checkpoint_metadata(metadata)

@@ -216,7 +216,9 @@ class MiniMaxH3LoRAAdapter(BaseLoRAAdapter):
     def checkpoint_metadata(self, lora_layers: Dict[str, nn.Module],
                             step: int, epoch: int) -> Dict[str, str]:
         """sd-scripts native format."""
+        from core.models.minimax_h3.residual_unet import model_topology_metadata
         return {
+            **model_topology_metadata(self.trainer.transformer),
             "model_type": "minimax_h3",
             "modelspec.architecture": "minimax_h3",
             "lora_rank": str(self.lora_rank),

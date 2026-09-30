@@ -322,3 +322,106 @@ class MiniMaxH3WrapperResidualContracts(unittest.TestCase):
         self.assertEqual(int(grid['target_indices'][0]),layout['sequence_length']-288)
         self.assertTrue(torch.isin(grid['target_indices'],layout['video_indices']).all())
         self.assertNotEqual(int(layout['video_indices'][0]),int(grid['target_indices'][0]))
+
+    def test_real_lora_save_resume_restores_graph_weights_and_native_predictions(self):
+        import tempfile
+        from types import SimpleNamespace
+        from safetensors import safe_open
+        from safetensors.torch import load_file, save_file
+        from unittest.mock import patch
+        from core.models.minimax_h3.residual_unet import restore_topology
+        from core.rewiring.spec import read_checkpoint_metadata, META_VERSION, META_SPEC, META_HASH
+        from core.training.adapters.minimax_h3_adapter import MiniMaxH3LoRAAdapter
+        from core.training.lora_trainer import LoRATrainer
+        from core.training.ops.minimax_h3_ops import train_step
+        base = deepcopy(self.inner)
+        restore_topology(base,None)
+        def trainer_for(model):
+            trainer = SimpleNamespace(transformer=model,transformer_original=getattr(model,'transformer',model),
+                minimax_h3_components={'transformer':model},config={},is_minimax_h3=True,
+                lora_layers={},lora_rank=2,lora_alpha=2,device=torch.device('cpu'),training_dtype=torch.float32,
+                audio_loss_weight=1.,reconstruction_loss_weight=0.,log_prefix='[H3 residual CPU]',
+                log_extra_metric=lambda name,value:None)
+            trainer.transformer.requires_grad_(False)
+            trainer.adapter = MiniMaxH3LoRAAdapter(trainer,lora_rank=2,lora_alpha=2)
+            trainer.adapter.apply_lora_to_unet(trainer.lora_layers)
+            return trainer
+        trained = trainer_for(self.wrapper)
+        params = [p for layer in trained.lora_layers.values() for p in layer.parameters() if p.requires_grad]
+        optimizer = torch.optim.AdamW(params,lr=1e-3)
+        loss,_,_ = train_step(trained,torch.randn(1,4,3,16,24),torch.randn(1,4,10),
+            dict(num_text_tokens=torch.tensor([4]),audio_latents=torch.randn(1,6,6)),timesteps=torch.tensor([.4]))
+        loss.backward();optimizer.step()
+        self.assertTrue(any(torch.count_nonzero(layer.lora_up.weight).item()>0 for layer in trained.lora_layers.values()))
+        with torch.no_grad(): expected = trained.transformer(**self.args)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'trained.safetensors'
+            trained.adapter.save_checkpoint(trained.lora_layers,step=8,epoch=1,output_path=path)
+            with safe_open(str(path),framework='pt',device='cpu') as handle:
+                metadata = handle.metadata()
+            self.assertEqual(read_checkpoint_metadata(metadata),self.spec)
+            generation_base = deepcopy(base)
+            resumed = trainer_for(base)
+            step = LoRATrainer.load_checkpoint(resumed,str(path))
+            self.assertEqual(step,8)
+            self.assertEqual(resumed.config['dit_rewiring_spec'],self.spec)
+            self.assertIs(resumed.minimax_h3_components['transformer'],resumed.transformer)
+            self.assertIs(resumed.transformer_original,base)
+            with torch.no_grad(): got = resumed.transformer(**self.args)
+            for a,b in zip(got,expected): torch.testing.assert_close(a,b,rtol=0,atol=0)
+            for name,layer in resumed.lora_layers.items():
+                for key,value in layer.branch_tensors().items():
+                    self.assertTrue(torch.equal(value,trained.lora_layers[name].branch_tensors()[key]))
+            from core.pipeline_backends.minimax_h3 import MiniMaxH3Mixin
+            from core.adapters import AdapterIncompatible
+            class Backend(MiniMaxH3Mixin):
+                def __init__(self,model):
+                    self.minimax_h3_components = {'transformer':model,'variant':'fl2va'}
+                @staticmethod
+                def _minimax_h3_resolve_lora_path(path): return str(path)
+            backend = Backend(generation_base)
+            self.assertGreater(backend._load_lora_minimax_h3([{'path':str(path),'strength':1.}],{}),0)
+            callable_model,offloader,probe = backend._ensure_minimax_h3_swap_and_offload({},torch.device('cpu'))
+            self.assertIsNone(offloader);self.assertIsNone(probe)
+            with torch.no_grad(): generated = callable_model(**self.args)
+            for a,b in zip(generated,expected): torch.testing.assert_close(a,b,rtol=2e-5,atol=2e-6)
+            with patch.object(backend,'_minimax_h3_move',side_effect=AssertionError('device move ran')):
+                for params in ({'spectrum_enable':True},{'_minimax_h3_debug_skip_blocks':[1]},
+                               {'_minimax_h3_debug_probe_residuals':True},
+                               {'fbcache_enable':True,'fbcache_threshold':.1}):
+                    with self.assertRaisesRegex(ValueError,'refuses caches'):
+                        backend._ensure_minimax_h3_swap_and_offload(params,torch.device('cpu'))
+            self.assertGreater(backend._unload_lora_minimax_h3(),0)
+            self.assertIsNone(getattr(generation_base,'_residual_unet_spec',None))
+            dense_md = {key:value for key,value in metadata.items() if key not in (META_VERSION,META_SPEC,META_HASH)}
+            dense = Path(directory)/'dense.safetensors'
+            save_file(load_file(str(path)),str(dense),metadata=dense_md)
+            with self.assertRaises(AdapterIncompatible):
+                backend._load_lora_minimax_h3([{'path':str(path),'strength':1.},
+                                              {'path':str(dense),'strength':1.}],{})
+            self.assertIsNone(getattr(generation_base,'_residual_unet_spec',None))
+            snapshots = {name:{key:value.clone() for key,value in layer.branch_tensors().items()}
+                         for name,layer in resumed.lora_layers.items()}
+            with patch('safetensors.torch.load_file',side_effect=AssertionError('tensor load ran')):
+                with self.assertRaisesRegex(ValueError,'topology disagree'):
+                    LoRATrainer.load_checkpoint(resumed,str(dense))
+            self.assertEqual(resumed.config['dit_rewiring_spec'],self.spec)
+            for name,layer in resumed.lora_layers.items():
+                for key,value in layer.branch_tensors().items():
+                    self.assertTrue(torch.equal(value,snapshots[name][key]))
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_training_resolution_dry_run_preserves_state_and_requires_wrapper_owner(self):
+        from core.models.minimax_h3.residual_unet import configure_training_topology,restore_topology
+        base = deepcopy(self.inner);restore_topology(base,None)
+        config = {}
+        graph = configure_training_topology(base,config,resume_spec=self.spec,install=False)
+        self.assertEqual(graph,self.spec);self.assertEqual(config,{})
+        self.assertIsNone(getattr(base,'_residual_unet_spec',None))
+        with self.assertRaisesRegex(ValueError,'wrapper or trainer'):
+            configure_training_topology(base,config,resume_spec=self.spec)
+        self.assertIsNone(getattr(base,'_residual_unet_spec',None));self.assertEqual(config,{})
+        self.assertEqual(configure_training_topology(self.wrapper,config),self.spec)
+        for feature in ('tread_enable','repa_enable','blockskip_enable'):
+            with self.subTest(feature=feature),self.assertRaises(ValueError):
+                configure_training_topology(self.wrapper,{feature:True})

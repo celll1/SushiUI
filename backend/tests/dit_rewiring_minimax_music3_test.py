@@ -249,3 +249,127 @@ class MiniMaxMusic3ResidualContracts(unittest.TestCase):
                         with self.assertRaisesRegex(ValueError,'Incomplete'):
                             builder(source,fixture['official'],torch.float32)
         self.assertFalse(torch.cuda.is_initialized())
+
+    def flow_pipeline(self):
+        from core.models.minimax_music3.pipeline import MiniMaxMusic3Pipeline
+        from core.models.minimax_music3.vendor.condition_embedder_minimax_music3 import MiniMaxMusic3ConditionEncoder
+        from diffusers import FlowMatchEulerDiscreteScheduler
+        pipeline=object.__new__(MiniMaxMusic3Pipeline)
+        pipeline.transformer=self.model
+        pipeline.condition_encoder=MiniMaxMusic3ConditionEncoder(condition_hidden_dim=3,
+            num_condition_layers=2,out_dim=6,input_sampling_rate=10,input_hop_length=1,
+            output_sampling_rate=13,output_hop_length=1).float().eval()
+        pipeline.scheduler=FlowMatchEulerDiscreteScheduler()
+        pipeline._execution_device=torch.device('cpu')
+        pipeline.vocoder=pipeline.language_model=pipeline.rvq_depth_decoder=None
+        return pipeline
+
+    def test_actual_flow_chunks_capture_cfg_counts_and_real_audio_sidecar(self):
+        import json,tempfile
+        from core.models.minimax_music3 import pipeline as module
+        from core.models.minimax_music3.residual_unet import capture_generation_observation
+        from utils import audio_utils
+        restore_topology(self.model,self.spec)
+        pipeline=self.flow_pipeline()
+        inputs=torch.randn(1,22,6)
+        with patch.object(module,'CHUNK_FRAMES',10),patch.object(module,'CHUNK_HOP',5), \
+             patch.object(module,'OVERLAP_LATENT_LENGTH',2):
+            chunks=pipeline.denoise_chunks(inputs,num_inference_steps=3,flow_guidance_scale=1.7,
+                generator=torch.Generator().manual_seed(9))
+        self.assertEqual([chunk.shape[-1] for chunk in chunks],[13,13,13,9])
+        self.assertTrue(all(torch.isfinite(chunk).all() for chunk in chunks))
+        actual=pipeline._dit_rewiring_flow_actual
+        self.assertEqual(actual['scope'],'flow_input_chunks')
+        self.assertEqual(actual['spec'],self.spec)
+        self.assertEqual([(r['input_frame_start'],r['input_frame_end']) for r in actual['chunks']],
+                         [(0,10),(5,15),(10,20),(15,22)])
+        self.assertEqual([r['native_audio_tokens'] for r in actual['chunks']],[13,13,13,9])
+        self.assertEqual([r['padded_audio_tokens'] for r in actual['chunks']],[16,16,16,12])
+        self.assertTrue(all(r['flow_evaluations']==6 and r['inference_steps']==3 for r in actual['chunks']))
+        params={'seed':9,'dit_rewiring_actual':{'stale':True}}
+        capture_generation_observation(pipeline,params,self.model)
+        self.assertEqual(params['dit_rewiring_actual'],actual)
+        params['dit_rewiring_actual']['chunks'][0]['native_audio_tokens']=999
+        self.assertEqual(actual['chunks'][0]['native_audio_tokens'],13)
+        capture_generation_observation(pipeline,params,self.model)
+        with tempfile.TemporaryDirectory() as folder,patch.object(audio_utils.settings,'outputs_dir',folder):
+            filename=audio_utils.save_audio_with_metadata(torch.sin(torch.arange(80).float())[None]*.1,
+                8000,params,'txt2aud',model_info={'type':'minimax_music3'})
+            self.assertGreater((Path(folder)/filename).stat().st_size,0)
+            sidecar=json.loads((Path(folder)/Path(filename).with_suffix('.json')).read_text(encoding='utf-8'))
+            self.assertEqual(sidecar['dit_rewiring_actual'],actual)
+        with patch.object(pipeline.scheduler,'step',side_effect=RuntimeError('flow failed')):
+            with self.assertRaisesRegex(RuntimeError,'flow failed'):
+                pipeline.denoise_chunks(inputs,3,1.7)
+        self.assertFalse(hasattr(pipeline,'_dit_rewiring_flow_actual'))
+        with self.assertRaisesRegex(ValueError,'completed flow chunks'):
+            capture_generation_observation(pipeline,params,self.model)
+        self.assertNotIn('dit_rewiring_actual',params)
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_flow_graph_change_and_dense_record_absence(self):
+        from core.models.minimax_music3.residual_unet import capture_generation_observation
+        pipeline=self.flow_pipeline()
+        restore_topology(self.model,self.spec)
+        changed=deepcopy(self.regions);changed[1]['start_block']=3
+        alternate=build_spec('minimax_music3',[{'name':'main','block_count':7}],changed,
+                             native_config(self.model.config))
+        def change_graph(*args):restore_topology(self.model,alternate)
+        with self.assertRaisesRegex(ValueError,'graph changed'):
+            pipeline.denoise_chunks(torch.randn(1,10,6),3,1.7,progress_callback=change_graph)
+        self.assertFalse(hasattr(pipeline,'_dit_rewiring_flow_actual'))
+        restore_topology(self.model,None)
+        pipeline.denoise_chunks(torch.randn(1,10,6),3,1.7)
+        params={'dit_rewiring_actual':{'stale':True}}
+        capture_generation_observation(pipeline,params,self.model)
+        self.assertNotIn('dit_rewiring_actual',params)
+        self.assertFalse(hasattr(pipeline,'_dit_rewiring_flow_actual'))
+
+    def test_backend_publishes_flow_metadata_only_after_successful_decode(self):
+        from types import SimpleNamespace
+        from core.models.minimax_music3 import pipeline as module
+        from core.pipeline_backends.minimax_music3 import MiniMaxMusic3Mixin
+        class Component(torch.nn.Module):
+            def __init__(self):
+                super().__init__();self.weight=torch.nn.Parameter(torch.ones(1),requires_grad=False)
+                self.model=SimpleNamespace(layers=[])
+                self.config=SimpleNamespace(num_codebooks=2,sampling_rate=8000)
+        restore_topology(self.model,self.spec)
+        flow=self.flow_pipeline()
+        language,depth,vocoder=Component(),Component(),Component()
+        class Manager(MiniMaxMusic3Mixin):
+            device='cpu'
+            is_minimax_music3_model=True
+        manager=Manager()
+        manager.minimax_music3_components=dict(tokenizer=object(),language_model=language,
+            rvq_depth_decoder=depth,transformer=self.model,condition_encoder=flow.condition_encoder,
+            scheduler=flow.scheduler,vocoder=vocoder,frame_rate=10,
+            rvq_depth_decoder_config={'num_codebooks':2})
+        fail_decode=False
+        def factory(**components):
+            pipeline=object.__new__(type(flow))
+            pipeline.__dict__.update(flow.__dict__)
+            for key,value in components.items():setattr(pipeline,key,value)
+            pipeline.encode_text=lambda *a:torch.zeros(2,4)
+            pipeline.generate_ar=lambda *a,**kw:SimpleNamespace(frame_hiddens=torch.randn(1,22,6),
+                frame_codes=torch.zeros(22,2,dtype=torch.long),prefix_codes=torch.zeros(1,2,dtype=torch.long))
+            def decode(*a,**kw):
+                if fail_decode:raise RuntimeError('decode failed')
+                return torch.full((1,2,32),.1)
+            pipeline.decode=decode
+            return pipeline
+        params=dict(prompt='CPU flow fixture',lyrics='[verse] test',seed=9,audio_duration=2.2,
+                    num_inference_steps=3,flow_guidance_scale=1.7,dit_rewiring_actual={'stale':True})
+        with patch.object(module,'MiniMaxMusic3Pipeline',side_effect=factory), \
+             patch.object(module,'CHUNK_FRAMES',10),patch.object(module,'CHUNK_HOP',5), \
+             patch.object(module,'OVERLAP_LATENT_LENGTH',2):
+            result=manager._generate_txt2aud_minimax_music3(params)
+            self.assertEqual(result.waveform.shape,(2,32))
+            self.assertEqual(params['dit_rewiring_actual']['spec'],self.spec)
+            self.assertEqual(len(params['dit_rewiring_actual']['chunks']),4)
+            self.assertTrue(all(record['flow_evaluations']==6 for record in params['dit_rewiring_actual']['chunks']))
+            fail_decode=True
+            with self.assertRaisesRegex(RuntimeError,'decode failed'):
+                manager._generate_txt2aud_minimax_music3(params)
+            self.assertNotIn('dit_rewiring_actual',params)
+        self.assertFalse(torch.cuda.is_initialized())

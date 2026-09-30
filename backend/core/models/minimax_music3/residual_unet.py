@@ -165,3 +165,44 @@ def preflight_flat_headers(graph, keys, config):
     if blocks != set(range(native_config(config)['num_layers'])) or not required.issubset(keys):
         raise ValueError('Rewired MiniMax Music 3 flat artifacts require complete native flow/condition headers')
     return graph
+
+
+def begin_flow_observation(pipeline):
+    pipeline.__dict__.pop('_dit_rewiring_flow_actual', None)
+    model = pipeline.transformer
+    if getattr(model, '_residual_unet_spec', None) is None:
+        return None
+    model.__dict__.pop('_residual_unet_last_grid', None)
+    model_topology_metadata(model)
+    return dict(spec_sha256=digest(model._residual_unet_spec), chunks=[])
+
+
+def observe_flow_evaluation(pipeline, observation):
+    if observation is None:
+        return None
+    actual = generation_metadata(pipeline.transformer)
+    if actual is None or actual['spec_sha256'] != observation['spec_sha256']:
+        raise ValueError('MiniMax Music 3 residual graph changed during flow generation')
+    return actual
+
+
+def finish_flow_observation(pipeline, observation):
+    if observation is None:
+        return
+    actual = observe_flow_evaluation(pipeline, observation)
+    if not observation['chunks']:
+        raise ValueError('MiniMax Music 3 residual flow did not observe any chunks')
+    pipeline._dit_rewiring_flow_actual = dict(
+        **{key:actual[key] for key in ('spec','spec_sha256','grid_policy','prefix_tokens','rotary_policy','kv_cache')},
+        scope='flow_input_chunks', chunks=deepcopy(observation['chunks']))
+
+
+def capture_generation_observation(pipeline, params, model):
+    params.pop('dit_rewiring_actual', None)
+    if getattr(model, '_residual_unet_spec', None) is None:
+        return
+    model_topology_metadata(model)
+    actual = getattr(pipeline, '_dit_rewiring_flow_actual', None)
+    if actual is None or actual['spec_sha256'] != digest(model._residual_unet_spec):
+        raise ValueError('MiniMax Music 3 generation did not observe its completed flow chunks')
+    params['dit_rewiring_actual'] = deepcopy(actual)

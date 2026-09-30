@@ -188,7 +188,7 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
             className="ml-2 rounded bg-gray-800 p-1" onChange={e => {
               const factor: [number, number] = [...region.down_factor]; factor[axis] = Number(e.target.value);
               editRegion(region.id, { down_factor: factor });
-            }}>{[2,4,8].map(f => <option key={f} value={f}>1/{f} of parent</option>)}</select>
+            }}>{[1,2,4,8].map(f => <option key={f} value={f}>{f === 1 ? "Keep parent size" : `1/${f} of parent`}</option>)}</select>
         </label>)}
         <label>Parent
           <select aria-label="Parent region" value={region.parent ?? ""} className="ml-2 rounded bg-gray-800 p-1"

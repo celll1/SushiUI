@@ -1605,3 +1605,42 @@ native, artifact, inspection and schema contracts (29 passing tests).
 This remains provisional CPU-verified SenseNova support. GPU performance and
 quality verification are exclusively Qwen-Image 2.1. Further DiT architectures
 and the final full-scope acceptance audit remain unfinished.
+
+
+## One-axis transport for temporal DiT adapters (CPU milestone)
+
+The common schema and editor now permit a per-axis factor of 1, retaining that
+axis while shrinking the other by 2, 4 or 8. A [1,1] region is refused because
+it performs no conversion. Existing two-axis presets and checkpoint hashes are
+unchanged. OpenAPI records the same supported factors and no-op refusal. The
+editor labels factor 1 as keeping the parent size; this does not expose a new
+audio/video architecture before its native adapter is connected.
+
+A temporal-only sequence can use the existing residual transport as a T-by-1
+logical grid with factors [2,1], or a 1-by-T grid with [1,2]. Average pooling and
+bilinear interpolation on that grid equal one-dimensional average pooling and
+linear interpolation. Nested residual updates restore the original sequence
+length, preserving the same block order, context restoration and parameter
+identity; conditioning tokens can remain outside the pooled tail.
+
+CPU tests compare values and every input/weight gradient against an independent
+1D oracle over two nested regions, verify both orientations and context transitions,
+and check exact zero-delta restoration in FP32, BF16 and FP16. Metadata round-trip
+and actual ASGI preview tests exercise a singleton axis and reject [1,1], boolean,
+zero and unsupported factors. All shared residual contract files pass (112 tests),
+changed backend files compile and import, and CUDA remains uninitialized. The
+frontend change is statically reviewed; owner build/type/browser checks remain
+pending.
+
+ACE-Step native inspection confirms a temporal Conv1d patch input, a decoder
+with separate encoder cross-attention, alternating full/sliding self-attention,
+RoPE, and ConvTranspose1d output with original-length cropping. Native integration
+must operate after patch projection and restore before the output projection,
+retain encoder conditioning, rebuild coarse RoPE and local-window connectivity,
+preserve checkpoint/offload hooks, and handle cached cross-attention separately
+from the resized self-attention sequence. Its source path currently discards
+input masks before constructing bidirectional decoder masks; residual support
+must not silently claim a stronger packed/padding contract than that native path.
+Native ACE-Step execution, artifact persistence, training/resume, generation
+lifetime and temporal editor units remain pending. No ACE-Step or other non-Qwen
+GPU model has been loaded.

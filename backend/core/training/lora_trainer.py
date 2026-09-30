@@ -338,6 +338,9 @@ class LoRATrainer(BaseTrainer):
                 raise ValueError("Ideogram 4 train_uncond requires a loaded unconditional transformer")
             configure_topology = partial(configure_training_topology,
                 unconditional_transformer=getattr(self,"transformer_uncond",None))
+        elif getattr(self, "is_sensenova", False):
+            from core.models.sensenova.residual_unet import configure_training_topology
+            configure_topology = configure_training_topology
         if configure_topology is not None:
             from core.rewiring.spec import read_checkpoint_metadata
             resume_topology = read_checkpoint_metadata(metadata)

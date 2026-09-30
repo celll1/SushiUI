@@ -9,13 +9,14 @@ interface Props {
   modelPath: string; resolution: number;
   mode: "inherit" | "configure" | undefined; spec: DiTRewiringSpec | null | undefined;
   onChange: (mode: "inherit" | "configure", spec: DiTRewiringSpec | null) => void;
+  onValidated?: (spec: DiTRewiringSpec | null) => void;
 }
 const message = (error: unknown): string => {
   const detail = (error as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
   return typeof detail === "string" ? detail : error instanceof Error ? error.message : "Topology validation failed";
 };
 
-export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, onChange }: Props) {
+export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, onChange, onValidated }: Props) {
   const [info, setInfo] = useState<DiTRewiringModelInfo | null>(null);
   const [plan, setPlan] = useState<DiTRewiringPlan | null>(null);
   const [validatedSpec, setValidatedSpec] = useState<DiTRewiringSpec | null>(null);
@@ -28,17 +29,19 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
   useEffect(() => { setPixels({ height: resolution, width: resolution }); }, [resolution]);
   useEffect(() => {
     let cancelled = false;
+    onValidated?.(null);
     setInfo(null); setPlan(null); setValidatedSpec(null); setSelected(""); setSelectedStream(""); setFrames(null); setError(null); setPending(true);
     inspectDiTRewiring(modelPath).then(value => {
       if (!cancelled) { setInfo(value); setFrames(value.temporal_geometry?.preview_frames ?? null); }
     }).catch(err => { if (!cancelled) setError(message(err)); })
       .finally(() => { if (!cancelled) setPending(false); });
     return () => { cancelled = true; };
-  }, [modelPath]);
+  }, [modelPath, onValidated]);
   const configuring = mode === "configure";
   const current = configuring ? (spec ?? info?.default_spec ?? null) : (spec ?? info?.topology ?? null);
   useEffect(() => {
     let cancelled = false;
+    onValidated?.(null);
     if (!info) return;
     setPending(false);
     if (!current) { setPlan(null); setError(null); return; }
@@ -72,12 +75,13 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
             setError("The inherited topology assertion differs from the checkpoint."); setPlan(null); return;
           }
           setValidatedSpec(current); setPlan(value.plan); setError(null);
+          onValidated?.(value.spec);
         })
         .catch(err => { if (!cancelled) { setError(message(err)); setPlan(null); } })
         .finally(() => { if (!cancelled) setPending(false); });
     }, 120);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [current, info, configuring, spec, pixels, frames]);
+  }, [current, info, configuring, spec, pixels, frames, onValidated]);
   let timeGrid: { native: number; padded: number } | null = null;
   if (current && info?.temporal_geometry) {
     try { timeGrid = temporalRewiringGrid(current, frames ?? info.temporal_geometry.preview_frames,

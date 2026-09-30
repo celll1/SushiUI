@@ -3568,6 +3568,44 @@ paths:
                     $ref: '#/components/schemas/DiTRewiringTemporalGeometry'
         '422':
           description: Unsupported model or incompatible artifact topology
+  /models/rewiring/export:
+    post:
+      tags: [models]
+      summary: Export an acoustic residual topology as a new safetensors file
+      description: >-
+        Supports complete YuE2 files and flat MiniMax Music 3 safetensors with
+        their existing companion configs. Writes beside the source using a new
+        filename and preserves all tensor bytes, dtypes, quantization declarations
+        and unrelated metadata. Does not modify the source, overwrite an output,
+        load weights or enable acoustic training. Native component directories,
+        shards and GGUF export are unsupported. The graph must match the inspected
+        native configuration and NAR/flow stream and shrink only the time axis.
+        Conversion does not calibrate weights; uncalibrated quality may degrade.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [model_path, output_name, spec]
+              properties:
+                model_path: {type: string, minLength: 1}
+                output_name: {type: string, minLength: 1, example: base-unet.safetensors, description: New basename ending in .safetensors; no directories or overwrite.}
+                spec: {$ref: '#/components/schemas/DiTRewiringSpec'}
+      responses:
+        '200':
+          description: New checkpoint with unchanged tensor payload and validated residual metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [model_path, spec_sha256]
+                properties:
+                  model_path: {type: string}
+                  spec_sha256: {type: string}
+        '422':
+          description: Unsupported source, incompatible graph, invalid filename or existing output
   /models/rewiring/validate:
     post:
       tags: [models]

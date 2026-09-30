@@ -9547,3 +9547,7 @@ export const inspectDiTRewiring = async (modelPath: string): Promise<DiTRewiring
 export const previewDiTRewiring = async (spec: DiTRewiringSpec, tokenHeight: number, tokenWidth: number):
   Promise<{ spec: DiTRewiringSpec; spec_sha256: string; plan: DiTRewiringPlan }> =>
   (await api.post("/models/rewiring/validate", { spec, token_height: tokenHeight, token_width: tokenWidth })).data;
+
+export const exportDiTRewiring = async (modelPath: string, outputName: string, spec: DiTRewiringSpec):
+  Promise<{ model_path: string; spec_sha256: string }> =>
+  (await api.post("/models/rewiring/export", { model_path: modelPath, output_name: outputName, spec })).data;

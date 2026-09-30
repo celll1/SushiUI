@@ -68,6 +68,47 @@ class TopologyContracts(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_model_identity(value, "krea2", value["streams"], {})
 
+
+    def test_multiple_stream_preview_and_cross_stream_parent_refusal(self):
+        from collections import Counter
+        streams = [{"name":"dual", "block_count":7}, {"name":"single", "block_count":11},
+                   {"name":"native", "block_count":5}]
+        regions = [dict(id="dual_outer", stream="dual", parent=None, start_block=1,
+                        end_block=6, down_factor=[2,2], **OPERATORS),
+                   dict(id="single_outer", stream="single", parent=None, start_block=2,
+                        end_block=9, down_factor=[4,2], **OPERATORS),
+                   dict(id="single_inner", stream="single", parent="single_outer", start_block=4,
+                        end_block=6, down_factor=[2,2], **OPERATORS)]
+        value = build_spec("multistream_fixture", streams, regions, {"streams":streams})
+        plan = preview_plan(value,64,96)
+        self.assertEqual(read_checkpoint_metadata(checkpoint_metadata(value)),value)
+        self.assertEqual(Counter(b["stream"] for b in plan["blocks"]),{"dual":7,"single":11,"native":5})
+        self.assertEqual({name:Counter(b["tokens"] for b in plan["blocks"] if b["stream"]==name)
+                          for name in ("dual","single","native")},
+                         {"dual":{6144:2,1536:5},"single":{6144:4,768:5,192:2},"native":{6144:5}})
+        self.assertEqual({(e["stream"],e["source"],e["target"]) for e in plan["skip_edges"]},
+                         {("dual",1,6),("single",2,9),("single",4,6)})
+        broken = deepcopy(value)
+        next(r for r in broken["regions"] if r["id"]=="single_inner")["parent"]="dual_outer"
+        with self.assertRaises(ValueError): validate_spec(broken)
+        import torch
+        from unittest.mock import patch
+        with patch.object(torch.cuda,"get_device_capability",return_value=(8,9)), \
+             patch.object(torch.cuda,"_lazy_init"), patch.object(torch._C,"_cuda_init"):
+            from api.rewiring_routes import router
+        import httpx
+        from fastapi import FastAPI
+        app=FastAPI(); app.include_router(router,prefix="/api/v1")
+        async def check():
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url="http://test") as client:
+                reply=await client.post("/api/v1/models/rewiring/validate",json={"spec":value,"token_height":64,"token_width":96})
+                self.assertEqual(reply.status_code,200,reply.text)
+                self.assertEqual(reply.json()["plan"],plan)
+                refusal=await client.post("/api/v1/models/rewiring/validate",json={"spec":broken,"token_height":64,"token_width":96})
+                self.assertEqual(refusal.status_code,422,refusal.text)
+        asyncio.run(check())
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_api_roundtrip(self):
         import torch
         from unittest.mock import patch

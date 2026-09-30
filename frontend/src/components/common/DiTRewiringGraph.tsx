@@ -9,16 +9,23 @@ interface Props {
   onBoundaryChange?: (id: string, side: "start_block" | "end_block", value: number) => void;
 }
 
-export default function DiTRewiringGraph({ spec, plan, selected, onSelect, onBoundaryChange }: Props) {
+export default function DiTRewiringGraph(props: Props) {
+  return <div className="space-y-3">{props.spec.streams.map(stream => <div key={stream.name}>
+    <p className="mb-1 text-gray-300">{stream.name} / {stream.block_count} blocks</p>
+    <StreamGraph {...props} stream={stream} />
+  </div>)}</div>;
+}
+
+function StreamGraph({ spec, plan, selected, onSelect, onBoundaryChange, stream }:
+  Props & { stream: DiTRewiringSpec["streams"][number] }) {
   const drag = useRef<{ id: string; side: "start_block" | "end_block" } | null>(null);
-  const stream = spec.streams[0];
   const blocks = plan.blocks.filter(b => b.stream === stream.name);
   const depth = Math.max(0, ...blocks.map(b => b.depth));
   const height = 100 + depth * 74;
   const x = (index: number) => 85 + index / stream.block_count * 770;
   const y = (level: number) => 50 + level * 74;
   const gap = Math.min(1, 770 / stream.block_count * 0.15);
-  return <svg viewBox={`0 0 900 ${height}`} role="img" aria-label="DiT resolution levels and residual skip connections"
+  return <svg viewBox={`0 0 900 ${height}`} role="img" aria-label={`${stream.name}: DiT resolution levels and residual skip connections`}
     className="w-full rounded bg-gray-950 touch-none"
     onPointerMove={e => {
       if (!drag.current || !onBoundaryChange) return;

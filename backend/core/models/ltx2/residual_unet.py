@@ -43,6 +43,24 @@ def native_config(config):
     return resolved
 
 
+def default_topology(config):
+    from api.param_defaults import DIT_REWIRING_PRESETS
+    from core.rewiring.spec import OPERATORS, build_spec
+    config = native_config(config)
+    preset = DIT_REWIRING_PRESETS["ltx2"]
+    if config["num_layers"] != preset["block_count"]:
+        return None
+    return build_spec("ltx2", [{"name":"main", "block_count":config["num_layers"]}],
+                      [{**region, **OPERATORS} for region in preset["regions"]], config)
+
+
+def video_geometry(config):
+    config = native_config(config)
+    time, height, width = config["vae_scale_factors"]
+    return dict(temporal_scale_factor=time, height_scale_factor=height,
+                width_scale_factor=width, grid_policy=GRID_POLICY)
+
+
 def validate_topology_identity(spec, config):
     resolved = native_config(config)
     return validate_model_identity(spec, "ltx2", [{"name":"main", "block_count":resolved["num_layers"]}], resolved)
@@ -80,7 +98,7 @@ def configure_training_topology(model, config, *, resuming=False, pending_adapte
     native = native_config(inner.config) if needs_identity else {}
     view = SimpleNamespace(config=native, _residual_unet_spec=existing)
     resolved = resolve_training_topology(view, dict(config), "ltx2", validate_topology_identity,
-        lambda owner, graph: None, resuming=resuming, pending_adapter_resume=pending_adapter_resume,
+        lambda owner, graph: None, default_topology, resuming=resuming, pending_adapter_resume=pending_adapter_resume,
         resume_spec=resume_spec, install=False)
     if resolved is not None:
         if len(inner.transformer_blocks) != native["num_layers"]:
@@ -253,7 +271,7 @@ def export_metadata(model):
     return metadata
 
 
-def preflight_checkpoint(path):
+def preflight_checkpoint(path, *, directory_config=None):
     import json
     import re
     from pathlib import Path
@@ -277,8 +295,9 @@ def preflight_checkpoint(path):
     if declaration is None:
         if graph is not None:
             raise ValueError("Rewired LTX-2 checkpoint requires native transformer_config")
-        return None, None
-    raw = json.loads(declaration)
+        if directory_config is None:
+            return None, None
+    raw = json.loads(declaration) if declaration is not None else dict(directory_config)
     if not isinstance(raw,dict) or type(raw.get("num_layers")) is not int:
         raise ValueError("LTX-2 checkpoint requires an explicit native transformer depth")
     config = native_config(raw)
@@ -306,7 +325,11 @@ def preflight_checkpoint(path):
     for shard in sources:
         with safe_open(str(shard),framework="pt",device="cpu") as handle:
             declared = (handle.metadata() or {}).get("transformer_config")
-            if declared is None or json.loads(declared) != raw:
+            if declared is None and declaration is None and directory_config is not None:
+                shard_config = dict(directory_config)
+            else:
+                shard_config = json.loads(declared) if declared is not None else None
+            if shard_config != raw:
                 raise ValueError("LTX-2 checkpoint index and shard native configs disagree")
             for key in handle.keys():
                 if key in seen or key not in keys or (str(source).endswith(".index.json") and index["weight_map"][key] != shard.name):

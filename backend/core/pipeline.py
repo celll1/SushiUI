@@ -1016,10 +1016,14 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     except Exception as e:
                         print(f"[Pipeline] Hash compute skipped: {e}")
 
+                from core.models.ltx2.residual_unet import video_geometry
                 self.current_model_info = {
                     "source_type": source_type,
                     "source": source,
                     "type": "ltx2",
+                    "dit_rewiring_spec": getattr(self.ltx2_components["transformer"], "_residual_unet_spec", None),
+                    "dit_rewiring_video_geometry": video_geometry(
+                        self.ltx2_components["transformer"].config),
                     "is_v_prediction": False,  # flow matching, velocity prediction
                     "model_hash": model_hash,
                     "is_video": True,

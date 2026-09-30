@@ -3496,14 +3496,15 @@ paths:
                     type: array
                     description: Implemented backend architectures; topology and workflow compatibility are validated per request
                     items: {type: string}
-                    example: [qwen_image_21, krea2, anima, zimage, flux2, lens, minit2i, ideogram4, sensenova, acestep]
+                    example: [qwen_image_21, krea2, anima, zimage, flux2, lens, minit2i, ideogram4, sensenova, acestep, ltx2]
   /models/rewiring/inspect:
     post:
       tags: [models]
       summary: Inspect native topology and checkpoint rewiring without loading weights
       description: >-
         Reads Qwen-Image 2.1, Krea 2, Anima, Z-Image, Flux2, Lens, MiniT2I,
-        Ideogram 4, SenseNova and ACE-Step configs and checkpoint headers. ACE-Step
+        Ideogram 4, SenseNova, ACE-Step and LTX-2 configs and checkpoint headers. LTX-2
+        exposes per-frame spatial scales; its time and audio grids remain native. ACE-Step
         exposes a temporal-only main stream; custom files require embedded native
         config, while published layouts must match the known native header geometry.
         SenseNova requires
@@ -3552,6 +3553,8 @@ paths:
                     description: Explicit single-region starting topology for custom layouts; selecting configure without a spec still uses default_spec.
                   latent_scale_factor: {type: integer}
                   pixel_alignment: {type: integer}
+                  video_geometry:
+                    $ref: '#/components/schemas/DiTRewiringVideoGeometry'
                   temporal_geometry:
                     $ref: '#/components/schemas/DiTRewiringTemporalGeometry'
         '422':
@@ -19205,6 +19208,17 @@ components:
             reports it under `LoadedModelInfo`.
           example: fl2va
 
+    DiTRewiringVideoGeometry:
+      type: object
+      additionalProperties: false
+      required: [temporal_scale_factor, height_scale_factor, width_scale_factor, grid_policy]
+      description: Native pixel-to-token scales for frame-local video residual execution. Time and audio tokens are never pooled; preview token grids describe one frame.
+      properties:
+        temporal_scale_factor: {type: integer, minimum: 1, example: 8}
+        height_scale_factor: {type: integer, minimum: 1, example: 32}
+        width_scale_factor: {type: integer, minimum: 1, example: 32}
+        grid_policy: {type: string, enum: [independent_spatial_frames_v1]}
+
     DiTRewiringTemporalGeometry:
       type: object
       additionalProperties: false
@@ -19237,6 +19251,8 @@ components:
           nullable: true
           description: Restored residual U-Net topology of the loaded model; null is the native sequence.
           example: null
+        dit_rewiring_video_geometry:
+          $ref: '#/components/schemas/DiTRewiringVideoGeometry'
         dit_rewiring_temporal_geometry:
           $ref: '#/components/schemas/DiTRewiringTemporalGeometry'
         dit_rewiring_token_stride:

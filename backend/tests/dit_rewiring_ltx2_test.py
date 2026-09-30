@@ -462,6 +462,67 @@ class Ltx2RuntimeContracts(unittest.TestCase):
             self.assertFalse(any(isinstance(module,CompositeAdapterLayer) for module in replacement.modules()))
         self.assertFalse(torch.cuda.is_initialized())
 
+    def test_public_presets_configure_and_header_only_video_inspection(self):
+        import asyncio,json,tempfile
+        import httpx
+        from fastapi import FastAPI
+        from safetensors.torch import save_file
+        from api.rewiring_routes import router
+        from core.rewiring.inspect import inspect_model
+        from core.rewiring.spec import preview_plan
+        from core.models.ltx2.residual_unet import default_topology,configure_training_topology,export_metadata
+        from core.models.common.single_file_format import save_single_file_state
+        config=dict(self.inner.config)
+        config["_class_name"]="LTX2VideoTransformer3DModel"
+        published={**config,"num_layers":48}
+        preset=default_topology(published)
+        self.assertEqual(preset["regions"][1]["end_block"]-preset["regions"][1]["start_block"],4)
+        plan=preview_plan(preset,32,32)
+        self.assertEqual([sum(block["tokens"]==tokens for block in plan["blocks"]) for tokens in (1024,256,64)],[8,36,4])
+        self.assertIsNone(default_topology(config))
+        configured={"dit_rewiring_mode":"configure","dit_rewiring_spec":self.spec}
+        self.assertEqual(configure_training_topology(self.model,configured),self.spec)
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);component=root/"transformer";component.mkdir()
+            metadata={"model_type":"ltx2",**export_metadata(self.model)}
+            source=component/"diffusion_pytorch_model.safetensors"
+            save_file(self.inner.state_dict(),str(source),metadata=metadata)
+            (component/"config.json").write_text(json.dumps(config),encoding="utf-8")
+            sharded=save_single_file_state({"net."+key:value for key,value in self.inner.state_dict().items()},
+                                          metadata,str(root/"sharded.safetensors"),max_shard_bytes=32768)
+            with patch("core.models.common.single_file_format.read_state_dict",side_effect=AssertionError("No tensors")):
+                info=inspect_model(str(source))
+                self.assertEqual(info,inspect_model(str(root)))
+                self.assertEqual(info,inspect_model(str(sharded)))
+                self.assertEqual(info["topology"],self.spec)
+                self.assertEqual(info["video_geometry"],dict(temporal_scale_factor=8,height_scale_factor=32,
+                    width_scale_factor=32,grid_policy="independent_spatial_frames_v1"))
+                self.assertIsNone(info["default_spec"])
+                app=FastAPI();app.include_router(router,prefix="/api/v1")
+                async def check():
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url="http://test") as client:
+                        schema=(await client.get("/api/v1/schema/dit-rewiring")).json()
+                        self.assertIn("ltx2",schema["runtime_architectures"])
+                        self.assertEqual(schema["presets"]["ltx2"]["block_count"],48)
+                        reply=await client.post("/api/v1/models/rewiring/inspect",json={"model_path":str(root)})
+                        self.assertEqual(reply.status_code,200,reply.text);self.assertEqual(reply.json(),info)
+                        reply=await client.post("/api/v1/models/rewiring/validate",json=dict(
+                            spec=info["topology"],token_height=8,token_width=12))
+                        self.assertEqual(reply.status_code,200,reply.text)
+                asyncio.run(check())
+                save_file(self.inner.state_dict(),str(source))
+                dense=inspect_model(str(root))
+                self.assertIsNone(dense["topology"])
+                self.assertEqual(dense["video_geometry"],info["video_geometry"])
+                asymmetric={**config,"vae_scale_factors":[8,16,32]}
+                (component/"config.json").write_text(json.dumps(asymmetric),encoding="utf-8")
+                axes=inspect_model(str(root))["video_geometry"]
+                self.assertEqual((axes["height_scale_factor"],axes["width_scale_factor"]),(16,32))
+                wrong={**config,"num_layers":8}
+                (component/"config.json").write_text(json.dumps(wrong),encoding="utf-8")
+                with self.assertRaisesRegex(ValueError,"native AV transformer"):inspect_model(str(root))
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_directory_loader_restores_graph_before_companions(self):
         import json, tempfile
         from types import SimpleNamespace

@@ -9,6 +9,9 @@ from .spec import OPERATORS, build_spec, digest
 
 
 def _native_adapter(architecture):
+    if architecture == "ltx2":
+        from core.models.ltx2 import residual_unet as adapter
+        return adapter, 32, 32
     if architecture == "acestep":
         from core.models.acestep import residual_unet as adapter
         return adapter, 1, 1
@@ -76,9 +79,19 @@ def inspect_model(model_path):
                             "Flux2Transformer2DModel": "flux2",
                             "LensTransformer2DModel": "lens",
                             "MiniT2IMMJiTModel": "minit2i",
-                            "Ideogram4Transformer2DModel": "ideogram4"}.get(class_name)
+                            "Ideogram4Transformer2DModel": "ideogram4",
+                            "LTX2VideoTransformer3DModel": "ltx2"}.get(class_name)
             _native_adapter(architecture)
             topology = read_directory_topology(transformer_dir)
+            if architecture == "ltx2":
+                from core.models.ltx2.loader import _transformer_shards
+                from core.models.ltx2.residual_unet import preflight_checkpoint, native_config
+                _, _, source = _transformer_shards(str(transformer_dir))
+                if source is None:
+                    raise ValueError("LTX-2 inspection requires native AV transformer headers")
+                declared, saved_config = preflight_checkpoint(source, directory_config=config)
+                if native_config(saved_config) != native_config(config) or declared != topology:
+                    raise ValueError("LTX-2 directory and checkpoint native configs disagree")
             if architecture == "ideogram4":
                 from core.models.ideogram4.residual_unet import inspect_artifact
                 config,topology = inspect_artifact(path)
@@ -123,7 +136,12 @@ def inspect_model(model_path):
                 key.removeprefix("net.") for key in keys):
             architecture = "acestep"
         _native_adapter(architecture)
-        if architecture == "acestep":
+        if architecture == "ltx2":
+            from core.models.ltx2.residual_unet import preflight_checkpoint
+            topology, config = preflight_checkpoint(path)
+            if config is None:
+                raise ValueError("LTX-2 file inspection requires native transformer_config metadata")
+        elif architecture == "acestep":
             from core.models.acestep.residual_unet import inspect_artifact
             config, topology = inspect_artifact(path)
         elif architecture == "qwen_image_21":
@@ -221,6 +239,10 @@ def inspect_model(model_path):
         if type(patch) is not int or patch < 1:
             raise ValueError("Anima spatial patch size must be a positive integer")
         token_scale = alignment = patch * 8
+    if architecture == "ltx2":
+        token_scale = config["vae_scale_factors"][1]
+        import math
+        alignment = math.lcm(*config["vae_scale_factors"][1:])
     if architecture == "lens" and config["patch_size"] != 2:
         raise ValueError("Lens editor requires native packed 2x2 patches")
     if architecture == "zimage" and (2 not in config["all_patch_size"] or 1 not in config["all_f_patch_size"]):
@@ -236,6 +258,8 @@ def inspect_model(model_path):
                 topology=topology, topology_sha256=None if topology is None else digest(topology),
                 default_spec=adapter.default_topology(config), initial_spec=initial,
                 latent_scale_factor=token_scale, pixel_alignment=alignment)
+    if architecture == "ltx2":
+        info["video_geometry"] = adapter.video_geometry(config)
     if architecture == "acestep":
         info["temporal_geometry"] = adapter.temporal_geometry(config)
     return info

@@ -1,0 +1,84 @@
+# DiT residual rewiring contract
+
+Status: accepted implementation contract; Qwen-Image 2.1 has an experimental
+inference probe, while public configuration, training, and checkpoint restore
+are pending. Other architectures require individual capability gates.
+
+## Default topology
+
+A new user-selected U-Net conversion defaults to two nested regions with four
+blocks at the deepest level. This does not automatically convert ordinary models
+or replace the topology declared by an existing checkpoint.
+
+For Qwen-Image 2.1's 32 main blocks, block indices are zero-based half-open:
+
+| Region | Block interval | Spatial downsample relative to parent |
+|---|---|---|
+| Outer | `[4, 28)` | 2 by 2 |
+| Inner | `[14, 18)` | 2 by 2 |
+
+At 1024px, eight blocks use 4096 image tokens, twenty use 1024 tokens, and four
+use 256 tokens. The latent input/output grid and text tokens retain their native
+meaning. Other architectures must resolve valid model-specific intervals before
+registering a default; do not reuse these indices without validation.
+
+## Execution
+
+Each region preserves its input image hidden states and executes its blocks on
+a pooled copy. Restore only the update:
+
+```text
+low_in = pool(hidden)
+low_out = execute_region(low_in)
+hidden = saved_hidden + upsample(low_out - low_in)
+```
+
+Use fixed average pooling, bilinear upsampling with `align_corners=False`, and
+identity delta addition initially. Each nested region performs its own subtraction
+and restoration. Preserve text updates, native block order, masks, positions,
+conditioning, gradient checkpointing, and offload ownership. Region context is
+per forward and must not depend on a mutable global skip stack.
+
+Allow nested or disjoint regions; refuse crossing regions, cycles, reordered
+blocks, unsupported stream transitions, and indivisible grids. Rebuild coarse
+positions using the architecture's coordinate contract. Restore the original
+grid and context before final output projection.
+
+## Configuration and artifacts
+
+All API defaults and presets belong to `backend/api/param_defaults.py`.
+Configuration is architecture-neutral, with per-architecture generation and
+training capabilities. Do not add rewired variants to ModelType/ARCH_REGISTRY.
+
+Store a versioned canonical JSON topology, its SHA256, architecture, stream block
+counts, block-layout/config identities, intervals, parent regions, operator and
+position rules, and any learned topology tensors. Safetensors metadata values
+are strings. Single files, shard indices, and directory artifacts must agree.
+Unknown versions, incompatible layouts, missing tensors, or conflicting metadata
+must fail before mutating the active model. Metadata cannot execute Python.
+
+Generation restores the checkpoint topology automatically and shows it read-only.
+Training can inherit a topology or configure a new conversion. Resume requires
+agreement between run configuration and checkpoint topology. LoRA artifacts must
+carry their required topology and base identity; incompatible adapter stacks must
+be refused atomically. Preserve existing adapter capability tables.
+
+## Editor and acceptance
+
+Provide a shared graphical topology renderer: block index on the horizontal axis,
+resolution levels on the vertical axis, draggable interval endpoints, and explicit
+skip edges. Show image pixels, latent grid, token grid, per-level counts, and
+validation errors. Backend-resolved plans are authoritative for editor previews.
+Keep presets, YAML editing, clone, export, and queues consistent.
+
+The uncalibrated Qwen probes show blur and granular artifacts. Shortening the
+deepest region from sixteen to four blocks improves some shapes but does not
+establish acceptable quality or universal performance gains. Calibration and
+fine-tuning quality, full/LoRA save-load-resume, production dtype gradients,
+checkpointing/offload, API round trips, and per-architecture gates remain required.
+Do not infer reduced checkpoint/optimizer size from reduced token computation.
+
+The method was assessed from
+[lodestone-rock/residual-to-unet](https://github.com/lodestone-rock/residual-to-unet/tree/4834458ea1e2dbede89e776ebccbe23233d10fd0).
+Its seven-layer linear reference is not a real DiT quality or speed benchmark.
+The SushiUI probe is independently written from the residual-update formulation.

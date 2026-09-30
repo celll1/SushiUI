@@ -26,6 +26,8 @@ machine-local working material.
 | [docs/guides/DATABASE_MIGRATION.md](DATABASE_MIGRATION.md) | SQLite schema migration procedure. |
 | [docs/guides/GENERATION_QUEUE_PROCESSOR.md](GENERATION_QUEUE_PROCESSOR.md) | Frontend queue ownership and dispatch invariants. |
 
+| [docs/guides/DIT_REWIRING_DESIGN.md](DIT_REWIRING_DESIGN.md) | Accepted residual U-Net topology, defaults, artifact and editor contract; implementation gates. |
+
 ## Generation behavior
 
 | Document | Purpose |
@@ -133,3 +135,4 @@ machine-local working material.
 Local strategies, research notes, raw measurements, drafts, and historical work
 logs are intentionally not enumerated here: they may be absent in a fresh clone
 and must not be referenced as current contracts.
+

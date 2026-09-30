@@ -23,7 +23,6 @@ from typing import Dict, List, Any, Optional, Iterator, Tuple
 
 import torch
 import torch.nn as nn
-from safetensors.torch import save_file
 
 from core.adapters import (
     LoRALinearLayer, is_adapter_covered, is_lora_wrappable_linear,
@@ -197,7 +196,9 @@ class Ltx2LoRAAdapter(BaseLoRAAdapter):
     def checkpoint_metadata(self, lora_layers: Dict[str, nn.Module],
                             step: int, epoch: int) -> Dict[str, str]:
         """sd-scripts native format."""
+        from core.models.ltx2.residual_unet import model_topology_metadata
         return {
+            **model_topology_metadata(self.trainer.transformer),
             "model_type": "ltx2",
             "modelspec.architecture": "ltx2",
             "lora_rank": str(self.lora_rank),
@@ -283,6 +284,10 @@ class Ltx2FullParameterAdapter(BaseFullParameterAdapter):
             "modelspec.architecture": "ltx2",
             "format": "pt",
         }
+        from core.models.ltx2.residual_unet import export_metadata
+        from core.models.common.single_file_format import save_single_file_state
+        metadata.update(export_metadata(trainer.transformer))
         print(f"[Ltx2FullParameterAdapter] Saving to {output_path}...")
-        save_file(combined, str(output_path), metadata=metadata)
-        print(f"[Ltx2FullParameterAdapter] Saved {len(combined)} tensors -> {output_path}")
+        written = save_single_file_state(combined,metadata,str(output_path))
+        print(f"[Ltx2FullParameterAdapter] Saved {len(combined)} tensors -> {written}")
+        return Path(written)

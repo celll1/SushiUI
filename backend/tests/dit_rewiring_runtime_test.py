@@ -54,6 +54,29 @@ class RuntimeContracts(unittest.TestCase):
         for left,right in zip(a,b):
             torch.testing.assert_close(left,right,rtol=3e-5,atol=3e-5)
 
+    def test_grouped_frames_match_independent_oracle_and_gradients(self):
+        torch.manual_seed(102)
+        batch,frames,height,width,channels=2,3,8,12,4
+        video=torch.randn(batch,frames*height*width,channels,requires_grad=True)
+        weights=[(torch.randn(channels,channels)*.03).requires_grad_() for _ in range(7)]
+        def execute(i,value,context):return value+torch.tanh(value@weights[i])
+        actual=run_rewired_stream(video,topology(),"main",frames*height,width,0,None,
+                                 execute,lambda *args:None,grid_groups=frames)
+        independent=[]
+        for frame in range(frames):
+            value=video.reshape(batch,frames,height*width,channels)[:,frame]
+            independent.append(run_rewired_stream(value,topology(),"main",height,width,0,None,
+                                                 execute,lambda *args:None))
+        expected=torch.cat(independent,dim=1)
+        torch.testing.assert_close(actual,expected,rtol=0,atol=0)
+        left=torch.autograd.grad(actual.square().sum(),[video,*weights],retain_graph=True)
+        right=torch.autograd.grad(expected.square().sum(),[video,*weights])
+        for a,b in zip(left,right):torch.testing.assert_close(a,b,rtol=2e-5,atol=2e-5)
+        with self.assertRaises(ValueError):
+            run_rewired_stream(video,topology(),"main",24,width,0,None,execute,lambda *args:None,grid_groups=4)
+        with self.assertRaises(ValueError):
+            run_rewired_stream(video,topology(),"main",24,width,0,None,execute,lambda *args:None,grid_groups=0)
+
     def test_identity_dtypes_and_local_context(self):
         for dtype in (torch.float32,torch.bfloat16,torch.float16):
             x = torch.randn(1,5+8*12,4).to(dtype)

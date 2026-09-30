@@ -16,6 +16,9 @@ training/LoRA resume and generation adapter scopes with CPU contracts. Standalon
 component references and full-resume dispatch are connected. Public temporal
 configuration, presets and editor/model discovery are connected with CPU checks;
 complete audio workflow acceptance and owner frontend checks remain pending.
+LTX-2.3 has an internal frame-local spatial residual block path and standalone
+transformer artifact contracts with CPU checks. Public generation/training
+restoration, companion references, presets and editor integration remain pending.
 GPU acceptance is restricted to Qwen-Image 2.1 by owner instruction; other models
 receive provisional implementation and CPU verification. Further architectures
 still require native execution/artifact adapters and capability gates.
@@ -1994,3 +1997,75 @@ residual/legacy ACE-Step/quantized-export run passes 172 tests and 50 subtests;
 after the dense-export correction, its native-source and quantized-export
 subset passes 38 tests and 18 subtests. No non-Qwen GPU run or frontend build/type
 check was performed.
+
+
+## LTX-2.3 frame-local residual execution and transformer artifacts (CPU milestone)
+
+LTX-2.3's native blocks jointly update video and audio, so its residual region
+shrinks each video's spatial grid independently while retaining every native
+frame and the complete audio token sequence. The canonical native config includes
+sushi_residual_video_grid_policy=independent_spatial_frames_v1 and all constructor
+geometry/modality settings. Topology uses a main stream over the existing shared
+block sequence. A frame count is runtime geometry, not a new learned parameter.
+
+Shared residual execution now accepts grid_groups. Pooling and bilinear residual
+upsampling reshape each frame into a separate batch grid before transport.
+Flattening all frames into one image height would allow interpolation across
+frame boundaries even when pooling happened to align; the grouped path prevents
+that error. Per-frame spatial divisibility is validated before projections.
+Existing image/audio callers use one group. A separate per-frame oracle verifies
+values and input/weight gradients for nested regions.
+
+The existing Ltx2BlockLoopWrapper owns the residual loop. Native projections,
+time and prompt conditioning, masked text attention, self/cross-modality attention,
+modulation gates, output heads, hooks and gradient checkpointing remain in use.
+Each coarse grid averages native coordinate boundary pairs and tokenwise video
+modulation tensors, recomputes native video/cross RoPE, and preserves time and
+full audio positions. Each block returns both updated modalities; video restores
+its residual update at region exits while audio continues through every block.
+Interleaved/split RoPE and asymmetric spatial factors have native CPU coverage.
+Generation offloader wait/submit ordering is tested with a CPU observer; actual
+CUDA transfer is unverified. This does not claim time isolation inside native
+attention: only transport is frame-local.
+
+Initial execution requires unit native video/audio patches, explicit positive
+frame/height/width geometry and rectangular native boundary coordinates. It
+refuses STG/perturbation masks, custom attention kwargs, FBCache/Spectrum,
+TREAD/BlockSkip and style processors before projections. Dense wrappers continue
+to delegate to the native transformer unchanged. Public model loading and
+training configuration do not expose this internal foundation yet.
+
+LoRA metadata records the complete graph identity. The real full writer also
+records native transformer_config and uses the shared 10-GiB shard writer,
+returning the actual file/index path. The internal standalone transformer loader
+validates topology, explicit block count, AV projection/attention header shapes,
+config agreement and shard ownership before loading tensors; it constructs the
+native model on meta, preserves verified quantized linears and applies strict
+state loading. It then restores the graph into the wrapper. Frozen companion
+components and their source references are separate, pending integration work.
+
+A reduced-width seven-block actual LTX-2.3 transformer verifies three-frame
+288/72/18 video-token grids and five audio tokens throughout, nonzero finite
+video/audio/text gradients, exact checkpointed predictions and all-parameter
+gradients, dense delegation, identity-block output heads, per-token timesteps,
+FP16/BF16 execution and graph/geometry refusal before projection. Real single-file
+and forced-shard full saves restore exact weights and graph, with FP32 predictions
+within rtol 2e-5 / atol 2e-6. A CPU gate Linear probe traced a 2.38e-7 intermediate
+difference to weight alignment (original 64-byte aligned, Safetensors view offset
+24): inputs/weights/bias were identical and cloning the weight removed the delta.
+Avoid claiming bitwise CPU artifact predictions or copying all large weights to
+force identical storage alignment.
+
+GPU validation remains Qwen-Image 2.1 only. Video quality, speed, actual offload,
+full pipeline/run/resume, public configure/presets and graphical model/editor
+integration remain pending. Non-Qwen work stays provisional.
+
+The standalone loader constructs from resolved native kwargs, so Diffusers'
+internal _use_default_values bookkeeping cannot replace a saved explicit RoPE
+mode with a library default. A split-mode checkpoint with deliberately stale
+bookkeeping restores split RoPE and its original graph.
+
+Changed modules compile/import with CUDA uninitialized. Shared residual, legacy
+ACE-Step/LTX-2 and quantized-export suites pass 198 cases and 64 subtests; the
+final LTX-2/runtime/legacy-LoRA subset passes 30 cases and 14 subtests. No GPU or
+frontend build/type checks were run for this milestone.

@@ -459,3 +459,35 @@ def load_ltx2_from_diffusers(
         "latent_channels": latent_channels,
         "is_video": True,
     }
+
+
+def load_ltx2_transformer_checkpoint(path: str, torch_dtype: torch.dtype = torch.bfloat16):
+    """Restore a standalone native AV transformer; companion loading is separate."""
+    from accelerate import init_empty_weights
+    from diffusers import LTX2VideoTransformer3DModel
+    from core.models.common.single_file_format import read_state_dict
+    from core.models.common.quantized_checkpoint_guard import quantized_state_dict_report, scaled_quantization_report, verify_quantized_swap
+    from .residual_unet import preflight_checkpoint, wrap_transformer, native_config, GRID_POLICY_KEY
+    graph, config = preflight_checkpoint(path)
+    if config is None:
+        raise ValueError("LTX-2 transformer checkpoint requires native transformer_config")
+    state, _ = read_state_dict(path)
+    state = {key.removeprefix("net."):value for key,value in state.items()}
+    report = scaled_quantization_report(quantized_state_dict_report(state,arch="LTX-2.3",path=path,label="transformer"),
+                                        arch="LTX-2.3",path=path,label="transformer")
+    construction = native_config(config)
+    construction.pop(GRID_POLICY_KEY)
+    with init_empty_weights():
+        model = LTX2VideoTransformer3DModel.from_config(construction)
+        model.to(torch_dtype)
+    swapped = _swap_ltx2_quantized_linears(model,state,torch_dtype)
+    verify_quantized_swap(report,swapped,arch="LTX-2.3",path=path,label="transformer")
+    quantized_weights = {key.removesuffix(".weight_scale")+".weight" for key in state if key.endswith(".weight_scale")}
+    state = {key:(value.to(torch_dtype) if value.is_floating_point() and
+                  key not in quantized_weights and not key.endswith(".weight_scale") else value)
+             for key,value in state.items()}
+    model.load_state_dict(state,strict=True,assign=True)
+    if any(value.is_meta for value in list(model.parameters())+list(model.buffers())):
+        raise ValueError("LTX-2 checkpoint left native tensors on the meta device")
+    model.eval().requires_grad_(False)
+    return wrap_transformer(model,graph) if graph is not None else model

@@ -1042,6 +1042,7 @@ class Anima(nn.Module):
         self.patch_temporal = patch_temporal
         self.num_heads = num_heads
         self.num_blocks = num_blocks
+        self.mlp_ratio = mlp_ratio
         self.model_channels = model_channels
         self.concat_padding_mask = concat_padding_mask
         self.pos_emb_cls = pos_emb_cls
@@ -1353,13 +1354,18 @@ class Anima(nn.Module):
         # composes with FBCache (inference-only) or block-swap (guarded off).
         blockskip = getattr(self, "_blockskip_config", None) if self.training else None
 
-        # REPA tap (training-only): drop any stream a previous forward stashed,
-        # so a step whose tap does not fire reads None rather than stale tokens.
+        # Clear the previous REPA tap before this forward can fail or skip its block.
         repa_tap_depth = self._repa_tap_depth
         if repa_tap_depth is not None:
             self._repa_tap_out = None
 
-        if blockskip is not None:
+        rewiring = getattr(self, "_residual_unet_spec", None)
+        if rewiring is not None:
+            from .residual_unet import run_rewired_anima
+            x_B_T_H_W_D = run_rewired_anima(
+                self, x_B_T_H_W_D, t_embedding_B_T_D, crossattn_emb,
+                attn_params, use_fp32, rope_emb_L_1_1_D, adaln_lora_B_T_3D, fps, rewiring)
+        elif blockskip is not None:
             x_B_T_H_W_D = self._blockskip_forward(
                 blockskip, x_B_T_H_W_D, t_embedding_B_T_D, crossattn_emb,
                 attn_params, use_fp32, rope_emb_L_1_1_D, adaln_lora_B_T_3D,

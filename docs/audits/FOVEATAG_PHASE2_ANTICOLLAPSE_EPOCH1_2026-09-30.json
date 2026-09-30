@@ -1,0 +1,95 @@
+{
+  "format_version": 1,
+  "kind": "foveatag_phase2_anticollapse_epoch_boundary",
+  "status": "continue_measurement",
+  "run": {
+    "output_dir": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase2_anticollapse_pretrain_20260929",
+    "initialization": "scratch",
+    "external_weights": [],
+    "epoch": 1,
+    "global_step": 193350,
+    "presented_samples": 1546798,
+    "decoded_samples": 1546789,
+    "skipped_samples": 9,
+    "samples_per_second": 66.23810008524775
+  },
+  "validation": {
+    "weighted": {
+      "loss": 0.14676524748210792,
+      "correspondence": 0.043385316980857166,
+      "reconstruction": 0.06506364214874338,
+      "chroma": 0.014026714197461843,
+      "variance": 0.0013378755682790454,
+      "covariance": 2.6307775380089877,
+      "centering": 0.03657280367187923
+    },
+    "domains": {
+      "16": {
+        "role": "partially_curated_photo",
+        "samples": 512,
+        "loss": 0.12413072446361184,
+        "masked_local": {
+          "mean_pairwise_cosine": 0.9102592436238578,
+          "effective_rank": 135.2041041660989,
+          "effective_rank_fraction": 0.3520940212658825,
+          "channel_std_mean": 1.140475621661543
+        },
+        "overview": {
+          "mean_pairwise_cosine": 0.6073705767299703,
+          "effective_rank": 175.90887265408563,
+          "effective_rank_fraction": 0.4580960225366813,
+          "channel_std_mean": 1.173013915794083
+        }
+      },
+      "25": {
+        "role": "danbooru_ground_illustration",
+        "samples": 2048,
+        "loss": 0.15075957507360727,
+        "masked_local": {
+          "mean_pairwise_cosine": 0.9178983431534761,
+          "effective_rank": 125.91886206663433,
+          "effective_rank_fraction": 0.3279137032985269,
+          "channel_std_mean": 1.095383209946714
+        },
+        "overview": {
+          "mean_pairwise_cosine": 0.6708232551919646,
+          "effective_rank": 171.10381106593948,
+          "effective_rank_fraction": 0.4455828413175507,
+          "channel_std_mean": 1.4397172813641301
+        }
+      }
+    }
+  },
+  "comparison_to_epoch_0": {
+    "weighted_loss_relative_improvement": 0.1197730694277774,
+    "correspondence_relative_change": 0.1472169327239963,
+    "reconstruction_relative_improvement": 0.09205797495446653,
+    "chroma_relative_improvement": 0.12125096782991187,
+    "feature_health": "Effective rank increased for all four domain/view pairs and mean pairwise cosine decreased for all four pairs."
+  },
+  "early_stop_policy": {
+    "path": "docs/audits/FOVEATAG_PHASE2_EARLY_STOP_POLICY_2026-09-30.json",
+    "sha256": "a6f34fe1e51adc1cb0115ae12b9621374da1888b9b04550367558387c31933ca",
+    "candidate": false,
+    "reason": "Only two epochs have completed, below the five-epoch minimum, and weighted validation loss improved by 11.98%, far above the 0.5% plateau threshold."
+  },
+  "artifacts": {
+    "history": {
+      "path": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase2_anticollapse_pretrain_20260929\\history.json",
+      "sha256": "a57151bb79ef5698f1ebc6d9c4e1a7abce68e6ed6876cbe18a79d2f3e3172784"
+    },
+    "best_encoder": {
+      "path": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase2_anticollapse_pretrain_20260929\\best_encoder.safetensors",
+      "sha256": "2db947491d041df5d8076f198aaa3234e94a12ce8104497a2e667018ac35f52a"
+    },
+    "best_encoder_metadata": {
+      "path": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase2_anticollapse_pretrain_20260929\\best_encoder_metadata.json",
+      "sha256": "cf9a03ecf8f89dc6d18013098232f3e4bfa5c3b8b4025b1aca99ce9b73650000"
+    }
+  },
+  "decision": {
+    "collapse_detected": false,
+    "phase2_accepted": false,
+    "reason": "The second completed epoch materially improved validation loss and feature health. Continue measurement; the registered early-stop rule has not triggered and Phase 2 acceptance remains contingent on the final hash-bound gate."
+  }
+}

@@ -1291,6 +1291,18 @@ component losses, and per-domain health metrics are recorded in
 `FOVEATAG_PHASE2_ANTICOLLAPSE_EPOCH0_2026-09-30.json`; this remains an interim
 health result rather than Phase 2 acceptance.
 
+Epoch 1 completed at step 193,350 after a second pass over 1,546,798 presented
+samples (nine deterministic decode skips). Weighted validation loss fell from
+0.166735 to 0.146765, an 11.98% relative improvement. Reconstruction and chroma
+losses improved by 9.21% and 12.13%; correspondence loss increased by 14.72%,
+so that component remains under observation. Effective rank increased for all
+four domain/view pairs to 125.92--175.91, while mean pairwise cosine fell to
+0.607--0.918. This is neither a collapse nor an early-stop candidate: only two
+epochs have completed and the validation improvement is far above the
+registered 0.5% plateau threshold. Exact metrics, policy binding, and artifact
+hashes are recorded in
+`FOVEATAG_PHASE2_ANTICOLLAPSE_EPOCH1_2026-09-30.json`.
+
 ### 9.14 Phase 3 throughput protocol (2026-09-29)
 
 `supervised_benchmark.py` measures the three registered Phase 3 input modes in

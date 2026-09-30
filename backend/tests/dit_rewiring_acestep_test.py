@@ -482,6 +482,10 @@ class AceStepRuntimeContracts(unittest.TestCase):
             refer_audio_order_mask=torch.arange(2), src_latents=torch.zeros(2,48,64),
             chunk_masks=torch.ones(2,48,64),is_covers=torch.zeros(2,dtype=torch.bool),
             silence_latent=torch.zeros(1,48,64),seed=94,infer_steps=3,dcw_enabled=False)
+        with patch.object(owner,"prepare_condition",side_effect=AssertionError("No conditioning on invalid grid")):
+            with self.assertRaisesRegex(ValueError,"not divisible"):
+                owner.generate_audio(**{**args,"src_latents":args["src_latents"][:,:45],
+                                        "chunk_masks":args["chunk_masks"][:,:45]})
         for sampler, method, calls in (("euler","ode",3),("heun","ode",5),("euler","sde",3)):
             with self.subTest(sampler=sampler,method=method):
                 seen = []
@@ -513,6 +517,45 @@ class AceStepRuntimeContracts(unittest.TestCase):
             hook.remove()
         self.assertEqual(len(dense_seen),3)
         self.assertTrue(torch.isfinite(result["target_latents"]).all())
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_generation_grid_preflight_and_audio_sidecar(self):
+        import json, tempfile
+        from core.models.acestep.residual_unet import restore_topology, generation_metadata
+        from core.pipeline_backends.acestep import AceStepMixin
+        from api.error_handlers import ValidationError
+        from core.rewiring.spec import digest
+        class Backend(AceStepMixin):
+            def __init__(self, owner):
+                self.acestep_components={"dit":owner,"vae":torch.nn.Linear(1,1),
+                                         "text_encoder":torch.nn.Linear(1,1),"tokenizer":object()}
+                self.is_acestep_model=True
+                self.device=torch.device("cpu")
+        backend=Backend(self.model)
+        restore_topology(self.model,self.spec)
+        actual=generation_metadata(self.model,47)
+        self.assertEqual(actual["token_grid"],[24,1])
+        self.assertEqual(actual["input_frames"],47)
+        self.assertEqual(actual["spec_sha256"],digest(self.spec))
+        params={"seed":94}
+        backend._acestep_rewiring_preflight(params,48)
+        self.assertEqual(params["dit_rewiring_actual"]["input_frames"],48)
+        with self.assertRaises(ValidationError): backend._acestep_rewiring_preflight({},45)
+        self.assertEqual(self.model._residual_unet_spec,self.spec)
+        with patch.object(backend,"_acestep_ensure_silence_latent",side_effect=AssertionError("No VAE staging")), \
+                patch.object(backend,"_acestep_move",side_effect=AssertionError("No model staging")), \
+                self.assertRaises(ValidationError):
+            backend._generate_txt2aud_acestep({"audio_duration":1.8,"seed":94})
+        import utils.audio_utils as audio
+        with tempfile.TemporaryDirectory() as directory, patch.object(audio.settings,"outputs_dir",directory):
+            filename=audio.save_audio_with_metadata(torch.zeros(2,480),48000,params,"txt2aud")
+            sidecar=json.loads((Path(directory)/Path(filename).with_suffix(".json")).read_text(encoding="utf-8"))
+            self.assertEqual(sidecar["dit_rewiring_actual"],params["dit_rewiring_actual"])
+            self.assertTrue((Path(directory)/filename).is_file())
+        restore_topology(self.model,None)
+        backend._acestep_rewiring_preflight(params,45)
+        self.assertNotIn("dit_rewiring_actual",params)
+        self.assertIsNone(generation_metadata(self.model,45))
         self.assertFalse(torch.cuda.is_initialized())
 
     def test_identity_decoder_padding_and_atomic_refusals(self):

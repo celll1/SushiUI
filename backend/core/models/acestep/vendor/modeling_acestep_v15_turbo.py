@@ -1925,6 +1925,9 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
         cfg_interval_end: float = 1.0,
         **kwargs,
     ):
+        from ..residual_unet import generation_metadata
+        generation_metadata(self, src_latents.shape[1])
+
         if diffusion_guidance_scale != 1.0 or use_adg or cfg_interval_start != 0.0 or cfg_interval_end != 1.0:
             logger.info(
                 "Turbo DiT ignores CFG params (guidance_scale=%.2f, use_adg=%s, "

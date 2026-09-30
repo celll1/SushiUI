@@ -1868,3 +1868,37 @@ uninitialized. Public configure/presets, temporal editor discovery, generation
 grid preflight/metadata and complete CPU audio workflow seams remain pending.
 ACE-Step is still outside public runtime capabilities; GPU verification remains
 Qwen-Image 2.1 only.
+
+
+## ACE-Step generation grid preflight and audio metadata (CPU milestone)
+
+A shared native generation preflight validates owner/decoder topology and checks
+the actual temporal token grid, ceil(input_frames / native patch_size) by one,
+against every nested residual region. It produces JSON-safe runtime metadata
+with canonical spec/hash, cache-disabled state, native input frame count and
+actual token grid. Dense execution returns no residual metadata; the backend
+clears any stale entry.
+
+The native sampler checks its source length before preparing conditioning or
+noise. Txt2audio retains the existing duration-to-frame rounding and checks
+before silence-VAE/text-encoder staging. All three audio generation paths also
+check actual source-latent length before DiT staging/block-offload installation.
+Backend errors use the normal API ValidationError path. Native patch-tail padding
+remains valid when the resulting patch grid divides correctly; arbitrary lengths
+that do not divide the selected down factors still refuse. General residual tail
+padding and its editor contract remain an explicit pending item before public
+ACE-Step presets can make default-duration generation useful.
+
+Audio sidecar JSON now retains dit_rewiring_actual; the existing gallery params
+already carry the same mutable request dict. CPU contracts write a real short
+FLAC/sidecar and read back exact topology/hash/frame metadata. Native sampler
+invalid-grid probes forbid condition preparation, and a real txt2audio entry
+probe forbids VAE/model staging and confirms the early API error. These are CPU
+control-flow/media-persistence checks, not decoded model sound quality or a live
+REST generation acceptance claim.
+
+Changed files compile and import. Shared residual, legacy ACE-Step and existing
+quantized-export suites pass 166 CPU cases and 48 subtests with CUDA uninitialized.
+Public configure/presets, temporal editor/model discovery, arbitrary-length grid
+handling and complete audio workflow/resume seams remain pending. ACE-Step stays
+outside public runtime capabilities; GPU verification remains Qwen-Image 2.1 only.

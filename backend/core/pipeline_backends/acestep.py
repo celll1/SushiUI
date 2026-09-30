@@ -1095,6 +1095,18 @@ class AceStepMixin:
                 self._unload_lora_acestep()
 
 
+    def _acestep_rewiring_preflight(self, params, length):
+        from api.error_handlers import ValidationError
+        from core.models.acestep.residual_unet import generation_metadata
+        try:
+            actual = generation_metadata(self.acestep_components["dit"], length)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        if actual is None:
+            params.pop("dit_rewiring_actual", None)
+        else:
+            params["dit_rewiring_actual"] = actual
+
     @_restores_acestep_lora
     def _generate_txt2aud_acestep(
         self,
@@ -1195,6 +1207,11 @@ class AceStepMixin:
             except Exception:
                 pass
 
+        latent_frames = int(round(round(audio_duration, 1) * 25))
+        latent_frames = max(latent_frames, 1)
+
+        self._acestep_rewiring_preflight(params, latent_frames)
+
         silence_latent = self._acestep_ensure_silence_latent(device)  # [1, 750, 64] on device
 
         self._acestep_move("text_encoder", device)
@@ -1218,9 +1235,6 @@ class AceStepMixin:
             self._acestep_move("text_encoder", "cpu")
             self._acestep_empty_cache()
 
-        latent_frames = int(round(round(audio_duration, 1) * 25))
-        latent_frames = max(latent_frames, 1)
-
         src_latents = self._acestep_silence_slice(silence_latent, latent_frames).to(model_dtype)  # [1, T, 64]
         chunk_masks = torch.ones(1, latent_frames, 64, dtype=model_dtype, device=device)
         is_covers = torch.zeros(1, dtype=torch.bool, device=device)
@@ -1243,6 +1257,7 @@ class AceStepMixin:
                 raw = [shift * t / (1.0 + (shift - 1.0) * t) for t in raw]
             custom_timesteps = torch.tensor(raw, device=device, dtype=model_dtype)
 
+        self._acestep_rewiring_preflight(params, src_latents.shape[1])
         self._acestep_move("dit", device)
         block_offloader = self._acestep_maybe_install_block_offload(params, dit, device)
         try:
@@ -1584,6 +1599,7 @@ class AceStepMixin:
             mode_kwargs["non_cover_text_hidden_states"] = text_hidden_states
             mode_kwargs["non_cover_text_attention_mask"] = text_attention_mask
 
+        self._acestep_rewiring_preflight(params, src_latents.shape[1])
         self._acestep_move("dit", device)
         block_offloader = self._acestep_maybe_install_block_offload(params, dit, device)
         try:
@@ -1939,6 +1955,7 @@ class AceStepMixin:
                 raw = [shift * t / (1.0 + (shift - 1.0) * t) for t in raw]
             custom_timesteps = torch.tensor(raw, device=device, dtype=model_dtype)
 
+        self._acestep_rewiring_preflight(params, src_latents.shape[1])
         self._acestep_move("dit", device)
         block_offloader = self._acestep_maybe_install_block_offload(params, dit, device)
         try:

@@ -242,3 +242,17 @@ def resolve_generation_topology(model, files):
         if decoder.config._attn_implementation not in ("eager", "sdpa"):
             raise ValueError("ACE-Step residual generation currently requires eager or SDPA attention")
     return required
+
+
+def generation_metadata(model, length):
+    from core.rewiring.spec import digest
+    topology = resolve_generation_topology(model, [])
+    if topology is None:
+        return None
+    if type(length) is not int or length < 1:
+        raise ValueError("ACE-Step residual audio length must be a positive native frame count")
+    patch = native_config(model.config)["patch_size"]
+    tokens = (length + patch - 1) // patch
+    preview_plan(topology, tokens, 1)
+    return dict(spec=topology, spec_sha256=digest(topology), kv_cache=False,
+                input_frames=length, token_grid=[tokens, 1])

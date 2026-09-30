@@ -123,23 +123,13 @@ class QwenImage21Mixin:
         from copy import deepcopy
         import weakref
         from core.adapters import AdapterIncompatible
-        from core.rewiring.spec import read_checkpoint_metadata
+        from core.rewiring.adapters import resolve_adapter_topology
         from core.models.qwen_image_21.residual_unet import restore_topology, validate_topology_identity
         model = self.qwen_image_21_components["transformer"]
         base_topology = getattr(model, "_residual_unet_spec", None)
         files = self._qwen21_lora_session.parse(configs)
-        declarations = []
         try:
-            for file in files:
-                topology = read_checkpoint_metadata(file.metadata)
-                if topology is not None:
-                    topology = validate_topology_identity(topology, dict(model.config))
-                declarations.append(topology)
-            required = declarations[0] if declarations else base_topology
-            if any(value != required for value in declarations):
-                raise ValueError("Selected LoRAs require different residual topologies")
-            if base_topology is not None and required != base_topology:
-                raise ValueError("LoRA topology does not match the loaded checkpoint")
+            required = resolve_adapter_topology(model, files, validate_topology_identity)
             if required is not None and (getattr(model, "_qwen_partition_global_payload", None) is not None
                     or any(file.metadata.get("qwen_partition_global_adapter") for file in files)):
                 raise ValueError("Residual topology excludes partition-global adapters")

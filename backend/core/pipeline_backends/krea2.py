@@ -373,9 +373,7 @@ class Krea2Mixin:
         copy their device. Raises on a file that resolves to zero targets -- a
         LoRA that had no effect must not pass as a successful generation.
         """
-        # Unconditional, and BEFORE the empty-config exit: a restore that failed
-        # in an earlier request must not leak its wrappers into this generation,
-        # and this is also what resets bookkeeping a model reload invalidated.
+        # Unload first so failed requests and model reloads cannot retain stale wrappers.
         self._unload_lora_krea2()
 
         if not lora_configs:
@@ -383,8 +381,22 @@ class Krea2Mixin:
         if not self.krea2_components:
             raise RuntimeError("Krea 2 LoRA requested but no Krea 2 model is loaded.")
 
-        return self._krea2_lora_session.load(
-            lora_configs, self._krea2_lora_components()).applied
+        from copy import deepcopy
+        import weakref
+        from core.adapters import AdapterIncompatible
+        from core.rewiring.adapters import resolve_adapter_topology
+        from core.models.krea2.residual_unet import restore_topology, validate_topology_identity
+        model = self.krea2_components["transformer"]
+        base_topology = getattr(model, "_residual_unet_spec", None)
+        files = self._krea2_lora_session.parse(lora_configs)
+        try:
+            required = resolve_adapter_topology(model, files, validate_topology_identity)
+        except ValueError as exc:
+            raise AdapterIncompatible(str(exc), code="lora_rewiring_incompatible") from exc
+        result = self._krea2_lora_session.load(files, self._krea2_lora_components())
+        restore_topology(model, required)
+        self._krea2_topology_restore = (weakref.ref(model), deepcopy(base_topology))
+        return result.applied
 
     def _unload_lora_krea2(self) -> int:
         """Restore every wrapped Krea 2 Linear to its pre-LoRA original.
@@ -392,7 +404,29 @@ class Krea2Mixin:
         The session drops each original as restore lands it, so a later one-time
         INT8 conversion cannot reinstate a stale pre-conversion module.
         """
-        return self._krea2_lora_session.unload(self._krea2_lora_components())
+        try:
+            return self._krea2_lora_session.unload(self._krea2_lora_components())
+        finally:
+            saved = self.__dict__.pop("_krea2_topology_restore", None)
+            if saved is not None and saved[0]() is not None:
+                from core.models.krea2.residual_unet import restore_topology
+                restore_topology(saved[0](), saved[1])
+
+    def _krea2_rewiring_metadata(self, params, cfg, transformer):
+        from api.error_handlers import ValidationError
+        from core.rewiring.spec import digest, preview_plan
+        topology = getattr(transformer, "_residual_unet_spec", None)
+        if topology is None:
+            params.pop("dit_rewiring_actual", None)
+            return
+        if params.get("style_transfer") or params.get("style_transfers"):
+            raise ValidationError("Residual U-Net generation does not support style injection")
+        try:
+            preview_plan(topology, cfg["grid_h"], cfg["grid_w"])
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        params["dit_rewiring_actual"] = {
+            "spec": topology, "spec_sha256": digest(topology), "kv_cache": False}
 
     def _krea2_style_triple(self, params: Dict[str, Any], style_dict: Dict[str, Any],
                              transformer, device, ref_index: int = 0):
@@ -667,6 +701,7 @@ class Krea2Mixin:
             # LoRA wrappers hold the current Linear modules, so this must follow
             # both the INT8 conversion and the GPU stage above.
             self._load_lora_krea2(params.get("loras") or [])
+            self._krea2_rewiring_metadata(params, cfg, transformer)
             block_offloader = self._krea2_maybe_install_block_offload(
                 params, transformer, device)
 
@@ -788,6 +823,7 @@ class Krea2Mixin:
 
             # Must follow the INT8 conversion and the GPU stage (see txt2img).
             self._load_lora_krea2(params.get("loras") or [])
+            self._krea2_rewiring_metadata(params, cfg, transformer)
             block_offloader = self._krea2_maybe_install_block_offload(
                 params, transformer, device)
 
@@ -914,6 +950,7 @@ class Krea2Mixin:
 
             # Must follow the INT8 conversion and the GPU stage (see txt2img).
             self._load_lora_krea2(params.get("loras") or [])
+            self._krea2_rewiring_metadata(params, cfg, transformer)
             block_offloader = self._krea2_maybe_install_block_offload(
                 params, transformer, device)
 

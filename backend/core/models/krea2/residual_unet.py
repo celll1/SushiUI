@@ -1,6 +1,8 @@
 """Krea image-tail residual execution with native position and block semantics."""
 import torch
 
+from core.rewiring.training import NO_RESUME_SPEC as _NO_RESUME_SPEC
+
 from core.rewiring.runtime import run_rewired_stream
 from core.rewiring.spec import validate_model_identity
 
@@ -100,3 +102,14 @@ def run_rewired_krea(model, hidden, modulation, rotary, mask, position_ids, pref
 
     return run_rewired_stream(hidden, spec, "main", height, width, prefix,
                               (rotary, mask), execute, coarse_context)
+
+
+
+
+def configure_training_topology(model, config, *, resuming=False, pending_adapter_resume=False,
+                                resume_spec=_NO_RESUME_SPEC, install=True):
+    from core.rewiring.training import resolve_training_topology
+    return resolve_training_topology(
+        model, config, "krea2", validate_topology_identity, restore_topology,
+        resuming=resuming, pending_adapter_resume=pending_adapter_resume,
+        resume_spec=resume_spec, install=install)

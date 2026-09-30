@@ -300,7 +300,7 @@ Three CPU contracts exercise a seven-block native GQA model with nested regions:
 image/text token counts and mask preservation, checkpointed output/gradient
 equivalence, and incompatible coordinates/config/REPA refusal. This is a native
 execution foundation with artifact persistence. Krea is not advertised in runtime
-capabilities until generation/training integration and real-model API checks are
+capabilities until default/editor integration and real-model API checks are
 complete; Qwen remains the sole exposed conversion architecture.
 
 Krea full checkpoints now save the canonical topology and restore it from single
@@ -309,5 +309,22 @@ before tensor loading. Export metadata cannot replace the installed topology;
 LoRA checkpoints also carry the installed topology. Two additional CPU contracts
 use actual writers/loaders to verify bit-identical weights and output after
 single/sharded round trips, dense compatibility, directory restoration and
-pre-allocation refusal of mismatched config. Training resume and temporary LoRA
-generation topology installation remain pending integration.
+pre-allocation refusal of mismatched config.
+
+The shared training resolver now owns inherit/configure/resume agreement and
+side-effect-free validation for both Qwen and Krea. Krea component loading and
+LoRA resume use it; topology installs only after all adapter tensors validate.
+Generation LoRA sessions validate the entire stack before mutation, install its
+required topology temporarily, and restore the base topology on unload/cleanup.
+The shared stack validator retains Qwen's existing partition-global refusal.
+All three Krea generation entry points validate grid divisibility, refuse styles
+and attach effective topology metadata.
+
+Two additional CPU contracts exercise actual Krea training adapter checkpoint
+loading and generation AdapterSession behavior: failed resume leaves tensors and
+config unchanged, successful resume restores tensors/spec, incompatible edits
+and features fail, dense/rewired stacks fail atomically, and base topology returns
+on unload. Krea configure/resume tests locally enable its runtime gate; public
+capabilities remain Qwen-only pending preset/editor and real-model API acceptance.
+Twenty-four aggregate CPU contracts pass. These are not full Krea GPU workflow or
+performance/quality results.

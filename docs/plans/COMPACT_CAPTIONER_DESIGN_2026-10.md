@@ -1,6 +1,6 @@
 # SigLIP2とFoveaTagに対応する軽量captionerの実装設計
 
-2026-10-01。状態: **SigLIP2コアと推論API、preview UI実装済み、学習run管理は未接続**。本書の初期モデル構成、API、実験値は提案であり、
+2026-10-01。状態: **SigLIP2コア、推論と学習run API、previewと学習UIを実装済み**。本書の初期モデル構成と実験値は提案であり、
 品質や速度の実測結果ではない。既存のSigLIP2 taggerを画像encoderとして共有し、
 画像の空間特徴と明示的なタグ概念から、短い自然言語captionを生成する専用decoderを学習する。
 蓄積済みのimage、tags、captionの組を教師データとして使う。
@@ -412,7 +412,12 @@ Tagger画面のCaptioner tabはbundleロード、source/device/token設定、pre
 進捗、checkpoint、exportとresume sequenceはtraining DBに保存し、events endpointから取得する。
 再起動後にworkerが存在しないstarting/running/stoppingはinterruptedとして記録する。
 再開checkpointはrun直下に限定し、latest markerからも選べる。exportはoptimizerを除いた別bundleを作る。
-学習UIと永続的なbatch管理は未実装である。
+Captioner tabの学習UIはdatasetごとに入力tags列と正解の自然文列を選び、runを作成する。
+設定のdefaultはAPIから取得し、詳細設定とdataset filtersも編集できる。
+runの開始・停止・再開、2秒ごとの状態とevents取得、checkpoint選択、推論exportを接続した。
+画面を閉じても学習は継続し、再度runを選ぶと保存された状態を取得する。
+checkpointとexportをpreviewのbundle pathへ渡し、利用者がロードしてsampleを確認できる。
+専用のsample APIと永続的なbatch管理は未実装である。
 GPU trainerの初期allocationは既存coordinatorでgenerationと排他する。
 worktree間のGPU調整と実training runのpause/offload検証はまだ必要である。
 実datasetから学習した自然文モデルはまだ存在せず、品質によるbest選択も未実装である。
@@ -435,3 +440,6 @@ worktree間でin-process lockは共有できないため、将来のGPU実測開
 学習runの永続化、中断表示、排他、停止、checkpoint指定の拒否、resumeと失敗cleanupをCPUで確認した。
 学習run・OpenAPI整合性・captioner API・コアを合わせた41件が通過した。
 学習run APIのGPU実dataset経路は未検証である。
+小型の実trainerを使うCPU REST検証で、run作成・開始、checkpoint保存、進捗取得、
+optimizerなしexportとbundle再ロードを確認した。captioner関連のCPUテスト43件が通過した。
+学習UIはコードを読み合わせたが、build/type-checkと画面の動作確認は未検証である。

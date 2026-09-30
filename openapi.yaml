@@ -65,6 +65,16 @@ tags:
     description: Developer-mode diagnostics (VRAM inspection)
 
 paths:
+  /schema/captioner-run-defaults:
+    get:
+      tags: [captioner]
+      summary: Read centralized captioner run and tagger loading defaults
+      responses:
+        '200':
+          description: Defaults from CAPTIONER_RUN_DEFAULTS
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
   /captioner-training/runs:
     get:
       tags: [captioner]

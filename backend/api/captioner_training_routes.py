@@ -292,6 +292,11 @@ class CaptionRunService:
 service = CaptionRunService(TrainingSessionLocal, DatasetsSessionLocal, settings.root_dir)
 
 
+@router.get("/schema/captioner-run-defaults")
+def run_defaults():
+    return copy.deepcopy(RD)
+
+
 @router.get("/captioner-training/runs")
 def list_runs():
     return service.list()

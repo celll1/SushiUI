@@ -61,6 +61,108 @@ export const saveCaptionerPreview = async (preview: CaptionerPreview, captionTyp
     dataset_revision: preview.dataset_revision, image_hash: preview.image_hash, caption: preview.caption,
     caption_type: captionType})).data;
 };
+
+export interface CaptionerTrainingConfig {
+  device: "cpu" | "cuda:0";
+  max_num_patches: number;
+  allowed_categories: string[];
+  max_concepts: number;
+  hidden_dim: number;
+  heads: number;
+  layers: number;
+  ffn_dim: number;
+  visual_queries: number;
+  max_length: number;
+  dropout: number;
+  vocab_size: number;
+  tokenizer_min_frequency: number;
+  learning_rate: number;
+  weight_decay: number;
+  warmup_ratio: number;
+  epochs: number;
+  batch_size: number;
+  label_smoothing: number;
+  max_grad_norm: number;
+  seed: number;
+  val_ratio: number;
+  test_ratio: number;
+  near_duplicate_distance: number;
+  concept_dropout: number;
+  all_concept_dropout: number;
+  source_weights: {predicted: number; provided: number; merged: number};
+  cache_max_gb: number;
+  save_every_steps: number;
+  use_tag_aliases: boolean;
+  language: string;
+}
+export interface CaptionerRunDefaults {
+  run_name: string;
+  output_dir: string | null;
+  vision_encoder_path: string;
+  lora_rank: number;
+  lora_alpha: number;
+  resume: boolean;
+  checkpoint: string;
+  after_id: number;
+  event_limit: number;
+}
+export interface CaptionerTaggerConfig {
+  checkpoint_path: string;
+  vocab_path: string;
+  vision_encoder_path: string;
+  lora_rank: number;
+  lora_alpha: number;
+}
+export interface CaptionerDatasetConfig {
+  dataset_id: number;
+  input_tag_caption_types: string[];
+  target_caption_types: string[];
+  filters: {item_ids?: number[]; min_width?: number; min_height?: number};
+}
+export interface CaptionerRunCreateRequest {
+  run_name: string;
+  output_dir: string | null;
+  tagger: CaptionerTaggerConfig;
+  dataset_configs: CaptionerDatasetConfig[];
+  config: CaptionerTrainingConfig;
+}
+export interface CaptionerTrainingRun extends Omit<CaptionerRunCreateRequest, "output_dir"> {
+  run_id: string;
+  output_dir: string;
+  status: "pending" | "starting" | "running" | "stopping" | "stopped" | "completed" | "failed" | "interrupted";
+  progress: Record<string, unknown>;
+  checkpoints: string[];
+  resume_seq: number;
+  error: string | null;
+  alias_count: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+export interface CaptionerTrainingEvent {
+  id: number;
+  run_id: string;
+  resume_seq: number;
+  payload: Record<string, unknown>;
+  timestamp: string;
+}
+export const getCaptionerTrainingDefaults = async (): Promise<CaptionerTrainingConfig> =>
+  (await api.get("/schema/captioner-training-defaults")).data;
+export const getCaptionerRunDefaults = async (): Promise<CaptionerRunDefaults> =>
+  (await api.get("/schema/captioner-run-defaults")).data;
+export const listCaptionerRuns = async (): Promise<{runs: CaptionerTrainingRun[]}> =>
+  (await api.get("/captioner-training/runs")).data;
+export const getCaptionerRun = async (runId: string): Promise<CaptionerTrainingRun> =>
+  (await api.get(`/captioner-training/runs/${runId}`)).data;
+export const createCaptionerRun = async (request: CaptionerRunCreateRequest): Promise<CaptionerTrainingRun> =>
+  (await api.post("/captioner-training/runs", request)).data;
+export const startCaptionerRun = async (runId: string, resume: boolean, checkpoint: string): Promise<CaptionerTrainingRun> =>
+  (await api.post(`/captioner-training/runs/${runId}/start`, {resume, checkpoint})).data;
+export const stopCaptionerRun = async (runId: string): Promise<CaptionerTrainingRun> =>
+  (await api.post(`/captioner-training/runs/${runId}/stop`)).data;
+export const getCaptionerRunEvents = async (runId: string, afterId: number, limit: number): Promise<{events: CaptionerTrainingEvent[]}> =>
+  (await api.get(`/captioner-training/runs/${runId}/events`, {params: {after_id: afterId, limit}})).data;
+export const exportCaptionerRun = async (runId: string, checkpoint: string): Promise<{path: string}> =>
+  (await api.post(`/captioner-training/runs/${runId}/export`, {checkpoint})).data;
 import { wsClient } from "./websocket";
 import { resolveGlobalAttentionImpl, resolveGlobalAttentionMethod, resolveGlobalAttentionType } from "./attentionSettings";
 import { trainingFeatureUnsupportedReason } from "./trainingCapabilities";

@@ -1513,3 +1513,48 @@ GPU checks remain restricted to Qwen-Image 2.1, with no SenseNova GPU use.
 Validation: shared residual contracts plus existing SenseNova training core,
 packed-batch, full-save, LoRA and refiner contracts pass (205 total). Changed
 backend files compile and import with CUDA uninitialized.
+
+
+## SenseNova generation topology lifetime (CPU milestone)
+
+The generation mixin parses LoRA files once before attention/device staging,
+validates all adapter/base topology declarations and the actual owner/decoder
+geometry, then applies the graph only after the adapter session has installed
+its weights. Request cleanup restores the previous graph with a weak reference
+to the original model, including when adapter unloading raises. Unexpected
+graph-install failure also unloads the newly installed adapters. Model replacement
+cannot apply the old graph to the new transformer. Understanding-only adapter
+loads share metadata validation while the understanding forward remains dense.
+Training dry resolution now also validates the actual decoder before adapter
+resume can install weights.
+
+All three image entry points validate the normalized native token grid before
+residency. Residual requests refuse style injection, FBCache, NAG and NegPip.
+Reference images remain in the immutable understanding-prefix KV path; they do
+not join the generation image grid. Request metadata records the actual spec
+and hash. Its generic `kv_cache: false` field disables the image-generation
+cache option, not SenseNova's immutable prefix-KV reuse.
+
+The native residual transport also accepts the existing inference KV streamer's
+host masters in BSHD layout after ordinary cache keys/values have been released.
+It validates the active branch, every layer and native batch/head dimensions
+before executing a block. The upstream streamer still owns staging and transfer.
+A CPU fake of its acquire interface produces exactly the ordinary-cache output
+at every residual resolution without modifying host prefixes; this is not a GPU
+streaming-performance or real CUDA-ring acceptance claim.
+
+CPU contracts cover both MoT adapter branches, parse-once behavior, arithmetic,
+request graph installation/cleanup, inherited graph retention, model replacement,
+unload/install exceptions, mixed dense/residual refusal, actual-decoder mismatch,
+early grid/feature refusal in all image entry points, and streamed-prefix parity.
+Shared residual and related SenseNova regressions pass (213 tests, one existing
+img2txt capability expectation deselected). That expectation and seven adapter
+key-normalization fixture failures were separately reproduced with the unchanged
+pre-milestone mixin; no unrelated fixture fixes are included. Final rollback
+changes are additionally checked with the native residual and legacy LoRA suites.
+Changed backend files compile and import with CUDA uninitialized.
+
+Public SenseNova configure/defaults, inspection/model-info and editor capability
+exposure remain pending. GPU validation stays exclusively Qwen-Image 2.1;
+other architectures receive provisional implementation and CPU checks. Frontend
+build/type checks remain with the owner for consolidated manual validation.

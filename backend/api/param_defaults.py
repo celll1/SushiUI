@@ -22,6 +22,15 @@ from core.models.minimax_h3.hybrid_spec import (
 DIT_REWIRING_REGION_DEFAULTS: Dict[str, Any] = {"edge_blocks": 1, "down_factor": [2, 2]}
 
 DIT_REWIRING_PRESETS: Dict[str, Any] = {
+    "sensenova": {
+        "block_count": 42,
+        "regions": [
+            {"id": "r0", "stream": "main", "parent": None,
+             "start_block": 4, "end_block": 38, "down_factor": [2, 2]},
+            {"id": "r1", "stream": "main", "parent": "r0",
+             "start_block": 19, "end_block": 23, "down_factor": [2, 2]},
+        ],
+    },
     "ideogram4": {
         "block_count": 34,
         "regions": [

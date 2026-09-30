@@ -3496,14 +3496,18 @@ paths:
                     type: array
                     description: Implemented backend architectures; topology and workflow compatibility are validated per request
                     items: {type: string}
-                    example: [qwen_image_21, krea2, anima, zimage, flux2, lens, minit2i, ideogram4]
+                    example: [qwen_image_21, krea2, anima, zimage, flux2, lens, minit2i, ideogram4, sensenova]
   /models/rewiring/inspect:
     post:
       tags: [models]
       summary: Inspect native topology and checkpoint rewiring without loading weights
       description: >-
-        Reads Qwen-Image 2.1, Krea 2, Anima, Z-Image and Flux2 configs and checkpoint
-        headers, including transformer-only directories. Flux2 exposes double/single streams.
+        Reads Qwen-Image 2.1, Krea 2, Anima, Z-Image, Flux2, Lens, MiniT2I,
+        Ideogram 4 and SenseNova configs and checkpoint headers. SenseNova requires
+        embedded native config and full model or refiner-base layout; swapped
+        VAE artifacts require declared channel count and spatial compression.
+        Transformer-only directories are supported where native formats provide them.
+        Flux2 exposes double/single streams.
         Flux2 and Z-Image file inspection
         requires a native constructor config declaration. Inspection and presets do not imply runtime
         support; consult /schema/dit-rewiring runtime_architectures.
@@ -25742,7 +25746,8 @@ components:
           example: configure
           description: >-
             Inherit the checkpoint topology, or configure a new residual U-Net.
-            Supported on Qwen-Image 2.1, Krea 2, Anima, Z-Image and Flux2. Resume requires the same topology.
+            Supported architectures are reported by /schema/dit-rewiring runtime_architectures.
+            SenseNova residual training requires batch_size 1. Resume requires the same topology.
             Incompatible with token/block skipping and positive stochastic block dropout.
         dit_rewiring_spec:
           allOf:

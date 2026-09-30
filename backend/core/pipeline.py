@@ -1325,6 +1325,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     except Exception as e:
                         print(f"[Pipeline] Hash compute skipped: {e}")
 
+                from core.models.sensenova.latent_space import token_pixel_width
                 self.current_model_info = {
                     "source_type": source_type,
                     "source": source,
@@ -1333,6 +1334,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "model_hash": model_hash,
                     **self._fold_component_latent_identity(model_result, "sensenova"),
                     **self._sensenova_token_grid_info(model_result),
+                    "dit_rewiring_spec": getattr(model_result["transformer"], "_residual_unet_spec", None),
+                    "dit_rewiring_token_stride": token_pixel_width(model_result["transformer"]),
                 }
                 self._save_last_model(source_type, source, pipeline_type)
                 print("[Pipeline] SenseNova model loaded successfully")

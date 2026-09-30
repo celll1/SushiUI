@@ -721,7 +721,7 @@ clone restoration, dense forward restoration and feature/grid refusals. All 54
 aggregate CPU contracts and changed-file compile/real imports pass with CUDA
 untouched.
 
-This remains internal: training configuration/resume, generation adapter scopes, presets and model/editor
+This remains internal: public training configuration, generation adapter scopes, presets and model/editor
 discovery must be connected before Flux2 joins public capabilities. Legacy dense
 wrapper paths are not accepted by this new-path CPU check. No Flux2 GPU workflow,
 performance or quality evidence is claimed. Only Qwen-Image 2.1 receives actual
@@ -748,4 +748,31 @@ that the checkpoint config governs reconstruction. Missing/mismatched config
 fails before tensor reading/downloads, and a legacy dense header remains accepted.
 Four Flux2 contracts and 50 existing LoRA/VAE regression cases pass; changed files
 compile and import with CUDA untouched. This is CPU artifact evidence only;
-training resume and generation adapter-stack integration remain pending for Flux2.
+public training configuration and generation adapter-stack integration remain pending for Flux2.
+
+## Flux2 training inheritance
+
+Both normal component loading and full-checkpoint-as-base loading now resolve
+the installed topology after latent-space application and before checkpointing,
+attention configuration or freezing. This catches incompatible latent edits and
+training features before the model proceeds. The shared resolver supplies the
+same inherit-versus-resume agreement rules as Qwen/Krea/Anima/Z-Image. Flux2 stays
+outside public capabilities until its generation scopes, presets and inspection
+are connected; this step supports internal checkpoint inheritance, not a public
+configure option.
+
+LoRA resume validates topology without installing it, then validates/loads branch
+tensors before committing the topology and run config. CPU tests use the real
+Flux2 adapter (50 branches over both streams) and LoRATrainer loader: incomplete
+weights leave every branch, topology and config unchanged; valid weights restore
+exactly and inherit the saved layout; a dense declaration cannot replace an
+already rewired base. Native checkpointing plus the real `flux2_ops.train_step`
+produces finite losses and finite nonzero LoRA gradients on CPU. Reference image
+grids are rejected before training packing or sample setup. Both load entry
+points are exercised up to a deliberate stop after topology resolution. These
+are CPU contracts only, not real-model GPU training, optimizer resume or sample
+quality acceptance.
+
+All 57 aggregate rewiring contracts and 50 existing Flux2 LoRA/VAE regression
+cases pass after this change. Changed backend files compile and import with CUDA
+untouched; frontend checks remain consolidated owner work.

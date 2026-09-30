@@ -42,6 +42,103 @@ class Flux2RuntimeContracts(unittest.TestCase):
         args.update(options)
         return self.model(**args)[0]
 
+    def test_training_inheritance_and_lora_resume_atomicity(self):
+        from core.models.flux2.residual_unet import restore_topology, configure_training_topology
+        from core.training.adapters.flux2_adapter import FLUX2LoRAAdapter
+        from core.training.lora_trainer import LoRATrainer
+        from core.rewiring.spec import checkpoint_metadata
+        from safetensors.torch import save_file
+        restore_topology(self.model,self.spec)
+        config={}
+        self.assertEqual(configure_training_topology(self.model,config,resuming=True),self.spec)
+        self.assertEqual(config["dit_rewiring_spec"],self.spec)
+        before=dict(config)
+        with self.assertRaisesRegex(ValueError,"block_skip_rate"):
+            configure_training_topology(self.model,dict(config,block_skip_rate=0.1))
+        self.assertEqual(config,before)
+        restore_topology(self.model,None)
+        untouched={}
+        self.assertEqual(configure_training_topology(self.model,untouched,resume_spec=self.spec,install=False),self.spec)
+        self.assertEqual(untouched,{})
+        self.assertFalse(hasattr(self.model,"_residual_unet_spec"))
+        trainer=SimpleNamespace(transformer=self.model,config={},is_flux2=True,
+            log_prefix="[Flux2ResumeTest]",lora_rank=2,lora_alpha=2,
+            adapter_algorithm="lora",weight_decompose=False,adapter_config={})
+        adapter=FLUX2LoRAAdapter(trainer,2,2)
+        self.model.requires_grad_(False)
+        layers={};adapter.apply_lora_to_unet(layers);trainer.lora_layers=layers
+        self.assertGreater(len(layers),0)
+        tensors={f"{name}.{key}":value.detach().clone()+0.01
+                 for name,layer in layers.items() for key,value in layer.branch_tensors().items()}
+        before={f"{name}.{key}":value.detach().clone()
+                for name,layer in layers.items() for key,value in layer.branch_tensors().items()}
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/"resume.safetensors"
+            metadata={"model_type":"flux2","step":"17",**checkpoint_metadata(self.spec)}
+            save_file({"unrelated":torch.ones(1)},str(path),metadata=metadata)
+            with self.assertRaisesRegex(ValueError,"missing required tensor"):
+                LoRATrainer.load_checkpoint(trainer,str(path))
+            self.assertFalse(hasattr(self.model,"_residual_unet_spec"));self.assertEqual(trainer.config,{})
+            for name,layer in layers.items():
+                for key,value in layer.branch_tensors().items():
+                    torch.testing.assert_close(value,before[f"{name}.{key}"],rtol=0,atol=0)
+            save_file(tensors,str(path),metadata=metadata)
+            self.assertEqual(LoRATrainer.load_checkpoint(trainer,str(path)),17)
+            self.assertEqual(self.model._residual_unet_spec,self.spec)
+            for name,layer in layers.items():
+                for key,value in layer.branch_tensors().items():
+                    torch.testing.assert_close(value,tensors[f"{name}.{key}"],rtol=0,atol=0)
+            save_file(tensors,str(path),metadata={"model_type":"flux2"})
+            with self.assertRaisesRegex(ValueError,"disagree"):
+                LoRATrainer.load_checkpoint(trainer,str(path))
+            self.assertEqual(self.model._residual_unet_spec,self.spec)
+        self.model.enable_gradient_checkpointing()
+        from core.training.ops import flux2_ops
+        trainer.device=torch.device("cpu");trainer.training_dtype=torch.float32;trainer.mixed_precision=False
+        trainer.noise_scheduler=None;trainer.snr_regularization_loss=None
+        trainer.energy_regularization_loss=None;trainer.reconstruction_loss_weight=0
+        loss,prediction_loss,reconstruction_loss=flux2_ops.train_step(trainer,self.images.detach(),self.text.detach(),
+            self.ids.unsqueeze(0).expand(2,-1,-1),self.text_ids.unsqueeze(0).expand(2,-1,-1),
+            timesteps=self.times,guidance=self.guidance)
+        self.assertTrue(torch.isfinite(loss));self.assertTrue(torch.isfinite(prediction_loss))
+        self.assertTrue(torch.isfinite(reconstruction_loss));loss.backward()
+        grads=[value.grad for layer in layers.values() for value in layer.parameters() if value.requires_grad]
+        self.assertTrue(grads);self.assertTrue(all(g is not None and torch.isfinite(g).all() for g in grads))
+        self.assertTrue(any(torch.count_nonzero(g) for g in grads))
+        with self.assertRaisesRegex(ValueError,"reference image grids"):
+            flux2_ops.train_step(trainer,self.images,self.text,self.ids,self.text_ids,
+                                 reference_latents_nested=[[torch.ones(1)]])
+        with self.assertRaisesRegex(ValueError,"reference image grids"):
+            flux2_ops.generate_sample(trainer,"test",reference_image_path="reference.png")
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_both_training_loaders_inherit_before_checkpointing_or_freeze(self):
+        from core.models.flux2.residual_unet import restore_topology
+        from core.training.ops import flux2_ops
+        from core.training.base_trainer import BaseTrainer
+        from core.model_loader import ModelLoader
+        restore_topology(self.model,self.spec)
+        components=dict(transformer=self.model,vae=torch.nn.Linear(1,1),text_encoder=torch.nn.Linear(1,1),
+                        tokenizer=object(),scheduler=object(),config={})
+        for resume in (False,True):
+            trainer=SimpleNamespace(config={},model_path="full.safetensors",weight_dtype=torch.float32,
+                vae_dtype=torch.float32,log_prefix="[Flux2LoadTest]",gradient_checkpointing=True)
+            sentinel="stop before checkpointing" if resume else "stop before quantization setup"
+            target="core.models.flux2.residual_unet.configure_training_topology"
+            from core.models.flux2.residual_unet import configure_training_topology
+            def resolve_then_stop(model,config,**options):
+                resolved=configure_training_topology(model,config,**options)
+                self.assertEqual(resolved,self.spec)
+                raise RuntimeError(sentinel)
+            with patch.object(ModelLoader,"detect_model_type",return_value="flux2"), \
+                 patch.object(ModelLoader,"load_flux2_from_safetensors",return_value=components), \
+                 patch("core.training.vae_swap.apply_latent_space"),patch(target,side_effect=resolve_then_stop):
+                with self.assertRaisesRegex(RuntimeError,sentinel):
+                    if resume:BaseTrainer._load_checkpoint_as_base(trainer,"full.safetensors")
+                    else:flux2_ops.load_components(trainer)
+            self.assertEqual(trainer.config["dit_rewiring_spec"],self.spec)
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_full_checkpoint_native_loader_roundtrip_and_preflight(self):
         from core.models.flux2.residual_unet import restore_topology, native_config, preflight_checkpoint
         from core.training.adapters.flux2_adapter import FLUX2FullParameterAdapter, FLUX2LoRAAdapter

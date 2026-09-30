@@ -206,6 +206,12 @@ def load_components(trainer) -> None:
     from core.training.vae_swap import apply_latent_space
     apply_latent_space(trainer, components.get("declared_vae"))
 
+    from core.models.flux2.residual_unet import configure_training_topology
+    resume_path = getattr(trainer, "resume_from_checkpoint", None)
+    configure_training_topology(trainer.transformer, trainer.config,
+        resuming=bool(resume_path and Path(trainer.model_path).resolve() == Path(resume_path).resolve()),
+        pending_adapter_resume=bool(resume_path and getattr(trainer, "_manages_own_resume", False)))
+
     # A training process is DEQUANT-ONLY (see ideogram4_ops.load_components for
     # the full reasoning). FLUX.2 is in RUNTIME_INT8_ARCHS and its loader now
     # swaps Int8Linear / Fp8Linear in for a weight-only quantized checkpoint, so a
@@ -417,6 +423,10 @@ def train_step(
     ``trainer.`` — mirroring the P5 ``_flux2_patchify_latents_for_training``
     delegator policy. See the original docstring for arg/shape details.
     """
+    if getattr(trainer.transformer, "_residual_unet_spec", None) is not None and \
+            reference_latents_nested is not None and any(reference_latents_nested):
+        raise ValueError("Flux2 residual training does not support reference image grids")
+
     # Lazy import (sibling-ops pattern): keep base_trainer out of module top level.
     from core.training.base_trainer import (
         add_noise_unified,
@@ -814,6 +824,8 @@ def generate_sample(
     Returns:
         PIL Image
     """
+    if getattr(trainer.transformer, "_residual_unet_spec", None) is not None and reference_image_path:
+        raise ValueError("Flux2 residual training samples do not support reference image grids")
     from core.training.base_trainer import log_verbose
 
     import random

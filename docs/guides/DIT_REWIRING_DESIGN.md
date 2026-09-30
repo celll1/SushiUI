@@ -358,3 +358,26 @@ executes all forty forwards and restores the dense base after LoRA unload. The
 output is pixel-identical to the previous accepted deepest-four-block probe
 (MAE zero). The cold request took 30.67 seconds; this is a connectivity/regression
 check, not a new steady-state throughput benchmark. No Krea GPU run was performed.
+
+## Graphical custom topology construction
+
+Inspection now returns an explicit `initial_spec`, a single editable region whose
+edge-block margin and shrink factors come from param_defaults.py. This is separate
+from `default_spec`: configure-with-null retains the accepted two-stage preset,
+and nonstandard block counts still require the user to select an explicit layout.
+A custom seven-block artifact is inspected, resolved for training and previewed
+through actual API routes without model allocation; all 27 CPU contracts pass.
+
+The editor can create the first region without a model preset, reset to a custom
+single region, and add independent or nested regions into available noncrossing
+intervals. Region deletion keeps at least one region. Model/parent/grid validation
+still determines whether the edited layout is usable. Graph rows show depth when
+same-depth regions have different token counts; tooltips and counts retain the
+actual grids. Block widths remain positive for large declared block counts.
+
+Owner frontend checks should also cover custom layouts without presets, adding
+independent regions with different shrink factors, resetting after a base-model
+change, and removing a parent while retaining another region. These controls
+receive static review; frontend build/type and browser checks remain deferred to
+the owner's consolidated verification. No additional GPU check is needed for
+this header/editor change, and no other model is run on the GPU.

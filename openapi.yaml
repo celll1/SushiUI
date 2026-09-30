@@ -3524,7 +3524,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [architecture, streams, base_config_sha256, block_layout_sha256, topology, default_spec, latent_scale_factor, pixel_alignment]
+                required: [architecture, streams, base_config_sha256, block_layout_sha256, topology, default_spec, initial_spec, latent_scale_factor, pixel_alignment]
                 properties:
                   architecture: {type: string}
                   streams: {type: array, items: {type: object}}
@@ -3537,6 +3537,9 @@ paths:
                   default_spec:
                     allOf: [{$ref: '#/components/schemas/DiTRewiringSpec'}]
                     nullable: true
+                  initial_spec:
+                    allOf: [{$ref: '#/components/schemas/DiTRewiringSpec'}]
+                    description: Explicit single-region starting topology for custom layouts; selecting configure without a spec still uses default_spec.
                   latent_scale_factor: {type: integer}
                   pixel_alignment: {type: integer}
         '422':

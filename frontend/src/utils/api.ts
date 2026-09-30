@@ -9497,6 +9497,7 @@ export interface DiTRewiringModelInfo {
   architecture: string; streams: DiTRewiringSpec["streams"];
   base_config_sha256: string; block_layout_sha256: string;
   topology: DiTRewiringSpec | null; topology_sha256: string | null; default_spec: DiTRewiringSpec | null;
+  initial_spec: DiTRewiringSpec;
   latent_scale_factor: number; pixel_alignment: number;
 }
 export const getDiTRewiringSchema = async (): Promise<{

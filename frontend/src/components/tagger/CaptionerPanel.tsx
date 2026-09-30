@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import CaptionerTrainingPanel from "./CaptionerTrainingPanel";
 import {
   CaptionerDefaults, CaptionerOptions, CaptionerPreview, CaptionerStatus, Dataset,
   getCaptionerDefaults, getCaptionerStatus, loadCaptioner, unloadCaptioner,
@@ -144,5 +145,6 @@ export default function CaptionerPanel() {
         <button className={input} disabled={busy || row.saved || !row.preview.caption.trim() || row.preview.dataset_id === undefined || !captionType.trim()} onClick={() => void save(index)}>確認済みcaptionを保存</button>
       </>}
     </section>)}
+    <CaptionerTrainingPanel onSelectBundle={setPath} />
   </div>;
 }

@@ -61,6 +61,15 @@ def test_training_openapi_parity():
         assert set(m.lower() for m in route.methods) <= set(spec["paths"][route.path])
 
 
+def test_run_defaults_are_detached():
+    from api.captioner_training_routes import run_defaults
+    from api.param_defaults import CAPTIONER_RUN_DEFAULTS
+    returned = run_defaults()
+    assert returned == CAPTIONER_RUN_DEFAULTS
+    returned["run_name"] = "changed"
+    assert run_defaults() == CAPTIONER_RUN_DEFAULTS
+
+
 def test_persistence_interruption_and_exclusive_directory(setup):
     factory, request, root = setup
     service = CaptionRunService(factory, factory, root)
@@ -153,3 +162,63 @@ def test_worker_failure_releases_activity_and_allows_retry(setup):
     assert final["status"] == "failed" and "incompatible" in final["error"]
     assert not service.workers
     assert not model_state_coordinator.snapshot()["activities"]
+
+
+def test_real_trainer_through_rest_and_export(setup, monkeypatch):
+    import asyncio
+    import httpx
+    import torch
+    from fastapi import FastAPI
+    import api.captioner_training_routes as routes
+    from captioner_training_test import database, manager
+    from core.captioner.artifact import load_bundle
+
+    factory, request, root = setup
+    dataset_factory, datasets = database(root)
+    request.dataset_configs = [routes.CaptionerDatasetConfig(**value) for value in datasets]
+    request.config = CaptionerTrainingConfig(hidden_dim=12, heads=3, layers=1, ffn_dim=24,
+        visual_queries=2, max_length=32, max_num_patches=4, max_concepts=2, vocab_size=280,
+        tokenizer_min_frequency=1, epochs=1, batch_size=2, near_duplicate_distance=0,
+        dropout=0.0, save_every_steps=1, use_tag_aliases=False)
+    unloaded = []
+
+    def load(_):
+        tagger = manager()
+        tagger.unload = lambda: unloaded.append(True)
+        return tagger
+
+    service = CaptionRunService(factory, dataset_factory, root, loader=load)
+    monkeypatch.setattr(routes, "service", service)
+    app = FastAPI()
+    app.include_router(routes.router)
+
+    async def call(method, path, **kwargs):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            return await client.request(method, path, **kwargs)
+
+    threads = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        created = asyncio.run(call("POST", "/captioner-training/runs", json=request.model_dump()))
+        assert created.status_code == 200, created.text
+        key = created.json()["run_id"]
+        started = asyncio.run(call("POST", f"/captioner-training/runs/{key}/start", json={}))
+        assert started.status_code == 200, started.text
+        with service.lock:
+            current = service.workers.get(key)
+        if current:
+            current[1].join(20)
+            assert not current[1].is_alive()
+        result = asyncio.run(call("GET", f"/captioner-training/runs/{key}"))
+        assert result.json()["status"] == "completed", result.text
+        assert unloaded and result.json()["checkpoints"]
+        exported = asyncio.run(call("POST", f"/captioner-training/runs/{key}/export", json={}))
+        assert exported.status_code == 200, exported.text
+        bundle = Path(exported.json()["path"])
+        assert not (bundle / "resume.pt").exists()
+        load_bundle(bundle)
+        events = asyncio.run(call("GET", f"/captioner-training/runs/{key}/events")).json()["events"]
+        assert any("loss" in row["payload"] for row in events)
+        assert any("export" in row["payload"] for row in events)
+    finally:
+        torch.set_num_threads(threads)

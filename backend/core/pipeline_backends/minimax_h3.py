@@ -1233,6 +1233,7 @@ class MiniMaxH3Mixin:
             ``(frames, audio, audio_sample_rate, actual_seed)`` -- the same
             tuple contract as every other video generate path.
         """
+        params.pop("dit_rewiring_actual", None)
         from api.error_handlers import ValidationError
         from api.generation_utils import (
             MINIMAX_H3_DOCUMENTED_ANCHOR_SCOPE,
@@ -1499,6 +1500,9 @@ class MiniMaxH3Mixin:
                 preserved_spans=preserved_spans, warn=warn,
             )
 
+        params.pop("dit_rewiring_actual", None)
+        if sub_params.get("dit_rewiring_actual") is not None:
+            params["dit_rewiring_actual"] = sub_params["dit_rewiring_actual"]
         return frames_out, audio_out, audio_sample_rate, seed
 
     def _minimax_h3_motion_preroll_keyframes(
@@ -1875,6 +1879,7 @@ class MiniMaxH3Mixin:
             ``(frames, audio, audio_sample_rate, actual_seed)`` -- the same
             tuple contract as every other video generate path.
         """
+        params.pop("dit_rewiring_actual", None)
         from api.error_handlers import ValidationError
         from api.generation_utils import (
             MINIMAX_H3_DOCUMENTED_ANCHOR_SCOPE,
@@ -2298,6 +2303,9 @@ class MiniMaxH3Mixin:
                 conditioned=bool(pinned_audio_latents),
             )
 
+        params.pop("dit_rewiring_actual", None)
+        if sub_params.get("dit_rewiring_actual") is not None:
+            params["dit_rewiring_actual"] = sub_params["dit_rewiring_actual"]
         return frames_out, audio_out, audio_sample_rate, seed
 
     def _minimax_h3_splice_inpaint_range_audio(
@@ -2597,6 +2605,9 @@ class MiniMaxH3Mixin:
         from core.models.minimax_h3 import h3_pipeline_ops as ops
         from core.models.minimax_h3 import h3_references as refs
         from core.models.minimax_h3 import prompt_cache
+        from core.models.minimax_h3.residual_unet import begin_generation_observation, generation_metadata
+        params.pop("dit_rewiring_actual", None)
+        execution_snapshot = None
         from core.models.minimax_h3.loader import minimax_h3_latent_frames
 
         components = getattr(self, "minimax_h3_components", None)
@@ -3249,6 +3260,7 @@ class MiniMaxH3Mixin:
                 lora_configs = params.get("loras") or []
                 if lora_configs:
                     self._load_lora_minimax_h3(lora_configs, params)
+                begin_generation_observation(components["transformer"], params)
                 # Staging owns the device move: with block swap it places the block stack
                 # itself rather than moving all 21 GB on and some of it back off.
                 transformer, offloader, probe_records = self._ensure_minimax_h3_swap_and_offload(
@@ -3286,6 +3298,7 @@ class MiniMaxH3Mixin:
                     spectrum_params=params,
                     block_swap_on=int(params.get("blocks_to_swap", 0) or 0) > 0,
                 )
+                execution_snapshot = generation_metadata(transformer)
         finally:
             if substep_reporter is not None:
                 substep_reporter.close()
@@ -3497,4 +3510,6 @@ class MiniMaxH3Mixin:
 
         if frames.dtype != np.uint8:  # pragma: no cover - decode_video guarantees it
             frames = frames.astype(np.uint8)
+        if execution_snapshot is not None:
+            params["dit_rewiring_actual"] = execution_snapshot
         return frames, audio_out, audio_sample_rate, seed

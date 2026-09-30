@@ -140,6 +140,62 @@ class MiniMaxH3WrapperResidualContracts(unittest.TestCase):
             text_indices=self.native['text_indices'], return_dict=False,
             residual_video_grid=dict(frames=3, height=8, width=12, target_indices=self.target))
 
+    def test_execution_metadata_is_detached_and_survives_scope_cleanup(self):
+        import json
+        import tempfile
+        import numpy as np
+        from unittest.mock import patch
+        from core.models.minimax_h3.residual_unet import (
+            begin_generation_observation, generation_metadata, restore_topology, native_config)
+        request = dict(seed=209, frame_rate=24, prompt='CPU metadata fixture',
+                       dit_rewiring_actual={'stale':True})
+        begin_generation_observation(self.wrapper, request)
+        self.assertNotIn('dit_rewiring_actual', request)
+        with self.assertRaisesRegex(ValueError, 'did not observe'):
+            generation_metadata(self.wrapper)
+        with torch.no_grad(): self.wrapper(**self.args)
+        actual = generation_metadata(self.wrapper)
+        self.assertEqual(actual['spec'], self.spec)
+        self.assertEqual(actual['native_video_grid'], [3,8,12])
+        self.assertEqual(actual['native_video_tokens'], 288)
+        self.assertEqual(actual['native_condition_video_tokens'], 96)
+        self.assertEqual(actual['native_audio_tokens'], 6)
+        self.assertEqual(actual['native_text_tokens'], 4)
+        self.assertEqual(actual['native_prefix_tokens'], 106)
+        self.assertEqual(actual['audio_grid_policy'], 'native_unscaled')
+        actual['spec']['regions'][0]['id'] = 'detached'
+        self.assertEqual(self.inner._residual_unet_spec, self.spec)
+        actual = generation_metadata(self.wrapper)
+        changed = deepcopy(self.spec['regions']); changed[1]['start_block'] = 3
+        alternate = build_spec('minimax_h3', [{'name':'main','block_count':7}], changed,
+            native_config(self.inner.config))
+        restore_topology(self.wrapper, alternate)
+        with self.assertRaisesRegex(ValueError, 'did not observe'):
+            generation_metadata(self.wrapper)
+        restore_topology(self.wrapper, None)
+        self.assertIsNone(generation_metadata(self.wrapper))
+        request['dit_rewiring_actual'] = actual
+        from utils import video_utils
+        with tempfile.TemporaryDirectory() as folder, patch.object(video_utils.settings, 'outputs_dir', folder):
+            frames = np.zeros((1,8,8,3), dtype=np.uint8)
+            filename,_ = video_utils.save_video_with_metadata(frames,None,None,request,'txt2vid',
+                model_info={'type':'minimax_h3'})
+            self.assertGreater((Path(folder)/filename).stat().st_size, 0)
+            sidecar = json.loads((Path(folder)/Path(filename).with_suffix('.json')).read_text(encoding='utf-8'))
+            self.assertEqual(sidecar['dit_rewiring_actual'], actual)
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_failed_native_head_invalidates_previous_execution_observation(self):
+        from unittest.mock import patch
+        from core.models.minimax_h3.residual_unet import generation_metadata
+        with torch.no_grad(): self.wrapper(**self.args)
+        self.assertIsNotNone(generation_metadata(self.wrapper))
+        with patch.object(self.inner.proj_out, 'forward', side_effect=RuntimeError('head failed')):
+            with torch.no_grad(), self.assertRaisesRegex(RuntimeError, 'head failed'):
+                self.wrapper(**self.args)
+        with self.assertRaisesRegex(ValueError, 'did not observe'):
+            generation_metadata(self.wrapper)
+
     def test_wrapper_native_heads_and_checkpointed_gradients(self):
         observed = []
         hooks = [block.register_forward_pre_hook(lambda module, args: observed.append(args[0].shape[1]))

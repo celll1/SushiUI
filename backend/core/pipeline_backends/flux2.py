@@ -649,7 +649,7 @@ class Flux2Mixin:
 
     def _load_lora_flux2(self, lora_configs: List[Dict]) -> int:
         components = self._flux2_lora_components()
-        self._flux2_lora_session.unload(components)
+        self._unload_lora_flux2()
 
         if not lora_configs:
             return 0
@@ -658,7 +658,27 @@ class Flux2Mixin:
             print("[FLUX.2 LoRA] WARNING: FLUX.2 components not loaded")
             return 0
 
-        result = self._flux2_lora_session.load(lora_configs, components)
+        from copy import deepcopy
+        from core.adapters import AdapterIncompatible
+        from core.rewiring.adapters import resolve_adapter_topology
+        from core.models.flux2.residual_unet import validate_topology_identity, restore_topology
+        model = components[0].module
+        base_topology = getattr(model, "_residual_unet_spec", None)
+        files = self._flux2_lora_session.parse(lora_configs)
+        try:
+            if model is None:
+                from core.rewiring.spec import read_checkpoint_metadata
+                if any(read_checkpoint_metadata(file.metadata) is not None for file in files):
+                    raise ValueError("Rewired Flux2 adapters require a loaded transformer")
+                required = None
+            else:
+                required = resolve_adapter_topology(model, files, validate_topology_identity)
+        except ValueError as exc:
+            raise AdapterIncompatible(str(exc), code="lora_rewiring_incompatible") from exc
+        result = self._flux2_lora_session.load(files, components)
+        if required is not None:
+            restore_topology(model, required)
+            self._flux2_topology_restore = (weakref.ref(model), deepcopy(base_topology))
         self._flux2_report_lora_files(result, components)
         return result.applied
 
@@ -697,7 +717,45 @@ class Flux2Mixin:
     def _unload_lora_flux2(self) -> int:
         """Restore both components' modules to their pre-LoRA originals."""
         components = self._flux2_lora_components()
-        return self._flux2_lora_session.unload(components)
+        try:
+            return self._flux2_lora_session.unload(components)
+        finally:
+            saved = self.__dict__.pop("_flux2_topology_restore", None)
+            if saved is not None and saved[0]() is not None:
+                from core.models.flux2.residual_unet import restore_topology
+                restore_topology(saved[0](), saved[1])
+
+    def _flux2_rewiring_metadata(self, params, transformer, height, width):
+        from api.error_handlers import ValidationError
+        from core.inference.fbcache import fbcache_active
+        from core.prompts.prompt_parser import prompt_has_negative_weight
+        from core.rewiring.spec import digest, preview_plan
+        topology = getattr(transformer, "_residual_unet_spec", None)
+        if topology is None:
+            params.pop("dit_rewiring_actual", None)
+            return
+        if params.get("ref_images"):
+            raise ValidationError("Flux2 residual U-Net generation does not support reference image grids")
+        if params.get("style_transfer") or params.get("style_transfers"):
+            raise ValidationError("Flux2 residual U-Net generation does not support style injection")
+        if fbcache_active(params):
+            raise ValidationError("Flux2 residual U-Net generation does not support FBCache")
+        if params.get("nag_enable"):
+            raise ValidationError("Flux2 residual U-Net generation does not support NAG")
+        for key in ("prompt", "negative_prompt", "nag_negative_prompt"):
+            value = params.get(key) or ""
+            prompts = value if isinstance(value, list) else [value]
+            if any(prompt_has_negative_weight(prompt) for prompt in prompts):
+                raise ValidationError("Flux2 residual U-Net generation does not support NegPip")
+        from core.models.flux2.residual_unet import generation_token_stride
+        stride = generation_token_stride(self.flux2_components.get("vae"))
+        try:
+            if height % stride or width % stride:
+                raise ValueError("Flux2 rewiring requires the native packed token grid")
+            preview_plan(topology, height // stride, width // stride)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        params["dit_rewiring_actual"] = {"spec": topology, "spec_sha256": digest(topology), "kv_cache": False}
 
     def _flux2_cleanup(self, gen_succeeded=True, keep_te=False, keep_transformer=False, keep_vae=False):
         """Safety-net CPU offload for FLUX.2 components.
@@ -732,6 +790,11 @@ class Flux2Mixin:
         teardown is a no-op -- the two states never coexist.
         """
         try:
+            if getattr(self, "_flux2_topology_restore", None) is not None:
+                try:
+                    self._unload_lora_flux2()
+                except Exception as e:
+                    print(f"[FLUX.2] cleanup: residual adapter restore failed: {e}")
             # Text-encoder LoRA wrappers are per-generation state, restored here
             # because this helper IS the finally of every generate entry point.
             # The transformer's wrappers keep their existing longer lifetime
@@ -858,23 +921,13 @@ class Flux2Mixin:
         try:
             import numpy as np
 
-            lora_configs = params.get("loras", [])
-            print(f"[FLUX.2] DEBUG: lora_configs from params = {lora_configs}")
-            if lora_configs:
-                # Unload previous LoRAs first (if any)
-                if hasattr(self, '_flux2_lora_wrapped_modules') and self._flux2_lora_wrapped_modules:
-                    self._unload_lora_flux2()
-                print(f"[FLUX.2] Loading {len(lora_configs)} LoRA(s)...")
-                self._load_lora_flux2(lora_configs)
-            else:
-                # No LoRAs requested - unload if any are loaded
-                if hasattr(self, '_flux2_lora_wrapped_modules') and self._flux2_lora_wrapped_modules:
-                    print(f"[FLUX.2] No LoRAs in params, unloading existing LoRAs")
-                    self._unload_lora_flux2()
-                else:
-                    print(f"[FLUX.2] DEBUG: No LoRAs in params, skipping LoRA loading")
+            self._load_lora_flux2(params.get("loras", []))
 
             transformer = self.flux2_components["transformer"]
+            from api.param_defaults import GENERATION_DEFAULTS
+            self._flux2_rewiring_metadata(params, transformer,
+                params.get("height", GENERATION_DEFAULTS["height"]),
+                params.get("width", GENERATION_DEFAULTS["width"]))
             vae = self.flux2_components["vae"]
             text_encoder = self.flux2_components["text_encoder"]
             tokenizer = self.flux2_components["tokenizer"]
@@ -2487,20 +2540,11 @@ class Flux2Mixin:
         try:
             import numpy as np
 
-            lora_configs = params.get("loras", [])
-            if lora_configs:
-                # Unload previous LoRAs first (if any)
-                if hasattr(self, '_flux2_lora_wrapped_modules') and self._flux2_lora_wrapped_modules:
-                    self._unload_lora_flux2()
-                print(f"[FLUX.2] Loading {len(lora_configs)} LoRA(s)...")
-                self._load_lora_flux2(lora_configs)
-            else:
-                # No LoRAs requested - unload if any are loaded
-                if hasattr(self, '_flux2_lora_wrapped_modules') and self._flux2_lora_wrapped_modules:
-                    print(f"[FLUX.2] No LoRAs in params, unloading existing LoRAs")
-                    self._unload_lora_flux2()
+            self._load_lora_flux2(params.get("loras", []))
 
             transformer = self.flux2_components["transformer"]
+            self._flux2_rewiring_metadata(params, transformer,
+                (init_image.height // 16) * 16, (init_image.width // 16) * 16)
             vae = self.flux2_components["vae"]
             text_encoder = self.flux2_components["text_encoder"]
             tokenizer = self.flux2_components["tokenizer"]
@@ -3309,20 +3353,11 @@ class Flux2Mixin:
         try:
             import numpy as np
 
-            lora_configs = params.get("loras", [])
-            if lora_configs:
-                # Unload previous LoRAs first (if any)
-                if hasattr(self, '_flux2_lora_wrapped_modules') and self._flux2_lora_wrapped_modules:
-                    self._unload_lora_flux2()
-                print(f"[FLUX.2] Loading {len(lora_configs)} LoRA(s)...")
-                self._load_lora_flux2(lora_configs)
-            else:
-                # No LoRAs requested - unload if any are loaded
-                if hasattr(self, '_flux2_lora_wrapped_modules') and self._flux2_lora_wrapped_modules:
-                    print(f"[FLUX.2] No LoRAs in params, unloading existing LoRAs")
-                    self._unload_lora_flux2()
+            self._load_lora_flux2(params.get("loras", []))
 
             transformer = self.flux2_components["transformer"]
+            self._flux2_rewiring_metadata(params, transformer,
+                (init_image.height // 16) * 16, (init_image.width // 16) * 16)
             vae = self.flux2_components["vae"]
             text_encoder = self.flux2_components["text_encoder"]
             tokenizer = self.flux2_components["tokenizer"]

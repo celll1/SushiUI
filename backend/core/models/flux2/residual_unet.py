@@ -64,6 +64,11 @@ def configure_training_topology(model, config, *, resuming=False, pending_adapte
         pending_adapter_resume=pending_adapter_resume, resume_spec=resume_spec, install=install)
 
 
+def generation_token_stride(vae):
+    blocks = getattr(getattr(vae, "config", None), "block_out_channels", None)
+    return (2 ** (len(blocks) - 1) if blocks else 8) * 2
+
+
 def preflight_checkpoint(path):
     from safetensors import safe_open
     from core.rewiring.artifacts import read_artifact_topology

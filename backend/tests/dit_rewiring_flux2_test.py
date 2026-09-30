@@ -112,6 +112,129 @@ class Flux2RuntimeContracts(unittest.TestCase):
             flux2_ops.generate_sample(trainer,"test",reference_image_path="reference.png")
         self.assertFalse(torch.cuda.is_initialized())
 
+    def test_generation_adapter_topology_scope_and_refusals(self):
+        from copy import deepcopy
+        from core.models.flux2.residual_unet import restore_topology
+        from core.pipeline_backends.flux2 import Flux2Mixin
+        from core.rewiring.spec import checkpoint_metadata,digest
+        from core.adapters import CompositeAdapterLayer,AdapterIncompatible
+        from safetensors.torch import save_file
+        class Manager(Flux2Mixin):
+            def __init__(manager):
+                manager.flux2_components={"transformer":self.model,"text_encoder":None,
+                    "vae":SimpleNamespace(config=SimpleNamespace(block_out_channels=[1,2,3,4]))}
+            def _flux2_resolve_lora_path(manager,path):return str(path)
+        manager=Manager();restore_topology(self.model,None)
+        original=self.model.transformer_blocks[0].attn.to_q
+        with tempfile.TemporaryDirectory() as folder:
+            def write(name,topology,wrong=False):
+                path=Path(folder)/f"{name}.safetensors"
+                save_file({"lora_transformer_transformer_blocks_0_attn_to_q.lora_down.weight":torch.randn(2,15 if wrong else 16),
+                           "lora_transformer_transformer_blocks_0_attn_to_q.lora_up.weight":torch.randn(16,2)},str(path),
+                    metadata={"model_type":"flux2",**({} if topology is None else checkpoint_metadata(topology))})
+                return {"path":str(path),"strength":1.0}
+            good,dense,bad=write("good",self.spec),write("dense",None),write("bad",self.spec,True)
+            changed=write("changed",dict(self.spec,regions=self.spec["regions"][:2]))
+            self.assertEqual(manager._load_lora_flux2([good]),1)
+            self.assertIsInstance(self.model.transformer_blocks[0].attn.to_q,CompositeAdapterLayer)
+            self.assertEqual(self.model._residual_unet_spec,self.spec)
+            params={};manager._flux2_rewiring_metadata(params,self.model,128,192)
+            self.assertEqual(params["dit_rewiring_actual"]["spec_sha256"],digest(self.spec))
+            self.assertTrue(torch.isfinite(self.forward()).all())
+            for options,message in (({"ref_images":["ref.png"]},"reference"),({"style_transfers":[{}]},"style"),
+                    ({"fbcache_enable":True,"fbcache_threshold":0.1},"FBCache"),({"nag_enable":True},"NAG"),
+                    ({"prompt":"(blurry:-1)"},"NegPip")):
+                with self.assertRaisesRegex(Exception,message):manager._flux2_rewiring_metadata(options,self.model,128,192)
+            with self.assertRaisesRegex(Exception,"divisible"):
+                manager._flux2_rewiring_metadata({},self.model,144,192)
+            manager._unload_lora_flux2()
+            self.assertIs(self.model.transformer_blocks[0].attn.to_q,original)
+            self.assertFalse(hasattr(self.model,"_residual_unet_spec"))
+            manager._flux2_rewiring_metadata(params,self.model,128,192)
+            self.assertNotIn("dit_rewiring_actual",params)
+            for files in ([good,dense],[good,changed],[good,bad]):
+                with self.assertRaises(RuntimeError):manager._load_lora_flux2(files)
+                self.assertIs(self.model.transformer_blocks[0].attn.to_q,original)
+                self.assertFalse(hasattr(self.model,"_residual_unet_spec"))
+            restore_topology(self.model,self.spec)
+            with self.assertRaises(AdapterIncompatible):manager._load_lora_flux2([dense])
+            manager._load_lora_flux2([good]);manager._unload_lora_flux2()
+            self.assertEqual(self.model._residual_unet_spec,self.spec)
+            restore_topology(self.model,None)
+            manager._load_lora_flux2([good])
+            replacement=deepcopy(self.model);restore_topology(replacement,None)
+            replacement.transformer_blocks[0].attn.to_q=deepcopy(original)
+            manager.flux2_components["transformer"]=replacement
+            manager._load_lora_flux2([good]);manager._unload_lora_flux2()
+            self.assertFalse(hasattr(replacement,"_residual_unet_spec"))
+            self.assertFalse(hasattr(self.model,"_residual_unet_spec"))
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_cleanup_restores_topology_despite_offload_failure(self):
+        from core.models.flux2.residual_unet import restore_topology
+        from core.pipeline_backends.flux2 import Flux2Mixin
+        import weakref
+        restore_topology(self.model,self.spec)
+        events=[]
+        class FailingOffload:
+            def to(module,device):events.append(device);raise RuntimeError("offload failed")
+        manager=Flux2Mixin()
+        manager.flux2_components={"transformer":self.model,"vae":FailingOffload()}
+        manager._flux2_topology_restore=(weakref.ref(self.model),None)
+        manager._flux2_cleanup(gen_succeeded=False)
+        self.assertFalse(hasattr(self.model,"_residual_unet_spec"));self.assertEqual(events,["cpu"])
+        with patch.object(manager,"_unload_lora_flux2",side_effect=RuntimeError("restore failed")):
+            manager._flux2_topology_restore=(weakref.ref(self.model),None)
+            manager._flux2_cleanup(gen_succeeded=False)
+        self.assertEqual(events,["cpu","cpu"])
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_all_generation_entries_select_and_restore_before_staging(self):
+        from PIL import Image
+        from core.pipeline_backends.flux2 import Flux2Mixin
+        from core.models.flux2.residual_unet import restore_topology
+        from core.rewiring.spec import checkpoint_metadata
+        from safetensors.torch import save_file
+        restore_topology(self.model,None)
+        class Manager(Flux2Mixin):
+            device="cpu"
+            def __init__(manager):
+                vae=torch.nn.Linear(1,1);vae.config=SimpleNamespace(block_out_channels=[1,2,3,4])
+                manager.flux2_components={"transformer":self.model,"vae":vae,"text_encoder":torch.nn.Linear(1,1),
+                                          "tokenizer":object(),"scheduler":object(),"config":{}}
+                manager.seen=[];manager.cleaned=[]
+            def _flux2_resolve_lora_path(manager,path):return str(path)
+            def _flux2_rewiring_metadata(manager,params,transformer,height,width):
+                super()._flux2_rewiring_metadata(params,transformer,height,width)
+                manager.seen.append(params.get("dit_rewiring_actual",{}).get("spec"))
+                raise RuntimeError("CPU stop before staging")
+            def _flux2_cleanup(manager,**options):
+                super()._flux2_cleanup(**options)
+                manager.cleaned.append(getattr(self.model,"_residual_unet_spec",None))
+        manager=Manager()
+        original=self.model.transformer_blocks[0].attn.to_q
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/"good.safetensors"
+            save_file({"lora_transformer_transformer_blocks_0_attn_to_q.lora_down.weight":torch.randn(2,16),
+                       "lora_transformer_transformer_blocks_0_attn_to_q.lora_up.weight":torch.randn(16,2)},str(path),
+                metadata={"model_type":"flux2",**checkpoint_metadata(self.spec)})
+            image=Image.new("RGB",(192,128));mask=Image.new("L",image.size)
+            for entry,args in ((manager._generate_txt2img_flux2,()),(manager._generate_img2img_flux2,(image,)),
+                               (manager._generate_inpaint_flux2,(image,mask))):
+                params={"loras":[{"path":str(path),"strength":1.0}],"height":128,"width":192,"seed":42}
+                with self.assertRaisesRegex(RuntimeError,"CPU stop before staging"):entry(params,*args)
+                self.assertIs(self.model.transformer_blocks[0].attn.to_q,original)
+                self.assertFalse(hasattr(self.model,"_residual_unet_spec"))
+                self.assertEqual(params["dit_rewiring_actual"]["spec"],self.spec)
+                manager._load_lora_flux2(params["loras"])
+                empty={"height":128,"width":192,"seed":42}
+                with self.assertRaisesRegex(RuntimeError,"CPU stop before staging"):entry(empty,*args)
+                self.assertNotIn("dit_rewiring_actual",empty)
+                self.assertIs(self.model.transformer_blocks[0].attn.to_q,original)
+                self.assertFalse(hasattr(self.model,"_residual_unet_spec"))
+            self.assertEqual(manager.seen,[self.spec,None]*3);self.assertEqual(manager.cleaned,[None]*6)
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_both_training_loaders_inherit_before_checkpointing_or_freeze(self):
         from core.models.flux2.residual_unet import restore_topology
         from core.training.ops import flux2_ops

@@ -721,7 +721,7 @@ clone restoration, dense forward restoration and feature/grid refusals. All 54
 aggregate CPU contracts and changed-file compile/real imports pass with CUDA
 untouched.
 
-This remains internal: public training configuration, generation adapter scopes, presets and model/editor
+This remains internal: public training configuration, presets and model/editor
 discovery must be connected before Flux2 joins public capabilities. Legacy dense
 wrapper paths are not accepted by this new-path CPU check. No Flux2 GPU workflow,
 performance or quality evidence is claimed. Only Qwen-Image 2.1 receives actual
@@ -748,7 +748,7 @@ that the checkpoint config governs reconstruction. Missing/mismatched config
 fails before tensor reading/downloads, and a legacy dense header remains accepted.
 Four Flux2 contracts and 50 existing LoRA/VAE regression cases pass; changed files
 compile and import with CUDA untouched. This is CPU artifact evidence only;
-public training configuration and generation adapter-stack integration remain pending for Flux2.
+public training configuration and inspection remain pending for Flux2.
 
 ## Flux2 training inheritance
 
@@ -757,7 +757,7 @@ the installed topology after latent-space application and before checkpointing,
 attention configuration or freezing. This catches incompatible latent edits and
 training features before the model proceeds. The shared resolver supplies the
 same inherit-versus-resume agreement rules as Qwen/Krea/Anima/Z-Image. Flux2 stays
-outside public capabilities until its generation scopes, presets and inspection
+outside public capabilities until its presets and inspection
 are connected; this step supports internal checkpoint inheritance, not a public
 configure option.
 
@@ -776,3 +776,32 @@ quality acceptance.
 All 57 aggregate rewiring contracts and 50 existing Flux2 LoRA/VAE regression
 cases pass after this change. Changed backend files compile and import with CUDA
 untouched; frontend checks remain consolidated owner work.
+
+## Flux2 generation adapter scopes
+
+Generation parses every selected adapter declaration and checks agreement with
+the native model identity and the loaded base topology before installing any
+branch. Mixed dense/rewired adapters or different residual layouts are refused.
+The adapter session installs the complete branch plan atomically, then the
+native forward binding restores the declared double/single topology. A weak
+model reference and copied base spec govern reversal, including model swaps.
+Every generation entry selects an adapter stack even when empty, so text-only
+adapter scopes cannot leave a topology behind for a subsequent dense request.
+
+Rewired adapter scopes unload both transformer and text encoder branches in
+generation cleanup and restore the base topology. Dense adapter lifetime rules
+remain as before. Cleanup still attempts CPU offload if adapter restoration fails;
+an offload failure does not prevent the prior topology restore. Actual generation
+metadata records the spec/hash and `kv_cache=false`; reference image grids,
+style injection, FBCache, NAG and NegPip are refused before GPU staging, and native
+packed-grid divisibility is checked. Img2img/inpaint preview uses the entry's
+existing 16-pixel rounded image dimensions.
+
+CPU contracts verify native forward with an applied rewired branch, invalid
+stack/shape refusals, full-base topology preservation, model-swap restoration and
+cleanup failure ordering. All three real generation entries are exercised up to
+a deliberate stop before staging and checked for finally restoration. This
+does not prove full GPU generation or performance/quality. All 60 aggregate
+rewiring contracts and 50 existing Flux2 LoRA/VAE cases pass; changed backend
+files compile and import with CUDA untouched. Public presets/model inspection
+and model-info connection remain pending.

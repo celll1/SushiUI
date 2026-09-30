@@ -122,6 +122,8 @@ class CachedNAR:
         if chunk.nar_cond_end < 0:
             raise ValueError("nar_cond_end must be nonnegative")
         self.visible_length = min(chunk.nar_cond_end, self.ar_length) if chunk.nar_cond_end else self.ar_length
+        from ..residual_unet import preflight_engine
+        self.residual_state = preflight_engine(model, len(chunk.noise), self.ar_length)
         positions = torch.arange(self.ar_length, self.ar_length + self.nar_length, device=self.device)[None]
         self.cos, self.sin = model.model.rotary_emb(positions)
         local = torch.arange(self.nar_length, device=self.device).clamp(max=model.config.max_latent_frames - 1)
@@ -153,6 +155,8 @@ class CachedNAR:
 
     @torch.inference_mode()
     def velocity(self, state, raw_t):
+        from ..residual_unet import assert_engine_topology, run_native_blocks
+        assert_engine_topology(self)
         model = self.model
         if tuple(state.shape) != tuple(self.chunk.noise.shape):
             raise ValueError("ODE state shape changed")
@@ -161,12 +165,15 @@ class CachedNAR:
         x = model.vae2llm(x_nar[None])
         x = x + model.time_embedder(shifted.expand(self.nar_length))[None]
         x = x + self.pos_emb
-        for layer, (ar_k, ar_v) in zip(model.model.layers, self.cache):
-            q, k, v = layer.nar_self_attn.project_qkv(layer.nar_input_layernorm(x), self.cos, self.sin)
-            k, v = torch.cat((ar_k, k[0])), torch.cat((ar_v, v[0]))
-            h = self._attention(q[0], k, v)
-            x = x + layer.nar_self_attn.o_proj(h.flatten(1)[None])
-            x = x + layer.nar_mlp(layer.nar_pre_mlp_layernorm(x))
+        if self.residual_state is not None:
+            x = run_native_blocks(self, x)
+        else:
+            for layer, (ar_k, ar_v) in zip(model.model.layers, self.cache):
+                q, k, v = layer.nar_self_attn.project_qkv(layer.nar_input_layernorm(x), self.cos, self.sin)
+                k, v = torch.cat((ar_k, k[0])), torch.cat((ar_v, v[0]))
+                h = self._attention(q[0], k, v)
+                x = x + layer.nar_self_attn.o_proj(h.flatten(1)[None])
+                x = x + layer.nar_mlp(layer.nar_pre_mlp_layernorm(x))
         return model.llm2vae(getattr(model, "nar_norm", model.model.norm)(x))[0, 1:-1]
 
     @torch.inference_mode()

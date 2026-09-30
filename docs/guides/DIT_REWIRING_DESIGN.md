@@ -2395,3 +2395,50 @@ CUDA uninitialized. This does not validate pretrained AV quality or speed.
 Public model/training configuration still needs graph installation and
 checkpoint persistence/restoration; the public MiniMax-H3 capability and editor
 remain pending. GPU acceptance remains exclusively Qwen-Image 2.1.
+
+### MiniMax-H3 LoRA topology persistence and restoration
+
+MiniMax-H3 retains its existing LoRA-only training boundary; full-parameter
+training remains explicitly refused by the existing capability/trainer guards.
+The native LoRA adapter now saves the versioned residual graph and digest via
+model_topology_metadata, validating native configuration and actual block count.
+Dense LoRA metadata remains unchanged.
+
+Training component loading resolves the selected resume checkpoint through the
+shared exact-path/latest selector and reads its topology before adapter setup
+and device staging. Shared inherited-topology resolution distinguishes an absent
+resume declaration from an explicitly dense checkpoint. A restored residual
+model receives one native execution wrapper; transformer_original retains the
+inner model, and the component dictionary points to the same callable wrapper.
+Direct LoRATrainer.load_checkpoint first resolves without installation, then
+uses the existing prepared/atomic adapter weight loading and installs topology
+after successful weight restoration. Incompatible native configurations or
+base/resume graphs refuse before checkpoint tensors are loaded.
+
+Generation LoRA loading parses every selected file, resolves their topology
+against the base native configuration and requires all selected declarations to
+agree, including dense versus residual. Compatible metadata installs the graph
+and native wrapper after adapter loading. A weak reference captures the original
+inner model/graph; unloading restores the graph even if another component has
+replaced the current model. Generation staging retains residual execution at
+zero block swap and refuses cache/debug-skip/probe combinations before device
+movement. Existing per-generation offloader teardown remains native.
+
+A real tiny LoRA AV training step updates adapter branches, saves through the
+actual MiniMaxH3LoRAAdapter, resumes through the actual LoRATrainer checkpoint
+method into a fresh model, and restores identical branch weights and exact
+native predictions. A dense-metadata resume into a residual base refuses before
+load_file and preserves graph/weights. The actual generation LoRA loader reads
+that same file, installs residual execution through the actual zero-swap staging
+helper, reproduces training predictions within FP32 tolerance (2e-5 relative,
+2e-6 absolute), and returns the dense base topology on unload. Mixed dense and
+residual LoRAs refuse; cache/debug conflicts refuse before component movement.
+Dry resolution preserves config/model state and bare-model installation requires
+a trainer owner or an execution wrapper.
+
+New residual/native LoRA tests plus existing cheap LoRA application/roundtrip and
+training contracts pass 97 cases and 14 subtests. Changed modules compile and
+import with CUDA uninitialized. No non-Qwen GPU was used. Public MiniMax-H3
+configuration/preset/schema/editor, output execution metadata and native full
+artifact loader integration remain pending; no full-training capability is
+implied by this LoRA integration.

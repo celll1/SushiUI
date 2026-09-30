@@ -7,6 +7,7 @@ import torch
 from core.rewiring.runtime import run_rewired_stream
 from core.rewiring.spec import preview_plan, validate_model_identity
 from .packed_residual_layout import prepare_layout, coarse_context
+from core.rewiring.training import NO_RESUME_SPEC
 from .vendor.transformer_minimax_h3 import MINIMAX_H3_MODALITY_NUM
 
 GRID_POLICY_KEY = 'sushi_residual_video_grid_policy'
@@ -153,3 +154,67 @@ def forward_kwargs(transformer, layout):
     target = torch.arange(start, start+count, device=positions.device)
     return {'residual_video_grid':dict(frames=grid['frames'], height=grid['height'],
                                      width=grid['width'], target_indices=target)}
+
+
+def model_topology_metadata(model):
+    from core.rewiring.spec import checkpoint_metadata
+    inner = getattr(model, 'transformer', model)
+    graph = getattr(inner, '_residual_unet_spec', None)
+    if graph is None:
+        return {}
+    graph = validate_topology_identity(graph, inner.config)
+    if len(inner.transformer_blocks) != native_config(inner.config)['num_layers']:
+        raise ValueError('MiniMax-H3 export block count disagrees with native config')
+    return checkpoint_metadata(graph)
+
+
+def configure_training_topology(model, config, *, resuming=False, pending_adapter_resume=False,
+                                resume_spec=NO_RESUME_SPEC, install=True, trainer=None):
+    from types import SimpleNamespace
+    from api.param_defaults import TRAINING_DEFAULTS
+    from core.rewiring.training import resolve_training_topology
+    from core.models.minimax_h3_block_loop_wrapper import MiniMaxH3BlockLoopWrapper
+    inner = getattr(model, 'transformer', model)
+    model_topology_metadata(model)
+    existing = getattr(inner, '_residual_unet_spec', None)
+    declared = config.get('dit_rewiring_spec', TRAINING_DEFAULTS['dit_rewiring_spec'])
+    needs_identity = config.get('dit_rewiring_mode') == 'configure' or existing is not None or declared is not None or (
+        resume_spec is not NO_RESUME_SPEC and resume_spec is not None)
+    native = native_config(inner.config) if needs_identity else {}
+    view = SimpleNamespace(config=native, _residual_unet_spec=existing)
+    resolved = resolve_training_topology(view, dict(config), 'minimax_h3', validate_topology_identity,
+        lambda owner, graph: None, resuming=resuming, pending_adapter_resume=pending_adapter_resume,
+        resume_spec=resume_spec, install=False)
+    if resolved is not None:
+        if len(inner.transformer_blocks) != native['num_layers']:
+            raise ValueError('MiniMax-H3 actual block count disagrees with native config')
+        for key in ('_tread_router', '_block_dropout', '_blockskip_config', '_attention_plan'):
+            if getattr(model, key, None) is not None:
+                raise ValueError(f'MiniMax-H3 residual training is incompatible with {key}')
+        if install and trainer is None and not isinstance(model, MiniMaxH3BlockLoopWrapper):
+            raise ValueError('MiniMax-H3 residual training requires its wrapper or trainer owner')
+    if install:
+        restore_topology(model, resolved)
+        if trainer is not None and resolved is not None:
+            wrapper = wrap_transformer(model, resolved)
+            trainer.transformer = wrapper
+            trainer.transformer_original = inner
+            components = getattr(trainer, 'minimax_h3_components', None)
+            if components is not None:
+                components['transformer'] = wrapper
+        config['dit_rewiring_mode'] = config.get('dit_rewiring_mode', TRAINING_DEFAULTS['dit_rewiring_mode'])
+        config['dit_rewiring_spec'] = resolved
+    return resolved
+
+
+def resolve_generation_topology(model, files):
+    from types import SimpleNamespace
+    from core.rewiring.spec import read_checkpoint_metadata
+    from core.rewiring.adapters import resolve_adapter_topology
+    inner = getattr(model, 'transformer', model)
+    model_topology_metadata(model)
+    existing = getattr(inner, '_residual_unet_spec', None)
+    needs_identity = existing is not None or any(read_checkpoint_metadata(file.metadata) is not None for file in files)
+    native = native_config(inner.config) if needs_identity else {}
+    view = SimpleNamespace(config=native, _residual_unet_spec=existing)
+    return resolve_adapter_topology(view, files, validate_topology_identity)

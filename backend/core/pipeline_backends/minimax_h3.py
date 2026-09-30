@@ -580,6 +580,9 @@ class MiniMaxH3Mixin:
         blocks_to_swap = int(params.get("blocks_to_swap", 0) or 0)
         from core.inference.fbcache import fbcache_active
         fbcache_on = fbcache_active(params) and not params.get("spectrum_enable", False)
+        residual_on = getattr(transformer, "_residual_unet_spec", None) is not None
+        if residual_on and (fbcache_on or params.get("spectrum_enable", False) or skip_blocks or probe_on):
+            raise ValueError("MiniMax-H3 residual generation refuses caches, debug skips and probes")
         num_blocks = len(transformer.transformer_blocks)
         if skip_blocks:
             # Validated HERE, before the device move below: raising inside
@@ -596,7 +599,7 @@ class MiniMaxH3Mixin:
 
         if blocks_to_swap <= 0:
             self._minimax_h3_move("transformer", device)
-            if fbcache_on or skip_blocks or probe_on:
+            if residual_on or fbcache_on or skip_blocks or probe_on:
                 wrapper = MiniMaxH3BlockLoopWrapper(transformer)
                 components["transformer"] = wrapper
                 if fbcache_on:
@@ -915,19 +918,43 @@ class MiniMaxH3Mixin:
             print("[MiniMax-H3 LoRA] WARNING: components not loaded")
             return 0
 
+        from copy import deepcopy
+        from core.adapters import AdapterIncompatible
+        from core.adapters.session import AdapterFile
+        from core.models.minimax_h3.residual_unet import resolve_generation_topology, wrap_transformer
+        files = list(lora_configs) if all(isinstance(file, AdapterFile) for file in lora_configs) else self._minimax_h3_lora_session.parse(lora_configs)
+        transformer = components["transformer"]
+        inner = getattr(transformer, "transformer", transformer)
+        try:
+            required = resolve_generation_topology(transformer, files)
+        except ValueError as exc:
+            raise AdapterIncompatible(str(exc), code="lora_rewiring_incompatible") from exc
+        original = deepcopy(getattr(inner, "_residual_unet_spec", None))
         self._minimax_h3_current_params = params
         try:
-            return self._minimax_h3_lora_session.load(
-                lora_configs, self._minimax_h3_lora_components()
-            ).applied
+            applied = self._minimax_h3_lora_session.load(files, self._minimax_h3_lora_components()).applied
+            if required is not None:
+                self._minimax_h3_topology_restore = (weakref.ref(inner), original)
+                try:
+                    components["transformer"] = wrap_transformer(transformer, required)
+                except Exception:
+                    self._unload_lora_minimax_h3()
+                    raise
+            return applied
         finally:
             self._minimax_h3_current_params = None
 
     def _unload_lora_minimax_h3(self) -> int:
-        restored = self._minimax_h3_lora_session.unload(self._minimax_h3_lora_components())
-        if restored:
-            print(f"[MiniMax-H3 LoRA] Unloaded {restored} LoRA wrapper(s)")
-        return restored
+        try:
+            restored = self._minimax_h3_lora_session.unload(self._minimax_h3_lora_components())
+            if restored:
+                print(f"[MiniMax-H3 LoRA] Unloaded {restored} LoRA wrapper(s)")
+            return restored
+        finally:
+            saved = self.__dict__.pop("_minimax_h3_topology_restore", None)
+            if saved is not None and saved[0]() is not None:
+                from core.models.minimax_h3.residual_unet import restore_topology
+                restore_topology(saved[0](), saved[1])
 
     def _minimax_h3_report_te_provenance(
         self, components: Dict[str, Any], params: Dict[str, Any],

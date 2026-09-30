@@ -2862,3 +2862,38 @@ Changed backend modules compile and import with CUDA uninitialized.
 Header-only public artifact inspection and a generation-only graph editing/export
 workflow remain outstanding. Owner frontend/workflow acceptance remains deferred;
 GPU validation stays limited to Qwen-Image 2.1.
+
+
+### YuE2 public complete-file inspection (CPU)
+
+The shared models/rewiring/inspect endpoint now recognizes complete YuE2 files
+from model_type or the native acoustic signature. It reuses the strict complete-
+file preflight census against shape-only meta models, validating all expected
+AR/NAR/VAE tensors, their shapes and supported dtypes without allocating their
+weight payloads. Inspection checks the embedded tokenizer's header but skips its
+payload/parser. Quantized files retain bounded quantization-marker validation;
+they are not described as entirely payload-free. Normal loading still parses the
+embedded tokenizer and enforces its 151643-token ordinary vocabulary. No external
+tokenizer/VAE completion, transformer-only directory or partial adapter format
+is introduced.
+
+Preflight now checks the opened safetensors declaration against the initial
+header snapshot before any marker/tokenizer reads. Malformed non-object headers
+or metadata reject with ValueError. The response carries the native NAR layout,
+configuration/layout hashes, restored topology/digest, defaults-owned 8/16/4
+preset and a temporal single-region starting graph. The existing graph-preview
+endpoint can display the 9000-frame illustrative default. Inspection/presets do
+not add YuE2 acoustic training to runtime_architectures.
+
+An actual 28-layer tiny complete-file fixture is inspected through in-process
+ASGI and the shared inspector. Native meta-state assertions verify shape-only
+construction; loader tensor readers and tokenizer parsing raise if reached.
+Dense/residual references return appropriate topology absence/presence. Public
+requests reject adapter-only, missing final NAR block, wrong acoustic projection
+shape and partial metadata declarations. Shared inspection and YuE2 residual,
+single-file, native CPU and API checks pass 68 tests and 8 subtests in 21.72s.
+Changed backend modules compile/import, OpenAPI parses and CUDA remains
+uninitialized. These fixtures do not replace production quantized/GPU acceptance.
+
+The generation-only graph editing/export workflow and final owner frontend/
+workflow acceptance remain outstanding. GPU validation stays Qwen-Image 2.1 only.

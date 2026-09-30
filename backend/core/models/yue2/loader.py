@@ -19,7 +19,10 @@ def read_header(path):
         size = struct.unpack("<Q", stream.read(8))[0]
         if not 0 < size <= 16 * 1024 * 1024:
             raise ValueError("Invalid YuE2 safetensors header length")
-        return json.loads(stream.read(size))
+        header = json.loads(stream.read(size))
+        if not isinstance(header, dict) or not isinstance(header.get("__metadata__", {}), dict):
+            raise ValueError("YuE2 header and metadata must be objects")
+        return header
 
 
 def keys_look_yue2(keys, metadata=None):
@@ -90,8 +93,8 @@ def build_empty_models():
     return model, vae
 
 
-def preflight_yue2(path, *, require_runtime=False):
-    """Read header, tiny markers, and tokenizer; never materialize model weights."""
+def preflight_yue2(path, *, require_runtime=False, load_tokenizer=True):
+    """Validate headers and markers; optionally parse the embedded tokenizer."""
     from core.models.common.convrot_marker import supported_int8_convrot_marker
     header = read_header(path)
     if not keys_look_yue2(header):
@@ -110,6 +113,8 @@ def preflight_yue2(path, *, require_runtime=False):
     expected = {**dict(model.state_dict()), **{"vae." + k: v for k, v in vae.state_dict().items()}}
     plan, targets, quantized = [], {}, {}
     with safe_open(path, framework="pt", device="cpu") as handle:
+        if read_checkpoint_metadata(handle.metadata() or {}) != topology:
+            raise ValueError("YuE2 checkpoint topology changed after header inspection")
         for key, info in header.items():
             if key == "__metadata__":
                 continue
@@ -155,12 +160,14 @@ def preflight_yue2(path, *, require_runtime=False):
         tok_info = header[TOKENIZER_KEY]
         if tok_info["dtype"] != "U8" or len(tok_info["shape"]) != 1 or not 0 < tok_info["shape"][0] <= 32 * 1024 * 1024:
             raise ValueError("Invalid YuE2 tokenizer payload")
-        tokenizer = EmbeddedTokenizer(bytes(handle.get_tensor(TOKENIZER_KEY).tolist()).decode("utf-8"))
+        tokenizer = (EmbeddedTokenizer(bytes(handle.get_tensor(TOKENIZER_KEY).tolist()).decode("utf-8"))
+                     if load_tokenizer else None)
     if require_runtime and quantized:
         from core.models.common.convrot_int8_linear import require_convrot_int8_runtime
         require_convrot_int8_runtime()
     return dict(plan=plan, quantized=quantized, metadata=metadata, tokenizer=tokenizer,
                 residual_topology=topology,
+                model_config={key: getattr(model.config, key) for key in model.config._inference_fields},
                 source_tensor_count=len(header) - int("__metadata__" in header))
 
 

@@ -130,6 +130,93 @@ class AceStepRuntimeContracts(unittest.TestCase):
             self.assertEqual(self.model._residual_unet_spec, self.spec)
             torch.testing.assert_close(self.forward()[0], expected, rtol=0, atol=0)
 
+    def test_generation_lora_topology_scope_and_native_prediction(self):
+        import tempfile
+        from types import SimpleNamespace
+        from safetensors import safe_open
+        from safetensors.torch import load_file, save_file
+        from core.adapters import AdapterIncompatible, CompositeAdapterLayer
+        from core.models.acestep.residual_unet import restore_topology
+        from core.pipeline_backends.acestep import AceStepMixin, _restores_acestep_lora
+        from core.training.adapters.acestep_adapter import AceStepLoRAAdapter
+        class Backend(AceStepMixin):
+            def __init__(self, model):
+                self.acestep_components = {"dit":model}
+                self.is_acestep_model = True
+                self.device = "cpu"
+        owner = torch.nn.Module()
+        owner.decoder = self.model
+        owner.config = self.model.config
+        generation = deepcopy(owner)
+        def predict(model):
+            return model.decoder(self.audio,torch.tensor([.5,.7]),torch.tensor([.1,.2]),
+                torch.ones(2,48),self.encoder,torch.ones(2,5),self.context,use_cache=False)[0]
+        dense = predict(generation).detach()
+        adapter = AceStepLoRAAdapter(SimpleNamespace(transformer=owner,config={}), 2, 2, torch.float32)
+        layers = {}
+        adapter.apply_lora_to_unet(layers)
+        with torch.no_grad():
+            for layer in layers.values():
+                for tensor in layer.branch_tensors().values(): tensor.fill_(.03)
+        restore_topology(owner,self.spec)
+        expected = predict(owner).detach()
+        backend = Backend(generation)
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp)/"rewired.safetensors"
+            adapter.save_checkpoint(layers,3,1,path)
+            with safe_open(str(path),framework="pt") as handle: metadata=handle.metadata()
+            dense_path = Path(temp)/"dense.safetensors"
+            save_file(load_file(str(path)),str(dense_path),
+                metadata={key:value for key,value in metadata.items() if not key.startswith("sushi.rewire.")})
+            configs = [{"path":str(path),"strength":1.0}]
+            original = generation.decoder.layers[0].self_attn.q_proj
+            with self.assertRaises(AdapterIncompatible) as rejected:
+                backend._load_lora_acestep(configs+[{"path":str(dense_path),"strength":1.0}])
+            self.assertEqual(rejected.exception.code,"lora_rewiring_incompatible")
+            self.assertIs(generation.decoder.layers[0].self_attn.q_proj,original)
+            self.assertFalse(hasattr(generation,"_residual_unet_spec"))
+            self.assertGreater(backend._load_lora_acestep(configs),0)
+            self.assertEqual(generation._residual_unet_spec,self.spec)
+            self.assertEqual(generation.decoder._residual_unet_spec,self.spec)
+            torch.testing.assert_close(predict(generation),expected,rtol=2e-5,atol=2e-6)
+            backend._unload_lora_acestep()
+            self.assertFalse(hasattr(generation,"_residual_unet_spec"))
+            self.assertFalse(hasattr(generation.decoder,"_residual_unet_spec"))
+            self.assertIs(generation.decoder.layers[0].self_attn.q_proj,original)
+            torch.testing.assert_close(predict(generation),dense,rtol=0,atol=0)
+            restore_topology(generation,self.spec)
+            with self.assertRaises(AdapterIncompatible):
+                backend._load_lora_acestep([{"path":str(dense_path),"strength":1.0}])
+            self.assertEqual(generation._residual_unet_spec,self.spec)
+            backend._load_lora_acestep(configs)
+            backend._unload_lora_acestep()
+            self.assertEqual(generation._residual_unet_spec,self.spec)
+            restore_topology(generation,None)
+            @_restores_acestep_lora
+            def failed_request(instance):
+                instance._load_lora_acestep(configs)
+                raise RuntimeError("denoise failed")
+            with self.assertRaisesRegex(RuntimeError,"denoise failed"):
+                failed_request(backend)
+            self.assertFalse(hasattr(generation,"_residual_unet_spec"))
+            self.assertFalse(any(isinstance(module,CompositeAdapterLayer) for module in generation.modules()))
+            @_restores_acestep_lora
+            def zero_targets(instance):
+                with patch.object(instance._acestep_lora_session,"load",return_value=SimpleNamespace(applied=0)):
+                    instance._load_lora_acestep(configs)
+                self.assertEqual(generation._residual_unet_spec,self.spec)
+            zero_targets(backend)
+            self.assertFalse(hasattr(generation,"_residual_unet_spec"))
+            replacement = deepcopy(generation)
+            restore_topology(replacement,self.spec)
+            backend._load_lora_acestep(configs)
+            backend.acestep_components={"dit":replacement}
+            backend._unload_lora_acestep()
+            self.assertFalse(hasattr(generation,"_residual_unet_spec"))
+            self.assertEqual(replacement._residual_unet_spec,self.spec)
+            self.assertFalse(any(isinstance(module,CompositeAdapterLayer) for module in replacement.modules()))
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_native_shapes_positions_masks_hooks_and_dense_restore(self):
         from core.models.acestep.residual_unet import restore_topology, native_config, model_topology_metadata
         dense = self.forward()[0].detach()
@@ -371,6 +458,61 @@ class AceStepRuntimeContracts(unittest.TestCase):
                 self.assertTrue(any(not torch.equal(before,after) for before,after in zip(snapshots,trainable)))
                 self.assertEqual(owner._residual_unet_spec, spec)
                 self.assertEqual(owner.decoder._residual_unet_spec, spec)
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_native_multistep_generation_avoids_residual_cache(self):
+        from core.models.acestep.vendor import AceStepConfig, AceStepConditionGenerationModel
+        from core.models.acestep.residual_unet import native_config, restore_topology
+        raw = self.model.config.to_dict()
+        raw.update(in_channels=192, audio_acoustic_hidden_dim=64,
+            num_lyric_encoder_hidden_layers=1, num_timbre_encoder_hidden_layers=1,
+            num_attention_pooler_hidden_layers=1, num_audio_decoder_hidden_layers=1,
+            text_hidden_dim=8, timbre_hidden_dim=64, timbre_fix_frame=48,
+            fsq_dim=16, fsq_input_levels=[2,2], pool_window_size=2)
+        config = AceStepConfig(**raw)
+        config._attn_implementation = "sdpa"
+        owner = AceStepConditionGenerationModel(config).eval()
+        spec = build_spec("acestep", self.spec["streams"], self.spec["regions"], native_config(config))
+        restore_topology(owner,spec)
+        args = dict(text_hidden_states=torch.randn(2,5,8),
+            text_attention_mask=torch.tensor([[1,1,1,1,1],[1,1,0,0,0]]),
+            lyric_hidden_states=torch.randn(2,4,8),
+            lyric_attention_mask=torch.tensor([[1,1,1,1],[1,0,0,0]]),
+            refer_audio_acoustic_hidden_states_packed=torch.zeros(2,48,64),
+            refer_audio_order_mask=torch.arange(2), src_latents=torch.zeros(2,48,64),
+            chunk_masks=torch.ones(2,48,64),is_covers=torch.zeros(2,dtype=torch.bool),
+            silence_latent=torch.zeros(1,48,64),seed=94,infer_steps=3,dcw_enabled=False)
+        for sampler, method, calls in (("euler","ode",3),("heun","ode",5),("euler","sde",3)):
+            with self.subTest(sampler=sampler,method=method):
+                seen = []
+                def observe(module, positional, kwargs):
+                    self.assertIsNone(kwargs["past_key_values"])
+                    self.assertFalse(kwargs["use_cache"])
+                    seen.append(kwargs["hidden_states"].shape)
+                hook = owner.decoder.register_forward_pre_hook(observe,with_kwargs=True)
+                try:
+                    with patch("core.models.acestep.vendor.modeling_acestep_v15_turbo.EncoderDecoderCache",
+                               side_effect=AssertionError("Residual sampler must not allocate KV cache")):
+                        result = owner.generate_audio(**args,sampler_mode=sampler,infer_method=method)
+                finally:
+                    hook.remove()
+                self.assertEqual(len(seen),calls)
+                self.assertEqual(result["target_latents"].shape,(2,48,64))
+                self.assertTrue(torch.isfinite(result["target_latents"]).all())
+                self.assertEqual(owner.decoder._residual_unet_spec,spec)
+        restore_topology(owner,None)
+        dense_seen = []
+        def observe_dense(module, positional, kwargs):
+            self.assertIsNotNone(kwargs["past_key_values"])
+            self.assertTrue(kwargs["use_cache"])
+            dense_seen.append(kwargs["hidden_states"].shape)
+        hook = owner.decoder.register_forward_pre_hook(observe_dense,with_kwargs=True)
+        try:
+            result = owner.generate_audio(**args,sampler_mode="euler",infer_method="ode")
+        finally:
+            hook.remove()
+        self.assertEqual(len(dense_seen),3)
+        self.assertTrue(torch.isfinite(result["target_latents"]).all())
         self.assertFalse(torch.cuda.is_initialized())
 
     def test_identity_decoder_padding_and_atomic_refusals(self):

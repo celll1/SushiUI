@@ -11,6 +11,10 @@ Z-Image, Flux2, Lens, MiniT2I, Ideogram 4 and SenseNova have native execution,
 artifact, supported training, LoRA generation and model/editor inspection
 integration with CPU contract checks. Ideogram 4 retains its LoRA-only training
 boundary; SenseNova residual training requires batch_size 1.
+ACE-Step has temporal native execution, checkpoint persistence, inherited
+training/LoRA resume and generation adapter scopes with CPU contracts; standalone
+companion resolution, public temporal configuration and editor discovery remain
+pending.
 GPU acceptance is restricted to Qwen-Image 2.1 by owner instruction; other models
 receive provisional implementation and CPU verification. Further architectures
 still require native execution/artifact adapters and capability gates.
@@ -1789,3 +1793,39 @@ Changed files compile and import. Shared residual and legacy ACE-Step suites pas
 resolution/full resume orchestration, generation adapter lifetime, public
 configure/presets and temporal editor discovery remain pending. ACE-Step remains
 outside public runtime capabilities; GPU validation stays Qwen-Image 2.1 only.
+
+
+## ACE-Step generation adapter scopes and sampler (CPU milestone)
+
+Generation parses selected adapters before installation and resolves their
+canonical topology against a native Transformers-config view. Every selected
+LoRA must agree, including dense/absent declarations; an already rewired base
+must match them. Owner/decoder geometry, actual depth and eager/SDPA support are
+validated before adapter application. Inconsistencies report the shared
+lora_rewiring_incompatible refusal code. Legacy dense fake models need no config.
+
+A successful adapter load installs topology on wrapper and decoder and retains
+a weak reference to the original owner plus its base graph. Unload restores both
+weights and topology; the shared request decorator covers success/failure and
+zero-target loads that have topology but no wrapped modules. Model replacement
+restores the old owner's graph without clearing the new owner's graph or copying
+old branches into it. Native trained-LoRA and generation-composite decoder
+predictions agree within FP32 tolerance, and unloading recovers the exact dense
+base prediction. Incompatible stacks refuse before any module is replaced.
+
+The native generate_audio sampler previously allocated encoder/decoder KV cache
+unconditionally, which conflicts with residual decoder preflight. For residual
+execution only, initial cache, cover-transition cache and Heun corrector cache
+are now absent, and main decoder calls request no cache. Dense generation keeps
+its existing cache behavior. Real reduced-width conditional-wrapper CPU tests
+run three-step Euler ODE, Heun ODE and Euler SDE with variable-length conditioning,
+forbid cache construction throughout residual generation, and verify finite native
+64-channel output latents. Dense Euler still passes cache on all three steps.
+This does not claim decoded waveform quality or a complete REST audio workflow.
+
+Changed backend files compile and import. Shared residual and legacy ACE-Step
+suites pass 133 CPU cases and 30 subtests with CUDA uninitialized. Standalone
+companion resolution/full resume orchestration, generation grid preflight and
+metadata reporting, public configure/presets and temporal editor discovery remain
+pending. ACE-Step remains outside public runtime capabilities; GPU validation
+stays exclusively Qwen-Image 2.1.

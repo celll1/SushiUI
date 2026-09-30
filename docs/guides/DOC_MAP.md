@@ -25,7 +25,7 @@ machine-local working material.
 | [docs/guides/API_TESTING.md](API_TESTING.md) | Safe API verification procedures. |
 | [docs/guides/DATABASE_MIGRATION.md](DATABASE_MIGRATION.md) | SQLite schema migration procedure. |
 | [docs/guides/GENERATION_QUEUE_PROCESSOR.md](GENERATION_QUEUE_PROCESSOR.md) | Frontend queue ownership and dispatch invariants. |
-| [docs/guides/DIT_REWIRING_DESIGN.md](DIT_REWIRING_DESIGN.md) | Accepted residual U-Net topology, defaults, artifact and editor contract; implementation gates. |
+| [docs/guides/DIT_REWIRING_DESIGN.md](DIT_REWIRING_DESIGN.md) | Implemented residual U-Net topology, artifact restoration, graph editor/acoustic export and GPU/CPU verification boundaries. |
 
 ## Generation behavior
 

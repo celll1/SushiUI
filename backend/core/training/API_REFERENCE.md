@@ -18,6 +18,21 @@ This document provides a comprehensive API reference for all components, classes
 
 ---
 
+## Residual DiT topology
+
+Training requests and run YAML carry `dit_rewiring_mode` and
+`dit_rewiring_spec`. Defaults and native-layout presets come from
+`backend/api/param_defaults.py`. `inherit` follows checkpoint metadata;
+`configure` selects an explicit graph or the model preset. Resume requires the
+same topology. Supported architectures are published by
+`GET /api/v1/schema/dit-rewiring`; this list does not enable NAR training for
+YuE2 or generation-only Music 3 training. Existing per-architecture training
+method gates still apply.
+
+See [the residual topology contract](../../../docs/guides/DIT_REWIRING_DESIGN.md)
+for metadata, graphical editing, configuration refusals, measured Qwen behavior
+and the provisional non-Qwen verification boundary.
+
 ## LatentCache
 
 **File**: `latent_cache.py`

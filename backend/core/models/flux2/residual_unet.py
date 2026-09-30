@@ -8,6 +8,7 @@ import torch
 from .single_file import FLUX2_DEFAULT_CONFIG
 from core.rewiring.runtime import run_rewired_stream
 from core.rewiring.spec import validate_model_identity, preview_plan, checkpoint_metadata
+from core.rewiring.training import NO_RESUME_SPEC
 
 
 def native_model(model):
@@ -53,6 +54,14 @@ def model_topology_metadata(model):
     model = native_model(model)
     spec = getattr(model, "_residual_unet_spec", None)
     return {} if spec is None else checkpoint_metadata(validate_topology_identity(spec, model))
+
+
+def configure_training_topology(model, config, *, resuming=False, pending_adapter_resume=False,
+                                resume_spec=NO_RESUME_SPEC, install=True):
+    from core.rewiring.training import resolve_training_topology
+    return resolve_training_topology(native_model(model), config, "flux2",
+        validate_topology_identity, restore_topology, resuming=resuming,
+        pending_adapter_resume=pending_adapter_resume, resume_spec=resume_spec, install=install)
 
 
 def preflight_checkpoint(path):

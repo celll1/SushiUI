@@ -320,6 +320,9 @@ class LoRATrainer(BaseTrainer):
         elif getattr(self, "is_zimage", False):
             from core.models.zimage_residual_unet import configure_training_topology
             configure_topology = configure_training_topology
+        elif getattr(self, "is_flux2", False):
+            from core.models.flux2.residual_unet import configure_training_topology
+            configure_topology = configure_training_topology
         if configure_topology is not None:
             from core.rewiring.spec import read_checkpoint_metadata
             resume_topology = read_checkpoint_metadata(metadata)

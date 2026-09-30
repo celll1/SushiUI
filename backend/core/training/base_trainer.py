@@ -4499,6 +4499,9 @@ class BaseTrainer(ABC):
             from core.training.vae_swap import apply_latent_space
             apply_latent_space(self, components.get("declared_vae"))
 
+            from core.models.flux2.residual_unet import configure_training_topology
+            configure_training_topology(self.transformer, self.config, resuming=True)
+
             # Enable gradient checkpointing for Transformer (CRITICAL for VRAM reduction)
             if not self.gradient_checkpointing:
                 print(f"{self.log_prefix} Gradient checkpointing disabled by config (FLUX.2)")

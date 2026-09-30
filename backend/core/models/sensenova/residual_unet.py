@@ -77,7 +77,8 @@ def restore_topology(model, spec):
 
 def model_topology_metadata(model):
     spec = getattr(model, "_residual_unet_spec", None)
-    decoder_spec = getattr(model.language_model.model, "_residual_unet_spec", None)
+    decoder = getattr(getattr(model, "language_model", None), "model", None)
+    decoder_spec = getattr(decoder, "_residual_unet_spec", None)
     if spec != decoder_spec:
         raise ValueError("SenseNova owner and generation decoder topologies disagree")
     return {} if spec is None else checkpoint_metadata(validate_topology_identity(spec, model.config))
@@ -143,3 +144,75 @@ def run_rewired_generation(model, hidden, indexes, prefix_cache, *,
         return checkpoint(block, states, use_reentrant=False) if checkpoint_layers else block(states)
 
     return run_rewired_stream(hidden, spec, "main", height, width, 0, context, execute, coarse_context)
+
+
+def preflight_checkpoint(path, *, _seen=None):
+    """Bind every shard and refiner dependency before reading model tensors."""
+    import json
+    import re
+    from pathlib import Path
+    from safetensors import safe_open
+    from core.rewiring.artifacts import read_artifact_topology
+    from .loader import sensenova_checkpoint_metadata, SENSENOVA_REFINER_DELTA_KIND
+    source = Path(path)
+    if not source.is_file() and Path(str(source) + ".index.json").is_file():
+        source = Path(str(source) + ".index.json")
+    source = source.resolve()
+    seen = set() if _seen is None else set(_seen)
+    if source in seen:
+        raise ValueError("SenseNova residual artifact dependency contains a cycle")
+    if len(seen) >= 64:
+        raise ValueError("SenseNova residual artifact dependency chain exceeds 64 files")
+    seen.add(source)
+    spec = read_artifact_topology(source)
+    metadata = sensenova_checkpoint_metadata(str(source))
+    if spec is not None:
+        declaration = metadata.get("sensenova_config")
+        if not isinstance(declaration, str) or not declaration.strip():
+            raise ValueError("Rewired SenseNova requires embedded native sensenova_config JSON")
+        config = json.loads(declaration)
+        if not isinstance(config, dict):
+            raise ValueError("SenseNova native checkpoint config must be an object")
+        validate_topology_identity(spec, config)
+    if metadata.get("sensenova_checkpoint_kind") == SENSENOVA_REFINER_DELTA_KIND:
+        base = str(metadata.get("sensenova_refiner_base_model_path") or "").strip()
+        if not base:
+            raise ValueError("SenseNova refiner delta requires a base checkpoint path")
+        base = Path(base)
+        if not base.is_absolute():
+            base = source.parent / base
+        base_spec = preflight_checkpoint(base, _seen=seen)
+        if spec != base_spec:
+            raise ValueError("SenseNova refiner delta and base residual topologies disagree")
+    elif spec is not None:
+        if str(source).endswith(".safetensors.index.json"):
+            with source.open(encoding="utf-8") as handle:
+                keys = list(json.load(handle)["weight_map"])
+        else:
+            with safe_open(str(source), framework="pt", device="cpu") as handle:
+                keys = list(handle.keys())
+        prefix = "transformer.language_model.model.layers."
+        blocks = {int(match.group(1)) for key in keys
+                  if (match := re.match(re.escape(prefix) + r"(\d+)\.", key))}
+        count = native_config(config)["llm_config"]["num_hidden_layers"]
+        if blocks != set(range(count)) or not any(
+                key.startswith("transformer.fm_modules.fm_head.") for key in keys) or not any(
+                key.endswith("self_attn.q_proj_mot_gen.weight") for key in keys):
+            raise ValueError("Rewired SenseNova requires complete native model blocks, not adapter weights")
+    return spec
+
+
+def export_topology_metadata(model, config_dict, *, base_path=None, export_metadata=None):
+    metadata = model_topology_metadata(model)
+    spec = getattr(model, "_residual_unet_spec", None)
+    if spec is not None:
+        validate_topology_identity(spec, config_dict)
+        if export_metadata is not None:
+            import json
+            declaration = export_metadata.get("sensenova_config")
+            if not isinstance(declaration, str) or not declaration.strip():
+                raise ValueError("Rewired SenseNova export requires embedded native config")
+            validate_topology_identity(spec, json.loads(declaration))
+    if base_path is not None and preflight_checkpoint(base_path) != spec:
+        raise ValueError("SenseNova refiner export and base residual topologies disagree")
+    return metadata

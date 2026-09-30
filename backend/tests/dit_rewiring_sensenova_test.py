@@ -189,6 +189,169 @@ class SenseNovaRuntimeContracts(unittest.TestCase):
         self.assertEqual(self.model._residual_unet_spec, self.spec)
         self.assertFalse(torch.cuda.is_initialized())
 
+    @staticmethod
+    def full_native_config():
+        return dict(vision_config=dict(patch_size=16, hidden_size=16, llm_hidden_size=16,
+                    max_position_embeddings_vision=256),
+            llm_config=dict(architectures=["Qwen3ForCausalLM"], vocab_size=32, hidden_size=16,
+                intermediate_size=24, num_hidden_layers=42, num_attention_heads=2,
+                num_key_value_heads=1, head_dim=8, attention_dropout=0.0),
+            template="neo1_0", fm_head_layers=2, use_pixel_head=True, concat_time_token_num=0,
+            noise_scale=1., noise_scale_mode="none", noise_scale_base_image_seq_len=1024,
+            add_noise_scale_embedding=False, noise_scale_max_value=1., time_schedule="linear",
+            time_shift_type="none", base_shift=0., max_shift=1., base_image_seq_len=256,
+            max_image_seq_len=4096, t_eps=0.05)
+
+    def test_full_native_artifacts_restore_through_production_loader(self):
+        import tempfile, json
+        from safetensors import safe_open
+        from safetensors.torch import save_file
+        from core.models.sensenova.vendor.configuration_neo_chat import NEOChatConfig
+        from core.models.sensenova.vendor.modeling_neo_chat import NEOChatModel
+        from core.models.sensenova.residual_unet import (native_config, restore_topology,
+            preflight_checkpoint, model_topology_metadata)
+        from core.models.sensenova import loader
+        from core.models.common.single_file_format import read_state_dict
+        from core.training.ops.sensenova_ops import forward_und_prefix_layers
+        from core.rewiring.spec import read_checkpoint_metadata, META_SPEC
+        from core.model_loader import ModelLoader
+        raw = self.full_native_config()
+        model = NEOChatModel(NEOChatConfig(**raw)).to(torch.bfloat16).eval()
+        spec = build_spec("sensenova", [{"name":"main", "block_count":42}], [
+            dict(id="outer", stream="main", parent=None, start_block=4, end_block=38,
+                 down_factor=[2,2], **OPERATORS),
+            dict(id="inner", stream="main", parent="outer", start_block=19, end_block=23,
+                 down_factor=[2,2], **OPERATORS)], native_config(model.config))
+        restore_topology(model, spec)
+        hidden = self.hidden.detach().to(torch.bfloat16)
+        z = torch.randn(1, 96, 3*32*32, dtype=torch.bfloat16)
+        def predict(owner):
+            prefix = forward_und_prefix_layers(owner.language_model.model, self.text,
+                self.text_indexes, self.text_mask, checkpoint_layers=False)
+            return owner._t2i_predict_v(hidden, self.indexes, {"full_attention":None}, prefix,
+                torch.tensor(0.4), z, 96, token_hw=(8,12))
+        with torch.no_grad(): expected = predict(model)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for stem, limit, save_format in (("single", 10**8, "bf16"), ("sharded", 20000, "bf16"),
+                                             ("int8", 10**8, "int8")):
+                written, census = loader.save_sensenova_full_finetune_checkpoint(model,
+                    str(root/(stem+".safetensors")), branch="both", save_format=save_format,
+                    raw_config=raw, config=model.config, max_shard_bytes=limit,
+                    extra_metadata={META_SPEC:"spoofed"})
+                self.assertEqual(census["trained_int8" if save_format == "int8" else "trained_bf16"], 588)
+                self.assertEqual(preflight_checkpoint(written), spec)
+                state, metadata = read_state_dict(written)
+                self.assertEqual(read_checkpoint_metadata(metadata), spec)
+                if written.endswith(".index.json"):
+                    index = json.loads(Path(written).read_text(encoding="utf-8"))
+                    for name in set(index["weight_map"].values()):
+                        with safe_open(str(root/name), framework="pt", device="cpu") as handle:
+                            self.assertEqual(read_checkpoint_metadata(handle.metadata()), spec)
+                requested = str(root/(stem+".safetensors"))
+                with patch.object(loader, "_load_sensenova_tokenizer", return_value=object()) as tokenizer:
+                    loaded = ModelLoader.load_sensenova_from_path(requested)["transformer"]
+                tokenizer.assert_called_once()
+                self.assertEqual(model_topology_metadata(loaded), model_topology_metadata(model))
+                self.assertEqual(loaded.language_model.model._residual_unet_spec, spec)
+                for key, value in loaded.state_dict().items():
+                    torch.testing.assert_close(value, state["transformer."+key], rtol=0, atol=0)
+                with torch.no_grad(): actual = predict(loaded)
+                if save_format == "bf16":
+                    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+                else:
+                    from core.models.ideogram4.vendor.int8_linear import Int8Linear
+                    quantized = [module for module in loaded.modules() if type(module) is Int8Linear]
+                    self.assertEqual(len(quantized), 588)
+                    self.assertTrue(all(not module._allow_int8_mm for module in quantized))
+                    self.assertTrue(torch.isfinite(actual).all())
+                del loaded
+            bad_config = deepcopy(raw); bad_config["llm_config"]["num_hidden_layers"] = 41
+            with self.assertRaises(ValueError):
+                loader.save_sensenova_full_finetune_checkpoint(model, str(root/"bad-save.safetensors"),
+                    branch="both", save_format="bf16", raw_config=raw,
+                    extra_metadata={"sensenova_config":json.dumps(bad_config)})
+            self.assertFalse((root/"bad-save.safetensors").exists())
+            # A missing native weight refuses before tokenizer or VAE module loading.
+            single_state, single_md = read_state_dict(str(root/"single.safetensors"))
+            single_state.pop("transformer.language_model.model.layers.41.mlp_mot_gen.down_proj.weight")
+            broken = root/"missing-weight.safetensors"
+            save_file(single_state, str(broken), metadata=single_md)
+            with patch.object(loader, "_load_sensenova_tokenizer", side_effect=AssertionError("tokenizer loaded")):
+                with self.assertRaisesRegex(RuntimeError, "native weights incomplete"):
+                    loader.load_sensenova_from_path(str(broken))
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_header_refusals_refiner_dependencies_and_lora_metadata(self):
+        import tempfile, json
+        from safetensors.torch import save_file
+        from core.models.sensenova.residual_unet import restore_topology, preflight_checkpoint
+        from core.models.sensenova import loader
+        from core.rewiring.spec import checkpoint_metadata, META_HASH, META_SPEC
+        from core.training.adapters.sensenova_adapter import SenseNovaLoRAAdapter
+        from core.models.common.single_file_format import save_single_file_state
+        restore_topology(self.owner, self.spec)
+        trainer = SimpleNamespace(transformer=self.owner, config={})
+        adapter = SenseNovaLoRAAdapter(trainer, 2, 2)
+        lora_md = adapter.checkpoint_metadata({"native_target":object()}, 4, 1)
+        self.assertEqual(json.loads(lora_md[META_SPEC]), self.spec)
+        from core.models.sensenova.loader import _serializable_sensenova_config
+        raw = _serializable_sensenova_config(self.owner.config)
+        # Preserve original scalar vision fields rather than the vendor's tuple serialization.
+        raw["vision_config"]["downsample_ratio"] = 0.5
+        raw["vision_config"]["llm_hidden_size"] = 2048
+        metadata = dict(checkpoint_metadata(self.spec), model_type="sensenova", sensenova_config=json.dumps(raw))
+        state = {"transformer.language_model.model."+key: value.detach().clone()
+                 for key,value in self.model.state_dict().items()}
+        state["transformer.fm_modules.fm_head.conv1.weight"] = torch.zeros(1)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); base = root/"base.safetensors"
+            save_file(state, str(base), metadata=metadata)
+            self.assertEqual(preflight_checkpoint(base), self.spec)
+            dense = root/"dense.safetensors"
+            save_file(state, str(dense), metadata={"model_type":"sensenova"})
+            cases = [(dict(metadata, **{META_HASH:"0"*64}), state),
+                     ({key:value for key,value in metadata.items() if key!="sensenova_config"}, state),
+                     (dict(metadata, sensenova_config=json.dumps(dict(raw, gen_patch_size=16))), state),
+                     (metadata, {"transformer.lora_target.lora_up.weight":torch.zeros(2,2)})]
+            for number, (md, weights) in enumerate(cases):
+                path = root/f"bad-{number}.safetensors"; save_file(weights, str(path), metadata=md)
+                with patch.object(loader,"read_state_dict",side_effect=AssertionError("tensors read")), \
+                     patch.object(loader,"NEOChatModel",side_effect=AssertionError("model built")):
+                    with self.assertRaises(ValueError):loader.load_sensenova_from_path(str(path))
+            delta = root/"delta.safetensors"
+            delta_md = dict(metadata, sensenova_checkpoint_kind=loader.SENSENOVA_REFINER_DELTA_KIND,
+                            sensenova_refiner_base_model_path=base.name)
+            save_file({"transformer.fm_modules.fm_refiner.gate":torch.zeros(1)}, str(delta), metadata=delta_md)
+            self.assertEqual(preflight_checkpoint(delta), self.spec)
+            from core.models.sensenova.latent_refiner import LatentRefiner, REFINER_INPUTS, REFINER_NORM
+            self.owner.fm_modules = torch.nn.ModuleDict({"fm_refiner":LatentRefiner(3,16,1)})
+            delta_config = dict(raw, gen_in_channels=3, gen_refiner=dict(version=1,width=16,depth=1,
+                inputs=list(REFINER_INPUTS),norm=REFINER_NORM,detach_anchor_step=None,detach_steps=None,detach_accum=None))
+            exported = loader.save_sensenova_refiner_delta_checkpoint(self.owner,str(root/"exported-delta.safetensors"),
+                base_model_path=str(base),raw_config=delta_config,extra_metadata={"step":"4",META_SPEC:"spoofed"})
+            self.assertEqual(preflight_checkpoint(exported),self.spec)
+            with self.assertRaisesRegex(ValueError,"base residual topologies"):
+                loader.save_sensenova_refiner_delta_checkpoint(self.owner,str(root/"wrong-delta.safetensors"),
+                    base_model_path=str(dense),raw_config=delta_config,extra_metadata={"step":"4"})
+            self.assertFalse((root/"wrong-delta.safetensors").exists())
+            for bad_md in (dict(delta_md, sensenova_refiner_base_model_path=dense.name),
+                           {key:value for key,value in delta_md.items() if not key.startswith("sushi.rewire.")},
+                           dict(delta_md, sensenova_refiner_base_model_path=delta.name)):
+                save_file({"refiner":torch.zeros(1)},str(delta),metadata=bad_md)
+                with patch.object(loader,"read_state_dict",side_effect=AssertionError("tensors read")):
+                    with self.assertRaises(ValueError):loader.load_sensenova_from_path(str(delta))
+            index_path = save_single_file_state(state, metadata, str(root/"shards.safetensors"), max_shard_bytes=3000)
+            index = json.loads(Path(index_path).read_text(encoding="utf-8"))
+            first = root/next(iter(index["weight_map"].values()))
+            from core.models.common.single_file_format import read_state_dict
+            shard, shard_md = read_state_dict(str(first))
+            save_file(shard,str(first),metadata={key:value for key,value in shard_md.items() if not key.startswith("sushi.rewire.")})
+            with patch.object(loader,"read_state_dict",side_effect=AssertionError("tensors read")):
+                with self.assertRaisesRegex(ValueError,"index and shard"):loader.load_sensenova_from_path(index_path)
+        self.assertFalse(torch.cuda.is_initialized())
+
+
 
 if __name__ == "__main__":
     unittest.main()

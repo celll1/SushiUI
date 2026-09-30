@@ -2065,7 +2065,8 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
             v_rad = retake_variance * (math.pi / 2.0)
             noise = math.cos(v_rad) * noise + math.sin(v_rad) * retake_noise
         bsz, device, dtype = context_latents.shape[0], context_latents.device, context_latents.dtype
-        past_key_values = EncoderDecoderCache(DynamicCache(), DynamicCache())
+        cache_enabled = getattr(self.decoder, "_residual_unet_spec", None) is None
+        past_key_values = EncoderDecoderCache(DynamicCache(), DynamicCache()) if cache_enabled else None
         
         # Cover noise initialization: blend noise with src_latents
         if cover_noise_strength > 0.0:
@@ -2120,7 +2121,7 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
                 encoder_hidden_states = encoder_hidden_states_non_cover
                 encoder_attention_mask = encoder_attention_mask_non_cover
                 context_latents = context_latents_non_cover
-                past_key_values = EncoderDecoderCache(DynamicCache(), DynamicCache())
+                past_key_values = EncoderDecoderCache(DynamicCache(), DynamicCache()) if cache_enabled else None
             
             with torch.no_grad():        
                 decoder_outputs = self.decoder(
@@ -2131,7 +2132,7 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
                     encoder_hidden_states=encoder_hidden_states,
                     encoder_attention_mask=encoder_attention_mask,
                     context_latents=context_latents,
-                    use_cache=True,
+                    use_cache=cache_enabled,
                     past_key_values=past_key_values,
                 )
                 
@@ -2182,7 +2183,7 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
                 xt_predicted = xt - vt * dt_tensor
                 # Corrector: evaluate model at the predicted point
                 t_next_tensor = next_timestep * torch.ones((bsz,), device=device, dtype=dtype)
-                corrector_kv = EncoderDecoderCache(DynamicCache(), DynamicCache())
+                corrector_kv = EncoderDecoderCache(DynamicCache(), DynamicCache()) if cache_enabled else None
                 with torch.no_grad():
                     decoder_outputs2 = self.decoder(
                         hidden_states=xt_predicted,

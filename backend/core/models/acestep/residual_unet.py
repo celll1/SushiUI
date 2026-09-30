@@ -221,3 +221,22 @@ def configure_training_topology(model, config, *, resuming=False, pending_adapte
         config["dit_rewiring_mode"] = config.get("dit_rewiring_mode", TRAINING_DEFAULTS["dit_rewiring_mode"])
         config["dit_rewiring_spec"] = resolved
     return resolved
+
+
+def resolve_generation_topology(model, files):
+    from types import SimpleNamespace
+    from core.rewiring.spec import read_checkpoint_metadata
+    from core.rewiring.adapters import resolve_adapter_topology
+    model_topology_metadata(model)
+    existing = getattr(model, "_residual_unet_spec", None)
+    needs_identity = existing is not None or any(read_checkpoint_metadata(file.metadata) is not None for file in files)
+    native = native_config(model.config) if needs_identity else {}
+    view = SimpleNamespace(config=native, _residual_unet_spec=existing)
+    required = resolve_adapter_topology(view, files, validate_topology_identity)
+    if required is not None:
+        decoder = getattr(model, "decoder", model)
+        if native_config(decoder.config) != native or len(decoder.layers) != native["num_hidden_layers"]:
+            raise ValueError("ACE-Step generation owner/decoder geometry disagrees")
+        if decoder.config._attn_implementation not in ("eager", "sdpa"):
+            raise ValueError("ACE-Step residual generation currently requires eager or SDPA attention")
+    return required

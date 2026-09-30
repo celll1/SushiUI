@@ -149,7 +149,7 @@ def _restores_acestep_lora(fn):
         try:
             return fn(self, *args, **kwargs)
         finally:
-            if getattr(self, "_acestep_lora_wrapped_modules", None):
+            if getattr(self, "_acestep_lora_wrapped_modules", None) or getattr(self, "_acestep_topology_restore", None):
                 try:
                     self._unload_lora_acestep()
                 except Exception as e:
@@ -1051,11 +1051,35 @@ class AceStepMixin:
                 "Cannot apply a LoRA: the loaded ACE-Step DiT has no decoder.layers",
                 detail="The LoRA target scope (decoder.layers.*) does not exist on this model.",
             )
+        from copy import deepcopy
+        import weakref
+        from core.adapters import AdapterIncompatible
+        from core.models.acestep.residual_unet import resolve_generation_topology, restore_topology
+        files = self._acestep_lora_session.parse(lora_configs)
+        try:
+            required = resolve_generation_topology(dit, files)
+        except ValueError as exc:
+            raise AdapterIncompatible(str(exc), code="lora_rewiring_incompatible") from exc
+        base_topology = deepcopy(getattr(dit, "_residual_unet_spec", None))
         print(f"[AceStep LoRA] Loading {len(lora_configs)} LoRA(s)...")
-        return self._acestep_lora_session.load(lora_configs, self._acestep_lora_components()).applied
+        result = self._acestep_lora_session.load(files, self._acestep_lora_components())
+        if required is not None:
+            self._acestep_topology_restore = (weakref.ref(dit), base_topology)
+            try:
+                restore_topology(dit, required)
+            except Exception:
+                self._unload_lora_acestep()
+                raise
+        return result.applied
 
     def _unload_lora_acestep(self) -> int:
-        return self._acestep_lora_session.unload(self._acestep_lora_components())
+        try:
+            return self._acestep_lora_session.unload(self._acestep_lora_components())
+        finally:
+            saved = self.__dict__.pop("_acestep_topology_restore", None)
+            if saved is not None and saved[0]() is not None:
+                from core.models.acestep.residual_unet import restore_topology
+                restore_topology(saved[0](), saved[1])
 
     def _apply_or_clear_lora_acestep(self, lora_configs: list):
         """Shared load/unload gate, called by every generate path before the
@@ -1066,7 +1090,7 @@ class AceStepMixin:
             # `_load_lora_acestep` unloads first, unconditionally.
             self._load_lora_acestep(lora_configs)
         else:
-            if getattr(self, "_acestep_lora_wrapped_modules", None):
+            if getattr(self, "_acestep_lora_wrapped_modules", None) or getattr(self, "_acestep_topology_restore", None):
                 print("[AceStep LoRA] No LoRAs in params, unloading existing LoRAs")
                 self._unload_lora_acestep()
 

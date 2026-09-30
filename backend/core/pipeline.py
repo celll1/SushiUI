@@ -796,6 +796,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "type": "lens",
                     "is_v_prediction": False,
                     "model_hash": model_hash,
+                    "dit_rewiring_spec": getattr(model_result["transformer"], "_residual_unet_spec", None),
+                    "dit_rewiring_token_stride": 16,
                 }
                 self.current_model_info.update(
                     self._fold_component_latent_identity(model_result, "lens"))

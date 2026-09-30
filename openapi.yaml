@@ -3496,7 +3496,7 @@ paths:
                     type: array
                     description: Implemented backend architectures; topology and workflow compatibility are validated per request
                     items: {type: string}
-                    example: [qwen_image_21, krea2, anima, zimage, flux2]
+                    example: [qwen_image_21, krea2, anima, zimage, flux2, lens]
   /models/rewiring/inspect:
     post:
       tags: [models]

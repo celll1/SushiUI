@@ -73,6 +73,108 @@ class LensRuntimeContracts(unittest.TestCase):
         self.assertEqual(original,{name:id(value) for name,value in self.model.named_parameters()})
         self.assertFalse(torch.cuda.is_initialized())
 
+    def test_public_preset_and_custom_training_configuration(self):
+        from collections import Counter
+        from core.models.lens.residual_unet import native_config, default_topology, configure_training_topology
+        from core.rewiring.spec import preview_plan
+        from api.routes import TrainingRunCreateRequest
+        from core.training.training_config import _build_train_section
+        model=type(self.model)(**native_config(dict(self.model.config,num_layers=48)))
+        request=TrainingRunCreateRequest(training_method="lora",base_model_path="lens",total_steps=1,
+                                        dit_rewiring_mode="configure")
+        config=_build_train_section(request.model_dump(),total_steps=1,epochs=None,
+                                    train_unet=True,train_text_encoder=False,arch="lens")
+        spec=configure_training_topology(model,config)
+        self.assertEqual(spec,default_topology(native_config(model)))
+        self.assertEqual([(r["start_block"],r["end_block"]) for r in spec["regions"]],[(4,44),(22,26)])
+        plan=preview_plan(spec,64,64)
+        self.assertEqual(Counter(b["tokens"] for b in plan["blocks"]),{4096:8,1024:36,256:4})
+        lengths=[]
+        handles=[block.register_forward_pre_hook(lambda block,args:lengths.append(args[0].shape[1]))
+                 for block in model.transformer_blocks]
+        try:
+            with patch.object(self,"model",model):self.assertTrue(torch.isfinite(self.forward()).all())
+        finally:
+            for handle in handles:handle.remove()
+        self.assertEqual(lengths,[96]*4+[24]*18+[6]*4+[24]*18+[96]*4)
+        self.assertIsNone(default_topology(native_config(self.model)))
+        with self.assertRaisesRegex(ValueError,"No rewiring preset"):
+            configure_training_topology(self.model,{"dit_rewiring_mode":"configure"})
+        self.assertEqual(configure_training_topology(self.model,
+            {"dit_rewiring_mode":"configure","dit_rewiring_spec":self.spec}),self.spec)
+        other=build_spec("lens",self.spec["streams"],self.spec["regions"][:1],native_config(self.model))
+        with self.assertRaisesRegex(ValueError,"without edits"):
+            configure_training_topology(self.model,{"dit_rewiring_mode":"configure","dit_rewiring_spec":other},resuming=True)
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_public_header_inspection_and_api_without_tensor_or_model_load(self):
+        import asyncio
+        import httpx
+        from fastapi import FastAPI
+        from safetensors.torch import save_file
+        from core.models.lens.residual_unet import native_config
+        from core.rewiring.spec import checkpoint_metadata
+        from core.rewiring.inspect import inspect_model
+        from core.models.common.single_file_format import save_single_file_state
+        from api.rewiring_routes import router
+        config=native_config(self.model)
+        metadata={"model_type":"lens","transformer_config":json.dumps(config),**checkpoint_metadata(self.spec)}
+        tensors={"net."+key:value.detach().contiguous() for key,value in self.model.state_dict().items()}
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);single=root/"model.safetensors"
+            save_file(tensors,str(single),metadata=metadata)
+            sharded=save_single_file_state(tensors,metadata,str(root/"sharded.safetensors"),max_shard_bytes=20000)
+            directory=root/"directory";directory.mkdir()
+            (directory/"config.json").write_text(json.dumps(dict(config,_class_name="LensTransformer2DModel")),encoding="utf-8")
+            save_file(self.model.state_dict(),str(directory/"diffusion_pytorch_model.safetensors"),metadata=metadata)
+            app=FastAPI();app.include_router(router,prefix="/api/v1")
+            with patch("core.models.common.single_file_format.read_state_dict",side_effect=AssertionError("tensor loading")), \
+                 patch.object(type(self.model),"__init__",autospec=True,side_effect=AssertionError("model allocation")):
+                info=inspect_model(str(single))
+                self.assertEqual(info["streams"],self.spec["streams"])
+                self.assertEqual(info["topology"],self.spec);self.assertIsNone(info["default_spec"])
+                self.assertEqual(info["latent_scale_factor"],16)
+                for path in (Path(sharded),root/"sharded.safetensors",directory):
+                    self.assertEqual(inspect_model(str(path)),info)
+                async def check():
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url="http://test") as client:
+                        response=await client.get("/api/v1/schema/dit-rewiring")
+                        schema=response.json();self.assertIn("lens",schema["runtime_architectures"])
+                        self.assertEqual(schema["presets"]["lens"]["block_count"],48)
+                        for path in (single,Path(sharded),directory):
+                            response=await client.post("/api/v1/models/rewiring/inspect",json={"model_path":str(path)})
+                            self.assertEqual(response.status_code,200,response.text);self.assertEqual(response.json(),info)
+                        response=await client.post("/api/v1/models/rewiring/validate",json={"spec":self.spec,"token_height":8,"token_width":12})
+                        self.assertEqual(response.status_code,200,response.text)
+                        self.assertEqual([b["tokens"] for b in response.json()["plan"]["blocks"]],[96,24,6,6,6,24,96])
+                        adapter=root/"adapter.safetensors"
+                        save_file({"lora_unet_transformer_blocks_0_attn_img_qkv.lora_down.weight":torch.ones(2,24)},str(adapter),metadata=metadata)
+                        response=await client.post("/api/v1/models/rewiring/inspect",json={"model_path":str(adapter)})
+                        self.assertEqual(response.status_code,422)
+                        broken=root/"mismatch.safetensors"
+                        save_file(tensors,str(broken),metadata={"model_type":"lens","transformer_config":json.dumps(dict(config,num_layers=8))})
+                        response=await client.post("/api/v1/models/rewiring/inspect",json={"model_path":str(broken)})
+                        self.assertEqual(response.status_code,422)
+                asyncio.run(check())
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_pipeline_model_info_reports_checkpoint_topology(self):
+        from core.pipeline import DiffusionPipelineManager
+        from core.model_loader import ModelLoader
+        from core.models.lens.residual_unet import restore_topology
+        restore_topology(self.model,self.spec)
+        vae=torch.nn.Linear(1,1);vae.config=SimpleNamespace(block_out_channels=[1,2,3,4],latent_channels=1)
+        manager=DiffusionPipelineManager();manager.device="cpu"
+        components={"type":"lens","transformer":self.model,"vae":vae,"text_encoder":torch.nn.Linear(1,1),
+                    "tokenizer":object(),"scheduler":object()}
+        with patch.object(ModelLoader,"load_model",return_value=components), \
+             patch.object(manager,"_save_last_model"),patch.object(torch.cuda,"is_available",return_value=False):
+            manager._load_model_locked("safetensors","cpu-lens-test.safetensors")
+        self.assertEqual(manager.current_model_info["type"],"lens")
+        self.assertEqual(manager.current_model_info["dit_rewiring_spec"],self.spec)
+        self.assertEqual(manager.current_model_info["dit_rewiring_token_stride"],16)
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_generation_lora_topology_scope_and_model_replacement(self):
         from copy import deepcopy
         from core.models.lens.residual_unet import restore_topology, native_config

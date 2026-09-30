@@ -60,8 +60,20 @@ def configure_training_topology(model, config, *, resuming=False, pending_adapte
                                 resume_spec=NO_RESUME_SPEC, install=True):
     from core.rewiring.training import resolve_training_topology
     return resolve_training_topology(model, config, "lens", validate_topology_identity,
-        restore_topology, resuming=resuming, pending_adapter_resume=pending_adapter_resume,
+        restore_topology, default_topology, resuming=resuming, pending_adapter_resume=pending_adapter_resume,
         resume_spec=resume_spec, install=install)
+
+
+def default_topology(config):
+    from api.param_defaults import DIT_REWIRING_PRESETS
+    from core.rewiring.spec import build_spec, OPERATORS
+    resolved = native_config(config)
+    preset = DIT_REWIRING_PRESETS["lens"]
+    if resolved["num_layers"] != preset["block_count"]:
+        return None
+    return validate_topology_identity(build_spec("lens",
+        [{"name": "main", "block_count": resolved["num_layers"]}],
+        [dict(region, **OPERATORS) for region in preset["regions"]], resolved), resolved)
 
 
 def preflight_checkpoint(path):

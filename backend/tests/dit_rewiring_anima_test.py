@@ -153,5 +153,120 @@ class AnimaRuntimeContracts(unittest.TestCase):
                 constructor.assert_not_called()
         self.assertFalse(torch.cuda.is_initialized())
 
+    @patch("core.rewiring.training.RUNTIME_ARCHITECTURES", ("anima",))
+    def test_lora_resume_atomicity_and_topology_agreement(self):
+        import tempfile
+        from types import SimpleNamespace
+        from safetensors.torch import save_file
+        from core.models.anima.residual_unet import configure_training_topology, restore_topology
+        from core.training.adapters.anima_adapter import AnimaLoRAAdapter
+        from core.training.lora_trainer import LoRATrainer
+        from core.rewiring.spec import checkpoint_metadata
+        restore_topology(self.model, None)
+        trainer = SimpleNamespace(transformer=self.model, config={}, is_anima=True,
+            log_prefix="[AnimaResumeTest]", lora_rank=2, lora_alpha=2,
+            adapter_algorithm="lora", weight_decompose=False, adapter_config={})
+        adapter = AnimaLoRAAdapter(trainer, 2, 2)
+        layers = {}; adapter.apply_lora_to_unet(layers); trainer.lora_layers = layers
+        tensors = {f"{name}.{key}": value.detach().clone()+0.01
+                   for name, layer in layers.items() for key, value in layer.branch_tensors().items()}
+        before = {f"{name}.{key}": value.detach().clone()
+                  for name, layer in layers.items() for key, value in layer.branch_tensors().items()}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/"resume.safetensors"
+            metadata = {"model_type": "anima", "step": "17", **checkpoint_metadata(self.spec)}
+            save_file({"unrelated": torch.ones(1)}, str(path), metadata=metadata)
+            with self.assertRaisesRegex(ValueError, "missing required tensor"):
+                LoRATrainer.load_checkpoint(trainer, str(path))
+            self.assertFalse(hasattr(self.model, "_residual_unet_spec"))
+            self.assertEqual(trainer.config, {})
+            for name, layer in layers.items():
+                for key, value in layer.branch_tensors().items():
+                    torch.testing.assert_close(value, before[f"{name}.{key}"], rtol=0, atol=0)
+            save_file(tensors, str(path), metadata=metadata)
+            self.assertEqual(LoRATrainer.load_checkpoint(trainer, str(path)), 17)
+            self.assertEqual(self.model._residual_unet_spec, self.spec)
+            for name, layer in layers.items():
+                for key, value in layer.branch_tensors().items():
+                    torch.testing.assert_close(value, tensors[f"{name}.{key}"], rtol=0, atol=0)
+        self.assertEqual(configure_training_topology(self.model, trainer.config, resuming=True), self.spec)
+        changed = dict(self.spec, regions=[self.spec["regions"][0],
+            {**self.spec["regions"][1], "end_block": 4}])
+        with self.assertRaisesRegex(ValueError, "without edits"):
+            configure_training_topology(self.model,
+                {"dit_rewiring_mode": "configure", "dit_rewiring_spec": changed}, resuming=True)
+        with self.assertRaisesRegex(ValueError, "incompatible"):
+            configure_training_topology(self.model, {**trainer.config, "repa_enable": True})
+
+    def test_generation_lora_scope_and_effective_metadata(self):
+        import tempfile
+        from safetensors.torch import save_file
+        from core.pipeline_backends.anima import AnimaMixin
+        from core.models.anima.residual_unet import restore_topology
+        from core.adapters import AdapterIncompatible, CompositeAdapterLayer
+        from core.rewiring.spec import checkpoint_metadata, digest
+        class Manager(AnimaMixin):
+            def __init__(manager):
+                manager.anima_components = {"transformer": self.model}
+            @staticmethod
+            def _anima_resolve_lora_path(path):
+                return str(path) if Path(path).is_file() else None
+        manager = Manager()
+        restore_topology(self.model, None)
+        original = self.model.blocks[0].self_attn.q_proj
+        with tempfile.TemporaryDirectory() as directory:
+            def write(name, topology, wrong=False):
+                path = Path(directory)/f"{name}.safetensors"
+                save_file({
+                    "lora_unet_blocks_0_self_attn_q_proj.lora_down.weight": torch.randn(2, 23 if wrong else 24),
+                    "lora_unet_blocks_0_self_attn_q_proj.lora_up.weight": torch.randn(24, 2)}, str(path),
+                    metadata={"model_type": "anima", **({} if topology is None else checkpoint_metadata(topology))})
+                return {"path": str(path), "strength": 1.0}
+            good = write("good", self.spec)
+            dense = write("dense", None)
+            malformed = write("bad_shape", self.spec, True)
+            self.assertEqual(manager._load_lora_anima([good]), 1)
+            self.assertIsInstance(self.model.blocks[0].self_attn.q_proj, CompositeAdapterLayer)
+            self.assertEqual(self.model._residual_unet_spec, self.spec)
+            params = {}
+            manager._anima_rewiring_metadata(params, self.model, 128, 192)
+            self.assertEqual(params["dit_rewiring_actual"]["spec_sha256"], digest(self.spec))
+            with self.assertRaisesRegex(Exception, "style"):
+                manager._anima_rewiring_metadata({"style_transfer": {"enabled": True}},
+                    self.model, 128, 192)
+            with self.assertRaisesRegex(Exception, "FBCache"):
+                manager._anima_rewiring_metadata({"fbcache_enable": True, "fbcache_threshold": 0.1},
+                    self.model, 128, 192)
+            with self.assertRaisesRegex(Exception, "divisible"):
+                manager._anima_rewiring_metadata({}, self.model, 144, 192)
+            manager._unload_lora_anima()
+            self.assertIs(self.model.blocks[0].self_attn.q_proj, original)
+            self.assertFalse(hasattr(self.model, "_residual_unet_spec"))
+            for files in ([good, dense], [good, malformed]):
+                with self.assertRaises(RuntimeError):
+                    manager._load_lora_anima(files)
+                self.assertIs(self.model.blocks[0].self_attn.q_proj, original)
+                self.assertFalse(hasattr(self.model, "_residual_unet_spec"))
+            restore_topology(self.model, self.spec)
+            with self.assertRaises(AdapterIncompatible):
+                manager._load_lora_anima([dense])
+            manager._load_lora_anima([good]); manager._unload_lora_anima()
+            self.assertEqual(self.model._residual_unet_spec, self.spec)
+
+    def test_internal_default_preset(self):
+        from collections import Counter
+        from types import SimpleNamespace
+        from core.models.anima.anima_models import ANIMA_DIT_CONFIG
+        from core.models.anima.residual_unet import default_topology, configure_training_topology
+        from core.rewiring.spec import preview_plan
+        model = SimpleNamespace(config=dict(ANIMA_DIT_CONFIG))
+        with patch("core.rewiring.training.RUNTIME_ARCHITECTURES", ("anima",)):
+            spec = configure_training_topology(model, {"dit_rewiring_mode": "configure"})
+        self.assertEqual(spec, default_topology(model.config))
+        self.assertEqual(Counter(b["tokens"] for b in preview_plan(spec, 64, 64)["blocks"]),
+                         {4096: 8, 1024: 16, 256: 4})
+        self.assertIsNone(default_topology(dict(model.config, num_blocks=7)))
+
+
 if __name__ == "__main__":
     unittest.main()

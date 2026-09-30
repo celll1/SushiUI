@@ -1120,6 +1120,11 @@ class Anima(nn.Module):
     def dtype(self):
         return next(self.parameters()).dtype
 
+    @property
+    def config(self):
+        from .residual_unet import native_config
+        return native_config(self)
+
     def enable_gradient_checkpointing(self, cpu_offload: bool = False,
                                        async_offload: bool = False) -> None:
         """Enable activation checkpointing on every Block.

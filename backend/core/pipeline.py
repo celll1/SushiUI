@@ -738,6 +738,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "source_type": source_type,
                     "source": source,
                     "type": "anima",
+                    "dit_rewiring_spec": getattr(self.anima_components["transformer"], "_residual_unet_spec", None),
                     "is_v_prediction": False,  # flow matching
                     "model_hash": model_hash,
                 }

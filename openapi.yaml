@@ -3490,6 +3490,7 @@ paths:
                 properties:
                   presets:
                     type: object
+                    description: Native-layout presets can include pending integrations; runtime_architectures determines public configure support
                     additionalProperties: true
                   runtime_architectures:
                     type: array

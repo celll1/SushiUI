@@ -424,3 +424,35 @@ pass, with the expanded four-test Anima suite also passing separately. Existing
 Anima scaled/scaleless quantized-loader matrix regression passes, and changed modules
 compile/import without CUDA initialization. Training/generation API topology scopes
 are not yet connected or advertised for Anima. No Anima GPU inference/training is run.
+
+
+## Anima training and generation topology scopes
+
+The native model now exposes constructor geometry to the shared training and
+adapter resolvers. Component loading resolves inherited topology after latent
+space selection; LoRA resume validates topology before tensor mutation and
+installs it only after the complete checkpoint validates. The internal 28-block
+preset is outer `[4, 24)` and inner `[12, 16)`, retaining eight full-grid,
+sixteen middle-grid and four deepest-grid blocks. Presets remain owned by
+param_defaults.py; an available preset does not by itself advertise runtime
+support.
+
+Generation AdapterSession validates the selected topology stack before applying
+weights, temporarily installs its topology and restores the base topology on
+unload or cleanup. All three Anima generation entry points attach effective
+spec/hash metadata, validate grid divisibility and refuse style injection and
+active FBCache before denoising. Loaded-model information includes the restored
+topology. These scopes have CPU coverage; public Anima configure capability and
+model/editor inspection remain withheld until their discovery path is connected.
+Internal configure/resume tests explicitly enable only the Anima capability in
+their test scope.
+
+Three additional CPU contracts cover the actual training adapter resume path,
+atomic failure, generation LoRA apply/unload and incompatible stacks, effective
+metadata/feature gates, and the preset allocation. All 34 rewiring contracts
+pass. Existing Anima LoRA and refusal regressions yield 29 passes and one known
+baseline failure: generate_img2txt lacks an error-context attachment. The same
+failure is present in the unchanged base commit; this conversion change does not
+edit that route. Changed backend modules compile and import with CUDA untouched.
+No Anima GPU inference, training, speed or quality claim is made. All further
+real-model GPU acceptance remains limited to Qwen-Image 2.1 by owner instruction.

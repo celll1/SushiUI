@@ -1213,3 +1213,39 @@ remaining assertion expected the previous capability list. After updating that
 API assertion, its targeted rerun passed (124 covered cases in total).
 Changed-file compile, real imports and OpenAPI capability agreement pass, with
 CUDA uninitialized throughout.
+
+## Ideogram 4 native residual transport foundation
+
+The vendored forward uses a residual branch only when topology is installed;
+removing it restores the existing dense path. Native input/text/role projections,
+per-sample timestep AdaLN and final packed projection stay unchanged. No weights
+or parameters are added, copied or rebound. The graph applies to one backbone;
+Ideogram 4's conditional and unconditional backbones use the same runner, with a
+text/padding prefix or an image-only sequence respectively.
+
+The runner validates a single complete row-major image tail with one image
+segment per sample. It pools only the evolving image hidden states; text and
+padding hidden states continue through all native blocks at their original
+lengths. At each downsample boundary it pools native three-axis position ids to
+cell centers, rebuilds MRoPE and the native segment equality mask, and preserves
+prefix positions/segment ids. Nested exits restore the saved full-grid context
+and add the upsampled image residual delta. Multi-image/irregular grids and
+per-token timestep conditioning are refused because they require separate
+transport/conditioning rules.
+
+Each native block keeps its checkpoint function and block-swap wait/submit at
+its original index. Residual execution refuses REPA taps, FBCache, active
+style/NAG/NegPip/TREAD/block-skip hooks and non-native attention processors.
+CPU native tests cover left-padded conditional batches, evolving text, exact
+segment masks, coarse/deep RoPE centers, the unconditional image-only layout,
+unchanged parameter identities, checkpoint output/finite gradients and bit-exact
+dense restoration. Existing Ideogram 4 LoRA and REPA cases are included.
+
+Checkpoint artifacts, inference adapter topology scopes, training resume and
+public inspection/editor presets remain pending for Ideogram 4. It is not yet
+advertised in public residual runtime capabilities. GPU validation remains
+Qwen-Image 2.1 only; this foundation makes no Ideogram GPU performance or quality
+claim.
+
+The 3 new native residual tests and 42 existing Ideogram LoRA/REPA tests pass
+(45 total). Compile and real imports pass with CUDA uninitialized.

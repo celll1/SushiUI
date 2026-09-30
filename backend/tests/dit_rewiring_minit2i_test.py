@@ -72,6 +72,109 @@ class MiniT2IRuntimeContracts(unittest.TestCase):
         torch.testing.assert_close(self.forward(img=self.images.permute(0,2,3,1)),output)
         self.assertFalse(torch.cuda.is_initialized())
 
+    def test_training_inheritance_lora_resume_and_production_train_step(self):
+        from core.models.minit2i.residual_unet import configure_training_topology,restore_topology
+        from core.training.adapters.minit2i_adapter import MiniT2ILoRAAdapter
+        from core.training.lora_trainer import LoRATrainer
+        from core.training.ops import minit2i_ops
+        from core.rewiring.spec import checkpoint_metadata
+        from safetensors.torch import save_file
+        restore_topology(self.model,self.spec)
+        config={};self.assertEqual(configure_training_topology(self.model,config,resuming=True),self.spec)
+        for key in ("repa_enable","tread_enable","blockskip_enable","dit_partition_training_enabled"):
+            with self.assertRaisesRegex(ValueError,key):
+                configure_training_topology(self.model,dict(config,**{key:True}))
+        with self.assertRaisesRegex(ValueError,"block_skip_rate"):
+            configure_training_topology(self.model,dict(config,block_skip_rate=0.1))
+        restore_topology(self.model,None)
+        untouched={}
+        self.assertEqual(configure_training_topology(self.model,untouched,resume_spec=self.spec,install=False),self.spec)
+        self.assertEqual(untouched,{})
+        self.assertFalse(hasattr(self.model,"_residual_unet_spec"))
+        trainer=SimpleNamespace(transformer=self.model,config={},is_minit2i=True,
+            log_prefix="[MiniT2IResumeTest]",lora_rank=2,lora_alpha=2,
+            adapter_algorithm="lora",weight_decompose=False,adapter_config={})
+        self.model.requires_grad_(False)
+        adapter=MiniT2ILoRAAdapter(trainer,2,2,scope={"attn":True,"mlp":True,"txt_embed":False})
+        layers={};adapter.apply_lora_to_unet(layers);trainer.lora_layers=layers
+        self.assertGreater(len(layers),0)
+        before={f"{name}.{key}":value.detach().clone()
+                for name,layer in layers.items() for key,value in layer.branch_tensors().items()}
+        tensors={key:value+0.01 for key,value in before.items()}
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/"resume.safetensors"
+            metadata={"model_type":"minit2i","step":"17",**checkpoint_metadata(self.spec)}
+            save_file({"unrelated":torch.ones(1)},str(path),metadata=metadata)
+            with self.assertRaisesRegex(ValueError,"missing required tensor"):
+                LoRATrainer.load_checkpoint(trainer,str(path))
+            self.assertFalse(hasattr(self.model,"_residual_unet_spec"));self.assertEqual(trainer.config,{})
+            for name,layer in layers.items():
+                for key,value in layer.branch_tensors().items():
+                    torch.testing.assert_close(value,before[f"{name}.{key}"],rtol=0,atol=0)
+            save_file(tensors,str(path),metadata=metadata)
+            self.assertEqual(LoRATrainer.load_checkpoint(trainer,str(path)),17)
+            self.assertEqual(self.model._residual_unet_spec,self.spec)
+            self.assertEqual(self.model.model.net._residual_unet_spec,self.spec)
+            for name,layer in layers.items():
+                for key,value in layer.branch_tensors().items():
+                    torch.testing.assert_close(value,tensors[f"{name}.{key}"],rtol=0,atol=0)
+            save_file(tensors,str(path),metadata={"model_type":"minit2i"})
+            with self.assertRaisesRegex(ValueError,"disagree"):
+                LoRATrainer.load_checkpoint(trainer,str(path))
+            self.assertEqual(self.model._residual_unet_spec,self.spec)
+        self.model.enable_gradient_checkpointing()
+        trainer.device=torch.device("cpu");trainer.training_dtype=torch.float32;trainer.mixed_precision=False
+        trainer.minit2i_noise_scale=1;trainer.reconstruction_loss_weight=0
+        trainer.stash_cfg_null_per_sample_loss=lambda *a:None
+        loss,prediction_loss,reconstruction_loss=minit2i_ops.train_step(trainer,self.images.detach(),
+            self.text.detach(),self.mask,timesteps=self.times)
+        self.assertTrue(torch.isfinite(loss));self.assertTrue(torch.isfinite(prediction_loss))
+        self.assertTrue(torch.isfinite(reconstruction_loss));loss.backward()
+        grads=[value.grad for layer in layers.values() for value in layer.parameters() if value.requires_grad]
+        self.assertTrue(grads);self.assertTrue(all(g is not None and torch.isfinite(g).all() for g in grads))
+        self.assertTrue(any(torch.count_nonzero(g) for g in grads))
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_training_loaders_inherit_before_checkpointing_and_freeze(self):
+        from core.models.minit2i.residual_unet import configure_training_topology,restore_topology
+        from core.training.ops import minit2i_ops
+        from core.training.base_trainer import BaseTrainer
+        from core.model_loader import ModelLoader
+        restore_topology(self.model,self.spec)
+        components=dict(transformer=self.model,text_encoder=torch.nn.Linear(1,1),tokenizer=object(),
+                        scheduler=object(),variant="b16",vae_type="sdxl",vae=torch.nn.Linear(1,1))
+        for resume in (False,True):
+            trainer=SimpleNamespace(config={},model_path="full.safetensors",weight_dtype=torch.float32,
+                vae_dtype=torch.float32,log_prefix="[MiniT2ILoadTest]",resume_from_checkpoint="full.safetensors" if resume else None)
+            def resolve_then_stop(model,config,**options):
+                self.assertEqual(options["resuming"],resume)
+                self.assertEqual(configure_training_topology(model,config,**options),self.spec)
+                raise RuntimeError("stop before checkpointing")
+            with patch.object(ModelLoader,"detect_model_type",return_value="minit2i"), \
+                 patch("core.models.minit2i.minit2i_loader.load_minit2i_components",return_value=components), \
+                 patch("core.training.vae_swap.apply_latent_space"), \
+                 patch("core.models.minit2i.residual_unet.configure_training_topology",side_effect=resolve_then_stop):
+                with self.assertRaisesRegex(RuntimeError,"stop before checkpointing"):
+                    if resume:BaseTrainer._load_checkpoint_as_base(trainer,"full.safetensors")
+                    else:minit2i_ops.load_components(trainer)
+            self.assertEqual(trainer.config["dit_rewiring_spec"],self.spec)
+        trainer=SimpleNamespace(config={},model_path="full.safetensors",weight_dtype=torch.float32,
+            vae_dtype=torch.float32,log_prefix="[MiniT2ILoadTest]",gradient_checkpointing=True,
+            blocks_to_swap=0,device=torch.device("cpu"),use_flash_attention=False)
+        checkpoint_calls=[];native_checkpoint=self.model.enable_gradient_checkpointing
+        def observe_checkpoint(**options):
+            self.assertEqual(trainer.config["dit_rewiring_spec"],self.spec)
+            checkpoint_calls.append(options);native_checkpoint(**options)
+        with patch("core.models.minit2i.minit2i_loader.load_minit2i_components",return_value=components), \
+             patch("core.training.vae_swap.apply_latent_space"), \
+             patch.object(self.model,"enable_gradient_checkpointing",side_effect=observe_checkpoint):
+            minit2i_ops.load_components(trainer)
+        self.assertEqual(len(checkpoint_calls),1)
+        self.assertTrue(self.model.gradient_checkpointing);self.assertTrue(self.model.model.net.gradient_checkpointing)
+        self.assertTrue(all(not value.requires_grad for value in self.model.parameters()))
+        self.assertTrue(self.model.training);self.assertEqual(self.model._residual_unet_spec,self.spec)
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_single_shard_and_directory_native_artifact_roundtrip(self):
         from core.models.minit2i.residual_unet import restore_topology,native_config,preflight_checkpoint
         from core.models.minit2i.vendor.single_file import save_single_file,load_single_file

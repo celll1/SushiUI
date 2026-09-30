@@ -25,7 +25,7 @@ import asyncio
 import os
 import threading
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from typing import Callable, List, Literal, Optional, Protocol
 
@@ -148,6 +148,14 @@ class GPUCoordinator:
             if h not in self._handles:
                 self._handles.append(h)
                 print(f"[GPUCoordinator] Registered trainer: {h.trainer_label()}")
+
+    @contextmanager
+    def trainer_allocation(self):
+        """Serialize initial trainer allocation against generation admission."""
+        with self._lock:
+            if self._active_generations or self._currently_paused:
+                raise RuntimeError("GPU is serving generation; retry trainer allocation later")
+            yield
 
     def unregister_trainer(self, h: TrainerHandle) -> None:
         with self._lock:

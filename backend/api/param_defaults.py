@@ -7,6 +7,26 @@ Frontend fetches these via /schema/* endpoints, eliminating manual sync.
 
 from typing import Any, Dict, Optional
 
+# Compact captioner defaults are exposed by its own schema routes.
+CAPTIONER_DEFAULTS: Dict[str, Any] = {
+    "tag_source": "predicted", "tags": [], "max_new_tokens": 96,
+    "device": "cpu", "max_num_patches": 256, "allowed_categories": ["General"],
+    "max_concepts": 64,
+}
+CAPTIONER_TRAINING_DEFAULTS: Dict[str, Any] = {
+    "device": "cpu", "max_num_patches": 256, "allowed_categories": ["General"],
+    "max_concepts": 64, "hidden_dim": 384, "heads": 6, "layers": 4,
+    "ffn_dim": 1536, "visual_queries": 32, "max_length": 96, "dropout": 0.1,
+    "vocab_size": 8192, "tokenizer_min_frequency": 2, "learning_rate": 0.0003,
+    "weight_decay": 0.01, "warmup_ratio": 0.05, "epochs": 10, "batch_size": 8,
+    "label_smoothing": 0.05, "max_grad_norm": 1.0, "seed": 42,
+    "val_ratio": 0.05, "test_ratio": 0.05, "near_duplicate_distance": 4,
+    "concept_dropout": 0.15, "all_concept_dropout": 0.1,
+    "source_weights": {"predicted": 0.7, "provided": 0.2, "merged": 0.1},
+    "cache_max_gb": 20.0, "save_every_steps": 100, "use_tag_aliases": True,
+    "language": "en",
+}
+
 # The only core import in this module. The hybrid block range is a CHECKPOINT
 # fact the loader validates against (hybrid_spec.py:71), so the API default is
 # imported rather than re-typed: two copies could disagree and the request would

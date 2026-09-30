@@ -3475,6 +3475,49 @@ paths:
                     items:
                       $ref: '#/components/schemas/ModelInfo'
 
+  /schema/dit-rewiring:
+    get:
+      tags: [models]
+      summary: Read residual rewiring presets and implementation status
+      responses:
+        '200':
+          description: Architecture presets; runtime support is reported separately
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [presets, runtime_architectures]
+                properties:
+                  presets:
+                    type: object
+                    additionalProperties: true
+                  runtime_architectures:
+                    type: array
+                    items: {type: string}
+  /models/rewiring/validate:
+    post:
+      tags: [models]
+      summary: Validate a residual topology and preview token grids without loading weights
+      description: This validates the declared layout, not its compatibility with a particular model artifact.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DiTRewiringPreviewRequest'}
+      responses:
+        '200':
+          description: Canonical topology, hash, levels, block grids and skip edges
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [spec, spec_sha256, plan]
+                properties:
+                  spec: {$ref: '#/components/schemas/DiTRewiringSpec'}
+                  spec_sha256: {type: string}
+                  plan: {type: object, additionalProperties: true}
+        '422':
+          description: Invalid topology, unsupported operator or indivisible grid
   /models/load:
     post:
       tags: [models]
@@ -11221,6 +11264,61 @@ components:
       bearerFormat: JWT
 
   schemas:
+    DiTRewiringSpec:
+      type: object
+      additionalProperties: false
+      required: [schema_version, method, architecture, streams, regions, base_config_sha256, block_layout_sha256]
+      properties:
+        schema_version: {type: integer, enum: [1]}
+        method: {type: string, enum: [residual_delta_unet]}
+        architecture: {type: string}
+        base_config_sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+        block_layout_sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+        streams:
+          type: array
+          minItems: 1
+          maxItems: 16
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, block_count]
+            properties:
+              name: {type: string}
+              block_count: {type: integer, minimum: 3, maximum: 4096}
+        regions:
+          type: array
+          minItems: 1
+          maxItems: 64
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, stream, parent, start_block, end_block, down_factor, down, up, align_corners, merge, position_policy, grid_policy, delta_dtype]
+            properties:
+              id: {type: string}
+              stream: {type: string}
+              parent: {type: string, nullable: true}
+              start_block: {type: integer, minimum: 1}
+              end_block: {type: integer, minimum: 2}
+              down_factor:
+                type: array
+                minItems: 2
+                maxItems: 2
+                items: {type: integer, enum: [2, 4, 8]}
+              down: {type: string, enum: [avg_pool]}
+              up: {type: string, enum: [bilinear]}
+              align_corners: {type: boolean, enum: [false]}
+              merge: {type: string, enum: [identity_delta_add]}
+              position_policy: {type: string, enum: [coarse_integer]}
+              grid_policy: {type: string, enum: [require_divisible]}
+              delta_dtype: {type: string, enum: [float32]}
+    DiTRewiringPreviewRequest:
+      type: object
+      additionalProperties: false
+      required: [spec, token_height, token_width]
+      properties:
+        spec: {$ref: '#/components/schemas/DiTRewiringSpec'}
+        token_height: {type: integer, minimum: 1, maximum: 65536, example: 64}
+        token_width: {type: integer, minimum: 1, maximum: 65536, example: 64}
     ConceptExposureResponse:
       type: object
       required: [enabled, rows]

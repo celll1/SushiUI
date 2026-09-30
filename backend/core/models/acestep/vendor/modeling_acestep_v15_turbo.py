@@ -1332,6 +1332,14 @@ class AceStepDiTModel(AceStepPreTrainedModel):
         **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
     ):
 
+        rewired = getattr(self, "_residual_unet_spec", None) is not None
+        if rewired:
+            from ..residual_unet import preflight_forward
+            preflight_forward(self, hidden_states.shape[1], attention_mask, encoder_attention_mask,
+                past_key_values=past_key_values, output_attentions=output_attentions,
+                custom_layers_config=custom_layers_config, enable_early_exit=enable_early_exit,
+                return_hidden_states=return_hidden_states)
+            use_cache = False
         use_cache = use_cache if use_cache is not None else self.config.use_cache
 
         # Disable cache during training or when gradient checkpointing is enabled
@@ -1382,84 +1390,85 @@ class AceStepDiTModel(AceStepPreTrainedModel):
             position_ids = cache_position.unsqueeze(0)
 
 
-        seq_len = hidden_states.shape[1]
-        encoder_seq_len = encoder_hidden_states.shape[1]
-        dtype = hidden_states.dtype
-        device = hidden_states.device
+        if not rewired:
+            seq_len = hidden_states.shape[1]
+            encoder_seq_len = encoder_hidden_states.shape[1]
+            dtype = hidden_states.dtype
+            device = hidden_states.device
         
-        # 判断是否使用 Flash Attention 2
-        is_flash_attn = (self.config._attn_implementation == "flash_attention_2")
+            # 判断是否使用 Flash Attention 2
+            is_flash_attn = (self.config._attn_implementation == "flash_attention_2")
 
-        # 初始化 Mask 变量
-        full_attn_mask = None
-        sliding_attn_mask = None
-        encoder_attention_mask = None
-        attention_mask = None
-        if is_flash_attn:
-            # -------------------------------------------------------
-            # 场景 A: Flash Attention 模式
-            # -------------------------------------------------------
-            # FA 不需要 4D Mask。
-            # 如果有 padding mask (attention_mask [B, L])，直接传给它即可。
-            # 如果没有 padding mask，传 None。
-            # 滑动窗口逻辑由 Layer 内部传给 FA kernel 的 sliding_window 参数控制。
-            full_attn_mask = attention_mask
+            # 初始化 Mask 变量
+            full_attn_mask = None
+            sliding_attn_mask = None
+            encoder_attention_mask = None
+            attention_mask = None
+            if is_flash_attn:
+                # -------------------------------------------------------
+                # 场景 A: Flash Attention 模式
+                # -------------------------------------------------------
+                # FA 不需要 4D Mask。
+                # 如果有 padding mask (attention_mask [B, L])，直接传给它即可。
+                # 如果没有 padding mask，传 None。
+                # 滑动窗口逻辑由 Layer 内部传给 FA kernel 的 sliding_window 参数控制。
+                full_attn_mask = attention_mask
             
-            # 这里的逻辑是：如果配置启用了滑动窗口，FA 模式下我们也只需要传基础的 padding mask
-            # Layer 会自己决定是否调用带 sliding window 的 kernel
-            sliding_attn_mask = attention_mask if self.config.use_sliding_window else None
+                # 这里的逻辑是：如果配置启用了滑动窗口，FA 模式下我们也只需要传基础的 padding mask
+                # Layer 会自己决定是否调用带 sliding window 的 kernel
+                sliding_attn_mask = attention_mask if self.config.use_sliding_window else None
 
-        else:
-            # -------------------------------------------------------
-            # 场景 B: CPU / Mac / SDPA (Eager 模式)
-            # -------------------------------------------------------
-            # 必须手动生成 4D Mask [B, 1, L, L]
+            else:
+                # -------------------------------------------------------
+                # 场景 B: CPU / Mac / SDPA (Eager 模式)
+                # -------------------------------------------------------
+                # 必须手动生成 4D Mask [B, 1, L, L]
             
-            # 1. Full Attention (Bidirectional, Global)
-            # 对应原来的 create_causal_mask + bidirectional
-            full_attn_mask = create_4d_mask(
-                seq_len=seq_len,
-                dtype=dtype,
-                device=device,
-                attention_mask=attention_mask,     # [B, L]
-                sliding_window=None,
-                is_sliding_window=False,
-                is_causal=False                    # <--- 关键：双向注意力
-            )
-            max_len = max(seq_len, encoder_seq_len)
-            
-            encoder_attention_mask = create_4d_mask(
-                seq_len=max_len,
-                dtype=dtype,
-                device=device,
-                attention_mask=attention_mask,     # [B, L]
-                sliding_window=None,
-                is_sliding_window=False,
-                is_causal=False                    # <--- 关键：双向注意力
-            )
-            encoder_attention_mask = encoder_attention_mask[:, :, :seq_len, :encoder_seq_len]
-            # 2. Sliding Attention (Bidirectional, Local)
-            # 对应原来的 create_sliding_window... + bidirectional
-            if self.config.use_sliding_window:
-                sliding_attn_mask = create_4d_mask(
+                # 1. Full Attention (Bidirectional, Global)
+                # 对应原来的 create_causal_mask + bidirectional
+                full_attn_mask = create_4d_mask(
                     seq_len=seq_len,
                     dtype=dtype,
                     device=device,
-                    attention_mask=attention_mask, # [B, L]
-                    sliding_window=self.config.sliding_window,
-                    is_sliding_window=True,        # <--- 开启滑动窗口
-                    is_causal=False                # <--- 关键：双向注意力
+                    attention_mask=attention_mask,     # [B, L]
+                    sliding_window=None,
+                    is_sliding_window=False,
+                    is_causal=False                    # <--- 关键：双向注意力
                 )
+                max_len = max(seq_len, encoder_seq_len)
 
-        # 构建 Mapping
-        self_attn_mask_mapping = {
-            "full_attention": full_attn_mask,
-            "sliding_attention": sliding_attn_mask,
-            "encoder_attention_mask": encoder_attention_mask,
-        }
+                encoder_attention_mask = create_4d_mask(
+                    seq_len=max_len,
+                    dtype=dtype,
+                    device=device,
+                    attention_mask=attention_mask,     # [B, L]
+                    sliding_window=None,
+                    is_sliding_window=False,
+                    is_causal=False                    # <--- 关键：双向注意力
+                )
+                encoder_attention_mask = encoder_attention_mask[:, :, :seq_len, :encoder_seq_len]
+                # 2. Sliding Attention (Bidirectional, Local)
+                # 对应原来的 create_sliding_window... + bidirectional
+                if self.config.use_sliding_window:
+                    sliding_attn_mask = create_4d_mask(
+                        seq_len=seq_len,
+                        dtype=dtype,
+                        device=device,
+                        attention_mask=attention_mask, # [B, L]
+                        sliding_window=self.config.sliding_window,
+                        is_sliding_window=True,        # <--- 开启滑动窗口
+                        is_causal=False                # <--- 关键：双向注意力
+                    )
 
-        # Create position embeddings to be shared across all decoder layers
-        position_embeddings = self.rotary_emb(hidden_states, position_ids)
+            # 构建 Mapping
+            self_attn_mask_mapping = {
+                "full_attention": full_attn_mask,
+                "sliding_attention": sliding_attn_mask,
+                "encoder_attention_mask": encoder_attention_mask,
+            }
+
+            # Create position embeddings to be shared across all decoder layers
+            position_embeddings = self.rotary_emb(hidden_states, position_ids)
         all_cross_attentions = () if output_attentions else None
 
         # Handle early exit for custom layer configurations
@@ -1472,29 +1481,32 @@ class AceStepDiTModel(AceStepPreTrainedModel):
                 all_cross_attentions = ()
 
         # Process through transformer layers
-        for index_block, layer_module in enumerate(self.layers):
+        if rewired:
+            from ..residual_unet import run_rewired_decoder
+            hidden_states = run_rewired_decoder(self, hidden_states, position_ids,
+                timestep_proj, encoder_hidden_states, **flash_attn_kwargs)
+        else:
+            for index_block, layer_module in enumerate(self.layers):
 
-            layer_outputs = layer_module(
-                hidden_states,
-                position_embeddings,
-                timestep_proj,
-                self_attn_mask_mapping[layer_module.attention_type],
-                position_ids,
-                past_key_values,
-                output_attentions,
-                use_cache,
-                cache_position,
-                encoder_hidden_states,
-                self_attn_mask_mapping["encoder_attention_mask"],
-                **flash_attn_kwargs,
-            )
-            hidden_states = layer_outputs[0]
+                layer_outputs = layer_module(
+                    hidden_states,
+                    position_embeddings,
+                    timestep_proj,
+                    self_attn_mask_mapping[layer_module.attention_type],
+                    position_ids,
+                    past_key_values,
+                    output_attentions,
+                    use_cache,
+                    cache_position,
+                    encoder_hidden_states,
+                    self_attn_mask_mapping["encoder_attention_mask"],
+                    **flash_attn_kwargs,
+                )
+                hidden_states = layer_outputs[0]
 
-            if output_attentions and self.layers[index_block].use_cross_attention:
-                # layer_outputs structure: (hidden_states, self_attn_weights, cross_attn_weights)
-                # Extract the last element which is cross_attn_weights
-                if len(layer_outputs) >= 3:
-                    all_cross_attentions += (layer_outputs[2],)
+                if output_attentions and self.layers[index_block].use_cross_attention:
+                    if len(layer_outputs) >= 3:
+                        all_cross_attentions += (layer_outputs[2],)
         
         if return_hidden_states:
             return hidden_states

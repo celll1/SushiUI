@@ -195,7 +195,7 @@ math attention; these exclude dataset/encoder/decoder/scheduler workflow.
 LoRA resume now delays topology installation until weight validation/loading
 succeeds. A regression test rejects an incomplete checkpoint while preserving
 native topology and configuration.
-Full-size full-parameter training, block swap, broader dataset/resume matrices,
+Full-size full-parameter training, broader dataset/resume matrices,
 calibration quality, frontend acceptance, and additional architecture adapters
 remain outstanding. The baseline dataset/resume workflow is verified below.
 
@@ -224,3 +224,18 @@ training position, and RNG state. Extending the target steps issued the expected
 scheduler-continuity notice. Both subprocesses exited successfully and the API
 reported completion at the requested step. This is a baseline workflow check,
 not a calibration or bitwise resume-equivalence result.
+
+## Block-swap verification
+
+The actual dataset/API LoRA workflow also completed two steps and resumed to
+step three with 30 swapped blocks and two GPU ring slots. Both processes
+registered 90 conductor lifecycle hooks, used all 32 gradient-checkpointed
+blocks and fused AdamW8bit ringbuffer updates, and completed training samples.
+ConvRot used transient BF16 backward; its cached/prefetch backward mode remains
+incompatible with swap by the existing Qwen contract. Checkpoint tensors are
+finite and topology-consistent, optimizer state is restored, and resumed updates
+change adapter weights. This does not establish bitwise swap/resident equality.
+
+The probe exposed a pre-existing LoRA runner gap: swap settings were saved in
+YAML but not passed to the trainer constructor. The runner now forwards swap
+count, pinned-memory selection and optimizer-group count using API defaults.

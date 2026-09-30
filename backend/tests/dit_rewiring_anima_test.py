@@ -30,6 +30,7 @@ class AnimaRuntimeContracts(unittest.TestCase):
             for parameter in self.model.parameters():
                 if parameter.ndim >= 2:
                     parameter.normal_(0, 0.02)
+        self.assertEqual(native_config(self.model)["crossattn_emb_channels"], 12)
         self.spec = build_spec("anima", [{"name": "main", "block_count": 7}], [
             dict(id="outer", stream="main", parent=None, start_block=1,
                  end_block=6, down_factor=[2, 2], **OPERATORS),
@@ -101,6 +102,56 @@ class AnimaRuntimeContracts(unittest.TestCase):
         self.assertEqual(self.forward().shape, self.image.shape)
         self.assertFalse(torch.cuda.is_initialized())
 
+
+    def test_full_writer_loader_and_lora_metadata(self):
+        import json
+        import tempfile
+        from types import SimpleNamespace
+        from safetensors import safe_open
+        from safetensors.torch import load_file, save_file
+        from core.models.anima import anima_loader
+        from core.models.anima.residual_unet import native_config
+        from core.training.adapters.anima_adapter import AnimaFullParameterAdapter, AnimaLoRAAdapter
+        from core.rewiring.spec import read_checkpoint_metadata
+        trainer = SimpleNamespace(transformer=self.model, config={}, vae=None)
+        adapter = AnimaFullParameterAdapter(trainer)
+        lora = AnimaLoRAAdapter(trainer, 2, 2)
+        self.assertEqual(read_checkpoint_metadata(lora.checkpoint_metadata({}, 1, 0)), self.spec)
+        with torch.no_grad():
+            expected = self.forward()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/"anima.safetensors"
+            with patch("api.param_defaults.resolve_bundle_vae", return_value=False), \
+                 patch("core.training.vae_swap.swap_metadata", return_value=(None, False, {})):
+                written = adapter.write_checkpoint(1, 0, path)
+            self.assertEqual(written, path)
+            restored = anima_loader.load_anima_dit(str(path), dtype=torch.float32)
+            self.assertEqual(restored._residual_unet_spec, self.spec)
+            self.assertEqual(native_config(restored), native_config(self.model))
+            for key, value in self.model.state_dict().items():
+                torch.testing.assert_close(value, restored.state_dict()[key], rtol=0, atol=0)
+            with torch.no_grad():
+                actual = restored(self.image, torch.tensor([0.5]), self.text, padding_mask=self.padding)
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+            with safe_open(str(path), framework="pt", device="cpu") as handle:
+                metadata = handle.metadata()
+            from core.models.common.single_file_format import save_single_file_state
+            sharded = Path(directory)/"sharded.safetensors"
+            save_single_file_state(load_file(str(path)), metadata, str(sharded), max_shard_bytes=12000)
+            from core.rewiring.artifacts import read_artifact_topology
+            self.assertEqual(read_artifact_topology(sharded), self.spec)
+            restored_shards = anima_loader.load_anima_dit(str(sharded), dtype=torch.float32)
+            self.assertEqual(restored_shards._residual_unet_spec, self.spec)
+            for key, value in self.model.state_dict().items():
+                torch.testing.assert_close(value, restored_shards.state_dict()[key], rtol=0, atol=0)
+            altered = json.loads(metadata["transformer_config"]); altered["mlp_ratio"] = 2.0
+            metadata["transformer_config"] = json.dumps(altered)
+            save_file(load_file(str(path)), str(path), metadata=metadata)
+            with patch.object(anima_loader, "Anima") as constructor:
+                with self.assertRaisesRegex(ValueError, "native config mismatch"):
+                    anima_loader.load_anima_dit(str(path), dtype=torch.float32)
+                constructor.assert_not_called()
+        self.assertFalse(torch.cuda.is_initialized())
 
 if __name__ == "__main__":
     unittest.main()

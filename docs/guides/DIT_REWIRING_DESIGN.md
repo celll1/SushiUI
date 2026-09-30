@@ -401,7 +401,26 @@ equivalence and feature/config refusals. CUDA initialization is stubbed for the
 whole CPU test, including native forward's late imports. All 30 aggregate contracts
 pass; no Anima model weights or compute run on the GPU.
 
-This is an internal execution foundation. Artifact restoration, training/generation
+This is an internal execution foundation with artifact restoration. Training/generation
 API integration, presets and editor discovery remain to be connected before
 Anima is advertised in the runtime capability list. It carries no real-model GPU,
 performance, quality or activation-offload equivalence claim.
+
+## Anima artifact restoration
+
+Full-parameter saves now contain canonical native geometry and residual topology;
+LoRA saves include topology metadata. The loader validates header declarations and
+config identity before constructing the DiT, and component loading preflights
+before allocating checkpoint tensors. Native geometry retains cross-attention
+width as well as MLP ratio, allowing nonstandard CPU fixture models to round-trip.
+Legacy files without topology/config retain the shipped native geometry;
+programmatic in-memory state-dict callers without a backing file remain supported.
+
+The actual full writer/native loader round trip preserves all tensors and inference
+output exactly on a randomized seven-block CPU model. Shared sharded export and
+native loader also restore topology/weights, including the sibling-index fallback.
+Modified config is refused before model construction. All 31 rewiring contracts
+pass, with the expanded four-test Anima suite also passing separately. Existing
+Anima scaled/scaleless quantized-loader matrix regression passes, and changed modules
+compile/import without CUDA initialization. Training/generation API topology scopes
+are not yet connected or advertised for Anima. No Anima GPU inference/training is run.

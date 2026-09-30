@@ -1043,6 +1043,7 @@ class Anima(nn.Module):
         self.num_heads = num_heads
         self.num_blocks = num_blocks
         self.mlp_ratio = mlp_ratio
+        self.crossattn_emb_channels = crossattn_emb_channels
         self.model_channels = model_channels
         self.concat_padding_mask = concat_padding_mask
         self.pos_emb_cls = pos_emb_cls

@@ -341,10 +341,14 @@ def load_anima_dit(dit_path: str, device: str = "cpu",
     """
     from accelerate import init_empty_weights
 
-    config = dict(ANIMA_DIT_CONFIG)
-    if latent_channels:
-        config["in_channels"] = int(latent_channels)
-        config["out_channels"] = int(latent_channels)
+    from .residual_unet import preflight_artifact, restore_topology
+    # In-memory callers may supply weights without a backing artifact.
+    if state_dict is not None and not Path(dit_path).exists() and not Path(str(dit_path)+".index.json").is_file():
+        topology, config = None, dict(ANIMA_DIT_CONFIG)
+        if latent_channels:
+            config["in_channels"] = config["out_channels"] = int(latent_channels)
+    else:
+        topology, config = preflight_artifact(dit_path, latent_channels)
     with init_empty_weights():
         model = Anima(**config)
         model.to(dtype)
@@ -424,6 +428,7 @@ def load_anima_dit(dit_path: str, device: str = "cpu",
     if device != "cpu":
         model = model.to(device)
     model = model.eval().requires_grad_(False)
+    restore_topology(model, topology)
     return model
 
 
@@ -634,6 +639,8 @@ def load_anima_components(
     # the unified ``vae.`` prefix (design §8.7). Both are split off here so
     # neither reaches the DiT load.
     from core.models.common.single_file_format import read_state_dict
+    from .residual_unet import preflight_artifact
+    preflight_artifact(discovered["dit"], declared_vae.latent_channels if declared_vae is not None else None)
     raw_dit_sd, _dit_md = read_state_dict(discovered["dit"])
     _VAE_PREFIXES = ("first_stage_model.", "vae.")
     embedded_vae_sd = {

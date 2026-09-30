@@ -412,3 +412,85 @@ class MiniMaxMusic3ResidualContracts(unittest.TestCase):
         self.assertEqual(model_info(components),{'dit_rewiring_spec':None})
         self.assertEqual(model_info({}),{'dit_rewiring_spec':None})
         self.assertFalse(torch.cuda.is_initialized())
+
+    def test_public_inspection_of_native_flat_and_gguf_without_tensor_loading(self):
+        import asyncio,json,tempfile
+        from contextlib import ExitStack
+        import httpx
+        from fastapi import FastAPI
+        from safetensors.torch import load_file,save_file
+        from tests.minimax_music3_flat_dit_fixture import write_tiny_flat_dit_and_official_tree
+        from tests.minimax_music3_gguf_fixture import write_gguf
+        from core.models.minimax_music3.flat_remap import apply_flat_dit_state_dict
+        from core.models.minimax_music3.residual_unet import native_config,default_topology
+        from core.rewiring.inspect import inspect_model
+        from core.rewiring.spec import checkpoint_metadata
+        from api.rewiring_routes import router
+        with tempfile.TemporaryDirectory() as folder:
+            fixture=write_tiny_flat_dit_and_official_tree(folder)
+            official=Path(fixture['official'])
+            config_path=official/'transformer'/'config.json'
+            config=json.loads(config_path.read_text(encoding='utf-8'));config['num_layers']=36
+            config_path.write_text(json.dumps(config),encoding='utf-8')
+            flat=load_file(fixture['dit_path'])
+            first={key:value for key,value in flat.items() if '.layers.0.' in key}
+            for index in range(1,36):
+                for key,value in first.items():flat[key.replace('.layers.0.',f'.layers.{index}.')]=value.clone()
+            graph=default_topology(native_config(config))
+            metadata={'model_type':'minimax_music3',**checkpoint_metadata(graph)}
+            save_file(flat,fixture['dit_path'],metadata=metadata)
+            native=official/'transformer'/'diffusion_pytorch_model.safetensors'
+            save_file(apply_flat_dit_state_dict(flat)['transformer'],str(native),metadata=metadata)
+            gguf=Path(fixture['dit_path']).with_suffix('.gguf')
+            write_gguf(str(gguf),flat,{'general.architecture':'minimax_music3',**metadata})
+            sources=[Path(folder),official,official/'transformer',native,Path(fixture['dit_path']),gguf]
+            with ExitStack() as stack:
+                for target in ('core.models.common.single_file_format.read_state_dict',
+                               'core.models.common.single_file_format.load_component_state_dict',
+                               'core.models.common.gguf_container.GGUFStateDict',
+                               'core.models.minimax_music3.vendor.transformer_minimax_music3.MiniMaxMusic3Transformer1DModel.from_config'):
+                    stack.enter_context(patch(target,side_effect=AssertionError('loaded/allocated weights')))
+                infos=[inspect_model(str(source)) for source in sources]
+                self.assertTrue(all(info==infos[0] for info in infos))
+                info=infos[0]
+                self.assertEqual(info['topology'],graph)
+                self.assertEqual(info['default_spec'],graph)
+                self.assertEqual(info['temporal_geometry']['preview_frames'],689)
+                self.assertEqual(info['temporal_geometry']['frame_rate'],44100/512)
+                self.assertEqual(info['initial_spec']['regions'][0]['down_factor'],[2,1])
+                app=FastAPI();app.include_router(router,prefix='/api/v1')
+                async def exercise():
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://cpu') as client:
+                        for source in sources:
+                            result=await client.post('/api/v1/models/rewiring/inspect',json={'model_path':str(source)})
+                            self.assertEqual(result.status_code,200,result.text)
+                            self.assertEqual(result.json(),info)
+                        result=await client.post('/api/v1/models/rewiring/validate',json={
+                            'spec':info['default_spec'],'token_height':692,'token_width':1})
+                        self.assertEqual(result.status_code,200,result.text)
+                        self.assertEqual([sum(b['depth']==depth for b in result.json()['plan']['blocks'])
+                            for depth in (0,1,2)],[8,24,4])
+                        adapter=Path(fixture['dit_path']).with_name('adapter.safetensors')
+                        save_file({'lora_down.weight':torch.zeros(1,1)},str(adapter),metadata=metadata)
+                        result=await client.post('/api/v1/models/rewiring/inspect',json={'model_path':str(adapter)})
+                        self.assertEqual(result.status_code,422)
+                        nested_adapter=native.with_name('adapter.safetensors')
+                        save_file({'lora_down.weight':torch.zeros(1,1)},str(nested_adapter),metadata=metadata)
+                        result=await client.post('/api/v1/models/rewiring/inspect',json={'model_path':str(nested_adapter)})
+                        self.assertEqual(result.status_code,422)
+                        malformed=official/'condition_encoder'/'config.json'
+                        original=malformed.read_text(encoding='utf-8')
+                        malformed.write_text('[]',encoding='utf-8')
+                        result=await client.post('/api/v1/models/rewiring/inspect',json={'model_path':str(native)})
+                        self.assertEqual(result.status_code,422)
+                        malformed.write_text(original,encoding='utf-8')
+                        native_weights=apply_flat_dit_state_dict(flat)['transformer']
+                        native_weights['time_proj.weight']=native_weights['time_proj.weight'].to(torch.int8)
+                        save_file(native_weights,str(native),metadata=metadata)
+                        result=await client.post('/api/v1/models/rewiring/inspect',json={'model_path':str(native)})
+                        self.assertEqual(result.status_code,422)
+                        self.assertIn('quantized',result.text)
+                asyncio.run(exercise())
+        from core.training.arch import ARCH_REGISTRY
+        self.assertNotIn('minimax_music3',ARCH_REGISTRY)
+        self.assertFalse(torch.cuda.is_initialized())

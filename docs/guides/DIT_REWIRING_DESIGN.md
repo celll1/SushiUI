@@ -2683,3 +2683,39 @@ fixtures pass 36 tests and 2 subtests; five tests targeting external real-model
 headers are excluded. Changed modules compile/import, OpenAPI parses, and CUDA
 remains uninitialized. Public artifact inspection/configuration, YuE2 and final
 owner workflow acceptance remain outstanding.
+
+
+### MiniMax Music 3 public artifact inspection (CPU)
+
+The existing models/rewiring/inspect endpoint now resolves Music 3 root,
+official, native flow directory/full-file, flat safetensors and GGUF references.
+It reads native companion flow/condition configs and checkpoint headers only.
+The response contains native config/layout hashes, restored graph/digest,
+36-block 8/24/4 preset, a defaults-owned temporal single-region starting graph,
+and the actual native flow-chunk temporal geometry. No model or weight
+materialization is required to preview layer depths and residual skip edges.
+
+Inspection checks contiguous native/flat block indices, input/output/Fourier
+projection dimensions, per-block Q or fused-QKV dimensions, conditioning output
+channels and resampling rates. Native directories require consistent topology
+across files/indexes and refuse duplicate header tensors or quantized native
+component dtypes. GGUF inspection keeps the existing supported-type guard.
+Adapter-only files refuse, including those stored inside a native component
+directory. Non-object companion configs now yield ValueError and the endpoint's
+422 response rather than an AttributeError. Inspection/presets do not register
+Music 3 training or expand the training runtime capability list.
+
+Real 36-layer tiny headers yield identical inspection responses for six source
+references. In-process ASGI requests validate the 692-token padded preview's
+exact 8 full / 24 middle / 4 deepest block distribution and refuse adapter-only,
+malformed-config and quantized-native artifacts. Eager/lazy weight readers and
+native model construction are patched to raise if reached. Native residual,
+shared inspection, Music 3 loader and GGUF loader checks pass 61 tests and 2
+subtests; the final nested-adapter classification check also passes independently.
+Changed modules compile/import, OpenAPI parses, and CUDA remains uninitialized.
+
+This provides public inspection and restored-generation display for provisional
+Music 3 support. A generation-only graph editing/export workflow and production
+GPU offload acceptance are not claimed. YuE2's NAR/AR boundary and final owner
+frontend/workflow acceptance remain outstanding; GPU verification stays limited
+to Qwen-Image 2.1.

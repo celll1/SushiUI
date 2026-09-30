@@ -3513,6 +3513,9 @@ paths:
         embedded native config and full model or refiner-base layout; swapped
         VAE artifacts require declared channel count and spatial compression.
         Transformer-only directories are supported where native formats provide them.
+        MiniMax Music 3 supports native flow component directories and flat safetensors/GGUF
+        with companion flow/condition configs. Its temporal preview represents one native
+        flow chunk and does not enable training for this generation-only architecture.
         Flux2 exposes double/single streams.
         Flux2 and Z-Image file inspection
         requires a native constructor config declaration. Inspection and presets do not imply runtime

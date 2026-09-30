@@ -1,8 +1,10 @@
 # DiT residual rewiring contract
 
-Status: accepted implementation contract; Qwen-Image 2.1 has an experimental
-inference probe, while public configuration, training, and checkpoint restore
-are pending. Other architectures require individual capability gates.
+Status: accepted implementation contract. Canonical topology validation and
+side-effect-free preview APIs are implemented. Qwen-Image 2.1 has an internal
+forward path with checkpointed backward verification. Public generation/training
+configuration, checkpoint restore, and the graphical editor are pending. Other
+architectures require individual capability gates.
 
 ## Default topology
 
@@ -107,3 +109,19 @@ The method was assessed from
 [lodestone-rock/residual-to-unet](https://github.com/lodestone-rock/residual-to-unet/tree/4834458ea1e2dbede89e776ebccbe23233d10fd0).
 Its seven-layer linear reference is not a real DiT quality or speed benchmark.
 The SushiUI probe is independently written from the residual-update formulation.
+
+## Current verification boundary
+
+`GET /api/v1/schema/dit-rewiring` supplies presets and
+`POST /api/v1/models/rewiring/validate` returns a validated grid/skip plan.
+These endpoints do not enable model execution; runtime capabilities remain empty
+until model loading and training requests enforce the complete artifact contract.
+
+The internal Qwen forward currently accepts a single uncached 2D target grid
+with native causal modulation. References, cached execution, partition positions,
+input residuals, and style contexts are refused. Native block execution and its
+gradient-checkpointing call remain in charge of attention and recomputation.
+CPU verification covers an independent nested residual output/gradient oracle,
+FP32/BF16/FP16 identity regions, local context restoration, actual Qwen blocks,
+and the full Qwen forward with backward. Production GPU dtype/offload and artifact
+save-load-resume verification remain acceptance gates.

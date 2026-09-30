@@ -364,6 +364,104 @@ class Ltx2RuntimeContracts(unittest.TestCase):
             for a,b in zip(expected,actual):torch.testing.assert_close(a,b,rtol=0,atol=0)
         self.assertFalse(torch.cuda.is_initialized())
 
+    def test_generation_lora_scope_and_actual_txt2vid_cleanup_on_cpu(self):
+        import tempfile
+        import numpy as np
+        from types import SimpleNamespace
+        from core.adapters import AdapterIncompatible,CompositeAdapterLayer
+        from core.models.ltx2.residual_unet import restore_topology
+        from core.pipeline_backends.ltx2 import LTX2Mixin
+        from core.training.adapters.ltx2_adapter import Ltx2LoRAAdapter
+        generation=deepcopy(self.inner)
+        restore_topology(generation,None)
+        trainer=SimpleNamespace(transformer=self.model,config={})
+        adapter=Ltx2LoRAAdapter(trainer,2,2,torch.float32)
+        layers={};adapter.apply_lora_to_unet(layers)
+        with torch.no_grad():
+            for layer in layers.values():
+                for tensor in layer.branch_tensors().values():tensor.fill_(.03)
+        expected=self.forward()
+        backend=LTX2Mixin()
+        observed=[]
+        owner=self
+        class Pipeline:
+            def __init__(self):self.transformer=generation;self.fail=False
+            def __call__(self,**kwargs):
+                actual=owner.forward(model=self.transformer)
+                observed.append(getattr(self.transformer,"_residual_unet_spec",None))
+                for a,b in zip(actual,expected):torch.testing.assert_close(a,b,rtol=2e-5,atol=2e-6)
+                if self.fail:raise RuntimeError("denoise failed")
+                return np.zeros((1,1,8,8,3),dtype=np.float32),None
+        pipeline=Pipeline()
+        backend.ltx2_components=dict(transformer=generation,pipeline=pipeline,
+            i2v_pipeline=SimpleNamespace(transformer=generation),cond_pipeline=SimpleNamespace(transformer=generation))
+        backend._ltx2_resolve_style=lambda params:False
+        stages=[]
+        backend._ltx2_runtime_int8=lambda *args,**kwargs:stages.append("quantize")
+        def stage(blocks_to_swap,force_wrap=False):
+            stages.append(force_wrap)
+            backend._ensure_ltx2_block_swap_wrapper(blocks_to_swap,force_wrap=force_wrap)
+            return pipeline
+        backend._ensure_ltx2_swap_and_offload=stage
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/"rewired.safetensors"
+            adapter.save_checkpoint(layers,3,1,path)
+            params=dict(loras=[dict(path=str(path),strength=1.)],height=256,width=384,
+                        num_frames=17,seed=4,audio_enable=False)
+            from safetensors import safe_open
+            from safetensors.torch import load_file,save_file
+            with safe_open(str(path),framework="pt") as handle:metadata=handle.metadata()
+            dense_path=Path(folder)/"dense.safetensors"
+            save_file(load_file(str(path)),str(dense_path),metadata={key:value for key,value in metadata.items()
+                      if not key.startswith("sushi.rewire.")})
+            original=generation.transformer_blocks[0].attn1.to_q
+            with self.assertRaises(AdapterIncompatible):
+                backend._load_lora_ltx2(params["loras"]+[dict(path=str(dense_path),strength=1.)])
+            self.assertIs(generation.transformer_blocks[0].attn1.to_q,original)
+            self.assertFalse(hasattr(generation,"_residual_unet_spec"))
+            with patch.object(torch.cuda,"is_available",return_value=False):
+                for fail in (False,True):
+                    pipeline.fail=fail
+                    if fail:
+                        with self.assertRaisesRegex(RuntimeError,"denoise failed"):
+                            backend._generate_txt2vid_ltx2(dict(params))
+                    else:
+                        frames,_,_,seed=backend._generate_txt2vid_ltx2(dict(params))
+                        self.assertEqual(frames.shape,(1,8,8,3));self.assertEqual(seed,4)
+                    self.assertFalse(hasattr(generation,"_residual_unet_spec"))
+                    self.assertIs(generation.transformer_blocks[0].attn1.to_q,original)
+                    self.assertFalse(any(isinstance(module,CompositeAdapterLayer) for module in generation.modules()))
+                self.assertEqual(observed,[self.spec,self.spec])
+                self.assertEqual(stages,["quantize",True,"quantize",True])
+                for changes in (dict(width=352),dict(spectrum_enable=True),dict(stg_scale=1.),
+                                dict(style_transfers=[dict(image="reference")])):
+                    with self.subTest(changes=changes),self.assertRaises(AdapterIncompatible):
+                        backend._ltx2_rewiring_preflight({**params,**changes},changes.get("height",256),changes.get("width",384))
+                    self.assertFalse(hasattr(generation,"_residual_unet_spec"))
+                    self.assertIs(generation.transformer_blocks[0].attn1.to_q,original)
+            restore_topology(generation,self.spec)
+            with self.assertRaises(AdapterIncompatible):
+                backend._load_lora_ltx2([dict(path=str(dense_path),strength=1.)])
+            self.assertEqual(generation._residual_unet_spec,self.spec)
+            backend._load_lora_ltx2(params["loras"])
+            backend._unload_lora_ltx2()
+            self.assertEqual(generation._residual_unet_spec,self.spec)
+            restore_topology(generation,None)
+            with patch.object(backend._ltx2_lora_session,"load",return_value=SimpleNamespace(applied=0)):
+                self.assertEqual(backend._load_lora_ltx2(params["loras"]),0)
+            self.assertEqual(generation._residual_unet_spec,self.spec)
+            backend._unload_lora_ltx2()
+            self.assertFalse(hasattr(generation,"_residual_unet_spec"))
+            replacement=deepcopy(generation)
+            restore_topology(replacement,self.spec)
+            backend._load_lora_ltx2(params["loras"])
+            backend.ltx2_components=dict(transformer=replacement,pipeline=SimpleNamespace(transformer=replacement))
+            backend._unload_lora_ltx2()
+            self.assertFalse(hasattr(generation,"_residual_unet_spec"))
+            self.assertEqual(replacement._residual_unet_spec,self.spec)
+            self.assertFalse(any(isinstance(module,CompositeAdapterLayer) for module in replacement.modules()))
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_directory_loader_restores_graph_before_companions(self):
         import json, tempfile
         from types import SimpleNamespace

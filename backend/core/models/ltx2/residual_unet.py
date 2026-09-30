@@ -225,6 +225,22 @@ def model_topology_metadata(model):
     return checkpoint_metadata(validate_topology_identity(graph, inner.config))
 
 
+def resolve_generation_topology(model, files):
+    from types import SimpleNamespace
+    from core.rewiring.spec import read_checkpoint_metadata
+    from core.rewiring.adapters import resolve_adapter_topology
+    inner = getattr(model, "transformer", model)
+    model_topology_metadata(model)
+    existing = getattr(inner, "_residual_unet_spec", None)
+    needs_identity = existing is not None or any(read_checkpoint_metadata(file.metadata) is not None for file in files)
+    native = native_config(inner.config) if needs_identity else {}
+    view = SimpleNamespace(config=native, _residual_unet_spec=existing)
+    required = resolve_adapter_topology(view, files, validate_topology_identity)
+    if required is not None and len(inner.transformer_blocks) != native["num_layers"]:
+        raise ValueError("LTX-2 actual block count disagrees with native config")
+    return required
+
+
 def export_metadata(model):
     import json
     inner = getattr(model, "transformer", model)

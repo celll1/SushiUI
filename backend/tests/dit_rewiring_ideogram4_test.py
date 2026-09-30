@@ -2,6 +2,11 @@
 from pathlib import Path
 import sys
 import unittest
+import tempfile
+import json
+from copy import deepcopy
+from types import SimpleNamespace
+from contextlib import ExitStack
 from unittest.mock import patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
@@ -87,6 +92,76 @@ class Ideogram4RuntimeContracts(unittest.TestCase):
         self.assertTrue(torch.count_nonzero(checkpoint_grads[0]));self.assertTrue(torch.count_nonzero(checkpoint_grads[1]))
         restore_topology(self.model,None);self.model.disable_gradient_checkpointing()
         torch.testing.assert_close(self.forward(),dense,rtol=0,atol=0)
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_combined_directory_artifacts_and_header_refusals(self):
+        from core.models.ideogram4.residual_unet import (
+            restore_topology,native_config,save_checkpoint,preflight_checkpoint,pair_topology_metadata)
+        from core.models.ideogram4.ideogram4_loader import load_ideogram4_single_file
+        from core.training.adapters.ideogram4_adapter import Ideogram4LoRAAdapter
+        from core.model_loader import ModelLoader
+        from core.models.common.single_file_format import read_state_dict,save_single_file_state
+        from safetensors.torch import save_file
+        restore_topology(self.model,self.spec);uncond=deepcopy(self.model)
+        expected=self.forward().detach();config=native_config(self.model)
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);base=root/"base";(base/"transformer").mkdir(parents=True)
+            (base/"text_encoder").mkdir();(base/"unconditional_transformer").mkdir()
+            for name in ("transformer","unconditional_transformer"):
+                (base/name/"config.json").write_text(json.dumps(dict(config,num_layers=3)),encoding="utf-8")
+            single=Path(save_checkpoint(self.model,uncond,root/"full.safetensors",
+                metadata={"component.base_dir":str(base)}))
+            state,metadata=read_state_dict(str(single))
+            self.assertEqual(read_checkpoint_metadata(metadata),self.spec)
+            self.assertEqual(preflight_checkpoint(single),(self.spec,{"transformer":config,"unconditional_transformer":config}))
+            adapter=Ideogram4LoRAAdapter(SimpleNamespace(transformer=self.model,transformer_uncond=uncond,config={}),2,2)
+            self.assertEqual(read_checkpoint_metadata(adapter.checkpoint_metadata({},1,0)),self.spec)
+            sharded=Path(save_checkpoint(self.model,uncond,root/"sharded.safetensors",
+                metadata={"component.base_dir":str(base)},max_shard_bytes=20000))
+            shared=Path(save_checkpoint(self.model,self.model,root/"shared.safetensors",
+                metadata={"component.base_dir":str(base)}))
+            directory=root/"directory";directory.mkdir()
+            for name,model in (("transformer",self.model),("unconditional_transformer",uncond)):
+                target=directory/name;target.mkdir()
+                (target/"config.json").write_text(json.dumps(dict(config,_class_name="Ideogram4Transformer2DModel")),encoding="utf-8")
+                save_single_file_state(model.state_dict(),metadata,str(target/"diffusion_pytorch_model.safetensors"),max_shard_bytes=20000)
+            tokenizer=SimpleNamespace(encode=lambda *a,**k:[1])
+            with ExitStack() as stack:
+                for target,value in (
+                    ("core.models.ideogram4.ideogram4_loader.load_ideogram4_text_encoder",torch.nn.Linear(1,1)),
+                    ("transformers.AutoTokenizer.from_pretrained",tokenizer),
+                    ("diffusers.AutoencoderKLFlux2.from_pretrained",torch.nn.Linear(1,1)),
+                    ("diffusers.FlowMatchEulerDiscreteScheduler.from_pretrained",object())):
+                    stack.enter_context(patch(target,return_value=value))
+                for path in (single,sharded,root/"sharded.safetensors",directory,shared):
+                    components=ModelLoader.load_ideogram4_from_path(str(path),torch_dtype=torch.float32)
+                    for name,source in (("transformer",self.model),("unconditional_transformer",uncond)):
+                        loaded=components[name];self.assertEqual(loaded._residual_unet_spec,self.spec)
+                        self.assertEqual(native_config(loaded),config)
+                        for key,value in source.state_dict().items():torch.testing.assert_close(loaded.state_dict()[key],value,rtol=0,atol=0)
+                        with patch.object(self,"model",loaded):torch.testing.assert_close(self.forward(),expected,rtol=0,atol=0)
+                only=load_ideogram4_single_file(str(single),torch_dtype=torch.float32,load_unconditional=False)
+                self.assertIsNone(only["unconditional_transformer"])
+                broken=root/"broken.safetensors"
+                for md in (dict(metadata,transformer_config="{}"),dict(metadata,unconditional_transformer_config="[]")):
+                    save_file(state,str(broken),metadata=md)
+                    with patch("core.models.common.single_file_format.read_state_dict",side_effect=AssertionError("weight allocation")):
+                        with self.assertRaises(ValueError):ModelLoader.load_ideogram4_from_path(str(broken),torch_dtype=torch.float32)
+                partial=root/"partial.safetensors"
+                save_file({k:v for k,v in state.items() if k!="transformer.input_proj.weight"},str(partial),metadata=metadata)
+                with patch("core.models.ideogram4.ideogram4_loader.load_ideogram4_text_encoder",side_effect=AssertionError("companion loading")):
+                    with self.assertRaises(RuntimeError):ModelLoader.load_ideogram4_from_path(str(partial),torch_dtype=torch.float32)
+                # A dense unconditional declaration cannot silently accompany a residual conditional graph.
+                uncond_dir=directory/"unconditional_transformer"
+                index=next(uncond_dir.glob("*.index.json"));data=json.loads(index.read_text(encoding="utf-8"))
+                data["metadata"]={};index.write_text(json.dumps(data),encoding="utf-8")
+                with patch("core.models.ideogram4.ideogram4_loader._load_component_state_dict",side_effect=AssertionError("weight allocation")):
+                    with self.assertRaises(ValueError):ModelLoader.load_ideogram4_from_path(str(directory),torch_dtype=torch.float32)
+            restore_topology(uncond,None)
+            with self.assertRaisesRegex(ValueError,"topologies disagree"):pair_topology_metadata(self.model,uncond)
+            with self.assertRaisesRegex(ValueError,"both transformers"):save_checkpoint(self.model,None,root/"invalid.safetensors")
+            dense=root/"dense.safetensors";save_file({"placeholder":torch.ones(1)},str(dense))
+            self.assertEqual(preflight_checkpoint(dense),(None,{}))
         self.assertFalse(torch.cuda.is_initialized())
 
     def test_metadata_identity_native_grid_and_feature_refusals(self):

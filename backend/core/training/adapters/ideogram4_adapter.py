@@ -102,7 +102,11 @@ class Ideogram4LoRAAdapter(BaseLoRAAdapter):
 
     def checkpoint_metadata(self, lora_layers: Dict[str, nn.Module],
                             step: int, epoch: int) -> Dict[str, str]:
+        from core.models.ideogram4.residual_unet import pair_topology_metadata
+        topology_metadata = pair_topology_metadata(self.trainer.transformer,
+            getattr(self.trainer,"transformer_uncond",None))
         return {
+            **topology_metadata,
             "model_type":             "ideogram4",
             "modelspec.architecture": "ideogram4",
             "lora_rank":              str(self.lora_rank),

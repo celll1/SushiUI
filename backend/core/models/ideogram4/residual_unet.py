@@ -54,6 +54,103 @@ def model_topology_metadata(model):
     return {} if spec is None else checkpoint_metadata(validate_topology_identity(spec, dict(model.config)))
 
 
+def pair_topology_metadata(transformer, unconditional_transformer=None):
+    metadata = model_topology_metadata(transformer)
+    if unconditional_transformer is not None and model_topology_metadata(unconditional_transformer) != metadata:
+        raise ValueError("Ideogram 4 conditional and unconditional topologies disagree")
+    return metadata
+
+
+def preflight_checkpoint(path, *, load_unconditional=True):
+    import json
+    from pathlib import Path
+    from safetensors import safe_open
+    from core.rewiring.artifacts import read_artifact_topology
+    source = Path(path)
+    if not source.exists() and Path(str(source)+".index.json").is_file():
+        source = Path(str(source)+".index.json")
+    spec = read_artifact_topology(source)
+    if spec is None:
+        return None, {}
+    if str(source).endswith(".safetensors.index.json"):
+        with source.open(encoding="utf-8") as handle:index = json.load(handle)
+        metadata = index.get("metadata") or {};keys = list(index["weight_map"])
+    else:
+        with safe_open(str(source),framework="pt",device="cpu") as handle:
+            metadata = handle.metadata() or {};keys = list(handle.keys())
+    configs = {}
+    for component in ("transformer","unconditional_transformer"):
+        present = any(key.startswith(component+".") for key in keys)
+        if not present:
+            if component == "transformer" or load_unconditional:
+                raise ValueError(f"Rewired Ideogram 4 checkpoint requires {component} weights")
+            continue
+        declaration = metadata.get(component+"_config")
+        if not isinstance(declaration,str):
+            raise ValueError(f"Rewired Ideogram 4 requires native {component}_config JSON")
+        config = json.loads(declaration)
+        if not isinstance(config,dict):
+            raise ValueError("Ideogram 4 native transformer config must be an object")
+        configs[component] = native_config(config)
+        validate_topology_identity(spec,configs[component])
+    return spec, configs
+
+
+def preflight_directory(path, *, load_unconditional=True):
+    import json
+    from pathlib import Path
+    from core.rewiring.artifacts import read_directory_topology
+    root = Path(path)
+    cond = read_directory_topology(root/"transformer")
+    uncond_dir = root/"unconditional_transformer"
+    uncond = read_directory_topology(uncond_dir) if uncond_dir.is_dir() else None
+    if uncond_dir.is_dir() and cond != uncond:
+        raise ValueError("Ideogram 4 conditional and unconditional topologies disagree")
+    if cond is None:
+        return None, {}
+    if load_unconditional and not uncond_dir.is_dir():
+        raise ValueError("Rewired Ideogram 4 directory requires unconditional_transformer")
+    configs = {}
+    for component in ("transformer","unconditional_transformer"):
+        directory = root/component
+        if not directory.is_dir():continue
+        with (directory/"config.json").open(encoding="utf-8") as handle:config = json.load(handle)
+        if not isinstance(config,dict):
+            raise ValueError("Ideogram 4 native directory config must be an object")
+        configs[component] = native_config(config)
+        validate_topology_identity(cond,configs[component])
+    return cond, configs
+
+
+def save_checkpoint(transformer, unconditional_transformer, path, *, metadata=None, max_shard_bytes=None):
+    import json
+    from core.models.common.single_file_format import dedup_tensors, save_single_file_state, DEFAULT_MAX_SHARD_BYTES
+    from core.rewiring.spec import META_VERSION, META_SPEC, META_HASH
+    topology_metadata = pair_topology_metadata(transformer,unconditional_transformer)
+    if topology_metadata and unconditional_transformer is None:
+        raise ValueError("Rewired Ideogram 4 inference export requires both transformers")
+    declarations = {"transformer":native_config(transformer)}
+    if unconditional_transformer is not None:
+        declarations["unconditional_transformer"] = native_config(unconditional_transformer)
+    saved = {str(key):str(value) for key,value in (metadata or {}).items()
+             if key not in (META_VERSION,META_SPEC,META_HASH)}
+    saved.update(model_type="ideogram4",format="pt")
+    saved.update({key+"_config":json.dumps(config) for key,config in declarations.items()})
+    saved.update(topology_metadata)
+    named = (("transformer."+key,value) for key,value in transformer.state_dict().items())
+    if unconditional_transformer is not None:
+        from itertools import chain
+        named = chain(named,(("unconditional_transformer."+key,value)
+                            for key,value in unconditional_transformer.state_dict().items()))
+    named = list(named)
+    state,dropped = dedup_tensors(named)
+    # Both backbones need complete keys even when a caller shares storage.
+    for key,value in named:
+        if key in dropped:state[key] = value.detach().cpu().contiguous().clone()
+    return save_single_file_state(state,saved,str(path),
+        max_shard_bytes=DEFAULT_MAX_SHARD_BYTES if max_shard_bytes is None else max_shard_bytes)
+
+
 def run_rewired_ideogram4(model, hidden, position_ids, segment_ids, indicator, adaln_input):
     from .vendor.transformer import Ideogram4AttnProcessor, OUTPUT_IMAGE_INDICATOR, LLM_TOKEN_INDICATOR
     spec = validate_topology_identity(model._residual_unet_spec, dict(model.config))

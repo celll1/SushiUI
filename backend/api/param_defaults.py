@@ -34,6 +34,9 @@ CAPTIONER_RUN_DEFAULTS: Dict[str, Any] = {
     "lora_rank": 32, "lora_alpha": 16.0, "resume": False, "checkpoint": "",
     "after_id": 0, "event_limit": 500,
 }
+CAPTIONER_BATCH_DEFAULTS: Dict[str, Any] = {
+    "retry_failed": False, "offset": 0, "limit": 200, "max_items": 10000,
+}
 
 # The only core import in this module. The hybrid block range is a CHECKPOINT
 # fact the loader validates against (hybrid_spec.py:71), so the API default is

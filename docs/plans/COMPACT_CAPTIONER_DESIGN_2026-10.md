@@ -405,7 +405,7 @@ dataset revisionと画像hashをSQLiteの書込transaction内で確認し、DB c
 GPU推論は既存coordinatorのslotを使い、trainer pauseのackがない場合は拒否する。
 接続切断と明示的なcancelでは停止を要求し、重複cancelでもworker終了までslotを保持する。
 Tagger画面のCaptioner tabはbundleロード、source/device/token設定、preview、本文編集と保存を持つ。
-複数itemの逐次previewでは成功と失敗を画面に残すが、画面を閉じた後のbatch結果はまだ永続化しない。
+通常の逐次previewは画面内の状態である。別途、永続的なbatch previewのbackendを接続した。
 
 学習run persistenceと学習APIを接続した。`/captioner-training/runs`で新しい専用output directoryを
 確保し、start/stopでprivate CPU taggerを読み込むworkerを制御する。設定とalias辞書はrun作成時に固定する。
@@ -422,7 +422,13 @@ runに属するcheckpointから一時的なdecoderをロードし、既存の一
 登録dataset画像のcaptionを返す。通常のpreview用captionerは差し替えない。
 sampleにもGPU admissionとrequest cancelを適用し、workerの終了・一時decoderの解放までslotを保持する。
 成功sampleはrun eventsへ保存し、UIのpreview欄へ表示する。sidecarは自動保存しない。
-永続的なbatch管理は未実装である。
+`/captioner/batches`はbundleと推論設定、item順序を固定したpending jobを作成する。
+start/stop/resultsでbackground workerを制御し、成功previewと失敗理由、attempt数をtraining DBへ保存する。
+ブラウザ接続とは独立して継続し、server再起動後にworkerがないrunはinterruptedへ変更する。
+再開はpending itemだけを処理し、失敗itemの再試行は明示指定する。完了済みitemは再計算しない。
+bundle manifestの変更を再開時に拒否する。encoderは既存taggerを借用し、decoderはbatch内で再利用する。
+各画像のGPU slotとcancelは通常previewと同じ処理を使う。sidecarは自動保存しない。
+永続batchのUI接続は未実装である。
 GPU trainerの初期allocationは既存coordinatorでgenerationと排他する。
 worktree間のGPU調整と実training runのpause/offload検証はまだ必要である。
 実datasetから学習した自然文モデルはまだ存在せず、品質によるbest選択も未実装である。
@@ -450,3 +456,6 @@ optimizerなしexportとbundle再ロードを確認した。captioner関連のCP
 学習UIはコードを読み合わせたが、build/type-checkと画面の動作確認は未検証である。
 専用sampleのencoder呼出し一回、通常previewの状態維持、結果eventの保存、cancel後の一時decoder解放、
 破損bundleの拒否をCPUで確認した。captioner関連のCPUテスト46件が通過した。
+永続batchのitem別結果、decoderロード一回、停止・再開、明示retry、再起動後の状態復旧、
+変更bundleの拒否、二重task cancel時のworker待機と解放を確認した。
+batch APIを含むcaptioner関連のCPUテスト51件が通過した。

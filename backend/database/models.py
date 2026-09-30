@@ -1147,6 +1147,43 @@ class TrainingMetrics(TrainingBase):
 
 
 
+class CaptionerBatch(TrainingBase):
+    __tablename__ = "captioner_batches"
+    job_id = Column(String, primary_key=True)
+    dataset_id = Column(Integer, nullable=False)
+    bundle_path = Column(String, nullable=False)
+    manifest_hash = Column(String, nullable=False)
+    options = Column(JSON, nullable=False)
+    status = Column(String, nullable=False)
+    error = Column(Text, nullable=True)
+    error_code = Column(String, nullable=True)
+    created_at = Column(DateTime, default=get_local_now)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
+    def to_dict(self):
+        return {"job_id": self.job_id, "dataset_id": self.dataset_id, "bundle_path": self.bundle_path,
+                "manifest_hash": self.manifest_hash, "options": self.options, "status": self.status,
+                "error": self.error, "error_code": self.error_code,
+                "created_at": self.created_at.isoformat(), "updated_at": self.updated_at.isoformat()}
+
+
+class CaptionerBatchItem(TrainingBase):
+    __tablename__ = "captioner_batch_items"
+    job_id = Column(String, ForeignKey("captioner_batches.job_id"), primary_key=True)
+    item_id = Column(Integer, primary_key=True)
+    position = Column(Integer, nullable=False)
+    status = Column(String, nullable=False)
+    attempts = Column(Integer, nullable=False)
+    preview = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    error_code = Column(String, nullable=True)
+
+    def to_dict(self):
+        return {"item_id": self.item_id, "position": self.position, "status": self.status,
+                "attempts": self.attempts, "preview": self.preview, "error": self.error,
+                "error_code": self.error_code}
+
+
 class CaptionerTrainingRun(TrainingBase):
     __tablename__ = "captioner_training_runs"
     run_id = Column(String, primary_key=True)

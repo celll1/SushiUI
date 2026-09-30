@@ -901,6 +901,7 @@ class LTX2Mixin:
 
         current = pipeline.transformer
         inner = current.transformer if isinstance(current, Ltx2BlockLoopWrapper) else current
+        force_wrap = force_wrap or getattr(inner, "_residual_unet_spec", None) is not None
 
         if blocks_to_swap <= 0:
             if force_wrap:
@@ -926,7 +927,7 @@ class LTX2Mixin:
                 if cond is not None:
                     cond.transformer = wrapper
                 self._ltx2_block_swap_count = 0
-                print("[LTX-2.3] FBCache-only wrap active (Ltx2BlockLoopWrapper, no block offloader)")
+                print("[LTX-2.3] Custom block loop active (no block offloader)")
                 return
             if isinstance(current, Ltx2BlockLoopWrapper):
                 offloader = current._block_offloader
@@ -1008,6 +1009,9 @@ class LTX2Mixin:
         hook (device-mismatch on the next call). Unwrapping first makes the hook
         bind to the restored inner transformer.
         """
+        current = self.ltx2_components["pipeline"].transformer
+        inner = getattr(current, "transformer", current)
+        force_wrap = force_wrap or getattr(inner, "_residual_unet_spec", None) is not None
         if blocks_to_swap > 0:
             pipeline = self._ensure_ltx2_offload(blocks_to_swap=blocks_to_swap)
             self._ensure_ltx2_block_swap_wrapper(blocks_to_swap)

@@ -399,7 +399,20 @@ def load_ltx2_from_diffusers(
     # transformer component is rebuilt and swapped here, because from_pretrained
     # would drop its scales and cast its codes. Everything else -- including a
     # plain float8 cast -- returns None and takes the original path unchanged.
-    quantized_transformer = _load_quantized_ltx2_transformer(model_path, torch_dtype)
+    from core.rewiring.artifacts import read_directory_topology
+    from .residual_unet import native_config, validate_topology_identity, wrap_transformer
+    directory = _resolve_transformer_dir(model_path)
+    graph = read_directory_topology(directory) if directory is not None else None
+    if graph is not None:
+        _, _, source = _transformer_shards(directory)
+        config = _transformer_config(directory, {})
+        validate_topology_identity(graph, config)
+        restored = load_ltx2_transformer_checkpoint(source, torch_dtype)
+        if native_config(restored.config) != native_config(config):
+            raise ValueError("LTX-2 directory and checkpoint native configs disagree")
+        quantized_transformer = restored.transformer
+    else:
+        quantized_transformer = _load_quantized_ltx2_transformer(model_path, torch_dtype)
     overrides = {"transformer": quantized_transformer} if quantized_transformer is not None else {}
 
     pipeline = LTX2Pipeline.from_pretrained(model_path, torch_dtype=torch_dtype, **overrides)
@@ -420,6 +433,9 @@ def load_ltx2_from_diffusers(
         torch.cuda.empty_cache()
 
     transformer = getattr(pipeline, "transformer", None)
+    if graph is not None:
+        transformer = wrap_transformer(transformer, graph)
+        pipeline.transformer = transformer
     vae = getattr(pipeline, "vae", None)
 
     # VAE scale factors (spatial 32x, temporal 8x) — pull from the transformer

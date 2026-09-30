@@ -2761,3 +2761,35 @@ need connection. The existing fixed complete single-file/embedded-tokenizer
 checkpoint boundary and AR-only training boundary must remain authoritative.
 All GPU validation remains limited to Qwen-Image 2.1 by the owner's instruction;
 YuE2 quality, throughput and production quantized execution are unmeasured.
+
+
+### YuE2 complete-file topology persistence (CPU)
+
+The existing complete safetensors writer now exports validated NAR topology from
+the actual transformer. Supplied extra metadata cannot invent a residual graph
+on a dense model or override the model's graph. Dense saves retain their existing
+metadata and layout. No acoustic training capability is added by this writer.
+
+The strict YuE2 preflight parses the shared topology declaration before creating
+its empty native models. Partial or invalid-digest declarations refuse at that
+point. Declared graphs must match the complete-file native model configuration
+and NAR stream before tokenizer/quantization marker reads. Weight loading checks
+the reopened file's declaration against the preflight snapshot before any model
+weight payload is read, then restores the validated graph after strict model/VAE
+state loading. Dense absence clears residual state. The existing complete-file,
+embedded-tokenizer, exact native tensor-shape and quantization gates still apply.
+
+An actual tiny BF16 native MoT is written to a complete safetensors fixture with
+its VAE/tokenizer payloads, preflighted, loaded through load_yue2_from_path and
+executed by CachedNAR. Every transformer weight and the resulting velocity match
+exactly after restoration. The fixture substitutes tiny empty native model/VAE
+constructors and tokenizer parsing; it does not claim that tiny files satisfy
+the production fixed 28-layer, 151643-token tokenizer contract. Additional checks
+cover dense reload, forged extra metadata, partial/digest-invalid declarations,
+native configuration mismatch and a changed declaration between preflight and
+payload loading. YuE2 residual, single-file, CPU protocol and training contracts
+pass 44 tests and 2 subtests; changed modules compile and import with CUDA
+uninitialized. No production GPU or non-Qwen model payload is loaded.
+
+Header-only public inspection, restored model-info display, generation provenance
+and the generation-only graph editing/export workflow remain to be connected.

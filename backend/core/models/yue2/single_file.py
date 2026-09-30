@@ -70,6 +70,14 @@ def save_yue2_single_file(path, transformer, vae, tokenizer, *, extra_metadata=N
     from core.training.adapters.base_adapter import reject_quantized_base
 
     reject_quantized_base(transformer, model_label="YuE2")
+    from .residual_unet import model_topology_metadata
+    from core.rewiring.spec import META_VERSION, META_SPEC, META_HASH, read_checkpoint_metadata
+    topology_metadata = model_topology_metadata(transformer)
+    metadata = _metadata(extra_metadata)
+    if any(key in metadata for key in (META_VERSION, META_SPEC, META_HASH)):
+        if read_checkpoint_metadata(metadata) != read_checkpoint_metadata(topology_metadata):
+            raise ValueError("YuE2 extra metadata disagrees with the model topology")
+    metadata.update(topology_metadata)
     state = {}
     for key, value in transformer.state_dict().items():
         if value.is_meta:
@@ -88,7 +96,7 @@ def save_yue2_single_file(path, transformer, vae, tokenizer, *, extra_metadata=N
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(output.name + ".tmp")
     try:
-        save_file(state, str(temporary), metadata=_metadata(extra_metadata))
+        save_file(state, str(temporary), metadata=metadata)
         os.replace(temporary, output)
     finally:
         if temporary.exists():

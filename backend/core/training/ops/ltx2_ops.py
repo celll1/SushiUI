@@ -112,7 +112,7 @@ def load_components(trainer) -> None:
     pipeline = components["pipeline"]
     trainer.ltx2_pipeline = pipeline
     trainer.transformer = components["transformer"]
-    trainer.transformer_original = trainer.transformer  # No wrapper for LTX2.
+    trainer.transformer_original = getattr(trainer.transformer, "transformer", trainer.transformer)
     trainer.vae = components["vae"]
     trainer.audio_vae = components.get("audio_vae")
     trainer.text_encoder = components["text_encoder"]
@@ -202,7 +202,7 @@ def load_components(trainer) -> None:
         trainer.transformer = _anima_quantize_fp8(
             trainer.transformer, fp8_base_dtype, "LTX-2.3 DiT (training base)",
         )
-        trainer.transformer_original = trainer.transformer
+        trainer.transformer_original = getattr(trainer.transformer, "transformer", trainer.transformer)
         trainer.transformer.requires_grad_(False)
     elif fp8_base_dtype:
         emit_training_warning(

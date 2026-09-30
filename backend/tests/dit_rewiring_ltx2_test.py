@@ -220,6 +220,55 @@ class Ltx2RuntimeContracts(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,"native AV transformer"):load_ltx2_transformer_checkpoint(str(path))
         self.assertFalse(torch.cuda.is_initialized())
 
+    def test_directory_loader_restores_graph_before_companions(self):
+        import json, tempfile
+        from types import SimpleNamespace
+        from safetensors.torch import save_file
+        from core.models.ltx2.loader import load_ltx2_from_diffusers
+        from core.models.ltx2.residual_unet import export_metadata
+        from core.models.ltx2_block_loop_wrapper import Ltx2BlockLoopWrapper
+        with tempfile.TemporaryDirectory() as folder:
+            component=Path(folder)/"transformer";component.mkdir()
+            config=dict(self.inner.config)
+            (component/"config.json").write_text(json.dumps(config),encoding="utf-8")
+            save_file(self.inner.state_dict(),str(component/"diffusion_pytorch_model.safetensors"),
+                      metadata=export_metadata(self.model))
+            def assemble(path, **kwargs):
+                self.assertIsInstance(kwargs["transformer"],type(self.inner))
+                self.assertNotIsInstance(kwargs["transformer"],Ltx2BlockLoopWrapper)
+                return SimpleNamespace(transformer=kwargs["transformer"],vae=None)
+            with patch("core.models.ltx2.LTX2Pipeline.from_pretrained",side_effect=assemble) as assemble_mock:
+                result=load_ltx2_from_diffusers(folder,torch.float32)
+                self.assertIs(result["transformer"],result["pipeline"].transformer)
+                self.assertIsInstance(result["transformer"],Ltx2BlockLoopWrapper)
+                self.assertEqual(result["transformer"]._residual_unet_spec,self.spec)
+                for key,value in self.inner.state_dict().items():
+                    torch.testing.assert_close(result["transformer"].state_dict()[key],value,rtol=0,atol=0)
+                assemble_mock.assert_called_once()
+            config["num_layers"]=8
+            (component/"config.json").write_text(json.dumps(config),encoding="utf-8")
+            with patch("core.models.ltx2.LTX2Pipeline.from_pretrained",side_effect=AssertionError("No companion load")), \
+                    patch("core.models.common.single_file_format.read_state_dict",side_effect=AssertionError("No tensors")):
+                with self.assertRaises(ValueError):load_ltx2_from_diffusers(folder,torch.float32)
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_zero_swap_preserves_residual_wrapper_and_offload_order(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from core.pipeline_backends.ltx2 import LTX2Mixin
+        manager=LTX2Mixin()
+        pipeline=SimpleNamespace(transformer=self.model)
+        manager.ltx2_components=dict(pipeline=pipeline,transformer=self.model,
+            i2v_pipeline=SimpleNamespace(transformer=self.model),cond_pipeline=SimpleNamespace(transformer=self.model))
+        calls=[]
+        manager._ensure_ltx2_offload=Mock(side_effect=lambda **kwargs:calls.append(kwargs) or pipeline)
+        manager._ensure_ltx2_swap_and_offload(0)
+        self.assertEqual(calls,[dict(blocks_to_swap=0,force_block_swap_mode=True)])
+        manager._ensure_ltx2_block_swap_wrapper(0)
+        self.assertIs(pipeline.transformer,self.model)
+        self.assertEqual(pipeline.transformer._residual_unet_spec,self.spec)
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_invalid_layout_and_conflicting_features_refuse_before_projection(self):
         coords=self.inner.rope.prepare_video_coords(2,3,8,12,self.video.device,fps=24.)
         bad_coords=coords.clone();bad_coords[0,0,1,0]+=1

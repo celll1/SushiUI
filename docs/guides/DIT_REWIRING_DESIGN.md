@@ -16,9 +16,11 @@ training/LoRA resume and generation adapter scopes with CPU contracts. Standalon
 component references and full-resume dispatch are connected. Public temporal
 configuration, presets and editor/model discovery are connected with CPU checks;
 complete audio workflow acceptance and owner frontend checks remain pending.
-LTX-2.3 has an internal frame-local spatial residual block path and standalone
-transformer artifact contracts with CPU checks. Public generation/training
-restoration, companion references, presets and editor integration remain pending.
+LTX-2.3 has a frame-local spatial residual block path, standalone transformer
+artifact contracts and directory-loader graph restoration with CPU checks. Zero
+block swap retains residual execution and its offload ordering. Training retains
+the inner transformer reference. LoRA/full resume dispatch, companion references,
+public configure, presets and editor integration remain pending.
 GPU acceptance is restricted to Qwen-Image 2.1 by owner instruction; other models
 receive provisional implementation and CPU verification. Further architectures
 still require native execution/artifact adapters and capability gates.
@@ -2069,3 +2071,24 @@ Changed modules compile/import with CUDA uninitialized. Shared residual, legacy
 ACE-Step/LTX-2 and quantized-export suites pass 198 cases and 64 subtests; the
 final LTX-2/runtime/legacy-LoRA subset passes 30 cases and 14 subtests. No GPU or
 frontend build/type checks were run for this milestone.
+
+### LTX-2 directory restoration and wrapper lifetime
+
+The normal directory loader reads every transformer topology declaration before
+loading weights or frozen companions. For a rewired component it validates
+config.json against the topology, strictly restores the native AV transformer
+and passes that native object to Diffusers pipeline assembly. The block-loop
+wrapper is installed afterwards and shared by the component map and pipeline.
+Conflicting directory geometry refuses before tensor and companion loading.
+
+Zero block swap retains the residual wrapper, excludes the transformer from the
+whole-module offload hook and preserves the existing offload-before-wrap order.
+Training stores the native inner module in transformer_original so parameter
+consumers do not acquire an additional wrapper prefix.
+
+CPU tests verify directory restoration with real tiny native weights, early
+geometry refusal and zero-swap offload ordering. Compilation and real imports
+pass; the LTX-2/runtime/legacy-LoRA subset passes 32 cases and 14 subtests with
+CUDA uninitialized. Companion assembly is mocked in this bounded test. Complete
+video generation and training/resume acceptance remain pending. GPU validation
+remains exclusively Qwen-Image 2.1; non-Qwen quality and speed are unmeasured.

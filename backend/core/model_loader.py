@@ -964,6 +964,10 @@ class ModelLoader:
 
                         if model_type == "qwen_image_21":
                             return "qwen_image_21"
+                        if model_type == "acestep" and (
+                                "null_condition_emb" in keys or "net.null_condition_emb" in keys) and any(
+                                key.startswith(("decoder.layers.", "net.decoder.layers.")) for key in keys):
+                            return "acestep"
 
                         if model_type in ["flux2", "flux.2", "flux2-klein", "flux.2-klein"]:
                             return "flux2"

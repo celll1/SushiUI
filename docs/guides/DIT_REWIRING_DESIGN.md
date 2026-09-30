@@ -6,7 +6,7 @@ checkpointed residual execution, metadata-driven generation, LoRA/full training,
 checkpoint restore and adapter-stack compatibility checks. Actual 1024px API
 workflows verify generation, training samples, saved artifacts and resume, both
 resident and with block swap. The graphical editor is connected and statically
-reviewed; the owner will perform consolidated frontend checks. Krea 2 and Anima
+reviewed; the owner will perform consolidated frontend checks. Krea 2, Anima and Z-Image
 have native execution/artifact/training/LoRA generation integration, model/editor
 inspection and CPU contract checks.
 GPU acceptance is restricted to Qwen-Image 2.1 by owner instruction; other models
@@ -721,9 +721,31 @@ clone restoration, dense forward restoration and feature/grid refusals. All 54
 aggregate CPU contracts and changed-file compile/real imports pass with CUDA
 untouched.
 
-This remains internal: native config/artifact persistence and loader restoration,
-training configuration/resume, generation adapter scopes, presets and model/editor
+This remains internal: training configuration/resume, generation adapter scopes, presets and model/editor
 discovery must be connected before Flux2 joins public capabilities. Legacy dense
 wrapper paths are not accepted by this new-path CPU check. No Flux2 GPU workflow,
 performance or quality evidence is claimed. Only Qwen-Image 2.1 receives actual
 GPU acceptance under the owner's instruction.
+
+## Flux2 checkpoint persistence
+
+LoRA saves now carry the installed topology declaration. Full saves additionally
+carry the canonical native transformer config, including both stream counts and
+RoPE geometry. The writer returns the actual single-file or shard-index path.
+The native loader validates topology/config headers before reading tensors or
+resolving companions; missing config or an incompatible stream layout is refused.
+Saved transformer config takes precedence over the companion repository config.
+Declared VAE channel changes must still agree with the topology identity before
+model construction. Rewired checkpoints require complete matching transformer
+weights; the topology is restored after loading and dtype conversion.
+
+CPU contracts drive the actual full writer and native Flux2 loader with tiny
+three-double/seven-single models. Only external companion resolution/loading is
+stubbed. Single files, shard indices and missing stems resolved to indices restore
+every weight exactly and recover the topology/config, with output agreement at
+`rtol=1e-5, atol=2e-7`. A deliberately different tiny companion config verifies
+that the checkpoint config governs reconstruction. Missing/mismatched config
+fails before tensor reading/downloads, and a legacy dense header remains accepted.
+Four Flux2 contracts and 50 existing LoRA/VAE regression cases pass; changed files
+compile and import with CUDA untouched. This is CPU artifact evidence only;
+training resume and generation adapter-stack integration remain pending for Flux2.

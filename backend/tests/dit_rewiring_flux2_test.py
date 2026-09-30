@@ -2,6 +2,10 @@
 from pathlib import Path
 import sys
 import unittest
+import json
+import tempfile
+from types import SimpleNamespace
+from contextlib import ExitStack
 from unittest.mock import patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
@@ -37,6 +41,57 @@ class Flux2RuntimeContracts(unittest.TestCase):
                   guidance=self.guidance,img_ids=self.ids,txt_ids=self.text_ids,return_dict=False)
         args.update(options)
         return self.model(**args)[0]
+
+    def test_full_checkpoint_native_loader_roundtrip_and_preflight(self):
+        from core.models.flux2.residual_unet import restore_topology, native_config, preflight_checkpoint
+        from core.training.adapters.flux2_adapter import FLUX2FullParameterAdapter, FLUX2LoRAAdapter
+        from core.models.common.single_file_format import read_state_dict, save_single_file_state
+        from core.model_loader import ModelLoader
+        from safetensors.torch import save_file
+        restore_topology(self.model,self.spec)
+        expected=self.forward().detach()
+        trainer=SimpleNamespace(transformer=self.model,train_unet=True,train_text_encoder=False,
+            vae=None,text_encoder=None,bundle_vae=False,config={},is_distilled=False,base_model_repo="test/tiny-flux2")
+        lora_metadata=FLUX2LoRAAdapter(trainer,4,4).checkpoint_metadata({},1,0)
+        from core.rewiring.spec import read_checkpoint_metadata
+        self.assertEqual(read_checkpoint_metadata(lora_metadata),self.spec)
+        with tempfile.TemporaryDirectory() as folder:
+            folder=Path(folder);base=folder/"base"; (base/"transformer").mkdir(parents=True)
+            (base/"vae").mkdir()
+            companion=dict(native_config(self.model),num_layers=4,num_single_layers=6,joint_attention_dim=16)
+            (base/"transformer"/"config.json").write_text(json.dumps(companion),encoding="utf-8")
+            single=FLUX2FullParameterAdapter(trainer).write_checkpoint(1,0,folder/"full.safetensors")
+            self.assertEqual(preflight_checkpoint(single),(self.spec,native_config(self.model)))
+            state,metadata=read_state_dict(str(single))
+            sharded=save_single_file_state(state,metadata,str(folder/"sharded.safetensors"),max_shard_bytes=12000)
+            vae=torch.nn.Linear(1,1);vae.config=SimpleNamespace(latent_channels=1)
+            with ExitStack() as stack:
+                for target,value in (
+                    ("huggingface_hub.snapshot_download",str(base)),
+                    ("core.models.common.vae_store.resolve_vae_dir",str(base/"vae")),
+                    ("diffusers.AutoencoderKLFlux2.from_pretrained",vae),
+                    ("transformers.Qwen3ForCausalLM.from_pretrained",torch.nn.Linear(1,1)),
+                    ("transformers.Qwen2TokenizerFast.from_pretrained",object()),
+                    ("diffusers.FlowMatchEulerDiscreteScheduler.from_pretrained",object())):
+                    stack.enter_context(patch(target,return_value=value))
+                for candidate in (single,Path(sharded),folder/"sharded.safetensors"):
+                    restored=ModelLoader.load_flux2_from_safetensors(str(candidate),device="cpu",torch_dtype=torch.float32)["transformer"]
+                    self.assertEqual(restored._residual_unet_spec,self.spec)
+                    self.assertEqual(native_config(restored),native_config(self.model))
+                    for key,value in self.model.state_dict().items():
+                        torch.testing.assert_close(restored.state_dict()[key],value,rtol=0,atol=0)
+                    with patch.object(self,"model",restored):
+                        torch.testing.assert_close(self.forward(),expected,rtol=1e-5,atol=2e-7)
+            for name,broken in (("missing-config",{k:v for k,v in metadata.items() if k!="transformer_config"}),
+                    ("wrong-config",dict(metadata,transformer_config=json.dumps(companion)))):
+                path=folder/f"{name}.safetensors";save_file(state,str(path),metadata=broken)
+                with patch("core.models.common.single_file_format.read_state_dict",side_effect=AssertionError("tensor read")), \
+                     patch("huggingface_hub.snapshot_download",side_effect=AssertionError("download")):
+                    with self.assertRaises(ValueError):
+                        ModelLoader.load_flux2_from_safetensors(str(path),device="cpu",torch_dtype=torch.float32)
+            dense=folder/"dense.safetensors";save_file({"weight":torch.ones(1)},str(dense))
+            self.assertEqual(preflight_checkpoint(dense),(None,None))
+        self.assertFalse(torch.cuda.is_initialized())
 
     def test_native_stream_lengths_rope_offloader_and_parameter_identity(self):
         from core.models.flux2.residual_unet import restore_topology

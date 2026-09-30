@@ -1882,6 +1882,11 @@ class ModelLoader:
 
             print(f"[ModelLoader] Loading FLUX.2 Klein from safetensors: {file_path}")
 
+            from core.models.flux2.residual_unet import preflight_checkpoint, validate_topology_identity, restore_topology
+            if not os.path.exists(file_path) and os.path.isfile(str(file_path) + ".index.json"):
+                file_path = str(file_path) + ".index.json"
+            topology, saved_transformer_config = preflight_checkpoint(file_path)
+
             # Single consolidated read: handles both a plain <stem>.safetensors
             # and a sharded <stem>.safetensors.index.json path, returning the
             # full state dict (CPU) plus the metadata block. All subsequent
@@ -1962,6 +1967,8 @@ class ModelLoader:
             transformer_config_path = os.path.join(cache_dir, "transformer", "config.json")
             with open(transformer_config_path, 'r') as f:
                 transformer_config = json.load(f)
+            if saved_transformer_config is not None:
+                transformer_config = saved_transformer_config
             print(f"[ModelLoader] Transformer config loaded:")
             print(f"  - in_channels: {transformer_config.get('in_channels', 128)}")
             print(f"  - num_layers: {transformer_config.get('num_layers', 8)} (dual stream)")
@@ -2088,6 +2095,8 @@ class ModelLoader:
                         f"features but its declaration says {declared_vae.latent_channels} "
                         f"latent channels ({packed}); refusing to load a checkpoint "
                         f"whose declaration and weights disagree about the latent space")
+            if topology is not None:
+                validate_topology_identity(topology, transformer_config)
             print(f"[ModelLoader] Creating Flux2Transformer2DModel...")
             transformer = Flux2Transformer2DModel(**transformer_config)
 
@@ -2123,6 +2132,8 @@ class ModelLoader:
 
             # Load weights
             missing_keys, unexpected_keys = transformer.load_state_dict(transformer_state_dict, strict=False)
+            if topology is not None and (missing_keys or unexpected_keys):
+                raise ValueError("Rewired Flux2 checkpoint does not match its native transformer_config")
             if missing_keys:
                 print(f"[ModelLoader] WARNING: Missing keys: {missing_keys[:5]}..." if len(missing_keys) > 5 else f"[ModelLoader] WARNING: Missing keys: {missing_keys}")
             if unexpected_keys:
@@ -2130,6 +2141,7 @@ class ModelLoader:
 
             if quant_report is None:
                 transformer = transformer.to(dtype=torch_dtype)
+            restore_topology(transformer, topology)
             print(f"[ModelLoader] Transformer loaded with {sum(p.numel() for p in transformer.parameters()):,} parameters")
 
             # Step 4: Load VAE — ALWAYS from the Apache-2.0 FLUX.2 store

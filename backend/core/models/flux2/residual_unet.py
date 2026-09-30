@@ -1,5 +1,7 @@
 """Native Flux2 double/single residual execution without patching diffusers files."""
 from types import MethodType
+import json
+from pathlib import Path
 
 import torch
 
@@ -51,6 +53,37 @@ def model_topology_metadata(model):
     model = native_model(model)
     spec = getattr(model, "_residual_unet_spec", None)
     return {} if spec is None else checkpoint_metadata(validate_topology_identity(spec, model))
+
+
+def preflight_checkpoint(path):
+    from safetensors import safe_open
+    from core.rewiring.artifacts import read_artifact_topology
+    path = Path(path)
+    if not path.exists() and str(path).endswith(".safetensors"):
+        path = Path(str(path) + ".index.json")
+    spec = read_artifact_topology(path)
+    if str(path).endswith(".index.json"):
+        with path.open(encoding="utf-8") as handle:
+            metadata = json.load(handle).get("metadata") or {}
+    else:
+        with safe_open(str(path), framework="pt", device="cpu") as handle:
+            metadata = handle.metadata() or {}
+    serialized = metadata.get("transformer_config")
+    if serialized is None:
+        if spec is not None:
+            raise ValueError("Rewired Flux2 checkpoint requires transformer_config")
+        return spec, None
+    if not isinstance(serialized, str):
+        raise ValueError("Flux2 transformer_config must be JSON text")
+    config = json.loads(serialized)
+    if not isinstance(config, dict):
+        raise ValueError("Flux2 transformer_config must be an object")
+    if spec is not None:
+        config = native_config(config)
+        validate_topology_identity(spec, config)
+    else:
+        config = {key:value for key,value in config.items() if key in FLUX2_DEFAULT_CONFIG}
+    return spec, config
 
 
 def _shared_ids(ids, batch, count, label):

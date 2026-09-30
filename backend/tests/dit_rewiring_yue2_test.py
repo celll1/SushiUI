@@ -2,6 +2,8 @@
 from copy import deepcopy
 from pathlib import Path
 import sys
+import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -33,6 +35,94 @@ def fixture(tokens=13):
 
 
 class YuE2Residual(unittest.TestCase):
+    def test_complete_file_restores_native_execution(self):
+        from core.models.yue2 import loader
+        from core.models.yue2.single_file import save_yue2_single_file
+        model, graph, chunk = fixture()
+        model = model.bfloat16()
+        restore_topology(model, graph)
+        vae = torch.nn.Module()
+        vae.register_buffer("scale", torch.ones(1))
+        tokenizer = SimpleNamespace(payload='{"version":"1.0"}')
+        engine = CachedNAR(model, chunk)
+        expected = engine.velocity(chunk.noise.bfloat16(), .3)
+        engine.close()
+        def empty():
+            with torch.device("meta"):
+                copied = YuE2ForCausalLM(deepcopy(model.config))
+                copied_vae = torch.nn.Module()
+                copied_vae.register_buffer("scale", torch.ones(1))
+            return copied, copied_vae
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "complete.safetensors"
+            save_yue2_single_file(path, model, vae, tokenizer)
+            with patch.object(loader, "build_empty_models", side_effect=empty), \
+                    patch.object(loader, "EmbeddedTokenizer", side_effect=lambda payload: SimpleNamespace(payload=payload)):
+                preflight = loader.preflight_yue2(path)
+                self.assertEqual(preflight["residual_topology"], graph)
+                loaded = loader.load_yue2_from_path(path)
+            self.assertEqual(loaded["transformer"]._residual_unet_spec, graph)
+            self.assertEqual(loaded["tokenizer"].payload, tokenizer.payload)
+            for key, value in model.state_dict().items():
+                torch.testing.assert_close(loaded["transformer"].state_dict()[key], value, rtol=0, atol=0)
+            restored = CachedNAR(loaded["transformer"], chunk)
+            torch.testing.assert_close(restored.velocity(chunk.noise.bfloat16(), .3), expected, rtol=0, atol=0)
+            restored.close()
+
+    def test_invalid_metadata_refuses_before_payload_read(self):
+        from core.models.yue2 import loader
+        from core.rewiring.spec import checkpoint_metadata, META_SPEC, META_HASH
+        model, graph, chunk = fixture()
+        metadata = checkpoint_metadata(graph)
+        base = {"model.diffusion_model.vae2llm.weight": {},
+                "model.diffusion_model.latent_pos_embed.pe": {}, loader.TOKENIZER_KEY: {}}
+        variants = [{META_SPEC: metadata[META_SPEC]}, {**metadata, META_HASH: "0" * 64}]
+        for declaration in variants:
+            with self.subTest(declaration=declaration), \
+                    patch.object(loader, "read_header", return_value={**base, "__metadata__": {"yue2_format": "1", **declaration}}), \
+                    patch.object(loader, "build_empty_models", side_effect=AssertionError("model construction reached")), \
+                    patch.object(loader, "safe_open", side_effect=AssertionError("payload reader reached")):
+                with self.assertRaises(ValueError):
+                    loader.preflight_yue2("invalid.safetensors")
+        model.config.timestep_shift = 2.
+        with patch.object(loader, "read_header", return_value={**base, "__metadata__": {"yue2_format": "1", **metadata}}), \
+                patch.object(loader, "build_empty_models", return_value=(model, torch.nn.Module())), \
+                patch.object(loader, "safe_open", side_effect=AssertionError("payload reader reached")):
+            with self.assertRaisesRegex(ValueError, "config"):
+                loader.preflight_yue2("wrong_config.safetensors")
+
+    def test_writer_refuses_injected_topology_and_dense_reload_is_dense(self):
+        from core.models.yue2 import loader
+        from core.models.yue2.single_file import save_yue2_single_file
+        from core.rewiring.spec import checkpoint_metadata
+        model, graph, chunk = fixture()
+        vae = torch.nn.Module()
+        vae.register_buffer("scale", torch.ones(1))
+        tokenizer = SimpleNamespace(payload='{"version":"1.0"}')
+        def empty():
+            with torch.device("meta"):
+                copied = YuE2ForCausalLM(deepcopy(model.config))
+                copied_vae = torch.nn.Module()
+                copied_vae.register_buffer("scale", torch.ones(1))
+            return copied, copied_vae
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "dense.safetensors"
+            with self.assertRaisesRegex(ValueError, "disagrees"):
+                save_yue2_single_file(path, model, vae, tokenizer, extra_metadata=checkpoint_metadata(graph))
+            self.assertFalse(path.exists())
+            save_yue2_single_file(path, model, vae, tokenizer)
+            with patch.object(loader, "build_empty_models", side_effect=empty), \
+                    patch.object(loader, "EmbeddedTokenizer", side_effect=lambda payload: SimpleNamespace(payload=payload)):
+                preflight = loader.preflight_yue2(path)
+                self.assertIsNone(preflight["residual_topology"])
+                loaded = loader.load_yue2_from_path(path)
+                self.assertFalse(hasattr(loaded["transformer"], "_residual_unet_spec"))
+                # The file was replaced with a dense artifact after a residual preflight.
+                preflight["residual_topology"] = graph
+                with patch.object(loader, "preflight_yue2", return_value=preflight):
+                    with self.assertRaisesRegex(ValueError, "changed after preflight"):
+                        loader.load_yue2_from_path(path)
+
     def test_native_loop_preserves_ar_cache_and_weights(self):
         model, graph, chunk = fixture()
         before = {key: value.clone() for key, value in model.state_dict().items()}

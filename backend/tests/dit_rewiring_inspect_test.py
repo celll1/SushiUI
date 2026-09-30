@@ -87,5 +87,37 @@ class InspectionContracts(unittest.TestCase):
                 asyncio.run(check())
         self.assertFalse(torch.cuda.is_initialized())
 
+    def test_custom_layout_initial_spec_is_editable_through_api(self):
+        import httpx
+        from fastapi import FastAPI
+        from types import SimpleNamespace
+        from core.models.krea2.vendor.single_file import KREA2_DEFAULT_CONFIG
+        from core.models.krea2.residual_unet import configure_training_topology
+        from core.rewiring.spec import validate_spec
+        config = dict(KREA2_DEFAULT_CONFIG, num_layers=7)
+        with tempfile.TemporaryDirectory() as directory:
+            model = Path(directory)/"custom.safetensors"
+            save_file({"placeholder": torch.ones(1)}, str(model), metadata={
+                "model_type": "krea2", "krea2_config": json.dumps(config)})
+            info = inspect_model(str(model))
+            self.assertIsNone(info["default_spec"])
+            initial = validate_spec(info["initial_spec"])
+            self.assertEqual(initial["regions"][0]["start_block"], 1)
+            self.assertEqual(initial["regions"][0]["end_block"], 6)
+            native = SimpleNamespace(config=config)
+            resolved = configure_training_topology(native,
+                {"dit_rewiring_mode": "configure", "dit_rewiring_spec": initial})
+            self.assertEqual(resolved, initial)
+            app = FastAPI(); app.include_router(router, prefix="/api/v1")
+            async def check():
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                    response = await client.post("/api/v1/models/rewiring/validate", json={
+                        "spec": initial, "token_height": 8, "token_width": 12})
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertEqual([b["tokens"] for b in response.json()["plan"]["blocks"]],
+                                     [96, 24, 24, 24, 24, 24, 96])
+            asyncio.run(check())
+        self.assertFalse(torch.cuda.is_initialized())
+
 if __name__ == "__main__":
     unittest.main()

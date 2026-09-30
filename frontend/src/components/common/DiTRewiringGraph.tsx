@@ -17,6 +17,7 @@ export default function DiTRewiringGraph({ spec, plan, selected, onSelect, onBou
   const height = 100 + depth * 74;
   const x = (index: number) => 85 + index / stream.block_count * 770;
   const y = (level: number) => 50 + level * 74;
+  const gap = Math.min(1, 770 / stream.block_count * 0.15);
   return <svg viewBox={`0 0 900 ${height}`} role="img" aria-label="DiT resolution levels and residual skip connections"
     className="w-full rounded bg-gray-950 touch-none"
     onPointerMove={e => {
@@ -28,16 +29,17 @@ export default function DiTRewiringGraph({ spec, plan, selected, onSelect, onBou
     }}
     onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }}>
     {Array.from({ length: depth + 1 }, (_, level) => {
-      const block = blocks.find(b => b.depth === level);
+      const tokens = Array.from(new Set(blocks.filter(b => b.depth === level).map(b => b.tokens)));
       return <g key={level}>
         <line x1={85} x2={855} y1={y(level)} y2={y(level)} stroke="#374151" strokeDasharray="3 5" />
-        <text x={8} y={y(level) + 4} fill="#9ca3af" fontSize={12}>{block?.tokens ?? ""} tokens</text>
+        <text x={8} y={y(level) + 4} fill="#9ca3af" fontSize={12}>{tokens.length === 1 ? `${tokens[0]} tokens` : `Depth ${level}`}
+          <title>{tokens.map(value => `${value} tokens`).join(", ")}</title></text>
       </g>;
     })}
     <polyline points={blocks.map(b => `${x(b.index + 0.5)},${y(b.depth)}`).join(" ")}
       fill="none" stroke="#60a5fa" strokeWidth={2} />
     {blocks.map(block => <g key={block.index}>
-      <rect x={x(block.index) + 1} y={y(block.depth) - 6} width={770 / stream.block_count - 2}
+      <rect x={x(block.index) + gap} y={y(block.depth) - 6} width={770 / stream.block_count - gap * 2}
         height={12} fill={["#38bdf8", "#a78bfa", "#fbbf24"][Math.min(2, block.depth)]}>
         <title>{`${stream.name} block ${block.index}: ${block.height}×${block.width}, ${block.tokens} tokens`}</title>
       </rect>

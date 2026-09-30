@@ -19,6 +19,8 @@ from core.models.minimax_h3.hybrid_spec import (
 )
 
 # The initial preset is resolved only for the matching native block layout.
+DIT_REWIRING_REGION_DEFAULTS: Dict[str, Any] = {"edge_blocks": 1, "down_factor": [2, 2]}
+
 DIT_REWIRING_PRESETS: Dict[str, Any] = {
     "qwen_image_21": {
         "block_count": 32,

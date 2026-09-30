@@ -70,20 +70,44 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
     if (!current || !configuring) return;
     onChange("configure", { ...current, regions: current.regions.map(r => r.id === id ? { ...r, ...patch } : r) });
   };
-  const addNested = () => {
-    if (!current || !region || region.end_block - region.start_block < 3) return;
-    let index = 0; while (current.regions.some(r => r.id === `r${index}`)) index++;
-    const child = { ...region, id: `r${index}`, parent: region.id,
-      start_block: region.start_block + 1, end_block: region.end_block - 1 };
-    onChange("configure", { ...current, regions: [...current.regions, child] });
-    setSelected(child.id);
+  const freeInterval = (parent: string | null): [number, number] | null => {
+    if (!current || !info || current.regions.length >= 64) return null;
+    const template = info.initial_spec.regions[0];
+    const owner = parent ? current.regions.find(r => r.id === parent) : null;
+    const stream = owner?.stream ?? region?.stream ?? template.stream;
+    const count = current.streams.find(s => s.name === stream)?.block_count;
+    if (count === undefined) return null;
+    let cursor = owner ? owner.start_block + 1 : template.start_block;
+    const end = owner ? owner.end_block - 1 : count - template.start_block;
+    const siblings = current.regions.filter(r => r.parent === parent && r.stream === stream)
+      .sort((a, b) => a.start_block - b.start_block);
+    for (const sibling of siblings) {
+      if (cursor < Math.min(sibling.start_block, end)) return [cursor, Math.min(sibling.start_block, end)];
+      cursor = Math.max(cursor, sibling.end_block);
+    }
+    return cursor < end ? [cursor, end] : null;
   };
+  const addRegion = (parent: string | null) => {
+    if (!info || !configuring) return;
+    if (!current) {
+      onChange("configure", info.initial_spec); setSelected(info.initial_spec.regions[0].id); return;
+    }
+    const interval = freeInterval(parent);
+    if (!interval) return;
+    let index = 0; while (current.regions.some(r => r.id === `r${index}`)) index++;
+    const added = { ...info.initial_spec.regions[0], id: `r${index}`, parent,
+      stream: region?.stream ?? info.initial_spec.regions[0].stream,
+      start_block: interval[0], end_block: interval[1] };
+    onChange("configure", { ...current, regions: [...current.regions, added] });
+    setSelected(added.id);
+  };
+  const removedIds = new Set(region ? [region.id] : []);
+  if (current) for (let i = 0; i < current.regions.length; i++)
+    current.regions.forEach(r => { if (r.parent && removedIds.has(r.parent)) removedIds.add(r.id); });
+  const canRemove = !!current && current.regions.some(r => !removedIds.has(r.id));
   const removeRegion = () => {
-    if (!current || !region) return;
-    const removed = new Set([region.id]);
-    for (let i = 0; i < current.regions.length; i++)
-      current.regions.forEach(r => { if (r.parent && removed.has(r.parent)) removed.add(r.id); });
-    onChange("configure", { ...current, regions: current.regions.filter(r => !removed.has(r.id)) });
+    if (!current || !region || !canRemove) return;
+    onChange("configure", { ...current, regions: current.regions.filter(r => !removedIds.has(r.id)) });
     setSelected("");
   };
   return <section className="space-y-3 rounded border border-gray-700 p-3 text-xs">
@@ -99,6 +123,13 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
       {configuring && <button type="button" disabled={!info?.default_spec} className="rounded bg-gray-700 px-3 py-2"
         onClick={() => onChange("configure", info?.default_spec ?? null)}>Model preset</button>}
       {info && <span>{info.architecture} / {info.streams[0]?.block_count} blocks</span>}
+      {configuring && info && <button type="button" className="rounded bg-gray-700 px-3 py-2"
+        disabled={!!current && !freeInterval(null)} onClick={() => addRegion(null)}>
+        {current ? "Add independent region" : "Create first region"}</button>}
+      {configuring && info && current && <button type="button" className="rounded bg-gray-700 px-3 py-2"
+        title="Replace the topology with one editable region" onClick={() => {
+          onChange("configure", info.initial_spec); setSelected(info.initial_spec.regions[0].id);
+        }}>Start custom layout</button>}
     </div>
     {current && <>
       <div className="flex flex-wrap items-center gap-3">
@@ -136,12 +167,12 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
           </select>
         </label>
         <span>Skip: {region.start_block} → {region.end_block}; parent: {region.parent ?? "full grid"}</span>
-        <button type="button" className="rounded bg-gray-700 px-2 py-1" onClick={addNested}>Add nested region</button>
-        <button type="button" className="rounded bg-gray-700 px-2 py-1" onClick={removeRegion}>Remove region and children</button>
+        <button type="button" className="rounded bg-gray-700 px-2 py-1" disabled={!freeInterval(region.id)} onClick={() => addRegion(region.id)}>Add nested region</button>
+        <button type="button" className="rounded bg-gray-700 px-2 py-1" disabled={!canRemove} onClick={removeRegion}>Remove region and children</button>
       </div>}
       <p className="text-gray-400">Block indices start at 0; end boundaries are exclusive. Drag skip endpoints or edit the interval and per-axis shrink factors. Fixed average pooling and residual update addition preserve parameter count. Uncalibrated quality may degrade.</p>
     </>}
-    {info && !current && <p className="text-gray-400">{configuring ? "No preset is available for this layout. Supply a topology in the run configuration." : "The checkpoint uses the native DiT sequence."}</p>}
+    {info && !current && <p className="text-gray-400">{configuring ? "No model preset is available. Create a region and edit its interval and shrink factors." : "The checkpoint uses the native DiT sequence."}</p>}
     {pending && <p className="text-gray-400">Validating topology…{plan && " The graph shows the last validated configuration."}</p>}
     {error && <p role="alert" className="text-red-400">{error}</p>}
   </section>;

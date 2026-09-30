@@ -5,7 +5,7 @@ from pathlib import Path
 from safetensors import safe_open
 
 from .artifacts import read_artifact_topology, read_directory_topology
-from .spec import digest
+from .spec import OPERATORS, build_spec, digest
 
 
 def _native_adapter(architecture):
@@ -74,8 +74,14 @@ def inspect_model(model_path):
     if type(config["num_layers"]) is not int or not 3 <= config["num_layers"] <= 4096:
         raise ValueError("Native stream block count must be an integer between 3 and 4096")
     streams = [{"name": "main", "block_count": config["num_layers"]}]
+    from api.param_defaults import DIT_REWIRING_REGION_DEFAULTS
+    edges = DIT_REWIRING_REGION_DEFAULTS["edge_blocks"]
+    initial = build_spec(architecture, streams, [dict(
+        id="r0", stream=streams[0]["name"], parent=None,
+        start_block=edges, end_block=config["num_layers"]-edges,
+        down_factor=DIT_REWIRING_REGION_DEFAULTS["down_factor"], **OPERATORS)], config)
     return dict(architecture=architecture, streams=streams,
                 base_config_sha256=digest(config), block_layout_sha256=digest(streams),
                 topology=topology, topology_sha256=None if topology is None else digest(topology),
-                default_spec=adapter.default_topology(config),
+                default_spec=adapter.default_topology(config), initial_spec=initial,
                 latent_scale_factor=token_scale, pixel_alignment=alignment)

@@ -23,6 +23,39 @@ def restore_topology(model, spec):
         model._residual_unet_spec = validate_topology_identity(spec, dict(model.config))
 
 
+def model_topology_metadata(model):
+    from core.rewiring.spec import checkpoint_metadata
+    spec = getattr(model, "_residual_unet_spec", None)
+    return {} if spec is None else checkpoint_metadata(
+        validate_topology_identity(spec, dict(model.config)))
+
+
+def preflight_artifact_topology(path):
+    import json
+    from pathlib import Path
+    from safetensors import safe_open
+    from core.rewiring.artifacts import read_artifact_topology
+
+    spec = read_artifact_topology(path)
+    if spec is None:
+        return None
+    source = Path(path)
+    if not source.exists() and Path(str(source) + ".index.json").is_file():
+        source = Path(str(source) + ".index.json")
+    if str(source).endswith(".safetensors.index.json"):
+        with source.open(encoding="utf-8") as handle:
+            metadata = json.load(handle)["metadata"]
+    else:
+        with safe_open(str(source), framework="pt", device="cpu") as handle:
+            metadata = handle.metadata() or {}
+    if metadata.get("model_type") != "krea2" or not metadata.get("krea2_config"):
+        raise ValueError("Rewired Krea artifact requires native config metadata")
+    config = json.loads(metadata["krea2_config"])
+    if not isinstance(config, dict):
+        raise ValueError("Native Krea config must be an object")
+    return validate_topology_identity(spec, config)
+
+
 def run_rewired_krea(model, hidden, modulation, rotary, mask, position_ids, prefix, spec):
     spec = validate_topology_identity(spec, dict(model.config))
     if getattr(model, "_style_ctx", None) is not None:

@@ -471,6 +471,8 @@ def load_single_file(path: str, torch_dtype: torch.dtype = torch.bfloat16) -> di
               "text_encoder_state_dict": dict|None, "is_distilled": bool,
               "config": dict}.
     """
+    from ..residual_unet import preflight_artifact_topology, restore_topology
+    topology = preflight_artifact_topology(path)
     raw, metadata = _read_safetensors(path)
     reject_unsupported_quant(path, metadata, raw)
 
@@ -486,6 +488,7 @@ def load_single_file(path: str, torch_dtype: torch.dtype = torch.bfloat16) -> di
         is_distilled = True
 
     model = build_krea2_transformer(diffusers_sd, config, torch_dtype)
+    restore_topology(model, topology)
     return {
         "transformer": model,
         "text_encoder_state_dict": te_sd,
@@ -528,6 +531,12 @@ def save_single_file(
             for k, v in vae.state_dict().items():
                 yield f"{VAE_PREFIX}{k}", v
 
+    from ..residual_unet import model_topology_metadata
+    from core.rewiring.spec import read_checkpoint_metadata
+    topology_metadata = model_topology_metadata(transformer)
+    if extra_metadata and any(key.startswith("sushi.rewire.") for key in extra_metadata):
+        if read_checkpoint_metadata(extra_metadata) != read_checkpoint_metadata(topology_metadata):
+            raise ValueError("Export metadata cannot override the model topology")
     state, dropped_tied = dedup_tensors(_named())
 
     config = dict(getattr(transformer, "config", {}) or {})
@@ -544,4 +553,5 @@ def save_single_file(
         metadata["tied_weights_dropped"] = json.dumps(dropped_tied)
     if extra_metadata:
         metadata.update({k: str(v) for k, v in extra_metadata.items()})
+    metadata.update(topology_metadata)
     save_single_file_state(state, metadata, path, max_shard_bytes=max_shard_bytes)

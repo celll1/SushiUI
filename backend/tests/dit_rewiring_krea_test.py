@@ -96,5 +96,77 @@ class KreaRuntimeContracts(unittest.TestCase):
         self.assertEqual(self.forward(malformed).shape, self.image.shape)
 
 
+    def test_full_and_lora_artifact_round_trip(self):
+        import json
+        import tempfile
+        from types import SimpleNamespace
+        from core.models.krea2.vendor import single_file
+        from core.models.krea2.residual_unet import restore_topology
+        from core.rewiring.artifacts import read_artifact_topology
+        from core.rewiring.spec import checkpoint_metadata, read_checkpoint_metadata
+        from core.training.adapters.krea2_adapter import Krea2LoRAAdapter
+        trainer = SimpleNamespace(transformer=self.model, config={}, krea2_is_distilled=False)
+        adapter = Krea2LoRAAdapter(trainer, 4, 4)
+        self.assertEqual(read_checkpoint_metadata(adapter.checkpoint_metadata({}, 1, 0)), self.spec)
+        with torch.no_grad():
+            expected = self.forward()
+        for limit in (10**9, 12000):
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory)/"krea.safetensors"
+                single_file.save_single_file(str(path), self.model, False, max_shard_bytes=limit)
+                actual_path = path if path.exists() else Path(str(path)+".index.json")
+                self.assertEqual(read_artifact_topology(actual_path), self.spec)
+                restored = single_file.load_single_file(str(actual_path), torch.float32)["transformer"]
+                self.assertEqual(restored._residual_unet_spec, self.spec)
+                for key, value in self.model.state_dict().items():
+                    torch.testing.assert_close(value, restored.state_dict()[key], rtol=0, atol=0)
+                with torch.no_grad():
+                    actual = restored(self.image, self.text, torch.tensor([0.5]),
+                                      self.positions, self.mask, return_dict=False)[0]
+                torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+                with self.assertRaisesRegex(ValueError, "override"):
+                    single_file.save_single_file(str(Path(directory)/"bad.safetensors"),
+                        self.model, False, extra_metadata=checkpoint_metadata(
+                            dict(self.spec, base_config_sha256="0"*64)))
+                if str(actual_path).endswith(".index.json"):
+                    index = json.loads(actual_path.read_text(encoding="utf-8"))
+                    index["metadata"]["krea2_config"] = json.dumps({
+                        **dict(self.model.config), "norm_eps": 0.01})
+                    actual_path.write_text(json.dumps(index), encoding="utf-8")
+                    with patch.object(single_file, "_read_safetensors") as reader:
+                        with self.assertRaisesRegex(ValueError, "native config mismatch"):
+                            single_file.load_single_file(str(actual_path), torch.float32)
+                        reader.assert_not_called()
+        restore_topology(self.model, None)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/"dense.safetensors"
+            single_file.save_single_file(str(path), self.model, False)
+            self.assertIsNone(read_artifact_topology(path))
+            restored = single_file.load_single_file(str(path), torch.float32)["transformer"]
+            self.assertFalse(hasattr(restored, "_residual_unet_spec"))
+
+    def test_directory_preflight_and_restoration(self):
+        import json
+        import tempfile
+        from safetensors.torch import save_file
+        from core.models.krea2 import krea2_loader
+        from core.rewiring.spec import checkpoint_metadata
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.model.save_config(root)
+            save_file(self.model.state_dict(), str(root/"diffusion_pytorch_model.safetensors"),
+                      metadata={"format": "pt", **checkpoint_metadata(self.spec)})
+            restored = krea2_loader._build_transformer_from_dir(directory, torch.float32)
+            self.assertEqual(restored._residual_unet_spec, self.spec)
+            for key, value in self.model.state_dict().items():
+                torch.testing.assert_close(value, restored.state_dict()[key], rtol=0, atol=0)
+            config = json.loads((root/"config.json").read_text(encoding="utf-8"))
+            config["norm_eps"] = 0.01
+            (root/"config.json").write_text(json.dumps(config), encoding="utf-8")
+            with patch.object(krea2_loader, "_load_component_state_dict") as reader:
+                with self.assertRaisesRegex(ValueError, "native config mismatch"):
+                    krea2_loader._build_transformer_from_dir(directory, torch.float32)
+                reader.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()

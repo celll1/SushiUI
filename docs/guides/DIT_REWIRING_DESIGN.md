@@ -20,8 +20,9 @@ LTX-2.3 has a frame-local spatial residual block path, standalone transformer
 artifact contracts and directory-loader graph restoration with CPU checks. Zero
 block swap retains residual execution and its offload ordering. Training retains
 the inner transformer reference. Inherited training and LoRA resume restore the
-graph with CPU native-training checks. Full resume dispatch, companion references,
-public configure, presets and editor integration remain pending.
+graph with CPU native-training checks. Generation LoRA scopes validate metadata
+before staging and restore the base graph on exit. Full resume dispatch, companion
+references, public configure, presets and editor integration remain pending.
 GPU acceptance is restricted to Qwen-Image 2.1 by owner instruction; other models
 receive provisional implementation and CPU verification. Further architectures
 still require native execution/artifact adapters and capability gates.
@@ -2124,3 +2125,40 @@ This is CPU provisional coverage, not complete video training/resume workflow
 acceptance. GPU validation stays Qwen-Image 2.1 only. LTX-2 public configure,
 presets, editor/model discovery, generation LoRA lifetime and full-checkpoint
 companion/resume dispatch remain pending.
+
+### LTX-2 generation LoRA topology scopes
+
+All three generation entries parse selected LoRAs and resolve their graph before
+quantization, device staging or offload setup. Every selected adapter declaration
+must agree, including dense declarations, and match an already-rewired base.
+Native spatial VAE factors and every nested region must divide the per-frame
+latent grid. Caches, STG and reference style transfer are refused for residual
+generation before GPU staging. A graph supplied by an adapter forces the custom
+block loop even at zero block swap.
+
+Adapter installation preserves the native block objects and propagates the
+wrapper to base, image-to-video and conditioning pipeline references. A weak
+reference records the original inner graph. Existing generation finally clauses
+remove adapters and restore that graph on success and failure. Model replacement
+restores the old owner's graph without changing the replacement's declaration.
+A zero-target installation still has a graph scope and is restored correctly.
+Cache cleanup now summarizes only an actual FBCache instance, so a residual-only
+wrapper does not dereference a missing cache at generation exit.
+
+CPU tests call the actual text-to-video entry with a mock assembled pipeline
+that executes the real tiny native AV transformer. Predictions match the saved
+training adapter within FP32 tolerance; successful and failing calls both restore
+original native Linears and the dense graph. Mixed dense/residual LoRAs, a dense
+adapter over a rewired base, invalid grids and unsupported features refuse.
+Declared base graphs persist after scope exit, and replacement/zero-target cases
+have contracts. Shared training/runtime and LTX-2 legacy suites pass 42 cases and
+23 subtests; the common adapter-key gate's LTX-2 subset passes 11 cases. Changed
+modules compile/import with CUDA uninitialized. No non-Qwen GPU use occurred.
+
+The complete common adapter-key gate still has seven failures, reproduced at
+pre-change commit f4ff6b54 in an isolated temporary archive: five SenseNova
+counter/format cases, the Qwen sd-scripts parser case, and the inventory assertion
+missing YuE2. These are separate existing acceptance issues, not a green suite.
+LTX-2 public configure/presets/editor/model discovery, generated artifact metadata
+and full companion/resume dispatch remain pending. Video quality and speed remain
+unmeasured; GPU acceptance is Qwen-Image 2.1 only.

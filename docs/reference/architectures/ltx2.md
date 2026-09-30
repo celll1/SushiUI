@@ -42,19 +42,30 @@ the whole LTX-2 stack resolves out of the pinned venv diffusers and that
 
 ## Load path
 
-Entry: `core.models.ltx2.loader.load_ltx2_from_diffusers`, reached from
+Entry: `core.models.ltx2.loader.load_ltx2_from_path`, reached from
 `ModelLoader.load_ltx2_from_path` (`backend/core/model_loader.py`), which
 `ModelLoader.load_model` dispatches to on `model_type == "ltx2"`.
 
-Detection (`ModelLoader.detect_model_type`): **diffusers directory only** — a
-`model_index.json` whose `_class_name` is `"LTX2Pipeline"`. There is no single-file
-probe and no key-name signature for this arch.
+Detection (`ModelLoader.detect_model_type`): native Diffusers directory
+(`model_index.json` class `LTX2Pipeline`) or SushiUI full transformer single/shard
+artifact declaring `model_type=ltx2`. Standalone full artifacts require embedded
+native configuration and validated `ltx2_components` frozen companion references.
+There is no guessed key-only native geometry.
 
 Accepted layouts:
 
 * **Diffusers directory** (`<MODEL_ROOT>/model_index.json` + component subfolders). This
-  is the only top-level layout. `LTX2Pipeline.from_pretrained(path, torch_dtype=bf16)`
+  is the native complete layout. `LTX2Pipeline.from_pretrained(path, torch_dtype=bf16)`
   resolves every component.
+* **SushiUI full transformer single/shard artifacts**: native `net.*` weights,
+  `transformer_config`, optional residual graph and `ltx2_components` version-1
+  absolute Diffusers companion root. Headers, graph identity and companion root
+  geometry are checked before tensor loading; the saved transformer overrides
+  the root's DiT during pipeline assembly, so base DiT weights are not loaded
+  twice. The root owns frozen text encoder, tokenizer, connectors, video/audio
+  VAEs, vocoder and scheduler. Missing references/components or index/shard
+  disagreements refuse. Full training resume reaches the same component loader.
+  See [residual contract](../../guides/DIT_REWIRING_DESIGN.md).
 * **Weight-only *scaled* quantized `transformer/` component** — int8 and/or `e4m3` codes
   with per-row `.weight_scale` siblings. Detected **from safetensors headers only** (no
   tensor bytes) by `_quantization_census` → `quantized_state_dict_report` →

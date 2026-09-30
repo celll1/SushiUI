@@ -606,7 +606,7 @@ class ModelLoader:
             return "sd15"
         if mt in ("zimage", "z-image"):
             return "zimage"
-        if mt in ("minit2i", "krea2", "qwen_image_21", "anima", "lens", "ideogram4", "sensenova", "sensenova_sdxl_chimera"):
+        if mt in ("minit2i", "krea2", "qwen_image_21", "anima", "lens", "ideogram4", "sensenova", "sensenova_sdxl_chimera", "ltx2"):
             return mt
         if mt == "siglip2_vision_encoder":
             return "vision_encoder"
@@ -964,6 +964,8 @@ class ModelLoader:
 
                         if model_type == "qwen_image_21":
                             return "qwen_image_21"
+                        if model_type == "ltx2":
+                            return "ltx2"
                         if model_type == "acestep" and (
                                 "null_condition_emb" in keys or "net.null_condition_emb" in keys) and any(
                                 key.startswith(("decoder.layers.", "net.decoder.layers.")) for key in keys):
@@ -2295,6 +2297,9 @@ class ModelLoader:
             print("[ModelLoader] Loading as Qwen-Image 2.1 (split artifact)")
             return ModelLoader.load_qwen_image_21_from_path(file_path, torch.bfloat16)
 
+        if model_type == "ltx2":
+            return ModelLoader.load_ltx2_from_path(file_path, torch.bfloat16)
+
         # Anima (DiT + Qwen3 + Qwen-Image VAE)
         if model_type == "anima":
             print(f"[ModelLoader] Loading as Anima (Cosmos-Predict2 DiT)")
@@ -3272,8 +3277,8 @@ class ModelLoader:
         Returns a component dict consumed by PipelineManager.load_model()
         (type == "ltx2"). bf16 by default to halve the fp32 Gemma-3 text encoder.
         """
-        from core.models.ltx2.loader import load_ltx2_from_diffusers
-        return load_ltx2_from_diffusers(model_path=path, torch_dtype=torch_dtype)
+        from core.models.ltx2.loader import load_ltx2_from_path
+        return load_ltx2_from_path(model_path=path, torch_dtype=torch_dtype)
 
     @staticmethod
     def load_acestep_from_path(

@@ -4445,6 +4445,13 @@ class BaseTrainer(ABC):
         self.is_yue2 = (model_type == "yue2")
         self.is_sdxl = False
 
+        if self.is_ltx2:
+            self.model_path = checkpoint_path
+            from core.training.ops import ltx2_ops
+            ltx2_ops.load_components(self)
+            print(f"{self.log_prefix} LTX-2 checkpoint loaded successfully as base model")
+            return
+
         if self.is_acestep:
             self.model_path = checkpoint_path
             from core.training.ops import acestep_ops

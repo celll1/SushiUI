@@ -176,3 +176,76 @@ class MiniMaxMusic3ResidualContracts(unittest.TestCase):
                     _build_diffusers_component(folder,'transformer',MiniMaxMusic3Transformer1DModel,
                         'MiniMaxMusic3Transformer1DModel',torch.float32)
         self.assertFalse(torch.cuda.is_initialized())
+
+    def test_flat_safetensors_and_gguf_restore_the_same_native_residual_graph(self):
+        import json
+        import tempfile
+        from safetensors.torch import load_file,save_file
+        from tests.minimax_music3_flat_dit_fixture import write_tiny_flat_dit_and_official_tree
+        from tests.minimax_music3_gguf_fixture import write_gguf
+        from core.models.minimax_music3 import loader
+        from core.models.minimax_music3.residual_unet import export_metadata
+        with tempfile.TemporaryDirectory() as folder:
+            fixture=write_tiny_flat_dit_and_official_tree(folder)
+            config_path=Path(fixture['official'])/'transformer'/'config.json'
+            config=json.loads(config_path.read_text(encoding='utf-8'));config['num_layers']=7
+            config_path.write_text(json.dumps(config),encoding='utf-8')
+            flat=load_file(fixture['dit_path'])
+            layer_zero={key:value for key,value in flat.items()
+                        if key.startswith('diffusion_transformer.transformer.layers.0.')}
+            for index in range(1,7):
+                for key,value in layer_zero.items():
+                    flat[key.replace('.layers.0.',f'.layers.{index}.')]=value.clone()
+            save_file(flat,fixture['dit_path'])
+            dense,_,condition,_=loader.build_transformer_and_condition_encoder_from_flat_dit(
+                fixture['dit_path'],fixture['official'],torch.float32)
+            self.assertIsNone(generation_metadata(dense))
+            spec=build_spec('minimax_music3',[{'name':'main','block_count':7}],self.regions,
+                            native_config(config))
+            restore_topology(dense,spec)
+            with torch.no_grad():expected=dense(**self.inputs)[0]
+            metadata=export_metadata(dense)
+            for kind in ('safetensors','gguf'):
+                if kind=='safetensors':
+                    source=fixture['dit_path']
+                    builder=loader.build_transformer_and_condition_encoder_from_flat_dit
+                    materializer='core.models.common.single_file_format.read_state_dict'
+                    def write(values,md):save_file(values,source,metadata=md)
+                else:
+                    source=str(Path(folder)/'residual.gguf')
+                    builder=loader.build_transformer_and_condition_encoder_from_gguf_dit
+                    materializer='core.models.common.gguf_container.GGUFStateDict'
+                    def write(values,md):write_gguf(source,values,{'general.architecture':'minimax_music3',**md})
+                with self.subTest(format=kind):
+                    write(flat,metadata)
+                    loaded,_,restored_condition,_=builder(source,fixture['official'],torch.float32)
+                    self.assertEqual(loaded._residual_unet_spec,spec)
+                    for key,value in loaded.state_dict().items():
+                        torch.testing.assert_close(value,dense.state_dict()[key],rtol=0,atol=0)
+                    for key,value in restored_condition.state_dict().items():
+                        torch.testing.assert_close(value,condition.state_dict()[key],rtol=0,atol=0)
+                    with torch.no_grad():actual=loaded(**self.inputs)[0]
+                    torch.testing.assert_close(actual,expected,rtol=2e-5,atol=2e-6)
+                    bad=dict(metadata);bad['sushi.rewire.spec_sha256']='0'*64
+                    write(flat,bad)
+                    with patch(materializer,side_effect=AssertionError('materialized tensors')):
+                        with self.assertRaisesRegex(ValueError,'hash mismatch'):
+                            builder(source,fixture['official'],torch.float32)
+                    wrong=build_spec('minimax_music3',[{'name':'main','block_count':7}],self.regions,
+                        {**native_config(config),'condition_dim':8})
+                    from core.rewiring.spec import checkpoint_metadata
+                    write(flat,checkpoint_metadata(wrong))
+                    with patch(materializer,side_effect=AssertionError('materialized tensors')):
+                        with self.assertRaisesRegex(ValueError,'config mismatch'):
+                            builder(source,fixture['official'],torch.float32)
+                    missing={key:value for key,value in flat.items() if '.layers.6.' not in key}
+                    write(missing,metadata)
+                    with patch(materializer,side_effect=AssertionError('materialized tensors')):
+                        with self.assertRaisesRegex(ValueError,'complete native'):
+                            builder(source,fixture['official'],torch.float32)
+                    partial=dict(metadata);partial.pop('sushi.rewire.spec_sha256')
+                    write(flat,partial)
+                    with patch(materializer,side_effect=AssertionError('materialized tensors')):
+                        with self.assertRaisesRegex(ValueError,'Incomplete'):
+                            builder(source,fixture['official'],torch.float32)
+        self.assertFalse(torch.cuda.is_initialized())

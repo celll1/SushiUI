@@ -613,6 +613,13 @@ def build_transformer_and_condition_encoder_from_flat_dit(
     )
 
     header_keys = _safetensors_tensor_keys(flat_dit_path)
+    from core.rewiring.artifacts import read_artifact_topology
+    from .residual_unet import preflight_flat_headers, restore_topology
+    residual_graph = read_artifact_topology(flat_dit_path)
+    transformer_config = None
+    if residual_graph is not None:
+        transformer_config = _read_component_config(official, "transformer", "MiniMaxMusic3Transformer1DModel")
+        residual_graph = preflight_flat_headers(residual_graph, header_keys, transformer_config)
     convrot_source_layers: Dict[str, Dict[str, int]] = {}
     if _header_looks_quantized(header_keys):
         # HEADER-ONLY, before a single multi-GB tensor byte is read -- mirrors
@@ -634,6 +641,9 @@ def build_transformer_and_condition_encoder_from_flat_dit(
             )
 
     flat_state_dict, _metadata = read_state_dict(flat_dit_path)
+    from core.rewiring.spec import read_checkpoint_metadata
+    if read_checkpoint_metadata(_metadata or {}) != residual_graph:
+        raise ValueError("MiniMax Music 3 flat topology changed during loading")
     if convrot_source_layers:
         from core.models.common.convrot_int8_linear import require_convrot_int8_runtime
 
@@ -655,7 +665,8 @@ def build_transformer_and_condition_encoder_from_flat_dit(
         dit_convrot_layer_configs = {}
     del flat_state_dict
 
-    transformer_config = _read_component_config(official, "transformer", "MiniMaxMusic3Transformer1DModel")
+    if transformer_config is None:
+        transformer_config = _read_component_config(official, "transformer", "MiniMaxMusic3Transformer1DModel")
     condition_encoder_config = _read_component_config(official, "condition_encoder", "MiniMaxMusic3ConditionEncoder")
 
     transformer = _build_module_from_remapped_state_dict(
@@ -666,6 +677,8 @@ def build_transformer_and_condition_encoder_from_flat_dit(
         MiniMaxMusic3ConditionEncoder, condition_encoder_config, remapped["condition_encoder"], torch.float32,
         label="condition_encoder",
     )
+    if residual_graph is not None:
+        restore_topology(transformer, residual_graph)
     return transformer, transformer_config, condition_encoder, condition_encoder_config
 
 
@@ -705,6 +718,13 @@ def build_transformer_and_condition_encoder_from_gguf_dit(
     )
 
     header = gguf_container.parse_gguf_header(gguf_dit_path)
+    from core.rewiring.spec import read_checkpoint_metadata
+    from .residual_unet import preflight_flat_headers, restore_topology
+    residual_graph = read_checkpoint_metadata(header.metadata)
+    transformer_config = None
+    if residual_graph is not None:
+        transformer_config = _read_component_config(official, "transformer", "MiniMaxMusic3Transformer1DModel")
+        residual_graph = preflight_flat_headers(residual_graph, {item.name for item in header.tensors}, transformer_config)
     # Header-only fast path, same ordering rule as the safetensors builder's
     # `_header_looks_quantized` gate: refuse before opening the data section.
     gguf_container.refuse_unsupported_tensor_types(header, arch="MiniMax Music 3", label="flat DiT")
@@ -715,7 +735,8 @@ def build_transformer_and_condition_encoder_from_gguf_dit(
     finally:
         state.close()
 
-    transformer_config = _read_component_config(official, "transformer", "MiniMaxMusic3Transformer1DModel")
+    if transformer_config is None:
+        transformer_config = _read_component_config(official, "transformer", "MiniMaxMusic3Transformer1DModel")
     condition_encoder_config = _read_component_config(official, "condition_encoder", "MiniMaxMusic3ConditionEncoder")
 
     transformer = _build_module_from_remapped_state_dict(
@@ -726,6 +747,8 @@ def build_transformer_and_condition_encoder_from_gguf_dit(
         MiniMaxMusic3ConditionEncoder, condition_encoder_config, remapped["condition_encoder"], torch.float32,
         label="condition_encoder",
     )
+    if residual_graph is not None:
+        restore_topology(transformer, residual_graph)
     return transformer, transformer_config, condition_encoder, condition_encoder_config
 
 

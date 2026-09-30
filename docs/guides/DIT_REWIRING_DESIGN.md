@@ -2570,3 +2570,35 @@ flow chunk output provenance, production offload interactions and final workflow
 acceptance remain to be connected or verified. No Music 3 weights or GPU quality/
 performance runs are used. YuE2's separate NAR flow and shared AR KV prefix still
 require their own architecture assessment and integration.
+
+
+### MiniMax Music 3 flat safetensors/GGUF graph restoration (CPU)
+
+Both existing flat flow+condition loaders now restore the residual graph rather
+than discarding its metadata. Safetensors use the canonical artifact header
+reader; GGUF uses its native string metadata entries with the same three
+sushi.rewire schema/spec/hash keys. A missing declaration retains dense native
+behavior. Partial declarations and bad hashes refuse before materialization.
+
+For declared residual artifacts, the companion native transformer config is
+resolved before tensor reads, checked against the topology's native config hash,
+and compared with contiguous flat layer indices and required flow/condition
+headers. Flat adapters, missing blocks and mismatched geometry refuse before
+the eager safetensors reader or lazy GGUFStateDict is constructed. Safetensors
+also compare the materialized metadata with the preflight declaration. Existing
+fused-QKV remapping, condition-encoder precision, INT8 ConvRot guards and GGUF
+supported-tensor-type restrictions remain in force. Topology is installed only
+after both native components load successfully.
+
+Real seven-layer flat fixtures pass through both production builders. Every
+flow and condition tensor matches exactly; both restored residual predictions
+match the reference within FP32 tolerance. Bad digests, partial declarations,
+wrong config and missing layer headers are tested with materializers patched to
+raise if reached. Native residual, loader, GGUF loader and flat-remap checks pass
+76 tests and 2 subtests in 3.42s, with CUDA uninitialized. Changed backend files
+compile and import. No production Music 3 weights or GPU runs are used.
+
+Public model inspection/configuration, whole-song output provenance, production
+offload acceptance and YuE2 remain outstanding. This extends the internal
+artifact contract; it does not enable Music 3 training or advertise complete
+public workflow support.

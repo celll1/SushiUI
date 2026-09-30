@@ -149,3 +149,19 @@ def preflight_directory(path, config):
     from core.rewiring.artifacts import read_directory_topology
     graph = read_directory_topology(path)
     return None if graph is None else validate_topology_identity(graph, config)
+
+
+def preflight_flat_headers(graph, keys, config):
+    import re
+    if graph is None:
+        return None
+    graph = validate_topology_identity(graph, config)
+    blocks = {int(match.group(1)) for key in keys
+              if (match := re.match(r'diffusion_transformer\.transformer\.layers\.(\d+)\.', key))}
+    required = {'diffusion_transformer.transformer.project_in.weight',
+                'diffusion_transformer.transformer.project_out.weight',
+                'diffusion_transformer.timestep_features.weight', 'cond_layer_logits',
+                'cond_layer_scale', 'latent_conditioners.0.weight', 'latent_conditioners.0.bias'}
+    if blocks != set(range(native_config(config)['num_layers'])) or not required.issubset(keys):
+        raise ValueError('Rewired MiniMax Music 3 flat artifacts require complete native flow/condition headers')
+    return graph

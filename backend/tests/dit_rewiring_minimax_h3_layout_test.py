@@ -113,3 +113,134 @@ class PackedResidualLayoutContracts(unittest.TestCase):
                 self.layout.prefix, self.layout.context, execute, coarse_context, grid_groups=3)
         torch.testing.assert_close(self.layout.unpack(inference), expected, rtol=2e-5, atol=2e-6)
         self.assertFalse(torch.cuda.is_initialized())
+
+class MiniMaxH3WrapperResidualContracts(unittest.TestCase):
+    prepare = PackedResidualLayoutContracts.prepare
+
+    def setUp(self):
+        PackedResidualLayoutContracts.setUp(self)
+        from core.models.minimax_h3.vendor import MiniMaxH3Transformer3DModel
+        from core.models.minimax_h3.residual_unet import native_config, wrap_transformer
+        torch.manual_seed(209)
+        self.inner = MiniMaxH3Transformer3DModel(num_attention_heads=2, attention_head_dim=16,
+            hidden_size=16, num_layers=7, num_refiner_layers=2, ffn_dim=32,
+            in_channels=4, audio_in_channels=6, patch_size=(1,2,2), text_dim=10,
+            freq_dim=8, time_embed_hidden_dim=16, time_embed_dim=8, rope_freq_dim=2,
+            adaln_curve_grid=33).float().eval()
+        with torch.no_grad(): self.inner.adaln_t_table.copy_(torch.randn_like(self.inner.adaln_t_table))
+        self.spec = build_spec('minimax_h3', [{'name':'main', 'block_count':7}],
+                              self.spec['regions'], native_config(self.inner.config))
+        self.wrapper = wrap_transformer(self.inner, self.spec)
+        self.args = dict(hidden_states=torch.randn(2, self.native['video_indices'].numel(), 16, requires_grad=True),
+            audio_hidden_states=torch.randn(2, self.native['audio_indices'].numel(), 6, requires_grad=True),
+            encoder_hidden_states=torch.randn(2, 4, 10, requires_grad=True),
+            timestep=torch.tensor([.3, .9]), timestep_indices=self.times,
+            token_tags=self.native['token_tags'], position_ids=self.native['position_ids'],
+            video_indices=self.native['video_indices'], audio_indices=self.native['audio_indices'],
+            text_indices=self.native['text_indices'], return_dict=False,
+            residual_video_grid=dict(frames=3, height=8, width=12, target_indices=self.target))
+
+    def test_wrapper_native_heads_and_checkpointed_gradients(self):
+        observed = []
+        hooks = [block.register_forward_pre_hook(lambda module, args: observed.append(args[0].shape[1]))
+                 for block in self.inner.transformer_blocks]
+        try:
+            expected = self.wrapper(**self.args)
+        finally:
+            for handle in hooks: handle.remove()
+        self.assertEqual(observed, [106+n for n in (288,72,18,18,18,72,288)])
+        self.assertEqual(expected[0].shape, self.args['hidden_states'].shape)
+        self.assertEqual(expected[1].shape, self.args['audio_hidden_states'].shape)
+        sum(value.square().mean() for value in expected).backward()
+        expected_grad = {name:p.grad.clone() for name,p in self.inner.named_parameters() if p.grad is not None}
+        input_grad = {key:self.args[key].grad.clone() for key in
+                      ('hidden_states', 'audio_hidden_states', 'encoder_hidden_states')}
+        self.inner.zero_grad(set_to_none=True)
+        for key in input_grad: self.args[key].grad = None
+        self.inner.enable_gradient_checkpointing()
+        got = self.wrapper(**self.args)
+        for a,b in zip(got,expected): torch.testing.assert_close(a,b,rtol=0,atol=0)
+        sum(value.square().mean() for value in got).backward()
+        for name,p in self.inner.named_parameters():
+            if name in expected_grad:
+                torch.testing.assert_close(p.grad,expected_grad[name],rtol=0,atol=0)
+        for key in input_grad:
+            torch.testing.assert_close(self.args[key].grad,input_grad[key],rtol=0,atol=0)
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_block_swap_runs_every_native_block_and_dense_delegation_restores(self):
+        from core.models.minimax_h3.residual_unet import restore_topology
+        class Offloader:
+            blocks_to_swap = 2
+            calls = []
+            def wait_for_block(self,index): self.calls.append(('wait',index))
+            def submit_move_blocks_forward(self,index): self.calls.append(('submit',index))
+        offloader = Offloader()
+        self.wrapper.attach_block_offloader(offloader)
+        with torch.no_grad(): self.wrapper(**self.args)
+        self.assertEqual(offloader.calls, [call for index in range(7)
+            for call in (('wait',index),('submit',index))])
+        self.wrapper.attach_block_offloader(None)
+        restore_topology(self.wrapper, None)
+        self.assertFalse(self.wrapper._any_feature_active())
+        args = {key:value for key,value in self.args.items() if key != 'residual_video_grid'}
+        with torch.no_grad():
+            expected = self.inner(**args); got = self.wrapper(**args)
+        for a,b in zip(got,expected): self.assertTrue(torch.equal(a,b))
+
+    def test_preflight_refuses_conflicts_and_deep_mixed_pins_before_projection(self):
+        from unittest.mock import patch
+        with patch.object(self.inner.proj_in, 'forward', side_effect=AssertionError('projection ran')):
+            for key,value in (('_fbcache',object()), ('_skip_blocks',frozenset([1])),
+                              ('_residual_probe',object())):
+                with self.subTest(key=key), patch.object(self.wrapper,key,value), self.assertRaises(ValueError):
+                    self.wrapper(**self.args)
+            with patch.object(self.inner,'_attention_plan',object(),create=True), self.assertRaises(ValueError):
+                self.wrapper(**self.args)
+            for override in ({'residual_video_grid':None}, {'attention_kwargs':{'scale':2.}},
+                             {'audio_indices':self.args['text_indices']},
+                             {'timestep':torch.tensor([.3])}):
+                with self.subTest(override=tuple(override)), self.assertRaises(ValueError):
+                    self.wrapper(**{**self.args, **override})
+            times = self.times.clone()
+            # One homogeneous first-level cell, mixed inside the deeper 4x4 cell.
+            times[self.target[torch.tensor([0,1,12,13])]] = 1
+            with self.assertRaisesRegex(ValueError,'mix pinned'):
+                self.wrapper(**{**self.args,'timestep_indices':times})
+
+    def test_topology_identity_cannot_be_transferred_to_another_native_config(self):
+        from core.models.minimax_h3.residual_unet import restore_topology
+        config = dict(self.inner.config)
+        self.inner.register_to_config(rope_theta=config['rope_theta']+1)
+        with self.assertRaisesRegex(ValueError,'native config'):
+            restore_topology(self.wrapper,self.spec)
+        self.inner.register_to_config(**config)
+        broken = deepcopy(self.spec); broken['architecture']='ltx2'
+        with self.assertRaises(ValueError): restore_topology(self.wrapper,broken)
+
+    def test_unpruned_modulation_and_native_output_object(self):
+        from core.models.minimax_h3.vendor import MiniMaxH3Transformer3DModel
+        from core.models.minimax_h3.residual_unet import native_config, wrap_transformer, GRID_POLICY_KEY
+        cfg = native_config(self.inner.config)
+        cfg.pop(GRID_POLICY_KEY); cfg['adaln_curve_grid'] = None
+        model = MiniMaxH3Transformer3DModel(**cfg).float().eval()
+        spec = build_spec('minimax_h3', [{'name':'main','block_count':7}], self.spec['regions'], native_config(model.config))
+        wrapper = wrap_transformer(model,spec)
+        result = wrapper(**{**self.args, 'return_dict':True})
+        self.assertEqual(result.sample.shape,self.args['hidden_states'].shape)
+        self.assertEqual(result.audio_sample.shape,self.args['audio_hidden_states'].shape)
+        (result.sample.square().mean()+result.audio_sample.square().mean()).backward()
+        self.assertTrue(torch.isfinite(model.time_embedder.linear_1.weight.grad).all())
+        self.assertGreater(torch.count_nonzero(model.time_embedder.linear_1.weight.grad).item(),0)
+
+    def test_permuted_pinned_frame_keeps_original_video_head_order(self):
+        indices = self.args['video_indices']
+        permutation = torch.cat((torch.arange(192,288),torch.arange(96),torch.arange(96,192),torch.arange(288,384)))
+        args = {**self.args, 'video_indices':indices[permutation],
+                'hidden_states':self.args['hidden_states'][:,permutation]}
+        times = self.times.clone(); times[self.target[96:192]] = 1
+        with torch.no_grad():
+            expected = self.wrapper(**{**self.args,'timestep_indices':times})
+            got = self.wrapper(**{**args,'timestep_indices':times})
+        for a,b in ((got[0],expected[0][:,permutation]),(got[1],expected[1])):
+            torch.testing.assert_close(a,b,rtol=0,atol=0)

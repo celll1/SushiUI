@@ -2316,3 +2316,44 @@ Native wrapper dispatch, generation/training topology installation, artifact
 restore, sparse-attention planning and public editor/schema integration remain
 pending. Other remaining architectures and consolidated owner acceptance remain
 part of the overall task.
+
+### MiniMax-H3 native wrapper execution
+
+The existing MiniMaxH3BlockLoopWrapper now notices an installed inner residual
+graph and accepts explicit residual_video_grid as an internal keyword. Graph
+identity hashes the vendored constructor's native configuration, including
+patch geometry, rotary axes and the pruned/full AdaLN variant, plus the packed
+spatial policy. Restoration checks the actual block count before installing a
+copy. Clearing the graph restores normal dense delegation.
+
+Residual preflight validates the complete native modality-row partition, input
+batch/row/channel shapes, timestep addressing and explicit rectangular target
+lattice. Every nested spatial level is checked before any projection, including
+mixed pinned/free AdaLN labels that only collide in the deeper level. Custom
+attention kwargs, native sparse-attention plans, FBCache, debug skip and residual
+probes refuse residual execution rather than consuming stale sequence geometry.
+Supporting sparse plans needs an explicit per-level plan rebuild and remains
+pending.
+
+The wrapper keeps its native projections, token refiner, timestep embedding and
+modality output heads. Its residual loop repacks only the intermediate hidden
+state, recomputes native RoPE for each coarse context, and passes the native
+block, modulation and positions explicitly through the native gradient
+checkpoint function. Block-swap waits/submissions occur once per executed block.
+After restoring the original target grid, inverse packing recovers the native
+row order before output normalization and both heads.
+
+The combined new layout/wrapper and existing wrapper/FBCache/skip/probe CPU
+contracts pass 58 cases and 11 subtests. The actual full forward preserves video
+and audio output shapes; gradient checkpointing reproduces exact predictions,
+input gradients and parameter gradients. Both AdaLN-curve and unpruned timestep
+MLP variants run, including a real backward into the timestep MLP. A pinned-frame
+video permutation preserves exact native output ordering. Invalid topology,
+attention/cache conflicts and deeper mixed pins refuse before projection.
+Compile and real imports pass with CUDA uninitialized.
+
+Generation/training callers do not yet supply the internal geometry, and the
+public residual capability list does not yet include MiniMax-H3. Topology
+installation through public loading/training, checkpoint persistence/restoration,
+editor/schema integration and caller geometry plumbing remain pending. No
+MiniMax-H3 GPU generation/training, quality or speed validation was performed.

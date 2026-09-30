@@ -73,6 +73,98 @@ class LensRuntimeContracts(unittest.TestCase):
         self.assertEqual(original,{name:id(value) for name,value in self.model.named_parameters()})
         self.assertFalse(torch.cuda.is_initialized())
 
+    def test_generation_lora_topology_scope_and_model_replacement(self):
+        from copy import deepcopy
+        from core.models.lens.residual_unet import restore_topology, native_config
+        from core.pipeline_backends.lens import LensMixin
+        from core.training.adapters.lens_adapter import LensLoRAAdapter
+        from core.rewiring.spec import checkpoint_metadata
+        from core.adapters import CompositeAdapterLayer, AdapterIncompatible
+        from safetensors.torch import save_file
+        class Manager(LensMixin):
+            def __init__(manager,model):manager.lens_components={"transformer":model}
+            def _lens_resolve_lora_path(manager,path):return str(path)
+        base=deepcopy(self.model);manager=Manager(base)
+        original=base.transformer_blocks[0].attn.img_qkv
+        adapter=LensLoRAAdapter(SimpleNamespace(transformer=self.model,config={}),2,2)
+        self.model.requires_grad_(False);layers={};adapter.apply_lora_to_unet(layers)
+        with torch.no_grad():
+            for layer in layers.values():
+                for value in layer.branch_tensors().values():value.add_(0.01)
+        tensors={f"{name}.{key}":value.detach().contiguous()
+                 for name,layer in layers.items() for key,value in layer.branch_tensors().items()}
+        restore_topology(self.model,self.spec)
+        expected=self.forward().detach()
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);good=root/"good.safetensors";dense=root/"dense.safetensors"
+            changed=root/"changed.safetensors";bad=root/"bad.safetensors"
+            md={"model_type":"lens",**checkpoint_metadata(self.spec)}
+            save_file(tensors,str(good),metadata=md)
+            save_file(tensors,str(dense),metadata={"model_type":"lens"})
+            other=build_spec("lens",self.spec["streams"],self.spec["regions"][:1],native_config(base))
+            save_file(tensors,str(changed),metadata={"model_type":"lens",**checkpoint_metadata(other)})
+            save_file({"lora_unet_ghost.lora_down.weight":torch.ones(2,24),
+                       "lora_unet_ghost.lora_up.weight":torch.ones(24,2)},str(bad),metadata=md)
+            request=lambda paths:[{"path":str(path),"strength":1.0} for path in paths]
+            for paths in ([good,dense],[good,changed],[good,bad]):
+                with self.assertRaises(RuntimeError):manager._load_lora_lens(request(paths))
+                self.assertIs(base.transformer_blocks[0].attn.img_qkv,original)
+                self.assertFalse(hasattr(base,"_residual_unet_spec"))
+            self.assertGreater(manager._load_lora_lens(request([good])),0)
+            self.assertEqual(base._residual_unet_spec,self.spec)
+            with patch.object(self,"model",base):torch.testing.assert_close(self.forward(),expected)
+            manager._load_lora_lens([])
+            self.assertIs(base.transformer_blocks[0].attn.img_qkv,original)
+            self.assertFalse(hasattr(base,"_residual_unet_spec"))
+            restore_topology(base,self.spec)
+            with self.assertRaises(AdapterIncompatible):manager._load_lora_lens(request([dense]))
+            manager._load_lora_lens(request([good]));manager._unload_lora_lens()
+            self.assertEqual(base._residual_unet_spec,self.spec)
+            restore_topology(base,None)
+            manager._load_lora_lens(request([good]))
+            replacement=type(base)(**native_config(base))
+            manager.lens_components["transformer"]=replacement
+            replacement_original=replacement.transformer_blocks[0].attn.img_qkv
+            manager._unload_lora_lens()
+            self.assertIs(replacement.transformer_blocks[0].attn.img_qkv,replacement_original)
+            self.assertFalse(hasattr(replacement,"_residual_unet_spec"))
+            self.assertFalse(hasattr(base,"_residual_unet_spec"))
+            self.assertFalse(any(isinstance(m,CompositeAdapterLayer) for m in replacement.modules()))
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_all_generation_entries_preflight_before_staging(self):
+        from core.models.lens.residual_unet import restore_topology
+        from core.pipeline_backends.lens import LensMixin
+        from core.rewiring.spec import digest
+        from PIL import Image
+        class Manager(LensMixin):
+            def __init__(manager):
+                manager.device=torch.device("cpu")
+                manager.lens_components={"transformer":self.model,"tokenizer":object(),"vae":object(),"scheduler":object()}
+        manager=Manager();restore_topology(self.model,self.spec)
+        image=Image.new("RGB",(192,128));mask=Image.new("L",(192,128))
+        calls=[(manager._generate_txt2img_lens,()),(manager._generate_img2img_lens,(image,)),
+               (manager._generate_inpaint_lens,(image,mask))]
+        with patch.object(manager,"_lens_kh_setup",side_effect=RuntimeError("stop before staging")) as setup:
+            for generate,args in calls:
+                params={"width":192,"height":128,"seed":1}
+                with self.assertRaisesRegex(RuntimeError,"stop before staging"):generate(params,*args)
+                self.assertEqual(params["dit_rewiring_actual"],
+                    {"spec":self.spec,"spec_sha256":digest(self.spec),"kv_cache":False})
+                for options,message in (({"style_transfer":{"image":True}},"style injection"),
+                        ({"ref_images":["reference.png"]},"reference image grids"),
+                        ({"fbcache_enable":True,"fbcache_threshold":0.1},"FBCache"),
+                        ({"nag_enable":True},"NAG"),({"prompt":"(blurry:-1)"},"NegPip"),
+                        ({"height":144},"divisible")):
+                    before=setup.call_count
+                    with self.assertRaisesRegex(Exception,message):generate(dict(params,**options),*args)
+                    self.assertEqual(setup.call_count,before)
+            restore_topology(self.model,None)
+            params={"dit_rewiring_actual":{"stale":True}}
+            self.assertEqual(manager._lens_rewiring_preflight(params,128,192),[])
+            self.assertNotIn("dit_rewiring_actual",params)
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_training_inheritance_lora_resume_and_real_train_step(self):
         from core.models.lens.residual_unet import configure_training_topology, restore_topology
         from core.training.adapters.lens_adapter import LensLoRAAdapter

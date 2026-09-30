@@ -89,20 +89,14 @@ _NO_RESUME_SPEC = object()
 
 def configure_training_topology(model, config, *, resuming=False, pending_adapter_resume=False,
                                 resume_spec=_NO_RESUME_SPEC):
-    from copy import deepcopy
-    from api.param_defaults import DIT_REWIRING_PRESETS
-    from core.rewiring.spec import OPERATORS, build_spec
     from core.rewiring.training import validate_training_features, validate_training_rewiring
 
     mode, requested = validate_training_rewiring(config, "qwen_image_21")
     existing = getattr(model, "_residual_unet_spec", None)
     if mode == "configure" and requested is None:
-        preset = deepcopy(DIT_REWIRING_PRESETS["qwen_image_21"])
-        if preset["block_count"] != len(model.transformer_blocks):
+        requested = default_topology(dict(model.config))
+        if requested is None:
             raise ValueError("No rewiring preset for this Qwen block count; supply an explicit spec")
-        regions = [dict(region, **OPERATORS) for region in preset["regions"]]
-        requested = build_spec("qwen_image_21", [{"name":"main", "block_count":preset["block_count"]}],
-                               regions, native_config(dict(model.config)))
     if requested is not None:
         requested = validate_topology_identity(requested, dict(model.config))
     if resume_spec is not _NO_RESUME_SPEC:
@@ -127,3 +121,15 @@ def configure_training_topology(model, config, *, resuming=False, pending_adapte
     config["dit_rewiring_mode"] = mode
     config["dit_rewiring_spec"] = resolved
     return resolved
+
+
+def default_topology(config):
+    from copy import deepcopy
+    from api.param_defaults import DIT_REWIRING_PRESETS
+    from core.rewiring.spec import OPERATORS, build_spec
+    preset = deepcopy(DIT_REWIRING_PRESETS["qwen_image_21"])
+    if native_config(config)["num_layers"] != preset["block_count"]:
+        return None
+    spec = build_spec("qwen_image_21", [{"name":"main","block_count":preset["block_count"]}],
+                      [dict(region, **OPERATORS) for region in preset["regions"]], native_config(config))
+    return validate_topology_identity(spec, config)

@@ -4,7 +4,8 @@ Status: accepted implementation contract. Canonical topology validation and
 side-effect-free preview APIs are implemented. Qwen-Image 2.1 has an internal
 forward path with checkpointed backward verification. Training request/YAML
 configuration is connected for Qwen LoRA/full runs. Generation capability
-reporting, adapter-stack restoration, and the graphical editor are pending.
+reporting and adapter-stack restoration are pending. The training graphical
+editor is connected; browser rendering and interaction acceptance are pending.
 Full Qwen artifact save/restore is connected; production acceptance remains pending. Other
 architectures require individual capability gates.
 
@@ -147,3 +148,13 @@ model disables KV caching. Current gates refuse partition training/global adapte
 TREAD, REPA, and block skipping. CPU contracts cover request/YAML parity, default
 resolution, inheritance, resume comparison, and refusal without model mutation.
 Actual trainer steps, persisted run/resume state and UI round trips remain pending.
+
+The training editor uses `POST /api/v1/models/rewiring/inspect` to obtain native
+config/layout identities, saved topology, and the resolved preset from file headers.
+It previews pixel/latent dimensions and per-level block/token counts through the
+validation API. The shared SVG renderer draws the resolution sequence and residual
+skip arcs; draggable boundaries, numeric endpoints, per-axis factors, parent
+selection, nested-region addition and subtree removal edit the same request spec.
+`PARAM_KEYS` carries both settings through clone, presets and run restoration.
+The backend inspection API is tested without tensor loading or model construction.
+Frontend build/type checking remain owner-run; browser/editor validation is pending.

@@ -10,6 +10,7 @@ import NumberInput from "../common/NumberInput";
 import VisionEncoderSelector from "../common/VisionEncoderSelector";
 import TimestepDistributionGraph from "./TimestepDistributionGraph";
 import QwenTrainingObjective from "./QwenTrainingObjective";
+import DiTRewiringEditor from "./DiTRewiringEditor";
 import GpuSelect from "./GpuSelect";
 import VaeSwapSourceSelector from "./VaeSwapSourceSelector";
 import DanbooruAugmentationSection from "./DanbooruAugmentationSection";
@@ -6236,6 +6237,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   </p>
                 )}
               </div>
+            )}
+
+            {isQwenImage21Model && (trainingMethod === "lora" || trainingMethod === "full_finetune") && (
+              <DiTRewiringEditor modelPath={baseModelPath} resolution={Math.max(...baseResolutions)}
+                mode={params.dit_rewiring_mode} spec={params.dit_rewiring_spec}
+                onChange={(mode, spec) => setParams(prev => ({ ...prev, dit_rewiring_mode: mode, dit_rewiring_spec: spec }))} />
             )}
 
             {/* Per-bucket activation offload dispatcher */}

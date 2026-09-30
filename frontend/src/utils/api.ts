@@ -7253,7 +7253,7 @@ export interface TrainingRunCreateRequest {
   dit_gradient_checkpointing_blocks?: number | null;
   dit_partition_gradient_checkpointing_blocks?: number | null;
   dit_rewiring_mode?: "inherit" | "configure";
-  dit_rewiring_spec?: Record<string, unknown> | null;
+  dit_rewiring_spec?: DiTRewiringSpec | null;
   dit_partition_training_enabled?: boolean;
   dit_partition_mode?: "fixed" | "token_threshold";
   dit_partition_fixed_count?: 2 | 4;
@@ -9472,3 +9472,34 @@ export const getTaggerVocabularyPreview = async (
   const response = await api.get("/tagger-training/vocabulary-preview", { params });
   return response.data;
 };
+
+
+export interface DiTRewiringRegion {
+  id: string; stream: string; parent: string | null;
+  start_block: number; end_block: number; down_factor: [number, number];
+  down: "avg_pool"; up: "bilinear"; align_corners: false;
+  merge: "identity_delta_add"; position_policy: "coarse_integer";
+  grid_policy: "require_divisible"; delta_dtype: "float32";
+}
+export interface DiTRewiringSpec {
+  schema_version: 1; method: "residual_delta_unet"; architecture: string;
+  streams: { name: string; block_count: number }[];
+  regions: DiTRewiringRegion[];
+  base_config_sha256: string; block_layout_sha256: string;
+}
+export interface DiTRewiringPlan {
+  levels: { id: string; depth: number; height: number; width: number; tokens: number }[];
+  skip_edges: { region: string; stream: string; source: number; target: number; merge: string }[];
+  blocks: { stream: string; index: number; depth: number; height: number; width: number; tokens: number }[];
+}
+export interface DiTRewiringModelInfo {
+  architecture: string; streams: DiTRewiringSpec["streams"];
+  base_config_sha256: string; block_layout_sha256: string;
+  topology: DiTRewiringSpec | null; topology_sha256: string | null; default_spec: DiTRewiringSpec | null;
+  latent_scale_factor: number; pixel_alignment: number;
+}
+export const inspectDiTRewiring = async (modelPath: string): Promise<DiTRewiringModelInfo> =>
+  (await api.post("/models/rewiring/inspect", { model_path: modelPath })).data;
+export const previewDiTRewiring = async (spec: DiTRewiringSpec, tokenHeight: number, tokenWidth: number):
+  Promise<{ spec: DiTRewiringSpec; spec_sha256: string; plan: DiTRewiringPlan }> =>
+  (await api.post("/models/rewiring/validate", { spec, token_height: tokenHeight, token_width: tokenWidth })).data;

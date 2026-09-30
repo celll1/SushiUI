@@ -40,6 +40,96 @@ class AceStepRuntimeContracts(unittest.TestCase):
         args.update(overrides)
         return self.model(**args)
 
+    def test_training_inheritance_resume_and_atomic_refusals(self):
+        from core.models.acestep.residual_unet import configure_training_topology, restore_topology
+        restore_topology(self.model, self.spec)
+        config = {}
+        self.assertEqual(configure_training_topology(self.model, config), self.spec)
+        self.assertEqual(config["dit_rewiring_spec"], self.spec)
+        untouched = {}
+        self.assertEqual(configure_training_topology(self.model, untouched, resuming=True,
+            resume_spec=self.spec, install=False), self.spec)
+        self.assertEqual(untouched, {})
+        for invalid, options in (({}, dict(resume_spec=None)),
+                ({"dit_rewiring_mode":"configure","dit_rewiring_spec":self.spec}, {}),
+                ({"block_skip_rate":0.5}, {}), ({"tread_enable":True}, {})):
+            before = deepcopy(invalid)
+            with self.assertRaises(ValueError):
+                configure_training_topology(self.model, invalid, resuming=True, **options)
+            self.assertEqual(invalid, before)
+            self.assertEqual(self.model._residual_unet_spec, self.spec)
+        self.model.config._attn_implementation = "flash_attention_2"
+        with self.assertRaisesRegex(ValueError, "SDPA"):
+            configure_training_topology(self.model, {})
+        self.model.config._attn_implementation = "eager"
+        restore_topology(self.model, None)
+        requested = {"dit_rewiring_mode":"inherit","dit_rewiring_spec":self.spec}
+        self.assertEqual(configure_training_topology(self.model, requested, resuming=True,
+            resume_spec=self.spec), self.spec)
+        restore_topology(self.model, None)
+        config = {}
+        self.assertIsNone(configure_training_topology(self.model, config))
+        self.assertIsNone(config["dit_rewiring_spec"])
+        self.assertFalse(hasattr(self.model, "_residual_unet_spec"))
+        owner = torch.nn.Module()
+        owner.decoder = self.model
+        owner.config = deepcopy(self.model.config)
+        self.model.config.intermediate_size += 8
+        try:
+            with self.assertRaisesRegex(ValueError, "owner/decoder"):
+                configure_training_topology(owner, {}, resume_spec=self.spec, install=False)
+            self.assertFalse(hasattr(owner, "_residual_unet_spec"))
+        finally:
+            self.model.config.intermediate_size -= 8
+
+    def test_real_lora_resume_restores_graph_before_native_prediction(self):
+        import tempfile
+        from types import SimpleNamespace
+        from safetensors import safe_open
+        from safetensors.torch import load_file, save_file
+        from core.models.acestep.residual_unet import restore_topology
+        from core.training.adapters.acestep_adapter import AceStepLoRAAdapter
+        from core.training.lora_trainer import LoRATrainer
+        owner = torch.nn.Module()
+        owner.decoder = self.model
+        owner.config = self.model.config
+        trainer = SimpleNamespace(transformer=owner, config={}, is_acestep=True,
+            log_prefix="[CPU]", lora_rank=2, lora_alpha=2, lora_layers={})
+        adapter = AceStepLoRAAdapter(trainer, 2, 2, torch.float32)
+        trainer.adapter = adapter
+        adapter.apply_lora_to_unet(trainer.lora_layers)
+        restore_topology(owner, self.spec)
+        with torch.no_grad():
+            for layer in trainer.lora_layers.values():
+                for tensor in layer.branch_tensors().values():
+                    tensor.fill_(.03)
+        expected = self.forward()[0].detach()
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp)/"audio.safetensors"
+            adapter.save_checkpoint(trainer.lora_layers, 3, 1, path)
+            with safe_open(str(path), framework="pt") as handle:
+                metadata = handle.metadata()
+            before = {name:{key:value.detach().clone() for key,value in layer.branch_tensors().items()}
+                      for name,layer in trainer.lora_layers.items()}
+            bad = Path(temp)/"dense.safetensors"
+            dense_metadata = {key:value for key,value in metadata.items() if not key.startswith("sushi.rewire.")}
+            save_file(load_file(str(path)), str(bad), metadata=dense_metadata)
+            with self.assertRaisesRegex(ValueError, "topology disagree"):
+                LoRATrainer.load_checkpoint(trainer, str(bad))
+            self.assertEqual(owner._residual_unet_spec, self.spec)
+            for name,layer in trainer.lora_layers.items():
+                for key,value in layer.branch_tensors().items():
+                    torch.testing.assert_close(value, before[name][key], rtol=0, atol=0)
+            restore_topology(owner, None)
+            with torch.no_grad():
+                for layer in trainer.lora_layers.values():
+                    for tensor in layer.branch_tensors().values():
+                        tensor.zero_()
+            self.assertEqual(LoRATrainer.load_checkpoint(trainer, str(path)), 3)
+            self.assertEqual(owner._residual_unet_spec, self.spec)
+            self.assertEqual(self.model._residual_unet_spec, self.spec)
+            torch.testing.assert_close(self.forward()[0], expected, rtol=0, atol=0)
+
     def test_native_shapes_positions_masks_hooks_and_dense_restore(self):
         from core.models.acestep.residual_unet import restore_topology, native_config, model_topology_metadata
         dense = self.forward()[0].detach()

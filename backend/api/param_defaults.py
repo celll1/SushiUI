@@ -19,9 +19,19 @@ from core.models.minimax_h3.hybrid_spec import (
 )
 
 # The initial preset is resolved only for the matching native block layout.
-DIT_REWIRING_REGION_DEFAULTS: Dict[str, Any] = {"edge_blocks": 1, "down_factor": [2, 2]}
+DIT_REWIRING_REGION_DEFAULTS: Dict[str, Any] = {"edge_blocks": 1, "down_factor": [2, 2],
+    "temporal_down_factor": [2, 1]}
 
 DIT_REWIRING_PRESETS: Dict[str, Any] = {
+    "acestep": {
+        "block_count": 24,
+        "regions": [
+            {"id": "r0", "stream": "main", "parent": None,
+             "start_block": 4, "end_block": 20, "down_factor": [2, 1]},
+            {"id": "r1", "stream": "main", "parent": "r0",
+             "start_block": 10, "end_block": 14, "down_factor": [2, 1]},
+        ],
+    },
     "sensenova": {
         "block_count": 42,
         "regions": [

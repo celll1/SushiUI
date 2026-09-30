@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { inspectDiTRewiring, previewDiTRewiring } from "@/utils/api";
+import { inspectDiTRewiring, previewDiTRewiring, temporalRewiringGrid } from "@/utils/api";
 import type { DiTRewiringModelInfo, DiTRewiringPlan, DiTRewiringSpec } from "@/utils/api";
 import DiTRewiringGraph from "../common/DiTRewiringGraph";
 
@@ -23,13 +23,14 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
   const [selected, setSelected] = useState<string>("");
   const [selectedStream, setSelectedStream] = useState<string>("");
   const [pixels, setPixels] = useState({ height: resolution, width: resolution });
+  const [frames, setFrames] = useState<number | null>(null);
   const [pending, setPending] = useState(false);
   useEffect(() => { setPixels({ height: resolution, width: resolution }); }, [resolution]);
   useEffect(() => {
     let cancelled = false;
-    setInfo(null); setPlan(null); setValidatedSpec(null); setSelected(""); setSelectedStream(""); setError(null); setPending(true);
+    setInfo(null); setPlan(null); setValidatedSpec(null); setSelected(""); setSelectedStream(""); setFrames(null); setError(null); setPending(true);
     inspectDiTRewiring(modelPath).then(value => {
-      if (!cancelled) setInfo(value);
+      if (!cancelled) { setInfo(value); setFrames(value.temporal_geometry?.preview_frames ?? null); }
     }).catch(err => { if (!cancelled) setError(message(err)); })
       .finally(() => { if (!cancelled) setPending(false); });
     return () => { cancelled = true; };
@@ -41,19 +42,28 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
     if (!info) return;
     setPending(false);
     if (!current) { setPlan(null); setError(null); return; }
-    if (current.base_config_sha256 !== info.base_config_sha256 || current.block_layout_sha256 !== info.block_layout_sha256) {
+    if ((current.base_config_sha256 !== info.base_config_sha256 && current.base_config_sha256 !== info.topology?.base_config_sha256) || current.block_layout_sha256 !== info.block_layout_sha256) {
       setError("This topology belongs to a different model configuration. Select the model preset to start a new topology.");
       setPlan(null); return;
     }
     if (!configuring && spec && !info.topology) {
       setError("The inherited topology assertion differs from the checkpoint."); setPlan(null); return;
     }
-    if (pixels.height % info.pixel_alignment || pixels.width % info.pixel_alignment) {
+    if (!info.temporal_geometry && (pixels.height % info.pixel_alignment || pixels.width % info.pixel_alignment)) {
       setError(`Image dimensions must be multiples of ${info.pixel_alignment}px.`); setPlan(null); return;
+    }
+    let tokenHeight = pixels.height / info.latent_scale_factor;
+    let tokenWidth = pixels.width / info.latent_scale_factor;
+    if (info.temporal_geometry) {
+      try {
+        tokenHeight = temporalRewiringGrid(current, frames ?? info.temporal_geometry.preview_frames,
+          info.temporal_geometry, info.base_config_sha256).padded;
+        tokenWidth = 1;
+      } catch (err) { setError(message(err)); setPlan(null); return; }
     }
     setError(null); setPending(true);
     const timer = setTimeout(() => {
-      previewDiTRewiring(current, pixels.height / info.latent_scale_factor, pixels.width / info.latent_scale_factor)
+      previewDiTRewiring(current, tokenHeight, tokenWidth)
          .then(value => {
           if (cancelled) return;
           if (!configuring && info.topology_sha256 !== value.spec_sha256) {
@@ -65,7 +75,12 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
         .finally(() => { if (!cancelled) setPending(false); });
     }, 120);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [current, info, configuring, spec, pixels]);
+  }, [current, info, configuring, spec, pixels, frames]);
+  let timeGrid: { native: number; padded: number } | null = null;
+  if (current && info?.temporal_geometry) {
+    try { timeGrid = temporalRewiringGrid(current, frames ?? info.temporal_geometry.preview_frames,
+      info.temporal_geometry, info.base_config_sha256); } catch { /* Validation effect reports the error. */ }
+  }
   const streams = current?.streams ?? info?.streams ?? [];
   const stream = streams.find(s => s.name === selectedStream) ?? streams[0];
   const regions = current?.regions.filter(r => r.stream === stream?.name) ?? [];
@@ -164,12 +179,17 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
     </div>
     {current && <>
       <div className="flex flex-wrap items-center gap-3">
-        {(["height", "width"] as const).map(axis => <label key={axis}>{axis} (px)
+        {info?.temporal_geometry ? <label>Clip frames ({info.temporal_geometry.frame_rate}/s)
+          <input type="number" aria-label="Preview audio frames" min={1} step={1}
+            value={frames ?? info.temporal_geometry.preview_frames} className="ml-2 w-24 rounded bg-gray-800 p-1"
+            onChange={e => setFrames(Number(e.target.value))} />
+        </label> : (["height", "width"] as const).map(axis => <label key={axis}>{axis} (px)
           <input type="number" aria-label={`Preview ${axis}`} min={info?.pixel_alignment} step={info?.pixel_alignment}
             value={pixels[axis]} className="ml-2 w-24 rounded bg-gray-800 p-1"
             onChange={e => setPixels(p => ({ ...p, [axis]: Number(e.target.value) }))} />
         </label>)}
-        <span>latent grid: {info ? `${pixels.height / info.latent_scale_factor} × ${pixels.width / info.latent_scale_factor}` : "…"}</span>
+        {info?.temporal_geometry ? <span>{timeGrid ? `${timeGrid.native} native tokens → ${timeGrid.padded} transport tokens (${timeGrid.padded - timeGrid.native} tail tokens)` : "…"}; final audio length is preserved.</span>
+          : <span>latent grid: {info ? `${pixels.height / info.latent_scale_factor} × ${pixels.width / info.latent_scale_factor}` : "…"}</span>}
       </div>
       {plan && <DiTRewiringGraph spec={validatedSpec ?? current} plan={plan} selected={region?.id} onSelect={selectRegion}
         onBoundaryChange={configuring ? (id, side, value) => editRegion(id, { [side]: value }) : undefined} />}
@@ -183,12 +203,12 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
           <input type="number" value={region[side]} min={1} max={(stream?.block_count ?? 1) - 1}
             className="ml-2 w-16 rounded bg-gray-800 p-1" onChange={e => editRegion(region.id, { [side]: Number(e.target.value) })} />
         </label>)}
-        {([0, 1] as const).map(axis => <label key={axis}>{axis === 0 ? "Height" : "Width"} downsample
-          <select aria-label={`${axis === 0 ? "Height" : "Width"} downsample`} value={region.down_factor[axis]}
+        {([0, 1] as const).filter(axis => !info?.temporal_geometry || axis === 0).map(axis => <label key={axis}>{info?.temporal_geometry ? "Time" : axis === 0 ? "Height" : "Width"} downsample
+          <select aria-label={`${info?.temporal_geometry ? "Time" : axis === 0 ? "Height" : "Width"} downsample`} value={region.down_factor[axis]}
             className="ml-2 rounded bg-gray-800 p-1" onChange={e => {
               const factor: [number, number] = [...region.down_factor]; factor[axis] = Number(e.target.value);
               editRegion(region.id, { down_factor: factor });
-            }}>{[1,2,4,8].map(f => <option key={f} value={f}>{f === 1 ? "Keep parent size" : `1/${f} of parent`}</option>)}</select>
+            }}>{[1,2,4,8].filter(f => !info?.temporal_geometry || f > 1).map(f => <option key={f} value={f}>{f === 1 ? "Keep parent size" : `1/${f} of parent`}</option>)}</select>
         </label>)}
         <label>Parent
           <select aria-label="Parent region" value={region.parent ?? ""} className="ml-2 rounded bg-gray-800 p-1"

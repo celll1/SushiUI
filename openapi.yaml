@@ -3496,14 +3496,17 @@ paths:
                     type: array
                     description: Implemented backend architectures; topology and workflow compatibility are validated per request
                     items: {type: string}
-                    example: [qwen_image_21, krea2, anima, zimage, flux2, lens, minit2i, ideogram4, sensenova]
+                    example: [qwen_image_21, krea2, anima, zimage, flux2, lens, minit2i, ideogram4, sensenova, acestep]
   /models/rewiring/inspect:
     post:
       tags: [models]
       summary: Inspect native topology and checkpoint rewiring without loading weights
       description: >-
         Reads Qwen-Image 2.1, Krea 2, Anima, Z-Image, Flux2, Lens, MiniT2I,
-        Ideogram 4 and SenseNova configs and checkpoint headers. SenseNova requires
+        Ideogram 4, SenseNova and ACE-Step configs and checkpoint headers. ACE-Step
+        exposes a temporal-only main stream; custom files require embedded native
+        config, while published layouts must match the known native header geometry.
+        SenseNova requires
         embedded native config and full model or refiner-base layout; swapped
         VAE artifacts require declared channel count and spatial compression.
         Transformer-only directories are supported where native formats provide them.
@@ -3549,6 +3552,8 @@ paths:
                     description: Explicit single-region starting topology for custom layouts; selecting configure without a spec still uses default_spec.
                   latent_scale_factor: {type: integer}
                   pixel_alignment: {type: integer}
+                  temporal_geometry:
+                    $ref: '#/components/schemas/DiTRewiringTemporalGeometry'
         '422':
           description: Unsupported model or incompatible artifact topology
   /models/rewiring/validate:
@@ -19200,6 +19205,29 @@ components:
             reports it under `LoadedModelInfo`.
           example: fl2va
 
+    DiTRewiringTemporalGeometry:
+      type: object
+      additionalProperties: false
+      required: [frame_rate, patch_size, preview_frames, grid_policy]
+      description: >-
+        Native audio latent frames per second and frames per decoder token.
+        Use ceil(frames/patch_size) tokens on the time axis and width 1.
+        zero_token_tail_v1 rounds tokens up to the least common multiple of
+        cumulative region factors; require_divisible never extends the grid.
+        Legacy checkpoint identities without the policy field retain require_divisible.
+      properties:
+        frame_rate: {type: integer, minimum: 1, example: 25}
+        patch_size: {type: integer, minimum: 1, example: 2}
+        preview_frames:
+          type: integer
+          minimum: 1
+          description: Initial preview clip length resolved from audio generation defaults.
+          example: 750
+        grid_policy:
+          type: string
+          enum: [zero_token_tail_v1, require_divisible]
+          example: zero_token_tail_v1
+
     LoadedModelInfo:
       type: object
       additionalProperties: true
@@ -19209,6 +19237,8 @@ components:
           nullable: true
           description: Restored residual U-Net topology of the loaded model; null is the native sequence.
           example: null
+        dit_rewiring_temporal_geometry:
+          $ref: '#/components/schemas/DiTRewiringTemporalGeometry'
         dit_rewiring_token_stride:
           type: integer
           minimum: 1

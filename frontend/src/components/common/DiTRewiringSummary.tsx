@@ -2,11 +2,11 @@
 
 import { useEffect, useState } from "react";
 import { useStartup } from "@/contexts/StartupContext";
-import { previewDiTRewiring } from "@/utils/api";
-import type { DiTRewiringPlan, DiTRewiringSpec } from "@/utils/api";
+import { previewDiTRewiring, temporalRewiringGrid } from "@/utils/api";
+import type { DiTRewiringPlan, DiTRewiringSpec, DiTRewiringTemporalGeometry } from "@/utils/api";
 import DiTRewiringGraph from "./DiTRewiringGraph";
 
-export default function DiTRewiringSummary({ spec, tokenStride }: { spec: DiTRewiringSpec; tokenStride?: number }) {
+export default function DiTRewiringSummary({ spec, tokenStride, temporalGeometry }: { spec: DiTRewiringSpec; tokenStride?: number; temporalGeometry?: DiTRewiringTemporalGeometry }) {
   const { generationDefaults } = useStartup();
   const [plan, setPlan] = useState<DiTRewiringPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -15,6 +15,14 @@ export default function DiTRewiringSummary({ spec, tokenStride }: { spec: DiTRew
   useEffect(() => {
     let cancelled = false;
     setPlan(null); setError(null);
+    if (temporalGeometry) {
+      try {
+        const grid = temporalRewiringGrid(spec, temporalGeometry.preview_frames, temporalGeometry);
+        previewDiTRewiring(spec, grid.padded, 1).then(value => { if (!cancelled) setPlan(value.plan); })
+          .catch(err => { if (!cancelled) setError(typeof err.response?.data?.detail === "string" ? err.response.data.detail : "Topology preview unavailable"); });
+      } catch (err) { setError(err instanceof Error ? err.message : "Topology preview unavailable"); }
+      return () => { cancelled = true; };
+    }
     if (typeof width !== "number" || typeof height !== "number") return;
     if (typeof tokenStride !== "number" || !Number.isInteger(tokenStride) || tokenStride < 1) {
       setError("Native token geometry unavailable"); return;
@@ -23,10 +31,11 @@ export default function DiTRewiringSummary({ spec, tokenStride }: { spec: DiTRew
       .then(value => { if (!cancelled) setPlan(value.plan); })
       .catch(err => { if (!cancelled) setError(typeof err.response?.data?.detail === "string" ? err.response.data.detail : "Topology preview unavailable"); });
     return () => { cancelled = true; };
-  }, [spec, width, height, tokenStride]);
+  }, [spec, width, height, tokenStride, temporalGeometry]);
   return <details className="mt-2 rounded border border-emerald-800 p-2 text-xs">
     <summary className="cursor-pointer text-emerald-300">Residual U-Net / {spec.regions.length} regions / checkpoint topology</summary>
-    <p className="my-2 text-gray-400">Read-only restored topology. Preview at {width}×{height}px; image dimensions follow the generation request. Image-token KV caching is disabled during rewired execution; immutable prefix KV remains available.</p>
+    <p className="my-2 text-gray-400">{temporalGeometry ? `Read-only temporal topology. Preview at ${temporalGeometry.preview_frames / temporalGeometry.frame_rate}s; actual clip length follows the generation request. Decoder KV caching is disabled.`
+      : `Read-only restored topology. Preview at ${width}×${height}px; image dimensions follow the generation request. Image-token KV caching is disabled during rewired execution; immutable prefix KV remains available.`}</p>
     {plan && <DiTRewiringGraph spec={spec} plan={plan} />}
     {spec.regions.map(region => <p key={region.id} className="mt-1 text-gray-300">
       {region.stream} / {region.id}: [{region.start_block}, {region.end_block}) / parent {region.parent ?? "full grid"} / downsample {region.down_factor.join("×")} / residual skip {region.start_block} → {region.end_block}

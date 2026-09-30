@@ -9,6 +9,9 @@ from .spec import OPERATORS, build_spec, digest
 
 
 def _native_adapter(architecture):
+    if architecture == "acestep":
+        from core.models.acestep import residual_unet as adapter
+        return adapter, 1, 1
     if architecture == "qwen_image_21":
         from core.models.qwen_image_21 import residual_unet as adapter
         return adapter, 16, 32
@@ -44,6 +47,11 @@ def inspect_model(model_path):
     if path.is_dir():
         from core.models.anima.discovery import detect_anima_split_layout
         layout = detect_anima_split_layout(str(path))
+        if layout is not None:
+            path = Path(layout["dit"])
+    if path.is_dir():
+        from core.models.acestep.loader import detect_acestep_layout
+        layout = detect_acestep_layout(str(path))
         if layout is not None:
             path = Path(layout["dit"])
     if path.is_dir():
@@ -111,8 +119,14 @@ def inspect_model(model_path):
         from core.models.anima.discovery import is_anima_state_dict_keys
         if architecture is None and is_anima_state_dict_keys(keys):
             architecture = "anima"
+        if architecture is None and {"decoder.proj_in.1.weight", "decoder.proj_out.1.weight", "null_condition_emb"}.issubset(
+                key.removeprefix("net.") for key in keys):
+            architecture = "acestep"
         _native_adapter(architecture)
-        if architecture == "qwen_image_21":
+        if architecture == "acestep":
+            from core.models.acestep.residual_unet import inspect_artifact
+            config, topology = inspect_artifact(path)
+        elif architecture == "qwen_image_21":
             if metadata.get("component") not in {"transformer", "training_bundle"}:
                 raise ValueError("Residual inspection requires a Qwen-Image 2.1 model artifact")
             config = json.loads(metadata.get("config") or "{}")
@@ -190,7 +204,7 @@ def inspect_model(model_path):
         token_scale = alignment = config["patch_size"] * (1 if config["vae_type"] == "none" else VAE_SCALE_FACTOR)
     if topology is not None:
         topology = adapter.validate_topology_identity(topology, config)
-    count_key = {"anima": "num_blocks", "zimage": "n_layers", "minit2i": "depth_double"}.get(architecture, "num_layers")
+    count_key = {"anima": "num_blocks", "zimage": "n_layers", "minit2i": "depth_double", "acestep": "num_hidden_layers"}.get(architecture, "num_layers")
     block_count = config["llm_config"]["num_hidden_layers"] if architecture == "sensenova" else config[count_key]
     if architecture == "sensenova":
         token_scale = alignment = sensenova_stride
@@ -216,9 +230,12 @@ def inspect_model(model_path):
     initial = build_spec(architecture, streams, [dict(
         id="r0", stream=streams[0]["name"], parent=None,
         start_block=edges, end_block=block_count-edges,
-        down_factor=DIT_REWIRING_REGION_DEFAULTS["down_factor"], **OPERATORS)], config)
-    return dict(architecture=architecture, streams=streams,
+        down_factor=DIT_REWIRING_REGION_DEFAULTS["temporal_down_factor" if architecture == "acestep" else "down_factor"], **OPERATORS)], config)
+    info = dict(architecture=architecture, streams=streams,
                 base_config_sha256=digest(config), block_layout_sha256=digest(streams),
                 topology=topology, topology_sha256=None if topology is None else digest(topology),
                 default_spec=adapter.default_topology(config), initial_spec=initial,
                 latent_scale_factor=token_scale, pixel_alignment=alignment)
+    if architecture == "acestep":
+        info["temporal_geometry"] = adapter.temporal_geometry(config)
+    return info

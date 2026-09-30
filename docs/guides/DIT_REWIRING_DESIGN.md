@@ -13,8 +13,9 @@ integration with CPU contract checks. Ideogram 4 retains its LoRA-only training
 boundary; SenseNova residual training requires batch_size 1.
 ACE-Step has temporal native execution, checkpoint persistence, inherited
 training/LoRA resume and generation adapter scopes with CPU contracts. Standalone
-component references and full-resume dispatch are connected; public temporal
-configuration and editor discovery remain pending.
+component references and full-resume dispatch are connected. Public temporal
+configuration, presets and editor/model discovery are connected with CPU checks;
+complete audio workflow acceptance and owner frontend checks remain pending.
 GPU acceptance is restricted to Qwen-Image 2.1 by owner instruction; other models
 receive provisional implementation and CPU verification. Further architectures
 still require native execution/artifact adapters and capability gates.
@@ -1943,3 +1944,53 @@ ACE-Step and existing quantized-export suites pass 168 cases and 50 subtests.
 Changed backend files compile/import with CUDA uninitialized. Public presets,
 temporal editor/model discovery and full audio workflow/resume acceptance remain
 pending; GPU validation stays Qwen-Image 2.1 only.
+
+
+## ACE-Step public temporal configuration (CPU milestone)
+
+ACE-Step joins runtime_architectures for explicit configure mode. The preset in
+param_defaults uses 24 decoder layers: outer [4,20), inner [10,14), each shrinking
+time by two while retaining width one. Eight layers use the full temporal grid,
+twelve the middle grid, and four the deepest grid. Other depths expose an editable
+single-region initial_spec and require an explicit spec; no preset is guessed.
+Ordinary checkpoints retain dense execution unless conversion is selected.
+
+Inspection accepts native full files and the loader's selected flat-tree DiT.
+It reads native config and tensor header shapes without loading tensors or
+allocating a model. Published files without embedded config must match the known
+native depth, input/output patch projections, null conditioning, and each block's
+attention/MLP geometry; custom missing-config files and adapter-only headers
+refuse. Runtime construction retains the loader's strict full weight checks.
+
+OpenAPI and TypeScript add temporal_geometry to inspection and
+dit_rewiring_temporal_geometry to loaded model information. These declare native
+frame rate, patch size, default preview frames and grid policy. The editor uses a
+clip-frame input and time shrink controls, shows native versus transport token
+counts and synthetic tail count, and keeps the existing graphical region/skip
+editing. The loaded-model summary previews temporal topology. Image editors keep
+spatial inputs. Frontend validation remains static; the owner runs final build,
+type and browser checks.
+
+The 30-second API default produces 750 raw frames, 375 native patch tokens and a
+376-token execution grid under zero_token_tail_v1: one synthetic tail token,
+188 middle tokens and 94 deepest tokens. Legacy hashes keep require_divisible;
+inspection exposes the native canonical hash separately from the restored legacy
+hash, so previews do not silently pad an older topology. Final native output
+cropping retains requested audio length. This arithmetic makes no sound-quality
+or GPU-throughput claim. GPU acceptance remains Qwen-Image 2.1 only.
+
+CPU contracts exercise actual FastAPI schema/inspect/preview, new-run preset and
+custom configuration, changed-topology resume refusal, a 24-layer reduced-width
+native decoder forward/backward, wrong-header/missing-config refusals, flat-tree
+selection and legacy-grid inspection. Complete audio workflow/resume acceptance
+remains pending; non-Qwen integration is provisional under the owner restriction.
+
+Dense ACE-Step exports with frozen component references also retain their native
+config without requiring a residual graph. A real full-writer/native-loader CPU
+roundtrip verifies exact dense weights and absence of topology metadata.
+
+Changed backend files compile and import with CUDA uninitialized. The shared
+residual/legacy ACE-Step/quantized-export run passes 172 tests and 50 subtests;
+after the dense-export correction, its native-source and quantized-export
+subset passes 38 tests and 18 subtests. No non-Qwen GPU run or frontend build/type
+check was performed.

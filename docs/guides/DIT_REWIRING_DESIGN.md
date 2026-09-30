@@ -1426,3 +1426,51 @@ core and packed-batch contracts pass (134 total). The final stricter native
 layer-count/KV-shape checks pass a targeted 39-case rerun. Changed backend files
 compile and import with CUDA uninitialized. SenseNova remains outside public
 runtime capabilities until its remaining persistence and request paths connect.
+
+
+## SenseNova residual checkpoint persistence (CPU milestone)
+
+The native full-finetune writer and LoRA metadata now persist the installed
+owner/decoder graph. Full exports put the same spec/hash on every shard and the
+index. Caller-supplied residual metadata cannot override the live graph. Residual
+exports validate both the selected native config and the final embedded config,
+so an extra metadata override cannot save a graph against different geometry.
+Dense legacy exports keep their existing config fallback behavior.
+
+The production loader resolves a missing single-file stem to its sibling index
+and checks topology headers before tensor reads, model construction or companion
+loads. Index/shard declarations, including absent declarations, must agree.
+Residual full artifacts require embedded native config, contiguous native block
+indices, generation projection keys and generation-head keys. After native
+quantized installation, missing or unexpected model weights are fatal for a
+residual artifact; the previous dense warning behavior is unchanged. The graph
+is restored on both NEOChat owner and generation decoder before tokenizer/VAE
+modules are loaded.
+
+Refiner deltas carry the same graph as their complete base. Header preflight
+follows relative/absolute base paths and validates every dependency, refusing
+conflicting declarations, cycles and chains over 64 files before tensor reads.
+A refiner export validates the referenced base headers/config and refuses a
+different graph before publishing a file. These checks concern topology and
+serialization; they do not expand the existing refiner training contract.
+
+CPU tests use actual 42-layer NEOChat/Qwen3 modules with reduced hidden widths.
+Single and sharded BF16 artifacts reload through ModelLoader with exact saved
+weights and exact native decoder/head output. The same production INT8 writer
+and loader restore 588 quantized Linears, retain the architecture's W8A8 opt-out
+and produce finite residual predictions; no quality-equivalence claim is made
+for requantization. Header-only tests refuse malformed hashes, missing/wrong
+embedded configs, adapter-as-base payloads, conflicting shard declarations and
+refiner dependencies before model/tensor access. Missing native weights refuse
+before tokenizer loading. LoRA and refiner exports retain the declared graph;
+reserved metadata spoofing and graph/config mismatches cannot publish an
+incorrect residual file. Existing full-save, LoRA and refiner contracts pass.
+
+Training configuration/resume, generation adapter lifetime, model-info metadata,
+public presets/inspection and editor capability exposure remain pending for
+SenseNova. GPU verification remains Qwen-Image 2.1 only. No frontend changes or
+build/type checks occur in this milestone.
+
+Validation: all shared residual contract files and existing SenseNova training
+core, packed-batch, full-save, LoRA and refiner contracts pass (203 total).
+Changed backend files compile and import; CUDA remains uninitialized.

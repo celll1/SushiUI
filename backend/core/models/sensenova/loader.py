@@ -595,6 +595,12 @@ def save_sensenova_refiner_delta_checkpoint(
     for key, value in (extra_metadata or {}).items():
         metadata[str(key)] = str(value)
 
+    from .residual_unet import export_topology_metadata
+    from core.rewiring.spec import META_VERSION, META_SPEC, META_HASH
+    for key in (META_VERSION, META_SPEC, META_HASH):
+        metadata.pop(key, None)
+    metadata.update(export_topology_metadata(transformer, config_dict, base_path=base, export_metadata=metadata))
+
     resolved = str(output_path)
     if not resolved.endswith(".safetensors"):
         resolved += ".safetensors"
@@ -1107,6 +1113,12 @@ def save_sensenova_full_finetune_checkpoint(
     for key, value in (extra_metadata or {}).items():
         metadata[str(key)] = str(value)
 
+    from .residual_unet import export_topology_metadata
+    from core.rewiring.spec import META_VERSION, META_SPEC, META_HASH
+    for key in (META_VERSION, META_SPEC, META_HASH):
+        metadata.pop(key, None)
+    metadata.update(export_topology_metadata(transformer, config_dict, export_metadata=metadata))
+
     writer = ShardWriter(
         output_path, metadata,
         int(max_shard_bytes or DEFAULT_EXPORT_SHARD_BYTES),
@@ -1247,6 +1259,7 @@ def install_sensenova_state_dict(
     torch_dtype: torch.dtype,
     *,
     path: Optional[str] = None,
+    require_complete: bool = False,
 ) -> int:
     """Guard, census, quantized-Linear swap and ``assign=True`` load. Returns the swap count.
 
@@ -1288,6 +1301,8 @@ def install_sensenova_state_dict(
     swapped += plain_swapped
 
     missing, unexpected = model.load_state_dict(sd_for_load, strict=False, assign=True)
+    if require_complete and (missing or unexpected):
+        raise RuntimeError(f"Rewired SenseNova native weights incomplete: missing={missing[:5]}, unexpected={unexpected[:5]}")
     if missing:
         print(f"[SenseNovaLoader] WARNING: {len(missing)} missing key(s); first 5: {missing[:5]}")
     if unexpected:
@@ -1363,9 +1378,13 @@ def load_sensenova_from_path(
     """
     from accelerate import init_empty_weights
 
+    if isinstance(model_path, str) and not os.path.isfile(model_path) and os.path.isfile(model_path + ".index.json"):
+        model_path += ".index.json"
     if not isinstance(model_path, str) or not os.path.isfile(model_path):
         raise FileNotFoundError(f"SenseNova checkpoint not found at {model_path!r}")
 
+    from .residual_unet import preflight_checkpoint, restore_topology
+    topology = preflight_checkpoint(model_path)
     initial_metadata = sensenova_checkpoint_metadata(model_path)
     if initial_metadata.get("sensenova_checkpoint_kind") == SENSENOVA_REFINER_DELTA_KIND:
         return _load_sensenova_refiner_delta(model_path, torch_dtype)
@@ -1416,8 +1435,11 @@ def load_sensenova_from_path(
     _assert_built_latent_geometry(model, config, path=model_path)
 
     swapped = install_sensenova_state_dict(
-        model, sd, int8_convrot_source_layers, torch_dtype, path=model_path
+        model, sd, int8_convrot_source_layers, torch_dtype, path=model_path,
+        require_complete=topology is not None,
     )
+    if topology is not None:
+        restore_topology(model, topology)
     if "fm_refiner" in model.fm_modules:
         model.fm_modules["fm_refiner"].gate.data = (
             model.fm_modules["fm_refiner"].gate.data.float()

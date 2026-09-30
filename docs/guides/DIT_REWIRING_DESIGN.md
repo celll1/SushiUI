@@ -2272,3 +2272,47 @@ load dispatch are real. This does not establish complete pretrained video
 quality/performance or whole training/optimizer resume acceptance. GPU validation
 remains Qwen-Image 2.1 only. Remaining architectures and consolidated owner
 frontend/workflow acceptance still require completion.
+
+### MiniMax-H3 packed spatial transport foundation
+
+GPU acceptance remains restricted to Qwen-Image 2.1. MiniMax-H3 work uses CPU
+fixtures only; no pretrained model quality or throughput claim is made.
+
+The native transformer packs text, reference/conditioning video, audio and
+output video into a single self-attention sequence. Modality tags cannot identify
+output video on their own: reference images and vision tokens also have the video
+tag, and temporal/spatial pins can permute video_indices. The residual caller
+must therefore supply the complete target-video row indices in chronological
+frame-major order, together with its explicit frame/height/width geometry. It
+must not guess the target from a modality tag or the beginning of video_indices.
+
+packed_residual_layout.py transports these explicit rows into the common runtime's
+contiguous spatial tail and retains every other native row as a full-resolution
+prefix. The inverse permutation restores the original packed layout before the
+native modality heads select rows. Coordinates must form a chronological
+rectangular lattice, and target rows must have the native video tag. Coarsening
+averages only spatial RoPE coordinates, retains the exact native per-frame clock,
+and preserves every prefix position/modality/timestep label. Audio and reference
+rows still participate in each native attention block and can update normally.
+
+A pooled cell must contain one AdaLN timestep label. Whole-frame pins survive
+spatial pooling, while mixed pinned/free pixels in one cell refuse transport.
+Silently averaging their discrete noise labels would change the conditioning
+contract. A future public integration must preflight every nested level before
+projection or block execution and provide an explicit policy for spatial pins.
+
+Five CPU contracts and four subtests pass. The real reduced-width vendored
+seven-block DiT executes a nested two-stage spatial stream with 288/72/18 target
+rows and an unchanged 106-row text/reference/audio prefix, restores native row
+order, and backpropagates finite gradients to the packed input and all seven
+blocks. Native inference's in-place residual adds agree with the autograd path;
+shared transport allocations protect the saved fine/coarse residual states.
+Arbitrary packed-row permutations, both coarse levels' native clocks and prefix
+labels, whole-frame versus spatial pins, and malformed grids are checked.
+Changed modules compile and import with CUDA uninitialized.
+
+This is an internal layout foundation, not an enabled MiniMax-H3 capability.
+Native wrapper dispatch, generation/training topology installation, artifact
+restore, sparse-attention planning and public editor/schema integration remain
+pending. Other remaining architectures and consolidated owner acceptance remain
+part of the overall task.

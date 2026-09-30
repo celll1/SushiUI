@@ -259,6 +259,115 @@ def test_inference_refusals_and_upload_limit(environment, inference_bundle, monk
     assert client.post(f"/api/v1/captioner/requests/{uuid4()}/cancel").status_code == 404
 
 
+@pytest.fixture
+def sample_run_environment(environment, inference_bundle, tmp_path, monkeypatch):
+    import shutil
+    import api.captioner_training_routes as routes
+    from database.models import TrainingBase
+    client, datasets, image, payload = environment
+    inference, bundle, content = inference_bundle
+    engine = create_engine(f"sqlite:///{tmp_path / 'sample_runs.db'}", connect_args={"check_same_thread": False})
+    TrainingBase.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    service = routes.CaptionRunService(factory, datasets, tmp_path)
+    monkeypatch.setattr(routes, "service", service)
+    monkeypatch.setattr(routes, "get_siglip2_inference_manager", lambda: inference.tagger)
+    run = service.create(routes.CaptionerRunCreateRequest(
+        tagger={"checkpoint_path": str(bundle / "model.safetensors"), "vocab_path": str(bundle / "tokenizer.json")},
+        dataset_configs=[{"dataset_id": payload["dataset_id"], "input_tag_caption_types": ["tags"],
+                          "target_caption_types": ["natural"], "filters": {}}], config={}))
+    checkpoint = Path(run["output_dir"]) / "checkpoint_sample"
+    shutil.copytree(bundle, checkpoint)
+    from core.captioner.storage import write_json
+    write_json(Path(run["output_dir"]) / "latest.json", {"checkpoint": checkpoint.name})
+    image.write_bytes(content)
+    client.app.include_router(routes.router, prefix="/api/v1")
+    request = {"dataset_id": payload["dataset_id"], "item_id": payload["item_id"],
+               "request_id": str(uuid4()), "max_new_tokens": 3}
+    yield client, service, run, request, inference, bundle, image
+    engine.dispose()
+
+
+def test_sample_isolated_model_and_durable_preview(sample_run_environment, monkeypatch):
+    import api.captioner_training_routes as routes
+    client, service, run, request, inference, bundle, image = sample_run_environment
+    inference.load(bundle)
+    preview_model = inference.model
+    calls, instances = [], []
+    original = inference.tagger.model.forward_features
+    monkeypatch.setattr(inference.tagger.model, "forward_features", lambda *args: (calls.append(1), original(*args))[1])
+    from core.captioner.inference import CaptionInferenceManager
+    def create(tagger):
+        manager = CaptionInferenceManager(tagger)
+        instances.append(manager)
+        return manager
+    monkeypatch.setattr(routes, "CaptionInferenceManager", create)
+    response = client.post(f"/api/v1/captioner-training/runs/{run['run_id']}/sample", json=request)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["run_id"] == run["run_id"] and result["checkpoint"] == "checkpoint_sample"
+    assert result["image_hash"] == file_hash(image) and len(calls) == 1
+    with service.datasets() as db:
+        assert result["dataset_revision"] == db.get(Dataset, request["dataset_id"]).revision
+    assert inference.model is preview_model and inference.status()["path"] == str(bundle)
+    assert instances[0].model is None and inference.tagger.model is not None
+    assert not image.with_suffix(".json").exists()
+    events = service.events(run["run_id"], 0, 500)["events"]
+    assert events[-1]["payload"]["sample"] == result
+    invalid = client.post(f"/api/v1/captioner-training/runs/{run['run_id']}/sample",
+                          json={**request, "request_id": str(uuid4()), "checkpoint": "../bundle"})
+    assert invalid.status_code == 400
+
+
+def test_sample_cancel_cleans_temporary_decoder(sample_run_environment, monkeypatch):
+    import api.captioner_training_routes as routes
+    import api.captioner_routes as inference_routes
+    from core.captioner.inference import CaptionInferenceManager
+    from core.model_state_coordinator import model_state_coordinator
+    client, service, run, request, inference, _, _ = sample_run_environment
+    entered, exited = threading.Event(), threading.Event()
+    instances = []
+    def create(tagger):
+        manager = CaptionInferenceManager(tagger)
+        instances.append(manager)
+        def predict(*args, cancelled, **kwargs):
+            entered.set()
+            try:
+                for _ in range(2000):
+                    if cancelled():
+                        raise InterruptedError("Caption generation cancelled")
+                    threading.Event().wait(0.001)
+                raise AssertionError("Sample was not cancelled")
+            finally:
+                exited.set()
+        manager.predict = predict
+        return manager
+    monkeypatch.setattr(routes, "CaptionInferenceManager", create)
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=client.app, raise_app_exceptions=False), base_url="http://test") as http:
+            task = asyncio.create_task(http.post(f"/api/v1/captioner-training/runs/{run['run_id']}/sample", json=request))
+            assert await asyncio.to_thread(entered.wait, 3)
+            cancel = await http.post(f"/api/v1/captioner/requests/{request['request_id']}/cancel")
+            assert cancel.status_code == 200
+            response = await task
+            assert response.status_code == 409 and response.json()["code"] == "captioner_cancelled"
+    asyncio.run(exercise())
+    assert exited.is_set() and instances[0].model is None
+    assert request["request_id"] not in inference_routes._requests
+    assert model_state_coordinator.snapshot()["active_generations"] == 0
+    assert not any("sample" in row["payload"] for row in service.events(run["run_id"], 0, 500)["events"])
+
+
+def test_sample_corrupt_bundle_reports_artifact_error(sample_run_environment):
+    client, service, run, request, inference, _, _ = sample_run_environment
+    path = Path(run["output_dir"]) / "checkpoint_sample" / "config.json"
+    path.write_text("{}", encoding="utf-8")
+    response = client.post(f"/api/v1/captioner-training/runs/{run['run_id']}/sample", json=request)
+    assert response.status_code == 400 and response.json()["code"] == "captioner_invalid_artifact"
+    assert not inference.status()["loaded"] and inference.tagger.model is not None
+    assert not any("sample" in row["payload"] for row in service.events(run["run_id"], 0, 500)["events"])
+
+
 def test_explicit_cancel_waits_for_worker_and_releases_lifecycle(environment, inference_bundle, monkeypatch):
     client, _, _, _ = environment
     inference, bundle, content = inference_bundle

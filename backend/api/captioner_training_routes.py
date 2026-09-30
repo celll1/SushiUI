@@ -1,20 +1,25 @@
 """Durable caption training runs with one private encoder worker per process."""
 
 import copy
+import asyncio
 from pathlib import Path
 import threading
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt, create_model
 
 from api.error_handlers import APIError, NotFoundError, ValidationError
 from api.param_defaults import CAPTIONER_RUN_DEFAULTS as RD, CAPTIONER_TRAINING_DEFAULTS as TD
 from api.training_run_helpers import find_output_dir_owner
+from api.captioner_routes import (CaptionerItemPredictRequest, CaptionerPredictionResponse,
+                                 _predict_caption, read_caption_image)
 from config.settings import settings
 from core.captioner.artifact import export_bundle
 from core.captioner.storage import read_json, write_json
 from core.captioner.trainer import CaptionTrainer, validate_config
+from core.captioner.inference import CaptionInferenceManager
+from core.tagger.siglip2_inference_manager import get_siglip2_inference_manager
 from core.model_state_coordinator import model_state_coordinator
 from database import DatasetsSessionLocal, TrainingSessionLocal
 from database.models import CaptionerTrainingEvent as Event, CaptionerTrainingRun as Run
@@ -73,6 +78,10 @@ class CaptionerRunStartRequest(StrictRequest):
 
 
 class CaptionerExportRequest(StrictRequest):
+    checkpoint: str = RD["checkpoint"]
+
+
+class CaptionerSampleRequest(CaptionerItemPredictRequest):
     checkpoint: str = RD["checkpoint"]
 
 
@@ -288,6 +297,16 @@ class CaptionRunService:
             db.commit()
             return {"path": str(destination)}
 
+    def checkpoint(self, run_id, name):
+        with self.lock, self.db() as db:
+            return self._checkpoint(self._get(db, run_id), name)
+
+    def record_sample(self, run_id, result):
+        with self.lock, self.db() as db:
+            run = self._get(db, run_id)
+            self._event(db, run, {"sample": result})
+            db.commit()
+
 
 service = CaptionRunService(TrainingSessionLocal, DatasetsSessionLocal, settings.root_dir)
 
@@ -340,3 +359,20 @@ def export_run(run_id: UUID, request: CaptionerExportRequest):
         return service.export(run_id, request.checkpoint)
     except (ValueError, KeyError, OSError) as exc:
         raise ValidationError(str(exc)) from exc
+
+
+@router.post("/captioner-training/runs/{run_id}/sample", response_model=CaptionerPredictionResponse)
+async def sample_run(run_id: UUID, http_request: Request, request: CaptionerSampleRequest):
+    try:
+        checkpoint = await asyncio.to_thread(service.checkpoint, run_id, request.checkpoint)
+    except (ValueError, KeyError, OSError) as exc:
+        raise ValidationError(str(exc)) from exc
+    content, revision = await asyncio.to_thread(read_caption_image, request.dataset_id, request.item_id, service.datasets)
+    manager = CaptionInferenceManager(get_siglip2_inference_manager())
+    result = await _predict_caption(http_request, request.request_id, content, tag_source=request.tag_source,
+        tags=request.tags, max_new_tokens=request.max_new_tokens, device=request.device,
+        manager=manager, bundle_path=checkpoint)
+    result = {**result, "dataset_id": request.dataset_id, "item_id": request.item_id,
+              "dataset_revision": revision, "run_id": str(run_id), "checkpoint": checkpoint.name}
+    await asyncio.to_thread(service.record_sample, run_id, result)
+    return result

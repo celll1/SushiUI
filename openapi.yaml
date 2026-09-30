@@ -144,6 +144,29 @@ paths:
       responses:
         '200': {description: Ascending event id rows with resume sequence and event payload}
         '404': {description: Run not found}
+  /captioner-training/runs/{run_id}/sample:
+    post:
+      tags: [captioner]
+      summary: Preview a run-owned checkpoint on a registered dataset image
+      description: Borrows the currently loaded matching PyTorch tagger without replacing the preview captioner. Uses captioner GPU admission and request cancellation. Records the sample as a run event; never saves a caption sidecar automatically.
+      parameters:
+        - {name: run_id, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerSampleRequest'}
+            example: {dataset_id: 1, item_id: 12, request_id: '550e8400-e29b-41d4-a716-446655440000', checkpoint: '', tag_source: predicted, max_new_tokens: 32, device: cpu}
+      responses:
+        '200':
+          description: Caption preview with dataset revision, run id and checkpoint name
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaptionerPredictionResponse'}
+        '400': {description: Invalid checkpoint, input or mismatching tagger}
+        '404': {description: Run or dataset image not found}
+        '409': {description: Request cancelled, duplicate request id or GPU busy}
+        '413': {description: Image exceeds configured byte limit}
   /captioner-training/runs/{run_id}/export:
     post:
       tags: [captioner]
@@ -11504,6 +11527,19 @@ components:
       additionalProperties: false
       properties:
         checkpoint: {type: string, default: '', description: Owned checkpoint directory name; empty selects latest}
+    CaptionerSampleRequest:
+      type: object
+      additionalProperties: false
+      required: [dataset_id, item_id, request_id]
+      properties:
+        dataset_id: {type: integer, minimum: 1}
+        item_id: {type: integer, minimum: 1}
+        request_id: {type: string, format: uuid}
+        checkpoint: {type: string, default: '', description: Run-owned directory name; empty selects latest}
+        tag_source: {type: string, enum: [predicted, provided, merged], default: predicted}
+        tags: {type: array, items: {type: string}, default: []}
+        max_new_tokens: {type: integer, minimum: 1, default: 96}
+        device: {type: string, enum: [cpu, 'cuda:0'], default: cpu}
     CaptionerTrainingConfig:
       type: object
       additionalProperties: false

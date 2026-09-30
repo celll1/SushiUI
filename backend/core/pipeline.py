@@ -1072,10 +1072,15 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     except Exception as e:
                         print(f"[Pipeline] Hash compute skipped: {e}")
 
+                from core.models.acestep.residual_unet import temporal_geometry
                 self.current_model_info = {
                     "source_type": source_type,
                     "source": source,
                     "type": "acestep",
+                    "dit_rewiring_spec": getattr(self.acestep_components["dit"], "_residual_unet_spec", None),
+                    "dit_rewiring_temporal_geometry": temporal_geometry(
+                        self.acestep_components["dit"].config,
+                        getattr(self.acestep_components["dit"], "_residual_unet_spec", None)),
                     "is_v_prediction": False,  # flow matching, velocity prediction
                     "model_hash": model_hash,
                     "is_audio": True,

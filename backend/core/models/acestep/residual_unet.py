@@ -54,6 +54,61 @@ def native_config(config):
     return resolved
 
 
+def default_topology(config):
+    from api.param_defaults import DIT_REWIRING_PRESETS
+    from core.rewiring.spec import OPERATORS, build_spec
+    resolved = native_config(config)
+    preset = deepcopy(DIT_REWIRING_PRESETS["acestep"])
+    if resolved["num_hidden_layers"] != preset["block_count"]:
+        return None
+    return validate_topology_identity(build_spec("acestep",
+        [{"name": "main", "block_count": preset["block_count"]}],
+        [dict(region, **OPERATORS) for region in preset["regions"]], resolved), resolved)
+
+
+def temporal_geometry(config, spec=None):
+    from api.param_defaults import AUDIO_GEN_DEFAULTS
+    resolved = native_config(config)
+    policy = resolved[GRID_POLICY_KEY]
+    if spec is not None:
+        graph = validate_topology_identity(spec, resolved)
+        if graph["base_config_sha256"] != digest(resolved):
+            policy = "require_divisible"
+    return dict(frame_rate=25, patch_size=resolved["patch_size"],
+                preview_frames=max(1, round(AUDIO_GEN_DEFAULTS["audio_duration"] * 25)),
+                grid_policy=policy)
+
+
+def inspect_artifact(path):
+    import re
+    from safetensors import safe_open
+    from .defaults import ACESTEP_DIT_CONFIG
+    graph, embedded = preflight_checkpoint(path)
+    raw = deepcopy(ACESTEP_DIT_CONFIG if embedded is None else embedded)
+    if embedded is not None and type(embedded.get("num_hidden_layers")) is not int:
+        raise ValueError("ACE-Step inspection requires explicit native decoder depth")
+    resolved = native_config(raw)
+    with safe_open(str(path), framework="pt", device="cpu") as handle:
+        keys = {key.removeprefix("net."): key for key in handle.keys()}
+        blocks = {int(match.group(1)) for key in keys
+                  if (match := re.match(r"decoder\.layers\.(\d+)\.", key))}
+        if blocks != set(range(resolved["num_hidden_layers"])):
+            raise ValueError("ACE-Step native config and checkpoint block counts disagree")
+        h = resolved["hidden_size"]
+        shapes = {"decoder.proj_in.1.weight": [h, resolved["in_channels"], resolved["patch_size"]],
+                  "decoder.proj_out.1.weight": [h, resolved["audio_acoustic_hidden_dim"], resolved["patch_size"]],
+                  "null_condition_emb": [1, 1, h]}
+        for index in range(resolved["num_hidden_layers"]):
+            prefix = f"decoder.layers.{index}."
+            shapes.update({prefix+"self_attn.q_proj.weight": [resolved["num_attention_heads"] * resolved["head_dim"], h],
+                           prefix+"self_attn.k_proj.weight": [resolved["num_key_value_heads"] * resolved["head_dim"], h],
+                           prefix+"mlp.gate_proj.weight": [resolved["intermediate_size"], h]})
+        for name, shape in shapes.items():
+            if name not in keys or list(handle.get_slice(keys[name]).get_shape()) != shape:
+                raise ValueError(f"ACE-Step native header geometry disagrees: {name}")
+    return raw, graph
+
+
 def validate_topology_identity(spec, config):
     resolved = native_config(config)
     identity = resolved
@@ -191,7 +246,7 @@ def export_metadata(model):
     config = getattr(model, "config", None)
     if config is not None and hasattr(config, "to_dict"):
         raw = config.to_dict()
-        if metadata:
+        if getattr(model, "_residual_unet_spec", None) is not None:
             graph = validate_topology_identity(model._residual_unet_spec, raw)
             resolved = native_config(raw)
             raw[GRID_POLICY_KEY] = GRID_POLICY if graph["base_config_sha256"] == digest(resolved) and resolved.get(GRID_POLICY_KEY) == GRID_POLICY else "require_divisible"
@@ -242,12 +297,12 @@ def configure_training_topology(model, config, *, resuming=False, pending_adapte
     model_topology_metadata(model)
     existing = getattr(model, "_residual_unet_spec", None)
     declared = config.get("dit_rewiring_spec", TRAINING_DEFAULTS["dit_rewiring_spec"])
-    needs_identity = existing is not None or declared is not None or (
+    needs_identity = config.get("dit_rewiring_mode") == "configure" or existing is not None or declared is not None or (
         resume_spec is not NO_RESUME_SPEC and resume_spec is not None)
     native = native_config(model.config) if needs_identity else {}
     view = SimpleNamespace(config=native, _residual_unet_spec=existing)
     resolved = resolve_training_topology(view, dict(config), "acestep", validate_topology_identity,
-        lambda owner, spec: None, resuming=resuming, pending_adapter_resume=pending_adapter_resume,
+        lambda owner, spec: None, default_topology, resuming=resuming, pending_adapter_resume=pending_adapter_resume,
         resume_spec=resume_spec, install=False)
     if resolved is not None:
         decoder = getattr(model, "decoder", model)

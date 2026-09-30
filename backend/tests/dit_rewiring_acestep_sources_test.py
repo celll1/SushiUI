@@ -49,6 +49,129 @@ class AceStepSourceContracts(unittest.TestCase):
         from core.training.adapters.acestep_adapter import AceStepFullParameterAdapter
         AceStepFullParameterAdapter(SimpleNamespace(transformer=self.owner)).write_checkpoint(3,1,self.path)
 
+    def test_dense_full_export_with_external_sources_roundtrips(self):
+        from core.models.acestep.residual_unet import restore_topology
+        from core.models.acestep.loader import _build_dit, detect_acestep_layout
+        from core.training.adapters.acestep_adapter import AceStepFullParameterAdapter
+        from core.rewiring.spec import read_checkpoint_metadata
+        restore_topology(self.owner,None)
+        path=self.path.parent/"dense.safetensors"
+        AceStepFullParameterAdapter(SimpleNamespace(transformer=self.owner)).write_checkpoint(1,1,path)
+        with safe_open(str(path),framework="pt",device="cpu") as handle:
+            metadata=handle.metadata()
+        self.assertIsNone(read_checkpoint_metadata(metadata))
+        self.assertEqual(json.loads(metadata["acestep_components"]),self.sources)
+        restored, _=_build_dit(str(path),torch.float32)
+        self.assertIsNone(getattr(restored,"_residual_unet_spec",None))
+        for key,value in self.owner.state_dict().items():
+            torch.testing.assert_close(restored.state_dict()[key],value,rtol=0,atol=0)
+        self.assertEqual(detect_acestep_layout(str(path))["vae"],str(self.vae))
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_public_temporal_inspection_and_configure_api(self):
+        import asyncio
+        import httpx
+        from fastapi import FastAPI
+        from api.rewiring_routes import router
+        from core.rewiring.inspect import inspect_model
+        from core.models.acestep.residual_unet import configure_training_topology, restore_topology, temporal_grid
+        with patch("safetensors.torch.load_file", side_effect=AssertionError("No tensor loading")), \
+                patch("core.models.acestep.vendor.AceStepConditionGenerationModel", side_effect=AssertionError("No allocation")):
+            info = inspect_model(str(self.path))
+        self.assertEqual(info["topology"], self.spec)
+        self.assertEqual(info["streams"], [{"name":"main", "block_count":7}])
+        self.assertEqual(info["temporal_geometry"], dict(frame_rate=25, patch_size=2,
+            preview_frames=750, grid_policy="zero_token_tail_v1"))
+        self.assertIsNone(info["default_spec"])
+        self.assertEqual(info["initial_spec"]["regions"][0]["down_factor"], [2,1])
+        restore_topology(self.owner, None)
+        custom = configure_training_topology(self.owner, dict(dit_rewiring_mode="configure",
+            dit_rewiring_spec=info["initial_spec"]))
+        self.assertEqual(custom, info["initial_spec"])
+        padded, _ = temporal_grid(custom, self.owner.config, 375)
+        app=FastAPI(); app.include_router(router,prefix="/api/v1")
+        async def check():
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url="http://test") as client:
+                response=await client.post("/api/v1/models/rewiring/inspect",json={"model_path":str(self.path)})
+                self.assertEqual(response.status_code,200,response.text)
+                self.assertEqual(response.json(),info)
+                schema=(await client.get("/api/v1/schema/dit-rewiring")).json()
+                self.assertIn("acestep",schema["runtime_architectures"])
+                reply=await client.post("/api/v1/models/rewiring/validate",json=dict(
+                    spec=custom,token_height=padded,token_width=1))
+                self.assertEqual(reply.status_code,200,reply.text)
+                self.assertEqual([b["tokens"] for b in reply.json()["plan"]["blocks"]],
+                                 [376,188,188,188,188,188,376])
+                self.assertEqual((await client.post("/api/v1/models/rewiring/validate",json=dict(
+                    spec=custom,token_height=375,token_width=1))).status_code,422)
+        asyncio.run(check())
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_temporal_directory_and_legacy_identity_inspection(self):
+        import shutil
+        from core.rewiring.inspect import inspect_model
+        from core.models.acestep.residual_unet import native_config, temporal_grid, GRID_POLICY_KEY
+        from core.rewiring.spec import build_spec, checkpoint_metadata
+        direct=inspect_model(str(self.path))
+        selected=self.root/"diffusion_models"/"acestep_v1.5_turbo.safetensors"
+        shutil.copyfile(self.path,selected)
+        self.assertEqual(inspect_model(str(self.root)),direct)
+        old_native=native_config(self.owner.config);old_native.pop(GRID_POLICY_KEY)
+        legacy=build_spec("acestep",self.spec["streams"],self.spec["regions"],old_native)
+        raw=self.owner.config.to_dict();raw.pop(GRID_POLICY_KEY,None)
+        state={"net."+key:value for key,value in self.owner.state_dict().items()}
+        saved=self.path.parent/"legacy.safetensors"
+        save_file(state,str(saved),metadata={"model_type":"acestep","acestep_config":json.dumps(raw),
+            **checkpoint_metadata(legacy)})
+        info=inspect_model(str(saved))
+        self.assertEqual(info["topology"],legacy)
+        self.assertNotEqual(info["base_config_sha256"],legacy["base_config_sha256"])
+        with self.assertRaises(ValueError): temporal_grid(legacy,raw,375)
+        self.assertEqual(temporal_grid(legacy,raw,376),(376,"require_divisible"))
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_default_four_deep_blocks_and_native_cpu_backward(self):
+        from core.models.acestep.vendor import AceStepConfig, AceStepDiTModel
+        from core.models.acestep.residual_unet import configure_training_topology, temporal_grid, generation_metadata
+        from core.rewiring.spec import preview_plan
+        raw=self.owner.config.to_dict(); raw.update(num_hidden_layers=24,layer_types=None)
+        config=AceStepConfig(**raw); config._attn_implementation="sdpa"
+        model=AceStepDiTModel(config)
+        params=dict(dit_rewiring_mode="configure")
+        spec=configure_training_topology(model,params)
+        self.assertEqual(params["dit_rewiring_spec"],spec)
+        self.assertEqual([(r["start_block"],r["end_block"]) for r in spec["regions"]],[(4,20),(10,14)])
+        padded, _=temporal_grid(spec,config,375)
+        self.assertEqual(padded,376)
+        plan=preview_plan(spec,padded,1)
+        self.assertEqual([sum(b["depth"]==d for b in plan["blocks"]) for d in range(3)],[8,12,4])
+        self.assertEqual(generation_metadata(model,750)["transport_padding_tokens"],1)
+        audio=torch.randn(1,45,4,requires_grad=True)
+        output=model(hidden_states=audio,timestep=torch.tensor([.5]),timestep_r=torch.tensor([.1]),
+            attention_mask=torch.ones(1,45),encoder_hidden_states=torch.randn(1,3,16),
+            encoder_attention_mask=torch.ones(1,3),context_latents=torch.randn(1,45,8),use_cache=False)[0]
+        self.assertEqual(output.shape,audio.shape);self.assertTrue(torch.isfinite(output).all())
+        output.square().mean().backward();self.assertTrue(torch.isfinite(audio.grad).all())
+        edited=json.loads(json.dumps(spec));edited["regions"][1]["end_block"]=15
+        with self.assertRaisesRegex(ValueError,"without edits"):
+            configure_training_topology(model,dict(dit_rewiring_mode="configure",dit_rewiring_spec=edited),resuming=True)
+        self.assertEqual(model._residual_unet_spec,spec)
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_inspection_refuses_custom_missing_config_and_wrong_native_shapes(self):
+        from core.rewiring.inspect import inspect_model
+        state={"net."+key:value for key,value in self.owner.state_dict().items()}
+        path=self.path.parent/"invalid.safetensors"
+        save_file(state,str(path),metadata={"model_type":"acestep"})
+        with self.assertRaisesRegex(ValueError,"block counts"):
+            inspect_model(str(path))
+        raw=self.owner.config.to_dict()
+        state["net.decoder.proj_in.1.weight"]=torch.ones(16,11,2)
+        save_file(state,str(path),metadata={"model_type":"acestep","acestep_config":json.dumps(raw)})
+        with self.assertRaisesRegex(ValueError,"header geometry"):
+            inspect_model(str(path))
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_standalone_loader_uses_exact_sources_and_reexports_them(self):
         from core.models.acestep.loader import detect_acestep_layout, load_acestep_from_path
         from core.model_loader import ModelLoader

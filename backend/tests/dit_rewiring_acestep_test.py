@@ -50,8 +50,9 @@ class AceStepRuntimeContracts(unittest.TestCase):
         self.assertEqual(configure_training_topology(self.model, untouched, resuming=True,
             resume_spec=self.spec, install=False), self.spec)
         self.assertEqual(untouched, {})
+        changed = deepcopy(self.spec); changed["regions"][1]["end_block"] = 4
         for invalid, options in (({}, dict(resume_spec=None)),
-                ({"dit_rewiring_mode":"configure","dit_rewiring_spec":self.spec}, {}),
+                ({"dit_rewiring_mode":"configure","dit_rewiring_spec":changed}, {}),
                 ({"block_skip_rate":0.5}, {}), ({"tread_enable":True}, {})):
             before = deepcopy(invalid)
             with self.assertRaises(ValueError):

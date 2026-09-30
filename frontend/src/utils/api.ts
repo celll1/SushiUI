@@ -242,6 +242,7 @@ export interface ModelInfo {
   is_v_prediction: boolean;
   dit_rewiring_spec?: DiTRewiringSpec | null;
   dit_rewiring_token_stride?: number;
+  dit_rewiring_temporal_geometry?: DiTRewiringTemporalGeometry;
   model_hash: string;
   // Model-list entry fields (from GET /models)
   name?: string;
@@ -9494,12 +9495,43 @@ export interface DiTRewiringPlan {
   skip_edges: { region: string; stream: string; source: number; target: number; merge: string }[];
   blocks: { stream: string; index: number; depth: number; height: number; width: number; tokens: number }[];
 }
+export interface DiTRewiringTemporalGeometry {
+  frame_rate: number; patch_size: number; preview_frames: number;
+  grid_policy: "zero_token_tail_v1" | "require_divisible";
+}
+export function temporalRewiringGrid(spec: DiTRewiringSpec, frames: number,
+  geometry: DiTRewiringTemporalGeometry, baseConfigHash?: string): { native: number; padded: number } {
+  if (!Number.isInteger(frames) || frames < 1) throw new Error("Preview frames must be a positive integer");
+  const native = Math.ceil(frames / geometry.patch_size);
+  if (geometry.grid_policy === "require_divisible" || (baseConfigHash && spec.base_config_sha256 !== baseConfigHash))
+    return { native, padded: native };
+  const factors = new Map<string, number>();
+  const visiting = new Set<string>();
+  const cumulative = (id: string): number => {
+    const known = factors.get(id); if (known !== undefined) return known;
+    const region = spec.regions.find(r => r.id === id);
+    if (!region || visiting.has(id)) throw new Error("Invalid temporal region parent");
+    visiting.add(id);
+    const factor = region.down_factor[0] * (region.parent ? cumulative(region.parent) : 1);
+    visiting.delete(id); factors.set(id, factor); return factor;
+  };
+  const gcd = (a: number, b: number): number => b ? gcd(b, a % b) : a;
+  let alignment = 1;
+  for (const region of spec.regions) {
+    if (region.down_factor[1] !== 1) throw new Error("Audio regions shrink the time axis only");
+    const factor = cumulative(region.id);
+    if (!Number.isInteger(factor) || factor < 1) throw new Error("Invalid temporal downsample factor");
+    alignment = alignment / gcd(alignment, factor) * factor;
+  }
+  return { native, padded: Math.ceil(native / alignment) * alignment };
+}
 export interface DiTRewiringModelInfo {
   architecture: string; streams: DiTRewiringSpec["streams"];
   base_config_sha256: string; block_layout_sha256: string;
   topology: DiTRewiringSpec | null; topology_sha256: string | null; default_spec: DiTRewiringSpec | null;
   initial_spec: DiTRewiringSpec;
   latent_scale_factor: number; pixel_alignment: number;
+  temporal_geometry?: DiTRewiringTemporalGeometry;
 }
 export const getDiTRewiringSchema = async (): Promise<{
   presets: Record<string, unknown>; runtime_architectures: string[];

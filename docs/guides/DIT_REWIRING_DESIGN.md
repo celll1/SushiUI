@@ -19,7 +19,8 @@ complete audio workflow acceptance and owner frontend checks remain pending.
 LTX-2.3 has a frame-local spatial residual block path, standalone transformer
 artifact contracts and directory-loader graph restoration with CPU checks. Zero
 block swap retains residual execution and its offload ordering. Training retains
-the inner transformer reference. LoRA/full resume dispatch, companion references,
+the inner transformer reference. Inherited training and LoRA resume restore the
+graph with CPU native-training checks. Full resume dispatch, companion references,
 public configure, presets and editor integration remain pending.
 GPU acceptance is restricted to Qwen-Image 2.1 by owner instruction; other models
 receive provisional implementation and CPU verification. Further architectures
@@ -2092,3 +2093,34 @@ pass; the LTX-2/runtime/legacy-LoRA subset passes 32 cases and 14 subtests with
 CUDA uninitialized. Companion assembly is mocked in this bounded test. Complete
 video generation and training/resume acceptance remain pending. GPU validation
 remains exclusively Qwen-Image 2.1; non-Qwen quality and speed are unmeasured.
+
+### LTX-2 inherited training and LoRA resume
+
+Training resolves topology through the shared inheritance/resume contract and
+validates the native constructor geometry and actual block depth. Installing a
+graph preserves the original inner parameter modules, installs exactly one block
+loop and updates the training pipeline reference. A bare transformer without an
+execution wrapper or trainer owner refuses graph installation. Incompatible
+routing/block-skip features and edited or dense-mismatched resume graphs refuse
+before adapter tensors are read.
+
+LoRA load-time preflight and the actual resume loader share artifact selection
+for latest, absolute paths and output-directory-relative names. Topology is read
+from that selected header during component setup, then validated again before
+adapter tensor loading. Successful LoRA restore reinstalls the graph and wrapper
+without changing native parameter identities.
+
+Actual reduced-width native train_step calls with mixed per-sample fps exercise
+full and LoRA flow losses, reconstruction loss, gradient checkpointing, finite
+nonzero gradients and AdamW parameter updates. Video grids follow 288/72/18/18/
+18/72/288 tokens while native audio stays unscaled. A real LoRA save and resume
+restores exact predictions; dense mismatch refuses before tensor loading and
+preserves adapter tensors. Wrapper ownership, no-mutation dry validation and
+latest/path selection also have CPU contracts.
+
+Changed modules compile and import with CUDA uninitialized. LTX-2, shared
+training, legacy LTX-2 LoRA and ACE-Step contracts pass 49 cases and 39 subtests.
+This is CPU provisional coverage, not complete video training/resume workflow
+acceptance. GPU validation stays Qwen-Image 2.1 only. LTX-2 public configure,
+presets, editor/model discovery, generation LoRA lifetime and full-checkpoint
+companion/resume dispatch remain pending.

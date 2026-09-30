@@ -7,6 +7,7 @@ import torch.nn.functional as F
 
 from core.rewiring.runtime import run_rewired_stream
 from core.rewiring.spec import validate_model_identity, preview_plan
+from core.rewiring.training import NO_RESUME_SPEC
 
 GRID_POLICY_KEY = "sushi_residual_video_grid_policy"
 GRID_POLICY = "independent_spatial_frames_v1"
@@ -62,6 +63,46 @@ def wrap_transformer(model, spec):
     from core.models.ltx2_block_loop_wrapper import Ltx2BlockLoopWrapper
     restore_topology(model, spec)
     return model if isinstance(model, Ltx2BlockLoopWrapper) else Ltx2BlockLoopWrapper(model)
+
+
+def configure_training_topology(model, config, *, resuming=False, pending_adapter_resume=False,
+                                resume_spec=NO_RESUME_SPEC, install=True, trainer=None):
+    from types import SimpleNamespace
+    from api.param_defaults import TRAINING_DEFAULTS
+    from core.rewiring.training import resolve_training_topology
+    from core.models.ltx2_block_loop_wrapper import Ltx2BlockLoopWrapper
+    inner = getattr(model, "transformer", model)
+    model_topology_metadata(model)
+    existing = getattr(inner, "_residual_unet_spec", None)
+    declared = config.get("dit_rewiring_spec", TRAINING_DEFAULTS["dit_rewiring_spec"])
+    needs_identity = config.get("dit_rewiring_mode") == "configure" or existing is not None or declared is not None or (
+        resume_spec is not NO_RESUME_SPEC and resume_spec is not None)
+    native = native_config(inner.config) if needs_identity else {}
+    view = SimpleNamespace(config=native, _residual_unet_spec=existing)
+    resolved = resolve_training_topology(view, dict(config), "ltx2", validate_topology_identity,
+        lambda owner, graph: None, resuming=resuming, pending_adapter_resume=pending_adapter_resume,
+        resume_spec=resume_spec, install=False)
+    if resolved is not None:
+        if len(inner.transformer_blocks) != native["num_layers"]:
+            raise ValueError("LTX-2 actual block count disagrees with native config")
+        for key in ("_tread_router", "_block_dropout", "_blockskip_config"):
+            if getattr(model, key, None) is not None:
+                raise ValueError(f"LTX-2 residual training is incompatible with {key}")
+        if install and trainer is None and not isinstance(model, Ltx2BlockLoopWrapper):
+            raise ValueError("LTX-2 residual training requires an execution wrapper or trainer owner")
+    if install:
+        restore_topology(model, resolved)
+        if trainer is not None and resolved is not None:
+            wrapper = wrap_transformer(model, resolved)
+            trainer.transformer = wrapper
+            trainer.transformer_original = inner
+            trainer.ltx2_block_loop_wrapper = wrapper
+            pipeline = getattr(trainer, "ltx2_pipeline", None)
+            if pipeline is not None:
+                pipeline.transformer = wrapper
+        config["dit_rewiring_mode"] = config.get("dit_rewiring_mode", TRAINING_DEFAULTS["dit_rewiring_mode"])
+        config["dit_rewiring_spec"] = resolved
+    return resolved
 
 
 def preflight_forward(wrapper, hidden, audio, frames, height, width, coords, *,

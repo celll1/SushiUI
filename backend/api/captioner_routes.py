@@ -97,7 +97,7 @@ async def load_captioner(request: CaptionerLoadRequest):
     manager = get_caption_manager()
     try:
         return await asyncio.to_thread(manager.load, Path(request.path).expanduser().resolve())
-    except (ValueError, OSError) as exc:
+    except (ValueError, KeyError, TypeError, OSError) as exc:
         raise _caption_error(exc, manager, loading=True) from exc
 
 
@@ -145,9 +145,9 @@ async def _caption_slot(device):
 
 
 async def _predict_caption(http_request, request_id, image_bytes, *, tag_source, tags, max_new_tokens, device,
-                           manager=None, bundle_path=None):
+                           manager=None, bundle_path=None, unload_bundle=True, stop_event=None):
     manager = manager if manager is not None else get_caption_manager()
-    stop = threading.Event()
+    stop = stop_event if stop_event is not None else threading.Event()
     with _request_lock:
         if str(request_id) in _requests:
             raise APIError("Caption request id is already active", status_code=409, code="captioner_request_busy")
@@ -163,12 +163,12 @@ async def _predict_caption(http_request, request_id, image_bytes, *, tag_source,
                             raise InterruptedError("Caption generation cancelled")
                         try:
                             manager.load(bundle_path)
-                        except (ValueError, OSError) as exc:
+                        except (ValueError, KeyError, TypeError, OSError) as exc:
                             raise _caption_error(exc, manager, loading=True) from exc
                     return manager.predict(image_bytes, tag_source=tag_source, tags=tags,
                         max_new_tokens=max_new_tokens, device=device, cancelled=stop.is_set)
                 finally:
-                    if bundle_path is not None:
+                    if bundle_path is not None and unload_bundle:
                         manager.unload()
             worker = asyncio.create_task(asyncio.to_thread(predict))
             async def watch_disconnect():
@@ -232,7 +232,7 @@ def read_caption_image(dataset_id, item_id, session_factory=None):
             dataset = db.query(Dataset).filter(Dataset.id == dataset_id).one_or_none()
             item = db.query(DatasetItem).filter(DatasetItem.id == item_id,
                 DatasetItem.dataset_id == dataset_id).one_or_none()
-            if dataset is None or item is None or item.item_type in {"audio", "video"}:
+            if dataset is None or item is None or not item.image_path or item.item_type in {"audio", "video"}:
                 raise NotFoundError("Dataset image item not found", code="captioner_item_not_found")
             root = Path(dataset.path).resolve()
             path = Path(item.image_path)

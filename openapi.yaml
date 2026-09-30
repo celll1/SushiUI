@@ -65,6 +65,78 @@ tags:
     description: Developer-mode diagnostics (VRAM inspection)
 
 paths:
+  /schema/captioner-batch-defaults:
+    get:
+      tags: [captioner]
+      summary: Read captioner batch defaults and limits
+      responses:
+        '200': {description: Centralized CAPTIONER_BATCH_DEFAULTS}
+  /captioner/batches:
+    get:
+      tags: [captioner]
+      summary: List persisted caption preview batches
+      responses:
+        '200': {description: Batch states and item counts; abandoned active jobs reported interrupted}
+    post:
+      tags: [captioner]
+      summary: Create a pending caption preview batch
+      description: Fixes the bundle manifest and inference options. Captions are never automatically written to dataset sidecars.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerBatchCreateRequest'}
+            example: {bundle_path: training/captioner/run/checkpoint_00000100, dataset_id: 1, item_ids: [12, 13], max_new_tokens: 32, device: cpu}
+      responses:
+        '200': {description: Persisted pending batch}
+        '400': {description: Invalid bundle, input options or duplicate item ids}
+        '404': {description: Dataset or item not found}
+  /captioner/batches/{job_id}:
+    get:
+      tags: [captioner]
+      summary: Read a persisted caption preview batch
+      parameters:
+        - {name: job_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: State, immutable options and item counts}
+        '404': {description: Batch not found}
+  /captioner/batches/{job_id}/start:
+    post:
+      tags: [captioner]
+      summary: Start or resume pending caption batch items
+      description: One batch worker per process. Completed items are retained. retry_failed explicitly requeues failed items. Reloads the pinned bundle on resume and refuses a changed manifest. Runs independently of the browser connection.
+      parameters:
+        - {name: job_id, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerBatchStartRequest'}
+            example: {retry_failed: false}
+      responses:
+        '200': {description: Started batch; poll state and results}
+        '404': {description: Batch not found}
+        '409': {description: Worker already active or no pending items}
+  /captioner/batches/{job_id}/stop:
+    post:
+      tags: [captioner]
+      summary: Cancel the active item and retain completed batch results
+      parameters:
+        - {name: job_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Stop requested; uncompleted items remain resumable}
+        '404': {description: Batch not found}
+  /captioner/batches/{job_id}/results:
+    get:
+      tags: [captioner]
+      summary: Read ordered per-item caption previews or failures
+      parameters:
+        - {name: job_id, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: offset, in: query, schema: {type: integer, minimum: 0, default: 0}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 1000, default: 200}}
+      responses:
+        '200': {description: Items with status, attempts, preview including dataset revision and image hash, or error and code}
+        '404': {description: Batch not found}
   /schema/captioner-run-defaults:
     get:
       tags: [captioner]
@@ -11487,6 +11559,23 @@ components:
       bearerFormat: JWT
 
   schemas:
+    CaptionerBatchCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [bundle_path, dataset_id, item_ids]
+      properties:
+        bundle_path: {type: string, minLength: 1}
+        dataset_id: {type: integer, minimum: 1}
+        item_ids: {type: array, minItems: 1, maxItems: 10000, items: {type: integer, minimum: 1}, uniqueItems: true}
+        tag_source: {type: string, enum: [predicted, provided, merged], default: predicted}
+        tags: {type: array, items: {type: string}, default: []}
+        max_new_tokens: {type: integer, minimum: 1, default: 96}
+        device: {type: string, enum: [cpu, 'cuda:0'], default: cpu}
+    CaptionerBatchStartRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        retry_failed: {type: boolean, default: false}
     CaptionerTaggerConfig:
       type: object
       additionalProperties: false

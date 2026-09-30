@@ -29,7 +29,7 @@ export default function DiTRewiringSummary({ spec, tokenStride }: { spec: DiTRew
     <p className="my-2 text-gray-400">Read-only restored topology. Preview at {width}×{height}px; image dimensions follow the generation request. KV caching is disabled during rewired execution.</p>
     {plan && <DiTRewiringGraph spec={spec} plan={plan} />}
     {spec.regions.map(region => <p key={region.id} className="mt-1 text-gray-300">
-      {region.id}: [{region.start_block}, {region.end_block}) / parent {region.parent ?? "full grid"} / downsample {region.down_factor.join("×")} / residual skip {region.start_block} → {region.end_block}
+      {region.stream} / {region.id}: [{region.start_block}, {region.end_block}) / parent {region.parent ?? "full grid"} / downsample {region.down_factor.join("×")} / residual skip {region.start_block} → {region.end_block}
     </p>)}
     {error && <p role="alert" className="mt-2 text-red-400">{error}</p>}
   </details>;

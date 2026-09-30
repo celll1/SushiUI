@@ -656,3 +656,32 @@ statically; build/type checking and browser checks remain with the owner.
 All 50 aggregate CPU contracts pass, including API 422 refusal for malformed
 native array config. Changed files compile/import and OpenAPI parses with CUDA
 untouched. No further GPU run was performed for this provisional Z-Image surface.
+
+
+## Multiple-stream graphical editing
+
+The graph renders each declared stream separately with its own block count,
+resolution rows, layer path, skip arcs and drag coordinate scale. Streams without
+regions display their native sequence. The editor's stream selector controls the
+region list, independent/nested region placement and input boundary limits;
+selecting a skip on another graph selects that stream too. Parent choices remain
+within the selected stream and exclude the selected subtree. Resetting to a custom
+layout creates one region in the selected stream while retaining the full declared
+stream layout; the reset still replaces the topology as its tooltip states.
+
+Grid summaries group by stream and both spatial dimensions, so equal token counts
+in different aspect ratios or streams are not combined. The checkpoint summary
+labels every region with its stream. The model's template supplies operators,
+shrink factors and edge placement; no frontend default topology is introduced.
+
+A CPU contract exercises a 7/11/5-block preview with independently rewired dual/
+single streams and an untouched native stream, rectangular asymmetric shrink,
+nesting, metadata round trip and actual preview API responses. Cross-stream
+parent connections are refused with 422. All six topology contracts pass and the
+changed test compiles/imports without CUDA initialization. Frontend changes are
+statically reviewed against api.ts and the shared graph/summary/editor call sites;
+no build/type check or browser rendering was run. The owner should include stream
+selection, cross-graph selection, independent regions on a previously dense
+stream, stream-specific endpoint dragging and parent choices in consolidated UI
+verification once a multiple-stream native integration is available. This editor
+work does not claim that a new architecture's native runtime is implemented.

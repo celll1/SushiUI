@@ -8,10 +8,12 @@ from .spec import preview_plan, validate_spec
 
 
 def run_rewired_stream(hidden, spec, stream, height, width, prefix, context,
-                       execute_block, coarse_context):
+                       execute_block, coarse_context, *, grid_groups=1):
     """Callbacks own native attention, checkpointing, and block-swap execution."""
     spec = validate_spec(spec)
-    preview_plan(spec, height, width)
+    if type(height) is not int or type(grid_groups) is not int or grid_groups < 1 or height % grid_groups:
+        raise ValueError("Rewired grid groups must evenly divide the token height")
+    preview_plan(spec, height // grid_groups, width)
     declaration = next((s for s in spec["streams"] if s["name"] == stream), None)
     if declaration is None:
         raise ValueError("Unknown rewired stream")
@@ -27,19 +29,24 @@ def run_rewired_stream(hidden, spec, stream, height, width, prefix, context,
             entry = stack.pop()
             saved, low_in = entry["saved"], entry["low_in"]
             delta = (hidden[:, prefix:].float() - low_in.float()).transpose(1, 2)
-            delta = delta.reshape(saved.shape[0], saved.shape[2], height, width)
+            delta = delta.reshape(batch, channels, grid_groups, height // grid_groups, width)
+            delta = delta.permute(0, 2, 1, 3, 4).reshape(batch * grid_groups, channels, height // grid_groups, width)
             height, width = entry["grid"]
-            update = F.interpolate(delta, size=(height, width), mode="bilinear",
-                                   align_corners=False).flatten(2).transpose(1, 2)
+            update = F.interpolate(delta, size=(height // grid_groups, width), mode="bilinear", align_corners=False)
+            update = update.reshape(batch, grid_groups, channels, height // grid_groups, width)
+            update = update.permute(0, 2, 1, 3, 4).flatten(2).transpose(1, 2)
             hidden = torch.cat((hidden[:, :prefix],
                                 (saved.float() + update).to(saved.dtype)), dim=1)
             context = entry["context"]
         region = starts.get(index)
         if region is not None:
             saved = hidden[:, prefix:]
-            grid = saved.transpose(1, 2).reshape(saved.shape[0], saved.shape[2], height, width)
+            grid = saved.transpose(1, 2).reshape(batch, channels, grid_groups, height // grid_groups, width)
+            grid = grid.permute(0, 2, 1, 3, 4).reshape(batch * grid_groups, channels, height // grid_groups, width)
             factor = tuple(region["down_factor"])
-            low_in = F.avg_pool2d(grid, factor).flatten(2).transpose(1, 2)
+            pooled = F.avg_pool2d(grid, factor)
+            low_in = pooled.reshape(batch, grid_groups, channels, height // grid_groups // factor[0], width // factor[1])
+            low_in = low_in.permute(0, 2, 1, 3, 4).flatten(2).transpose(1, 2)
             stack.append(dict(end=region["end_block"], saved=saved, low_in=low_in,
                               grid=(height, width), context=context))
             height, width = height // factor[0], width // factor[1]

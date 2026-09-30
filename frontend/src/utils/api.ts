@@ -9498,7 +9498,7 @@ export interface DiTRewiringPlan {
 }
 export interface DiTRewiringTemporalGeometry {
   frame_rate: number; patch_size: number; preview_frames: number;
-  grid_policy: "zero_token_tail_v1" | "require_divisible";
+  grid_policy: "zero_token_tail_v1" | "zero_hidden_tail_v1" | "require_divisible";
 }
 export function temporalRewiringGrid(spec: DiTRewiringSpec, frames: number,
   geometry: DiTRewiringTemporalGeometry, baseConfigHash?: string): { native: number; padded: number } {

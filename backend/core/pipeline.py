@@ -643,6 +643,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             )
 
             if isinstance(model_result, dict) and model_result.get("type") == "yue2":
+                from core.models.yue2.residual_unet import model_info as residual_model_info
+                residual_info = residual_model_info(model_result)
                 from core.models.components.wiring import YUE2_WIRING
                 from utils.hash_cache import get_cached_file_hash
                 self.yue2_components = model_result
@@ -657,6 +659,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     sample_rate=48000, frame_rate=25, latent_frame_rate=25, latent_channels=64,
                     weight_license=model_result["model_identity"].get("license"),
                     weight_source=model_result["model_identity"].get("source"))
+                self.current_model_info.update(residual_info)
                 self._save_last_model(source_type, source, pipeline_type)
                 return
 

@@ -19234,8 +19234,10 @@ components:
       description: >-
         Native audio latent frames per second and frames per decoder token.
         Use ceil(frames/patch_size) tokens on the time axis and width 1.
-        zero_token_tail_v1 rounds tokens up to the least common multiple of
-        cumulative region factors; require_divisible never extends the grid.
+        zero_token_tail_v1 and zero_hidden_tail_v1 round tokens up to the least
+        common multiple of cumulative region factors. YuE2 zero_hidden_tail_v1
+        pads embedded acoustic hidden states while preserving both boundary
+        tokens and the immutable AR prefix KV. require_divisible never extends the grid.
         Legacy checkpoint identities without the policy field retain require_divisible.
       properties:
         frame_rate: {type: number, minimum: 0, exclusiveMinimum: true, example: 25}
@@ -19247,7 +19249,7 @@ components:
           example: 750
         grid_policy:
           type: string
-          enum: [zero_token_tail_v1, require_divisible]
+          enum: [zero_token_tail_v1, zero_hidden_tail_v1, require_divisible]
           example: zero_token_tail_v1
 
     LoadedModelInfo:

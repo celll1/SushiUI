@@ -2793,3 +2793,35 @@ uninitialized. No production GPU or non-Qwen model payload is loaded.
 
 Header-only public inspection, restored model-info display, generation provenance
 and the generation-only graph editing/export workflow remain to be connected.
+
+
+### YuE2 restored model-info and acoustic graph display (CPU/static)
+
+The loaded-model branch now publishes a validated detached NAR spec and temporal
+geometry. Residual model-info requires the loaded component contract's native
+25 Hz and 64 channels; mismatched values refuse before the branch publishes its
+state. Dense model-info has a null spec without residual geometry. Preview frames
+come from the YuE2 audio-duration defaults (360 seconds / 9000 frames), with one
+frame per acoustic token. The preview is illustrative: real acoustic chunks
+follow the generated codec sequence and original context budget, including AR
+prefix length, which is unknown at model-loading time.
+
+OpenAPI and frontend API types now accept zero_hidden_tail_v1 alongside existing
+temporal grid policies. The common temporal preview uses the same nested-factor
+padding arithmetic for this policy. The restored-topology summary explains the
+NAR-only stream, preserved START/END tokens, unchanged autoregressive generation
+and immutable AR prefix KV; its graph shows per-layer acoustic token counts and
+residual skip edges. No frontend build, type-check or browser rendering is run,
+as agreed with the owner; API types, the model selector's geometry forwarding
+and shared graph component are reviewed statically.
+
+A CPU fixture exercises the actual DiffusionPipelineManager YuE2 loading branch
+with a native tiny MoT and fixture loader/hash. It checks the detached model
+information, defaults-derived geometry, incompatible component geometry and
+dense absence. Residual, complete-file, API and shared-spec checks pass 56 tests
+and 4 subtests. Changed backend modules compile/import, OpenAPI parses and CUDA
+remains uninitialized. GPU validation remains Qwen-Image 2.1 only.
+
+Public artifact inspection, successful-generation provenance and the generation-
+only graph editing/export workflow remain outstanding. Owner frontend/workflow
+acceptance is deferred to the requested final manual verification.

@@ -56,6 +56,28 @@ def default_topology(config):
         [{**region, **OPERATORS} for region in preset["regions"]], native_config(config))
 
 
+
+def temporal_geometry(config):
+    from api.param_defaults import audio_defaults_for_arch
+    if config.latent_dim != 64 or config.latent_type != "vae":
+        raise ValueError("YuE2 residual geometry requires native 64-channel VAE latents")
+    return dict(frame_rate=25, patch_size=1,
+        preview_frames=max(1, round(audio_defaults_for_arch("yue2")["audio_duration"] * 25)),
+        grid_policy=GRID_POLICY)
+
+
+def model_info(components):
+    model = components.get("transformer")
+    graph = getattr(model, "_residual_unet_spec", None)
+    if graph is None:
+        return {"dit_rewiring_spec": None}
+    model_topology_metadata(model)
+    if components.get("frame_rate") != 25 or components.get("latent_channels") != 64:
+        raise ValueError("YuE2 residual model-info requires native 25 Hz / 64-channel geometry")
+    return {"dit_rewiring_spec": deepcopy(graph),
+            "dit_rewiring_temporal_geometry": temporal_geometry(model.config)}
+
+
 def preflight_engine(model, native_tokens, ar_tokens):
     graph = getattr(model, "_residual_unet_spec", None)
     if graph is None:

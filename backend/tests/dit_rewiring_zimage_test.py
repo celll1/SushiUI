@@ -37,6 +37,91 @@ class ZImageRuntimeContracts(unittest.TestCase):
         output, _ = self.model(list(self.images.unbind()), self.times, self.captions)
         return torch.stack(output)
 
+
+
+    def test_component_loading_inherits_after_latent_space(self):
+        from types import SimpleNamespace
+        from core.model_loader import ModelLoader
+        from core.training.ops import zimage_ops
+        components = {"transformer": self.model, "vae": torch.nn.Linear(4, 4),
+                      "text_encoder": torch.nn.Linear(12, 12), "tokenizer": object(),
+                      "scheduler": SimpleNamespace()}
+        components["vae"].config = SimpleNamespace(latent_channels=4)
+        trainer = SimpleNamespace(log_prefix="[ZImageLoadTest]", model_path="base.safetensors",
+            weight_dtype=torch.float32, vae_dtype=torch.float32, config={},
+            use_flash_attention=False, gradient_checkpointing=False, blocks_to_swap=1,
+            device="cpu", resume_from_checkpoint="adapter.safetensors", _manages_own_resume=True)
+        order = []
+        def latent_space(owner, declared):
+            self.assertIs(owner.transformer.transformer, self.model)
+            self.assertEqual(owner.config, {})
+            order.append("latent_space")
+        with patch.object(ModelLoader, "load_zimage_from_diffusers", return_value=components), \
+             patch.object(zimage_ops, "_apply_latent_space", side_effect=latent_space):
+            zimage_ops.load_components(trainer)
+        self.assertEqual(order, ["latent_space"])
+        self.assertEqual(trainer.config["dit_rewiring_spec"], self.spec)
+        self.assertIs(trainer.transformer_original, self.model)
+        self.assertTrue(all(not parameter.requires_grad for parameter in trainer.transformer.parameters()))
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_training_inheritance_and_lora_resume_atomicity(self):
+        import tempfile
+        from types import SimpleNamespace
+        from safetensors.torch import save_file
+        from core.models.batched_zimage_wrapper import BatchedZImageWrapperOptimized
+        from core.models.zimage_residual_unet import configure_training_topology, restore_topology
+        from core.training.adapters.zimage_adapter import ZImageLoRAAdapter
+        from core.training.lora_trainer import LoRATrainer
+        from core.rewiring.training import validate_training_rewiring
+        from core.rewiring.spec import checkpoint_metadata
+        wrapper = BatchedZImageWrapperOptimized(self.model)
+        config = {}
+        self.assertEqual(configure_training_topology(wrapper, config), self.spec)
+        self.assertEqual(configure_training_topology(wrapper, config, resuming=True), self.spec)
+        with self.assertRaisesRegex(ValueError, "not yet supported"):
+            validate_training_rewiring(config, "zimage")
+        with self.assertRaisesRegex(ValueError, "not yet supported"):
+            configure_training_topology(wrapper, {"dit_rewiring_mode": "configure",
+                                                   "dit_rewiring_spec": self.spec})
+        with self.assertRaisesRegex(ValueError, "block_skip_rate"):
+            configure_training_topology(wrapper, {**config, "block_skip_rate": 0.1})
+        self.assertEqual(self.model._residual_unet_spec, self.spec)
+        restore_topology(wrapper, None)
+        trainer = SimpleNamespace(transformer=wrapper, config={}, is_zimage=True,
+            log_prefix="[ZImageResumeTest]", lora_rank=2, lora_alpha=2,
+            adapter_algorithm="lora", weight_decompose=False, adapter_config={})
+        adapter = ZImageLoRAAdapter(trainer, 2, 2)
+        layers = {}; adapter.apply_lora_to_unet(layers); trainer.lora_layers = layers
+        self.assertGreater(len(layers), 0)
+        tensors = {f"{name}.{key}": value.detach().clone()+0.01
+                   for name, layer in layers.items() for key, value in layer.branch_tensors().items()}
+        before = {f"{name}.{key}": value.detach().clone()
+                  for name, layer in layers.items() for key, value in layer.branch_tensors().items()}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/"resume.safetensors"
+            metadata = {"model_type": "zimage", "step": "17", **checkpoint_metadata(self.spec)}
+            save_file({"unrelated": torch.ones(1)}, str(path), metadata=metadata)
+            with self.assertRaisesRegex(ValueError, "missing required tensor"):
+                LoRATrainer.load_checkpoint(trainer, str(path))
+            self.assertFalse(hasattr(self.model, "_residual_unet_spec"))
+            self.assertEqual(trainer.config, {})
+            for name, layer in layers.items():
+                for key, value in layer.branch_tensors().items():
+                    torch.testing.assert_close(value, before[f"{name}.{key}"], rtol=0, atol=0)
+            save_file(tensors, str(path), metadata=metadata)
+            self.assertEqual(LoRATrainer.load_checkpoint(trainer, str(path)), 17)
+            self.assertEqual(self.model._residual_unet_spec, self.spec)
+            for name, layer in layers.items():
+                for key, value in layer.branch_tensors().items():
+                    torch.testing.assert_close(value, tensors[f"{name}.{key}"], rtol=0, atol=0)
+            self.assertEqual(configure_training_topology(wrapper, trainer.config, resuming=True), self.spec)
+            save_file(tensors, str(path), metadata={"model_type": "zimage"})
+            with self.assertRaisesRegex(ValueError, "disagree"):
+                LoRATrainer.load_checkpoint(trainer, str(path))
+            self.assertEqual(self.model._residual_unet_spec, self.spec)
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_native_shapes_auxiliary_masks_rope_and_offloader(self):
         count = sum(p.numel() for p in self.model.parameters())
         events = []

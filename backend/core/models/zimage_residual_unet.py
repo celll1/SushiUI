@@ -4,6 +4,7 @@ import inspect
 import torch
 from torch.utils.checkpoint import checkpoint
 
+from core.rewiring.training import NO_RESUME_SPEC
 from core.rewiring.runtime import run_rewired_stream
 from core.rewiring.spec import preview_plan, validate_model_identity
 
@@ -148,3 +149,11 @@ def preflight_artifact(path):
     if topology is not None:
         topology = validate_topology_identity(topology, config)
     return topology, config
+
+
+def configure_training_topology(model, config, *, resuming=False, pending_adapter_resume=False,
+                                resume_spec=NO_RESUME_SPEC, install=True):
+    from core.rewiring.training import resolve_training_topology
+    return resolve_training_topology(native_model(model), config, "zimage",
+        validate_topology_identity, restore_topology, resuming=resuming,
+        pending_adapter_resume=pending_adapter_resume, resume_spec=resume_spec, install=install)

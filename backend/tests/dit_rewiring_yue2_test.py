@@ -35,6 +35,111 @@ def fixture(tokens=13):
 
 
 class YuE2Residual(unittest.TestCase):
+    def generation_fixture(self):
+        from core.models.yue2.vendor.protocol import CODEC_OFFSET
+        from core.models.yue2.vendor.nar import song_chunks
+        from core.pipeline_backends.yue2 import YuE2Mixin
+        from api.param_defaults import audio_defaults_for_arch
+        model, graph, _ = fixture()
+        model.config.vocab_size = 184704
+        model.model.embed_tokens = torch.nn.Embedding(model.config.vocab_size, model.config.hidden_size)
+        model.lm_head = torch.nn.Linear(model.config.hidden_size, model.config.vocab_size, bias=False)
+        model.nar_norm = deepcopy(model.model.norm)
+        model.eval()
+        graph = build_spec("yue2", graph["streams"], graph["regions"], native_config(model.config))
+        restore_topology(model, graph)
+        class VAE(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.decoder = torch.nn.Identity()
+            def decode(self, latent):
+                return torch.zeros(1, 2, 52)
+            def decode_tiled(self, latent, **kwargs):
+                return self.decode(latent)
+        vae = VAE()
+        components = dict(transformer=model, vae=vae,
+            tokenizer=SimpleNamespace(encode=lambda text: [1,2]),
+            model_identity={"checkpoint": "fixture.safetensors"})
+        manager = YuE2Mixin()
+        manager.yue2_components, manager.device = components, "cpu"
+        manager._prepare_yue2_loras = lambda configs: []
+        manager._set_yue2_adapter_stage = lambda files, stage: 0
+        params = {**audio_defaults_for_arch("yue2"), "prompt": "Pop", "lyrics": "Hello",
+                  "audio_duration": .52, "yue2_cot": "off", "seed": 5, "vae_decode_mode": "full"}
+        from contextlib import ExitStack
+        def mocks():
+            stack = ExitStack()
+            stack.enter_context(patch("core.models.yue2.pipeline.validate_context_budget", return_value=[1,2]))
+            stack.enter_context(patch("core.models.yue2.pipeline.token_prefixes", return_value=[1,2]))
+            stack.enter_context(patch("core.models.yue2.pipeline.negative_prefix", return_value=[1,2]))
+            stack.enter_context(patch("core.models.yue2.pipeline.generate_tokens",
+                return_value=([CODEC_OFFSET+i for i in range(13)], {}, False)))
+            stack.enter_context(patch("core.models.yue2.pipeline.song_chunks",
+                side_effect=lambda prefix, codec, seed: song_chunks(prefix, codec, seed, context=20)))
+            stack.enter_context(patch("core.inference.cancellation.raise_if_cancelled", return_value=None))
+            return stack
+        return manager, model, graph, params, mocks
+
+    def test_actual_generation_records_completed_chunks_and_audio_sidecars(self):
+        import json
+        from utils import audio_utils
+        from core.models.yue2.artifacts import write_yue2_sidecar
+        manager, model, graph, params, mocks = self.generation_fixture()
+        params["dit_rewiring_actual"] = {"stale": True}
+        with mocks():
+            result = manager._generate_txt2aud_yue2(params)
+        actual = params["dit_rewiring_actual"]
+        self.assertEqual(actual["spec"], graph)
+        self.assertEqual(actual["scope"], "native_acoustic_song_chunks")
+        self.assertTrue(actual["immutable_ar_prefix_kv"])
+        self.assertFalse(actual["acoustic_kv_cache"])
+        self.assertEqual(actual["preserved_boundary_tokens"], 2)
+        self.assertEqual([c["native_audio_tokens"] for c in actual["chunks"]], [7,6])
+        self.assertEqual([c["padded_audio_tokens"] for c in actual["chunks"]], [8,8])
+        self.assertEqual([c["velocity_evaluations"] for c in actual["chunks"]], [64,64])
+        self.assertEqual([(c["input_frame_start"],c["input_frame_end"]) for c in actual["chunks"]], [(0,7),(7,13)])
+        self.assertEqual(result.effective_config["dit_rewiring_actual"], actual)
+        actual["spec"]["regions"][0]["id"] = "detached"
+        self.assertEqual(result.effective_config["dit_rewiring_actual"]["spec"], graph)
+        self.assertEqual(model._residual_unet_spec, graph)
+        with tempfile.TemporaryDirectory() as directory, patch.object(audio_utils.settings, "outputs_dir", directory):
+            filename = audio_utils.save_audio_with_metadata(result.waveform, result.sample_rate,
+                params, "txt2aud", model_info={"type":"yue2"})
+            path = Path(directory) / filename
+            self.assertTrue(path.is_file())
+            common = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+            self.assertEqual(common["dit_rewiring_actual"], actual)
+            specific = Path(write_yue2_sidecar(path, result))
+            provenance = json.loads(specific.read_text(encoding="utf-8"))
+            self.assertEqual(provenance["effective_config"]["dit_rewiring_actual"]["spec"], graph)
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_failure_cancellation_and_final_graph_mutation_leave_no_record(self):
+        manager, model, graph, params, mocks = self.generation_fixture()
+        params["dit_rewiring_actual"] = {"stale": True}
+        with mocks(), patch.object(manager.yue2_components["vae"], "decode", side_effect=RuntimeError("decode failed")):
+            with self.assertRaisesRegex(RuntimeError, "decode failed"):
+                manager._generate_txt2aud_yue2(params)
+        self.assertNotIn("dit_rewiring_actual", params)
+        def cancelled(completed, total):
+            if completed >= 7100:
+                raise InterruptedError("cancelled")
+        params["dit_rewiring_actual"] = {"stale": True}
+        with mocks(), self.assertRaisesRegex(InterruptedError, "cancelled"):
+            manager._generate_txt2aud_yue2(params, progress_callback=cancelled)
+        self.assertNotIn("dit_rewiring_actual", params)
+        def graph_change(completed, total):
+            if completed == 10000:
+                restore_topology(model, None)
+        with mocks(), self.assertRaisesRegex(ValueError, "changed during generation"):
+            manager._generate_txt2aud_yue2(params, progress_callback=graph_change)
+        self.assertNotIn("dit_rewiring_actual", params)
+        with mocks():
+            result = manager._generate_txt2aud_yue2(params)
+        self.assertNotIn("dit_rewiring_actual", params)
+        self.assertNotIn("dit_rewiring_actual", result.effective_config)
+
+
     def test_loaded_model_info_displays_detached_nar_geometry(self):
         from core.models.yue2.residual_unet import model_info, temporal_geometry
         from api.param_defaults import audio_defaults_for_arch

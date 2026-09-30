@@ -137,3 +137,43 @@ def run_native_blocks(engine, hidden):
     hidden = run_rewired_stream(hidden, state["graph"], "nar", padded, 1, 2,
                                 rotary(padded), execute, coarse_context)
     return torch.cat((hidden[:, :1], hidden[:, 2:2 + native], hidden[:, 1:2]), dim=1)
+
+
+def begin_generation_observation(model):
+    graph = getattr(model, "_residual_unet_spec", None)
+    if graph is None:
+        return None
+    model_topology_metadata(model)
+    return dict(spec=deepcopy(graph), spec_sha256=digest(graph), frame_rate=25,
+        grid_policy=GRID_POLICY, preserved_boundary_tokens=2,
+        immutable_ar_prefix_kv=True, acoustic_kv_cache=False,
+        scope="native_acoustic_song_chunks", chunks=[])
+
+
+def observe_completed_chunk(observation, engine, frame_start, steps):
+    if observation is None:
+        if engine.residual_state is not None:
+            raise ValueError("YuE2 NAR topology changed during generation")
+        return
+    assert_engine_topology(engine)
+    state = engine.residual_state
+    if state is None or state["sha256"] != observation["spec_sha256"]:
+        raise ValueError("YuE2 NAR topology changed during generation")
+    if engine.velocity_evaluations != 2 * steps:
+        raise ValueError("YuE2 residual observation requires a complete midpoint solve")
+    native = engine.nar_length - 2
+    observation["chunks"].append(dict(index=len(observation["chunks"]),
+        input_frame_start=frame_start, input_frame_end=frame_start + native,
+        native_audio_tokens=native, padded_audio_tokens=state["padded_tokens"],
+        ar_prefix_tokens=engine.ar_length, visible_ar_prefix_tokens=engine.visible_length,
+        ode_steps=steps, velocity_evaluations=engine.velocity_evaluations))
+
+
+def finish_generation_observation(observation, model):
+    current = begin_generation_observation(model)
+    if (current is None) != (observation is None) or (current is not None
+            and current["spec_sha256"] != observation["spec_sha256"]):
+        raise ValueError("YuE2 NAR topology changed during generation")
+    if observation is not None and not observation["chunks"]:
+        raise ValueError("YuE2 residual observation requires completed acoustic chunks")
+    return deepcopy(observation)

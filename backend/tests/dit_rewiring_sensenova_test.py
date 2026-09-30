@@ -51,6 +51,166 @@ class SenseNovaRuntimeContracts(unittest.TestCase):
         args.update(overrides)
         return self.model(**args)
 
+    def generation_backend(self):
+        from core.pipeline_backends.sensenova import SenseNovaMixin
+        root = torch.nn.Module()
+        root.config = self.owner.config
+        root.language_model = torch.nn.Module()
+        root.language_model.model = self.model
+        root.patch_size = 16; root.downsample_ratio = 0.5
+        root.gen_patch_size = 32; root.gen_in_channels = 3
+        root.gen_vit_patch_size = 16; root.gen_vae_scale_factor = 1
+        class Backend(SenseNovaMixin):
+            pass
+        backend = Backend()
+        backend.sensenova_components = {"transformer": root, "tokenizer": object()}
+        backend.device = "cpu"
+        backend._sensenova_resolve_lora_path = lambda path: path
+        return backend, root
+
+    def test_generation_adapter_topology_lifetime_and_atomic_refusals(self):
+        import tempfile
+        from safetensors.torch import save_file
+        from core.adapters import AdapterIncompatible, CompositeAdapterLayer
+        from core.rewiring.spec import checkpoint_metadata
+        from core.models.sensenova.residual_unet import restore_topology
+        backend, root = self.generation_backend()
+        paths = ["language_model.model.layers.0.self_attn.q_proj_mot_gen",
+                 "language_model.model.layers.0.self_attn.q_proj"]
+        originals = [root.get_submodule(path) for path in paths]
+        tensors = {}
+        for path, module in zip(paths, originals):
+            tensors[path + ".lora_down.weight"] = torch.randn(2, module.in_features)
+            tensors[path + ".lora_up.weight"] = torch.randn(module.out_features, 2)
+        metadata = dict(model_type="sensenova", tensor_kind="neo_hf_lora", lora_rank="2", lora_alpha="2")
+        with tempfile.TemporaryDirectory() as folder:
+            rewired = str(Path(folder) / "rewired.safetensors")
+            dense = str(Path(folder) / "dense.safetensors")
+            save_file(tensors, rewired, metadata={**metadata, **checkpoint_metadata(self.spec)})
+            save_file(tensors, dense, metadata=metadata)
+            requests = [{"path": rewired, "strength": 0.7}]
+            params = {"loras": requests, "ref_images": [object()]}
+            session = backend._sensenova_lora_session
+            with patch.object(session, "parse", wraps=session.parse) as parser:
+                files = backend._sensenova_rewiring_preflight(params, {"width": 384, "height": 256})
+                self.assertIsNone(getattr(root, "_residual_unet_spec", None))
+                self.assertEqual(params["dit_rewiring_actual"]["spec"], self.spec)
+                self.assertEqual(backend._load_lora_sensenova(requests, parsed_files=files), 2)
+                self.assertEqual(parser.call_count, 1)
+            self.assertEqual(root._residual_unet_spec, self.spec)
+            self.assertEqual(self.model._residual_unet_spec, self.spec)
+            for path, original in zip(paths, originals):
+                wrapper = root.get_submodule(path)
+                self.assertIsInstance(wrapper, CompositeAdapterLayer)
+                x = torch.randn(1, 3, original.in_features)
+                expected = original(x) + 0.7 * torch.nn.functional.linear(
+                    torch.nn.functional.linear(x, tensors[path + ".lora_down.weight"]),
+                    tensors[path + ".lora_up.weight"])
+                torch.testing.assert_close(wrapper(x), expected)
+            backend._unload_lora_sensenova()
+            self.assertIsNone(getattr(root, "_residual_unet_spec", None))
+            for path, original in zip(paths, originals):
+                self.assertIs(root.get_submodule(path), original)
+            with patch.object(session, "load", wraps=session.load) as load:
+                with self.assertRaises(AdapterIncompatible):
+                    backend._load_lora_sensenova(requests + [{"path": dense}])
+                self.assertEqual(load.call_count, 0)
+                original_config = root.language_model.model.config
+                root.language_model.model.config = deepcopy(original_config)
+                root.language_model.model.config.num_hidden_layers = 8
+                root.language_model.model.config.layer_types = ["full_attention"] * 8
+                try:
+                    with self.assertRaises(AdapterIncompatible):
+                        backend._load_lora_sensenova(requests)
+                    self.assertEqual(load.call_count, 0)
+                finally:
+                    root.language_model.model.config = original_config
+            with patch("core.models.sensenova.residual_unet.restore_topology",
+                       side_effect=[RuntimeError("restore failed"), None]):
+                with self.assertRaisesRegex(RuntimeError, "restore failed"):
+                    backend._load_lora_sensenova(requests)
+            for path, original in zip(paths, originals):
+                self.assertIs(root.get_submodule(path), original)
+            self.assertIsNone(getattr(root, "_residual_unet_spec", None))
+            restore_topology(root, self.spec)
+            backend._load_lora_sensenova(requests, component_names=["understanding"])
+            self.assertIs(root.get_submodule(paths[0]), originals[0])
+            backend._unload_lora_sensenova()
+            self.assertEqual(root._residual_unet_spec, self.spec)
+            restore_topology(root, None)
+            backend._load_lora_sensenova(requests)
+            replacement = torch.nn.Module()
+            backend.sensenova_components["transformer"] = replacement
+            backend._unload_lora_sensenova()
+            self.assertIsNone(getattr(root, "_residual_unet_spec", None))
+            self.assertFalse(hasattr(replacement, "_residual_unet_spec"))
+            backend.sensenova_components["transformer"] = root
+            backend._load_lora_sensenova(requests)
+            with patch.object(session, "unload", side_effect=RuntimeError("unload failed")):
+                with self.assertRaisesRegex(RuntimeError, "unload failed"):
+                    backend._unload_lora_sensenova()
+            self.assertIsNone(getattr(root, "_residual_unet_spec", None))
+            backend._unload_lora_sensenova()
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_generation_preflight_refuses_features_and_grid_before_residency(self):
+        from PIL import Image
+        from api.error_handlers import ValidationError
+        from core.models.sensenova.residual_unet import restore_topology
+        backend, root = self.generation_backend()
+        restore_topology(root, self.spec)
+        image = Image.new("RGB", (384, 256)); mask = Image.new("L", (384, 256))
+        entries = [(backend._generate_txt2img_sensenova, ()),
+                   (backend._generate_img2img_sensenova, (image,)),
+                   (backend._generate_inpaint_sensenova, (image, mask))]
+        for entry, args in entries:
+            for extra in ({"style_transfer": {"enabled": True}}, {"nag_enable": True},
+                          {"prompt": "(fox:-1)"}, {"width": 352}):
+                params = {"width": 384, "height": 256, **extra}
+                with self.subTest(entry=entry.__name__, extra=extra), patch.object(
+                        backend, "_sensenova_apply_attention_backend") as attention, patch.object(
+                        backend, "_sensenova_move") as move:
+                    with self.assertRaises(ValidationError):
+                        entry(params, *args)
+                    attention.assert_not_called(); move.assert_not_called()
+        self.assertEqual(root._residual_unet_spec, self.spec)
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_streamed_host_prefix_matches_native_cache_at_every_resolution(self):
+        from core.models.sensenova.residual_unet import restore_topology
+        restore_topology(self.owner, self.spec)
+        masters = [(layer.keys.transpose(1, 2).contiguous().clone(),
+                    layer.values.transpose(1, 2).contiguous().clone()) for layer in self.prefix.layers]
+        class Streamer:
+            _current_branch = "cond"
+            _masters = {"cond": masters}
+            calls = []
+            def acquire(self, index, *, branch):
+                assert branch == self._current_branch
+                self.calls.append(index)
+                keys, values = self._masters[branch][index]
+                shape = (keys.shape[0], keys.shape[1] + 96, keys.shape[2], keys.shape[3])
+                k = keys.new_zeros(shape); v = values.new_zeros(shape)
+                k[:, :keys.shape[1]].copy_(keys); v[:, :values.shape[1]].copy_(values)
+                return k, v, keys.shape[1]
+        streamer = Streamer()
+        cache = SimpleNamespace(layers=[SimpleNamespace(keys=None, values=None) for _ in masters],
+            get_seq_length=lambda: 0, _kv_cache_streamer=streamer, _kv_cache_streamer_branch="cond")
+        saved = [(k.clone(), v.clone()) for k, v in masters]
+        with torch.no_grad():
+            expected = self.forward().last_hidden_state
+            actual = self.forward(past_key_values=cache).last_hidden_state
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        self.assertEqual(streamer.calls, list(range(7)))
+        for (k, v), (before_k, before_v) in zip(masters, saved):
+            torch.testing.assert_close(k, before_k, rtol=0, atol=0)
+            torch.testing.assert_close(v, before_v, rtol=0, atol=0)
+        streamer._current_branch = "uncond"
+        with self.assertRaisesRegex(ValueError, "active"):
+            self.forward(past_key_values=cache)
+        self.assertEqual(len(streamer.calls), 7)
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_native_transport_positions_hooks_parameter_identity_and_cache(self):
         from core.models.sensenova.residual_unet import restore_topology, model_topology_metadata
         from core.rewiring.spec import read_checkpoint_metadata

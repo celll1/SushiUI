@@ -68,14 +68,20 @@ def restore_topology(model, spec):
                 module.__dict__.pop("_residual_unet_spec", None)
                 module.__dict__.pop("_residual_unet_native_config", None)
         return
+    graph = validate_owner_topology(spec, model)
     resolved = native_config(model.config)
-    if (_decoder_config(decoder.config) != resolved["llm_config"]
-            or len(decoder.layers) != resolved["llm_config"]["num_hidden_layers"]):
-        raise ValueError("SenseNova owner and decoder configs disagree")
-    graph = validate_topology_identity(spec, model.config)
     for module in (model, decoder):
         module._residual_unet_spec = deepcopy(graph)
         module._residual_unet_native_config = deepcopy(resolved)
+
+
+def validate_owner_topology(spec, model):
+    resolved = native_config(model.config)
+    decoder = getattr(getattr(model, "language_model", None), "model", None)
+    if (decoder is None or _decoder_config(decoder.config) != resolved["llm_config"]
+            or len(decoder.layers) != resolved["llm_config"]["num_hidden_layers"]):
+        raise ValueError("SenseNova owner and decoder configs disagree")
+    return validate_topology_identity(spec, model.config)
 
 
 def model_topology_metadata(model):
@@ -118,12 +124,23 @@ def run_rewired_generation(model, hidden, indexes, prefix_cache, *,
     if prefix_cache is not None:
         if len(prefix_cache.layers) != len(model.layers):
             raise ValueError("SenseNova residual prefix cache must have every native decoder layer")
-        for layer in prefix_cache.layers:
-            keys, values = layer.keys, layer.values
+        streamer = getattr(prefix_cache, "_kv_cache_streamer", None)
+        if streamer is not None:
+            branch = getattr(prefix_cache, "_kv_cache_streamer_branch", None)
+            masters = getattr(streamer, "_masters", {}).get(branch)
+            if (not isinstance(masters, list) or len(masters) != len(model.layers)
+                    or getattr(streamer, "_current_branch", None) != branch):
+                raise ValueError("SenseNova residual streaming prefix branch must match the active branch")
+            tensors = masters
+            token_axis, head_axis = 1, 2
+        else:
+            tensors = [(layer.keys, layer.values) for layer in prefix_cache.layers]
+            token_axis, head_axis = 2, 1
+        for keys, values in tensors:
             llm = config["llm_config"]
             if (not isinstance(keys, torch.Tensor) or not isinstance(values, torch.Tensor)
-                    or keys.ndim != 4 or keys.shape != values.shape or keys.shape[2] < 1
-                    or keys.shape[0] != hidden.shape[0] or keys.shape[1] != llm["num_key_value_heads"]
+                    or keys.ndim != 4 or keys.shape != values.shape or keys.shape[token_axis] < 1
+                    or keys.shape[0] != hidden.shape[0] or keys.shape[head_axis] != llm["num_key_value_heads"]
                     or keys.shape[3] != llm["head_dim"]):
                 raise ValueError("SenseNova residual prefix KV must match native batch/head geometry")
     context = (indexes.float(), height, width)
@@ -240,6 +257,8 @@ def configure_training_topology(model, config, *, resuming=False, pending_adapte
     resolved = resolve_training_topology(view, staged, "sensenova", validate_topology_identity,
         lambda owner, spec: None, resuming=resuming, pending_adapter_resume=pending_adapter_resume,
         resume_spec=resume_spec, install=False)
+    if resolved is not None:
+        validate_owner_topology(resolved, model)
     if resolved is not None and int(config.get("batch_size", TRAINING_DEFAULTS["batch_size"])) != 1:
         raise ValueError("SenseNova residual training currently requires batch_size 1")
     if install:

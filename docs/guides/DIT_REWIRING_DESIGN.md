@@ -2825,3 +2825,40 @@ remains uninitialized. GPU validation remains Qwen-Image 2.1 only.
 Public artifact inspection, successful-generation provenance and the generation-
 only graph editing/export workflow remain outstanding. Owner frontend/workflow
 acceptance is deferred to the requested final manual verification.
+
+
+### YuE2 successful-generation residual provenance (CPU)
+
+Generation snapshots the validated NAR topology before AR sampling. Each native
+CachedNAR counts successful velocity evaluations; completed chunk observations
+require the exact twice-per-step count of the midpoint solver and an unchanged
+engine/model graph. Records contain contiguous song-local input frame offsets,
+native/padded acoustic token lengths, full/visible AR prefix lengths, ODE steps
+and actual velocity evaluation counts. The record explicitly preserves two
+boundary tokens, immutable AR prefix KV and no acoustic KV cache. It reports no
+GPU speed or song-quality measurement.
+
+The pipeline publishes this detached snapshot in effective_config only after
+all acoustic chunks and finite waveform decoding succeed, checking topology
+again after the final progress callback. The backend publishes a separate copy
+in params.dit_rewiring_actual only after the pipeline returns successfully,
+including its cleanup. Both entry points clear stale caller observations before
+validation/work. Dense generation has no residual record. The existing common
+FLAC JSON writer stores params.dit_rewiring_actual; the YuE2 token/latent sidecar
+retains the same actual graph under effective_config without changing its NPZ
+or training-artifact contracts.
+
+A CPU backend fixture uses the actual native MoT, grouped-query AR prefill,
+CachedNAR, song noise/chunking and fixed 32-step midpoint solver. Only AR token
+sampling/prefixes and waveform decoding are substituted; the fixture uses a
+small chunk context to exercise two original acoustic chunks. Their native
+lengths 7/6 pad to 8/8, cover song frames [0,7)/[7,13), and each perform 64
+velocity evaluations. Actual FLAC/common JSON and YuE2 JSON/NPZ writers persist
+the records. Tests also cover detached graphs, decode failure, callback
+cancellation, final callback graph mutation and dense absence. Residual, native
+CPU, single-file, training and API checks pass 83 tests and 4 subtests in 6.94s.
+Changed backend modules compile and import with CUDA uninitialized.
+
+Header-only public artifact inspection and a generation-only graph editing/export
+workflow remain outstanding. Owner frontend/workflow acceptance remains deferred;
+GPU validation stays limited to Qwen-Image 2.1.

@@ -129,6 +129,7 @@ class CachedNAR:
         local = torch.arange(self.nar_length, device=self.device).clamp(max=model.config.max_latent_frames - 1)
         self.pos_emb = model.latent_pos_embed(local)[None]
         self.cache = []
+        self.velocity_evaluations = 0
         self._prefill()
 
     def _attention(self, q, k, v, causal=False):
@@ -174,7 +175,9 @@ class CachedNAR:
                 h = self._attention(q[0], k, v)
                 x = x + layer.nar_self_attn.o_proj(h.flatten(1)[None])
                 x = x + layer.nar_mlp(layer.nar_pre_mlp_layernorm(x))
-        return model.llm2vae(getattr(model, "nar_norm", model.model.norm)(x))[0, 1:-1]
+        result = model.llm2vae(getattr(model, "nar_norm", model.model.norm)(x))[0, 1:-1]
+        self.velocity_evaluations += 1
+        return result
 
     @torch.inference_mode()
     def solve(self, steps=32, cancelled: Callable[[], bool] | None = None,

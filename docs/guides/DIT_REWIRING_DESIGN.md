@@ -3,7 +3,8 @@
 Status: accepted implementation contract. Canonical topology validation and
 side-effect-free preview APIs are implemented. Qwen-Image 2.1 has an internal
 forward path with checkpointed backward verification. Public generation/training
-configuration, checkpoint restore, and the graphical editor are pending. Other
+configuration, adapter-stack restoration, and the graphical editor are pending.
+Full Qwen artifact save/restore is connected; production acceptance remains pending. Other
 architectures require individual capability gates.
 
 ## Default topology
@@ -125,3 +126,12 @@ CPU verification covers an independent nested residual output/gradient oracle,
 FP32/BF16/FP16 identity regions, local context restoration, actual Qwen blocks,
 and the full Qwen forward with backward. Production GPU dtype/offload and artifact
 save-load-resume verification remain acceptance gates.
+
+Full Qwen transformer artifacts and training bundles now restore validated topology
+metadata; full and LoRA writers record it. Native config identity excludes loader
+annotations and includes every Qwen constructor setting with resolved defaults.
+Shard index and all referenced shard headers must declare the same topology.
+Tiny actual Qwen full-writer/load-transformer round trips cover single and sharded
+files, exact parameter restoration, numerically matching forward output, config
+mismatch, and a tampered shard. LoRA stack application, full-size GPU artifacts,
+training-bundle companion restoration, and training resume remain unverified.

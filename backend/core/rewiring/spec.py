@@ -163,6 +163,8 @@ def checkpoint_metadata(spec):
 
 
 def read_checkpoint_metadata(metadata):
+    if not isinstance(metadata, dict):
+        raise ValueError("Checkpoint metadata must be an object")
     keys = {META_VERSION, META_SPEC, META_HASH}
     present = keys.intersection(metadata)
     if not present:

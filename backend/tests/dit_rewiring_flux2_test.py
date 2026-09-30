@@ -112,6 +112,114 @@ class Flux2RuntimeContracts(unittest.TestCase):
             flux2_ops.generate_sample(trainer,"test",reference_image_path="reference.png")
         self.assertFalse(torch.cuda.is_initialized())
 
+    def test_public_default_and_custom_multistream_training_configuration(self):
+        from collections import Counter
+        from core.models.flux2.residual_unet import native_config,default_topology,configure_training_topology
+        from core.rewiring.spec import preview_plan
+        from api.routes import TrainingRunCreateRequest
+        from core.training.training_config import _build_train_section
+        model=type(self.model)(**native_config(dict(self.model.config,num_layers=5,num_single_layers=20)))
+        request=TrainingRunCreateRequest(training_method="lora",base_model_path="flux2",total_steps=1,
+                                        dit_rewiring_mode="configure")
+        config=_build_train_section(request.model_dump(),total_steps=1,epochs=None,
+                                   train_unet=True,train_text_encoder=False,arch="flux2")
+        spec=configure_training_topology(model,config)
+        self.assertEqual(spec,default_topology(native_config(model)))
+        self.assertEqual(spec["streams"],[{"name":"double","block_count":5},{"name":"single","block_count":20}])
+        self.assertEqual([(r["stream"],r["start_block"],r["end_block"]) for r in spec["regions"]],
+                         [("single",4,16),("single",8,12)])
+        plan=preview_plan(spec,64,64)
+        self.assertEqual(Counter(b["tokens"] for b in plan["blocks"]),{4096:13,1024:8,256:4})
+        seen=[]
+        handles=[block.register_forward_pre_hook(lambda block,args:seen.append(args[0].shape[1]-5))
+                 for block in model.single_transformer_blocks]
+        try:
+            with patch.object(self,"model",model):output=self.forward()
+        finally:
+            for handle in handles:handle.remove()
+        self.assertTrue(torch.isfinite(output).all())
+        self.assertEqual(seen,[96]*4+[24]*4+[6]*4+[24]*4+[96]*4)
+        self.assertIsNone(default_topology(native_config(self.model)))
+        with self.assertRaisesRegex(ValueError,"No rewiring preset"):
+            configure_training_topology(self.model,{"dit_rewiring_mode":"configure"})
+        custom={"dit_rewiring_mode":"configure","dit_rewiring_spec":self.spec}
+        self.assertEqual(configure_training_topology(self.model,custom),self.spec)
+        with self.assertRaisesRegex(ValueError,"without edits"):
+            configure_training_topology(self.model,{"dit_rewiring_mode":"configure",
+                "dit_rewiring_spec":dict(self.spec,regions=self.spec["regions"][:2])},resuming=True)
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_public_header_inspection_and_multistream_preview_without_tensor_load(self):
+        import asyncio
+        import httpx
+        from fastapi import FastAPI
+        from safetensors.torch import save_file
+        from core.models.flux2.residual_unet import native_config
+        from core.rewiring.spec import checkpoint_metadata
+        from core.rewiring.inspect import inspect_model
+        from core.models.common.single_file_format import save_single_file_state
+        from api.rewiring_routes import router
+        config=native_config(self.model)
+        metadata={"model_type":"flux2","transformer_config":json.dumps(config),**checkpoint_metadata(self.spec)}
+        tensors={"model.diffusion_model."+key:value.detach().contiguous() for key,value in self.model.state_dict().items()}
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);single=root/"model.safetensors"
+            save_file(tensors,str(single),metadata=metadata)
+            sharded=save_single_file_state(tensors,metadata,str(root/"sharded.safetensors"),max_shard_bytes=12000)
+            directory=root/"directory";directory.mkdir()
+            (directory/"config.json").write_text(json.dumps(dict(config,_class_name="Flux2Transformer2DModel")),encoding="utf-8")
+            save_file(self.model.state_dict(),str(directory/"diffusion_pytorch_model.safetensors"),metadata=metadata)
+            app=FastAPI();app.include_router(router,prefix="/api/v1")
+            with patch("core.models.common.single_file_format.read_state_dict",side_effect=AssertionError("tensor loading")), \
+                 patch.object(type(self.model),"__init__",side_effect=AssertionError("model allocation")):
+                info=inspect_model(str(single))
+                self.assertEqual(info["streams"],self.spec["streams"])
+                self.assertEqual(info["topology"],self.spec);self.assertIsNone(info["default_spec"])
+                self.assertEqual(info["latent_scale_factor"],16)
+                for path in (Path(sharded),root/"sharded.safetensors",directory):
+                    self.assertEqual(inspect_model(str(path)),info)
+                async def check():
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url="http://test") as client:
+                        schema=(await client.get("/api/v1/schema/dit-rewiring")).json()
+                        self.assertIn("flux2",schema["runtime_architectures"])
+                        self.assertEqual(schema["presets"]["flux2"]["streams"],[{"name":"double","block_count":5},{"name":"single","block_count":20}])
+                        for path in (single,Path(sharded),directory):
+                            response=await client.post("/api/v1/models/rewiring/inspect",json={"model_path":str(path)})
+                            self.assertEqual(response.status_code,200,response.text);self.assertEqual(response.json(),info)
+                        response=await client.post("/api/v1/models/rewiring/validate",json={"spec":self.spec,"token_height":8,"token_width":12})
+                        self.assertEqual(response.status_code,200,response.text)
+                        blocks=response.json()["plan"]["blocks"]
+                        self.assertEqual([b["stream"] for b in blocks],["double"]*3+["single"]*7)
+                        adapter=root/"adapter.safetensors"
+                        save_file({"lora_transformer_transformer_blocks_0_attn_to_q.lora_down.weight":torch.ones(2,16)},str(adapter),metadata=metadata)
+                        response=await client.post("/api/v1/models/rewiring/inspect",json={"model_path":str(adapter)})
+                        self.assertEqual(response.status_code,422)
+                        broken=root/"mismatch.safetensors"
+                        save_file(tensors,str(broken),metadata={"model_type":"flux2","transformer_config":json.dumps(dict(config,num_layers=4))})
+                        response=await client.post("/api/v1/models/rewiring/inspect",json={"model_path":str(broken)})
+                        self.assertEqual(response.status_code,422)
+                asyncio.run(check())
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_both_pipeline_load_branches_report_checkpoint_topology(self):
+        from core.pipeline import DiffusionPipelineManager
+        from core.model_loader import ModelLoader
+        from core.models.flux2.residual_unet import restore_topology
+        restore_topology(self.model,self.spec)
+        vae=torch.nn.Linear(1,1);vae.config=SimpleNamespace(block_out_channels=[1,2,3,4],latent_channels=1)
+        for tagged in (True,False):
+            manager=DiffusionPipelineManager();manager.device="cpu"
+            components={"transformer":self.model,"vae":vae,"text_encoder":torch.nn.Linear(1,1),
+                        "tokenizer":object(),"scheduler":object(),"config":{}}
+            if tagged:components["model_type"]="flux2"
+            with patch.object(ModelLoader,"load_model",return_value=components), \
+                 patch.object(manager,"_save_last_model"),patch.object(torch.cuda,"is_available",return_value=False):
+                manager._load_model_locked("safetensors","cpu-flux2-test.safetensors")
+            self.assertEqual(manager.current_model_info["type"],"flux2")
+            self.assertEqual(manager.current_model_info["dit_rewiring_spec"],self.spec)
+            self.assertEqual(manager.current_model_info["dit_rewiring_token_stride"],16)
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_generation_adapter_topology_scope_and_refusals(self):
         from copy import deepcopy
         from core.models.flux2.residual_unet import restore_topology

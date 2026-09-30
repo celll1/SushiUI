@@ -22,6 +22,15 @@ from core.models.minimax_h3.hybrid_spec import (
 DIT_REWIRING_REGION_DEFAULTS: Dict[str, Any] = {"edge_blocks": 1, "down_factor": [2, 2]}
 
 DIT_REWIRING_PRESETS: Dict[str, Any] = {
+    "flux2": {
+        "streams": [{"name": "double", "block_count": 5}, {"name": "single", "block_count": 20}],
+        "regions": [
+            {"id": "r0", "stream": "single", "parent": None,
+             "start_block": 4, "end_block": 16, "down_factor": [2, 2]},
+            {"id": "r1", "stream": "single", "parent": "r0",
+             "start_block": 8, "end_block": 12, "down_factor": [2, 2]},
+        ],
+    },
     "zimage": {
         "block_count": 30,
         "regions": [

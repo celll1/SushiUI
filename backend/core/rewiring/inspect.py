@@ -21,6 +21,9 @@ def _native_adapter(architecture):
     if architecture == "zimage":
         from core.models import zimage_residual_unet as adapter
         return adapter, 16, 16
+    if architecture == "flux2":
+        from core.models.flux2 import residual_unet as adapter
+        return adapter, 16, 16
     raise ValueError("Residual inspection requires a supported native DiT artifact")
 
 
@@ -49,7 +52,8 @@ def inspect_model(model_path):
                 raise ValueError("Native model class must be a string")
             architecture = {"QwenImage21Transformer2DModel": "qwen_image_21",
                             "Krea2Transformer2DModel": "krea2",
-                            "ZImageTransformer2DModel": "zimage"}.get(class_name)
+                            "ZImageTransformer2DModel": "zimage",
+                            "Flux2Transformer2DModel": "flux2"}.get(class_name)
             _native_adapter(architecture)
             topology = read_directory_topology(transformer_dir)
     else:
@@ -72,6 +76,11 @@ def inspect_model(model_path):
                 metadata = handle.metadata() or {}
                 keys = list(handle.keys())
         architecture = metadata.get("model_type")
+        if architecture is None and any(key.startswith(("transformer_blocks.", "single_transformer_blocks.",
+                "model.diffusion_model.transformer_blocks.", "model.diffusion_model.single_transformer_blocks.")) for key in keys):
+            from core.models.flux2.single_file import count_flux2_blocks
+            if all(count_flux2_blocks(key.removeprefix("model.diffusion_model.") for key in keys)):
+                architecture = "flux2"
         from core.models.anima.discovery import is_anima_state_dict_keys
         if architecture is None and is_anima_state_dict_keys(keys):
             architecture = "anima"
@@ -92,6 +101,17 @@ def inspect_model(model_path):
             topology, config = preflight_artifact(path)
             if config is None:
                 raise ValueError("Z-Image file inspection requires native config metadata")
+        elif architecture == "flux2":
+            native_keys = [key.removeprefix("model.diffusion_model.") for key in keys]
+            if "x_embedder.weight" not in native_keys:
+                raise ValueError("Residual inspection requires a Flux2 model artifact, not adapter weights")
+            from core.models.flux2.residual_unet import preflight_checkpoint
+            from core.models.flux2.single_file import count_flux2_blocks
+            topology, config = preflight_checkpoint(path)
+            if config is None:
+                raise ValueError("Flux2 file inspection requires native config metadata")
+            if count_flux2_blocks(native_keys) != (config.get("num_layers"), config.get("num_single_layers")):
+                raise ValueError("Flux2 native config and checkpoint block counts disagree")
         else:
             if not metadata.get("krea2_config"):
                 raise ValueError("Residual inspection requires a Krea model config declaration")
@@ -108,6 +128,11 @@ def inspect_model(model_path):
     if type(block_count) is not int or not 3 <= block_count <= 4096:
         raise ValueError("Native stream block count must be an integer between 3 and 4096")
     streams = [{"name": "main", "block_count": block_count}]
+    if architecture == "flux2":
+        single_count = config["num_single_layers"]
+        if type(single_count) is not int or not 3 <= single_count <= 4096:
+            raise ValueError("Native single stream block count must be an integer between 3 and 4096")
+        streams = [{"name": "double", "block_count": block_count}, {"name": "single", "block_count": single_count}]
     if architecture == "anima":
         patch = config["patch_spatial"]
         if type(patch) is not int or patch < 1:

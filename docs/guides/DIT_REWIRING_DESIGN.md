@@ -2357,3 +2357,41 @@ public residual capability list does not yet include MiniMax-H3. Topology
 installation through public loading/training, checkpoint persistence/restoration,
 editor/schema integration and caller geometry plumbing remain pending. No
 MiniMax-H3 GPU generation/training, quality or speed validation was performed.
+
+### MiniMax-H3 native sampler and training caller geometry
+
+Both native packed-layout builders now record target_video_grid with explicit
+frame count, spatial token height/width and target start row. This records the
+builder's target-video tail before any video-index permutation; it remains
+correct when references have different sizes or pinned frames move to the
+conditioning prefix. The grid is scalar geometry, not additional weight data.
+Native index/tag/position tensors retain their previous contents.
+
+The shared forward_kwargs helper adds residual_video_grid only when a residual
+graph is installed. It checks that the native layout identifies exactly the
+complete target tail and requires the execution wrapper. Dense callers retain
+the original forward kwargs. The denoise loop passes this geometry on every
+actual DiT evaluation; the training flow step uses the same builder/helper.
+Residual generation refuses Spectrum/FBCache before mutating either scheduler,
+so forecasting cannot bypass a graph's execution or reuse incompatible results.
+
+The actual native CPU sampler runs three dual-scheduler evaluations with the
+seven-block two-stage residual graph, updates video/audio rows and preserves
+conditioning anchors exactly. The actual native train_step runs joint AV
+velocity loss with padded-audio loss masking, native gradient checkpointing,
+backward and an AdamW update that changes a deepest-block attention weight.
+The full AV text/reference/audio prefix and target geometry are supplied by
+production callers, rather than a mocked transformer invocation. Ref2va
+variable reference banks and a pinned target frame retain correct target rows.
+
+Layout/wrapper, training, native-layout conformance, reference/inpaint, temporal
+pin, audio-pin and FBCache CPU suites pass 281 cases and 11 subtests. One existing
+latent-regeneration test fixture lacked the current Qwen/SenseNova architecture
+flags; the failing test and dispatch method were byte-identical to HEAD before
+this change. The fixture now supplies those false flags, exercising the original
+MiniMax-H3 recovery assertion again. Changed modules compile and import with
+CUDA uninitialized. This does not validate pretrained AV quality or speed.
+
+Public model/training configuration still needs graph installation and
+checkpoint persistence/restoration; the public MiniMax-H3 capability and editor
+remain pending. GPU acceptance remains exclusively Qwen-Image 2.1.

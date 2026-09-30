@@ -163,6 +163,7 @@ from api.schema_routes import (
     router as schema_router,
 )
 from api.style_training_routes import router as style_training_router
+from api.captioner_routes import router as captioner_router
 from api.style_inference_routes import router as style_inference_router
 from api.training_run_helpers import (
     LazySerialExecutor,
@@ -175,6 +176,7 @@ from api.training_run_helpers import (
 router = APIRouter()
 router.include_router(schema_router)
 router.include_router(style_training_router)
+router.include_router(captioner_router)
 router.include_router(style_inference_router)
 
 minimax_h3_prompt_assistant = MiniMaxH3PromptAssistant(

@@ -287,7 +287,8 @@ SigLIP2特徴取得だけは既存tagger model側に置き、旧predictのrespon
 captioner managerはtagger modelのborrow lifetimeを管理する。要求中のreload/unloadを排他し、
 既存GPU調停とpause/offloadに従う。二つのmanagerが同じencoderを別々にGPUへロードしない。
 
-以下のroute名は提案であり、現時点では存在しない。実装時は[ADD_A_PARAMETER.md](../guides/ADD_A_PARAMETER.md)
+以下の推論と学習route名は提案である。default schemaと保存APIの実装範囲は末尾の進捗欄に記す。
+実装時は[ADD_A_PARAMETER.md](../guides/ADD_A_PARAMETER.md)
 に従い、openapi.yamlを先に更新する。
 
 | API候補 | 目的 |
@@ -393,13 +394,21 @@ alias辞書はbundleに固定し、optimizerを除いた推論exportを別に作
 GPU上のcaption decoderは要求終了時にCPUへ戻すため、その移動を含めた速度を今後測定する。
 CaptionConfigの構造値はすべて明示引数とし、実行設定のdefaultはparam_defaults.pyに置く。
 
-run persistence、APIと公開schema、UI、datasetへの自然文保存、batch実行は未実装である。
+保存API `/captioner/save`と二つのdefault schema endpointを接続した。
+保存は利用者が確認した自然文を独立したcaption_typeへ書き、TXT tagsを保持したまま
+JSONの`compact_caption` fieldとdataset indexを更新する。
+`_sushi_compact_caption` metadataでcaption_typeを保持し、再scanでも自然文として扱う。
+既存の別sourceが所有するcaption_typeとJSON fieldは上書きせず拒否する。
+dataset revisionと画像hashをSQLiteの書込transaction内で確認し、DB commit失敗時はsidecarを戻す。
+
+run persistence、推論と学習のAPI、UI、batch実行は未実装である。
 GPU trainerの初期allocationは既存coordinatorでgenerationと排他するが、
 caption推論のGPU slot接続とworktree間の調整はまだ必要である。
 実datasetから学習した自然文モデルはまだ存在せず、品質によるbest選択も未実装である。
 
 基盤と追加コアのCPUテスト23件が通過した。中断後の再開は連続学習と重みが完全一致し、
 export、依存不一致拒否、caption推論、borrow中のunload待機も確認した。
+保存API、OpenAPI整合性、既存caption更新とsidecar/scannerの回帰を合わせた44件も通過した。
 初期基盤ではfp32/bf16/fp16でloss/backward/生成を確認した。
 変更backendのpy_compileと実importも通過した。これは小型人工例での動作検証である。
 検証時はCPUのみを使い、CUDA context未初期化をassertする。実checkpointのロード、GPU学習、

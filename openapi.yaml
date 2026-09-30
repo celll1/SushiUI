@@ -23,6 +23,8 @@ servers:
     description: Local development server (API v1)
 
 tags:
+  - name: captioner
+    description: Compact SigLIP2 captioner inference, training, and natural caption persistence
   - name: generation
     description: Image generation endpoints
   - name: images
@@ -63,6 +65,57 @@ tags:
     description: Developer-mode diagnostics (VRAM inspection)
 
 paths:
+  /captioner/save:
+    post:
+      tags: [captioner]
+      summary: Save a reviewed natural caption without replacing tag sidecars
+      description: Checks dataset revision and image SHA256 under a SQLite write transaction. Writes the compact_caption JSON field and updates the dataset index atomically with rollback on failure.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaptionerSaveRequest'
+            example:
+              dataset_id: 1
+              item_id: 10
+              dataset_revision: 2
+              image_hash: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+              caption: A girl with blue hair.
+              caption_type: natural_language
+      responses:
+        '200':
+          description: Saved natural caption and new dataset revision
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaptionerSaveResponse'
+        '400':
+          description: Invalid caption type, tag-formatted destination, unsafe sidecar, or corrupt JSON
+        '404':
+          description: Dataset or scoped image item not found
+        '409':
+          description: Dataset revision or image content changed after preview
+  /schema/captioner-defaults:
+    get:
+      tags: [captioner]
+      summary: Get compact captioner inference defaults
+      responses:
+        '200':
+          description: Values from CAPTIONER_DEFAULTS
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+  /schema/captioner-training-defaults:
+    get:
+      tags: [captioner]
+      summary: Get compact captioner training defaults
+      responses:
+        '200':
+          description: Values from CAPTIONER_TRAINING_DEFAULTS
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
   /health:
     get:
       summary: Backend liveness check
@@ -11221,6 +11274,25 @@ components:
       bearerFormat: JWT
 
   schemas:
+    CaptionerSaveRequest:
+      type: object
+      additionalProperties: false
+      required: [dataset_id, item_id, dataset_revision, image_hash, caption]
+      properties:
+        dataset_id: {type: integer, minimum: 1, example: 1}
+        item_id: {type: integer, minimum: 1, example: 10}
+        dataset_revision: {type: integer, minimum: 0, example: 2}
+        image_hash: {type: string, pattern: '^[0-9a-f]{64}$', description: SHA256 of the preview image file, example: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
+        caption: {type: string, minLength: 1, maxLength: 16384, example: A girl with blue hair.}
+        caption_type: {type: string, minLength: 1, maxLength: 128, default: compact_caption, description: Separate natural-language index column. tags and columns owned by other sources are refused. The selected type is preserved on JSON rescan., example: compact_caption}
+    CaptionerSaveResponse:
+      type: object
+      required: [caption_id, dataset_revision, sidecar_path, source_field]
+      properties:
+        caption_id: {type: integer}
+        dataset_revision: {type: integer}
+        sidecar_path: {type: string}
+        source_field: {type: string, enum: [compact_caption]}
     ConceptExposureResponse:
       type: object
       required: [enabled, rows]

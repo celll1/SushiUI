@@ -142,10 +142,12 @@ def write_indexed_caption(
     *,
     caption_type: str = "tags",
     source_field: str | None = None,
+    json_only: bool = False,
 ) -> SidecarWriteResult:
     """Persist an indexed caption without changing the sidecar's established shape.
 
-    An existing JSON field wins when it matches the indexed source field or a
+    JSON-only writes preserve TXT and use a separate top-level field.
+    Otherwise an existing JSON field wins when it matches the indexed source field or a
     known legacy tag field. Otherwise an existing TXT sidecar is retained. A
     JSON file with no matching field receives the canonical ``tags`` field;
     when neither sidecar exists, the conventional TXT file is created.
@@ -154,6 +156,21 @@ def write_indexed_caption(
     txt_path = media_path.with_suffix(".txt")
     json_path = media_path.with_suffix(".json")
     json_data: MutableMapping[str, Any] | None = None
+
+    if json_only:
+        if not source_field or source_field in {"tags", "caption"} or "." in source_field:
+            raise SidecarFormatError("JSON-only captions need a separate top-level field")
+        json_data = _load_json_object(json_path) if json_path.exists() else {}
+        if source_field == "compact_caption":
+            if caption_type != source_field and _find_field(json_data, caption_type):
+                raise SidecarFormatError("Caption type is already owned by another JSON field")
+            metadata = json_data.get("_sushi_compact_caption")
+            if metadata is not None and (not isinstance(metadata, dict) or metadata.get("version") != 1):
+                raise SidecarFormatError("Existing compact caption metadata has an unsupported format")
+            json_data["_sushi_compact_caption"] = {"version": 1, "caption_type": caption_type}
+        _set_field(json_data, source_field, content)
+        _atomic_write(json_path, json.dumps(json_data, ensure_ascii=False, indent=2) + "\n")
+        return SidecarWriteResult(str(json_path), "json", source_field)
 
     if json_path.exists():
         json_data = _load_json_object(json_path)

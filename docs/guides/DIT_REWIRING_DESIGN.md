@@ -2719,3 +2719,45 @@ Music 3 support. A generation-only graph editing/export workflow and production
 GPU offload acceptance are not claimed. YuE2's NAR/AR boundary and final owner
 frontend/workflow acceptance remain outstanding; GPU verification stays limited
 to Qwen-Image 2.1.
+
+
+### YuE2 acoustic NAR block-loop foundation (CPU)
+
+Residual execution now has an architecture-owned NAR-only stream. The 28-layer
+preset uses 8 full-resolution / 16 middle / 4 deepest blocks, with temporal
+factors [2,1] at both levels. The preset lives in param_defaults.py. It does not
+add YuE2 to the training runtime capability list: Phase-A ABC-planner LoRA
+continues to train the AR half only; acoustic NAR training remains unsupported.
+
+CachedNAR still prefills the complete native AR prefix exactly once and retains
+its restricted visible KV set unchanged through the midpoint solver. Only the
+acoustic hidden-state timeline is pooled. START and END hidden tokens become
+two preserved prefix tokens during residual execution and return to their native
+head positions afterward. Their absolute rotary positions remain native. Coarse
+acoustic positions use integer coordinates; padding positions start after END
+so they never alias a boundary. Native learned positions and timestep embeddings
+are applied before transport; zero hidden-state tail padding reaches the nested
+factor alignment and is removed before the original norm/output head. Padding
+that exceeds the native context limit refuses before AR prefill.
+
+Topology identity hashes native configuration and zero_hidden_tail_v1 policy.
+Restore/export helpers validate the acoustic stream, actual block depth and
+64-channel VAE contract. Each cached engine freezes a detached graph; adding,
+removing or changing the model graph after prefill refuses before velocity work.
+No parameter tensors, state-dict keys, AR modules or solver arithmetic change.
+
+CPU contracts exercise the actual native tiny MoT, grouped-query attention,
+restricted AR cache and midpoint solver. A 13-frame input pads to 16 acoustic
+transport tokens: the seven test blocks see 18/10/6/6/6/10/18 tokens including
+boundaries. Zero NAR residual updates reproduce the dense native head exactly,
+including odd-length padding. Tests check immutable AR values/storage, identical
+weights, preserved boundary rotary positions, no duplicate padded positions,
+context refusal, configuration mutation and the 8/16/4 public preset.
+
+This is a provisional native execution foundation, not a complete public YuE2
+workflow. Loader-driven checkpoint restoration, header-only artifact inspection,
+model-info display, generation provenance and generation-only graph export still
+need connection. The existing fixed complete single-file/embedded-tokenizer
+checkpoint boundary and AR-only training boundary must remain authoritative.
+All GPU validation remains limited to Qwen-Image 2.1 by the owner's instruction;
+YuE2 quality, throughput and production quantized execution are unmeasured.

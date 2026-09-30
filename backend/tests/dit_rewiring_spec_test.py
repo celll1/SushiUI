@@ -146,8 +146,10 @@ class TopologyContracts(unittest.TestCase):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
                 schema = await client.get("/api/v1/schema/dit-rewiring")
                 self.assertEqual(schema.status_code, 200)
-                self.assertEqual(schema.json()["runtime_architectures"], ["qwen_image_21", "krea2", "anima", "zimage", "flux2", "lens", "minit2i", "ideogram4", "sensenova", "acestep"])
+                self.assertEqual(schema.json()["runtime_architectures"], ["qwen_image_21", "krea2", "anima", "zimage", "flux2", "lens", "minit2i", "ideogram4", "sensenova", "acestep", "ltx2", "minimax_h3"])
                 self.assertEqual(schema.json()["presets"]["qwen_image_21"]["regions"][1]["end_block"], 18)
+                self.assertEqual(schema.json()["presets"]["yue2"]["regions"][1]["stream"], "nar")
+                self.assertNotIn("yue2", schema.json()["runtime_architectures"])
                 body = dict(spec=spec(), token_height=64, token_width=64)
                 valid = await client.post("/api/v1/models/rewiring/validate", json=body)
                 self.assertEqual(valid.status_code, 200, valid.text)

@@ -885,9 +885,8 @@ not establish their GPU offload equivalence. All 66 aggregate rewiring contracts
 and 69 existing Lens LoRA/REPA/text-mask cases pass, with changed-file compile and
 real imports leaving CUDA untouched.
 
-Lens remains outside public runtime capabilities. Directory artifact restore,
-public training configuration and model/editor inspection must be connected
-before exposing it. No Lens GPU inference/training,
+Lens remains outside public runtime capabilities. Public training configuration
+and model/editor inspection must be connected before exposing it. No Lens GPU inference/training,
 performance or quality evidence is claimed; GPU acceptance stays Qwen-only.
 
 
@@ -971,9 +970,34 @@ CPU tests verify real trained-LoRA/native forward agreement, mixed-topology and
 zero-target atomic refusals, dense and residual base restoration, empty requests,
 model replacement, and pre-staging refusal/metadata behavior for txt2img,
 img2img and inpaint. These are CPU compatibility checks; no Lens GPU generation,
-image-quality or throughput evidence is claimed. Directory restoration, public
-presets/inspection and graphical configuration remain pending.
+image-quality or throughput evidence is claimed. Public presets/inspection and
+graphical configuration remain pending.
 
 All 71 aggregate rewiring contracts plus 104 existing Lens/VAE cases pass (175
 total). Changed backend files and the composed Pipeline compile/import with CUDA
 untouched. GPU acceptance remains Qwen 2.1 only.
+
+
+## Lens local directory artifact restoration
+
+Local diffusers directories now read and reconcile topology headers from every
+transformer safetensors file/index before native weight loading or construction.
+A declared topology must match the canonical native transformer/config.json.
+Rewired directories require diffusion_pytorch_model.safetensors or its native
+index and reconstruct the native DiT directly, refusing quantized codes and
+missing/unexpected weights before loading text encoder, tokenizer, VAE or
+scheduler. The graph is restored before companion loading. Dense local artifacts
+and Hub identifiers retain the existing from_pretrained path; the new header
+contract covers local checkpoint directories. A validated transformer override
+from a single-file save bypasses the companion base's directory topology.
+
+CPU tests drive the actual ModelLoader and native construction/loading for both
+single and indexed directory weights. All weights, native output and selected
+text layers agree with the saved model. Config/layer disagreement and shard
+metadata disagreement refuse before tensor loading/model construction; incomplete
+weights refuse before companion loading. Dense headers preserve legacy dispatch.
+External companion loaders are stubbed throughout; no Lens GPU is used.
+
+All 72 aggregate rewiring contracts and 104 existing Lens/VAE regression cases
+pass (176 total); changed-file compile and real imports leave CUDA untouched.
+GPU acceptance remains Qwen 2.1 only.

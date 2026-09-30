@@ -42,12 +42,25 @@ def load_lens_components(
     print(f"[LensLoader] Loading components from: {model_path}")
 
     print("[LensLoader] Loading transformer (LensTransformer2DModel)...")
-    transformer = transformer_override if transformer_override is not None else LensTransformer2DModel.from_pretrained(
-        model_path,
-        subfolder="transformer",
-        torch_dtype=torch_dtype,
-        low_cpu_mem_usage=True,
-    )
+    transformer = transformer_override
+    if transformer is None:
+        from core.models.lens.residual_unet import preflight_directory, restore_topology
+        topology, saved_config, weights_path = preflight_directory(model_path)
+        if topology is None:
+            transformer = LensTransformer2DModel.from_pretrained(
+                model_path, subfolder="transformer", torch_dtype=torch_dtype, low_cpu_mem_usage=True,
+            )
+        else:
+            from core.models.common.single_file_format import read_state_dict
+            from core.models.common.quantized_checkpoint_guard import refuse_quantized_state_dict
+            state, _ = read_state_dict(str(weights_path))
+            refuse_quantized_state_dict(state, arch="lens", path=str(weights_path), label="DiT")
+            transformer = LensTransformer2DModel(**saved_config)
+            info = transformer.load_state_dict(state, strict=False)
+            if info.missing_keys or info.unexpected_keys:
+                raise ValueError("Rewired Lens directory weights do not match their native config")
+            transformer.to(torch_dtype)
+            restore_topology(transformer, topology)
     transformer.eval()
     transformer.to("cpu")
 

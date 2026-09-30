@@ -71,8 +71,21 @@ def configure_training_topology(model, config, *, resuming=False, pending_adapte
                                 resume_spec=NO_RESUME_SPEC, install=True):
     from core.rewiring.training import resolve_training_topology
     return resolve_training_topology(model, config, "minit2i", validate_topology_identity,
-        restore_topology, resuming=resuming, pending_adapter_resume=pending_adapter_resume,
+        restore_topology, default_topology, resuming=resuming, pending_adapter_resume=pending_adapter_resume,
         resume_spec=resume_spec, install=install)
+
+
+def default_topology(config):
+    from api.param_defaults import DIT_REWIRING_PRESETS
+    from core.rewiring.spec import build_spec, OPERATORS
+    resolved = native_config(config)
+    preset = next((value for value in DIT_REWIRING_PRESETS["minit2i"]["variants"].values()
+                   if value["block_count"] == resolved["depth_double"]), None)
+    if preset is None:
+        return None
+    return validate_topology_identity(build_spec("minit2i",
+        [{"name": "main", "block_count": resolved["depth_double"]}],
+        [dict(region, **OPERATORS) for region in preset["regions"]], resolved), resolved)
 
 
 def preflight_checkpoint(path):

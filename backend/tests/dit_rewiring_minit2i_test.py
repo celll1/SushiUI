@@ -158,6 +158,97 @@ class MiniT2IRuntimeContracts(unittest.TestCase):
                 self.assertEqual(setup.call_count,before)
         self.assertFalse(torch.cuda.is_initialized())
 
+    def test_public_presets_custom_configuration_and_model_info(self):
+        from collections import Counter
+        from core.models.minit2i.residual_unet import native_config, default_topology, configure_training_topology
+        from core.rewiring.spec import preview_plan
+        from api.routes import TrainingRunCreateRequest
+        from core.training.training_config import _build_train_section
+        from core.pipeline import DiffusionPipelineManager
+        from core.model_loader import ModelLoader
+        for count,middle in ((17,5),(23,11)):
+            model=type(self.model)(**dict(native_config(self.model),depth_double=count))
+            request=TrainingRunCreateRequest(training_method="lora",base_model_path="minit2i",total_steps=1,
+                                            dit_rewiring_mode="configure")
+            config=_build_train_section(request.model_dump(),total_steps=1,epochs=None,
+                                       train_unet=True,train_text_encoder=False,arch="minit2i")
+            spec=configure_training_topology(model,config)
+            self.assertEqual(spec,default_topology(native_config(model)))
+            self.assertEqual(Counter(b["tokens"] for b in preview_plan(spec,64,64)["blocks"]),
+                             {4096:8,1024:middle,256:4})
+            with patch.object(self,"model",model):self.assertTrue(torch.isfinite(self.forward()).all())
+        self.assertIsNone(default_topology(native_config(self.model)))
+        with self.assertRaisesRegex(ValueError,"No rewiring preset"):
+            configure_training_topology(self.model,{"dit_rewiring_mode":"configure"})
+        configure_training_topology(self.model,{"dit_rewiring_mode":"configure","dit_rewiring_spec":self.spec})
+        manager=DiffusionPipelineManager();manager.device="cpu"
+        components={"type":"minit2i","transformer":self.model,"vae_type":"sdxl","vae_scale_factor":8,
+                    "text_encoder":torch.nn.Linear(1,1),"tokenizer":object(),"scheduler":object()}
+        with patch.object(ModelLoader,"load_model",return_value=components), \
+             patch.object(manager,"_save_last_model"),patch.object(torch.cuda,"is_available",return_value=False):
+            manager._load_model_locked("safetensors","cpu-minit2i-test.safetensors")
+        self.assertEqual(manager.current_model_info["dit_rewiring_spec"],self.spec)
+        self.assertEqual(manager.current_model_info["dit_rewiring_token_stride"],16)
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_public_inspection_api_reads_headers_only(self):
+        import asyncio
+        import httpx
+        from fastapi import FastAPI
+        from safetensors.torch import save_file
+        from core.models.minit2i.residual_unet import native_config
+        from core.rewiring.spec import checkpoint_metadata
+        from core.rewiring.inspect import inspect_model
+        from core.models.common.single_file_format import save_single_file_state
+        from api.rewiring_routes import router
+        config=native_config(self.model)
+        metadata={"model_type":"minit2i","mmjit_config":json.dumps(config),**checkpoint_metadata(self.spec)}
+        tensors={"transformer."+key:value.detach().contiguous() for key,value in self.model.state_dict().items()}
+        app=FastAPI();app.include_router(router,prefix="/api/v1")
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);single=root/"model.safetensors"
+            save_file(tensors,str(single),metadata=metadata)
+            sharded=save_single_file_state(tensors,metadata,str(root/"sharded.safetensors"),max_shard_bytes=20000)
+            directory=root/"directory";directory.mkdir()
+            (directory/"config.json").write_text(json.dumps(dict(config,_class_name="MiniT2IMMJiTModel")),encoding="utf-8")
+            save_file(self.model.state_dict(),str(directory/"diffusion_pytorch_model.safetensors"),metadata=metadata)
+            with patch("core.models.common.single_file_format.read_state_dict",side_effect=AssertionError("tensor loading")), \
+                 patch.object(type(self.model),"__init__",autospec=True,side_effect=AssertionError("model allocation")):
+                info=inspect_model(str(single))
+                self.assertEqual(info["streams"],self.spec["streams"])
+                self.assertEqual(info["topology"],self.spec);self.assertIsNone(info["default_spec"])
+                self.assertEqual(info["latent_scale_factor"],16)
+                for path in (Path(sharded),root/"sharded.safetensors",directory):
+                    self.assertEqual(inspect_model(str(path)),info)
+                async def check():
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url="http://test") as client:
+                        response=await client.get("/api/v1/schema/dit-rewiring")
+                        schema=response.json();self.assertIn("minit2i",schema["runtime_architectures"])
+                        self.assertEqual(schema["presets"]["minit2i"]["variants"]["b16"]["block_count"],17)
+                        for path in (single,Path(sharded),directory):
+                            response=await client.post("/api/v1/models/rewiring/inspect",json={"model_path":str(path)})
+                            self.assertEqual(response.status_code,200,response.text);self.assertEqual(response.json(),info)
+                        response=await client.post("/api/v1/models/rewiring/validate",json={"spec":self.spec,"token_height":8,"token_width":12})
+                        self.assertEqual(response.status_code,200,response.text)
+                        self.assertEqual([b["tokens"] for b in response.json()["plan"]["blocks"]],[96,24,6,6,6,24,96])
+                        adapter=root/"adapter.safetensors"
+                        save_file({"lora_unet_double_blocks_0_img_qkv.lora_down.weight":torch.ones(2,16)},str(adapter),metadata=metadata)
+                        response=await client.post("/api/v1/models/rewiring/inspect",json={"model_path":str(adapter)})
+                        self.assertEqual(response.status_code,422)
+                        broken=root/"mismatch.safetensors"
+                        save_file(tensors,str(broken),metadata={"model_type":"minit2i","mmjit_config":json.dumps(dict(config,depth_double=8))})
+                        response=await client.post("/api/v1/models/rewiring/inspect",json={"model_path":str(broken)})
+                        self.assertEqual(response.status_code,422)
+                asyncio.run(check())
+                for vae,patch_size,stride in (("none",16,16),("sdxl",2,16),("flux1",2,16)):
+                    sample=root/f"{vae}.safetensors"
+                    save_file(tensors,str(sample),metadata={"model_type":"minit2i",
+                        "mmjit_config":json.dumps(dict(config,vae_type=vae,patch_size=patch_size))})
+                    result=inspect_model(str(sample))
+                    self.assertIsNone(result["topology"])
+                    self.assertEqual(result["latent_scale_factor"],stride)
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_training_inheritance_lora_resume_and_production_train_step(self):
         from core.models.minit2i.residual_unet import configure_training_topology,restore_topology
         from core.training.adapters.minit2i_adapter import MiniT2ILoRAAdapter

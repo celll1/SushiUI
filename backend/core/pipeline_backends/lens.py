@@ -219,7 +219,7 @@ class LensMixin:
                 f"unrecognized key format or a different model. Sample keys in file: "
                 f"{list(file.tensors.keys())[:5]}")
 
-    def _load_lora_lens(self, lora_configs: List[Dict]) -> int:
+    def _load_lora_lens(self, lora_configs: List[Dict], *, parsed_files=None) -> int:
         """Cover target Linear modules of the Lens transformer with LoRA adapters.
 
         Must be called after the transformer is on GPU (and optionally quantised).
@@ -247,7 +247,23 @@ class LensMixin:
             print("[Lens LoRA] WARNING: components not loaded")
             return 0
 
-        return self._lens_lora_session.load(lora_configs, components).applied
+        from copy import deepcopy
+        import weakref
+        from core.adapters import AdapterIncompatible
+        from core.rewiring.adapters import resolve_adapter_topology
+        from core.models.lens.residual_unet import validate_topology_identity, restore_topology
+        model = components[0].module
+        base_topology = getattr(model, "_residual_unet_spec", None)
+        files = self._lens_lora_session.parse(lora_configs) if parsed_files is None else parsed_files
+        try:
+            required = resolve_adapter_topology(model, files, validate_topology_identity)
+        except ValueError as exc:
+            raise AdapterIncompatible(str(exc), code="lora_rewiring_incompatible") from exc
+        result = self._lens_lora_session.load(files, components)
+        if required is not None:
+            restore_topology(model, required)
+            self._lens_topology_restore = (weakref.ref(model), deepcopy(base_topology))
+        return result.applied
 
     def _unload_lora_lens(self) -> int:
         """Restore every Lens transformer Linear to its pre-LoRA original.
@@ -255,7 +271,51 @@ class LensMixin:
         The session drops each original as restore lands it: a surviving entry
         would be written into the NEXT model loaded at the same path.
         """
-        return self._lens_lora_session.unload(self._lens_lora_components())
+        try:
+            return self._lens_lora_session.unload(self._lens_lora_components())
+        finally:
+            saved = self.__dict__.pop("_lens_topology_restore", None)
+            if saved is not None and saved[0]() is not None:
+                from core.models.lens.residual_unet import restore_topology
+                restore_topology(saved[0](), saved[1])
+
+    def _lens_rewiring_preflight(self, params, height, width):
+        from core.adapters import AdapterIncompatible
+        from api.error_handlers import ValidationError
+        from core.rewiring.adapters import resolve_adapter_topology
+        from core.models.lens.residual_unet import validate_topology_identity
+        from core.rewiring.spec import digest, preview_plan
+        from core.inference.fbcache import fbcache_active
+        from core.prompts.prompt_parser import prompt_has_negative_weight
+        self._unload_lora_lens()
+        model = self.lens_components["transformer"]
+        files = self._lens_lora_session.parse(params.get("loras") or [])
+        try:
+            topology = resolve_adapter_topology(model, files, validate_topology_identity)
+        except ValueError as exc:
+            raise AdapterIncompatible(str(exc), code="lora_rewiring_incompatible") from exc
+        if topology is None:
+            params.pop("dit_rewiring_actual", None)
+            return files
+        if params.get("ref_images"):
+            raise ValidationError("Lens residual U-Net does not support reference image grids")
+        if params.get("style_transfer") or params.get("style_transfers"):
+            raise ValidationError("Lens residual U-Net does not support style injection")
+        if fbcache_active(params):
+            raise ValidationError("Lens residual U-Net does not support FBCache")
+        if params.get("nag_enable"):
+            raise ValidationError("Lens residual U-Net does not support NAG")
+        for key in ("prompt", "negative_prompt", "nag_negative_prompt"):
+            value = params.get(key) or ""
+            prompts = value if isinstance(value, list) else [value]
+            if any(prompt_has_negative_weight(prompt) for prompt in prompts):
+                raise ValidationError("Lens residual U-Net does not support NegPip")
+        try:
+            preview_plan(topology, height // 16, width // 16)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        params["dit_rewiring_actual"] = {"spec": topology, "spec_sha256": digest(topology), "kv_cache": False}
+        return files
 
     @staticmethod
     def _lens_advanced_cfg(params: Dict[str, Any]) -> Dict[str, Any]:
@@ -828,6 +888,8 @@ class LensMixin:
         latent_h = height // 16
         latent_w = width // 16
 
+        prepared_loras = self._lens_rewiring_preflight(params, height, width)
+
         cpu_text_encoding = params.get("cpu_text_encoding", False)
         enc_device = "cpu" if cpu_text_encoding else device
 
@@ -869,9 +931,7 @@ class LensMixin:
             print("[Lens] Stage 3: Denoising...")
             transformer = self._lens_stage_transformer(params, device, transformer_quantization,
                                                        model_key=_kh_model_key)
-            lora_configs = params.get("loras") or []
-            if lora_configs:
-                self._load_lora_lens(lora_configs)
+            self._load_lora_lens(params.get("loras") or [], parsed_files=prepared_loras)
             transformer = self.lens_components["transformer"]
             self._lens_set_attention_backend(transformer, params)
             try:
@@ -990,6 +1050,8 @@ class LensMixin:
         latent_h = height // 16
         latent_w = width // 16
 
+        prepared_loras = self._lens_rewiring_preflight(params, height, width)
+
         cpu_text_encoding = params.get("cpu_text_encoding", False)
         enc_device = "cpu" if cpu_text_encoding else device
 
@@ -1032,9 +1094,7 @@ class LensMixin:
             print("[Lens] Stage 3: Denoising...")
             transformer = self._lens_stage_transformer(params, device, transformer_quantization,
                                                        model_key=_kh_model_key)
-            lora_configs = params.get("loras") or []
-            if lora_configs:
-                self._load_lora_lens(lora_configs)
+            self._load_lora_lens(params.get("loras") or [], parsed_files=prepared_loras)
             transformer = self.lens_components["transformer"]
             self._lens_set_attention_backend(transformer, params)
             try:
@@ -1160,6 +1220,8 @@ class LensMixin:
             from PIL import ImageFilter
             mask_image = mask_image.filter(ImageFilter.GaussianBlur(mask_blur))
 
+        prepared_loras = self._lens_rewiring_preflight(params, height, width)
+
         cpu_text_encoding = params.get("cpu_text_encoding", False)
         enc_device = "cpu" if cpu_text_encoding else device
 
@@ -1204,9 +1266,7 @@ class LensMixin:
             print("[Lens] Stage 3: Denoising (repaint)...")
             transformer = self._lens_stage_transformer(params, device, transformer_quantization,
                                                        model_key=_kh_model_key)
-            lora_configs = params.get("loras") or []
-            if lora_configs:
-                self._load_lora_lens(lora_configs)
+            self._load_lora_lens(params.get("loras") or [], parsed_files=prepared_loras)
             transformer = self.lens_components["transformer"]
             self._lens_set_attention_backend(transformer, params)
             try:

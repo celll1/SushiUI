@@ -886,8 +886,8 @@ and 69 existing Lens LoRA/REPA/text-mask cases pass, with changed-file compile a
 real imports leaving CUDA untouched.
 
 Lens remains outside public runtime capabilities. Directory artifact restore,
-public training configuration, generation adapter scopes and model/editor
-inspection must be connected before exposing it. No Lens GPU inference/training,
+public training configuration and model/editor inspection must be connected
+before exposing it. No Lens GPU inference/training,
 performance or quality evidence is claimed; GPU acceptance stays Qwen-only.
 
 
@@ -896,8 +896,8 @@ performance or quality evidence is claimed; GPU acceptance stays Qwen-only.
 Full-parameter saves now include the canonical native transformer config and
 validated residual topology, and use the shared single-file/sharded writer. The
 writer returns the actual file or shard-index path so REPA sidecars retain their
-existing pairing. LoRA saves include the installed topology metadata; generation
-LoRA topology agreement/installation is still pending.
+existing pairing. LoRA saves include the installed topology metadata; generation LoRA topology
+agreement and installation are connected below.
 
 Single-file and indexed-shard loads validate topology headers before reading
 weights or resolving companion components. Rewired files require a native
@@ -947,3 +947,33 @@ All 69 aggregate residual contracts plus 104 existing Lens/VAE cases pass (173
 total). The final loader check also passes separately. Changed files compile and
 import with CUDA untouched. This is CPU compatibility evidence only; GPU training,
 quality, performance and calibration acceptance remain Qwen 2.1 only.
+
+
+## Lens generation adapter scopes and preflight
+
+Lens adapter loading now checks every selected LoRA's topology against the native
+model config and the base checkpoint. Mixed dense/residual declarations or
+incompatible residual graphs are refused before installing any branch. The shared
+AdapterSession still validates every target and installs the request atomically;
+only a successful load installs the topology. Unload restores the base topology
+through a weak model reference, so a model replacement cannot apply the previous
+model's graph to the new model. An empty adapter request also clears a previous
+LoRA-derived graph while retaining any graph carried by the base checkpoint.
+
+All three generation entries preflight the selected adapters and aligned grid
+before text encoding or component staging. Parsed files are reused for the later
+post-staging adapter install. Rewired runs refuse reference grids, style injection,
+FBCache, NAG and NegPip, and record the resolved spec/hash with KV caching disabled
+in dit_rewiring_actual. Dense requests remove stale residual result metadata.
+Native denoise loops consume the restored topology through the Lens forward path.
+
+CPU tests verify real trained-LoRA/native forward agreement, mixed-topology and
+zero-target atomic refusals, dense and residual base restoration, empty requests,
+model replacement, and pre-staging refusal/metadata behavior for txt2img,
+img2img and inpaint. These are CPU compatibility checks; no Lens GPU generation,
+image-quality or throughput evidence is claimed. Directory restoration, public
+presets/inspection and graphical configuration remain pending.
+
+All 71 aggregate rewiring contracts plus 104 existing Lens/VAE cases pass (175
+total). Changed backend files and the composed Pipeline compile/import with CUDA
+untouched. GPU acceptance remains Qwen 2.1 only.

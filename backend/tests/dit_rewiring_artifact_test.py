@@ -20,6 +20,51 @@ with patch.object(torch.cuda,"get_device_capability",return_value=(8,9)), \
 
 
 class ArtifactContracts(unittest.TestCase):
+    def test_diffusers_directory_restores_before_companions(self):
+        from safetensors.torch import save_file
+        from core.models.qwen_image_21.loader import _source_components
+        from core.models.qwen_image_21.vendor import AutoencoderKLQwenImage21
+        from transformers import Qwen3VLProcessor
+        from core.rewiring.spec import checkpoint_metadata
+        from core.rewiring.inspect import inspect_model
+
+        model = QwenImage21Transformer2DModel(num_layers=7,num_attention_heads=1,
+            attention_head_dim=12,axes_dims_rope=(4,4,4),context_in_dim=12,mlp_ratio=1)
+        spec = build_spec("qwen_image_21",[{"name":"main","block_count":7}], [
+            dict(id="outer",stream="main",parent=None,start_block=1,end_block=6,
+                 down_factor=[2,2],**OPERATORS)], native_config(dict(model.config)))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("transformer","text_encoder","vae","processor"):
+                (root/name).mkdir()
+            model.save_config(root/"transformer")
+            weight_path = root/"transformer"/"diffusion_pytorch_model.safetensors"
+            save_file(model.state_dict(),str(weight_path),metadata={
+                "format":"pt",**checkpoint_metadata(spec)})
+            self.assertEqual(inspect_model(directory)["topology"],spec)
+            with patch.object(AutoencoderKLQwenImage21,"from_pretrained"), \
+                 patch.object(Qwen3VLProcessor,"from_pretrained"):
+                components = _source_components(directory,torch.float32,
+                    load_text_encoder_component=False)
+            restored = components["transformer"]
+            self.assertEqual(restored._residual_unet_spec,spec)
+            for key,value in model.state_dict().items():
+                torch.testing.assert_close(value,restored.state_dict()[key],rtol=0,atol=0)
+            config_path = root/"transformer"/"config.json"
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            config["eps"] = 1e-4
+            config_path.write_text(json.dumps(config),encoding="utf-8")
+            with patch.object(QwenImage21Transformer2DModel,"from_pretrained") as load, \
+                 patch.object(AutoencoderKLQwenImage21,"from_pretrained") as vae:
+                with self.assertRaisesRegex(ValueError,"native config mismatch"):
+                    _source_components(directory,torch.float32,load_text_encoder_component=False)
+                load.assert_not_called()
+                vae.assert_not_called()
+            save_file({"extra":torch.zeros(1)},str(root/"transformer"/"extra.safetensors"))
+            with self.assertRaisesRegex(ValueError,"declarations disagree"):
+                inspect_model(directory)
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_full_writer_loader_and_lora_metadata(self):
         torch.manual_seed(9)
         model = QwenImage21Transformer2DModel(num_layers=7,num_attention_heads=1,

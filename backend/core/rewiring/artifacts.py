@@ -38,3 +38,13 @@ def read_artifact_topology(path):
         if shard_spec != spec:
             raise ValueError("Checkpoint index and shard topology declarations disagree")
     return spec
+
+
+def read_directory_topology(path):
+    declarations = [read_artifact_topology(candidate) for candidate in sorted(Path(path).iterdir())
+                    if candidate.is_file() and str(candidate).endswith(
+                        (".safetensors", ".safetensors.index.json"))]
+    topology = declarations[0] if declarations else None
+    if any(value != topology for value in declarations):
+        raise ValueError("Directory transformer topology declarations disagree")
+    return topology

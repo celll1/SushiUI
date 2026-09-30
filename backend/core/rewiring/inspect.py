@@ -8,52 +8,74 @@ from .artifacts import read_artifact_topology, read_directory_topology
 from .spec import digest
 
 
-def inspect_model(model_path):
-    from core.models.qwen_image_21.artifact import load_manifest
-    from core.models.qwen_image_21.residual_unet import (
-        default_topology, native_config, validate_topology_identity)
+def _native_adapter(architecture):
+    if architecture == "qwen_image_21":
+        from core.models.qwen_image_21 import residual_unet as adapter
+        return adapter, 16, 32
+    if architecture == "krea2":
+        from core.models.krea2 import residual_unet as adapter
+        return adapter, 16, 16
+    raise ValueError("Residual inspection requires a supported native DiT artifact")
 
+
+def inspect_model(model_path):
     path = Path(model_path)
     if path.is_dir():
         if (path / "manifest.json").is_file():
+            from core.models.qwen_image_21.artifact import load_manifest
             manifest = load_manifest(str(path))
+            architecture = "qwen_image_21"
             config = manifest.transformer_config
             topology = read_artifact_topology(manifest.transformer)
         else:
-            config_path = path / "transformer" / "config.json"
-            with config_path.open(encoding="utf-8") as handle:
+            transformer_dir = path / "transformer" if (path / "transformer").is_dir() else path
+            with (transformer_dir / "config.json").open(encoding="utf-8") as handle:
                 config = json.load(handle)
-            if not isinstance(config,dict):
+            if not isinstance(config, dict):
                 raise ValueError("Native model config must be an object")
-            if config.get("_class_name") != "QwenImage21Transformer2DModel":
-                raise ValueError("Residual inspection currently supports Qwen-Image 2.1 only")
-            topology = read_directory_topology(path / "transformer")
+            class_name = config.get("_class_name")
+            if not isinstance(class_name, str):
+                raise ValueError("Native model class must be a string")
+            architecture = {"QwenImage21Transformer2DModel": "qwen_image_21",
+                            "Krea2Transformer2DModel": "krea2"}.get(class_name)
+            _native_adapter(architecture)
+            topology = read_directory_topology(transformer_dir)
     else:
         if not path.exists() and Path(str(path)+".index.json").exists():
             path = Path(str(path)+".index.json")
         if str(path).endswith(".safetensors.index.json"):
             with path.open(encoding="utf-8") as handle:
                 index = json.load(handle)
-                if not isinstance(index,dict):
+                if not isinstance(index, dict):
                     raise ValueError("Checkpoint index must be an object")
                 metadata = index.get("metadata") or {}
-                if not isinstance(metadata,dict):
+                if not isinstance(metadata, dict):
                     raise ValueError("Checkpoint metadata must be an object")
         else:
-            with safe_open(str(path),framework="pt",device="cpu") as handle:
+            with safe_open(str(path), framework="pt", device="cpu") as handle:
                 metadata = handle.metadata() or {}
-        if metadata.get("model_type") != "qwen_image_21" or metadata.get("component") not in {"transformer","training_bundle"}:
-            raise ValueError("Residual inspection requires a Qwen-Image 2.1 model artifact")
-        config = json.loads(metadata.get("config") or "{}")
+        architecture = metadata.get("model_type")
+        _native_adapter(architecture)
+        if architecture == "qwen_image_21":
+            if metadata.get("component") not in {"transformer", "training_bundle"}:
+                raise ValueError("Residual inspection requires a Qwen-Image 2.1 model artifact")
+            config = json.loads(metadata.get("config") or "{}")
+        else:
+            if not metadata.get("krea2_config"):
+                raise ValueError("Residual inspection requires a Krea model config declaration")
+            config = json.loads(metadata["krea2_config"])
         topology = read_artifact_topology(path)
-    if not isinstance(config,dict):
+    if not isinstance(config, dict):
         raise ValueError("Native model config must be an object")
-    config = native_config(config)
+    adapter, token_scale, alignment = _native_adapter(architecture)
+    config = adapter.native_config(config)
     if topology is not None:
-        topology = validate_topology_identity(topology,config)
-    streams = [{"name":"main","block_count":config["num_layers"]}]
-    return dict(architecture="qwen_image_21", streams=streams,
+        topology = adapter.validate_topology_identity(topology, config)
+    if type(config["num_layers"]) is not int or not 3 <= config["num_layers"] <= 4096:
+        raise ValueError("Native stream block count must be an integer between 3 and 4096")
+    streams = [{"name": "main", "block_count": config["num_layers"]}]
+    return dict(architecture=architecture, streams=streams,
                 base_config_sha256=digest(config), block_layout_sha256=digest(streams),
                 topology=topology, topology_sha256=None if topology is None else digest(topology),
-                default_spec=default_topology(config),
-                latent_scale_factor=16, pixel_alignment=32)
+                default_spec=adapter.default_topology(config),
+                latent_scale_factor=token_scale, pixel_alignment=alignment)

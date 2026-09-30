@@ -931,6 +931,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "is_v_prediction": False,  # flow matching, velocity prediction
                     "model_hash": model_hash,
                     "is_distilled": self.krea2_components.get("is_distilled", False),
+                    "dit_rewiring_spec": getattr(model_result["transformer"], "_residual_unet_spec", None),
                 }
                 self.current_model_info.update(
                     self._fold_component_latent_identity(model_result, "krea2"))

@@ -6,8 +6,11 @@ checkpointed residual execution, metadata-driven generation, LoRA/full training,
 checkpoint restore and adapter-stack compatibility checks. Actual 1024px API
 workflows verify generation, training samples, saved artifacts and resume, both
 resident and with block swap. The graphical editor is connected and statically
-reviewed; the owner will perform consolidated frontend checks. Other architectures
-still require their own native execution/artifact adapters and capability gates.
+reviewed; the owner will perform consolidated frontend checks. Krea 2 has native
+execution/artifact/training/LoRA generation integration and CPU contract checks.
+GPU acceptance is restricted to Qwen-Image 2.1 by owner instruction; other models
+receive provisional implementation and CPU verification. Further architectures
+still require native execution/artifact adapters and capability gates.
 
 ## Default topology
 
@@ -299,9 +302,9 @@ the original block loop.
 Three CPU contracts exercise a seven-block native GQA model with nested regions:
 image/text token counts and mask preservation, checkpointed output/gradient
 equivalence, and incompatible coordinates/config/REPA refusal. This is a native
-execution foundation with artifact persistence. Krea is not advertised in runtime
-capabilities until default/editor integration and real-model API checks are
-complete; Qwen remains the sole exposed conversion architecture.
+execution implementation with artifact persistence. Krea is exposed through the
+runtime capability list following native CPU contracts; it has no GPU acceptance
+claim. Qwen is the sole GPU-verified conversion architecture.
 
 Krea full checkpoints now save the canonical topology and restore it from single
 files, shard indices and transformer directories. Header/config validation runs
@@ -324,7 +327,34 @@ Two additional CPU contracts exercise actual Krea training adapter checkpoint
 loading and generation AdapterSession behavior: failed resume leaves tensors and
 config unchanged, successful resume restores tensors/spec, incompatible edits
 and features fail, dense/rewired stacks fail atomically, and base topology returns
-on unload. Krea configure/resume tests locally enable its runtime gate; public
-capabilities remain Qwen-only pending preset/editor and real-model API acceptance.
-Twenty-four aggregate CPU contracts pass. These are not full Krea GPU workflow or
-performance/quality results.
+on unload. Krea configure/resume tests now use the actual public capability gate.
+These are not full Krea GPU workflow or performance/quality results.
+
+Krea's 28-block preset is outer `[4, 24)` and inner `[12, 16)`: eight blocks at
+4096 image tokens, sixteen at 1024 and four at 256 for native 1024px output.
+Its image-token-linear work is 43.75% of dense; no measured speed or quality is
+claimed. The preset is owned by param_defaults.py. Model inspection supports
+Krea metadata files/shards and native full/transformer-only directories without
+tensor allocation. The training editor uses the backend capability list instead
+of a Qwen-only condition; Krea loaded-model info includes restored topology.
+Two further CPU checks verify header-only inspection through actual API routes,
+malformed config refusal, the 8/16/4 preset and request/YAML/runtime resolution.
+Twenty-six aggregate CPU contracts pass. Per owner instruction, further GPU
+checks use Qwen only; Krea UI receives static review and consolidated owner checks.
+
+## GPU verification scope
+
+The owner explicitly limits GPU verification to Qwen-Image 2.1. Krea and subsequent
+models receive provisional integration and CPU contracts only. Do not run their
+GPU generation or training to promote a capability. Record any absent real-model
+GPU/performance/quality evidence explicitly instead of inferring it from Qwen.
+
+## Qwen regression after shared resolution changes
+
+A fresh actual 1024px/40-step generation through isolated FastAPI routes passes
+with the shared training/adapter resolvers and expanded inspection/capability
+implementation. Its metadata-driven default topology disables KV caching,
+executes all forty forwards and restores the dense base after LoRA unload. The
+output is pixel-identical to the previous accepted deepest-four-block probe
+(MAE zero). The cold request took 30.67 seconds; this is a connectivity/regression
+check, not a new steady-state throughput benchmark. No Krea GPU run was performed.

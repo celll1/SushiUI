@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
-import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, SenseNovaTaskView, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns, trainingMethodUnsupportedReason, trainingFeatureUnsupportedReason, trainingRequiredValues, TrainingRequiredValue, trainingFeatureAdvisory, TrainingFeatureAdvisory, archDisplayName, cfgUncondDropDefault, trainingSampleParameterSupported, trainingSampleNote, trainableAdapterAlgorithms, adapterTrainingRefusalReason, weightDecomposeTrainable, decomposedAdapterFamily, getLrSchedulePreview, LrSchedulePreview, getDatasetLatentCache, LatentCacheStatus } from "@/utils/api";
+import { getDiTRewiringSchema, createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, SenseNovaTaskView, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns, trainingMethodUnsupportedReason, trainingFeatureUnsupportedReason, trainingRequiredValues, TrainingRequiredValue, trainingFeatureAdvisory, TrainingFeatureAdvisory, archDisplayName, cfgUncondDropDefault, trainingSampleParameterSupported, trainingSampleNote, trainableAdapterAlgorithms, adapterTrainingRefusalReason, weightDecomposeTrainable, decomposedAdapterFamily, getLrSchedulePreview, LrSchedulePreview, getDatasetLatentCache, LatentCacheStatus } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
@@ -68,6 +68,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // trainingConfigDefinitions.tsx.
   const [params, setParams] = useState<TrainingRunCreateRequest>(DEFAULT_PARAMS);
   const { trainingDefaults, trainingSampleDefaultsByArch, trainingGuidanceLossDefaultsByArch, timestepDefaultsByArch, bundleVaeDefaultsByArch, archCapabilities } = useStartup();
+  const [rewiringArchitectures, setRewiringArchitectures] = useState<string[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    getDiTRewiringSchema().then(value => {
+      if (!cancelled) setRewiringArchitectures(value.runtime_architectures);
+    }).catch(error => console.warn("Could not load residual U-Net capabilities", error));
+    return () => { cancelled = true; };
+  }, []);
+
 
   // Apply backend-fetched defaults when they arrive (only for new runs, not edit mode)
   useEffect(() => {
@@ -6228,7 +6237,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </div>
             )}
 
-            {isQwenImage21Model && (trainingMethod === "lora" || trainingMethod === "full_finetune") && (
+            {rewiringArchitectures.includes(getModelArchitecture(baseModelPath) ?? "") && (trainingMethod === "lora" || trainingMethod === "full_finetune") && (
               <DiTRewiringEditor modelPath={baseModelPath} resolution={Math.max(...baseResolutions)}
                 mode={params.dit_rewiring_mode} spec={params.dit_rewiring_spec}
                 onChange={(mode, spec) => setParams(prev => ({ ...prev, dit_rewiring_mode: mode, dit_rewiring_spec: spec }))} />

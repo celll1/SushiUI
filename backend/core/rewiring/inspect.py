@@ -24,6 +24,9 @@ def _native_adapter(architecture):
     if architecture == "flux2":
         from core.models.flux2 import residual_unet as adapter
         return adapter, 16, 16
+    if architecture == "lens":
+        from core.models.lens import residual_unet as adapter
+        return adapter, 16, 16
     raise ValueError("Residual inspection requires a supported native DiT artifact")
 
 
@@ -53,9 +56,17 @@ def inspect_model(model_path):
             architecture = {"QwenImage21Transformer2DModel": "qwen_image_21",
                             "Krea2Transformer2DModel": "krea2",
                             "ZImageTransformer2DModel": "zimage",
-                            "Flux2Transformer2DModel": "flux2"}.get(class_name)
+                            "Flux2Transformer2DModel": "flux2",
+                            "LensTransformer2DModel": "lens"}.get(class_name)
             _native_adapter(architecture)
             topology = read_directory_topology(transformer_dir)
+            if architecture == "lens":
+                native_keys = []
+                for source in transformer_dir.glob("*.safetensors"):
+                    with safe_open(str(source), framework="pt", device="cpu") as handle:
+                        native_keys.extend(handle.keys())
+                if "img_in.weight" not in native_keys:
+                    raise ValueError("Lens directory inspection requires native model weights")
     else:
         if not path.exists() and Path(str(path)+".index.json").exists():
             path = Path(str(path)+".index.json")
@@ -112,6 +123,14 @@ def inspect_model(model_path):
                 raise ValueError("Flux2 file inspection requires native config metadata")
             if count_flux2_blocks(native_keys) != (config.get("num_layers"), config.get("num_single_layers")):
                 raise ValueError("Flux2 native config and checkpoint block counts disagree")
+        elif architecture == "lens":
+            native_keys = [key.removeprefix("net.") for key in keys]
+            if "img_in.weight" not in native_keys:
+                raise ValueError("Residual inspection requires a Lens model artifact, not adapter weights")
+            from core.models.lens.residual_unet import preflight_checkpoint
+            topology, config = preflight_checkpoint(path)
+            if config is None:
+                raise ValueError("Lens file inspection requires native config metadata")
         else:
             if not metadata.get("krea2_config"):
                 raise ValueError("Residual inspection requires a Krea model config declaration")
@@ -121,6 +140,12 @@ def inspect_model(model_path):
         raise ValueError("Native model config must be an object")
     adapter, token_scale, alignment = _native_adapter(architecture)
     config = adapter.native_config(config)
+    if architecture == "lens":
+        import re
+        blocks = {int(match.group(1)) for key in native_keys
+                  if (match := re.match(r"^transformer_blocks\.(\d+)\.", key))}
+        if len(blocks) != config["num_layers"] or blocks != set(range(len(blocks))):
+            raise ValueError("Lens native config and checkpoint block counts disagree")
     if topology is not None:
         topology = adapter.validate_topology_identity(topology, config)
     count_key = {"anima": "num_blocks", "zimage": "n_layers"}.get(architecture, "num_layers")
@@ -138,6 +163,8 @@ def inspect_model(model_path):
         if type(patch) is not int or patch < 1:
             raise ValueError("Anima spatial patch size must be a positive integer")
         token_scale = alignment = patch * 8
+    if architecture == "lens" and config["patch_size"] != 2:
+        raise ValueError("Lens editor requires native packed 2x2 patches")
     if architecture == "zimage" and (2 not in config["all_patch_size"] or 1 not in config["all_f_patch_size"]):
         raise ValueError("Z-Image editor requires the native 2-1 generation patch bank")
     from api.param_defaults import DIT_REWIRING_REGION_DEFAULTS

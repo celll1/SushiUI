@@ -885,8 +885,8 @@ not establish their GPU offload equivalence. All 66 aggregate rewiring contracts
 and 69 existing Lens LoRA/REPA/text-mask cases pass, with changed-file compile and
 real imports leaving CUDA untouched.
 
-Lens remains outside public runtime capabilities. Public training configuration
-and model/editor inspection must be connected before exposing it. No Lens GPU inference/training,
+Lens public configuration and model/editor inspection are connected in the
+public integration milestone below. No Lens GPU inference/training,
 performance or quality evidence is claimed; GPU acceptance stays Qwen-only.
 
 
@@ -929,8 +929,8 @@ and before native checkpointing, freezing or base quantization. The full-paramet
 resume branch uses this same loader. Base/resume/explicit inherited declarations
 must agree, and residual runs refuse REPA, TREAD, block skipping and partition
 training/global adapters through the shared training gates. New public configure
-requests remain unavailable until Lens capability/editor integration is complete;
-no default topology is exposed in this milestone.
+requests and the default topology are connected in the public integration
+milestone below.
 
 LoRA resume validates checkpoint topology before reading or changing adapter
 weights, and installs the resolved topology/config only after successful weight
@@ -971,7 +971,7 @@ zero-target atomic refusals, dense and residual base restoration, empty requests
 model replacement, and pre-staging refusal/metadata behavior for txt2img,
 img2img and inpaint. These are CPU compatibility checks; no Lens GPU generation,
 image-quality or throughput evidence is claimed. Public presets/inspection and
-graphical configuration remain pending.
+graphical configuration are connected below.
 
 All 71 aggregate rewiring contracts plus 104 existing Lens/VAE cases pass (175
 total). Changed backend files and the composed Pipeline compile/import with CUDA
@@ -1001,3 +1001,38 @@ External companion loaders are stubbed throughout; no Lens GPU is used.
 All 72 aggregate rewiring contracts and 104 existing Lens/VAE regression cases
 pass (176 total); changed-file compile and real imports leave CUDA untouched.
 GPU acceptance remains Qwen 2.1 only.
+
+
+## Lens public configuration and model inspection
+
+Lens joins runtime_architectures after native execution, artifact persistence,
+training inheritance/resume and generation adapter scopes are connected. Its
+48-block default is centralized in backend/api/param_defaults.py: outer region
+[4,44), deepest region [22,26), both downsampling image axes by two. At 1024px
+with native stride 16, eight blocks keep 4096 image tokens, 36 use 1024 and four
+use 256. The image-token linear estimate is 35.9375% of dense; this is neither a
+FLOP estimate nor a speed/quality measurement, and excludes evolving text tokens.
+Other layer counts require an explicit graph instead of guessing a preset.
+
+Header-only inspection accepts Lens single-file, shard-index/missing-stem and
+local diffusers artifacts, canonicalizes native config and verifies contiguous
+native block counts against headers. Adapter-only files and config/header
+count disagreement are refused. Native packed 2x2 patch geometry is required by
+the editor. Inspection returns config/layout hashes, restored topology, default
+or initial graph, stride and alignment without reading tensors or allocating a
+model. The existing generic editor obtains Lens support through the schema and
+renders region depth/downsampling/skip edges using this result.
+
+Generation model info includes the restored topology and dit_rewiring_token_stride
+for the existing read-only common graph. CPU tests exercise actual configure
+request/train-section resolution, a real tiny 48-block preset forward, explicit
+custom topology and resume-edit refusal, actual ASGI schema/inspection/preview
+responses, and the composed Pipeline Lens loading branch. Inspection tests forbid
+tensor loading and model allocation. Frontend API types, capability gating,
+training editor and generation summary wiring were statically checked; owner
+build/type/browser validation remains pending as requested. Lens GPU behavior,
+performance and quality remain unverified; GPU acceptance is Qwen 2.1 only.
+
+All 75 aggregate rewiring contracts and 104 existing Lens/VAE regression cases
+pass (179 total). Changed files compile/import with CUDA untouched, and the
+OpenAPI runtime capability example matches the actual schema response.

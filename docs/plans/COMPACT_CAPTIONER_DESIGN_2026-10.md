@@ -407,7 +407,12 @@ GPU推論は既存coordinatorのslotを使い、trainer pauseのackがない場�
 Tagger画面のCaptioner tabはbundleロード、source/device/token設定、preview、本文編集と保存を持つ。
 複数itemの逐次previewでは成功と失敗を画面に残すが、画面を閉じた後のbatch結果はまだ永続化しない。
 
-学習run persistenceと学習API、学習UI、永続的なbatch管理は未実装である。
+学習run persistenceと学習APIを接続した。`/captioner-training/runs`で新しい専用output directoryを
+確保し、start/stopでprivate CPU taggerを読み込むworkerを制御する。設定とalias辞書はrun作成時に固定する。
+進捗、checkpoint、exportとresume sequenceはtraining DBに保存し、events endpointから取得する。
+再起動後にworkerが存在しないstarting/running/stoppingはinterruptedとして記録する。
+再開checkpointはrun直下に限定し、latest markerからも選べる。exportはoptimizerを除いた別bundleを作る。
+学習UIと永続的なbatch管理は未実装である。
 GPU trainerの初期allocationは既存coordinatorでgenerationと排他する。
 worktree間のGPU調整と実training runのpause/offload検証はまだ必要である。
 実datasetから学習した自然文モデルはまだ存在せず、品質によるbest選択も未実装である。
@@ -427,3 +432,6 @@ fp32/bf16/fp16のloss/backward、生成のfull/cache一致、cancel、fp32 optim
 実dataの学習、速度benchmark、server restartは行っていない。
 worktree間でin-process lockは共有できないため、将来のGPU実測開始前には他作業のGPU利用と調整する。
 この基盤検証は実caption品質や1秒目標達成の証拠にはならない。
+学習runの永続化、中断表示、排他、停止、checkpoint指定の拒否、resumeと失敗cleanupをCPUで確認した。
+学習run・OpenAPI整合性・captioner API・コアを合わせた41件が通過した。
+学習run APIのGPU実dataset経路は未検証である。

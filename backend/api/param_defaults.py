@@ -29,6 +29,11 @@ CAPTIONER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "cache_max_gb": 20.0, "save_every_steps": 100, "use_tag_aliases": True,
     "language": "en",
 }
+CAPTIONER_RUN_DEFAULTS: Dict[str, Any] = {
+    "run_name": "captioner", "output_dir": None, "vision_encoder_path": "",
+    "lora_rank": 32, "lora_alpha": 16.0, "resume": False, "checkpoint": "",
+    "after_id": 0, "event_limit": 500,
+}
 
 # The only core import in this module. The hybrid block range is a CHECKPOINT
 # fact the loader validates against (hybrid_spec.py:71), so the API default is

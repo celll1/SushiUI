@@ -1249,3 +1249,36 @@ claim.
 
 The 3 new native residual tests and 42 existing Ideogram LoRA/REPA tests pass
 (45 total). Compile and real imports pass with CUDA uninitialized.
+
+## Ideogram 4 dual-backbone checkpoint contracts
+
+The combined inference export helper writes both transformer states with canonical
+native configs and the resolved topology. It validates the pair before copying
+weights, restores shared-storage tensor keys rather than dropping a backbone,
+and returns the actual file or shard-index path. Every shard and its index carries
+the same graph. LoRA saves add the conditional graph and, when an unconditional
+model is loaded, require that model's graph to agree.
+
+Combined-file loading checks all topology headers before tensor/base-directory
+loading, requires native configs for each saved branch, binds the graph to both,
+and restores it only after native weights load successfully. Generation requires
+both branches; conditional-only training loading may skip unconditional weights.
+A split directory checks conditional/unconditional graph agreement and native
+config identity before reading either state. Dense legacy loading remains on the
+existing path; an absent dense config may still use companion config as before.
+
+CPU tests use the actual native export and ModelLoader for single-file, shard
+index, missing-stem index, split sharded directory and shared-storage export.
+Both restored backbones reproduce every weight and the original packed native
+output exactly. Invalid/missing graph configs are refused before tensor loading;
+missing native tensors are refused before TE/VAE companions. Directory headers
+with conflicting declarations are refused before either branch's weights load.
+Only external TE/tokenizer/VAE/scheduler companions are stubbed.
+
+The 4 Ideogram residual tests plus 42 existing Ideogram LoRA/REPA tests pass (46
+total), with compile/real imports leaving CUDA uninitialized. This connects
+artifact restoration and LoRA save metadata. Training graph setup/resume,
+inference LoRA graph scopes and public presets/inspection/editor remain pending.
+The existing Ideogram full-finetune refusal is retained; the combined export
+helper does not claim to enable that baseline workflow. GPU validation remains
+Qwen-Image 2.1 only.

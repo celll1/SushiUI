@@ -382,6 +382,10 @@ def _build_diffusers_component(
 
     config = _read_component_config(official, subdir, expected_class)
     comp_dir = os.path.join(official, subdir)
+    residual_graph = None
+    if subdir == "transformer" and expected_class == "MiniMaxMusic3Transformer1DModel":
+        from .residual_unet import preflight_directory
+        residual_graph = preflight_directory(comp_dir, config)
 
     state_dict = load_component_state_dict(comp_dir, _WEIGHT_BASENAME)
     # Defensive: see module docstring -- official/ files are never observed
@@ -408,6 +412,9 @@ def _build_diffusers_component(
         )
     model.eval()
     model.requires_grad_(False)
+    if residual_graph is not None:
+        from .residual_unet import restore_topology
+        restore_topology(model, residual_graph)
     return model, config
 
 

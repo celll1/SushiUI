@@ -2521,3 +2521,52 @@ throughput or a full production generation/decode workflow.
 GPU measurements and acceptance runs remain limited to Qwen-Image 2.1, per the
 owner's resource constraint. Other model implementations use CPU contracts and
 static inspection; their quality and throughput are explicitly unmeasured.
+
+
+### MiniMax Music 3 native temporal flow foundation (CPU)
+
+MiniMax Music 3 contains a noncausal 36-block flow-matching DiT in addition to
+its autoregressive semantic-code generator. Only the flow block loop is rewired;
+the language model, RVQ depth decoder, condition encoder, scheduler/chunk blend
+and vocoder remain native. Generation-only and adapter/training refusals remain
+in force. No new training registration is added.
+
+The native flow DiT projects aligned acoustic latents and conditioning first,
+then prepends one Fourier timestep token. Temporal residual pooling preserves
+that token as the prefix and shrinks only the projected audio timeline. Native
+partial RoPE is regenerated at each coarse integer grid. Native checkpointed
+blocks, output projection and postprocess convolution stay in use. Arbitrary
+chunk lengths gain zero hidden-token tail padding to the graph's required
+alignment; the restored timeline is cropped before the native output heads.
+This padding changes attention visibility and requires calibration just like
+the other uncalibrated residual paths; it is part of the native config hash.
+
+The 36-block preset is owned by param_defaults.py: [4,32) at half length and
+[16,20) at quarter length, giving 8 full-length / 24 middle / 4 deepest blocks.
+Config identity, actual depth, temporal-axis factors, input batch/conditioning
+shape and conflicting execution features are checked before input projection.
+Execution metadata is recorded only after successful output heads; failures
+invalidate previous observations. Parameter counts and checkpoint weight keys
+remain unchanged.
+
+Native component directories restore uniform graph declarations before reading
+checkpoint tensors. Their strict native/meta loading and quantization guards
+remain in effect. The graph metadata exporter stores canonical native config
+and schema/hash fields; real CPU checkpoint round trips preserve every weight
+exactly and predictions within FP32 tolerance. Changed config identity and mixed
+dense/residual directory declarations refuse before tensor materialization.
+
+The native residual, directory-loader, API-default and capability checks pass
+57 tests with CUDA uninitialized. Tests also compare checkpointed gradients,
+confirm zero block updates exactly preserve the native heads/time token, and
+verify the 8/24/4 preset. An additional existing staged-offload fixture has four
+failures because its _MockComponent lacks language_model.model.layers; the same
+four failures and seven passes reproduce using the unchanged 12328f37 backend
+source in a fresh CPU process. They do not prove a passing offload suite.
+
+This is an internal CPU foundation, not a public capability announcement. Flat
+and GGUF artifact declarations, public model inspection/configuration, complete
+flow chunk output provenance, production offload interactions and final workflow
+acceptance remain to be connected or verified. No Music 3 weights or GPU quality/
+performance runs are used. YuE2's separate NAR flow and shared AR KV prefix still
+require their own architecture assessment and integration.

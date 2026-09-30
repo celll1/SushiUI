@@ -20,7 +20,8 @@
 #     `minimax_h3/vendor/transformer_minimax_h3.py`. This is full
 #     self-attention over one packed 1D sequence: no mask, no causal, equal
 #     q/kv heads (head_dim 64 here, inside every backend's allowed set).
-#   * everything else — the Fourier time embedding, the partial rotary
+#   * optional temporal residual transport replaces only the flow block loop.
+#   * otherwise the Fourier time embedding, the partial rotary
 #     embedding, the block structure, the pre/post 1x1-conv residual wrapper
 #     around `proj_in`/`proj_out`, and the prepended-timestep-token trick — is
 #     unchanged from upstream; this is a checkpoint contract.
@@ -285,6 +286,10 @@ class MiniMaxMusic3Transformer1DModel(ModelMixin, ConfigMixin):
         Returns:
             The predicted flow-matching velocity with the same shape as `hidden_states`.
         """
+        residual_state = None
+        if getattr(self, '_residual_unet_spec', None) is not None:
+            from core.models.minimax_music3.residual_unet import preflight_forward
+            residual_state = preflight_forward(self, hidden_states, timestep, encoder_hidden_states)
         self._stamp_attention_backend()  # SushiUI: unified attention conduit
         zeros = torch.zeros_like(hidden_states)
         hidden_states = torch.cat((hidden_states, zeros, encoder_hidden_states.transpose(1, 2)), dim=1)
@@ -296,18 +301,25 @@ class MiniMaxMusic3Transformer1DModel(ModelMixin, ConfigMixin):
         hidden_states = self.proj_in(hidden_states)
         # The timestep embedding is prepended as one extra token and removed after the blocks.
         hidden_states = torch.cat((temb.unsqueeze(1), hidden_states), dim=1)
-        rotary_emb = self.rotary_emb(hidden_states.shape[1], hidden_states.device)
-
-        for block in self.transformer_blocks:
-            if torch.is_grad_enabled() and self.gradient_checkpointing:
-                hidden_states = self._gradient_checkpointing_func(block, hidden_states, rotary_emb)
-            else:
-                hidden_states = block(hidden_states, rotary_emb)
+        native_tokens = hidden_states.shape[1]-1
+        if residual_state is not None:
+            from core.models.minimax_music3.residual_unet import run_native_blocks
+            hidden_states = run_native_blocks(self, hidden_states, residual_state)
+        else:
+            rotary_emb = self.rotary_emb(hidden_states.shape[1], hidden_states.device)
+            for block in self.transformer_blocks:
+                if torch.is_grad_enabled() and self.gradient_checkpointing:
+                    hidden_states = self._gradient_checkpointing_func(block, hidden_states, rotary_emb)
+                else:
+                    hidden_states = block(hidden_states, rotary_emb)
 
         hidden_states = self.proj_out(hidden_states[:, 1:])
         hidden_states = hidden_states.transpose(1, 2)
         hidden_states = self.postprocess_conv(hidden_states) + hidden_states
 
+        if residual_state is not None:
+            from core.models.minimax_music3.residual_unet import record_execution
+            record_execution(self, residual_state, native_tokens)
         if not return_dict:
             return (hidden_states,)
         return Transformer2DModelOutput(sample=hidden_states)

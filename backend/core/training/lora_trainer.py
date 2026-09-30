@@ -307,11 +307,19 @@ class LoRATrainer(BaseTrainer):
                         f"does not match this run's {value!r}"
                     )
 
+        configure_topology = None
         if getattr(self, "is_qwen_image_21", False):
-            from core.rewiring.spec import read_checkpoint_metadata
             from core.models.qwen_image_21.residual_unet import configure_training_topology
-            configure_training_topology(self.transformer, self.config, resuming=True,
-                                        resume_spec=read_checkpoint_metadata(metadata), install=False)
+            configure_topology = configure_training_topology
+        elif getattr(self, "is_krea2", False):
+            from core.models.krea2.residual_unet import configure_training_topology
+            configure_topology = configure_training_topology
+        if configure_topology is not None:
+            from core.rewiring.spec import read_checkpoint_metadata
+            resume_topology = read_checkpoint_metadata(metadata)
+            configure_topology(self.transformer, self.config, resuming=True,
+                               resume_spec=resume_topology, install=False)
+        if getattr(self, "is_qwen_image_21", False):
             expected_forward = (
                 "convrot_int8_bf16_backward_v1"
                 if getattr(self, "qwen_convrot_training_forward", "dequant")
@@ -422,8 +430,8 @@ class LoRATrainer(BaseTrainer):
                             tensor.copy_(snapshot[name])
             raise
 
-        if getattr(self, "is_qwen_image_21", False):
-            configure_training_topology(self.transformer, self.config, resuming=True,
-                                        resume_spec=read_checkpoint_metadata(metadata))
+        if configure_topology is not None:
+            configure_topology(self.transformer, self.config, resuming=True,
+                               resume_spec=resume_topology)
         print(f"{self.log_prefix} Loaded LoRA checkpoint from step {step}")
         return step

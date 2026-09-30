@@ -168,5 +168,100 @@ class KreaRuntimeContracts(unittest.TestCase):
                     krea2_loader._build_transformer_from_dir(directory, torch.float32)
                 reader.assert_not_called()
 
+    def test_lora_resume_atomicity_and_topology_agreement(self):
+        import tempfile
+        from types import SimpleNamespace
+        from safetensors.torch import save_file
+        from core.models.krea2.residual_unet import configure_training_topology, restore_topology
+        from core.training.adapters.krea2_adapter import Krea2LoRAAdapter
+        from core.training.lora_trainer import LoRATrainer
+        from core.rewiring.spec import checkpoint_metadata
+        restore_topology(self.model, None)
+        trainer = SimpleNamespace(transformer=self.model, config={}, is_krea2=True,
+            log_prefix="[KreaResumeTest]", lora_rank=2, lora_alpha=2,
+            adapter_algorithm="lora", weight_decompose=False, adapter_config={})
+        adapter = Krea2LoRAAdapter(trainer, 2, 2)
+        layers = {}; adapter.apply_lora_to_unet(layers); trainer.lora_layers = layers
+        tensors = {f"{name}.{key}": value.detach().clone()+0.01
+                   for name, layer in layers.items() for key, value in layer.branch_tensors().items()}
+        before = {f"{name}.{key}": value.detach().clone()
+                  for name, layer in layers.items() for key, value in layer.branch_tensors().items()}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/"resume.safetensors"
+            metadata = {"model_type": "krea2", "step": "17", **checkpoint_metadata(self.spec)}
+            save_file({"unrelated": torch.ones(1)}, str(path), metadata=metadata)
+            with self.assertRaisesRegex(ValueError, "missing required tensor"):
+                LoRATrainer.load_checkpoint(trainer, str(path))
+            self.assertFalse(hasattr(self.model, "_residual_unet_spec"))
+            self.assertEqual(trainer.config, {})
+            for name, layer in layers.items():
+                for key, value in layer.branch_tensors().items():
+                    torch.testing.assert_close(value, before[f"{name}.{key}"], rtol=0, atol=0)
+            save_file(tensors, str(path), metadata=metadata)
+            self.assertEqual(LoRATrainer.load_checkpoint(trainer, str(path)), 17)
+            self.assertEqual(self.model._residual_unet_spec, self.spec)
+            for name, layer in layers.items():
+                for key, value in layer.branch_tensors().items():
+                    torch.testing.assert_close(value, tensors[f"{name}.{key}"], rtol=0, atol=0)
+        with patch("core.rewiring.training.RUNTIME_ARCHITECTURES", ("qwen_image_21", "krea2")):
+            self.assertEqual(configure_training_topology(self.model, trainer.config, resuming=True), self.spec)
+            changed = dict(self.spec, regions=[self.spec["regions"][0],
+                {**self.spec["regions"][1], "end_block": 4}])
+            with self.assertRaisesRegex(ValueError, "without edits"):
+                configure_training_topology(self.model,
+                    {"dit_rewiring_mode": "configure", "dit_rewiring_spec": changed}, resuming=True)
+            with self.assertRaisesRegex(ValueError, "incompatible"):
+                configure_training_topology(self.model, {**trainer.config, "repa_enable": True})
+
+    def test_generation_lora_scope_and_effective_metadata(self):
+        import tempfile
+        from safetensors.torch import save_file
+        from core.pipeline_backends.krea2 import Krea2Mixin
+        from core.models.krea2.residual_unet import restore_topology
+        from core.adapters import AdapterIncompatible, CompositeAdapterLayer
+        from core.rewiring.spec import checkpoint_metadata, digest
+        class Manager(Krea2Mixin):
+            def __init__(manager):
+                manager.krea2_components = {"transformer": self.model}
+            @staticmethod
+            def _krea2_resolve_lora_path(path):
+                return str(path) if Path(path).is_file() else None
+        manager = Manager()
+        restore_topology(self.model, None)
+        original = self.model.transformer_blocks[0].attn.to_q
+        with tempfile.TemporaryDirectory() as directory:
+            def write(name, topology, wrong=False):
+                path = Path(directory)/f"{name}.safetensors"
+                save_file({
+                    "lora_unet_transformer_blocks__0__attn__to_q.lora_down.weight": torch.randn(2, 23 if wrong else 24),
+                    "lora_unet_transformer_blocks__0__attn__to_q.lora_up.weight": torch.randn(24, 2)}, str(path),
+                    metadata={"model_type": "krea2", **({} if topology is None else checkpoint_metadata(topology))})
+                return {"path": str(path), "strength": 1.0}
+            good = write("good", self.spec)
+            dense = write("dense", None)
+            malformed = write("bad_shape", self.spec, True)
+            self.assertEqual(manager._load_lora_krea2([good]), 1)
+            self.assertIsInstance(self.model.transformer_blocks[0].attn.to_q, CompositeAdapterLayer)
+            self.assertEqual(self.model._residual_unet_spec, self.spec)
+            params = {}
+            manager._krea2_rewiring_metadata(params, {"grid_h": 8, "grid_w": 12}, self.model)
+            self.assertEqual(params["dit_rewiring_actual"]["spec_sha256"], digest(self.spec))
+            with self.assertRaisesRegex(Exception, "style"):
+                manager._krea2_rewiring_metadata({"style_transfer": {"enabled": True}},
+                    {"grid_h": 8, "grid_w": 12}, self.model)
+            manager._unload_lora_krea2()
+            self.assertIs(self.model.transformer_blocks[0].attn.to_q, original)
+            self.assertFalse(hasattr(self.model, "_residual_unet_spec"))
+            for files in ([good, dense], [good, malformed]):
+                with self.assertRaises(RuntimeError):
+                    manager._load_lora_krea2(files)
+                self.assertIs(self.model.transformer_blocks[0].attn.to_q, original)
+                self.assertFalse(hasattr(self.model, "_residual_unet_spec"))
+            restore_topology(self.model, self.spec)
+            with self.assertRaises(AdapterIncompatible):
+                manager._load_lora_krea2([dense])
+            manager._load_lora_krea2([good]); manager._unload_lora_krea2()
+            self.assertEqual(self.model._residual_unet_spec, self.spec)
+
 if __name__ == "__main__":
     unittest.main()

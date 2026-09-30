@@ -78,6 +78,14 @@ def load_components(trainer) -> None:
     # the freeze below, so the resize's new Parameters take the same grad flags.
     _apply_latent_space(trainer, components.get("declared_vae"))
 
+    from pathlib import Path
+    from core.models.krea2.residual_unet import configure_training_topology
+    resume_path = getattr(trainer, "resume_from_checkpoint", None)
+    checkpoint_loaded = bool(resume_path) and Path(trainer.model_path).resolve() == Path(resume_path).resolve()
+    configure_training_topology(
+        trainer.transformer, trainer.config, resuming=checkpoint_loaded,
+        pending_adapter_resume=bool(resume_path) and bool(getattr(trainer, "_manages_own_resume", False)))
+
     # A training process is DEQUANT-ONLY (see ideogram4_ops.load_components for
     # the full reasoning). Krea 2's TE CAN be fp8: when the TE directory resolves
     # to an Ideogram-4-style "<parent>/text_encoder" layout, krea2_loader's

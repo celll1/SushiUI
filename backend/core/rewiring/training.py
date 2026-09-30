@@ -26,3 +26,43 @@ def validate_training_features(config):
                 "tread_enable", "repa_enable", "blockskip_enable"):
         if config.get(key):
             raise ValueError(f"Residual rewiring is incompatible with {key}")
+
+
+NO_RESUME_SPEC = object()
+
+
+def resolve_training_topology(model, config, architecture, validate_topology_identity,
+                              restore_topology, default_topology=None, *, resuming=False,
+                              pending_adapter_resume=False, resume_spec=NO_RESUME_SPEC,
+                              install=True):
+    mode, requested = validate_training_rewiring(config, architecture)
+    existing = getattr(model, "_residual_unet_spec", None)
+    if mode == "configure" and requested is None:
+        requested = None if default_topology is None else default_topology(dict(model.config))
+        if requested is None:
+            raise ValueError(f"No rewiring preset for this {architecture} block count; supply an explicit spec")
+    if requested is not None:
+        requested = validate_topology_identity(requested, dict(model.config))
+    if resume_spec is not NO_RESUME_SPEC:
+        if resume_spec is not None:
+            resume_spec = validate_topology_identity(resume_spec, dict(model.config))
+        if existing is not None and existing != resume_spec:
+            raise ValueError("Resume checkpoint and base topology disagree")
+        inherited = resume_spec
+    else:
+        inherited = requested if pending_adapter_resume and existing is None else existing
+    if mode == "inherit":
+        if requested is not None and requested != inherited:
+            raise ValueError("Explicit inherited topology does not match checkpoint")
+        resolved = inherited
+    else:
+        resolved = requested
+        if (resuming or resume_spec is not NO_RESUME_SPEC) and resolved != inherited:
+            raise ValueError("Resume requires the checkpoint topology without edits")
+    if resolved is not None:
+        validate_training_features(config)
+    if install:
+        restore_topology(model, resolved)
+        config["dit_rewiring_mode"] = mode
+        config["dit_rewiring_spec"] = resolved
+    return resolved

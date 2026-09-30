@@ -112,6 +112,34 @@ class AceStepSourceContracts(unittest.TestCase):
                     load_acestep_from_path(str(self.path),torch.float32)
         self.assertFalse(torch.cuda.is_initialized())
 
+    def test_legacy_and_new_grid_policies_roundtrip_in_full_config(self):
+        from core.models.acestep.residual_unet import native_config, restore_topology, generation_metadata, GRID_POLICY_KEY, GRID_POLICY
+        from core.models.acestep.loader import _build_dit
+        from core.rewiring.spec import build_spec
+        from core.training.adapters.acestep_adapter import AceStepFullParameterAdapter
+        legacy_config=native_config(self.owner.config);legacy_config.pop(GRID_POLICY_KEY)
+        legacy=build_spec("acestep",self.spec["streams"],self.spec["regions"],legacy_config)
+        restore_topology(self.owner,legacy)
+        AceStepFullParameterAdapter(SimpleNamespace(transformer=self.owner)).write_checkpoint(4,1,self.path)
+        with safe_open(str(self.path),framework="pt") as handle: metadata=handle.metadata()
+        raw=json.loads(metadata["acestep_config"])
+        self.assertEqual(raw[GRID_POLICY_KEY],"require_divisible")
+        loaded,config=_build_dit(str(self.path),torch.float32)
+        self.assertEqual(loaded._residual_unet_spec,legacy)
+        self.assertEqual(native_config(native_config(config)),native_config(config))
+        with self.assertRaisesRegex(ValueError,"not divisible"): generation_metadata(loaded,45)
+        raw[GRID_POLICY_KEY]=GRID_POLICY
+        save_file(load_file(str(self.path)),str(self.path),metadata={**metadata,"acestep_config":json.dumps(raw)})
+        with patch("core.models.acestep.vendor.AceStepConditionGenerationModel",side_effect=AssertionError("No allocation")), \
+                self.assertRaisesRegex(ValueError,"explicit grid policy"):
+            _build_dit(str(self.path),torch.float32)
+        restore_topology(self.owner,self.spec)
+        AceStepFullParameterAdapter(SimpleNamespace(transformer=self.owner)).write_checkpoint(5,1,self.path)
+        loaded,config=_build_dit(str(self.path),torch.float32)
+        self.assertEqual(generation_metadata(loaded,250)["transport_padding_tokens"],3)
+        self.assertEqual(getattr(config,GRID_POLICY_KEY),GRID_POLICY)
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_full_resume_dispatches_to_native_component_loader(self):
         from core.training.base_trainer import BaseTrainer
         trainer=SimpleNamespace(model_path="unused",log_prefix="[CPU]")

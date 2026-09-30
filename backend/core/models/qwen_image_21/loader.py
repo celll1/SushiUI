@@ -22,9 +22,20 @@ def _source_components(
     missing = [name for name in required if not os.path.isdir(os.path.join(model_path, name))]
     if missing:
         raise ValueError(f"{model_path}: missing Qwen-Image 2.1 subfolder(s): {', '.join(missing)}")
+    from core.rewiring.artifacts import read_directory_topology
+    from .residual_unet import restore_topology, validate_topology_identity
+
+    topology = None
+    if load_transformer_component:
+        topology = read_directory_topology(os.path.join(model_path, "transformer"))
+        if topology is not None:
+            config = QwenImage21Transformer2DModel.load_config(model_path, subfolder="transformer")
+            topology = validate_topology_identity(topology, config)
     transformer = QwenImage21Transformer2DModel.from_pretrained(
         model_path, subfolder="transformer", torch_dtype=dtype, low_cpu_mem_usage=True
     ).eval() if load_transformer_component else None
+    if transformer is not None:
+        restore_topology(transformer, topology)
     text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(
         model_path, subfolder="text_encoder", torch_dtype=dtype, low_cpu_mem_usage=True
     ).eval() if load_text_encoder_component else None

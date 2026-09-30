@@ -4,7 +4,7 @@ from pathlib import Path
 
 from safetensors import safe_open
 
-from .artifacts import read_artifact_topology
+from .artifacts import read_artifact_topology, read_directory_topology
 from .spec import digest
 
 
@@ -27,12 +27,7 @@ def inspect_model(model_path):
                 raise ValueError("Native model config must be an object")
             if config.get("_class_name") != "QwenImage21Transformer2DModel":
                 raise ValueError("Residual inspection currently supports Qwen-Image 2.1 only")
-            candidates = sorted((path / "transformer").glob("*.safetensors*"))
-            declarations = [read_artifact_topology(candidate) for candidate in candidates
-                            if str(candidate).endswith((".safetensors", ".safetensors.index.json"))]
-            topology = declarations[0] if declarations else None
-            if any(value != topology for value in declarations):
-                raise ValueError("Directory transformer topology declarations disagree")
+            topology = read_directory_topology(path / "transformer")
     else:
         if not path.exists() and Path(str(path)+".index.json").exists():
             path = Path(str(path)+".index.json")

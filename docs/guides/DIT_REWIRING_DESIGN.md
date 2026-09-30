@@ -198,3 +198,13 @@ native topology and configuration. Sixteen CPU contract tests pass.
 Full-size full-parameter training, run-level scheduler/RNG resume, block swap,
 actual dataset workflows, calibration quality, frontend acceptance, and additional
 architecture adapters remain outstanding.
+
+## Diffusers directory restoration verification
+
+Native Qwen Diffusers directory loading reads transformer safetensors headers
+before allocating weights, validates the topology against the native config,
+and restores it after the transformer loads. Inspection and loading share the
+same directory declaration check. Conflicting files or shards are refused.
+A small native transformer round trip verifies exact parameter restoration,
+topology restoration, and config mismatch refusal before loading companions.
+The residual rewiring CPU suite now passes 17 tests.

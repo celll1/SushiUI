@@ -162,6 +162,9 @@ def preflight_forward(wrapper, hidden, audio, frames, height, width, coords, *,
                 "_blockskip_config", "_style_cfg", "_style_refs", "_style_processors"):
         if getattr(wrapper, key, None) is not None:
             raise ValueError(f"LTX-2 residual execution is incompatible with {key}")
+    from core.rewiring.spec import digest
+    inner._residual_unet_last_grid = dict(spec_sha256=digest(graph),
+        video_grid=[frames,height,width], audio_tokens=audio.shape[1])
     return graph
 
 
@@ -257,6 +260,23 @@ def resolve_generation_topology(model, files):
     if required is not None and len(inner.transformer_blocks) != native["num_layers"]:
         raise ValueError("LTX-2 actual block count disagrees with native config")
     return required
+
+
+def generation_metadata(model):
+    from core.rewiring.spec import digest, preview_plan
+    inner = getattr(model, "transformer", model)
+    graph = resolve_generation_topology(model, [])
+    if graph is None:
+        return None
+    observed = getattr(inner, "_residual_unet_last_grid", None)
+    if observed is None or observed["spec_sha256"] != digest(graph):
+        raise ValueError("LTX-2 generation did not observe the current residual graph")
+    frames, height, width = observed["video_grid"]
+    preview_plan(graph, height, width)
+    return dict(spec=deepcopy(graph), spec_sha256=digest(graph), grid_policy=GRID_POLICY,
+        video_geometry=video_geometry(inner.config), native_video_grid=[frames,height,width],
+        native_video_tokens=frames*height*width, native_audio_tokens=observed["audio_tokens"],
+        audio_grid_policy="native_unscaled", kv_cache=False)
 
 
 def export_metadata(model):

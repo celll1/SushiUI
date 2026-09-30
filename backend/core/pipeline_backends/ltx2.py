@@ -469,6 +469,7 @@ class LTX2Mixin:
         from core.inference.fbcache import fbcache_active
         from core.models.ltx2.residual_unet import resolve_generation_topology, native_config
         from core.rewiring.spec import preview_plan
+        params.pop("dit_rewiring_actual", None)
         self._unload_lora_ltx2()
         files = self._ltx2_lora_session.parse(params.get("loras"))
         model = self._ltx2_lora_transformer()
@@ -538,6 +539,20 @@ class LTX2Mixin:
             if saved is not None and saved[0]() is not None:
                 from core.models.ltx2.residual_unet import restore_topology
                 restore_topology(saved[0](), saved[1])
+
+    def _ltx2_begin_rewiring_metadata(self, params):
+        params.pop("dit_rewiring_actual", None)
+        model = self._ltx2_lora_transformer()
+        if model is not None:
+            model.__dict__.pop("_residual_unet_last_grid", None)
+
+    def _ltx2_capture_rewiring_metadata(self, params):
+        from core.models.ltx2.residual_unet import generation_metadata
+        actual = generation_metadata(self._ltx2_lora_transformer())
+        if actual is None:
+            params.pop("dit_rewiring_actual", None)
+        else:
+            params["dit_rewiring_actual"] = actual
 
     def _ltx2_sync_block_swap_after_lora(self) -> None:
         """Reconcile the block offloader with the adapters just installed.
@@ -1280,6 +1295,7 @@ class LTX2Mixin:
         try:
             # LoRA: see _generate_txt2vid_ltx2's note (same ordering contract).
             self._load_lora_ltx2(rewiring_files)
+            self._ltx2_begin_rewiring_metadata(params)
 
             video, audio = pipeline(
                 image=input_image,
@@ -1298,6 +1314,7 @@ class LTX2Mixin:
                 max_sequence_length=max_sequence_length,
                 callback_on_step_end=callback,
             )
+            self._ltx2_capture_rewiring_metadata(params)
         finally:
             self._unload_lora_ltx2()
             if fbcache_target is not None and fbcache is not None:
@@ -1595,6 +1612,7 @@ class LTX2Mixin:
         try:
             # LoRA: see _generate_txt2vid_ltx2's note (same ordering contract).
             self._load_lora_ltx2(rewiring_files)
+            self._ltx2_begin_rewiring_metadata(params)
 
             video, audio = cond_pipeline(
                 conditions=[condition],
@@ -1613,6 +1631,7 @@ class LTX2Mixin:
                 max_sequence_length=max_sequence_length,
                 callback_on_step_end=callback,
             )
+            self._ltx2_capture_rewiring_metadata(params)
         finally:
             self._unload_lora_ltx2()
             if fbcache_target is not None and fbcache is not None:
@@ -1889,6 +1908,7 @@ class LTX2Mixin:
             # unloaded in the finally below. See _load_lora_ltx2 for the ordering
             # and block-swap contracts.
             self._load_lora_ltx2(rewiring_files)
+            self._ltx2_begin_rewiring_metadata(params)
 
             video, audio = pipeline(
                 prompt=prompt,
@@ -1906,6 +1926,7 @@ class LTX2Mixin:
                 max_sequence_length=max_sequence_length,
                 callback_on_step_end=callback,
             )
+            self._ltx2_capture_rewiring_metadata(params)
         finally:
             self._unload_lora_ltx2()
             if fbcache_target is not None and fbcache is not None:

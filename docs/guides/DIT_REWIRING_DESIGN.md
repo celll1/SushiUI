@@ -592,3 +592,35 @@ configuration/defaults, generation LoRA topology lifetime and editor discovery
 remain pending. All 45 aggregate CPU contracts and changed-file compile/real
 imports pass with CUDA untouched. No Z-Image GPU workflow or performance/quality
 claim is made.
+
+
+## Z-Image generation adapter scopes
+
+Z-Image resolves every selected LoRA's topology against the native constructor
+and the loaded base before the shared adapter session mutates any module. Missing
+metadata declares a dense topology; dense/rewired mixtures and disagreeing specs
+are refused. A weak reference and a copied base declaration restore topology on
+unload, including model swaps; a replacement model cannot inherit the old model's
+restore snapshot.
+
+Txt2img, img2img and inpaint now unload the previous session, apply this request's
+files, validate the topology/grid/features, and restore adapters/topology in their
+finally cleanup. Inpaint previously omitted adapter selection and could run with
+LoRAs left by an earlier request. CPU offloading still executes if adapter restore
+raises, and adapter restore precedes CPU offloading. The loaded checkpoint's own
+rewired topology survives cleanup.
+
+The actual spec/hash is recorded in generation params for PNG metadata. Native
+pixel stride follows the selected VAE's downscale and the generation 2-1 patch
+bank; incompatible grids are rejected. Style injection, active FBCache/NAG and
+negative-weight NegPip prompts are refused before text encoding/model staging.
+Dense generations retain their native path and omit residual metadata.
+
+CPU checks cover real adapter installation/native forward, mixed declarations,
+shape-refusal atomicity, metadata, feature/grid gates, base preservation, model
+swaps and cleanup failures. All three real generation entry methods are exercised
+up to a deliberate stop before GPU staging, then their finally restoration is
+checked. This is not a full Z-Image generation/API/GPU acceptance result. All 48
+aggregate CPU contracts and 17 existing Z-Image LoRA/DoRA quantization guard tests
+pass; changed modules compile/import without CUDA initialization. Public Z-Image
+configuration/defaults and model/editor discovery remain pending.

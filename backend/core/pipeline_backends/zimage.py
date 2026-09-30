@@ -209,32 +209,8 @@ class ZImageMixin:
         the three generate paths at the point the quantization parameters are
         read, which is:
 
-        * AFTER the LoRA gate (``_load_lora_zimage`` / ``_unload_lora_zimage``)
-          in txt2img and img2img. The converter REFUSES a LoRA-wrapped module --
-          the wrappers hide the Linears, so the selection would differ from the
-          offline audit -- and Z-Image's wrappers are PERSISTENT state:
-          ``_zimage_lora_wrapped_modules`` survives the generation that created
-          it and is cleared only by the NEXT generation's LoRA gate. Running the
-          conversion first would therefore see a stale wrapper from an earlier
-          generation and refuse an INT8 request that carries no LoRAs at all --
-          the LTX-2.3 stale-offloader shape, where the refusal's own advice
-          ("remove the LoRAs") had already been followed. After the gate, the
-          wrappers present are exactly the ones THIS request asked for, which is
-          the only case where refusing is right.
-          INPAINT HAS NO LORA GATE AT ALL -- ``_generate_inpaint_zimage`` never
-          calls ``_load_lora_zimage``/``_unload_lora_zimage``, so this hook is
-          NOT "after the LoRA gate" there; there is nothing to be after. A prior
-          txt2img/img2img generation that loaded LoRAs leaves
-          ``_zimage_lora_wrapped_modules`` populated (cleared only by a later
-          gated generation, not by inpaint), so a following inpaint request with
-          ``unet_quantization: "int8"`` and no LoRAs of its own can still see
-          ``lora_wrapped_count > 0`` and be refused with "Remove the LoRAs (or
-          reload the model without them) to convert" -- advice this request has
-          no way to act on, since it never asked for LoRAs. This is degradation
-          (an unnecessary refusal with misleading advice), not corruption, and it
-          is a symptom of a larger, pre-existing gap this hook does not fix:
-          inpaint also *runs* with whatever LoRAs the previous generation left
-          wrapped, since it has no gate of its own to unload them.
+        * AFTER adapter selection in every generation path. Conversion refuses
+          current LoRA wrappers, whose hidden Linears would change the selection.
         * BEFORE the block-swap branch and ``create_block_offloader_for_model``.
           The offloader captures references to each block's Linear modules and
           builds pinned CPU masters from their weights; converting afterwards
@@ -425,9 +401,28 @@ class ZImageMixin:
             if lora_configs:
                 print("[Z-Image LoRA] WARNING: Z-Image components not loaded")
             return
+        saved = getattr(self, "_zimage_topology_restore", None)
+        if saved is not None and saved[0]() is not components[0].module:
+            self._unload_lora_zimage()
         if lora_configs:
             print(f"[Z-Image LoRA] Loading {len(lora_configs)} LoRA(s)...")
-        self._zimage_lora_session.load(lora_configs, components)
+        from copy import deepcopy
+        import weakref
+        from core.adapters import AdapterIncompatible
+        from core.rewiring.adapters import resolve_adapter_topology
+        from core.models.zimage_residual_unet import restore_topology, validate_topology_identity
+        model = components[0].module
+        base_topology = getattr(model, "_residual_unet_spec", None)
+        files = self._zimage_lora_session.parse(lora_configs)
+        try:
+            required = resolve_adapter_topology(model, files, validate_topology_identity)
+        except ValueError as exc:
+            raise AdapterIncompatible(str(exc), code="lora_rewiring_incompatible") from exc
+        applied = self._zimage_lora_session.load(files, components).applied
+        restore_topology(model, required)
+        if not hasattr(self, "_zimage_topology_restore"):
+            self._zimage_topology_restore = (weakref.ref(model), deepcopy(base_topology))
+        return applied
 
     @staticmethod
     def _zimage_lora_warn(message: str, code: str) -> None:
@@ -484,7 +479,57 @@ class ZImageMixin:
 
     def _unload_lora_zimage(self):
         """Restore the original Linear layers, composites and branches and all."""
-        self._zimage_lora_session.unload(self._zimage_lora_components())
+        try:
+            return self._zimage_lora_session.unload(self._zimage_lora_components())
+        finally:
+            saved = self.__dict__.pop("_zimage_topology_restore", None)
+            if saved is not None and saved[0]() is not None:
+                from core.models.zimage_residual_unet import restore_topology
+                restore_topology(saved[0](), saved[1])
+
+    def _zimage_finish_generation(self, **options):
+        try:
+            self._unload_lora_zimage()
+        finally:
+            self._zimage_cleanup(**options)
+
+    def _zimage_rewiring_metadata(self, params, transformer, height, width):
+        from api.error_handlers import ValidationError
+        from core.inference.fbcache import fbcache_active
+        from core.prompts.prompt_parser import prompt_has_negative_weight
+        from core.rewiring.spec import digest, preview_plan
+        topology = getattr(transformer, "_residual_unet_spec", None)
+        if topology is None:
+            params.pop("dit_rewiring_actual", None)
+            return
+        if params.get("style_transfer") or params.get("style_transfers"):
+            raise ValidationError("Z-Image residual U-Net generation does not support style injection")
+        if fbcache_active(params):
+            raise ValidationError("Z-Image residual U-Net generation does not support FBCache")
+        try:
+            nag_scale = float(params.get("nag_scale", 1.0))
+        except (TypeError, ValueError):
+            nag_scale = 1.0
+        if params.get("nag_enable") and abs(nag_scale - 1.0) > 1e-5 and params.get("nag_negative_prompt"):
+            raise ValidationError("Z-Image residual U-Net generation does not support NAG")
+        for key in ("prompt", "negative_prompt", "nag_negative_prompt"):
+            prompt = params.get(key) or ""
+            prompts = prompt if isinstance(prompt, list) else [prompt]
+            if any(prompt_has_negative_weight(value) for value in prompts):
+                raise ValidationError("Z-Image residual U-Net generation does not support NegPip")
+        vae = self.zimage_components.get("vae")
+        blocks = getattr(getattr(vae, "config", None), "block_out_channels", None)
+        stride = (2 ** (len(blocks) - 1) if blocks else 8) * 2
+        try:
+            if 2 not in transformer.all_patch_size or 1 not in transformer.all_f_patch_size:
+                raise ValueError("Z-Image generation requires the native 2-1 patch bank")
+            if height % stride or width % stride:
+                raise ValueError("Z-Image rewiring requires the native token grid")
+            preview_plan(topology, height // stride, width // stride)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        params["dit_rewiring_actual"] = {
+            "spec": topology, "spec_sha256": digest(topology), "kv_cache": False}
 
     def _zimage_cleanup(self, gen_succeeded=True, keep_te=False, keep_transformer=False, keep_vae=False):
         """Safety-net CPU offload for Z-Image components.
@@ -700,15 +745,8 @@ class ZImageMixin:
             print(f"[Z-Image] DEBUG: lora_configs type: {type(lora_configs)}")
             print(f"[Z-Image] DEBUG: lora_configs length: {len(lora_configs) if lora_configs else 0}")
 
-            if lora_configs:
-                # Unload previous LoRAs first (if any)
-                if hasattr(self, '_zimage_lora_wrapped_modules') and self._zimage_lora_wrapped_modules:
-                    self._unload_lora_zimage()
-                self._load_lora_zimage(lora_configs)
-            else:
-                # No LoRAs requested - unload if any are loaded
-                if hasattr(self, '_zimage_lora_wrapped_modules') and self._zimage_lora_wrapped_modules:
-                    self._unload_lora_zimage()
+            self._unload_lora_zimage()
+            self._load_lora_zimage(lora_configs)
 
             seed = params.get("seed", -1)
             if seed == -1:
@@ -731,6 +769,7 @@ class ZImageMixin:
             negative_prompt = params.get("negative_prompt", "")
             height = params.get("height", 1024)
             width = params.get("width", 1024)
+            self._zimage_rewiring_metadata(params, transformer, height, width)
             num_inference_steps = params.get("steps", 8)  # Turbo default: 8 steps
             max_sequence_length = params.get("max_sequence_length", 512)
 
@@ -934,7 +973,7 @@ class ZImageMixin:
                     mark_resident(self, "vae", _kh_model_key)
                 else:
                     discard_resident(self, "vae")
-            self._zimage_cleanup(
+            self._zimage_finish_generation(
                 gen_succeeded=_kh_gen_succeeded,
                 keep_te=_kh_keep_te,
                 keep_transformer=_kh_keep_transformer,
@@ -1031,13 +1070,8 @@ class ZImageMixin:
                 set_zimage_attention_backend(attention_type)
 
             lora_configs = params.get("loras", [])
-            if lora_configs:
-                if hasattr(self, '_zimage_lora_wrapped_modules') and self._zimage_lora_wrapped_modules:
-                    self._unload_lora_zimage()
-                self._load_lora_zimage(lora_configs)
-            else:
-                if hasattr(self, '_zimage_lora_wrapped_modules') and self._zimage_lora_wrapped_modules:
-                    self._unload_lora_zimage()
+            self._unload_lora_zimage()
+            self._load_lora_zimage(lora_configs)
 
             seed = params.get("seed", -1)
             if seed == -1:
@@ -1060,6 +1094,7 @@ class ZImageMixin:
             negative_prompt = params.get("negative_prompt", "")
             height = params.get("height", 1024)
             width = params.get("width", 1024)
+            self._zimage_rewiring_metadata(params, transformer, height, width)
             num_inference_steps = params.get("steps", 8)
             max_sequence_length = params.get("max_sequence_length", 512)
             guidance_scale = params.get("cfg_scale", 3.5)
@@ -1327,7 +1362,7 @@ class ZImageMixin:
                     mark_resident(self, "vae", _kh_model_key)
                 else:
                     discard_resident(self, "vae")
-            self._zimage_cleanup(
+            self._zimage_finish_generation(
                 gen_succeeded=_kh_gen_succeeded,
                 keep_te=_kh_keep_te,
                 keep_transformer=_kh_keep_transformer,
@@ -1363,8 +1398,6 @@ class ZImageMixin:
         )
         _kh_requested = keep_hot_requested(params)
         _kh_model_key = compute_model_key(self, params)
-        # Inpaint does not apply LoRA, but the LoRA hazard gate is kept uniform
-        # across every keep-hot entry point regardless of per-arch LoRA support.
         _kh_has_loras = bool(params.get("loras") or [])
         # Match the ACTUAL offloader-creation guard (created whenever
         # enable_block_swap is set; blocks_to_swap count is clamped). Keeps the
@@ -1416,12 +1449,16 @@ class ZImageMixin:
             vae = self.zimage_components["vae"]
             scheduler = self.zimage_components["scheduler"]
 
+            self._unload_lora_zimage()
+            self._load_lora_zimage(params.get("loras", []))
+
             prompt = params.get("prompt", "")
             negative_prompt = params.get("negative_prompt", "")
             num_inference_steps = params.get("steps", 8)
             guidance_scale = params.get("cfg_scale", 3.5)
             height = params.get("height", 1024)
             width = params.get("width", 1024)
+            self._zimage_rewiring_metadata(params, transformer, height, width)
             seed = params.get("seed", -1)
             denoising_strength = params.get("denoising_strength", 0.75)
             mask_blur = params.get("mask_blur", 0)
@@ -1458,17 +1495,7 @@ class ZImageMixin:
             transformer_quantization = params.get("unet_quantization")
             text_encoder_quantization = params.get("text_encoder_quantization")
 
-            # Runtime INT8: converts the transformer IN PLACE, once per model
-            # load, when this request asks for it. Placed here deliberately --
-            # before the block-swap branch and before any staging. NOTE: unlike
-            # txt2img/img2img there is no LoRA gate above this call -- inpaint
-            # never calls _load_lora_zimage/_unload_lora_zimage (see the
-            # "Inpaint does not apply LoRA" comment near the top of this
-            # function). If an earlier txt2img/img2img generation left
-            # _zimage_lora_wrapped_modules populated, this hook can still see it
-            # and refuse an int8 request that carries no LoRAs of its own. See
-            # _zimage_runtime_int8 for the full ordering argument; a request for
-            # anything other than "int8" is a no-op.
+            # Convert after adapter selection and before block-swap setup.
             transformer = self._zimage_runtime_int8(
                 params, progress_callback=progress_callback) or transformer
 
@@ -1733,7 +1760,7 @@ class ZImageMixin:
                     mark_resident(self, "vae", _kh_model_key)
                 else:
                     discard_resident(self, "vae")
-            self._zimage_cleanup(
+            self._zimage_finish_generation(
                 gen_succeeded=_kh_gen_succeeded,
                 keep_te=_kh_keep_te,
                 keep_transformer=_kh_keep_transformer,

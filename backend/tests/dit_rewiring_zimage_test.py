@@ -39,6 +39,145 @@ class ZImageRuntimeContracts(unittest.TestCase):
 
 
 
+
+    def test_generation_lora_topology_scope_and_metadata(self):
+        import tempfile
+        from copy import deepcopy
+        from types import SimpleNamespace
+        from safetensors.torch import save_file
+        from core.pipeline_backends.zimage import ZImageMixin
+        from core.models.zimage_residual_unet import restore_topology
+        from core.adapters import CompositeAdapterLayer, AdapterIncompatible
+        from core.rewiring.spec import checkpoint_metadata, digest
+        class Manager(ZImageMixin):
+            def __init__(manager):
+                manager.zimage_components = {"transformer": self.model,
+                    "vae": SimpleNamespace(config=SimpleNamespace(block_out_channels=[1,2,3,4]))}
+            def _zimage_resolve_lora_path(manager, path):
+                return str(path) if Path(path).is_file() else None
+        manager = Manager()
+        restore_topology(self.model, None)
+        original = self.model.layers[0].attention.to_q
+        with tempfile.TemporaryDirectory() as directory:
+            def write(name, topology, wrong=False):
+                path = Path(directory)/f"{name}.safetensors"
+                save_file({
+                    "lora_transformer_layers_0_attention_to_q.lora_down.weight": torch.randn(2, 23 if wrong else 24),
+                    "lora_transformer_layers_0_attention_to_q.lora_up.weight": torch.randn(24, 2)}, str(path),
+                    metadata={"model_type": "zimage", **({} if topology is None else checkpoint_metadata(topology))})
+                return {"path": str(path), "strength": 1.0}
+            good, dense, bad = write("good", self.spec), write("dense", None), write("bad", self.spec, True)
+            self.assertEqual(manager._load_lora_zimage([good]), 1)
+            self.assertIsInstance(self.model.layers[0].attention.to_q, CompositeAdapterLayer)
+            self.assertEqual(self.model._residual_unet_spec, self.spec)
+            params = {}
+            manager._zimage_rewiring_metadata(params, self.model, 128, 192)
+            self.assertEqual(params["dit_rewiring_actual"]["spec_sha256"], digest(self.spec))
+            self.assertTrue(torch.isfinite(self.forward()).all())
+            for options, message in (({"style_transfer": {"enabled": True}}, "style"),
+                    ({"fbcache_enable": True, "fbcache_threshold": 0.1}, "FBCache"),
+                    ({"nag_enable": True, "nag_scale": 2, "nag_negative_prompt": "blurry"}, "NAG"),
+                    ({"prompt": "(blurry:-1)"}, "NegPip")):
+                with self.assertRaisesRegex(Exception, message):
+                    manager._zimage_rewiring_metadata(options, self.model, 128, 192)
+            with self.assertRaisesRegex(Exception, "divisible"):
+                manager._zimage_rewiring_metadata({}, self.model, 144, 192)
+            manager._unload_lora_zimage()
+            self.assertIs(self.model.layers[0].attention.to_q, original)
+            self.assertFalse(hasattr(self.model, "_residual_unet_spec"))
+            manager._zimage_rewiring_metadata(params, self.model, 128, 192)
+            self.assertNotIn("dit_rewiring_actual", params)
+            for files in ([good, dense], [good, bad]):
+                with self.assertRaises(RuntimeError): manager._load_lora_zimage(files)
+                self.assertIs(self.model.layers[0].attention.to_q, original)
+                self.assertFalse(hasattr(self.model, "_residual_unet_spec"))
+            restore_topology(self.model, self.spec)
+            with self.assertRaises(AdapterIncompatible): manager._load_lora_zimage([dense])
+            manager._load_lora_zimage([good]); manager._unload_lora_zimage()
+            self.assertEqual(self.model._residual_unet_spec, self.spec)
+            # A model swap must not inherit a previous model's restore snapshot.
+            restore_topology(self.model, None)
+            manager._load_lora_zimage([good])
+            replacement = deepcopy(self.model)
+            restore_topology(replacement, None)
+            replacement.layers[0].attention.to_q = deepcopy(original)
+            manager.zimage_components["transformer"] = replacement
+            manager._load_lora_zimage([good]); manager._unload_lora_zimage()
+            self.assertFalse(hasattr(replacement, "_residual_unet_spec"))
+            self.assertFalse(hasattr(self.model, "_residual_unet_spec"))
+        self.assertFalse(torch.cuda.is_initialized())
+
+
+    def test_all_generation_entries_select_and_restore_topology_before_staging(self):
+        import tempfile
+        from types import SimpleNamespace
+        from PIL import Image
+        from safetensors.torch import save_file
+        from core.pipeline_backends.zimage import ZImageMixin
+        from core.models.zimage_residual_unet import restore_topology
+        from core.rewiring.spec import checkpoint_metadata
+        restore_topology(self.model, None)
+        class Manager(ZImageMixin):
+            device = "cpu"
+            current_attention_type = "native"
+            def __init__(manager):
+                manager.zimage_components = {"transformer": self.model,
+                    "vae": SimpleNamespace(config=SimpleNamespace(block_out_channels=[1,2,3,4])),
+                    "text_encoder": object(), "tokenizer": object(), "scheduler": SimpleNamespace()}
+                manager.seen = []; manager.cleaned = []
+            def _get_zimage_scheduler(manager, sampler): return SimpleNamespace()
+            def _zimage_resolve_lora_path(manager, path): return str(path)
+            def _zimage_rewiring_metadata(manager, params, transformer, height, width):
+                super()._zimage_rewiring_metadata(params, transformer, height, width)
+                manager.seen.append(params["dit_rewiring_actual"]["spec"])
+                raise RuntimeError("CPU stop before staging")
+            def _zimage_cleanup(manager, **options):
+                manager.cleaned.append(getattr(self.model, "_residual_unet_spec", None))
+        manager = Manager()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/"rewired.safetensors"
+            save_file({"lora_transformer_layers_0_attention_to_q.lora_down.weight": torch.randn(2,24),
+                       "lora_transformer_layers_0_attention_to_q.lora_up.weight": torch.randn(24,2)},
+                      str(path), metadata={"model_type": "zimage", **checkpoint_metadata(self.spec)})
+            image = Image.new("RGB", (192,128)); mask = Image.new("L", (192,128))
+            original = self.model.layers[0].attention.to_q
+            for entry, args in ((manager._generate_txt2img_zimage, ()),
+                                (manager._generate_img2img_zimage, (image,)),
+                                (manager._generate_inpaint_zimage, (image,mask))):
+                params = {"loras": [{"path": str(path), "strength": 1.0}],
+                          "height": 128, "width": 192, "seed": 42, "attention_type": "native"}
+                with self.assertRaisesRegex(RuntimeError, "CPU stop before staging"):
+                    entry(params, *args)
+                self.assertFalse(hasattr(self.model, "_residual_unet_spec"))
+                self.assertIs(self.model.layers[0].attention.to_q, original)
+                self.assertEqual(params["dit_rewiring_actual"]["spec"], self.spec)
+            self.assertEqual(manager.seen, [self.spec]*3)
+            self.assertEqual(manager.cleaned, [None]*3)
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_generation_finally_restores_even_when_offload_fails(self):
+        from core.pipeline_backends.zimage import ZImageMixin
+        from core.models.zimage_residual_unet import restore_topology
+        events = []
+        class Manager(ZImageMixin):
+            def __init__(manager): manager.zimage_components = {"transformer": self.model}
+            def _zimage_cleanup(manager, **options):
+                events.append(options)
+                raise RuntimeError("offload failed")
+        manager = Manager()
+        restore_topology(self.model, None)
+        manager._load_lora_zimage([])
+        restore_topology(self.model, self.spec)
+        with self.assertRaisesRegex(RuntimeError, "offload failed"):
+            manager._zimage_finish_generation(gen_succeeded=False)
+        self.assertFalse(hasattr(self.model, "_residual_unet_spec"))
+        self.assertEqual(events, [{"gen_succeeded": False}])
+        with patch.object(manager, "_unload_lora_zimage", side_effect=RuntimeError("restore failed")), \
+             patch.object(manager, "_zimage_cleanup") as cleanup:
+            with self.assertRaisesRegex(RuntimeError, "restore failed"):
+                manager._zimage_finish_generation(gen_succeeded=False)
+            cleanup.assert_called_once_with(gen_succeeded=False)
+
     def test_component_loading_inherits_after_latent_space(self):
         from types import SimpleNamespace
         from core.model_loader import ModelLoader

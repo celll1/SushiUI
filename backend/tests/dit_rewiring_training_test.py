@@ -2,6 +2,8 @@
 from copy import deepcopy
 from pathlib import Path
 import sys
+import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -74,7 +76,33 @@ class TrainingContracts(unittest.TestCase):
         configure_training_topology(fresh,resume_config,pending_adapter_resume=True)
         self.assertEqual(configure_training_topology(fresh,resume_config,resume_spec=spec),spec)
         dense_base = model()
+        untouched = {}
+        self.assertEqual(configure_training_topology(dense_base,untouched,resume_spec=spec,install=False),spec)
+        self.assertEqual(untouched,{})
+        self.assertFalse(hasattr(dense_base,"_residual_unet_spec"))
         self.assertEqual(configure_training_topology(dense_base,{},resume_spec=spec),spec)
+
+    def test_invalid_resume_keeps_native_topology(self):
+        from safetensors.torch import save_file
+        from core.training.adapters.qwen_image_21_adapter import QwenImage21LoRAAdapter
+        from core.training.lora_trainer import LoRATrainer
+        from core.rewiring.spec import checkpoint_metadata
+        configured = model()
+        required = configure_training_topology(configured,{"dit_rewiring_mode":"configure"})
+        native = model()
+        trainer = SimpleNamespace(transformer=native,config={},is_qwen_image_21=True,
+            log_prefix="[InvalidResumeTest]",lora_rank=2,lora_alpha=2,
+            adapter_algorithm="lora",weight_decompose=False,adapter_config={})
+        adapter = QwenImage21LoRAAdapter(trainer,2,2)
+        layers = {}; adapter.apply_lora_to_unet(layers); trainer.lora_layers=layers
+        with tempfile.TemporaryDirectory() as folder:
+            checkpoint = Path(folder)/"invalid.safetensors"
+            save_file({"unrelated":torch.ones(1)},str(checkpoint),
+                      metadata={"model_type":"qwen_image_21",**checkpoint_metadata(required)})
+            with self.assertRaisesRegex(ValueError,"missing required tensor"):
+                LoRATrainer.load_checkpoint(trainer,str(checkpoint))
+        self.assertFalse(hasattr(native,"_residual_unet_spec"))
+        self.assertEqual(trainer.config,{})
 
     def test_incompatible_options_do_not_mutate_model(self):
         m = model()

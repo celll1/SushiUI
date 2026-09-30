@@ -559,6 +559,121 @@ class Ltx2RuntimeContracts(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,"native AV transformer"):inspect_model(str(root))
         self.assertFalse(torch.cuda.is_initialized())
 
+    def companion_root(self, root):
+        import json
+        from core.models.ltx2.component_sources import COMPONENTS,validate_sources
+        root.mkdir(parents=True,exist_ok=True)
+        for name in COMPONENTS:(root/name).mkdir()
+        (root/"transformer").mkdir(exist_ok=True)
+        (root/"transformer"/"config.json").write_text(json.dumps(dict(self.inner.config)),encoding="utf-8")
+        (root/"model_index.json").write_text(json.dumps({"_class_name":"LTX2Pipeline",
+            **{name:["test",name] for name in COMPONENTS}}),encoding="utf-8")
+        return validate_sources(dict(schema_version=1,root=str(root.resolve())))
+
+    def test_full_artifact_companions_public_loading_and_real_resume_dispatch(self):
+        import tempfile
+        from types import SimpleNamespace
+        from diffusers import FlowMatchEulerDiscreteScheduler
+        from core.model_loader import ModelLoader
+        from core.training.base_trainer import BaseTrainer
+        from core.training.adapters.ltx2_adapter import Ltx2FullParameterAdapter
+        from core.models.ltx2.component_sources import read_sources
+        from core.models.common.single_file_format import save_single_file_state
+        expected=self.forward()
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)/"native"
+            self.inner._ltx2_component_sources=self.companion_root(root)
+            (root/"transformer"/"diffusion_pytorch_model.safetensors").write_text("Must never read base DiT",encoding="utf-8")
+            def assemble(path,**kwargs):
+                self.assertEqual(Path(path),root)
+                transformer=kwargs["transformer"]
+                self.assertIsInstance(transformer,type(self.inner))
+                return SimpleNamespace(transformer=transformer,vae=torch.nn.Identity(),audio_vae=torch.nn.Identity(),
+                    text_encoder=torch.nn.Identity(),connectors=torch.nn.Identity(),vocoder=torch.nn.Identity(),
+                    tokenizer=object(),scheduler=FlowMatchEulerDiscreteScheduler())
+            with patch("core.models.ltx2.LTX2Pipeline.from_pretrained",side_effect=assemble):
+                for sharded in (False,True):
+                    target=Path(folder)/("shard.safetensors" if sharded else "single.safetensors")
+                    trainer=SimpleNamespace(transformer=self.model,config={})
+                    def write(state,metadata,path):return save_single_file_state(state,metadata,path,max_shard_bytes=32768)
+                    manager=patch("core.models.common.single_file_format.save_single_file_state",side_effect=write) if sharded else patch("builtins.print")
+                    with manager:written=Ltx2FullParameterAdapter(trainer).write_checkpoint(3,1,target)
+                    self.assertEqual(read_sources(written),self.inner._ltx2_component_sources)
+                    self.assertEqual(ModelLoader.detect_model_type(str(written)),"ltx2")
+                    components=ModelLoader.load_ltx2_from_path(str(written),torch.float32)
+                    restored=components["transformer"]
+                    self.assertEqual(restored._residual_unet_spec,self.spec)
+                    self.assertEqual(restored.transformer._ltx2_component_sources,self.inner._ltx2_component_sources)
+                    for key,value in self.inner.state_dict().items():
+                        torch.testing.assert_close(restored.state_dict()[key],value,rtol=0,atol=0)
+                    for a,b in zip(self.forward(model=restored),expected):torch.testing.assert_close(a,b,rtol=2e-5,atol=2e-6)
+                    resume=SimpleNamespace(log_prefix="[CPU]",config={},model_path=str(written),
+                        resume_from_checkpoint=str(written),weight_dtype=torch.float32,training_dtype=torch.float32,
+                        vae_dtype=torch.float32,attention_backend="native",gradient_checkpointing=True,
+                        device=torch.device("cpu"),blocks_to_swap=0,trains_base_weights=True,
+                        _resolve_training_backend=lambda value:value)
+                    BaseTrainer._load_checkpoint_as_base(resume,str(written))
+                    self.assertTrue(resume.is_ltx2)
+                    self.assertEqual(resume.config["dit_rewiring_spec"],self.spec)
+                    self.assertIs(resume.transformer.transformer,resume.transformer_original)
+                    self.assertIs(resume.ltx2_pipeline.transformer,resume.transformer)
+                    self.assertTrue(resume.transformer.gradient_checkpointing)
+                    self.assertEqual(resume.model_path,str(written))
+                    with patch.object(ModelLoader,"load_ltx2_from_path",return_value=components) as dispatch:
+                        self.assertIs(ModelLoader.load_from_safetensors(str(written)),components)
+                        dispatch.assert_called_once()
+                import json
+                from core.models.ltx2.residual_unet import restore_topology,export_metadata,GRID_POLICY_KEY
+                restore_topology(self.model,None)
+                self.assertNotIn(GRID_POLICY_KEY,json.loads(export_metadata(self.model)["transformer_config"]))
+                dense_path=Path(folder)/"dense.safetensors"
+                Ltx2FullParameterAdapter(SimpleNamespace(transformer=self.model,config={})).write_checkpoint(3,1,dense_path)
+                dense=ModelLoader.load_ltx2_from_path(str(dense_path),torch.float32)
+                self.assertFalse(hasattr(dense["transformer"],"_residual_unet_spec"))
+                self.assertIsInstance(dense["transformer"],type(self.inner))
+                from safetensors.torch import save_file
+                save_file(self.inner.state_dict(),str(root/"transformer"/"diffusion_pytorch_model.safetensors"),
+                    metadata={"transformer_config":json.dumps(dict(self.inner.config))})
+                (root/"transformer"/"config.json").unlink()
+                fallback=ModelLoader.load_ltx2_from_path(str(dense_path),torch.float32)
+                self.assertEqual(fallback["transformer"].config.num_layers,7)
+                self.assertFalse(hasattr(fallback["transformer"],"_residual_unet_spec"))
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_companion_refusals_precede_transformer_or_companion_loading(self):
+        import json,tempfile
+        from safetensors.torch import save_file
+        from core.models.ltx2.loader import load_ltx2_from_path
+        from core.models.ltx2.residual_unet import export_metadata
+        from core.models.ltx2.component_sources import METADATA_KEY
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)/"native"
+            refs=self.companion_root(root)
+            self.inner._ltx2_component_sources=refs
+            metadata={"model_type":"ltx2",**export_metadata(self.model)}
+            path=Path(folder)/"full.safetensors"
+            state={"net."+key:value for key,value in self.inner.state_dict().items()}
+            with patch("core.models.common.single_file_format.read_state_dict",side_effect=AssertionError("No tensors")), \
+                    patch("core.models.ltx2.LTX2Pipeline.from_pretrained",side_effect=AssertionError("No companions")):
+                for refs_value in ({"schema_version":1,"root":"relative"},
+                                   {"schema_version":2,"root":str(root)},
+                                   {"schema_version":1,"root":str(root/"missing")}):
+                    save_file(state,str(path),metadata={**metadata,METADATA_KEY:json.dumps(refs_value)})
+                    with self.subTest(refs=refs_value),self.assertRaises(ValueError):load_ltx2_from_path(str(path))
+                save_file(state,str(path),metadata=metadata)
+                wrong=dict(self.inner.config);wrong["num_layers"]=8
+                (root/"transformer"/"config.json").write_text(json.dumps(wrong),encoding="utf-8")
+                with self.assertRaisesRegex(ValueError,"geometry disagree"):load_ltx2_from_path(str(path))
+                from core.models.common.single_file_format import save_single_file_state
+                index_path=save_single_file_state(state,metadata,str(Path(folder)/"shard.safetensors"),max_shard_bytes=32768)
+                index=json.loads(Path(index_path).read_text(encoding="utf-8"))
+                index["metadata"][METADATA_KEY]=json.dumps({"schema_version":1,"root":str(root/"other")})
+                Path(index_path).write_text(json.dumps(index),encoding="utf-8")
+                with self.assertRaisesRegex(ValueError,"companion references disagree"):load_ltx2_from_path(str(index_path))
+                (root/"audio_vae").rmdir()
+                with self.assertRaisesRegex(ValueError,"audio_vae"):load_ltx2_from_path(str(path))
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_directory_loader_restores_graph_before_companions(self):
         import json, tempfile
         from types import SimpleNamespace
@@ -567,7 +682,8 @@ class Ltx2RuntimeContracts(unittest.TestCase):
         from core.models.ltx2.residual_unet import export_metadata
         from core.models.ltx2_block_loop_wrapper import Ltx2BlockLoopWrapper
         with tempfile.TemporaryDirectory() as folder:
-            component=Path(folder)/"transformer";component.mkdir()
+            self.companion_root(Path(folder))
+            component=Path(folder)/"transformer"
             config=dict(self.inner.config)
             (component/"config.json").write_text(json.dumps(config),encoding="utf-8")
             save_file(self.inner.state_dict(),str(component/"diffusion_pytorch_model.safetensors"),

@@ -3594,6 +3594,9 @@ paths:
         - `.safetensors` (recommended)
         - `.ckpt` (legacy)
         - Diffusers format (directory)
+        - LTX-2 full transformer `.safetensors` or `.safetensors.index.json` with
+          embedded native config and `ltx2_components` references to the original
+          Diffusers companion root. The referenced frozen components must remain available.
 
         **Note:** Loading a new model will unload the currently loaded model and clear VRAM.
 

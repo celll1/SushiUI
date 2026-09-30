@@ -24,8 +24,9 @@ graph with CPU native-training checks. Generation LoRA scopes validate metadata
 before staging and restore the base graph on exit. Public configure, presets,
 header inspection and graphical editor/model discovery are connected; frontend
 validation remains with the owner. Generated video sidecars retain the actual
-residual graph and observed native token grids. Full resume dispatch and companion
-references remain pending.
+residual graph and observed native token grids. Full single/shard artifacts carry
+validated frozen companion root references and reach normal loading/full-resume
+dispatch with CPU checks; complete video workflow acceptance remains pending.
 GPU acceptance is restricted to Qwen-Image 2.1 by owner instruction; other models
 receive provisional implementation and CPU verification. Further architectures
 still require native execution/artifact adapters and capability gates.
@@ -2231,3 +2232,43 @@ Changed modules compile and import. LTX-2/legacy-LoRA and lossless-video contain
 suites pass 40 cases and 23 subtests with CUDA uninitialized. No non-Qwen GPU was
 used. Full-checkpoint companion references and resume dispatch, remaining model
 integrations and consolidated owner frontend/workflow acceptance remain pending.
+
+### LTX-2 standalone full artifacts and training restore
+
+Full native transformer exports retain ltx2_components version 1 with the exact
+absolute Diffusers companion root captured by normal loading. This root declares
+LTX2Pipeline and supplies frozen text encoder/tokenizer/connectors, video/audio
+VAEs, vocoder and scheduler. Their weights are external, not duplicated into the
+DiT save; the root and declared component directories must remain available.
+Every index/shard reference declaration must agree. No missing source is guessed.
+
+Normal single-file and shard model detection dispatches to load_ltx2_from_path.
+The loader validates references and saved/native-root geometry from headers
+before reading checkpoint tensors or allocating frozen companions. Native root
+geometry can come from config.json or the original transformer's config metadata
+without reading its weight tensors. The saved DiT is restored strictly with the
+existing quantized-state contract, then passed as a native component override to
+Diffusers assembly. Original-root DiT weights are not loaded a second time.
+Residual wrappers are installed after assembly; dense saves remain native even
+when they carry companion references. BaseTrainer full-resume dispatch loads
+through the same component path and shared inherited-topology contract.
+
+Real tiny full saves, both single and forced shards, restore exact weights,
+graph/companion references and FP32 predictions within the established storage
+alignment tolerance. The actual BaseTrainer checkpoint-as-base dispatcher calls
+the actual LTX-2 load_components, configures native attention/checkpointing on CPU
+and retains one execution wrapper shared with the training pipeline. Public
+safetensors dispatch and model detection have contracts. Root DiT bytes are
+intentionally invalid in the geometry-file case, proving those weights are not
+read; a header-only source-geometry fallback is also checked. Missing roots,
+unsupported reference versions, missing audio VAE, geometry disagreement and
+index/shard reference mismatch refuse before tensor/companion loading. Dense
+exports do not acquire residual policy markers or a residual graph.
+
+Changed modules compile/import and OpenAPI parses. LTX-2/legacy LoRA and quantized
+export contracts pass 64 cases and 38 subtests with CUDA uninitialized. Frozen
+companion assembly is mocked with CPU modules; native DiT restoration and training
+load dispatch are real. This does not establish complete pretrained video
+quality/performance or whole training/optimizer resume acceptance. GPU validation
+remains Qwen-Image 2.1 only. Remaining architectures and consolidated owner
+frontend/workflow acceptance still require completion.

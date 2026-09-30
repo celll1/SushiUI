@@ -283,9 +283,11 @@ def export_metadata(model):
     import json
     inner = getattr(model, "transformer", model)
     metadata = model_topology_metadata(model)
+    from .component_sources import export_sources
+    metadata.update(export_sources(model))
     if hasattr(inner, "config"):
         raw = dict(inner.config)
-        if metadata:
+        if getattr(inner, "_residual_unet_spec", None) is not None:
             raw[GRID_POLICY_KEY] = GRID_POLICY
         metadata["transformer_config"] = json.dumps(raw, allow_nan=False)
     return metadata

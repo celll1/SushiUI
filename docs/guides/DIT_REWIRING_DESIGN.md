@@ -2897,3 +2897,50 @@ uninitialized. These fixtures do not replace production quantized/GPU acceptance
 
 The generation-only graph editing/export workflow and final owner frontend/
 workflow acceptance remain outstanding. GPU validation stays Qwen-Image 2.1 only.
+
+
+### Generation-only acoustic graph editing and export (CPU/static)
+
+POST /api/v1/models/rewiring/export accepts a source file, new safetensors
+basename and explicit graph. It supports complete YuE2 and flat MiniMax Music 3
+flow files, retaining existing companion lookup because output stays beside the
+source. Native component directories/shards and GGUF export refuse; their
+restored-generation support is unchanged. This endpoint does not enable NAR or
+Music 3 training. Graphs must match inspected architecture, stream layout and
+native configuration hash and shrink only the time axis.
+
+Export replaces only the three canonical topology metadata keys and preserves
+unrelated metadata, every tensor descriptor/offset and every payload byte. It
+streams the data tail with bounded memory, flushes the temporary file, checks
+source identity/size/mtime and re-inspects native configuration before publication.
+A safetensors header check verifies the new declaration. Atomic hard-link
+publication refuses an existing/racing output; failures remove temporary files.
+No source is overwritten and no model weights are materialized for conversion.
+The filesystem must support hard links; failure returns a 422 without fallback
+to an overwrite-prone publication method. Disk space for a full checkpoint copy
+is required; this does not reduce parameter size or calibrate image/audio quality.
+
+The active-model card for acoustic safetensors now offers a lazily mounted graph
+editor and new-filename export control. It reuses the training editor's validated
+layer/scale/skip graph and defaults-owned presets. The optional validation callback
+keeps export disabled while a graph is pending/invalid; native controls and graph
+pointer events are disabled during copying. Successful exports enter the local
+model list and selection; loading remains an explicit normal model action. The
+original loaded model keeps its graph until the exported checkpoint is loaded.
+Frontend API types, callbacks, hooks, model-list fields and JSX are reviewed
+statically; no build/type-check/browser execution is performed.
+
+The actual REST export creates a YuE2 safetensors fixture whose complete payload
+matches the dense source byte-for-byte. Native loader restoration reproduces
+velocity exactly and preserves unrelated metadata. Music 3 flat export retains
+its companions and is inspected successfully with the same native hash. Tests
+cover traversal/Windows-invalid names, existing/source targets, graph mismatch,
+copy failure, temporary cleanup and a racing output claimed by another writer.
+Residual/audio checks initially pass 29 tests and 17 subtests; after adding the
+race and final source re-inspection, export/shared API/inspection checks pass 15
+tests and 7 subtests. Changed backend modules compile/import, OpenAPI parses and
+CUDA remains uninitialized. Production file-copy throughput and acoustic GPU
+quality are unmeasured; GPU verification remains Qwen-Image 2.1 only.
+
+Final owner frontend/workflow acceptance and the overall feature completion audit
+remain outstanding; this milestone is not a claim that all model formats export.

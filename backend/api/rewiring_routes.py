@@ -46,3 +46,19 @@ def inspect_rewiring(request: RewiringInspectRequest):
         return inspect_model(request.model_path)
     except (ValueError, OSError, SafetensorError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class RewiringExportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    model_path: str = Field(min_length=1)
+    output_name: str = Field(min_length=1)
+    spec: dict
+
+
+@router.post("/models/rewiring/export")
+def export_rewiring(request: RewiringExportRequest):
+    from core.rewiring.export import export_acoustic_topology
+    try:
+        return export_acoustic_topology(request.model_path, request.output_name, request.spec)
+    except (ValueError, OSError, SafetensorError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc

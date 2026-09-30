@@ -422,12 +422,27 @@ class Ltx2RuntimeContracts(unittest.TestCase):
             with patch.object(torch.cuda,"is_available",return_value=False):
                 for fail in (False,True):
                     pipeline.fail=fail
+                    request={**params,"dit_rewiring_actual":{"stale":True}}
                     if fail:
                         with self.assertRaisesRegex(RuntimeError,"denoise failed"):
-                            backend._generate_txt2vid_ltx2(dict(params))
+                            backend._generate_txt2vid_ltx2(request)
+                        self.assertNotIn("dit_rewiring_actual",request)
                     else:
-                        frames,_,_,seed=backend._generate_txt2vid_ltx2(dict(params))
+                        frames,_,_,seed=backend._generate_txt2vid_ltx2(request)
                         self.assertEqual(frames.shape,(1,8,8,3));self.assertEqual(seed,4)
+                        actual=request["dit_rewiring_actual"]
+                        self.assertEqual(actual["spec"],self.spec)
+                        self.assertEqual(actual["native_video_grid"],[3,8,12])
+                        self.assertEqual(actual["native_video_tokens"],288)
+                        self.assertEqual(actual["native_audio_tokens"],5)
+                        self.assertEqual(actual["audio_grid_policy"],"native_unscaled")
+                        import json
+                        from utils import video_utils
+                        with patch.object(video_utils.settings,"outputs_dir",folder):
+                            filename,_=video_utils.save_video_with_metadata(frames,None,None,request,"txt2vid",model_info={"type":"ltx2"})
+                        self.assertGreater((Path(folder)/filename).stat().st_size,0)
+                        sidecar=json.loads((Path(folder)/Path(filename).with_suffix(".json")).read_text(encoding="utf-8"))
+                        self.assertEqual(sidecar["dit_rewiring_actual"],actual)
                     self.assertFalse(hasattr(generation,"_residual_unet_spec"))
                     self.assertIs(generation.transformer_blocks[0].attn1.to_q,original)
                     self.assertFalse(any(isinstance(module,CompositeAdapterLayer) for module in generation.modules()))
@@ -460,6 +475,27 @@ class Ltx2RuntimeContracts(unittest.TestCase):
             self.assertFalse(hasattr(generation,"_residual_unet_spec"))
             self.assertEqual(replacement._residual_unet_spec,self.spec)
             self.assertFalse(any(isinstance(module,CompositeAdapterLayer) for module in replacement.modules()))
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_generation_metadata_rejects_stale_grids_and_keeps_snapshot_detached(self):
+        from core.models.ltx2.residual_unet import generation_metadata,restore_topology
+        from core.pipeline_backends.ltx2 import LTX2Mixin
+        backend=LTX2Mixin();backend.ltx2_components={"transformer":self.model}
+        params={"dit_rewiring_actual":{"stale":True}}
+        self.forward()
+        backend._ltx2_begin_rewiring_metadata(params)
+        with self.assertRaisesRegex(ValueError,"did not observe"):generation_metadata(self.model)
+        self.assertNotIn("dit_rewiring_actual",params)
+        self.forward()
+        backend._ltx2_capture_rewiring_metadata(params)
+        actual=params["dit_rewiring_actual"]
+        self.assertEqual(actual["native_video_grid"],[3,8,12])
+        actual["spec"]["regions"][0]["start_block"]=2
+        self.assertEqual(self.inner._residual_unet_spec,self.spec)
+        restore_topology(self.model,None)
+        backend._ltx2_capture_rewiring_metadata(params)
+        self.assertNotIn("dit_rewiring_actual",params)
+        self.assertIsNone(generation_metadata(self.model))
         self.assertFalse(torch.cuda.is_initialized())
 
     def test_public_presets_configure_and_header_only_video_inspection(self):

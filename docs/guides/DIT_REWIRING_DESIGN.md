@@ -23,8 +23,9 @@ the inner transformer reference. Inherited training and LoRA resume restore the
 graph with CPU native-training checks. Generation LoRA scopes validate metadata
 before staging and restore the base graph on exit. Public configure, presets,
 header inspection and graphical editor/model discovery are connected; frontend
-validation remains with the owner. Full resume dispatch, companion references and
-generated artifact metadata remain pending.
+validation remains with the owner. Generated video sidecars retain the actual
+residual graph and observed native token grids. Full resume dispatch and companion
+references remain pending.
 GPU acceptance is restricted to Qwen-Image 2.1 by owner instruction; other models
 receive provisional implementation and CPU verification. Further architectures
 still require native execution/artifact adapters and capability gates.
@@ -2197,3 +2198,36 @@ compile/import and OpenAPI parses. LTX-2, shared training, legacy LoRA and exist
 inspection suites pass 44 cases and 23 subtests with CUDA uninitialized. GPU
 validation remains Qwen-Image 2.1 only. Full artifact companions/resume dispatch,
 generated metadata and complete video workflow acceptance remain pending.
+
+### LTX-2 generated video metadata
+
+Every residual native forward records its validated frame/height/width grid,
+audio token count and graph digest. Generation clears this observation after
+LoRA installation, then captures metadata only after the assembled pipeline
+returns successfully and before adapter/topology cleanup. Missing or differently
+hashed observations refuse capture rather than reusing an earlier forward.
+The detached dit_rewiring_actual snapshot retains the graph/digest, native video
+grid and total token count, native audio token count, axis-specific geometry,
+independent_spatial_frames_v1 and native_unscaled audio policy. Dense generation
+removes residual result metadata; preflight also removes stale caller fields.
+
+Text-to-video, image-to-video and temporal outpaint capture through the same
+helpers inside their existing try/finally scopes. LoRA teardown restores the base
+model graph while leaving the generated snapshot intact. The real video writer
+persists this field in the JSON sidecar alongside its actual output dimensions,
+frame count, model/seed and timing provenance. No route parameter or default is
+introduced; video metadata remains an output artifact.
+
+A CPU test runs the actual text-to-video entry with a mock assembled pipeline
+executing the real reduced-width AV transformer, then uses software FFmpeg and
+the real save_video_with_metadata writer. JSON readback matches the complete
+execution snapshot after the loaded model has reverted to its dense graph.
+Observed native grids are three frames by 8x12 video tokens and five unscaled
+audio tokens. Success/failure, stale-observation refusal, dense metadata removal
+and snapshot detachment have contracts. Generated decoded pixels are mocked;
+this validates execution/provenance and file saving, not video quality.
+
+Changed modules compile and import. LTX-2/legacy-LoRA and lossless-video container
+suites pass 40 cases and 23 subtests with CUDA uninitialized. No non-Qwen GPU was
+used. Full-checkpoint companion references and resume dispatch, remaining model
+integrations and consolidated owner frontend/workflow acceptance remain pending.

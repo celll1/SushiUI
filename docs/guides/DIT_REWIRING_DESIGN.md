@@ -845,3 +845,47 @@ Changed backend files compile and import with CUDA untouched; the OpenAPI runtim
 capability example matches the actual schema response. Frontend capability and
 per-stream graph wiring were statically checked; owner build/type/browser review
 is still required.
+
+## Lens native execution foundation
+
+Lens now has an internal native residual adapter for its evolving image/text
+joint blocks. Only packed image tokens are pooled; text states pass through each
+block and survive both nested-region exits. Native image/text normalization,
+multilayer text feature projection, timestep embedding, output normalization and
+projection remain in use. Single-feature text input is also supported. Native
+block checkpointing owns recompute and CPU-offload behavior; the residual loop
+does not add another checkpoint layer. Native offloader wait/submit calls retain
+the original block index sequence, and no learned parameter is added.
+
+Lens centers image RoPE coordinates and offsets text positions from the image
+grid size. Coarse blocks use the native centered coarse image coordinates, while
+text rotary frequencies stay at their original full-grid values. Joint masks
+keep native image-prefix/text-tail ordering: image keys stay unmasked and the
+text padding mask stays unchanged. The transport to the shared executor uses
+text-prefix/image-tail ordering and converts back only at each native block.
+One frame and one shared rectangular grid are required; inconsistent batches,
+reference/video grids and out-of-table coordinates are refused. Style injection,
+NAG/NegPip, FBCache, REPA, token/block skipping and extra attention arguments are
+refused for rewired execution. Dense execution still takes the original branch.
+
+Native config identity is derived from the constructor's own fields/defaults;
+RoPE axes and selected text layers are canonical lists. Effective `inner_dim`
+comes from native head count times head dimension, matching the constructor.
+Removing the topology returns the model to the dense branch without rebinding
+forward or changing modules/parameters.
+
+CPU contracts use seven real Lens blocks with 24 hidden channels, two heads,
+two twelve-dimensional text feature layers, five text tokens and an 8x12 image
+grid. Image lengths are 96/24/6/6/6/24/96. Tests verify native image coordinates,
+exact text-frequency/mask preservation, consecutive evolving text states, all
+seven offloader wait/submit pairs, unchanged parameter identities, finite outputs
+and dense restoration. No checkpointing, standard checkpointing, CPU-offload and
+async CPU-offload modes agree in output and finite gradients on CPU; this does
+not establish their GPU offload equivalence. All 66 aggregate rewiring contracts
+and 69 existing Lens LoRA/REPA/text-mask cases pass, with changed-file compile and
+real imports leaving CUDA untouched.
+
+Lens remains outside public runtime capabilities. Artifact save/restore,
+training configuration/resume, generation adapter scopes and model/editor
+inspection must be connected before exposing it. No Lens GPU inference/training,
+performance or quality evidence is claimed; GPU acceptance stays Qwen-only.

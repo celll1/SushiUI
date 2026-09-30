@@ -181,7 +181,15 @@ configuration through the same parameter contract.
 The training editor displays each native stream, validated grid counts and skip
 edges. Dragging endpoints or editing intervals, parent regions and per-axis
 factors changes the same canonical spec. Crossings/cycles/config mismatches
-produce errors. The active-model summary displays checkpoint topology read-only.
+produce errors. The active-model summary displays checkpoint topology read-only. Qwen inspection
+and loaded-model information also provide a native-config parameter census:
+7,115,124,736 logical DiT parameters at the standard layout, unchanged by
+rewiring. The shared parameter panel shows total/native versus U-Net counts
+and a bar distribution across shared projections and the validated resolution
+levels. It excludes text encoders, VAE and quantization storage auxiliaries.
+Custom Qwen dimensions are checked against native meta models. Other provisional
+architectures show an unavailable base census and zero added transport parameters
+rather than treating stored quantization tensors as learned weights.
 Loaded generation automatically restores metadata; the request need not repeat
 it. Generation adapter scopes validate stack topology and restore the base graph
 on unload, including failed inference.
@@ -239,6 +247,10 @@ independent residual output/gradient oracles, native block loops, FP32/BF16/FP16
 identity transport, metadata/shard/config refusals, supported training adapters,
 checkpoint restore/resume, adapter lifetime, inspection/preview APIs and acoustic
 export. Tiny CPU fixtures are not production quality or throughput tests.
+The additional parameter-census/inspection/training regression run passes
+13 tests and three native-meta subtests with CUDA uninitialized. Frontend
+parameter-chart and checkpoint wiring are statically reviewed; owner-run
+render/type checks remain the consolidated manual pass.
 
 Qwen GPU/API evidence from 2026-09-30 and 2026-10-01 is retained under
 `local/measurements/` (ignored machine-local artifacts). It includes:
@@ -250,6 +262,11 @@ Qwen GPU/API evidence from 2026-09-30 and 2026-10-01 is retained under
   probe; one full request takes 19.27 seconds with 9.21 GiB peak allocated memory.
 - LoRA 1024px dataset/API training, periodic samples and checkpoint/optimizer/RNG
   resume both resident and with 30 swapped blocks/two ring slots.
+- A fresh LoRA run from an already rewired BF16 full checkpoint uses `inherit`
+  without a repeated graph: two steps, save, resume to step three with 30 swapped
+  blocks/two ring slots, all 256 optimizer tensors restored, finite checkpoints
+  and unchanged base/LoRA graph metadata. The report is
+  `local/measurements/rewiring_inherited_base_bf16_api_20261001/results.json`.
 - Full parameter training step one and resume to step two: all 297 trainable
   tensors, 7,115,124,736 parameters, frozen TE/VAE, finite saved weights and
   restored optimizer states. The four-shard checkpoint is about 14.23 GB.

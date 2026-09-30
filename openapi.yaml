@@ -3560,6 +3560,10 @@ paths:
                   initial_spec:
                     allOf: [{$ref: '#/components/schemas/DiTRewiringSpec'}]
                     description: Explicit single-region starting topology for custom layouts; selecting configure without a spec still uses default_spec.
+                  parameter_counts:
+                    allOf: [{$ref: '#/components/schemas/DiTRewiringParameterCounts'}]
+                    nullable: true
+                    description: Logical native DiT parameters, independent of quantized storage; null when no exact architecture census is available. Excludes text encoders and VAE.
                   latent_scale_factor: {type: integer}
                   pixel_alignment: {type: integer}
                   video_geometry:
@@ -11379,6 +11383,24 @@ components:
       bearerFormat: JWT
 
   schemas:
+    DiTRewiringParameterCounts:
+      type: object
+      required: [scope, source, total, shared, added, blocks]
+      properties:
+        scope: {type: string, enum: [native_dit]}
+        source: {type: string, enum: [native_config_census]}
+        total: {type: integer, minimum: 0, example: 7115124736}
+        shared: {type: integer, minimum: 0}
+        added: {type: integer, enum: [0]}
+        blocks:
+          type: array
+          items:
+            type: object
+            required: [stream, index, count]
+            properties:
+              stream: {type: string}
+              index: {type: integer, minimum: 0}
+              count: {type: integer, minimum: 0}
     DiTRewiringSpec:
       type: object
       additionalProperties: false
@@ -19303,6 +19325,10 @@ components:
           nullable: true
           description: Restored residual U-Net topology of the loaded model; null is the native sequence.
           example: null
+        dit_rewiring_parameter_counts:
+          allOf: [{$ref: '#/components/schemas/DiTRewiringParameterCounts'}]
+          nullable: true
+          description: Exact logical native DiT parameter census where available; excludes text encoders, VAE and quantization storage buffers.
         dit_rewiring_video_geometry:
           $ref: '#/components/schemas/DiTRewiringVideoGeometry'
         dit_rewiring_temporal_geometry:

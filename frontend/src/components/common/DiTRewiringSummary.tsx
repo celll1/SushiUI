@@ -3,10 +3,11 @@
 import { useEffect, useState } from "react";
 import { useStartup } from "@/contexts/StartupContext";
 import { previewDiTRewiring, temporalRewiringGrid } from "@/utils/api";
-import type { DiTRewiringPlan, DiTRewiringSpec, DiTRewiringTemporalGeometry, DiTRewiringVideoGeometry } from "@/utils/api";
+import type { DiTRewiringPlan, DiTRewiringSpec, DiTRewiringTemporalGeometry, DiTRewiringVideoGeometry, DiTRewiringParameterCounts } from "@/utils/api";
 import DiTRewiringGraph from "./DiTRewiringGraph";
+import DiTParameterSummary from "./DiTParameterSummary";
 
-export default function DiTRewiringSummary({ spec, tokenStride, temporalGeometry, videoGeometry }: { spec: DiTRewiringSpec; tokenStride?: number; temporalGeometry?: DiTRewiringTemporalGeometry; videoGeometry?: DiTRewiringVideoGeometry }) {
+export default function DiTRewiringSummary({ spec, tokenStride, temporalGeometry, videoGeometry, parameterCounts }: { parameterCounts?: DiTRewiringParameterCounts | null; spec: DiTRewiringSpec; tokenStride?: number; temporalGeometry?: DiTRewiringTemporalGeometry; videoGeometry?: DiTRewiringVideoGeometry }) {
   const { generationDefaults } = useStartup();
   const [plan, setPlan] = useState<DiTRewiringPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -43,6 +44,7 @@ export default function DiTRewiringSummary({ spec, tokenStride, temporalGeometry
       : temporalGeometry ? `Read-only temporal topology. Preview at ${temporalGeometry.preview_frames / temporalGeometry.frame_rate}s; actual clip length follows the generation request. Decoder KV caching is disabled.`
       : videoGeometry ? `Per-frame spatial topology at ${width}×${height}px. Frames and audio tokens retain native resolution; pooling and skip connections never cross frame boundaries.`
       : `Read-only restored topology. Preview at ${width}×${height}px; image dimensions follow the generation request. Image-token KV caching is disabled during rewired execution; immutable prefix KV remains available.`}</p>
+    <DiTParameterSummary counts={parameterCounts} plan={plan} />
     {plan && <DiTRewiringGraph spec={spec} plan={plan} />}
     {spec.regions.map(region => <p key={region.id} className="mt-1 text-gray-300">
       {region.stream} / {region.id}: [{region.start_block}, {region.end_block}) / parent {region.parent ?? "full grid"} / downsample {region.down_factor.join("×")} / residual skip {region.start_block} → {region.end_block}

@@ -1644,3 +1644,50 @@ must not silently claim a stronger packed/padding contract than that native path
 Native ACE-Step execution, artifact persistence, training/resume, generation
 lifetime and temporal editor units remain pending. No ACE-Step or other non-Qwen
 GPU model has been loaded.
+
+
+## ACE-Step native temporal decoder transport (CPU milestone)
+
+A native adapter now validates decoder config, layer count and temporal-only
+[factor,1] regions, installs/removes the graph on the wrapper/decoder, and can
+produce canonical topology metadata. Execution enters after context/audio
+concatenation and Conv1d patch projection and restores before adaptive output
+normalization and ConvTranspose1d projection. Original native patch padding and
+final-length cropping remain in place; the padded patch grid must still satisfy
+all region divisibility constraints.
+
+Coarse temporal RoPE uses physical patch-cell centers. Bidirectional sliding
+attention retains its native temporal radius by comparing those coordinates;
+full and encoder cross-attention remain unmasked for unpadded inputs. Per-level
+RoPE/sliding masks are shared and restored with each region's context. Residual
+execution bypasses native full-length mask construction and does not allocate
+zero full/cross-attention matrices. Encoder conditioning remains the same
+projected sequence at every resolution. Native layer module hooks are preserved;
+explicit non-reentrant checkpointing bypasses the Transformers checkpoint wrapper
+while retaining decoder checkpoint configuration and trainable conditioning.
+
+Current execution supports eager and SDPA attention. It disables KV cache
+creation, rejects supplied caches, attention extraction/early-exit probes and
+padded masks before decoder blocks, and refuses irregular temporal positions.
+Flash attention and cached encoder-KV reuse need separate native contracts;
+they are not advertised by this milestone. Dense execution retains the original
+native path when no residual graph is installed.
+
+Reduced-width actual seven-layer ACE-Step decoder tests verify token counts
+24/12/6/6/6/12/24, physical centers, sliding connectivity, unchanged conditioning,
+module hooks, parameter identity, metadata and exact dense restoration after
+graph removal. Direct/checkpointed outputs and every used gradient agree, with
+nonzero audio/context/encoder/self/cross/projection gradients; SDPA agrees with
+eager within FP32 tolerance. BF16 and FP16 native backward produce finite,
+nonzero gradients with native timestep dtype. Cache creation is disabled in an
+actual eval forward. Zero block delta restores the pre-head hidden exactly;
+the head output can differ by small FP32 rounding because residual restoration
+changes tensor strides. Native patch padding retains the exact requested output
+length. Invalid feature/grid/axis requests refuse atomically.
+
+The shared residual and legacy ACE-Step LoRA suites passed 125 CPU cases before
+the final mask-allocation changes; the final native/legacy ACE-Step subset passes
+14 cases. Changed files compile and import with CUDA uninitialized. Artifact
+persistence/load, training configuration/resume, generation adapter lifetime,
+presets and temporal editor discovery remain pending. ACE-Step is still excluded
+from public runtime capabilities. GPU validation remains Qwen-Image 2.1 only.

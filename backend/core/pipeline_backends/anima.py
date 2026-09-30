@@ -252,8 +252,21 @@ class AnimaMixin:
         # ``warnings[]`` carries every code (refusal_error_code_cheap_test).
         self._anima_lora_missing: List[str] = []
         files = self._anima_lora_session.parse(lora_configs)
+        from copy import deepcopy
+        import weakref
+        from core.adapters import AdapterIncompatible
+        from core.rewiring.adapters import resolve_adapter_topology
+        from core.models.anima.residual_unet import restore_topology, validate_topology_identity
+        model = self.anima_components["transformer"]
+        base_topology = getattr(model, "_residual_unet_spec", None)
+        try:
+            required = resolve_adapter_topology(model, files, validate_topology_identity)
+        except ValueError as exc:
+            raise AdapterIncompatible(str(exc), code="lora_rewiring_incompatible") from exc
         applied = self._anima_lora_session.load(
             files, self._anima_lora_components()).applied
+        restore_topology(model, required)
+        self._anima_topology_restore = (weakref.ref(model), deepcopy(base_topology))
         if self._anima_lora_missing:
             # Restore first, so the failure leaves a clean DiT.
             self._unload_lora_anima()
@@ -273,7 +286,13 @@ class AnimaMixin:
 
         components = self._anima_lora_components()
         wrapped = set(self._anima_lora_session.bind(components[0]).wrapped)
-        restored = self._anima_lora_session.unload(components)
+        try:
+            restored = self._anima_lora_session.unload(components)
+        finally:
+            saved = self.__dict__.pop("_anima_topology_restore", None)
+            if saved is not None and saved[0]() is not None:
+                from core.models.anima.residual_unet import restore_topology
+                restore_topology(saved[0](), saved[1])
 
         transformer = components[0].module
         if wrapped and transformer is not None:
@@ -286,6 +305,28 @@ class AnimaMixin:
                     f"{unresolved[:5]}); the DiT may still carry LoRA weights.",
                     "lora_unload_failed")
         return restored
+
+    def _anima_rewiring_metadata(self, params, transformer, height, width):
+        from api.error_handlers import ValidationError
+        from core.inference.fbcache import fbcache_active
+        from core.rewiring.spec import digest, preview_plan
+        topology = getattr(transformer, "_residual_unet_spec", None)
+        if topology is None:
+            params.pop("dit_rewiring_actual", None)
+            return
+        if params.get("style_transfer") or params.get("style_transfers"):
+            raise ValidationError("Residual U-Net generation does not support style injection")
+        if fbcache_active(params):
+            raise ValidationError("Anima residual U-Net generation does not support FBCache")
+        stride = transformer.patch_spatial * 8
+        try:
+            if height % stride or width % stride:
+                raise ValueError("Anima rewiring requires the native token grid")
+            preview_plan(topology, height // stride, width // stride)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        params["dit_rewiring_actual"] = {
+            "spec": topology, "spec_sha256": digest(topology), "kv_cache": False}
 
     @staticmethod
     def _anima_advanced_cfg(params: Dict[str, Any]) -> Dict[str, Any]:
@@ -917,8 +958,9 @@ class AnimaMixin:
             # current Linear modules; they survive .to() but not deepcopy,
             # so the order must be: quantize -> wrap LoRA -> sample -> unwrap.
             lora_configs = params.get("loras") or []
-            applied_lora_count = self._load_lora_anima(lora_configs) if lora_configs else 0
+            applied_lora_count = self._load_lora_anima(lora_configs)
             transformer = self.anima_components["transformer"]
+            self._anima_rewiring_metadata(params, transformer, height, width)
 
             # Optional NAG (Normalized Attention Guidance). OFF by default.
             nag_wrapper = self._anima_build_nag_wrapper(params, transformer, nag_neg)
@@ -1184,8 +1226,9 @@ class AnimaMixin:
             # current Linear modules; they survive .to() but not deepcopy,
             # so the order must be: quantize -> wrap LoRA -> sample -> unwrap.
             lora_configs = params.get("loras") or []
-            applied_lora_count = self._load_lora_anima(lora_configs) if lora_configs else 0
+            applied_lora_count = self._load_lora_anima(lora_configs)
             transformer = self.anima_components["transformer"]
+            self._anima_rewiring_metadata(params, transformer, height, width)
 
             # Optional NAG (Normalized Attention Guidance). OFF by default.
             nag_wrapper = self._anima_build_nag_wrapper(params, transformer, nag_neg)
@@ -1458,8 +1501,9 @@ class AnimaMixin:
             # current Linear modules; they survive .to() but not deepcopy,
             # so the order must be: quantize -> wrap LoRA -> sample -> unwrap.
             lora_configs = params.get("loras") or []
-            applied_lora_count = self._load_lora_anima(lora_configs) if lora_configs else 0
+            applied_lora_count = self._load_lora_anima(lora_configs)
             transformer = self.anima_components["transformer"]
+            self._anima_rewiring_metadata(params, transformer, height, width)
 
             # Optional NAG (Normalized Attention Guidance). OFF by default.
             nag_wrapper = self._anima_build_nag_wrapper(params, transformer, nag_neg)

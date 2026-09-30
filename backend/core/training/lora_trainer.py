@@ -314,6 +314,9 @@ class LoRATrainer(BaseTrainer):
         elif getattr(self, "is_krea2", False):
             from core.models.krea2.residual_unet import configure_training_topology
             configure_topology = configure_training_topology
+        elif getattr(self, "is_anima", False):
+            from core.models.anima.residual_unet import configure_training_topology
+            configure_topology = configure_training_topology
         if configure_topology is not None:
             from core.rewiring.spec import read_checkpoint_metadata
             resume_topology = read_checkpoint_metadata(metadata)

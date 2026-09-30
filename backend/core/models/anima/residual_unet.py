@@ -2,6 +2,7 @@
 import inspect
 
 from core.rewiring.runtime import run_rewired_stream
+from core.rewiring.training import NO_RESUME_SPEC
 from core.rewiring.spec import validate_model_identity
 
 
@@ -104,3 +105,24 @@ def preflight_artifact(path, latent_channels=None):
     if topology is not None:
         topology = validate_topology_identity(topology, config)
     return topology, native_config(config)
+
+
+def configure_training_topology(model, config, *, resuming=False, pending_adapter_resume=False,
+                                resume_spec=NO_RESUME_SPEC, install=True):
+    from core.rewiring.training import resolve_training_topology
+    return resolve_training_topology(model, config, "anima", validate_topology_identity,
+        restore_topology, default_topology, resuming=resuming,
+        pending_adapter_resume=pending_adapter_resume, resume_spec=resume_spec, install=install)
+
+
+def default_topology(config):
+    from copy import deepcopy
+    from api.param_defaults import DIT_REWIRING_PRESETS
+    from core.rewiring.spec import OPERATORS, build_spec
+    preset = deepcopy(DIT_REWIRING_PRESETS["anima"])
+    resolved = native_config(config)
+    if resolved["num_blocks"] != preset["block_count"]:
+        return None
+    return validate_topology_identity(build_spec("anima",
+        [{"name": "main", "block_count": preset["block_count"]}],
+        [dict(region, **OPERATORS) for region in preset["regions"]], resolved), config)

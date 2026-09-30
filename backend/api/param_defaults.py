@@ -31,6 +31,15 @@ DIT_REWIRING_PRESETS: Dict[str, Any] = {
              "start_block": 14, "end_block": 18, "down_factor": [2, 2]},
         ],
     },
+    "anima": {
+        "block_count": 28,
+        "regions": [
+            {"id": "r0", "stream": "main", "parent": None,
+             "start_block": 4, "end_block": 24, "down_factor": [2, 2]},
+            {"id": "r1", "stream": "main", "parent": "r0",
+             "start_block": 12, "end_block": 16, "down_factor": [2, 2]},
+        ],
+    },
     "krea2": {
         "block_count": 28,
         "regions": [

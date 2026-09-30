@@ -98,8 +98,9 @@ def validate_spec(value):
         if start >= end:
             raise ValueError("Region must have start_block < end_block")
         factor = region["down_factor"]
-        if not isinstance(factor, list) or len(factor) != 2 or any(type(v) is not int or v not in (2, 4, 8) for v in factor):
-            raise ValueError("down_factor must contain two supported spatial factors")
+        if (not isinstance(factor, list) or len(factor) != 2
+                or any(type(v) is not int or v not in (1, 2, 4, 8) for v in factor) or factor == [1, 1]):
+            raise ValueError("down_factor must contain two supported factors and reduce at least one axis")
         for key, expected in OPERATORS.items():
             if type(region[key]) is not type(expected) or region[key] != expected:
                 raise ValueError(f"Unsupported region {key}")

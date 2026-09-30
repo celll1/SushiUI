@@ -17,7 +17,7 @@ def run_rewired_stream(hidden, spec, stream, height, width, prefix, context,
         raise ValueError("Unknown rewired stream")
     if (hidden.ndim != 3 or type(prefix) is not int or prefix < 0
             or hidden.shape[1] != prefix + height * width):
-        raise ValueError("Rewired stream requires a contiguous 2D image-token tail")
+        raise ValueError("Rewired stream requires a contiguous token-grid tail")
     batch, channels = hidden.shape[0], hidden.shape[2]
     regions = [r for r in spec["regions"] if r["stream"] == stream]
     starts = {r["start_block"]: r for r in regions}

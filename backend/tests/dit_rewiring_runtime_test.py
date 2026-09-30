@@ -66,6 +66,50 @@ class RuntimeContracts(unittest.TestCase):
             self.assertTrue(torch.equal(x,actual))
             self.assertEqual(seen,[0,1,2,2,2,1,0])
 
+    def test_temporal_only_nested_transport_matches_linear_oracle(self):
+        torch.manual_seed(93)
+        regions = [dict(id="outer", stream="main", parent=None, start_block=1,
+            end_block=6, down_factor=[2, 1], **OPERATORS),
+            dict(id="inner", stream="main", parent="outer", start_block=2,
+            end_block=5, down_factor=[2, 1], **OPERATORS)]
+        spec = build_spec("temporal_fixture", [{"name": "main", "block_count": 7}], regions, {})
+        x = torch.randn(2, 2+24, 4, requires_grad=True)
+        weights = [(torch.randn(4,4)*0.02).requires_grad_() for _ in range(7)]
+        def temporal_pool(value):
+            return F.avg_pool1d(value.transpose(1,2), 2).transpose(1,2)
+        def temporal_up(value, length):
+            return F.interpolate(value.transpose(1,2), size=length,
+                                 mode="linear", align_corners=False).transpose(1,2)
+        entered = linear(weights[:1], x)
+        low = temporal_pool(entered[:,2:])
+        pre_inner = linear(weights[1:2], low)
+        inner_low = temporal_pool(pre_inner)
+        inner = pre_inner + temporal_up(linear(weights[2:5], inner_low)-inner_low, 12)
+        sequence = entered[:,2:] + temporal_up(linear(weights[5:6], inner)-low, 24)
+        expected = linear(weights[6:], torch.cat((linear(weights[1:6], entered[:,:2]), sequence), dim=1))
+        seen = []
+        def execute(index, hidden, context):
+            seen.append((index, hidden.shape[1]-2, context))
+            return linear(weights[index:index+1], hidden)
+        actual = run_rewired_stream(x, spec, "main", 24, 1, 2, 0, execute,
+                                   lambda c,h,y,w,p: c+1)
+        self.assertEqual(seen, [(i,n,c) for i,(n,c) in enumerate(zip(
+            [24,12,6,6,6,12,24], [0,1,2,2,2,1,0]))])
+        torch.testing.assert_close(actual, expected)
+        a = torch.autograd.grad(actual.square().sum(), [x,*weights], retain_graph=True)
+        b = torch.autograd.grad(expected.square().sum(), [x,*weights])
+        for left,right in zip(a,b): torch.testing.assert_close(left,right)
+        for region in regions: region["down_factor"] = [1,2]
+        horizontal = build_spec("temporal_fixture", spec["streams"], regions, {})
+        other = run_rewired_stream(x, horizontal, "main", 1, 24, 2, None,
+            lambda i,h,c: linear(weights[i:i+1],h), lambda c,h,y,w,p: c)
+        torch.testing.assert_close(other, expected)
+        for dtype in (torch.float32, torch.bfloat16, torch.float16):
+            value = x.detach().to(dtype)
+            identity = run_rewired_stream(value, spec, "main", 24, 1, 2, None,
+                lambda i,h,c: h, lambda c,h,y,w,p: c)
+            self.assertTrue(torch.equal(identity,value))
+
     def test_native_qwen_checkpoint_backward(self):
         with patch.object(torch.cuda,"get_device_capability",return_value=(8,9)), \
              patch.object(torch.cuda,"_lazy_init"),patch.object(torch._C,"_cuda_init"):

@@ -48,6 +48,30 @@ class TopologyContracts(unittest.TestCase):
             with self.assertRaises(ValueError): validate_spec(value)
         with self.assertRaises(ValueError): preview_plan(spec(), 66, 64)
 
+    def test_single_axis_metadata_and_rest_preview(self):
+        import httpx
+        from fastapi import FastAPI
+        from api.rewiring_routes import router
+        value = spec()
+        for region in value["regions"]: region["down_factor"] = [2,1]
+        self.assertEqual(read_checkpoint_metadata(checkpoint_metadata(value)), value)
+        self.assertEqual([level["tokens"] for level in preview_plan(value,24,1)["levels"]], [12,6])
+        for factors in ([1,1], [True,2], [1,0], [1,3]):
+            invalid = deepcopy(value); invalid["regions"][0]["down_factor"] = factors
+            with self.assertRaises(ValueError): validate_spec(invalid)
+        app = FastAPI(); app.include_router(router, prefix="/api/v1")
+        async def check():
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url="http://test") as client:
+                response = await client.post("/api/v1/models/rewiring/validate",json={
+                    "spec": value, "token_height":24, "token_width":1})
+                self.assertEqual(response.status_code,200,response.text)
+                self.assertEqual(response.json()["plan"], preview_plan(value,24,1))
+                invalid = deepcopy(value); invalid["regions"][0]["down_factor"] = [1,1]
+                response = await client.post("/api/v1/models/rewiring/validate",json={
+                    "spec": invalid, "token_height":24, "token_width":1})
+                self.assertEqual(response.status_code,422,response.text)
+        asyncio.run(check())
+
     def test_tampered_incomplete_and_duplicate_metadata(self):
         metadata = checkpoint_metadata(spec())
         self.assertIsNone(read_checkpoint_metadata({}))

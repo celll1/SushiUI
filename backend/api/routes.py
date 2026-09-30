@@ -10050,6 +10050,10 @@ async def create_scratch_minit2i_endpoint(
     }
 
 
+from api.rewiring_routes import router as rewiring_router
+router.include_router(rewiring_router)
+
+
 @router.post("/models/load")
 async def load_model(
     source_type: str = Form(...),

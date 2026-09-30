@@ -19,7 +19,32 @@ For Qwen-Image 2.1's 32 main blocks, block indices are zero-based half-open:
 
 At 1024px, eight blocks use 4096 image tokens, twenty use 1024 tokens, and four
 use 256 tokens. The latent input/output grid and text tokens retain their native
-meaning. Other architectures must resolve valid model-specific intervals before
+meaning. The default block allocation is:
+
+| Zero-based blocks | Image token grid at 1024px | Tokens per block | Blocks |
+|---|---|---|---|
+| `[0, 4)`, `[28, 32)` | 64 by 64 | 4096 | 8 |
+| `[4, 14)`, `[18, 28)` | 32 by 32 | 1024 | 20 |
+| `[14, 18)` | 16 by 16 | 256 | 4 |
+
+```text
+blocks    0..3    4..13    14..17    18..27    28..31
+tokens    4096    1024       256      1024      4096
+outer skip        [----------------------)
+inner skip                  [-----)
+```
+
+Each skip connects its region entry to its exit, restoring that region's residual
+update. The outer region is `[4, 28)` and the inner region is `[14, 18)`.
+The 1024 values above describe image token counts, not image pixels.
+
+This allocation retains more blocks at 1024 tokens than the sixteen-deepest-block
+probe. Its image-token-linear work is approximately 41.40625% of dense execution;
+this is not a full-model FLOP or throughput estimate. Fixed pooling and upsampling
+add no parameters, so checkpoint parameter size does not shrink. The measured
+quality improvement is partial and still requires calibration.
+
+Other architectures must resolve valid model-specific intervals before
 registering a default; do not reuse these indices without validation.
 
 ## Execution

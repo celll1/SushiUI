@@ -18,6 +18,19 @@ from core.models.minimax_h3.hybrid_spec import (
     PRESET_BLOCK_RANGE_ADALN,
 )
 
+# The initial preset is resolved only for the matching native block layout.
+DIT_REWIRING_PRESETS: Dict[str, Any] = {
+    "qwen_image_21": {
+        "block_count": 32,
+        "regions": [
+            {"id": "r0", "stream": "main", "parent": None,
+             "start_block": 4, "end_block": 28, "down_factor": [2, 2]},
+            {"id": "r1", "stream": "main", "parent": "r0",
+             "start_block": 14, "end_block": 18, "down_factor": [2, 2]},
+        ],
+    },
+}
+
 # ---------------------------------------------------------------------------
 # MiniMax-H3 prompt assistant
 # ---------------------------------------------------------------------------

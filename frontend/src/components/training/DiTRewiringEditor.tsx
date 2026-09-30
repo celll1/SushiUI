@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { inspectDiTRewiring, previewDiTRewiring, temporalRewiringGrid } from "@/utils/api";
 import type { DiTRewiringModelInfo, DiTRewiringPlan, DiTRewiringSpec } from "@/utils/api";
 import DiTRewiringGraph from "../common/DiTRewiringGraph";
+import DiTParameterSummary from "../common/DiTParameterSummary";
 
 interface Props {
   modelPath: string; resolution: number;
@@ -183,6 +184,7 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
           if (layout) { onChange("configure", layout); setSelected(layout.regions[0].id); }
         }}>Start custom layout</button>}
     </div>
+    {info && <DiTParameterSummary counts={info.parameter_counts} plan={plan} />}
     {current && <>
       {info?.video_geometry && <p className="my-2 text-gray-400">Spatial grids and skip connections apply independently to each video frame. Frame count and audio tokens stay at native resolution.</p>}
       <div className="flex flex-wrap items-center gap-3">

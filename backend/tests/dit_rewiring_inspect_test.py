@@ -38,6 +38,8 @@ class InspectionContracts(unittest.TestCase):
                 file_info = inspect_model(str(model))
                 self.assertEqual(file_info,inspect_model(str(root)))
                 self.assertEqual(file_info["topology"],topology)
+                self.assertEqual(file_info["parameter_counts"]["total"], 7115124736)
+                self.assertEqual(file_info["parameter_counts"]["added"], 0)
                 self.assertEqual(file_info["streams"][0]["block_count"],32)
                 app=FastAPI(); app.include_router(router,prefix="/api/v1")
                 async def check():

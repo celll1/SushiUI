@@ -956,6 +956,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 return
 
             if isinstance(model_result, dict) and model_result.get("type") == "qwen_image_21":
+                from core.rewiring.parameters import parameter_counts
                 print("[Pipeline] Qwen-Image 2.1 model detected")
                 self.qwen_image_21_components = model_result
                 self.is_qwen_image_21_model = True
@@ -972,6 +973,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "source": source,
                     "type": "qwen_image_21",
                     "is_v_prediction": False,
+                    "dit_rewiring_parameter_counts": parameter_counts(
+                        "qwen_image_21", dict(model_result["transformer"].config)),
                     "transformer_variant": model_result.get("transformer_variant", "bf16"),
                     "text_encoder_variant": model_result.get("text_encoder_variant", "bf16"),
                     "dit_rewiring_spec": getattr(model_result["transformer"], "_residual_unet_spec", None),

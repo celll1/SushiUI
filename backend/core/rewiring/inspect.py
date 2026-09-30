@@ -279,7 +279,9 @@ def inspect_model(model_path):
         id="r0", stream=streams[0]["name"], parent=None,
         start_block=edges, end_block=block_count-edges,
         down_factor=DIT_REWIRING_REGION_DEFAULTS["temporal_down_factor" if architecture == "acestep" else "down_factor"], **OPERATORS)], config)
-    info = dict(architecture=architecture, streams=streams,
+    from .parameters import parameter_counts
+    info = dict(parameter_counts=parameter_counts(architecture, config),
+                architecture=architecture, streams=streams,
                 base_config_sha256=digest(config), block_layout_sha256=digest(streams),
                 topology=topology, topology_sha256=None if topology is None else digest(topology),
                 default_spec=adapter.default_topology(config), initial_spec=initial,

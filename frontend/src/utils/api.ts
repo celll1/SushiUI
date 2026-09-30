@@ -241,6 +241,7 @@ export interface ModelInfo {
   type: "sd15" | "sdxl" | "zimage" | "flux2" | "anima" | "lens" | "ideogram4" | "minit2i" | "krea2" | "qwen_image_21" | "sensenova" | "sensenova_sdxl_chimera" | "ltx2" | "acestep" | "minimax_h3" | "minimax_music3" | "yue2";
   is_v_prediction: boolean;
   dit_rewiring_spec?: DiTRewiringSpec | null;
+  dit_rewiring_parameter_counts?: DiTRewiringParameterCounts | null;
   dit_rewiring_token_stride?: number;
   dit_rewiring_temporal_geometry?: DiTRewiringTemporalGeometry;
   dit_rewiring_video_geometry?: DiTRewiringVideoGeometry;
@@ -9530,7 +9531,13 @@ export interface DiTRewiringVideoGeometry {
   temporal_scale_factor: number | null; height_scale_factor: number; width_scale_factor: number;
   grid_policy: "independent_spatial_frames_v1" | "packed_target_spatial_frames_v1";
 }
+export interface DiTRewiringParameterCounts {
+  scope: "native_dit"; source: "native_config_census";
+  total: number; shared: number; added: 0;
+  blocks: { stream: string; index: number; count: number }[];
+}
 export interface DiTRewiringModelInfo {
+  parameter_counts?: DiTRewiringParameterCounts | null;
   architecture: string; streams: DiTRewiringSpec["streams"];
   base_config_sha256: string; block_layout_sha256: string;
   topology: DiTRewiringSpec | null; topology_sha256: string | null; default_spec: DiTRewiringSpec | null;

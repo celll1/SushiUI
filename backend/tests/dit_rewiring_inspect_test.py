@@ -53,5 +53,39 @@ class InspectionContracts(unittest.TestCase):
         self.assertFalse(torch.cuda.is_initialized())
 
 
+    def test_krea_file_directory_and_api_without_model_load(self):
+        import httpx
+        from fastapi import FastAPI
+        from core.models.krea2.vendor import single_file
+        from core.models.krea2.residual_unet import default_topology
+        config = dict(single_file.KREA2_DEFAULT_CONFIG)
+        topology = default_topology(config)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = root/"diffusion_pytorch_model.safetensors"
+            save_file({"placeholder": torch.ones(1)}, str(model), metadata={
+                "model_type": "krea2", "krea2_config": json.dumps(config),
+                **checkpoint_metadata(topology)})
+            (root/"config.json").write_text(json.dumps({
+                **config, "_class_name": "Krea2Transformer2DModel"}), encoding="utf-8")
+            with patch.object(single_file, "_read_safetensors", side_effect=AssertionError("Tensor loading forbidden")), \
+                 patch.object(single_file, "Krea2Transformer2DModel", side_effect=AssertionError("Model allocation forbidden")):
+                info = inspect_model(str(model))
+                self.assertEqual(info, inspect_model(str(root)))
+                self.assertEqual(info["architecture"], "krea2")
+                self.assertEqual(info["topology"], topology)
+                self.assertEqual(info["pixel_alignment"], 16)
+                app = FastAPI(); app.include_router(router, prefix="/api/v1")
+                async def check():
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                        response = await client.post("/api/v1/models/rewiring/inspect", json={"model_path": str(root)})
+                        self.assertEqual(response.status_code, 200, response.text)
+                        self.assertEqual(response.json(), info)
+                        (root/"config.json").write_text(json.dumps({"_class_name": []}), encoding="utf-8")
+                        invalid = await client.post("/api/v1/models/rewiring/inspect", json={"model_path": str(root)})
+                        self.assertEqual(invalid.status_code, 422)
+                asyncio.run(check())
+        self.assertFalse(torch.cuda.is_initialized())
+
 if __name__ == "__main__":
     unittest.main()

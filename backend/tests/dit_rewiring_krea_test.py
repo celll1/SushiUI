@@ -203,15 +203,14 @@ class KreaRuntimeContracts(unittest.TestCase):
             for name, layer in layers.items():
                 for key, value in layer.branch_tensors().items():
                     torch.testing.assert_close(value, tensors[f"{name}.{key}"], rtol=0, atol=0)
-        with patch("core.rewiring.training.RUNTIME_ARCHITECTURES", ("qwen_image_21", "krea2")):
-            self.assertEqual(configure_training_topology(self.model, trainer.config, resuming=True), self.spec)
-            changed = dict(self.spec, regions=[self.spec["regions"][0],
-                {**self.spec["regions"][1], "end_block": 4}])
-            with self.assertRaisesRegex(ValueError, "without edits"):
-                configure_training_topology(self.model,
-                    {"dit_rewiring_mode": "configure", "dit_rewiring_spec": changed}, resuming=True)
-            with self.assertRaisesRegex(ValueError, "incompatible"):
-                configure_training_topology(self.model, {**trainer.config, "repa_enable": True})
+        self.assertEqual(configure_training_topology(self.model, trainer.config, resuming=True), self.spec)
+        changed = dict(self.spec, regions=[self.spec["regions"][0],
+            {**self.spec["regions"][1], "end_block": 4}])
+        with self.assertRaisesRegex(ValueError, "without edits"):
+            configure_training_topology(self.model,
+                {"dit_rewiring_mode": "configure", "dit_rewiring_spec": changed}, resuming=True)
+        with self.assertRaisesRegex(ValueError, "incompatible"):
+            configure_training_topology(self.model, {**trainer.config, "repa_enable": True})
 
     def test_generation_lora_scope_and_effective_metadata(self):
         import tempfile
@@ -262,6 +261,27 @@ class KreaRuntimeContracts(unittest.TestCase):
                 manager._load_lora_krea2([dense])
             manager._load_lora_krea2([good]); manager._unload_lora_krea2()
             self.assertEqual(self.model._residual_unet_spec, self.spec)
+
+    def test_default_preset_and_training_request(self):
+        from collections import Counter
+        from types import SimpleNamespace
+        from api.routes import TrainingRunCreateRequest
+        from core.training.training_config import _build_train_section
+        from core.models.krea2.residual_unet import configure_training_topology, default_topology
+        from core.models.krea2.vendor.single_file import KREA2_DEFAULT_CONFIG
+        from core.rewiring.spec import preview_plan
+        model = SimpleNamespace(config=dict(KREA2_DEFAULT_CONFIG))
+        request = TrainingRunCreateRequest(training_method="lora", base_model_path="krea",
+            total_steps=1, dit_rewiring_mode="configure")
+        section = _build_train_section(request.model_dump(), total_steps=1, epochs=None,
+            train_unet=True, train_text_encoder=False, arch="krea2")
+        spec = configure_training_topology(model, section)
+        self.assertEqual(spec, default_topology(model.config))
+        counts = Counter(block["tokens"] for block in preview_plan(spec, 64, 64)["blocks"])
+        self.assertEqual(counts, {4096: 8, 1024: 16, 256: 4})
+        self.assertEqual(spec["regions"][0]["start_block"], 4)
+        self.assertEqual(spec["regions"][0]["end_block"], 24)
+        self.assertIsNone(default_topology(dict(model.config, num_layers=7)))
 
 if __name__ == "__main__":
     unittest.main()

@@ -9499,6 +9499,9 @@ export interface DiTRewiringModelInfo {
   topology: DiTRewiringSpec | null; topology_sha256: string | null; default_spec: DiTRewiringSpec | null;
   latent_scale_factor: number; pixel_alignment: number;
 }
+export const getDiTRewiringSchema = async (): Promise<{
+  presets: Record<string, unknown>; runtime_architectures: string[];
+}> => (await api.get("/schema/dit-rewiring")).data;
 export const inspectDiTRewiring = async (modelPath: string): Promise<DiTRewiringModelInfo> =>
   (await api.post("/models/rewiring/inspect", { model_path: modelPath })).data;
 export const previewDiTRewiring = async (spec: DiTRewiringSpec, tokenHeight: number, tokenWidth: number):

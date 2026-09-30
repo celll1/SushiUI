@@ -110,6 +110,19 @@ def configure_training_topology(model, config, *, resuming=False, pending_adapte
                                 resume_spec=_NO_RESUME_SPEC, install=True):
     from core.rewiring.training import resolve_training_topology
     return resolve_training_topology(
-        model, config, "krea2", validate_topology_identity, restore_topology,
+        model, config, "krea2", validate_topology_identity, restore_topology, default_topology,
         resuming=resuming, pending_adapter_resume=pending_adapter_resume,
         resume_spec=resume_spec, install=install)
+
+
+def default_topology(config):
+    from copy import deepcopy
+    from api.param_defaults import DIT_REWIRING_PRESETS
+    from core.rewiring.spec import OPERATORS, build_spec
+    preset = deepcopy(DIT_REWIRING_PRESETS["krea2"])
+    resolved = native_config(config)
+    if resolved["num_layers"] != preset["block_count"]:
+        return None
+    return validate_topology_identity(build_spec("krea2",
+        [{"name": "main", "block_count": preset["block_count"]}],
+        [dict(region, **OPERATORS) for region in preset["regions"]], resolved), config)

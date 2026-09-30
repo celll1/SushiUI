@@ -237,7 +237,7 @@ export. Tiny CPU fixtures are not production quality or throughput tests. The se
 MiniMax-H3 reload/native block-loop regression modules also pass 26 CPU tests
 with CUDA uninitialized.
 
-Qwen GPU/API evidence from 2026-09-30 is retained under
+Qwen GPU/API evidence from 2026-09-30 and 2026-10-01 is retained under
 `local/measurements/` (ignored machine-local artifacts). It includes:
 
 - Paired 1024px, 40-step, CFG 1, INT8 ConvRot inference for dense, single-stage,
@@ -251,7 +251,17 @@ Qwen GPU/API evidence from 2026-09-30 is retained under
   tensors, 7,115,124,736 parameters, frozen TE/VAE, finite saved weights and
   restored optimizer states. The four-shard checkpoint is about 14.23 GB.
 - Generation from the saved full checkpoint without explicit topology and
-  matching loaded-model/PNG graph metadata.
+  matching loaded-model/PNG graph metadata. A 1024px, 40-step API check completes
+  40 native forwards in 34.95 seconds with 14.00 GiB peak allocated memory.
+  Its two ordinary training steps do not recover image quality; pronounced
+  blur/pixelation remains, and this is not a calibration result.
+- The original INT8 model with metadata-bearing zero LoRA reproduces the earlier
+  four-deepest-block image exactly (pixel MAE 0), completing 40 native forwards
+  in 24.90 seconds with 9.21 GiB peak allocated memory. The requested KV cache
+  is disabled for rewiring; adapter cleanup restores the dense base topology.
+  These whole-request timings include generation overhead and are not a paired
+  warm throughput comparison. Reports are in `rewiring_qwen_final_20261001` and
+  `rewiring_qwen_original_final_20261001` under the local measurements directory.
 
 Four-deepest-block loop observations are 3.98–4.33 step/sec; one paired warm
 prompt improves about 5% over the single-stage graph. Other timings vary enough

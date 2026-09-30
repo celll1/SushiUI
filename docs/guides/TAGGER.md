@@ -26,6 +26,13 @@ the frontend request type.
 
 ## Inference paths
 
+Both PyTorch SigLIP2 variants expose `forward_features()` for the compact
+captioner foundation. It returns patch features, the actual head-input pooled
+features, and logits from one encoder call. Ordinary `forward()` still returns
+only logits. The caption feature provider requires evaluation mode and detaches
+its outputs; caption API, model-lifetime sharing, and GPU coordination are not
+wired yet. See [the captioner design](../plans/COMPACT_CAPTIONER_DESIGN_2026-10.md).
+
 `POST /api/v1/tagger/siglip2/load` detects full, LoRA, or ONNX weights. The UI
 may preview checkpoint metadata, but the status returned by the loaded manager
 is authoritative. A vocabulary beside a checkpoint is only an initial path

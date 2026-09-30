@@ -1661,27 +1661,39 @@ class Qwen3Model(Qwen3PreTrainedModel):
         selected_kv = {}
         selected_hidden = []
 
-        for layer_index, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
-            layer_output = decoder_layer(
-                hidden_states,
-                image_gen_indicators=image_gen_indicators,
-                exist_non_image_gen_tokens=exist_non_image_gen_tokens,
-                exist_image_gen_tokens=exist_image_gen_tokens,
-                indexes=indexes,
-                attention_mask=causal_mask_mapping[decoder_layer.attention_type],
-                position_ids=position_ids,
-                past_key_values=past_key_values,
-                use_cache=use_cache,
-                cache_position=cache_position,
-                return_kv=layer_index in capture,
-                **kwargs,
-            )
-            if layer_index in capture:
-                hidden_states, key_states, value_states = layer_output
-                selected_kv[layer_index] = (key_states, value_states)
-                selected_hidden.append(hidden_states)
-            else:
-                hidden_states = layer_output
+        rewired = getattr(self, "_residual_unet_spec", None) is not None and exist_image_gen_tokens
+        if rewired:
+            from ..residual_unet import run_rewired_generation
+            if exist_non_image_gen_tokens or capture or kwargs.get("update_cache", True):
+                raise ValueError("SenseNova residual generation requires image-only immutable-cache execution")
+            if set(causal_mask_mapping) != {"full_attention"}:
+                raise ValueError("SenseNova residual generation requires native full attention")
+            hidden_states = run_rewired_generation(self, hidden_states, indexes, past_key_values,
+                attention_mask=causal_mask_mapping["full_attention"],
+                checkpoint_layers=self.training and self.gradient_checkpointing,
+                packed_gen=kwargs.get("packed_gen"))
+        else:
+            for layer_index, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
+                layer_output = decoder_layer(
+                    hidden_states,
+                    image_gen_indicators=image_gen_indicators,
+                    exist_non_image_gen_tokens=exist_non_image_gen_tokens,
+                    exist_image_gen_tokens=exist_image_gen_tokens,
+                    indexes=indexes,
+                    attention_mask=causal_mask_mapping[decoder_layer.attention_type],
+                    position_ids=position_ids,
+                    past_key_values=past_key_values,
+                    use_cache=use_cache,
+                    cache_position=cache_position,
+                    return_kv=layer_index in capture,
+                    **kwargs,
+                )
+                if layer_index in capture:
+                    hidden_states, key_states, value_states = layer_output
+                    selected_kv[layer_index] = (key_states, value_states)
+                    selected_hidden.append(hidden_states)
+                else:
+                    hidden_states = layer_output
         if not exist_image_gen_tokens:
             hidden_states = self.norm(hidden_states)
         elif not exist_non_image_gen_tokens:

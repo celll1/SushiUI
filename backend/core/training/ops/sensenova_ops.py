@@ -3091,6 +3091,12 @@ def forward_gen_decoder_layers(
         )
     if packed_gen is not None and packed_gen.prefix is not cache_packed:
         raise ValueError("SenseNova generation training: plan and prefix cache disagree")
+    if getattr(model, "_residual_unet_spec", None) is not None:
+        from core.models.sensenova.residual_unet import run_rewired_generation
+        states = run_rewired_generation(model, hidden_states, indexes, prefix_cache,
+            attention_mask=attention_mask, checkpoint_layers=checkpoint_layers, packed_gen=packed_gen)
+        return model.norm_mot_gen(states)
+
     image_gen_indicators = torch.ones(
         hidden_states.shape[:2], dtype=torch.bool, device=hidden_states.device
     )

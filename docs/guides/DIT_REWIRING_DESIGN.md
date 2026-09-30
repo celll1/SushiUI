@@ -194,10 +194,10 @@ math attention; these exclude dataset/encoder/decoder/scheduler workflow.
 
 LoRA resume now delays topology installation until weight validation/loading
 succeeds. A regression test rejects an incomplete checkpoint while preserving
-native topology and configuration. Sixteen CPU contract tests pass.
-Full-size full-parameter training, run-level scheduler/RNG resume, block swap,
-actual dataset workflows, calibration quality, frontend acceptance, and additional
-architecture adapters remain outstanding.
+native topology and configuration.
+Full-size full-parameter training, block swap, broader dataset/resume matrices,
+calibration quality, frontend acceptance, and additional architecture adapters
+remain outstanding. The baseline dataset/resume workflow is verified below.
 
 ## Diffusers directory restoration verification
 
@@ -208,3 +208,19 @@ same directory declaration check. Conflicting files or shards are refused.
 A small native transformer round trip verifies exact parameter restoration,
 topology restoration, and config mismatch refusal before loading companions.
 The residual rewiring CPU suite now passes 17 tests.
+
+## Actual dataset/API training verification
+
+The isolated worktree API completed a one-image 1024px LoRA run at two steps,
+then updated the same run and resumed its latest checkpoint to step three.
+FP32 rank-4 adapters, BF16 compute/model weights, native attention, 32 checkpointed
+blocks, ConvRot prefetch and VAE/text caching were exercised. Step-zero and
+periodic training samples completed. Configuration retrieval preserved the
+conversion selection; all three saved checkpoint topologies agree, their tensors
+are finite, and the resumed step changes adapter weights.
+
+The real resume restored all 256 optimizer tensors without fresh states, the
+training position, and RNG state. Extending the target steps issued the expected
+scheduler-continuity notice. Both subprocesses exited successfully and the API
+reported completion at the requested step. This is a baseline workflow check,
+not a calibration or bitwise resume-equivalence result.

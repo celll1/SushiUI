@@ -1314,3 +1314,36 @@ Inference LoRA graph scopes and public inspection/editor exposure remain pending
 
 All aggregate residual contracts and the existing Ideogram LoRA/REPA cases pass
 (133 total). Changed-file compile and real imports pass with CUDA uninitialized.
+
+## Ideogram 4 generation adapter topology scopes
+
+All generation entry points parse requested LoRAs once and validate both loaded
+backbones plus every adapter declaration before prompt cleaning, text encoding,
+residency changes or transformer staging. They validate the normalized native
+image grid (including the existing 256px minimum) against nested downsampling.
+Residual requests reject reference grids, style injection, FBCache, NAG and
+NegPip before those workflows can install incompatible processors. Resolved
+spec/hash and disabled KV-cache status are recorded in generation metadata;
+dense requests clear stale residual metadata.
+
+The existing dual-component AdapterSession still owns atomic weight binding.
+Only after it succeeds does the backend install the required graph on both
+models. Cleanup restores both base graphs even if adapter unloading raises;
+weak references restrict cleanup to the original models during a partial reload.
+Metadata-free dense LoRAs cannot run against a residual checkpoint, nor can
+selected LoRAs require different graphs. Residual inference requires both native
+transformers, even for a LoRA trained on the conditional branch only.
+
+CPU tests use real trained native branches, compare both restored outputs, refuse
+mixed graph declarations and invalid unconditional targets atomically, verify
+parse-once behavior, empty-request cleanup, saved-base retention and partial
+model replacement. All three generation entries are checked before residency;
+unsupported features and indivisible normalized grids refuse at that boundary.
+Public presets, artifact inspection and editor exposure are still pending.
+GPU verification remains restricted to Qwen-Image 2.1.
+
+Validation covers 8 Ideogram residual contracts and 42 existing LoRA/REPA
+cases (50 total): 49 passed initially; after correcting the minimum-resolution
+assumption, the generation-entry contract passed its targeted rerun. The
+dual-graph unload-failure/retry contract also passes. Changed-file compile and
+real imports leave CUDA uninitialized.

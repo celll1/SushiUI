@@ -3,8 +3,9 @@
 Status: accepted implementation contract. Canonical topology validation and
 side-effect-free preview APIs are implemented. Qwen-Image 2.1 has an internal
 forward path with checkpointed backward verification. Training request/YAML
-configuration is connected for Qwen LoRA/full runs. Generation capability
-reporting and adapter-stack restoration are pending. The training graphical
+configuration is connected for Qwen LoRA/full runs. Generation topology
+reporting and adapter-stack restoration are connected for Qwen; production
+acceptance remains pending. The training graphical
 editor is connected; browser rendering and interaction acceptance are pending.
 Full Qwen artifact save/restore is connected; production acceptance remains pending. Other
 architectures require individual capability gates.
@@ -158,3 +159,17 @@ selection, nested-region addition and subtree removal edit the same request spec
 `PARAM_KEYS` carries both settings through clone, presets and run restoration.
 The backend inspection API is tested without tensor loading or model construction.
 Frontend build/type checking remain owner-run; browser/editor validation is pending.
+
+Generation preflights the entire Qwen LoRA stack before branch installation.
+Declared native config and topology must agree across every file and with a
+rewired full checkpoint. A legacy adapter with no topology declaration denotes
+the native sequence and cannot be mixed with rewired adapters. On a dense base,
+a consistent rewired stack temporarily installs its topology; unload restores
+the base using model-specific weakref ownership. Invalid structure/shape stacks
+leave the model untouched. Generation exceptions also unload branches/topology.
+Rewired generation excludes partition/reference/style workflows, validates the
+actual grid, and disables KV caching. PNG/gallery parameters record the effective
+spec/hash and cache policy. Loaded full-model topology is shown read-only through
+the shared graph in the model selector. Real AdapterSession CPU contracts cover
+these installation/refusal/lifetime paths; denoising in this test is a stub.
+Production GPU generation and frontend rendering remain unverified.

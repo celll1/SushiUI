@@ -19186,6 +19186,11 @@ components:
       type: object
       additionalProperties: true
       properties:
+        dit_rewiring_spec:
+          allOf: [{$ref: '#/components/schemas/DiTRewiringSpec'}]
+          nullable: true
+          description: Restored residual U-Net topology of the loaded model; null is the native sequence.
+          example: null
         source_type:
           type: string
         source:

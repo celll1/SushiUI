@@ -2647,3 +2647,39 @@ import with CUDA uninitialized. Production GPU offload remains unmeasured.
 Public model inspection/configuration and model-info display, YuE2 integration
 and final owner frontend/workflow acceptance remain outstanding. GPU acceptance
 continues to use Qwen-Image 2.1 only.
+
+
+### MiniMax Music 3 restored model-info and temporal graph display (CPU)
+
+The loaded-model information now includes the validated, detached residual spec
+and temporal geometry when the native flow component is rewired. Dense models
+report a null spec without inventing a temporal geometry. Geometry comes from
+the actual condition encoder's resampling rates/hops; its out_dim must match
+the flow DiT condition_dim. Missing conditioning geometry and mismatched channels
+refuse instead of displaying a guessed scale.
+
+Preview frames are the condition encoder's exact native CHUNK_FRAMES resampling
+calculation, matching its forward arithmetic. The released rates produce
+44100/512 = 86.1328125 latent frames/sec and 689 native tokens per 200 AR-frame
+chunk; patch_size is 1 because the flow DiT projects each latent frame directly.
+The four-deepest-block preset pads this preview to 692 transport tokens. This is
+one flow-input chunk, not the complete song, and no throughput claim follows
+from the diagram.
+
+The shared restored-topology summary displays Music 3's chunk duration/token
+count, preserved timestep token and unchanged autoregressive stage. Its temporal
+preview already uses the common zero-tail padding calculation and graph API.
+OpenAPI now permits any positive numeric temporal frame_rate, including the
+native fractional value; preview_frames can originate from native chunk geometry
+as well as generation defaults. Existing frontend frame_rate types are number.
+No frontend build/type/render command is run; source and API types are reviewed
+statically as required by the owner.
+
+CPU tests exercise the actual DiffusionPipelineManager Music 3 loading branch
+with real tiny native flow/condition components and a fixture component loader.
+They check detached metadata, native rates/preview frames, channel/geometry
+refusals and dense absence. Residual contracts plus encoder selection/reload
+fixtures pass 36 tests and 2 subtests; five tests targeting external real-model
+headers are excluded. Changed modules compile/import, OpenAPI parses, and CUDA
+remains uninitialized. Public artifact inspection/configuration, YuE2 and final
+owner workflow acceptance remain outstanding.

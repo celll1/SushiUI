@@ -1691,3 +1691,42 @@ the final mask-allocation changes; the final native/legacy ACE-Step subset passe
 persistence/load, training configuration/resume, generation adapter lifetime,
 presets and temporal editor discovery remain pending. ACE-Step is still excluded
 from public runtime capabilities. GPU validation remains Qwen-Image 2.1 only.
+
+
+## ACE-Step checkpoint topology persistence (CPU milestone)
+
+The full-parameter writer embeds reconstructible native wrapper config alongside
+its topology metadata; LoRA exports carry the required graph through the existing
+adapter metadata hook. Export validates owner/decoder graph agreement, config
+identity and actual depth before publishing. Dense legacy test doubles retain
+empty residual metadata without requiring a native config.
+
+The DiT loader performs topology/header preflight before model construction or
+tensor reads. Residual artifacts require explicit native depth, contiguous decoder
+block headers, native input/output projections and the wrapper null condition.
+Missing/inconsistent config, bad hashes and adapter-as-model payloads refuse.
+Mixed native/net-prefixed weights refuse in preflight and again against loaded
+tensors. Full writer net-prefixed checkpoints now load by stripping that uniform
+prefix; published unprefixed native weights retain their existing path. Embedded
+config reconstructs custom native dimensions; config-less published files retain
+the existing architecture template. Strict state loading remains in effect.
+The graph is installed on wrapper and decoder only after all weights load.
+
+CPU contracts use an actual reduced-width seven-layer conditional wrapper,
+including condition encoder, FSQ tokenizer and detokenizer. Full writer to native
+DiT loader preserves every saved tensor, decoder prediction and installed graph
+exactly in FP32. An unprefixed artifact also restores exactly. LoRA metadata
+retains the same graph. Header-only refusal probes forbid model allocation;
+missing individual native weights fail strict loading. These tests do not claim
+whole audio-pipeline or quantized-base acceptance.
+
+The companion VAE/text-encoder tree remains the existing loader requirement;
+standalone full-checkpoint companion resolution and full training resume still
+need connecting. Sharding, generation LoRA lifetime, training configure/resume,
+presets and temporal editor discovery also remain pending. ACE-Step stays outside
+public runtime capabilities. All checks use CPU with CUDA uninitialized; GPU
+verification remains exclusively Qwen-Image 2.1.
+
+Final verification: changed backend files compile and import successfully. The
+shared residual suites and legacy ACE-Step LoRA roundtrip suite pass 127 CPU
+cases, with 20 subtests. CUDA remains uninitialized throughout verification.

@@ -243,12 +243,18 @@ def _build_dit(dit_path: str, torch_dtype: torch.dtype):
     from .vendor import AceStepConditionGenerationModel, AceStepConfig
     from safetensors import safe_open
 
-    config = AceStepConfig(**ACESTEP_DIT_CONFIG)
+    from .residual_unet import preflight_checkpoint, restore_topology
+    topology, embedded_config = preflight_checkpoint(dit_path)
+    config = AceStepConfig(**(ACESTEP_DIT_CONFIG if embedded_config is None else embedded_config))
     model = AceStepConditionGenerationModel(config)
     model = model.to(dtype=torch_dtype)
 
     with safe_open(dit_path, framework="pt") as f:
         state_dict = {k: f.get_tensor(k) for k in f.keys()}
+    if any(key.startswith("net.") for key in state_dict):
+        if not all(key.startswith("net.") for key in state_dict):
+            raise ValueError("ACE-Step checkpoint mixes native and net-prefixed weights")
+        state_dict = {key.removeprefix("net."): value for key, value in state_dict.items()}
 
     # Detected and verified AROUND the swap: the census fires on EITHER a
     # ``.weight_scale`` key or an int8/float8 ``.weight``, while the swap helpers
@@ -285,6 +291,7 @@ def _build_dit(dit_path: str, torch_dtype: torch.dtype):
                 f"missing={missing[:5]} ({len(missing)}), "
                 f"unexpected={unexpected[:5]} ({len(unexpected)})"
             )
+        restore_topology(model, topology)
         model.eval()
         return model, config
 
@@ -297,6 +304,7 @@ def _build_dit(dit_path: str, torch_dtype: torch.dtype):
             f"ACE-Step DiT state_dict mismatch: missing={missing}, unexpected={unexpected}"
         )
 
+    restore_topology(model, topology)
     model.eval()
     return model, config
 

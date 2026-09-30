@@ -74,7 +74,13 @@ def model_topology_metadata(model):
     spec = getattr(model, "_residual_unet_spec", None)
     if spec != getattr(decoder, "_residual_unet_spec", None):
         raise ValueError("ACE-Step owner and decoder residual topologies disagree")
-    return {} if spec is None else checkpoint_metadata(validate_topology_identity(spec, decoder.config))
+    if spec is None:
+        return {}
+    config = native_config(decoder.config)
+    if len(decoder.layers) != config["num_hidden_layers"] or (
+            model is not decoder and native_config(model.config) != config):
+        raise ValueError("ACE-Step export owner/decoder geometry disagrees")
+    return checkpoint_metadata(validate_topology_identity(spec, decoder.config))
 
 
 def preflight_forward(model, length, attention_mask, encoder_mask, *, past_key_values,
@@ -128,3 +134,48 @@ def run_rewired_decoder(model, hidden, positions, timestep_proj, encoder_hidden,
 
     return run_rewired_stream(hidden, spec, "main", hidden.shape[1], 1, 0,
                               context, execute, coarse_context)
+
+
+def export_metadata(model):
+    import json
+    metadata = model_topology_metadata(model)
+    config = getattr(model, "config", None)
+    if config is not None and hasattr(config, "to_dict"):
+        raw = config.to_dict()
+        if metadata:
+            validate_topology_identity(model._residual_unet_spec, raw)
+        metadata["acestep_config"] = json.dumps(raw, allow_nan=False)
+    elif metadata:
+        raise ValueError("Rewired ACE-Step export requires native wrapper config")
+    return metadata
+
+
+def preflight_checkpoint(path):
+    import json
+    import re
+    from safetensors import safe_open
+    from core.rewiring.artifacts import read_artifact_topology
+    graph = read_artifact_topology(path)
+    with safe_open(str(path), framework="pt", device="cpu") as handle:
+        metadata = handle.metadata() or {}
+        keys = list(handle.keys())
+    if any(key.startswith("net.") for key in keys) and not all(key.startswith("net.") for key in keys):
+        raise ValueError("ACE-Step checkpoint mixes native and net-prefixed weights")
+    config = None
+    if metadata.get("acestep_config"):
+        config = json.loads(metadata["acestep_config"])
+        if not isinstance(config, dict):
+            raise ValueError("ACE-Step embedded config must be an object")
+    if graph is not None:
+        if config is None or type(config.get("num_hidden_layers")) is not int:
+            raise ValueError("Rewired ACE-Step requires embedded native config and explicit depth")
+        validate_topology_identity(graph, config)
+        native_keys = [key.removeprefix("net.") for key in keys]
+        blocks = {int(match.group(1)) for key in native_keys
+                  if (match := re.match(r"decoder\.layers\.(\d+)\.", key))}
+        if (blocks != set(range(config["num_hidden_layers"])) or
+                "decoder.proj_in.1.weight" not in native_keys or
+                "decoder.proj_out.1.weight" not in native_keys or
+                "null_condition_emb" not in native_keys):
+            raise ValueError("Rewired ACE-Step requires complete native wrapper headers, not adapter weights")
+    return graph, config

@@ -97,6 +97,65 @@ class AceStepRuntimeContracts(unittest.TestCase):
         torch.testing.assert_close(self.forward()[0],checked,rtol=2e-5,atol=2e-6)
         self.assertFalse(torch.cuda.is_initialized())
 
+    def test_full_writer_native_loader_and_lora_metadata_roundtrip(self):
+        import json, tempfile
+        from types import SimpleNamespace
+        from safetensors.torch import load_file, save_file
+        from core.models.acestep.vendor import AceStepConfig, AceStepConditionGenerationModel
+        from core.models.acestep.residual_unet import native_config, restore_topology, preflight_checkpoint
+        from core.models.acestep.loader import _build_dit
+        from core.training.adapters.acestep_adapter import AceStepFullParameterAdapter, AceStepLoRAAdapter
+        from core.rewiring.spec import checkpoint_metadata
+        raw = self.model.config.to_dict()
+        raw.update(num_lyric_encoder_hidden_layers=1,num_timbre_encoder_hidden_layers=1,
+            num_attention_pooler_hidden_layers=1,num_audio_decoder_hidden_layers=1,
+            text_hidden_dim=8,timbre_hidden_dim=4,fsq_dim=8,fsq_input_levels=[2,2],pool_window_size=2)
+        config = AceStepConfig(**raw)
+        config._attn_implementation = "sdpa"
+        owner = AceStepConditionGenerationModel(config).eval()
+        restore_topology(owner,self.spec)
+        def predict(model):
+            return model.decoder(self.audio,torch.tensor([.5,.7]),torch.tensor([.1,.2]),
+                torch.ones(2,48),self.encoder,torch.ones(2,5),self.context,use_cache=False)[0]
+        expected = predict(owner).detach()
+        trainer = SimpleNamespace(transformer=owner)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/"full.safetensors"
+            AceStepFullParameterAdapter(trainer).write_checkpoint(3,1,path)
+            spec, embedded = preflight_checkpoint(path)
+            self.assertEqual(spec,self.spec);self.assertEqual(native_config(embedded),native_config(config))
+            restored, restored_config = _build_dit(str(path),torch.float32)
+            self.assertEqual(restored._residual_unet_spec,self.spec)
+            self.assertEqual(restored.decoder._residual_unet_spec,self.spec)
+            self.assertEqual(set(owner.state_dict()),set(restored.state_dict()))
+            for name,value in owner.state_dict().items():
+                torch.testing.assert_close(value,restored.state_dict()[name],rtol=0,atol=0)
+            torch.testing.assert_close(predict(restored),expected,rtol=0,atol=0)
+            lora = AceStepLoRAAdapter(trainer,2,2)
+            self.assertEqual(read_checkpoint_metadata(lora.checkpoint_metadata({},3,1)),self.spec)
+            saved = load_file(str(path))
+            plain = {key.removeprefix("net."):value for key,value in saved.items()}
+            plain_path = Path(folder)/"plain.safetensors"
+            save_file(plain,str(plain_path),metadata={"acestep_config":json.dumps(embedded),**checkpoint_metadata(self.spec)})
+            plain_owner,_ = _build_dit(str(plain_path),torch.float32)
+            torch.testing.assert_close(predict(plain_owner),expected,rtol=0,atol=0)
+            broken = Path(folder)/"bad.safetensors"
+            cases = [(dict(saved,null_condition_emb=plain["null_condition_emb"].clone()),
+                    {"acestep_config":json.dumps(embedded),**checkpoint_metadata(self.spec)}),
+                (saved,checkpoint_metadata(self.spec)),
+                ({"lora_unet_decoder_layers_0_self_attn_q_proj.lora_down.weight":torch.ones(2,16)},
+                    {"acestep_config":json.dumps(embedded),**checkpoint_metadata(self.spec)}),
+                (saved,{"acestep_config":json.dumps(dict(embedded,patch_size=4)),**checkpoint_metadata(self.spec)}),
+                (saved,{"acestep_config":json.dumps(embedded),**checkpoint_metadata(self.spec),"sushi.rewire.spec_sha256":"0"*64})]
+            with patch("core.models.acestep.vendor.AceStepConditionGenerationModel",side_effect=AssertionError("Model allocation forbidden")):
+                for tensors,metadata in cases:
+                    save_file(tensors,str(broken),metadata=metadata)
+                    with self.assertRaises(ValueError):_build_dit(str(broken),torch.float32)
+            del saved["net.decoder.layers.0.self_attn.q_proj.weight"]
+            save_file(saved,str(broken),metadata={"acestep_config":json.dumps(embedded),**checkpoint_metadata(self.spec)})
+            with self.assertRaises(RuntimeError):_build_dit(str(broken),torch.float32)
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_native_low_precision_backward_and_cache_disable(self):
         from core.models.acestep.residual_unet import restore_topology
         restore_topology(self.model,self.spec)

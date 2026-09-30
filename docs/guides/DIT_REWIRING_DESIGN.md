@@ -381,3 +381,27 @@ change, and removing a parent while retaining another region. These controls
 receive static review; frontend build/type and browser checks remain deferred to
 the owner's consolidated verification. No additional GPU check is needed for
 this header/editor change, and no other model is run on the GPU.
+
+## Anima native execution foundation
+
+Anima now has an internal image-only residual adapter for its native five-axis
+hidden grid. The shared runtime pools the image stream; native 3D RoPE is rebuilt
+for each coarse grid, cross-attention context and AdaLN conditioning remain
+unchanged, and the full grid is restored before the native output head/unpatchify.
+Each native Block owns its existing checkpointing mode. The inference offloader's
+wait/submit order is preserved; no parameters are added. Native config identity
+covers constructor geometry, including the explicitly retained mlp_ratio, while
+attention backend selection remains independent.
+
+The initial boundary refuses multiple frames, temporal patches, extra absolute
+positions, style injection, FBCache, TREAD, block skipping/dropout and REPA. Three
+CPU contracts use a randomized seven-block native model to check grid/RoPE shape,
+unchanged cross-context, offloader ordering, finite checkpointed output/gradient
+equivalence and feature/config refusals. CUDA initialization is stubbed for the
+whole CPU test, including native forward's late imports. All 30 aggregate contracts
+pass; no Anima model weights or compute run on the GPU.
+
+This is an internal execution foundation. Artifact restoration, training/generation
+API integration, presets and editor discovery remain to be connected before
+Anima is advertised in the runtime capability list. It carries no real-model GPU,
+performance, quality or activation-offload equivalence claim.

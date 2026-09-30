@@ -425,3 +425,104 @@ class MiniMaxH3WrapperResidualContracts(unittest.TestCase):
         for feature in ('tread_enable','repa_enable','blockskip_enable'):
             with self.subTest(feature=feature),self.assertRaises(ValueError):
                 configure_training_topology(self.wrapper,{feature:True})
+
+    def test_public_configure_preset_and_header_inspection(self):
+        import asyncio,json,tempfile
+        import httpx
+        from fastapi import FastAPI
+        from safetensors.torch import save_file
+        from unittest.mock import patch
+        from api.rewiring_routes import router
+        from core.models.minimax_h3.residual_unet import configure_training_topology,default_topology,inspect_artifact
+        from core.rewiring.inspect import inspect_model
+        from core.rewiring.spec import checkpoint_metadata,preview_plan
+        self.assertEqual(configure_training_topology(self.wrapper,
+            {'dit_rewiring_mode':'configure','dit_rewiring_spec':self.spec}),self.spec)
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);(root/'diffusion_models').mkdir();(root/'official'/'transformer').mkdir(parents=True)
+            config=dict(self.inner.config);config['num_layers']=50
+            (root/'official'/'transformer'/'config.json').write_text(json.dumps(config),encoding='utf-8')
+            weights={'video_patch_proj.weight':torch.zeros(16,16),'audio_patch_proj.weight':torch.zeros(16,6),
+                'condition_proj.weight':torch.zeros(16,10),'blocks.0.mlp.fc1.weight':torch.zeros(64,16),
+                'blocks.0.attn.qkv_proj.weight':torch.zeros(96,16),
+                'blocks.0.adaln_proj.linear.weight':torch.zeros(96,8),'adaln_t_table':torch.zeros(33,8)}
+            weights.update({f'blocks.{i}.probe':torch.zeros(1) for i in range(50)})
+            weights.update({f'token_refiner.blocks.{i}.probe':torch.zeros(1) for i in range(2)})
+            (root/'official'/'model_index.json').write_text(json.dumps({'_class_name':'MiniMaxH3ModularPipeline'}),encoding='utf-8')
+            source=root/'diffusion_models'/'minimax_h3_fl2va_pruned_fp8_scaled.safetensors'
+            save_file(weights,str(source))
+            with patch('safetensors.torch.load_file',side_effect=AssertionError('tensor load ran')):
+                native,_=inspect_artifact(source)
+                spec=default_topology(native)
+                plan=preview_plan(spec,32,32)
+                self.assertEqual([sum(b['tokens']==n for b in plan['blocks']) for n in (1024,256,64)],[8,38,4])
+                save_file(weights,str(source),metadata=checkpoint_metadata(spec))
+                info=inspect_model(source)
+                self.assertEqual(info['topology'],spec);self.assertEqual(info['default_spec'],spec)
+                self.assertEqual(info,inspect_model(root));self.assertEqual(info,inspect_model(root/'official'))
+                self.assertEqual(info['video_geometry'],dict(temporal_scale_factor=None,height_scale_factor=32,
+                    width_scale_factor=32,grid_policy='packed_target_spatial_frames_v1'))
+                app=FastAPI();app.include_router(router,prefix='/api/v1')
+                async def check():
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+                        schema=(await client.get('/api/v1/schema/dit-rewiring')).json()
+                        self.assertIn('minimax_h3',schema['runtime_architectures'])
+                        self.assertEqual(schema['presets']['minimax_h3']['block_count'],50)
+                        reply=await client.post('/api/v1/models/rewiring/inspect',json={'model_path':str(source)})
+                        self.assertEqual(reply.status_code,200,reply.text);self.assertEqual(reply.json(),info)
+                        reply=await client.post('/api/v1/models/rewiring/validate',json=dict(spec=spec,token_height=32,token_width=32))
+                        self.assertEqual(reply.status_code,200,reply.text)
+                asyncio.run(check())
+            bad=Path(folder)/'adapter.safetensors'
+            save_file({'lora_unet_transformer_blocks_0_attn_to_q.lora_down.weight':torch.zeros(2,16)},str(bad),metadata={'model_type':'minimax_h3'})
+            with self.assertRaisesRegex(ValueError,'not adapter'):
+                inspect_model(bad)
+
+    def test_real_comfy_native_loader_restores_residual_graph_before_execution(self):
+        import json,tempfile
+        from safetensors.torch import save_file
+        from unittest.mock import patch
+        from core.models.minimax_h3.loader import _build_transformer
+        from core.models.minimax_h3.residual_unet import native_config,wrap_transformer
+        from core.rewiring.spec import checkpoint_metadata
+        self.inner.register_to_config(freq_dim=256,time_embed_hidden_dim=5376)
+        spec=build_spec('minimax_h3',[{'name':'main','block_count':7}],self.spec['regions'],native_config(self.inner.config))
+        wrapper=wrap_transformer(self.inner,spec)
+        state=self.inner.state_dict()
+        def rename(key):
+            replacements=(('token_refiner.refiner_blocks.','token_refiner.blocks.'),
+                ('transformer_blocks.','blocks.'),('audio_proj_in.','audio_patch_proj.'),
+                ('context_embedder.','condition_proj.'),('audio_proj_out.','final_layer.audio_out.'),
+                ('proj_in.','video_patch_proj.'),('proj_out.','final_layer.video_out.'),
+                ('norm_out.norm.','final_layer.norm.'),('norm_out.linear.','final_layer.adaln_proj.linear.'),
+                ('.attn.norm_q.','.attn.q_norm.'),('.attn.norm_k.','.attn.k_norm.'),
+                ('.attn.to_out.0.','.attn.out_proj.'),('.ff.net.0.proj.','.mlp.fc1.'),('.ff.net.2.','.mlp.fc2.'))
+            for old,new in replacements: key=key.replace(old,new)
+            return key
+        comfy={}
+        for key,value in state.items():
+            if '.attn.to_k.' in key or '.attn.to_v.' in key: continue
+            if '.attn.to_q.' in key:
+                prefix,suffix=key.split('.attn.to_q.')
+                comfy[rename(prefix+'.attn.qkv_proj.'+suffix)]=torch.cat(
+                    [state[prefix+'.attn.'+name+'.'+suffix] for name in ('to_q','to_k','to_v')]).contiguous()
+            else:
+                if '.ff.net.0.proj.weight' in key:
+                    a,b=value.chunk(2,dim=0);value=torch.cat((b,a))
+                comfy[rename(key)]=value.contiguous()
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);official=root/'official';(official/'transformer').mkdir(parents=True)
+            (official/'transformer'/'config.json').write_text(json.dumps(dict(self.inner.config)),encoding='utf-8')
+            source=root/'model.safetensors'
+            save_file(comfy,str(source),metadata=checkpoint_metadata(spec))
+            loaded,_=_build_transformer(str(source),torch.float32,str(official))
+            self.assertEqual(loaded._residual_unet_spec,spec)
+            for key,value in loaded.state_dict().items(): self.assertTrue(torch.equal(value,state[key]),key)
+            with torch.no_grad(): expected=wrapper(**self.args);got=loaded(**self.args)
+            for a,b in zip(got,expected): torch.testing.assert_close(a,b,rtol=2e-5,atol=2e-6)
+            broken=dict(checkpoint_metadata(spec));broken['sushi.rewire.spec_sha256']='0'*64
+            save_file(comfy,str(source),metadata=broken)
+            with patch('core.models.minimax_h3.hybrid_reader.open_dit_reader',side_effect=AssertionError('tensor reader opened')):
+                with self.assertRaisesRegex(ValueError,'hash mismatch'):
+                    _build_transformer(str(source),torch.float32,str(official))
+        self.assertFalse(torch.cuda.is_initialized())

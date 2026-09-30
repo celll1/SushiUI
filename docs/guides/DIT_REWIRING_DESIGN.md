@@ -2442,3 +2442,56 @@ import with CUDA uninitialized. No non-Qwen GPU was used. Public MiniMax-H3
 configuration/preset/schema/editor, output execution metadata and native full
 artifact loader integration remain pending; no full-training capability is
 implied by this LoRA integration.
+
+### MiniMax-H3 public spatial configuration and native inspection
+
+MiniMax-H3 now belongs to the public residual runtime capability list following
+its native CPU execution, train/save/resume and generation-adapter contracts.
+The authoritative param_defaults preset is 50 blocks with outer [4,46) and inner
+[23,27), each pooling 2x2 spatially: eight full-grid, 38 middle-grid and four
+maximum-depth blocks. The normal training default remains inherit; configure
+selects this preset only at its exact native depth, otherwise an explicit graph
+is required. Existing LoRA-only training capability is unchanged.
+
+The header-only inspector recognizes the distributed Comfy-style DiT keys and
+uses the loader's native geometry synthesis with companion official config.
+Root, official-directory and exact-file spellings yield identical information.
+Noncontiguous block headers and LoRA-only artifacts refuse inspection. It
+exposes the actual native patch-dependent spatial token scales and the packed
+per-frame policy, permitting the shared graphical layer/scale/skip editor to
+configure a model. The existing training panel discovers runtime architectures
+from the schema endpoint rather than a frontend hardcoded list.
+
+MiniMax-H3's causal temporal packing has no single constant pixel-to-latent
+frame ratio. Its video geometry therefore declares temporal_scale_factor=null
+instead of a guessed ratio; height/width retain positive native pixel-per-token
+scales. OpenAPI and the frontend video geometry type accept this explicit null
+and the packed_target_spatial_frames_v1 policy. The editor/summary use only the
+spatial scales for preview and state that time/audio remain native. Static
+review found and fixed the summary component's missing videoGeometry property
+type, which previously appeared as an unnamed member in its props declaration.
+Frontend build/type/render checks remain assigned to the owner.
+
+The existing Comfy loader validates residual metadata against synthesized native
+configuration before opening its tensor reader, then restores the native wrapper
+after its unchanged strict mapping and quantization guards. Hybrid base/overlay
+files must declare the same graph. Full loading and DiT-only reloading update
+the restored topology and video geometry in current_model_info; reload computes
+geometry before changing the live components. Test doubles now supply native
+config attributes for this model-information contract.
+
+CPU ASGI tests read the public schema, inspect native headers and validate the
+50-block preset's exact 8/38/4 token distribution. A complete tiny real Comfy
+checkpoint goes through the actual header synthesis, contiguous fused-QKV split,
+SwiGLU conversion, meta construction and strict native state restoration. Every
+weight is identical and residual predictions match within FP32 tolerance.
+Tampered graph digests refuse before opening the tensor reader. The LTX-2/shared
+video inspection and MiniMax-H3 component-order/LoRA checks pass 49 cases and 40
+subtests; after adding native-loader and reload contracts, the MiniMax-H3 native,
+DiT-reload and hybrid-lifecycle checks pass 69 cases and 14 subtests. Backend
+modules compile/import, OpenAPI parses, and CUDA stays uninitialized.
+
+This remains CPU/provisional support for MiniMax-H3. Output execution metadata,
+additional native full artifact formats, remaining architectures and consolidated
+owner frontend/workflow acceptance require completion. GPU validation remains
+restricted to Qwen-Image 2.1.

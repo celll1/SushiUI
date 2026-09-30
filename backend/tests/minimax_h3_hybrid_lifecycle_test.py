@@ -90,7 +90,7 @@ def _stub_build(monkeypatch, seen=None):
     def build(path, dtype, official, hybrid=None):
         if seen is not None:
             seen.append(hybrid)
-        return object(), object()
+        return SimpleNamespace(config={}), {}
 
     monkeypatch.setattr(h3_reload, "_build_transformer", build)
 
@@ -506,7 +506,7 @@ def test_a_base_only_swap_records_no_hybrid_fields(monkeypatch, tmp_path):
     monkeypatch.setattr(
         h3_reload, "build_dit_only_reload",
         lambda components, current_source, source: dict(
-            components, transformer=object(), variant="fl2va"))
+            components, transformer=SimpleNamespace(config={}), variant="fl2va"))
     reloaded, manager, saved = _swap(monkeypatch, base, None)
 
     assert reloaded is True

@@ -183,7 +183,7 @@ def configure_training_topology(model, config, *, resuming=False, pending_adapte
     native = native_config(inner.config) if needs_identity else {}
     view = SimpleNamespace(config=native, _residual_unet_spec=existing)
     resolved = resolve_training_topology(view, dict(config), 'minimax_h3', validate_topology_identity,
-        lambda owner, graph: None, resuming=resuming, pending_adapter_resume=pending_adapter_resume,
+        lambda owner, graph: None, default_topology, resuming=resuming, pending_adapter_resume=pending_adapter_resume,
         resume_spec=resume_spec, install=False)
     if resolved is not None:
         if len(inner.transformer_blocks) != native['num_layers']:
@@ -218,3 +218,45 @@ def resolve_generation_topology(model, files):
     native = native_config(inner.config) if needs_identity else {}
     view = SimpleNamespace(config=native, _residual_unet_spec=existing)
     return resolve_adapter_topology(view, files, validate_topology_identity)
+
+
+def default_topology(config):
+    from api.param_defaults import DIT_REWIRING_PRESETS
+    from core.rewiring.spec import OPERATORS, build_spec
+    config = native_config(config)
+    preset = DIT_REWIRING_PRESETS['minimax_h3']
+    if config['num_layers'] != preset['block_count']:
+        return None
+    return build_spec('minimax_h3', [{'name':'main','block_count':config['num_layers']}],
+                      [{**region, **OPERATORS} for region in preset['regions']], config)
+
+
+def video_geometry(config, spatial_scale=None):
+    from .loader import MINIMAX_H3_VAE_SPATIAL_COMPRESSION
+    config = native_config(config)
+    scale = MINIMAX_H3_VAE_SPATIAL_COMPRESSION if spatial_scale is None else spatial_scale
+    if type(scale) is not int or scale < 1:
+        raise ValueError('MiniMax-H3 native spatial scale must be a positive integer')
+    return dict(temporal_scale_factor=None, height_scale_factor=scale*config['patch_size'][1],
+                width_scale_factor=scale*config['patch_size'][2], grid_policy=GRID_POLICY)
+
+
+def inspect_artifact(path):
+    import re
+    from pathlib import Path
+    from core.rewiring.artifacts import read_artifact_topology
+    from .loader import _guard_component_file, _synthesize_transformer_config
+    source = Path(path)
+    header, metadata = _guard_component_file(str(source), label='transformer', allow_h3_int8_convrot=True)
+    if not {'video_patch_proj.weight','audio_patch_proj.weight','condition_proj.weight'}.issubset(header):
+        raise ValueError('MiniMax-H3 inspection requires native model headers, not adapter weights')
+    official = next((parent/'official' for parent in source.parents
+                     if (parent/'official'/'transformer'/'config.json').is_file()),None)
+    config = _synthesize_transformer_config(header, None if official is None else str(official))
+    blocks = {int(match.group(1)) for key in header if (match := re.match(r'blocks\.(\d+)\.',key))}
+    if blocks != set(range(config['num_layers'])):
+        raise ValueError('MiniMax-H3 native checkpoint block indices are not contiguous')
+    graph = read_artifact_topology(source)
+    if graph is not None:
+        graph = validate_topology_identity(graph,config)
+    return config,graph

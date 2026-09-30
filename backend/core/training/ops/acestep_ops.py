@@ -141,6 +141,12 @@ def load_components(trainer) -> None:
 
     setup_attention_backend(trainer, trainer.attention_backend)
 
+    from core.models.acestep.residual_unet import configure_training_topology
+    resume_path = getattr(trainer, "resume_from_checkpoint", None)
+    configure_training_topology(trainer.transformer, trainer.config,
+        resuming=bool(resume_path and Path(trainer.model_path).resolve() == Path(resume_path).resolve()),
+        pending_adapter_resume=bool(resume_path and getattr(trainer, "_manages_own_resume", False)))
+
     # Gradient checkpointing: AceStepDiTLayer/AceStepEncoderLayer subclass
     # transformers' GradientCheckpointingLayer, so the standard PreTrainedModel
     # toggle applies.

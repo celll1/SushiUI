@@ -1730,3 +1730,30 @@ verification remains exclusively Qwen-Image 2.1.
 Final verification: changed backend files compile and import successfully. The
 shared residual suites and legacy ACE-Step LoRA roundtrip suite pass 127 CPU
 cases, with 20 subtests. CUDA remains uninitialized throughout verification.
+
+## ACE-Step inherited training and LoRA resume (CPU milestone)
+
+Training component loading now resolves inherited topology after native attention
+selection and before freezing/precomputing conditioning. The shared training
+resolver receives a canonical config view rather than treating a Transformers
+config as an iterable mapping. Dense legacy loads remain valid. Residual loads
+require matching owner/decoder geometry, actual depth and eager/SDPA attention;
+shared incompatible training-feature checks still apply. Staged validation leaves
+both run config and topology untouched on failure.
+
+The real LoRA trainer validates checkpoint topology before reading/applying
+adapter tensors, and installs the resolved graph after successful weight loading.
+A saved native-decoder LoRA restores its tensors and owner/decoder graph from a
+dense base, reproducing the pre-save FP32 decoder prediction exactly. A dense
+adapter checkpoint against an already rewired base refuses before changing any
+branch tensor. CPU tests also cover dry-run immutability, inherited graph edits,
+unsupported attention/features and owner/decoder geometry disagreement.
+
+The shared residual and legacy ACE-Step suites pass 129 CPU cases and 20 subtests.
+The final geometry-check refinement passes all 17 native/legacy ACE-Step cases
+and 8 subtests. Changed backend files compile and import with CUDA uninitialized.
+This milestone does not verify a full audio training run, conditioner padding,
+standalone companion resolution or full-parameter resume orchestration. Those
+connections, generation adapter lifetime, public configure/presets and temporal
+editor discovery remain pending; ACE-Step is still outside public runtime
+capabilities. GPU validation remains Qwen-Image 2.1 only.

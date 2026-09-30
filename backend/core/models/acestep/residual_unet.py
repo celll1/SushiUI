@@ -7,6 +7,7 @@ from torch import nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
+from core.rewiring.training import NO_RESUME_SPEC
 from core.rewiring.runtime import run_rewired_stream
 from core.rewiring.spec import checkpoint_metadata, validate_model_identity, preview_plan
 
@@ -179,3 +180,33 @@ def preflight_checkpoint(path):
                 "null_condition_emb" not in native_keys):
             raise ValueError("Rewired ACE-Step requires complete native wrapper headers, not adapter weights")
     return graph, config
+
+
+def configure_training_topology(model, config, *, resuming=False, pending_adapter_resume=False,
+                                resume_spec=NO_RESUME_SPEC, install=True):
+    from types import SimpleNamespace
+    from api.param_defaults import TRAINING_DEFAULTS
+    from core.rewiring.training import resolve_training_topology
+    model_topology_metadata(model)
+    existing = getattr(model, "_residual_unet_spec", None)
+    declared = config.get("dit_rewiring_spec", TRAINING_DEFAULTS["dit_rewiring_spec"])
+    needs_identity = existing is not None or declared is not None or (
+        resume_spec is not NO_RESUME_SPEC and resume_spec is not None)
+    native = native_config(model.config) if needs_identity else {}
+    view = SimpleNamespace(config=native, _residual_unet_spec=existing)
+    resolved = resolve_training_topology(view, dict(config), "acestep", validate_topology_identity,
+        lambda owner, spec: None, resuming=resuming, pending_adapter_resume=pending_adapter_resume,
+        resume_spec=resume_spec, install=False)
+    if resolved is not None:
+        decoder = getattr(model, "decoder", model)
+        if decoder.config._attn_implementation not in ("eager", "sdpa"):
+            raise ValueError("ACE-Step residual training currently requires eager or SDPA attention")
+        if native_config(decoder.config) != native:
+            raise ValueError("ACE-Step training owner/decoder geometry disagrees")
+        if len(decoder.layers) != native["num_hidden_layers"]:
+            raise ValueError("ACE-Step actual decoder depth disagrees with native config")
+    if install:
+        restore_topology(model, resolved)
+        config["dit_rewiring_mode"] = config.get("dit_rewiring_mode", TRAINING_DEFAULTS["dit_rewiring_mode"])
+        config["dit_rewiring_spec"] = resolved
+    return resolved

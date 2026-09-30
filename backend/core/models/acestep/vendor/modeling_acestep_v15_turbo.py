@@ -1336,6 +1336,7 @@ class AceStepDiTModel(AceStepPreTrainedModel):
         if rewired:
             from ..residual_unet import preflight_forward
             preflight_forward(self, hidden_states.shape[1], attention_mask, encoder_attention_mask,
+                batch_size=hidden_states.shape[0], encoder_length=encoder_hidden_states.shape[1],
                 past_key_values=past_key_values, output_attentions=output_attentions,
                 custom_layers_config=custom_layers_config, enable_early_exit=enable_early_exit,
                 return_hidden_states=return_hidden_states)
@@ -1484,7 +1485,7 @@ class AceStepDiTModel(AceStepPreTrainedModel):
         if rewired:
             from ..residual_unet import run_rewired_decoder
             hidden_states = run_rewired_decoder(self, hidden_states, position_ids,
-                timestep_proj, encoder_hidden_states, **flash_attn_kwargs)
+                timestep_proj, encoder_hidden_states, encoder_attention_mask, **flash_attn_kwargs)
         else:
             for index_block, layer_module in enumerate(self.layers):
 

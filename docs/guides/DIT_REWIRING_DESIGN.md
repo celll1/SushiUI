@@ -1757,3 +1757,35 @@ standalone companion resolution or full-parameter resume orchestration. Those
 connections, generation adapter lifetime, public configure/presets and temporal
 editor discovery remain pending; ACE-Step is still outside public runtime
 capabilities. GPU validation remains Qwen-Image 2.1 only.
+
+## ACE-Step padded conditioning and native training step (CPU milestone)
+
+Residual decoder execution now retains the caller's native condition validity
+mask. Audio remains an unpadded temporal grid; condition tokens remain at native
+length. A shared B/1/1/L additive key mask broadcasts across all coarse/full query
+resolutions without allocating a query-by-condition matrix at each region.
+Binary B/L masks require one valid token per row and exact input dimensions;
+invalid shapes, nonbinary values, NaNs and empty rows refuse before projections.
+All-valid conditioning keeps the previous mask-free residual path. The dense
+vendored path remains unchanged; its mask handling is not a padding oracle.
+
+CPU contracts observe the same key-mask object at all seven native layers and
+three query resolutions. Perturbing masked condition values leaves decoder
+predictions exactly unchanged, and masked condition input gradients are zero.
+Checkpointed predictions/parameter gradients match the ordinary residual path;
+eager and SDPA agree within FP32 tolerance. BF16/FP16 masked backwards remain
+finite. Native patch-tail padding still preserves requested audio length.
+
+The real training ops now run against a reduced-width conditional wrapper with
+native 64-channel audio, condition encoders, FSQ tokenizer/detokenizer, variable
+text/lyric lengths and residual decoder checkpointing. Both full-decoder training
+and real injected LoRA produce finite losses/gradients and AdamW parameter
+updates; condition encoder gradients remain absent. This is a cached-latent CPU
+training-step contract, not acceptance of VAE/audio encoding, a complete training
+job, block-swap CUDA transfers or decoded sound quality.
+
+Changed files compile and import. Shared residual and legacy ACE-Step suites pass
+131 CPU cases and 27 subtests with CUDA uninitialized. Standalone companion
+resolution/full resume orchestration, generation adapter lifetime, public
+configure/presets and temporal editor discovery remain pending. ACE-Step remains
+outside public runtime capabilities; GPU validation stays Qwen-Image 2.1 only.

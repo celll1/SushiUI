@@ -84,7 +84,7 @@ def model_topology_metadata(model):
     return checkpoint_metadata(validate_topology_identity(spec, decoder.config))
 
 
-def preflight_forward(model, length, attention_mask, encoder_mask, *, past_key_values,
+def preflight_forward(model, length, attention_mask, encoder_mask, *, batch_size, encoder_length, past_key_values,
                       output_attentions, custom_layers_config, enable_early_exit, return_hidden_states):
     graph = validate_topology_identity(model._residual_unet_spec, model.config)
     if len(model.layers) != native_config(model.config)["num_hidden_layers"]:
@@ -94,17 +94,28 @@ def preflight_forward(model, length, attention_mask, encoder_mask, *, past_key_v
         raise ValueError("ACE-Step residual execution currently requires eager or SDPA attention")
     if past_key_values is not None or output_attentions or custom_layers_config is not None or enable_early_exit or return_hidden_states:
         raise ValueError("ACE-Step residual execution refuses cache, attention extraction and early-exit probes")
-    for mask in (attention_mask, encoder_mask):
-        if mask is not None and (not isinstance(mask, torch.Tensor) or mask.ndim != 2 or not bool((mask == 1).all())):
-            raise ValueError("ACE-Step residual execution currently requires unpadded conditioning and audio")
+    if attention_mask is not None and (not isinstance(attention_mask, torch.Tensor) or
+            attention_mask.shape != (batch_size, length) or not bool((attention_mask == 1).all())):
+        raise ValueError("ACE-Step residual execution currently requires unpadded audio")
+    if encoder_mask is not None and (not isinstance(encoder_mask, torch.Tensor) or
+            encoder_mask.shape != (batch_size, encoder_length) or
+            not bool(((encoder_mask == 0) | (encoder_mask == 1)).all()) or
+            not bool(encoder_mask.bool().any(dim=1).all())):
+        raise ValueError("ACE-Step residual conditioning mask requires binary native B/L with a valid token per row")
 
 
-def run_rewired_decoder(model, hidden, positions, timestep_proj, encoder_hidden, **kwargs):
+def run_rewired_decoder(model, hidden, positions, timestep_proj, encoder_hidden, encoder_mask=None, **kwargs):
     spec = validate_topology_identity(model._residual_unet_spec, model.config)
     if (positions.ndim != 2 or positions.shape[1] != hidden.shape[1]
             or positions.shape[0] not in (1, hidden.shape[0]) or not torch.isfinite(positions).all()
             or not bool((positions[:,1:] - positions[:,:-1] == 1).all())):
         raise ValueError("ACE-Step residual positions must be a regular native temporal grid")
+    cross_mask = None
+    if encoder_mask is not None and not bool((encoder_mask == 1).all()):
+        # Conditioning stays at native length; broadcast its key mask across every query grid.
+        cross_mask = hidden.new_zeros((hidden.shape[0], 1, 1, encoder_hidden.shape[1]))
+        cross_mask.masked_fill_(~encoder_mask.to(device=hidden.device, dtype=torch.bool)[:, None, None, :],
+                                torch.finfo(hidden.dtype).min)
     def make_context(current, states):
         mask = None
         if "sliding_attention" in model.config.layer_types:
@@ -128,7 +139,7 @@ def run_rewired_decoder(model, hidden, positions, timestep_proj, encoder_hidden,
         def block(value):
             return nn.Module.__call__(model.layers[index], value, rotary, timestep_proj,
                 mask, positions, None, False, False, cache_position, encoder_hidden,
-                None, **kwargs)[0]
+                cross_mask, **kwargs)[0]
         if model.training and model.gradient_checkpointing:
             return checkpoint(block, states, use_reentrant=False)
         return block(states)

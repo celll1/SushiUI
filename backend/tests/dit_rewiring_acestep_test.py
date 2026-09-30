@@ -259,12 +259,118 @@ class AceStepRuntimeContracts(unittest.TestCase):
             result = self.forward(hidden_states=audio,context_latents=self.context.detach().to(dtype),
                                   encoder_hidden_states=self.encoder.detach().to(dtype),
                                   timestep=torch.tensor([.5,.7],dtype=dtype),
-                                  timestep_r=torch.tensor([.1,.2],dtype=dtype))[0]
+                                  timestep_r=torch.tensor([.1,.2],dtype=dtype),
+                                  encoder_attention_mask=torch.tensor([[1,1,0,0,0],[1,0,1,0,1]]))[0]
             self.assertEqual(result.dtype,dtype);self.assertTrue(torch.isfinite(result).all())
             result.float().square().mean().backward()
             self.assertTrue(torch.isfinite(audio.grad).all())
             self.assertTrue(torch.count_nonzero(audio.grad))
             self.assertTrue(torch.isfinite(self.model.layers[0].self_attn.q_proj.weight.grad).all())
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_conditioning_padding_is_masked_at_every_resolution(self):
+        from core.models.acestep.residual_unet import restore_topology
+        restore_topology(self.model, self.spec)
+        mask = torch.tensor([[1,1,0,0,0],[1,0,1,0,1]])
+        changed = self.encoder.detach().clone()
+        changed[~mask.bool()] += 100
+        observations = []
+        handles = [layer.register_forward_pre_hook(lambda module,args:
+            observations.append((args[0].shape[1],args[10]))) for layer in self.model.layers]
+        try:
+            expected = self.forward(encoder_attention_mask=mask)[0]
+        finally:
+            for handle in handles: handle.remove()
+        self.assertEqual([count for count,_ in observations], [24,12,6,6,6,12,24])
+        shared = observations[0][1]
+        self.assertEqual(shared.shape, (2,1,1,5))
+        self.assertTrue(all(value is shared for _,value in observations))
+        torch.testing.assert_close(shared[:,0,0] == 0, mask.bool())
+        torch.testing.assert_close(self.forward(encoder_hidden_states=changed,
+            encoder_attention_mask=mask)[0], expected, rtol=0, atol=0)
+        expected.square().mean().backward()
+        self.assertEqual(torch.count_nonzero(self.encoder.grad[~mask.bool()]).item(), 0)
+        self.assertGreater(torch.count_nonzero(self.encoder.grad[mask.bool()]).item(), 0)
+        gradients = {name:value.grad.detach().clone() for name,value in self.model.named_parameters()
+                     if value.grad is not None}
+        self.model.zero_grad(set_to_none=True)
+        self.model.gradient_checkpointing_enable()
+        checkpointed = self.forward(encoder_attention_mask=mask)[0]
+        torch.testing.assert_close(checkpointed, expected, rtol=0, atol=0)
+        checkpointed.square().mean().backward()
+        for name,value in self.model.named_parameters():
+            if name in gradients:
+                torch.testing.assert_close(value.grad, gradients[name], rtol=0, atol=0)
+        self.model.gradient_checkpointing_disable()
+        self.model.set_attn_implementation("sdpa")
+        torch.testing.assert_close(self.forward(encoder_attention_mask=mask)[0], expected,
+                                   rtol=2e-5, atol=2e-6)
+        invalid = [torch.ones(1,5), torch.ones(2,6), torch.full((2,5), .5),
+                   torch.full((2,5), float("nan")), torch.tensor([[1,1,1,1,1],[0,0,0,0,0]])]
+        with patch.object(self.model.proj_in,"forward",side_effect=AssertionError("Projection must not run")):
+            for value in invalid:
+                with self.subTest(mask=value), self.assertRaises(ValueError):
+                    self.forward(encoder_attention_mask=value)
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_native_conditioner_flow_training_updates_full_and_lora(self):
+        from types import SimpleNamespace
+        from core.models.acestep.vendor import AceStepConfig, AceStepConditionGenerationModel
+        from core.models.acestep.residual_unet import native_config, restore_topology, configure_training_topology
+        from core.training.ops.acestep_ops import train_step
+        from core.training.adapters.acestep_adapter import AceStepLoRAAdapter
+        raw = self.model.config.to_dict()
+        raw.update(in_channels=192, audio_acoustic_hidden_dim=64,
+            num_lyric_encoder_hidden_layers=1, num_timbre_encoder_hidden_layers=1,
+            num_attention_pooler_hidden_layers=1, num_audio_decoder_hidden_layers=1,
+            text_hidden_dim=8, timbre_hidden_dim=64, timbre_fix_frame=48,
+            fsq_dim=16, fsq_input_levels=[2,2], pool_window_size=2)
+        for method in ("full", "lora"):
+            with self.subTest(method=method):
+                config = AceStepConfig(**raw)
+                config._attn_implementation = "sdpa"
+                owner = AceStepConditionGenerationModel(config).train()
+                spec = build_spec("acestep", self.spec["streams"], self.spec["regions"], native_config(config))
+                restore_topology(owner, spec)
+                owner.requires_grad_(False)
+                trainer = SimpleNamespace(transformer=owner, config={}, device=torch.device("cpu"),
+                    training_dtype=torch.float32, mixed_precision=False, reconstruction_loss_weight=.25,
+                    acestep_silence_latent=torch.zeros(1,48,64))
+                configure_training_topology(owner, trainer.config)
+                if method == "full":
+                    owner.decoder.requires_grad_(True)
+                else:
+                    adapter = AceStepLoRAAdapter(trainer, 2, 2, torch.float32)
+                    layers = {}
+                    adapter.apply_lora_to_unet(layers)
+                owner.gradient_checkpointing_enable()
+                trainable = [value for value in owner.parameters() if value.requires_grad]
+                snapshots = [value.detach().clone() for value in trainable]
+                optimizer = torch.optim.AdamW(trainable, lr=.001)
+                observed = []
+                hook = owner.decoder.register_forward_pre_hook(lambda module,args,kwargs:
+                    observed.append(kwargs["encoder_attention_mask"].detach().clone()), with_kwargs=True)
+                try:
+                    loss, prediction, reconstruction = train_step(trainer, torch.randn(2,48,64),
+                        torch.randn(2,5,8), dict(text_attention_mask=torch.tensor([[1,1,1,1,1],[1,1,0,0,0]]),
+                            lyric_hidden_states=torch.randn(2,4,8),
+                            lyric_attention_mask=torch.tensor([[1,1,1,1],[1,0,0,0]])),
+                        timesteps=torch.tensor([.5,.7]))
+                finally:
+                    hook.remove()
+                self.assertTrue(torch.isfinite(loss))
+                self.assertGreater(prediction.item(), 0)
+                self.assertGreater(reconstruction.item(), 0)
+                self.assertTrue((observed[0] == 0).any())
+                self.assertTrue(observed[0].bool().any(dim=1).all())
+                loss.backward()
+                self.assertTrue(all(value.grad is None or torch.isfinite(value.grad).all() for value in trainable))
+                self.assertTrue(any(value.grad is not None and torch.count_nonzero(value.grad) for value in trainable))
+                self.assertTrue(all(value.grad is None for value in owner.encoder.parameters()))
+                optimizer.step()
+                self.assertTrue(any(not torch.equal(before,after) for before,after in zip(snapshots,trainable)))
+                self.assertEqual(owner._residual_unet_spec, spec)
+                self.assertEqual(owner.decoder._residual_unet_spec, spec)
         self.assertFalse(torch.cuda.is_initialized())
 
     def test_identity_decoder_padding_and_atomic_refusals(self):
@@ -299,7 +405,8 @@ class AceStepRuntimeContracts(unittest.TestCase):
             torch.testing.assert_close(head_inputs[0],head_inputs[1],rtol=0,atol=0)
             torch.testing.assert_close(rewired,ordinary,rtol=2e-5,atol=1e-6)
             restore_topology(self.model,self.spec)
-            padded = self.forward(hidden_states=self.audio[:,:47],context_latents=self.context[:,:47])[0]
+            padded = self.forward(hidden_states=self.audio[:,:47],context_latents=self.context[:,:47],
+                                  attention_mask=torch.ones(2,47))[0]
             self.assertEqual(padded.shape,(2,47,4))
         finally:
             for handle in handles:handle.stop()

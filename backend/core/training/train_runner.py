@@ -3395,6 +3395,9 @@ def main():
                 attention_impl=attention_impl,
                 min_snr_gamma=min_snr_gamma,
                 reconstruction_loss_weight=reconstruction_loss_weight,
+                blocks_to_swap=train_config.get('blocks_to_swap', TRAINING_DEFAULTS['blocks_to_swap']),
+                use_pinned_memory=train_config.get('use_pinned_memory', TRAINING_DEFAULTS['use_pinned_memory']),
+                num_optimizer_groups=train_config.get('num_optimizer_groups', TRAINING_DEFAULTS['num_optimizer_groups']),
                 # Component-specific learning rates
                 unet_lr=unet_lr,
                 text_encoder_lr=text_encoder_lr,

@@ -73,6 +73,110 @@ class LensRuntimeContracts(unittest.TestCase):
         self.assertEqual(original,{name:id(value) for name,value in self.model.named_parameters()})
         self.assertFalse(torch.cuda.is_initialized())
 
+    def test_training_inheritance_lora_resume_and_real_train_step(self):
+        from core.models.lens.residual_unet import configure_training_topology, restore_topology
+        from core.training.adapters.lens_adapter import LensLoRAAdapter
+        from core.training.lora_trainer import LoRATrainer
+        from core.training.ops import lens_ops
+        from core.rewiring.spec import checkpoint_metadata
+        from safetensors.torch import save_file
+        restore_topology(self.model,self.spec)
+        config={}
+        self.assertEqual(configure_training_topology(self.model,config,resuming=True),self.spec)
+        for key in ("repa_enable","tread_enable","blockskip_enable","dit_partition_training_enabled"):
+            with self.assertRaisesRegex(ValueError,key):
+                configure_training_topology(self.model,dict(config,**{key:True}))
+        with self.assertRaisesRegex(ValueError,"block_skip_rate"):
+            configure_training_topology(self.model,dict(config,block_skip_rate=0.1))
+        restore_topology(self.model,None)
+        untouched={}
+        self.assertEqual(configure_training_topology(self.model,untouched,resume_spec=self.spec,install=False),self.spec)
+        self.assertEqual(untouched,{})
+        self.assertFalse(hasattr(self.model,"_residual_unet_spec"))
+        trainer=SimpleNamespace(transformer=self.model,config={},is_lens=True,
+            log_prefix="[LensResumeTest]",lora_rank=2,lora_alpha=2,
+            adapter_algorithm="lora",weight_decompose=False,adapter_config={})
+        self.model.requires_grad_(False)
+        adapter=LensLoRAAdapter(trainer,2,2)
+        layers={};adapter.apply_lora_to_unet(layers);trainer.lora_layers=layers
+        self.assertGreater(len(layers),0)
+        before={f"{name}.{key}":value.detach().clone()
+                for name,layer in layers.items() for key,value in layer.branch_tensors().items()}
+        tensors={key:value+0.01 for key,value in before.items()}
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/"resume.safetensors"
+            metadata={"model_type":"lens","step":"17",**checkpoint_metadata(self.spec)}
+            save_file({"unrelated":torch.ones(1)},str(path),metadata=metadata)
+            with self.assertRaisesRegex(ValueError,"missing required tensor"):
+                LoRATrainer.load_checkpoint(trainer,str(path))
+            self.assertFalse(hasattr(self.model,"_residual_unet_spec"));self.assertEqual(trainer.config,{})
+            for name,layer in layers.items():
+                for key,value in layer.branch_tensors().items():
+                    torch.testing.assert_close(value,before[f"{name}.{key}"],rtol=0,atol=0)
+            save_file(tensors,str(path),metadata=metadata)
+            self.assertEqual(LoRATrainer.load_checkpoint(trainer,str(path)),17)
+            self.assertEqual(self.model._residual_unet_spec,self.spec)
+            for name,layer in layers.items():
+                for key,value in layer.branch_tensors().items():
+                    torch.testing.assert_close(value,tensors[f"{name}.{key}"],rtol=0,atol=0)
+            save_file(tensors,str(path),metadata={"model_type":"lens"})
+            with self.assertRaisesRegex(ValueError,"disagree"):
+                LoRATrainer.load_checkpoint(trainer,str(path))
+            self.assertEqual(self.model._residual_unet_spec,self.spec)
+        self.model.enable_gradient_checkpointing()
+        trainer.device=torch.device("cpu");trainer.training_dtype=torch.float32;trainer.mixed_precision=False
+        trainer.noise_scheduler=None;trainer.reconstruction_loss_weight=0
+        trainer.stash_cfg_null_per_sample_loss=lambda *a:None
+        loss,prediction_loss,reconstruction_loss=lens_ops.train_step(trainer,self.images.detach(),
+            torch.stack([feature.detach() for feature in self.features],dim=1),self.mask,
+            timesteps=torch.tensor([0.3,0.7]),latent_h=8,latent_w=12)
+        self.assertTrue(torch.isfinite(loss));self.assertTrue(torch.isfinite(prediction_loss))
+        loss.backward()
+        grads=[value.grad for layer in layers.values() for value in layer.parameters() if value.requires_grad]
+        self.assertTrue(grads);self.assertTrue(all(g is not None and torch.isfinite(g).all() for g in grads))
+        self.assertTrue(any(torch.count_nonzero(g) for g in grads))
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_training_loaders_inherit_before_checkpointing_and_freeze(self):
+        from core.models.lens.residual_unet import restore_topology, configure_training_topology
+        from core.training.ops import lens_ops
+        from core.training.base_trainer import BaseTrainer
+        from core.model_loader import ModelLoader
+        restore_topology(self.model,self.spec)
+        components=dict(transformer=self.model,vae=torch.nn.Linear(1,1),text_encoder=torch.nn.Linear(1,1),
+                        tokenizer=object(),scheduler=object(),base_dir="base")
+        for resume in (False,True):
+            trainer=SimpleNamespace(config={},model_path="full.safetensors",weight_dtype=torch.float32,
+                vae_dtype=torch.float32,log_prefix="[LensLoadTest]",resume_from_checkpoint="full.safetensors" if resume else None)
+            def resolve_then_stop(model,config,**options):
+                self.assertEqual(options["resuming"],resume)
+                self.assertEqual(configure_training_topology(model,config,**options),self.spec)
+                raise RuntimeError("stop before checkpointing")
+            with patch.object(ModelLoader,"detect_model_type",return_value="lens"), \
+                 patch.object(ModelLoader,"load_lens_from_path",return_value=components), \
+                 patch("core.training.vae_swap.apply_latent_space"), \
+                 patch("core.models.lens.residual_unet.configure_training_topology",side_effect=resolve_then_stop):
+                with self.assertRaisesRegex(RuntimeError,"stop before checkpointing"):
+                    if resume:BaseTrainer._load_checkpoint_as_base(trainer,"full.safetensors")
+                    else:lens_ops.load_components(trainer)
+            self.assertEqual(trainer.config["dit_rewiring_spec"],self.spec)
+        trainer=SimpleNamespace(config={},model_path="full.safetensors",weight_dtype=torch.float32,
+            vae_dtype=torch.float32,log_prefix="[LensLoadTest]",gradient_checkpointing=True,
+            blocks_to_swap=0,device=torch.device("cpu"),use_flash_attention=False)
+        checkpoint_calls=[]
+        native_checkpoint=self.model.enable_gradient_checkpointing
+        def observe_checkpoint(**options):
+            self.assertEqual(trainer.config["dit_rewiring_spec"],self.spec)
+            checkpoint_calls.append(options);native_checkpoint(**options)
+        with patch.object(ModelLoader,"load_lens_from_path",return_value=components), \
+             patch("core.training.vae_swap.apply_latent_space"), \
+             patch.object(self.model,"enable_gradient_checkpointing",side_effect=observe_checkpoint):
+            lens_ops.load_components(trainer)
+        self.assertEqual(len(checkpoint_calls),1)
+        self.assertTrue(all(not value.requires_grad for value in self.model.parameters()))
+        self.assertEqual(self.model._residual_unet_spec,self.spec)
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_full_writer_native_loader_single_shard_and_preflight(self):
         from core.models.lens.residual_unet import restore_topology,native_config,preflight_checkpoint
         from core.training.adapters.lens_adapter import LensFullParameterAdapter,LensLoRAAdapter

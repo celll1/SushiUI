@@ -886,7 +886,7 @@ and 69 existing Lens LoRA/REPA/text-mask cases pass, with changed-file compile a
 real imports leaving CUDA untouched.
 
 Lens remains outside public runtime capabilities. Directory artifact restore,
-training configuration/resume, generation adapter scopes and model/editor
+public training configuration, generation adapter scopes and model/editor
 inspection must be connected before exposing it. No Lens GPU inference/training,
 performance or quality evidence is claimed; GPU acceptance stays Qwen-only.
 
@@ -921,3 +921,29 @@ loading. No Lens GPU performance, quality or training acceptance is claimed.
 All 67 aggregate rewiring contracts plus 104 existing Lens LoRA/REPA/text-mask
 and VAE regression cases pass (171 total). Changed backend files compile and
 import with CUDA untouched. GPU validation remains limited to Qwen 2.1.
+
+
+## Lens training topology inheritance and resume
+
+Lens training now resolves inherited residual topology after latent-space setup
+and before native checkpointing, freezing or base quantization. The full-parameter
+resume branch uses this same loader. Base/resume/explicit inherited declarations
+must agree, and residual runs refuse REPA, TREAD, block skipping and partition
+training/global adapters through the shared training gates. New public configure
+requests remain unavailable until Lens capability/editor integration is complete;
+no default topology is exposed in this milestone.
+
+LoRA resume validates checkpoint topology before reading or changing adapter
+weights, and installs the resolved topology/config only after successful weight
+restoration. Incomplete branch tensors leave the dense model, config and all
+existing branch weights untouched; a later dense checkpoint cannot erase an
+installed residual topology. CPU tests use real Lens LoRA branches and the
+production flow-matching train_step with native checkpointing, confirming finite
+loss and finite, nonzero adapter gradients. Both normal and full-resume loaders
+reach topology resolution before checkpointing; the normal loader also completes
+checkpoint setup, freezing and CPU placement.
+
+All 69 aggregate residual contracts plus 104 existing Lens/VAE cases pass (173
+total). The final loader check also passes separately. Changed files compile and
+import with CUDA untouched. This is CPU compatibility evidence only; GPU training,
+quality, performance and calibration acceptance remain Qwen 2.1 only.

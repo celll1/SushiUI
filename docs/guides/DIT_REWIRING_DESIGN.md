@@ -299,6 +299,15 @@ the original block loop.
 Three CPU contracts exercise a seven-block native GQA model with nested regions:
 image/text token counts and mask preservation, checkpointed output/gradient
 equivalence, and incompatible coordinates/config/REPA refusal. This is a native
-execution foundation only. Krea is not advertised in runtime capabilities until
-artifact restoration, generation/training integration and real-model API checks
-are complete; Qwen remains the sole exposed conversion architecture.
+execution foundation with artifact persistence. Krea is not advertised in runtime
+capabilities until generation/training integration and real-model API checks are
+complete; Qwen remains the sole exposed conversion architecture.
+
+Krea full checkpoints now save the canonical topology and restore it from single
+files, shard indices and transformer directories. Header/config validation runs
+before tensor loading. Export metadata cannot replace the installed topology;
+LoRA checkpoints also carry the installed topology. Two additional CPU contracts
+use actual writers/loaders to verify bit-identical weights and output after
+single/sharded round trips, dense compatibility, directory restoration and
+pre-allocation refusal of mismatched config. Training resume and temporary LoRA
+generation topology installation remain pending integration.

@@ -210,10 +210,17 @@ def _build_transformer_from_dir(model_path: str, torch_dtype: torch.dtype):
             if k in file_cfg:
                 config[k] = file_cfg[k]
 
+    from core.rewiring.artifacts import read_directory_topology
+    from .residual_unet import restore_topology, validate_topology_identity
+    topology = read_directory_topology(transformer_dir)
+    if topology is not None:
+        topology = validate_topology_identity(topology, config)
     state_dict = _load_component_state_dict(transformer_dir, "diffusion_pytorch_model")
     reject_unsupported_quant(transformer_dir, {}, state_dict)
     diffusers_sd, _ = normalize_state_dict(state_dict, metadata={})
-    return build_krea2_transformer(diffusers_sd, config, torch_dtype)
+    transformer = build_krea2_transformer(diffusers_sd, config, torch_dtype)
+    restore_topology(transformer, topology)
+    return transformer
 
 
 def load_krea2_components(

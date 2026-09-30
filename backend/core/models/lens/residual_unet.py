@@ -95,6 +95,30 @@ def preflight_checkpoint(path):
     return spec, config
 
 
+def preflight_directory(path):
+    import json
+    from pathlib import Path
+    from core.rewiring.artifacts import read_directory_topology
+    directory = Path(path) / "transformer"
+    if not directory.is_dir():
+        return None, None, None
+    spec = read_directory_topology(directory)
+    if spec is None:
+        return None, None, None
+    with (directory / "config.json").open(encoding="utf-8") as handle:
+        config = json.load(handle)
+    if not isinstance(config, dict):
+        raise ValueError("Lens directory transformer config must be an object")
+    config = native_config(config)
+    validate_topology_identity(spec, config)
+    source = directory / "diffusion_pytorch_model.safetensors.index.json"
+    if not source.is_file():
+        source = directory / "diffusion_pytorch_model.safetensors"
+    if not source.is_file():
+        raise ValueError("Rewired Lens directory requires native safetensors weights")
+    return spec, config, source
+
+
 def _grid(shapes, batch, count):
     if not isinstance(shapes, (list, tuple)) or not shapes:
         raise ValueError("Lens rewiring requires a native image grid")

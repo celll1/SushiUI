@@ -327,6 +327,71 @@ class LensRuntimeContracts(unittest.TestCase):
             self.assertEqual(preflight_checkpoint(dense),(None,None))
         self.assertFalse(torch.cuda.is_initialized())
 
+    def test_directory_native_restore_and_header_refusals(self):
+        from core.models.lens.residual_unet import restore_topology, native_config, preflight_directory
+        from core.models.common.single_file_format import save_single_file_state
+        from core.rewiring.spec import checkpoint_metadata
+        from core.model_loader import ModelLoader
+        from safetensors.torch import save_file, load_file
+        restore_topology(self.model,self.spec)
+        config=native_config(self.model);expected=self.forward().detach()
+        metadata=checkpoint_metadata(self.spec)
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            directories=[]
+            for name,sharded in (("single",False),("sharded",True)):
+                directory=root/name;transformer_dir=directory/"transformer"
+                transformer_dir.mkdir(parents=True);(directory/"vae").mkdir()
+                (directory/"vae"/"config.json").write_text("{}")
+                (transformer_dir/"config.json").write_text(json.dumps(dict(config,_class_name="LensTransformer2DModel")))
+                save_single_file_state(self.model.state_dict(),metadata,
+                    str(transformer_dir/"diffusion_pytorch_model.safetensors"),
+                    max_shard_bytes=20000 if sharded else 10**9)
+                directories.append(directory)
+                spec,declared,source=preflight_directory(directory)
+                self.assertEqual(spec,self.spec);self.assertEqual(declared,config)
+                self.assertTrue(source.is_file())
+            text_encoder=torch.nn.Linear(1,1)
+            text_encoder.set_selected_layers=lambda layers:setattr(text_encoder,"selected",layers)
+            tokenizer=SimpleNamespace(pad_token_id=0,encode=lambda *a,**k:[1])
+            with ExitStack() as stack:
+                for target,value in (("core.models.lens.vendor.LensGptOssEncoder.from_pretrained",text_encoder),
+                    ("diffusers.AutoencoderKLFlux2.from_pretrained",torch.nn.Linear(1,1)),
+                    ("transformers.AutoTokenizer.from_pretrained",tokenizer),
+                    ("diffusers.FlowMatchEulerDiscreteScheduler.from_pretrained",object())):
+                    stack.enter_context(patch(target,return_value=value))
+                stack.enter_context(patch.object(type(self.model),"from_pretrained",side_effect=AssertionError("native pretrained allocation")))
+                for directory in directories:
+                    restored=ModelLoader.load_lens_from_path(str(directory),torch_dtype=torch.float32)["transformer"]
+                    self.assertEqual(restored._residual_unet_spec,self.spec)
+                    self.assertEqual(text_encoder.selected,(5,11))
+                    for key,value in self.model.state_dict().items():
+                        torch.testing.assert_close(restored.state_dict()[key],value,rtol=0,atol=0)
+                    with patch.object(self,"model",restored):torch.testing.assert_close(self.forward(),expected)
+            config_path=directories[0]/"transformer"/"config.json"
+            config_path.write_text(json.dumps(dict(config,num_layers=3)))
+            with patch("core.models.common.single_file_format.read_state_dict",side_effect=AssertionError("tensor loading")), \
+                 patch.object(type(self.model),"__init__",autospec=True,side_effect=AssertionError("native allocation")):
+                with self.assertRaises(ValueError):ModelLoader.load_lens_from_path(str(directories[0]))
+            config_path.write_text(json.dumps(config))
+            weights=directories[0]/"transformer"/"diffusion_pytorch_model.safetensors"
+            save_file({key:value for key,value in self.model.state_dict().items() if key!="img_in.weight"},str(weights),metadata=metadata)
+            with patch("core.models.lens.vendor.LensGptOssEncoder.from_pretrained",side_effect=AssertionError("companion loading")):
+                with self.assertRaisesRegex(ValueError,"weights do not match"):
+                    ModelLoader.load_lens_from_path(str(directories[0]))
+            index_path=directories[1]/"transformer"/"diffusion_pytorch_model.safetensors.index.json"
+            index=json.loads(index_path.read_text())
+            shard=index_path.parent/next(iter(index["weight_map"].values()))
+            save_file(load_file(str(shard)),str(shard),metadata={})
+            with patch("core.models.common.single_file_format.read_state_dict",side_effect=AssertionError("tensor loading")), \
+                 patch.object(type(self.model),"__init__",autospec=True,side_effect=AssertionError("native allocation")):
+                with self.assertRaisesRegex(ValueError,"declarations disagree"):
+                    ModelLoader.load_lens_from_path(str(directories[1]))
+            dense=root/"dense";(dense/"transformer").mkdir(parents=True)
+            save_file({"placeholder":torch.ones(1)},str(dense/"transformer"/"diffusion_pytorch_model.safetensors"))
+            self.assertEqual(preflight_directory(dense),(None,None,None))
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_native_checkpoint_modes_preserve_output_and_gradients(self):
         from core.models.lens.residual_unet import restore_topology
         restore_topology(self.model,self.spec)

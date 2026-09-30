@@ -61,11 +61,11 @@ def configure_training_topology(model, config, *, unconditional_transformer=None
     pair_topology_metadata(model,unconditional_transformer)
     staged = dict(config)
     resolved = resolve_training_topology(model,staged,"ideogram4",validate_topology_identity,
-        restore_topology,resuming=resuming,pending_adapter_resume=pending_adapter_resume,
+        restore_topology,default_topology,resuming=resuming,pending_adapter_resume=pending_adapter_resume,
         resume_spec=resume_spec,install=False)
     if unconditional_transformer is not None:
         other = resolve_training_topology(unconditional_transformer,dict(config),"ideogram4",
-            validate_topology_identity,restore_topology,resuming=resuming,
+            validate_topology_identity,restore_topology,default_topology,resuming=resuming,
             pending_adapter_resume=pending_adapter_resume,resume_spec=resume_spec,install=False)
         if other != resolved:
             raise ValueError("Ideogram 4 conditional and unconditional training topologies disagree")
@@ -76,6 +76,66 @@ def configure_training_topology(model, config, *, unconditional_transformer=None
         config["dit_rewiring_mode"] = config.get("dit_rewiring_mode",TRAINING_DEFAULTS["dit_rewiring_mode"])
         config["dit_rewiring_spec"] = resolved
     return resolved
+
+
+def default_topology(config):
+    from api.param_defaults import DIT_REWIRING_PRESETS
+    from core.rewiring.spec import build_spec, OPERATORS
+    resolved = native_config(config)
+    preset = DIT_REWIRING_PRESETS["ideogram4"]
+    if resolved["num_layers"] != preset["block_count"]:
+        return None
+    return validate_topology_identity(build_spec("ideogram4",
+        [{"name":"main","block_count":resolved["num_layers"]}],
+        [dict(region,**OPERATORS) for region in preset["regions"]],resolved),resolved)
+
+
+def inspect_artifact(path):
+    import json
+    import re
+    from pathlib import Path
+    from safetensors import safe_open
+    source = Path(path)
+    if source.is_dir():
+        if source.name == "transformer" and (source.parent/"unconditional_transformer").is_dir():
+            source = source.parent
+        topology,_ = preflight_directory(source)
+        configs = {};keys = {}
+        for component in ("transformer","unconditional_transformer"):
+            directory = source/component
+            with (directory/"config.json").open(encoding="utf-8") as handle:configs[component] = json.load(handle)
+            keys[component] = []
+            for shard in directory.glob("*.safetensors"):
+                with safe_open(str(shard),framework="pt",device="cpu") as handle:keys[component].extend(handle.keys())
+    else:
+        if not source.exists() and Path(str(source)+".index.json").is_file():source = Path(str(source)+".index.json")
+        topology,_ = preflight_checkpoint(source)
+        if str(source).endswith(".safetensors.index.json"):
+            with source.open(encoding="utf-8") as handle:index = json.load(handle)
+            metadata = index.get("metadata") or {};all_keys = list(index["weight_map"])
+        else:
+            with safe_open(str(source),framework="pt",device="cpu") as handle:
+                metadata = handle.metadata() or {};all_keys = list(handle.keys())
+        configs = {};keys = {}
+        for component in ("transformer","unconditional_transformer"):
+            keys[component] = [key.removeprefix(component+".") for key in all_keys if key.startswith(component+".")]
+            declaration = metadata.get(component+"_config")
+            if not isinstance(declaration,str):
+                raise ValueError("Ideogram 4 inspection requires native configs for both backbones")
+            configs[component] = json.loads(declaration)
+    for component,config in configs.items():
+        if not isinstance(config,dict):raise ValueError("Ideogram 4 native inspection config must be an object")
+        if "num_layers" not in config:raise ValueError("Ideogram 4 inspection requires explicit native block counts")
+        configs[component] = native_config(config)
+        native_keys = keys[component]
+        if "input_proj.weight" not in native_keys:
+            raise ValueError("Ideogram 4 inspection requires native model weights, not adapters")
+        blocks = {int(match.group(1)) for key in native_keys if (match := re.match(r"^layers\.(\d+)\.",key))}
+        if len(blocks) != configs[component]["num_layers"] or blocks != set(range(len(blocks))):
+            raise ValueError("Ideogram 4 native config and checkpoint block counts disagree")
+    if configs["transformer"] != configs["unconditional_transformer"]:
+        raise ValueError("Ideogram 4 editor requires matching native backbone configs")
+    return configs["transformer"],topology
 
 
 def pair_topology_metadata(transformer, unconditional_transformer=None):

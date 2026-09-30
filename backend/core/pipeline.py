@@ -845,6 +845,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "type": "ideogram4",
                     "is_v_prediction": False,  # flow matching
                     "model_hash": model_hash,
+                    "dit_rewiring_spec": getattr(model_result["transformer"], "_residual_unet_spec", None),
+                    "dit_rewiring_token_stride": 16,
                 }
                 self._save_last_model(source_type, source, pipeline_type)
                 print("[Pipeline] Ideogram 4 model loaded successfully")

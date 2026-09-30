@@ -374,6 +374,112 @@ class Ideogram4RuntimeContracts(unittest.TestCase):
         self.assertNotIn("dit_rewiring_actual",params)
         self.assertFalse(torch.cuda.is_initialized())
 
+    def test_public_preset_custom_training_and_pipeline_model_info(self):
+        from collections import Counter
+        from core.models.ideogram4.residual_unet import configure_training_topology,native_config,default_topology
+        from core.rewiring.spec import preview_plan
+        from api.routes import TrainingRunCreateRequest
+        from core.training.training_config import _build_train_section
+        from core.pipeline import DiffusionPipelineManager
+        from core.model_loader import ModelLoader
+        model=type(self.model)(**dict(native_config(self.model),num_layers=34));uncond=deepcopy(model)
+        request=TrainingRunCreateRequest(training_method="lora",base_model_path="ideogram4",total_steps=1,
+                                        dit_rewiring_mode="configure")
+        config=_build_train_section(request.model_dump(),total_steps=1,epochs=None,
+                                   train_unet=True,train_text_encoder=False,arch="ideogram4")
+        spec=configure_training_topology(model,config,unconditional_transformer=uncond)
+        self.assertEqual(spec,default_topology(native_config(model)));self.assertEqual(uncond._residual_unet_spec,spec)
+        self.assertEqual(Counter(b["tokens"] for b in preview_plan(spec,64,64)["blocks"]),{4096:8,1024:22,256:4})
+        lengths=[]
+        handles=[block.register_forward_pre_hook(lambda block,args:lengths.append(args[0].shape[1]-5)) for block in model.layers]
+        try:
+            with patch.object(self,"model",model):self.assertTrue(torch.isfinite(self.forward()).all())
+        finally:
+            for handle in handles:handle.remove()
+        self.assertEqual(lengths,[96]*4+[24]*11+[6]*4+[24]*11+[96]*4)
+        self.assertIsNone(default_topology(native_config(self.model)))
+        with self.assertRaisesRegex(ValueError,"No rewiring preset"):
+            configure_training_topology(self.model,{"dit_rewiring_mode":"configure"})
+        partner=deepcopy(self.model)
+        self.assertEqual(configure_training_topology(self.model,
+            {"dit_rewiring_mode":"configure","dit_rewiring_spec":self.spec},unconditional_transformer=partner),self.spec)
+        other=build_spec("ideogram4",self.spec["streams"],self.spec["regions"][:1],native_config(self.model))
+        with self.assertRaisesRegex(ValueError,"without edits"):
+            configure_training_topology(self.model,{"dit_rewiring_mode":"configure","dit_rewiring_spec":other},
+                                        unconditional_transformer=partner,resuming=True)
+        self.assertEqual(partner._residual_unet_spec,self.spec)
+        manager=DiffusionPipelineManager();manager.device="cpu"
+        components={"type":"ideogram4","transformer":self.model,"unconditional_transformer":partner,
+                    "vae":torch.nn.Linear(1,1),"text_encoder":torch.nn.Linear(1,1),"tokenizer":object(),"scheduler":object()}
+        with patch.object(ModelLoader,"load_model",return_value=components), \
+             patch.object(manager,"_save_last_model"),patch.object(torch.cuda,"is_available",return_value=False):
+            manager._load_model_locked("safetensors","cpu-ideogram-test.safetensors")
+        self.assertEqual(manager.current_model_info["dit_rewiring_spec"],self.spec)
+        self.assertEqual(manager.current_model_info["dit_rewiring_token_stride"],16)
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_public_inspection_api_reads_both_backbone_headers_only(self):
+        import asyncio
+        import httpx
+        from fastapi import FastAPI
+        from safetensors.torch import save_file
+        from core.models.ideogram4.residual_unet import native_config,save_checkpoint,restore_topology
+        from core.rewiring.spec import checkpoint_metadata
+        from core.rewiring.inspect import inspect_model
+        from core.models.common.single_file_format import save_single_file_state,read_state_dict
+        from api.rewiring_routes import router
+        config=native_config(self.model);restore_topology(self.model,self.spec)
+        uncond=deepcopy(self.model)
+        app=FastAPI();app.include_router(router,prefix="/api/v1")
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);single=Path(save_checkpoint(self.model,uncond,root/"model.safetensors"))
+            state,metadata=read_state_dict(str(single))
+            sharded=Path(save_checkpoint(self.model,uncond,root/"sharded.safetensors",max_shard_bytes=20000))
+            directory=root/"directory";directory.mkdir()
+            for name,model in (("transformer",self.model),("unconditional_transformer",uncond)):
+                target=directory/name;target.mkdir()
+                (target/"config.json").write_text(json.dumps(dict(config,_class_name="Ideogram4Transformer2DModel")),encoding="utf-8")
+                save_single_file_state(model.state_dict(),metadata,str(target/"diffusion_pytorch_model.safetensors"),max_shard_bytes=20000)
+            with patch("core.models.common.single_file_format.read_state_dict",side_effect=AssertionError("tensor loading")), \
+                 patch.object(type(self.model),"__init__",autospec=True,side_effect=AssertionError("model allocation")):
+                info=inspect_model(str(single));self.assertEqual(info["topology"],self.spec)
+                self.assertEqual(info["streams"],self.spec["streams"]);self.assertEqual(info["latent_scale_factor"],16)
+                self.assertIsNone(info["default_spec"])
+                for path in (sharded,root/"sharded.safetensors",directory,directory/"transformer"):
+                    self.assertEqual(inspect_model(str(path)),info)
+                async def check():
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url="http://test") as client:
+                        response=await client.get("/api/v1/schema/dit-rewiring")
+                        self.assertIn("ideogram4",response.json()["runtime_architectures"])
+                        self.assertEqual(response.json()["presets"]["ideogram4"]["block_count"],34)
+                        for path in (single,sharded,directory):
+                            response=await client.post("/api/v1/models/rewiring/inspect",json={"model_path":str(path)})
+                            self.assertEqual(response.status_code,200,response.text);self.assertEqual(response.json(),info)
+                        response=await client.post("/api/v1/models/rewiring/validate",json={"spec":self.spec,"token_height":8,"token_width":12})
+                        self.assertEqual(response.status_code,200,response.text)
+                        self.assertEqual([b["tokens"] for b in response.json()["plan"]["blocks"]],[96,24,6,6,6,24,96])
+                        adapter=root/"adapter.safetensors"
+                        save_file({"lora_unet_layers_0_attention_to_q.lora_down.weight":torch.ones(2,24)},str(adapter),metadata=metadata)
+                        response=await client.post("/api/v1/models/rewiring/inspect",json={"model_path":str(adapter)})
+                        self.assertEqual(response.status_code,422)
+                        broken=root/"mismatch.safetensors"
+                        md={k:v for k,v in metadata.items() if not k.startswith("sushi.rewire.")}
+                        md["unconditional_transformer_config"]=json.dumps(dict(config,num_layers=8))
+                        save_file(state,str(broken),metadata=md)
+                        response=await client.post("/api/v1/models/rewiring/inspect",json={"model_path":str(broken)})
+                        self.assertEqual(response.status_code,422)
+                        dense=root/"dense.safetensors"
+                        dense_md={k:v for k,v in metadata.items() if not k.startswith("sushi.rewire.")}
+                        save_file(state,str(dense),metadata=dense_md)
+                        response=await client.post("/api/v1/models/rewiring/inspect",json={"model_path":str(dense)})
+                        self.assertEqual(response.status_code,200,response.text);self.assertIsNone(response.json()["topology"])
+                        dense_md["unconditional_transformer_config"]=json.dumps(dict(config,llm_features_dim=13))
+                        save_file(state,str(broken),metadata=dense_md)
+                        response=await client.post("/api/v1/models/rewiring/inspect",json={"model_path":str(broken)})
+                        self.assertEqual(response.status_code,422)
+                asyncio.run(check())
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_metadata_identity_native_grid_and_feature_refusals(self):
         from core.models.ideogram4.residual_unet import restore_topology,model_topology_metadata,native_config
         restore_topology(self.model,self.spec)

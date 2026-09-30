@@ -1347,3 +1347,38 @@ cases (50 total): 49 passed initially; after correcting the minimum-resolution
 assumption, the generation-entry contract passed its targeted rerun. The
 dual-graph unload-failure/retry contract also passes. Changed-file compile and
 real imports leave CUDA uninitialized.
+
+## Ideogram 4 public topology configuration and inspection
+
+Ideogram 4 is included in public residual runtime capabilities. The existing
+frontend schema gate exposes its training graph editor, and loaded model info
+provides the restored graph and 16px token stride to the generation summary.
+The owner retains build/type/browser verification; frontend review here is static.
+
+The native 34-block preset lives only in `param_defaults.py`: outer [4,30),
+deepest [15,19), giving 8 full-grid, 22 half-grid and 4 quarter-grid blocks on
+each backbone. Public configure resolves both models together; a custom block
+count requires an explicit graph. CPU forwards execute the actual native preset
+with evolving packed text and both nested transitions.
+
+Header inspection supports combined single/index/missing-stem files and paired
+native directories, including a transformer-subdirectory selection with its
+unconditional sibling. It reads no tensors and allocates no model. Both branches
+must have explicit native block counts, native embedding keys and contiguous
+actual layer indices agreeing with config. Their canonical configs and installed
+graphs must agree, since the editor expresses one graph shared by the two
+backbones. LoRA-as-base files, mismatched counts/configs and conflicting graph
+headers refuse with 422. Dense native declarations are inspected without adding
+a graph; absent native configs are refused rather than guessed from a companion.
+
+CPU ASGI tests exercise schema/inspection/plan endpoints and file/directory
+round-trips under guards against model allocation and tensor reads. The pipeline
+model-info path is also executed on CPU. Public support is provisional pending
+owner UI validation; no Ideogram GPU speed, quality or training acceptance is
+claimed. GPU verification remains Qwen-Image 2.1 only. The existing Ideogram
+full-finetune refusal remains; LoRA and inherited checkpoint inference are the
+connected workflows.
+
+All shared residual contracts and existing Ideogram LoRA/REPA cases pass
+(137 total). Changed-file compile, real imports and OpenAPI capability agreement
+pass with CUDA uninitialized.

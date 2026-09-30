@@ -117,3 +117,34 @@ def run_rewired_zimage(model, hidden, modulation, rotary, mask, image_sizes,
     output = run_rewired_stream(transported, spec, "main", height, width, extras,
                                (rotary, mask), execute, coarse_context)
     return torch.cat((output[:, extras:], output[:, :extras]), dim=1)
+
+
+def preflight_artifact(path):
+    import json
+    from pathlib import Path
+    from safetensors import safe_open
+    from core.rewiring.artifacts import read_artifact_topology
+    source = Path(path)
+    if not source.exists() and Path(str(source)+".index.json").is_file():
+        source = Path(str(source)+".index.json")
+    topology = read_artifact_topology(source)
+    if str(source).endswith(".safetensors.index.json"):
+        with source.open(encoding="utf-8") as handle:
+            metadata = json.load(handle).get("metadata") or {}
+    else:
+        with safe_open(str(source), framework="pt", device="cpu") as handle:
+            metadata = handle.metadata() or {}
+    declaration = metadata.get("transformer_config")
+    config = None
+    if declaration:
+        if not isinstance(declaration, str):
+            raise ValueError("Z-Image native config metadata must be JSON text")
+        config = json.loads(declaration)
+        if not isinstance(config, dict):
+            raise ValueError("Z-Image native config must be an object")
+        config = native_config(config)
+    elif topology is not None:
+        raise ValueError("Rewired Z-Image artifact requires native config metadata")
+    if topology is not None:
+        topology = validate_topology_identity(topology, config)
+    return topology, config

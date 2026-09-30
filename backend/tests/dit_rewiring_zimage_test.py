@@ -162,6 +162,97 @@ class ZImageRuntimeContracts(unittest.TestCase):
         self.assertEqual(events, [160, 88, 70, 70, 70, 88, 160])
         self.assertFalse(torch.cuda.is_initialized())
 
+    def test_full_writer_native_loader_single_shards_and_preflight(self):
+        import json
+        import tempfile
+        from types import SimpleNamespace
+        from safetensors import safe_open
+        from safetensors.torch import save_file
+        from core.model_loader import ModelLoader
+        from core.models.batched_zimage_wrapper import BatchedZImageWrapperOptimized
+        from core.models.common.single_file_format import read_state_dict, save_single_file_state
+        from core.models.zimage_residual_unet import native_config, preflight_artifact
+        from core.training.adapters.zimage_adapter import ZImageFullParameterAdapter, ZImageLoRAAdapter
+        from core.rewiring.spec import read_checkpoint_metadata
+        config = native_config(self.model)
+        wrapper = BatchedZImageWrapperOptimized(self.model)
+        trainer = SimpleNamespace(transformer=wrapper, train_unet=True, train_text_encoder=False,
+            text_encoder=None, vae=None, config={}, bundle_vae=False)
+        adapter = ZImageFullParameterAdapter(trainer)
+        self.assertEqual(read_checkpoint_metadata(ZImageLoRAAdapter(trainer, 2, 2).checkpoint_metadata({}, 1, 0)), self.spec)
+        with torch.no_grad(): expected = self.forward()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); path = root/"model.safetensors"
+            with patch("core.training.vae_swap.swap_metadata", return_value=(None, False, {})):
+                self.assertEqual(adapter.write_checkpoint(1, 0, path), path)
+            raw, metadata = read_state_dict(str(path))
+            self.assertEqual(json.loads(metadata["transformer_config"]), config)
+            self.assertEqual(preflight_artifact(path), (self.spec, config))
+            def load(source):
+                weights, _ = read_state_dict(str(source))
+                state, _, _, layout = ModelLoader._normalize_zimage_state_dict(weights)
+                result = ModelLoader._build_zimage_transformer_from_state(config,
+                    config["n_layers"], config["in_channels"], state, layout, torch.float32, path=str(source))
+                self.assertEqual(result._residual_unet_spec, self.spec)
+                self.assertEqual(native_config(result), config)
+                for key, value in self.model.state_dict().items():
+                    torch.testing.assert_close(value, result.state_dict()[key], rtol=0, atol=0)
+                with torch.no_grad(): actual, _ = result(list(self.images.unbind()), self.times, self.captions)
+                torch.testing.assert_close(torch.stack(actual), expected, rtol=1e-5, atol=2e-7)
+            load(path)
+            sharded = root/"sharded.safetensors"
+            save_single_file_state(raw, metadata, str(sharded), max_shard_bytes=120000)
+            self.assertFalse(sharded.exists())
+            self.assertEqual(preflight_artifact(sharded), (self.spec, config))
+            load(sharded)
+            index = Path(str(sharded)+".index.json")
+            with patch.object(ModelLoader, "load_zimage_from_comfy_safetensors", return_value={}) as dispatch:
+                ModelLoader.load_zimage_from_diffusers(str(sharded), device="cpu", torch_dtype=torch.float32)
+            self.assertEqual(dispatch.call_args.kwargs["file_path"], str(index))
+            fake_base = root/"base"/"transformer"; fake_base.mkdir(parents=True)
+            (fake_base/"config.json").write_text(json.dumps(dict(config, dim=48, n_layers=30)), encoding="utf-8")
+            built = []
+            def stop_after_config(*args, **kwargs):
+                built.append(args[:3]); raise RuntimeError("Stop before companion loading")
+            with patch("huggingface_hub.snapshot_download", return_value=str(fake_base.parent)), \
+                 patch.object(ModelLoader, "_build_zimage_transformer_from_state", side_effect=stop_after_config):
+                with self.assertRaisesRegex(RuntimeError, "Stop before companion"):
+                    ModelLoader.load_zimage_from_comfy_safetensors(str(path), device="cpu", torch_dtype=torch.float32)
+            self.assertEqual(built[0], (config, 7, 4))
+            from core.models.zimage_transformer import ZImageTransformer2DModel
+            multi_config = dict(config, all_patch_size=[2, 4], all_f_patch_size=[2, 1])
+            multi_model = ZImageTransformer2DModel(**multi_config)
+            multi_path = root/"multibank.safetensors"
+            save_file({"model.diffusion_model."+key: value for key, value in multi_model.state_dict().items()},
+                str(multi_path), metadata={"model_type": "zimage", "transformer_config": json.dumps(multi_config)})
+            with patch("huggingface_hub.snapshot_download", return_value=str(fake_base.parent)), \
+                 patch.object(ModelLoader, "_build_zimage_transformer_from_state", side_effect=stop_after_config):
+                with self.assertRaisesRegex(RuntimeError, "Stop before companion"):
+                    ModelLoader.load_zimage_from_comfy_safetensors(str(multi_path), device="cpu", torch_dtype=torch.float32)
+            self.assertEqual(built[1], (multi_config, 7, 4))
+            damaged = root/"bad.safetensors"
+            save_file(raw, str(damaged), metadata={**metadata,
+                "transformer_config": json.dumps(dict(config, cap_feat_dim=13))})
+            with patch("huggingface_hub.snapshot_download", side_effect=AssertionError("Downloads forbidden")):
+                with self.assertRaisesRegex(ValueError, "native config mismatch"):
+                    ModelLoader.load_zimage_from_comfy_safetensors(str(damaged), device="cpu")
+            state, _, _, layout = ModelLoader._normalize_zimage_state_dict(raw)
+            with patch("core.model_loader.torch.device", side_effect=AssertionError("Allocation forbidden")):
+                with self.assertRaisesRegex(ValueError, "native config mismatch"):
+                    ModelLoader._build_zimage_transformer_from_state(dict(config, cap_feat_dim=13),
+                        7, 4, state, layout, torch.float32, path=str(path))
+            legacy = root/"legacy.safetensors"
+            save_file(raw, str(legacy), metadata={"model_type": "zimage"})
+            self.assertEqual(preflight_artifact(legacy), (None, None))
+            state, _, _, layout = ModelLoader._normalize_zimage_state_dict(raw)
+            dense = ModelLoader._build_zimage_transformer_from_state(config, 7, 4, state, layout,
+                torch.float32, path=str(legacy))
+            self.assertFalse(hasattr(dense, "_residual_unet_spec"))
+            save_file(raw, str(damaged), metadata={k: v for k, v in metadata.items() if k != "transformer_config"})
+            with self.assertRaisesRegex(ValueError, "requires native config"):
+                preflight_artifact(damaged)
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_feature_grid_and_identity_refusal(self):
         from core.models.zimage_residual_unet import restore_topology, native_config
         for name in ("_nag_request", "_negpip_request", "_style_ctx", "_fbcache", "_tread_config", "_block_skip_config", "_repa_tap_depth"):

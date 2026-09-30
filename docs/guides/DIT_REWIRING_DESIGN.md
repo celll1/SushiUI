@@ -532,8 +532,38 @@ rewiring contracts pass. Five existing Z-Image LoRA round-trip checks and the
 scaled/scaleless loader and quantized Comfy-layout refusal checks pass; changed
 files compile/import with CUDA untouched.
 
-This remains an internal foundation. Artifact metadata restoration, training
-configuration/resume, generation LoRA topology scopes and model/editor discovery
-must be connected before Z-Image joins the public runtime capability list. No
+This remains an internal foundation with artifact restoration described below.
+Training configuration/resume, generation LoRA topology scopes and model/editor
+discovery must be connected before Z-Image joins the public runtime capability list. No
 Z-Image GPU generation/training, performance or quality evidence is claimed; GPU
 acceptance remains restricted to Qwen-Image 2.1.
+
+
+## Z-Image artifact restoration
+
+Full-parameter saves now persist canonical constructor geometry and the installed
+residual topology; LoRA saves carry the topology metadata. Saved full geometry
+supersedes the companion repository's transformer config on load. Header-only
+preflight validates topology/config before companion downloads or tensor reads,
+and the native builder validates the resolved layer/channel geometry before
+constructing a model, then restores topology after strict weight loading.
+
+Single files, shard indices and the sibling-index fallback use the shared reader
+and topology declaration agreement checks. Training's file dispatcher also accepts
+the index path. Native embedding-bank keys determine spatial and temporal patch
+factors when inferring channels; the previous two-element-list heuristic could
+misread a multi-bank geometry. Legacy files without topology/config retain their
+native dense path and companion-config/shape reconstruction.
+
+An additional CPU contract drives the actual full writer, native loader and
+component-loader config selection. Single/sharded round trips preserve every
+weight exactly and FP32 inference within rtol 1e-5 / atol 2e-7; the first single
+round-trip comparison differed by at most 1.49e-7. The component-loader check
+stubs downloads and stops before companion allocation, confirming saved geometry
+is selected even when the companion config differs. A real two-bank fixture
+also preserves its channel count. Invalid/missing topology config is refused
+before downloads or model allocation. LoRA metadata and dense legacy compatibility
+are covered. All 43 aggregate contracts pass, as do the existing Z-Image quantized
+loader matrix/refusal checks and changed-module compile/import checks without CUDA
+initialization. Public training/generation scopes and editor discovery are still
+pending for Z-Image; it carries no GPU inference/training or quality claim.

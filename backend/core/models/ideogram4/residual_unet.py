@@ -5,6 +5,7 @@ import math
 import torch
 import torch.nn.functional as F
 
+from core.rewiring.training import NO_RESUME_SPEC
 from core.rewiring.runtime import run_rewired_stream
 from core.rewiring.spec import validate_model_identity, checkpoint_metadata
 
@@ -52,6 +53,29 @@ def restore_topology(model, spec):
 def model_topology_metadata(model):
     spec = getattr(model, "_residual_unet_spec", None)
     return {} if spec is None else checkpoint_metadata(validate_topology_identity(spec, dict(model.config)))
+
+
+def configure_training_topology(model, config, *, unconditional_transformer=None, resuming=False,
+                                pending_adapter_resume=False, resume_spec=NO_RESUME_SPEC, install=True):
+    from core.rewiring.training import resolve_training_topology
+    pair_topology_metadata(model,unconditional_transformer)
+    staged = dict(config)
+    resolved = resolve_training_topology(model,staged,"ideogram4",validate_topology_identity,
+        restore_topology,resuming=resuming,pending_adapter_resume=pending_adapter_resume,
+        resume_spec=resume_spec,install=False)
+    if unconditional_transformer is not None:
+        other = resolve_training_topology(unconditional_transformer,dict(config),"ideogram4",
+            validate_topology_identity,restore_topology,resuming=resuming,
+            pending_adapter_resume=pending_adapter_resume,resume_spec=resume_spec,install=False)
+        if other != resolved:
+            raise ValueError("Ideogram 4 conditional and unconditional training topologies disagree")
+    if install:
+        restore_topology(model,resolved)
+        if unconditional_transformer is not None:restore_topology(unconditional_transformer,resolved)
+        from api.param_defaults import TRAINING_DEFAULTS
+        config["dit_rewiring_mode"] = config.get("dit_rewiring_mode",TRAINING_DEFAULTS["dit_rewiring_mode"])
+        config["dit_rewiring_spec"] = resolved
+    return resolved
 
 
 def pair_topology_metadata(transformer, unconditional_transformer=None):

@@ -1282,3 +1282,35 @@ inference LoRA graph scopes and public presets/inspection/editor remain pending.
 The existing Ideogram full-finetune refusal is retained; the combined export
 helper does not claim to enable that baseline workflow. GPU validation remains
 Qwen-Image 2.1 only.
+
+## Ideogram 4 training inheritance and dual LoRA resume
+
+The training component loader accepts existing directories and combined native
+files/indexes (including a missing stem with its index). It resolves inherited
+checkpoint topology on both loaded backbones before checkpointing, freezing or
+device placement. Conditional-only training leaves the unconditional model
+unloaded. When `ideogram4_train_uncond` is requested, a missing unconditional
+model is refused instead of silently dropping that loss branch.
+
+The shared training resolver validates the pair without changing either graph or
+the config; installation occurs only after both native identities and inherited
+base/explicit/resume declarations agree. The common residual feature gates apply
+to inherited runs. Ideogram's public configure mode/presets remain pending.
+
+LoRA resume checks topology and the saved `train_uncond` scope before reading
+branch tensors. It uses the existing atomic branch restore and installs topology
+on both models only after that restore succeeds. A missing branch tensor leaves
+all weights, config and both graphs unchanged; a dense resume cannot erase an
+installed residual graph. A mismatch in the second backbone's native config is
+refused during dry validation.
+
+CPU tests run real conditional/unconditional native LoRA branches through the
+production velocity train_step with checkpointing and the reconstruction mix.
+Loss/monitoring values and gradients are finite; nonzero adapter gradients reach
+both backbones. Loader ordering is checked for directory and combined-file
+entry points, with external component loading stubbed. No Ideogram GPU training,
+quality or speed acceptance is claimed; GPU verification remains Qwen 2.1 only.
+Inference LoRA graph scopes and public inspection/editor exposure remain pending.
+
+All aggregate residual contracts and the existing Ideogram LoRA/REPA cases pass
+(133 total). Changed-file compile and real imports pass with CUDA uninitialized.

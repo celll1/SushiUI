@@ -1078,10 +1078,47 @@ and latent (patch2 four-channel) models execute, and the published l16 head widt
 52 follows the existing native attention padding route. This does not establish
 GPU offload, throughput or quality.
 
-MiniT2I remains outside public runtime capabilities. Artifact metadata restore,
-training configure/inheritance/resume, generation adapter scopes, preset/model
+MiniT2I remains outside public runtime capabilities. Training
+configure/inheritance/resume, generation adapter scopes, preset/model
 inspection and editor exposure remain to be connected. GPU validation remains
 Qwen 2.1 only.
 
 All 78 aggregate residual contracts and 39 existing MiniT2I LoRA/CFG cases pass
 (117 total). Changed files compile and import with CUDA untouched.
+
+
+## MiniT2I checkpoint artifact integration
+
+MiniT2I full saves validate the installed topology before copying tensors, then
+persist its metadata and complete canonical MMJiTConfig. Dense saves retain the
+legacy variant/I/O config format. The shared writer returns the actual single-file
+or shard-index path; the full training adapter returns that path for correct REPA
+sidecar pairing. LoRA metadata also carries the installed native topology.
+
+Single-file loads preflight topology declarations and their native config before
+weight reads/construction. A rewired file requires valid mmjit_config JSON whose
+canonical identity matches the graph; it cannot silently fall back to variant
+shape inference after a malformed/missing declaration. Native quantized-code
+refusal and complete-key checks remain in place. The wrapper/net topology is
+restored only after a successful native state load. Missing single-file stems
+resolve to their sibling index at the component-loader entry.
+
+Resolved local diffusers transformer directories reconcile every file/index
+header declaration, validate transformer/config.json against the topology, and
+load complete native single/indexed weights before resolving FLAN-T5, scheduler
+or VAE. Dense directories retain native from_pretrained. Rewired directory weights
+with missing/unexpected keys are refused instead of accepting a partially
+initialized native model. Native VAE declaration/bundling behavior is retained.
+
+CPU contracts exercise the actual full training writer, low-threshold shared
+sharding, ModelLoader component dispatch, native model construction, weight load
+and forward for single-file, index, missing-stem, directory-single and
+directory-sharded paths. External FLAN-T5 and VAE loading is stubbed. All restored
+weights/config/topology/output agree with the saved model. Missing/incompatible
+file config is refused before tensors/allocation; incompatible directory config
+is refused before tensors/allocation; incomplete file/directory weights are
+refused before companion loading. These checks do not claim MiniT2I GPU inference,
+quality, throughput or training acceptance. GPU validation remains Qwen 2.1 only.
+
+All 79 aggregate residual contracts and 74 existing MiniT2I LoRA/CFG/VAE cases
+pass (153 total), with changed-file compile/import leaving CUDA untouched.

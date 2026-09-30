@@ -1,14 +1,13 @@
 # DiT residual rewiring contract
 
 Status: accepted implementation contract. Canonical topology validation and
-side-effect-free preview APIs are implemented. Qwen-Image 2.1 has an internal
-forward path with checkpointed backward verification. Training request/YAML
-configuration is connected for Qwen LoRA/full runs. Generation topology
-reporting and adapter-stack restoration are connected for Qwen; production
-acceptance remains pending. The training graphical
-editor is connected; browser rendering and interaction acceptance are pending.
-Full Qwen artifact save/restore is connected; production acceptance remains pending. Other
-architectures require individual capability gates.
+side-effect-free preview APIs are implemented. Qwen-Image 2.1 supports native
+checkpointed residual execution, metadata-driven generation, LoRA/full training,
+checkpoint restore and adapter-stack compatibility checks. Actual 1024px API
+workflows verify generation, training samples, saved artifacts and resume, both
+resident and with block swap. The graphical editor is connected and statically
+reviewed; the owner will perform consolidated frontend checks. Other architectures
+still require their own native execution/artifact adapters and capability gates.
 
 ## Default topology
 
@@ -195,9 +194,8 @@ math attention; these exclude dataset/encoder/decoder/scheduler workflow.
 LoRA resume now delays topology installation until weight validation/loading
 succeeds. A regression test rejects an incomplete checkpoint while preserving
 native topology and configuration.
-Full-size full-parameter training, broader dataset/resume matrices,
-calibration quality, frontend acceptance, and additional architecture adapters
-remain outstanding. The baseline dataset/resume workflow is verified below.
+Broader dataset/resume matrices, calibration quality, frontend acceptance,
+and additional architecture adapters remain outstanding. The baseline dataset/resume workflow is verified below.
 
 ## Diffusers directory restoration verification
 
@@ -239,3 +237,52 @@ change adapter weights. This does not establish bitwise swap/resident equality.
 The probe exposed a pre-existing LoRA runner gap: swap settings were saved in
 YAML but not passed to the trainer constructor. The runner now forwards swap
 count, pinned-memory selection and optimizer-group count using API defaults.
+
+## Full-parameter and saved-model inference verification
+
+Actual isolated API workflows completed full-size Qwen training at step one and
+resumed to step two. All 297 trainable tensors (7,115,124,736 parameters) used
+BF16 after explicit INT8 materialization, native attention, 32 checkpointed
+blocks, 30 swap layers/two GPU slots and fused AdamW8bit ringbuffer updates.
+TE/VAE remained frozen. Both processes exited zero and their training samples
+completed. Each saved model comprises four shards and an index, about 14.23 GB
+of weight files. All topology declarations agree and all saved tensors are
+finite; the resumed step changes 235 tensors. All 297 optimizer tensors restore
+without fresh states, and training/RNG position restoration is exercised.
+
+The step-two full checkpoint also completes actual 1024px generation through
+API loading with no LoRA or explicit topology request. Loaded-model info and
+PNG metadata report the restored spec/hash; KV caching is disabled and the base
+topology remains installed afterwards. Missing Qwen file dispatch and single-file
+metadata detection in ModelLoader were fixed; regression tests use real saved
+single/sharded artifacts. The schema API now reports Qwen as an implemented
+backend architecture through a shared capability declaration. Seventeen CPU
+contract tests, real imports and OpenAPI capability checks pass.
+
+These short runs prove workflow connectivity; they do not establish quality
+calibration, TE joint training or bitwise equivalence under automatic attention.
+
+## Consolidated frontend checks for the owner
+
+Frontend build/type checking and browser checks are deferred to the owner at the
+end, per the owner's instruction; agent verification is static review.
+
+- Create a Qwen LoRA/full run and select Configure / Model preset. Confirm the
+  8/20/4 block allocation at 4096/1024/256 image tokens for a 1024px preview.
+- Drag skip endpoints and edit numeric boundaries/shrink factors. Confirm the
+  graph, counts and interval labels update after validation and dragging stops
+  on pointer release.
+- Enter crossing intervals, a parent cycle or incompatible dimensions. Confirm
+  the error appears and invalid graphs disappear; restore the preset to recover.
+- Save, reopen, copy and preset a configured run. Confirm mode/spec survive.
+  Open an older run without topology keys and confirm API defaults populate
+  without overwriting its saved values.
+- Change the base model and confirm config/layout mismatch is reported until a
+  compatible topology is selected.
+- Load a rewired full checkpoint and confirm the model selector's read-only
+  topology graph matches its metadata. Generate and inspect effective topology
+  in gallery/PNG parameters, including automatic KV-cache disablement.
+- Apply compatible rewired LoRA files and confirm their temporary topology is
+  removed on unload; incompatible stacks must report a useful refusal.
+- Confirm ordinary models retain their native sequence and unsupported
+  architectures do not offer an unverified conversion option.

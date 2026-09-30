@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from safetensors import SafetensorError
 
 from api.param_defaults import DIT_REWIRING_PRESETS
+from core.rewiring.capability import RUNTIME_ARCHITECTURES
 from core.rewiring.spec import digest, preview_plan, validate_spec
 
 router = APIRouter()
@@ -20,7 +21,7 @@ class RewiringPreviewRequest(BaseModel):
 
 @router.get("/schema/dit-rewiring")
 def rewiring_schema():
-    return {"presets": deepcopy(DIT_REWIRING_PRESETS), "runtime_architectures": []}
+    return {"presets": deepcopy(DIT_REWIRING_PRESETS), "runtime_architectures": list(RUNTIME_ARCHITECTURES)}
 
 
 @router.post("/models/rewiring/validate")

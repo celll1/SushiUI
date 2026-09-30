@@ -3493,7 +3493,9 @@ paths:
                     additionalProperties: true
                   runtime_architectures:
                     type: array
+                    description: Implemented backend architectures; topology and workflow compatibility are validated per request
                     items: {type: string}
+                    example: [qwen_image_21]
   /models/rewiring/inspect:
     post:
       tags: [models]

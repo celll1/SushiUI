@@ -1,4 +1,5 @@
 """Training configuration gates shared by requests, YAML and runtime resolution."""
+from .capability import RUNTIME_ARCHITECTURES
 from .spec import validate_spec
 
 
@@ -11,7 +12,7 @@ def validate_training_rewiring(config, architecture):
     if spec is not None:
         spec = validate_spec(spec)
     if mode == "configure" or spec is not None:
-        if architecture != "qwen_image_21":
+        if architecture not in RUNTIME_ARCHITECTURES:
             raise ValueError(f"Residual rewiring is not yet supported for {architecture}")
         if spec is not None and spec["architecture"] != architecture:
             raise ValueError("Training topology architecture mismatch")

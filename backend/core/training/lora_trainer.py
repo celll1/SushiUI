@@ -308,6 +308,10 @@ class LoRATrainer(BaseTrainer):
                     )
 
         if getattr(self, "is_qwen_image_21", False):
+            from core.rewiring.spec import read_checkpoint_metadata
+            from core.models.qwen_image_21.residual_unet import configure_training_topology
+            configure_training_topology(self.transformer, self.config, resuming=True,
+                                        resume_spec=read_checkpoint_metadata(metadata))
             expected_forward = (
                 "convrot_int8_bf16_backward_v1"
                 if getattr(self, "qwen_convrot_training_forward", "dequant")

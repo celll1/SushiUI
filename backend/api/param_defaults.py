@@ -2696,6 +2696,8 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # the architecture policy; unsupported architectures reject explicit values.
     "dit_gradient_checkpointing_blocks": None,
     "dit_partition_gradient_checkpointing_blocks": None,
+    "dit_rewiring_mode": "inherit",
+    "dit_rewiring_spec": None,
     "dit_partition_training_enabled": False,
     "dit_partition_mode": "token_threshold",
     "dit_partition_fixed_count": 2,

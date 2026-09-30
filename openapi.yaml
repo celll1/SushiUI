@@ -25672,6 +25672,24 @@ components:
           description: >-
             Optional checkpointed-block count during complete-coverage DiT
             partition forwards. Null inherits the resolved full-frame count.
+        dit_rewiring_mode:
+          type: string
+          enum: [inherit, configure]
+          default: inherit
+          example: configure
+          description: >-
+            Inherit the checkpoint topology, or configure a new residual U-Net.
+            Initially supported on Qwen-Image 2.1. Resume requires the same topology.
+        dit_rewiring_spec:
+          allOf:
+            - {$ref: '#/components/schemas/DiTRewiringSpec'}
+          nullable: true
+          default: null
+          example: null
+          description: >-
+            Canonical topology. Null with configure resolves the architecture preset
+            (Qwen 32 blocks: two stages, four deepest blocks). With inherit an explicit
+            spec asserts the required checkpoint topology instead of replacing it.
         dit_partition_training_enabled:
           type: boolean
           default: false

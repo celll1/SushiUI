@@ -1152,3 +1152,25 @@ training, quality or speed acceptance is claimed; GPU validation is Qwen 2.1 onl
 All 81 aggregate residual contracts and 74 existing MiniT2I LoRA/CFG/VAE cases
 pass (155 total), with changed-file compile and real imports leaving CUDA
 untouched.
+
+## MiniT2I generation topology scopes
+
+Generation checks base/LoRA topology agreement before residency setup or either
+adapter pass in txt2img, img2img and inpaint. Metadata-free dense adapters cannot
+silently run against a residual base. Text-encoder branches are still applied
+before encoding, and transformer branches install topology only after their
+atomic weight restore succeeds. Cleanup restores both wrapper and MMJiT net;
+a weak reference keeps model replacement from changing the new model graph.
+
+Preflight derives the image token stride from native patch size and the actual
+VAE scale (or one for pixel models), checks complete/divisible nested grids, and
+records the resolved graph/hash with KV cache disabled. Residual runs refuse
+reference grids, style injection, FBCache, NAG and NegPip before encoding.
+CPU tests cover real adapter output, conflicting declarations, graph cleanup,
+model replacement, pixel/latent grids and all three generation entry points.
+GPU validation remains **Qwen-Image 2.1 only**; other architectures have CPU
+implementation checks and no quality, speed or GPU training acceptance.
+MiniT2I public presets, inspection and editor exposure remain pending.
+
+The MiniT2I residual and existing adapter round-trip suites pass all 20 CPU
+cases; changed-file compile and real imports leave CUDA uninitialized.

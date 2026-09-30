@@ -458,6 +458,10 @@ class LensTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrig
 
     def forward(self, hidden_states, encoder_hidden_states, encoder_hidden_states_mask,
                 timestep, img_shapes, attention_kwargs=None):
+        if getattr(self, "_residual_unet_spec", None) is not None:
+            from core.models.lens.residual_unet import run_rewired_lens
+            return run_rewired_lens(self, hidden_states, encoder_hidden_states, encoder_hidden_states_mask,
+                                   timestep, img_shapes, attention_kwargs)
         bsz, img_len, _ = hidden_states.shape
         if self.multi_layer_encoder_feature:
             if not isinstance(encoder_hidden_states, (list, tuple)):

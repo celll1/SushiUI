@@ -2602,3 +2602,48 @@ Public model inspection/configuration, whole-song output provenance, production
 offload acceptance and YuE2 remain outstanding. This extends the internal
 artifact contract; it does not enable Music 3 training or advertise complete
 public workflow support.
+
+
+### MiniMax Music 3 flow-chunk provenance and generation scope (CPU)
+
+The actual denoise_chunks path observes every conditional and unconditional
+native DiT evaluation. All evaluations must retain the initial graph digest;
+changing the graph during progress callbacks refuses the request. The pipeline
+publishes its detached flow record only after every chunk completes, and clears
+previous records before a new attempt. Failed flow requests expose no completed
+record. Dense requests retain no residual provenance.
+
+The record contains the canonical graph/hash, zero-token-tail policy, preserved
+time-token prefix, coarse integer RoPE policy and chunks. Each chunk declares
+its input_frame_start/end, native/padded audio tokens, actual inference step
+count and flow evaluation count. scope=flow_input_chunks means these are offsets
+within the supplied AR frame-hidden window, not global song offsets. Extend and
+repaint may supply only a tail/window; existing audio edit provenance describes
+where that window is placed. Summing overlapping chunk lengths is not a song
+length or a speed measurement.
+
+Fresh generation, extension, regenerate and rerender clear stale caller metadata
+at entry and attach the completed flow snapshot only after successful decode and
+waveform splicing. The common audio writer persists dit_rewiring_actual in its
+existing FLAC JSON sidecar. Returned frame-code sidecars keep their established
+AR replay contract; residual metadata does not change their code sampling.
+
+A real native CPU DiT, condition encoder and FlowMatchEulerDiscreteScheduler run
+four overlapping test chunks with native lengths 13/13/13/9, padded lengths
+16/16/16/12, and six CFG evaluations per chunk over three steps. Tests cover
+failed flow, graph changes, detached snapshots, dense absence and actual FLAC/
+JSON output. A backend fixture uses this actual flow stack with mocked AR and
+waveform decoding, confirming publication after success and absence after a
+decode failure. It does not evaluate vocoder quality or real song generation.
+
+Testing also exposed the existing rerender path's unbound transformer reference
+at flow staging; it now binds the loaded component alongside the AR components.
+The staged-offload mock supplies model.layers and transformer_blocks matching
+the production structural contract, resolving its previously recorded four
+fixture failures. Native residual, staging/cleanup, extension, repaint and
+progress checks pass 74 tests and 2 subtests in 5.44s. Changed modules compile and
+import with CUDA uninitialized. Production GPU offload remains unmeasured.
+
+Public model inspection/configuration and model-info display, YuE2 integration
+and final owner frontend/workflow acceptance remain outstanding. GPU acceptance
+continues to use Qwen-Image 2.1 only.

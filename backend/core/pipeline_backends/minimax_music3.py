@@ -492,6 +492,7 @@ class MiniMaxMusic3Mixin:
         still reaches `PROGRESS_TOTAL_UNITS` exactly at the end of this
         call (the final unconditional callback below), regardless.
         """
+        params.pop("dit_rewiring_actual", None)
         from api.error_handlers import ValidationError
         from core.models.minimax_music3.defaults import (
             CHUNK_FRAMES,
@@ -700,6 +701,8 @@ class MiniMaxMusic3Mixin:
         waveform = audio[0].detach().to("cpu").float()
         sample_rate = int(pipeline.sampling_rate)
 
+        from core.models.minimax_music3.residual_unet import capture_generation_observation
+        capture_generation_observation(pipeline, params, transformer)
         return MiniMaxMusic3Txt2AudResult(
             waveform=waveform,
             sample_rate=sample_rate,
@@ -926,6 +929,7 @@ class MiniMaxMusic3Mixin:
             `MiniMaxMusic3ExtendResult` -- the FULL (preserved + new) waveform and code sequence, so a caller can
             write a new sidecar for the extended file and extend it again later.
         """
+        params.pop("dit_rewiring_actual", None)
         from api.error_handlers import ValidationError
         from core.models.minimax_music3.defaults import (
             CHUNK_FRAMES,
@@ -1274,6 +1278,8 @@ class MiniMaxMusic3Mixin:
 
         full_frame_codes = torch.cat([sidecar.frame_codes.to(torch.long), ar_result.frame_codes.detach().to("cpu")], dim=0)
 
+        from core.models.minimax_music3.residual_unet import capture_generation_observation
+        capture_generation_observation(pipeline, params, transformer)
         return MiniMaxMusic3ExtendResult(
             waveform=full_waveform,
             sample_rate=sample_rate,
@@ -1565,6 +1571,7 @@ class MiniMaxMusic3Mixin:
         Returns:
             `MiniMaxMusic3RepaintResult` with `repaint_mode="regenerate"`.
         """
+        params.pop("dit_rewiring_actual", None)
         from api.error_handlers import ValidationError
         from core.models.minimax_music3.defaults import (
             CHUNK_FRAMES, CHUNK_HOP, CROP_LEFT_LATENT, CROP_RIGHT_LATENT, MAX_AUDIO_FRAMES,
@@ -1785,6 +1792,8 @@ class MiniMaxMusic3Mixin:
             [sidecar.frame_codes[:T].to(torch.long), ar_result.frame_codes.detach().to("cpu")], dim=0,
         )
 
+        from core.models.minimax_music3.residual_unet import capture_generation_observation
+        capture_generation_observation(pipeline, params, transformer)
         return MiniMaxMusic3RepaintResult(
             waveform=full_waveform,
             sample_rate=sample_rate,
@@ -1889,6 +1898,7 @@ class MiniMaxMusic3Mixin:
             `MiniMaxMusic3RepaintResult` with `repaint_mode="rerender"`; `frame_codes`/`num_frames` are UNCHANGED
             from the sidecar (see `MiniMaxMusic3RepaintResult`'s own docstring).
         """
+        params.pop("dit_rewiring_actual", None)
         from api.error_handlers import ValidationError
         from core.models.minimax_music3.defaults import CHUNK_FRAMES, CHUNK_HOP, CROP_LEFT_LATENT, CROP_RIGHT_LATENT
 
@@ -1995,6 +2005,7 @@ class MiniMaxMusic3Mixin:
         comps = self.minimax_music3_components
         language_model = comps["language_model"]
         rvq_depth_decoder = comps["rvq_depth_decoder"]
+        transformer = comps["transformer"]
 
         self._minimax_music3_move(("language_model", "rvq_depth_decoder"), device)
         ar_offloader = self._minimax_music3_maybe_install_block_offload(
@@ -2091,6 +2102,8 @@ class MiniMaxMusic3Mixin:
             original_wave, new_middle_waveform, start_sample, end_sample, sample_rate,
         )
 
+        from core.models.minimax_music3.residual_unet import capture_generation_observation
+        capture_generation_observation(pipeline, params, transformer)
         return MiniMaxMusic3RepaintResult(
             waveform=full_waveform,
             sample_rate=sample_rate,
@@ -2126,6 +2139,7 @@ class MiniMaxMusic3Mixin:
         docstring above both for the honest description of each, and for why mid-span infill with a preserved
         tail is not offered by either.
         """
+        params.pop("dit_rewiring_actual", None)
         from api.error_handlers import ValidationError
 
         mode = params.get("mode")

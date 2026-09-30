@@ -35,6 +35,97 @@ def fixture(tokens=13):
 
 
 class YuE2Residual(unittest.TestCase):
+    def test_public_complete_file_inspection_does_not_read_weights_or_tokenizer(self):
+        import asyncio
+        import httpx
+        from fastapi import FastAPI
+        from safetensors import safe_open
+        from safetensors.torch import save_file
+        from core.models.yue2 import loader
+        from core.models.yue2.single_file import save_yue2_single_file
+        from core.rewiring.inspect import inspect_model
+        from api.rewiring_routes import router
+        config = deepcopy(fixture()[0].config)
+        config.num_hidden_layers = 28
+        model = YuE2ForCausalLM(config).eval()
+        graph = default_topology(config)
+        restore_topology(model, graph)
+        vae = torch.nn.Module()
+        vae.register_buffer("scale", torch.ones(1))
+        tokenizer = SimpleNamespace(payload='{"version":"1.0"}')
+        def empty():
+            with torch.device("meta"):
+                copied = YuE2ForCausalLM(deepcopy(config))
+                copied_vae = torch.nn.Module()
+                copied_vae.register_buffer("scale", torch.ones(1))
+            self.assertTrue(all(value.is_meta for value in copied.state_dict().values()))
+            return copied, copied_vae
+        class HeaderOnly:
+            def __init__(self, *args, **kwargs):
+                self.handle = safe_open(*args, **kwargs)
+            def __enter__(self):
+                self.handle.__enter__()
+                return self
+            def __exit__(self, *args):
+                return self.handle.__exit__(*args)
+            def metadata(self):
+                return self.handle.metadata()
+            def get_tensor(self, key):
+                raise AssertionError("Payload read: " + key)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            residual_path, dense_path = root / "residual.safetensors", root / "dense.safetensors"
+            save_yue2_single_file(residual_path, model, vae, tokenizer)
+            restore_topology(model, None)
+            save_yue2_single_file(dense_path, model, vae, tokenizer)
+            adapter_path = root / "adapter.safetensors"
+            save_file({"lora_down.weight": torch.ones(1)}, str(adapter_path), metadata={"model_type":"yue2"})
+            with safe_open(str(residual_path), framework="pt", device="cpu") as handle:
+                state = {key: handle.get_tensor(key) for key in handle.keys()}
+                metadata = handle.metadata()
+            missing_path = root / "missing.safetensors"
+            missing = dict(state)
+            del missing["model.diffusion_model.model.layers.27.self_attn.q_proj.weight"]
+            save_file(missing, str(missing_path), metadata=metadata)
+            wrong_path = root / "wrong_shape.safetensors"
+            wrong = dict(state)
+            wrong["model.diffusion_model.vae2llm.weight"] = torch.zeros(1)
+            save_file(wrong, str(wrong_path), metadata=metadata)
+            partial_path = root / "partial.safetensors"
+            partial = dict(metadata)
+            del partial["sushi.rewire.spec_sha256"]
+            save_file(state, str(partial_path), metadata=partial)
+            app = FastAPI()
+            app.include_router(router, prefix="/api/v1")
+            async def check():
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                    response = await client.post("/api/v1/models/rewiring/inspect", json={"model_path":str(residual_path)})
+                    self.assertEqual(response.status_code, 200, response.text)
+                    info = response.json()
+                    self.assertEqual(info["architecture"], "yue2")
+                    self.assertEqual(info["streams"], [{"name":"nar", "block_count":28}])
+                    self.assertEqual(info["topology"], graph)
+                    self.assertEqual(info["default_spec"], graph)
+                    self.assertEqual(info["temporal_geometry"]["grid_policy"], "zero_hidden_tail_v1")
+                    self.assertEqual(info["initial_spec"]["regions"][0]["down_factor"], [2,1])
+                    self.assertEqual(inspect_model(dense_path)["topology"], None)
+                    plan = await client.post("/api/v1/models/rewiring/validate", json={
+                        "spec": info["default_spec"], "token_height":9000, "token_width":1})
+                    self.assertEqual(plan.status_code, 200, plan.text)
+                    blocks = plan.json()["plan"]["blocks"]
+                    self.assertEqual([sum(b["depth"] == depth for b in blocks) for depth in range(3)], [8,16,4])
+                    for bad in (adapter_path, missing_path, wrong_path, partial_path):
+                        with self.subTest(path=bad.name):
+                            refused = await client.post("/api/v1/models/rewiring/inspect", json={"model_path":str(bad)})
+                            self.assertEqual(refused.status_code, 422, refused.text)
+            with patch.object(loader, "build_empty_models", side_effect=empty), \
+                    patch.object(loader, "safe_open", side_effect=HeaderOnly), \
+                    patch.object(loader, "EmbeddedTokenizer", side_effect=AssertionError("Tokenizer materialization reached")), \
+                    patch.object(loader, "load_yue2_from_path", side_effect=AssertionError("Weight loading reached")):
+                asyncio.run(check())
+        self.assertFalse(torch.cuda.is_initialized())
+
+
     def generation_fixture(self):
         from core.models.yue2.vendor.protocol import CODEC_OFFSET
         from core.models.yue2.vendor.nar import song_chunks

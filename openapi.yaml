@@ -3516,6 +3516,10 @@ paths:
         MiniMax Music 3 supports native flow component directories and flat safetensors/GGUF
         with companion flow/condition configs. Its temporal preview represents one native
         flow chunk and does not enable training for this generation-only architecture.
+        YuE2 requires its complete single-file native tensor census and embedded
+        tokenizer header. Inspection builds shape-only meta models and may read bounded
+        quantization markers; it does not read model/VAE weights or tokenizer payload.
+        Its acoustic NAR preview does not enable NAR training; Phase-A remains AR-only.
         Flux2 exposes double/single streams.
         Flux2 and Z-Image file inspection
         requires a native constructor config declaration. Inspection and presets do not imply runtime

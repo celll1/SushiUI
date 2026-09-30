@@ -135,6 +135,9 @@ def inspect_model(model_path):
                 metadata = handle.metadata() or {}
                 keys = list(handle.keys())
         architecture = metadata.get("model_type")
+        from core.models.yue2.loader import keys_look_yue2
+        if architecture == "yue2" or keys_look_yue2(keys):
+            return _inspect_yue2(path)
         if architecture == "minimax_music3" or "diffusion_transformer.transformer.project_in.weight" in keys:
             return _inspect_music3(path)
         if architecture is None and {"video_patch_proj.weight", "audio_patch_proj.weight", "condition_proj.weight", "blocks.0.attn.qkv_proj.weight"}.issubset(keys):
@@ -305,3 +308,24 @@ def _inspect_music3(path):
         topology_sha256=None if topology is None else digest(topology),
         default_spec=adapter.default_topology(config),initial_spec=initial,
         latent_scale_factor=1,pixel_alignment=1,temporal_geometry=geometry)
+
+
+def _inspect_yue2(path):
+    from core.models.yue2 import residual_unet as adapter
+    from core.models.yue2.loader import preflight_yue2
+    from core.models.yue2.vendor.modeling_yue2 import YuE2Config
+    from api.param_defaults import DIT_REWIRING_REGION_DEFAULTS
+    inspected = preflight_yue2(path, load_tokenizer=False)
+    config = YuE2Config(**inspected["model_config"])
+    resolved = adapter.native_config(config)
+    topology = inspected["residual_topology"]
+    streams = [{"name": "nar", "block_count": config.num_hidden_layers}]
+    edges = DIT_REWIRING_REGION_DEFAULTS["edge_blocks"]
+    initial = build_spec("yue2", streams, [dict(id="r0", stream="nar", parent=None,
+        start_block=edges, end_block=config.num_hidden_layers-edges,
+        down_factor=DIT_REWIRING_REGION_DEFAULTS["temporal_down_factor"], **OPERATORS)], resolved)
+    return dict(architecture="yue2", streams=streams, base_config_sha256=digest(resolved),
+        block_layout_sha256=digest(streams), topology=topology,
+        topology_sha256=None if topology is None else digest(topology),
+        default_spec=adapter.default_topology(config), initial_spec=initial,
+        latent_scale_factor=1, pixel_alignment=1, temporal_geometry=adapter.temporal_geometry(config))

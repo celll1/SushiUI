@@ -35,6 +35,42 @@ def fixture(tokens=13):
 
 
 class YuE2Residual(unittest.TestCase):
+    def test_loaded_model_info_displays_detached_nar_geometry(self):
+        from core.models.yue2.residual_unet import model_info, temporal_geometry
+        from api.param_defaults import audio_defaults_for_arch
+        from core import pipeline as pipeline_module
+        model, graph, chunk = fixture()
+        restore_topology(model, graph)
+        components = dict(type="yue2", transformer=model, frame_rate=25, latent_channels=64,
+                          model_identity={"license": "fixture", "source": "fixture"})
+        expected_geometry = dict(frame_rate=25, patch_size=1,
+            preview_frames=round(audio_defaults_for_arch("yue2")["audio_duration"] * 25),
+            grid_policy="zero_hidden_tail_v1")
+        info = model_info(components)
+        self.assertEqual(info["dit_rewiring_spec"], graph)
+        self.assertEqual(info["dit_rewiring_temporal_geometry"], expected_geometry)
+        info["dit_rewiring_spec"]["regions"][0]["id"] = "detached"
+        self.assertEqual(model._residual_unet_spec, graph)
+        for override in ({"frame_rate": 24}, {"latent_channels": 32}):
+            with self.subTest(override=override), self.assertRaisesRegex(ValueError, "native 25 Hz"):
+                model_info({**components, **override})
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(pipeline_module, "LAST_MODEL_CONFIG_FILE", Path(directory) / "last.json"), \
+                patch.object(pipeline_module.ModelLoader, "load_model", return_value=components), \
+                patch("utils.hash_cache.get_cached_file_hash", return_value="fixture_hash"):
+            manager = pipeline_module.DiffusionPipelineManager()
+            manager._load_model_locked("safetensors", str(Path(directory) / "yue2.safetensors"))
+            self.assertTrue(manager.is_yue2_model)
+            self.assertEqual(manager.current_model_info["dit_rewiring_spec"], graph)
+            self.assertEqual(manager.current_model_info["dit_rewiring_temporal_geometry"], expected_geometry)
+            manager.current_model_info["dit_rewiring_spec"]["regions"][0]["id"] = "detached"
+            self.assertEqual(model._residual_unet_spec, graph)
+        restore_topology(model, None)
+        self.assertEqual(model_info(components), {"dit_rewiring_spec": None})
+        self.assertEqual(model_info({}), {"dit_rewiring_spec": None})
+        self.assertFalse(torch.cuda.is_initialized())
+
+
     def test_complete_file_restores_native_execution(self):
         from core.models.yue2 import loader
         from core.models.yue2.single_file import save_yue2_single_file

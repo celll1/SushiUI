@@ -38,6 +38,8 @@ export default function DiTRewiringSummary({ spec, tokenStride, temporalGeometry
     <summary className="cursor-pointer text-emerald-300">Residual U-Net / {spec.regions.length} regions / checkpoint topology</summary>
     <p className="my-2 text-gray-400">{temporalGeometry && spec.architecture === "minimax_music3"
       ? `Read-only flow chunk topology. Preview: ${temporalGeometry.preview_frames} native audio tokens (${(temporalGeometry.preview_frames / temporalGeometry.frame_rate).toFixed(2)}s). The time token stays at full resolution. Autoregressive code generation is unchanged; flow KV caching is disabled.`
+      : temporalGeometry && spec.architecture === "yue2"
+      ? `Read-only acoustic NAR topology. Preview: ${temporalGeometry.preview_frames} audio tokens (${(temporalGeometry.preview_frames / temporalGeometry.frame_rate).toFixed(2)}s). Actual chunks follow the generated codec sequence and native context limit. START and END tokens stay at full resolution; autoregressive generation and its immutable prefix KV are preserved.`
       : temporalGeometry ? `Read-only temporal topology. Preview at ${temporalGeometry.preview_frames / temporalGeometry.frame_rate}s; actual clip length follows the generation request. Decoder KV caching is disabled.`
       : videoGeometry ? `Per-frame spatial topology at ${width}×${height}px. Frames and audio tokens retain native resolution; pooling and skip connections never cross frame boundaries.`
       : `Read-only restored topology. Preview at ${width}×${height}px; image dimensions follow the generation request. Image-token KV caching is disabled during rewired execution; immutable prefix KV remains available.`}</p>

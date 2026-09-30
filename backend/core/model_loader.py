@@ -962,6 +962,9 @@ class ModelLoader:
                         if model_type == "siglip2_vision_encoder":
                             return "vision_encoder"
 
+                        if model_type == "qwen_image_21":
+                            return "qwen_image_21"
+
                         if model_type in ["flux2", "flux.2", "flux2-klein", "flux.2-klein"]:
                             return "flux2"
                         elif model_type in ["sdxl", "sd-xl", "stable-diffusion-xl", "stable_diffusion_xl"]:
@@ -2267,6 +2270,10 @@ class ModelLoader:
         if model_type == "flux2":
             print(f"[ModelLoader] Loading as FLUX.2 Klein (Flux2Transformer2DModel)")
             return ModelLoader.load_flux2_from_safetensors(file_path, device, torch.bfloat16)
+
+        if model_type == "qwen_image_21":
+            print("[ModelLoader] Loading as Qwen-Image 2.1 (split artifact)")
+            return ModelLoader.load_qwen_image_21_from_path(file_path, torch.bfloat16)
 
         # Anima (DiT + Qwen3 + Qwen-Image VAE)
         if model_type == "anima":

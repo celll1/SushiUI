@@ -96,6 +96,12 @@ class ArtifactContracts(unittest.TestCase):
                 restored,variant = load_transformer(str(path),config,torch.float32)
                 self.assertEqual(restored._residual_unet_spec,spec)
                 self.assertEqual(variant,"bf16")
+                from core.model_loader import ModelLoader
+                with patch.object(ModelLoader,"load_qwen_image_21_from_path",
+                                  return_value={"transformer":restored}) as dispatch:
+                    components = ModelLoader.load_from_safetensors(str(path))
+                    self.assertIs(components["transformer"],restored)
+                    dispatch.assert_called_once_with(str(path),torch.bfloat16)
                 with torch.no_grad():
                     result = restored(x,text,torch.tensor([0.5]),[[(1,8,12)]],slots).sample
                 for key,value in model.state_dict().items():

@@ -1,6 +1,6 @@
 # SigLIP2とFoveaTagに対応する軽量captionerの実装設計
 
-2026-10-01。状態: **SigLIP2学習と推論コア実装済み、APIとUIは未接続**。本書の初期モデル構成、API、実験値は提案であり、
+2026-10-01。状態: **SigLIP2コアと推論API、preview UI実装済み、学習run管理は未接続**。本書の初期モデル構成、API、実験値は提案であり、
 品質や速度の実測結果ではない。既存のSigLIP2 taggerを画像encoderとして共有し、
 画像の空間特徴と明示的なタグ概念から、短い自然言語captionを生成する専用decoderを学習する。
 蓄積済みのimage、tags、captionの組を教師データとして使う。
@@ -287,7 +287,7 @@ SigLIP2特徴取得だけは既存tagger model側に置き、旧predictのrespon
 captioner managerはtagger modelのborrow lifetimeを管理する。要求中のreload/unloadを排他し、
 既存GPU調停とpause/offloadに従う。二つのmanagerが同じencoderを別々にGPUへロードしない。
 
-以下の推論と学習route名は提案である。default schemaと保存APIの実装範囲は末尾の進捗欄に記す。
+以下の学習route名は提案である。推論、default schemaと保存APIの実装範囲は末尾の進捗欄に記す。
 実装時は[ADD_A_PARAMETER.md](../guides/ADD_A_PARAMETER.md)
 に従い、openapi.yamlを先に更新する。
 
@@ -401,17 +401,29 @@ JSONの`compact_caption` fieldとdataset indexを更新する。
 既存の別sourceが所有するcaption_typeとJSON fieldは上書きせず拒否する。
 dataset revisionと画像hashをSQLiteの書込transaction内で確認し、DB commit失敗時はsidecarを戻す。
 
-run persistence、推論と学習のAPI、UI、batch実行は未実装である。
-GPU trainerの初期allocationは既存coordinatorでgenerationと排他するが、
-caption推論のGPU slot接続とworktree間の調整はまだ必要である。
+推論APIはload/status/unload、multipart predict、dataset predict-item、request cancelを接続した。
+GPU推論は既存coordinatorのslotを使い、trainer pauseのackがない場合は拒否する。
+接続切断と明示的なcancelでは停止を要求し、重複cancelでもworker終了までslotを保持する。
+Tagger画面のCaptioner tabはbundleロード、source/device/token設定、preview、本文編集と保存を持つ。
+複数itemの逐次previewでは成功と失敗を画面に残すが、画面を閉じた後のbatch結果はまだ永続化しない。
+
+学習run persistenceと学習API、学習UI、永続的なbatch管理は未実装である。
+GPU trainerの初期allocationは既存coordinatorでgenerationと排他する。
+worktree間のGPU調整と実training runのpause/offload検証はまだ必要である。
 実datasetから学習した自然文モデルはまだ存在せず、品質によるbest選択も未実装である。
 
 基盤と追加コアのCPUテスト23件が通過した。中断後の再開は連続学習と重みが完全一致し、
 export、依存不一致拒否、caption推論、borrow中のunload待機も確認した。
 保存API、OpenAPI整合性、既存caption更新とsidecar/scannerの回帰を合わせた44件も通過した。
+推論API、実encoder呼出し一回、preview後の保存、二重cancelとpause待機中のcancel、
+GPU admissionのCPU検証を加えた50件が通過した。
+frontendはコードをレビューしたが、build/type-checkと画面での動作確認はrepo ownerの検証が必要である。
 初期基盤ではfp32/bf16/fp16でloss/backward/生成を確認した。
 変更backendのpy_compileと実importも通過した。これは小型人工例での動作検証である。
-検証時はCPUのみを使い、CUDA context未初期化をassertする。実checkpointのロード、GPU学習、
-速度benchmark、server restartは行わず、別ワークツリーのVRAM利用と競合させない。
+通常のCPU検証ではCUDA context未初期化をassertする。利用者のGPU空き報告後に、
+opt-inの`captioner_gpu_test.py`でtiny SigLIP2とdecoderのGPUテスト3件が通過した。
+fp32/bf16/fp16のloss/backward、生成のfull/cache一致、cancel、fp32 optimizerのDRAM退避・復帰を確認した。
+このGPU smokeは128 MiB未満のtensor割当上限をassertし、実checkpointやdatasetを使わない。
+実dataの学習、速度benchmark、server restartは行っていない。
 worktree間でin-process lockは共有できないため、将来のGPU実測開始前には他作業のGPU利用と調整する。
 この基盤検証は実caption品質や1秒目標達成の証拠にはならない。

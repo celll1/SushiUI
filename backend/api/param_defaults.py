@@ -13,6 +13,8 @@ CAPTIONER_DEFAULTS: Dict[str, Any] = {
     "device": "cpu", "max_num_patches": 256, "allowed_categories": ["General"],
     "max_concepts": 64,
     "save_caption_type": "compact_caption",
+    "gpu_pause_timeout": 30.0,
+    "max_image_bytes": 20971520,
 }
 CAPTIONER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "device": "cpu", "max_num_patches": 256, "allowed_categories": ["General"],

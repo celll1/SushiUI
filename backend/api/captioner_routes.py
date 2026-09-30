@@ -1,21 +1,242 @@
 """Compact captioner REST integration."""
 
 import copy
+import asyncio
+from contextlib import asynccontextmanager, AsyncExitStack
+import json
 from pathlib import Path
 from typing import Literal
+import threading
+from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from sqlalchemy.orm import Session
 
 from api.error_handlers import APIError, NotFoundError, ValidationError
 from api.param_defaults import CAPTIONER_DEFAULTS, CAPTIONER_TRAINING_DEFAULTS
 from core.captioner.storage import file_hash
+from core.captioner.inference import CaptionInferenceManager
+from core.gpu_coordinator import gpu_coordinator
+from core.model_state_coordinator import model_state_coordinator, ModelStateBusyError
+from core.tagger.siglip2_inference_manager import get_siglip2_inference_manager
 from core.datasets.captions import select_caption, update_caption
 from database import get_datasets_db
 from database.models import Dataset, DatasetCaption, DatasetItem
 
 router = APIRouter()
+_caption_manager = None
+_requests = {}
+_request_lock = threading.Lock()
+
+
+def get_caption_manager():
+    global _caption_manager
+    with _request_lock:
+        if _caption_manager is None:
+            _caption_manager = CaptionInferenceManager(get_siglip2_inference_manager())
+        return _caption_manager
+
+
+class CaptionerLoadRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    path: str = Field(min_length=1)
+
+
+class CaptionerItemPredictRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    dataset_id: StrictInt = Field(ge=1)
+    item_id: StrictInt = Field(ge=1)
+    request_id: UUID
+    tag_source: Literal["predicted", "provided", "merged"] = CAPTIONER_DEFAULTS["tag_source"]
+    tags: list[str] = CAPTIONER_DEFAULTS["tags"]
+    max_new_tokens: StrictInt = Field(CAPTIONER_DEFAULTS["max_new_tokens"], ge=1)
+    device: Literal["cpu", "cuda:0"] = CAPTIONER_DEFAULTS["device"]
+
+
+class CaptionerStatusResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    loaded: bool
+
+
+class CaptionerUsedTag(BaseModel):
+    name: str
+    source: Literal["predicted", "provided"]
+    score: float | None
+    score_calibrated: bool
+
+
+class CaptionerPredictionResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    caption: str
+    used_tags: list[CaptionerUsedTag]
+    warnings: list[str]
+    termination: Literal["eos", "length_limit"]
+    token_count: int
+    image_hash: str
+    model_identity: str
+    timings_ms: dict[str, float]
+
+
+def _caption_error(exc, manager, *, loading=False):
+    if isinstance(exc, InterruptedError):
+        return APIError(str(exc), status_code=409, code="captioner_cancelled")
+    if isinstance(exc, FileNotFoundError):
+        return NotFoundError(str(exc), code="captioner_artifact_not_found" if loading else "captioner_item_not_found")
+    if manager.tagger.model_type == "onnx":
+        return ValidationError("ONNX taggers do not expose caption features", code="captioner_unsupported_backend")
+    if manager.tagger.model is None:
+        return ValidationError("Load a PyTorch SigLIP2 tagger first", code="captioner_tagger_not_loaded")
+    if "match" in str(exc):
+        return ValidationError(str(exc), code="captioner_tagger_mismatch")
+    return ValidationError(str(exc), code="captioner_invalid_artifact" if loading else "captioner_invalid_input")
+
+
+@router.post("/captioner/load", response_model=CaptionerStatusResponse)
+async def load_captioner(request: CaptionerLoadRequest):
+    manager = get_caption_manager()
+    try:
+        return await asyncio.to_thread(manager.load, Path(request.path).expanduser().resolve())
+    except (ValueError, OSError) as exc:
+        raise _caption_error(exc, manager, loading=True) from exc
+
+
+@router.get("/captioner/status", response_model=CaptionerStatusResponse)
+async def captioner_status():
+    return await asyncio.to_thread(get_caption_manager().status)
+
+
+@router.post("/captioner/unload", response_model=CaptionerStatusResponse)
+async def unload_captioner():
+    manager = get_caption_manager()
+    await asyncio.to_thread(manager.unload)
+    return await asyncio.to_thread(manager.status)
+
+
+@router.post("/captioner/requests/{request_id}/cancel")
+def cancel_caption_request(request_id: UUID):
+    with _request_lock:
+        stop = _requests.get(str(request_id))
+        if stop is None:
+            raise NotFoundError("Caption request is no longer active", code="captioner_request_not_found")
+        stop.set()
+    return {"cancel_requested": True}
+
+
+@asynccontextmanager
+async def _caption_slot(device):
+    try:
+        model_state_coordinator.begin_generation()
+    except ModelStateBusyError as exc:
+        raise APIError(str(exc), status_code=409, code="captioner_model_busy") from exc
+    try:
+        if device == "cuda:0":
+            async with AsyncExitStack() as stack:
+                try:
+                    await stack.enter_async_context(gpu_coordinator.generation_slot(estimated_peak_gb=3.0,
+                        timeout=CAPTIONER_DEFAULTS["gpu_pause_timeout"], require_pause_ack=True))
+                except RuntimeError as exc:
+                    raise APIError(str(exc), status_code=409, code="captioner_gpu_busy") from exc
+                yield
+        else:
+            yield
+    finally:
+        model_state_coordinator.end_generation()
+
+
+async def _predict_caption(http_request, request_id, image_bytes, *, tag_source, tags, max_new_tokens, device):
+    manager = get_caption_manager()
+    stop = threading.Event()
+    with _request_lock:
+        if str(request_id) in _requests:
+            raise APIError("Caption request id is already active", status_code=409, code="captioner_request_busy")
+        _requests[str(request_id)] = stop
+    try:
+        if not (await asyncio.to_thread(manager.status))["loaded"]:
+            raise ValidationError("Load a captioner bundle first", code="captioner_not_loaded")
+        async with _caption_slot(device):
+            worker = asyncio.create_task(asyncio.to_thread(manager.predict, image_bytes,
+                tag_source=tag_source, tags=tags, max_new_tokens=max_new_tokens,
+                device=device, cancelled=stop.is_set))
+            async def watch_disconnect():
+                while not worker.done():
+                    if await http_request.is_disconnected():
+                        stop.set()
+                        return
+                    await asyncio.sleep(0.2)
+            monitor = asyncio.create_task(watch_disconnect())
+            try:
+                return await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                stop.set()
+                while not worker.done():
+                    try:
+                        await asyncio.shield(worker)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                raise
+            except (ValueError, OSError, InterruptedError) as exc:
+                raise _caption_error(exc, manager) from exc
+            finally:
+                monitor.cancel()
+                try:
+                    await monitor
+                except asyncio.CancelledError:
+                    pass
+    finally:
+        with _request_lock:
+            _requests.pop(str(request_id), None)
+
+
+@router.post("/captioner/predict", response_model=CaptionerPredictionResponse)
+async def predict_caption(request: Request, image: UploadFile = File(...), request_id: UUID = Form(...),
+        tag_source: Literal["predicted", "provided", "merged"] = Form(CAPTIONER_DEFAULTS["tag_source"]),
+        tags: str = Form(json.dumps(CAPTIONER_DEFAULTS["tags"])),
+        max_new_tokens: int = Form(CAPTIONER_DEFAULTS["max_new_tokens"], ge=1),
+        device: Literal["cpu", "cuda:0"] = Form(CAPTIONER_DEFAULTS["device"])):
+    try:
+        provided = json.loads(tags)
+    except json.JSONDecodeError as exc:
+        raise ValidationError("tags must be a JSON array", code="captioner_invalid_input") from exc
+    try:
+        content = await image.read(CAPTIONER_DEFAULTS["max_image_bytes"] + 1)
+    finally:
+        await image.close()
+    if len(content) > CAPTIONER_DEFAULTS["max_image_bytes"]:
+        raise APIError("Caption image is too large", status_code=413, code="captioner_image_too_large")
+    return await _predict_caption(request, request_id, content, tag_source=tag_source, tags=provided,
+                                 max_new_tokens=max_new_tokens, device=device)
+
+
+@router.post("/captioner/predict-item", response_model=CaptionerPredictionResponse)
+async def predict_caption_item(http_request: Request, request: CaptionerItemPredictRequest):
+    def read_item():
+        from database import DatasetsSessionLocal
+        with DatasetsSessionLocal() as db:
+            dataset = db.query(Dataset).filter(Dataset.id == request.dataset_id).one_or_none()
+            item = db.query(DatasetItem).filter(DatasetItem.id == request.item_id,
+                DatasetItem.dataset_id == request.dataset_id).one_or_none()
+            if dataset is None or item is None or item.item_type in {"audio", "video"}:
+                raise NotFoundError("Dataset image item not found", code="captioner_item_not_found")
+            root = Path(dataset.path).resolve()
+            path = Path(item.image_path)
+            path = (path if path.is_absolute() else root / path).resolve()
+            if not path.is_relative_to(root):
+                raise ValidationError("Image escapes registered root", code="captioner_unsafe_path")
+            with path.open("rb") as stream:
+                content = stream.read(CAPTIONER_DEFAULTS["max_image_bytes"] + 1)
+            if len(content) > CAPTIONER_DEFAULTS["max_image_bytes"]:
+                raise APIError("Caption image is too large", status_code=413, code="captioner_image_too_large")
+            return content, dataset.revision
+    try:
+        content, revision = await asyncio.to_thread(read_item)
+    except OSError as exc:
+        raise NotFoundError(str(exc), code="captioner_item_not_found") from exc
+    result = await _predict_caption(http_request, request.request_id, content, tag_source=request.tag_source,
+        tags=request.tags, max_new_tokens=request.max_new_tokens, device=request.device)
+    return {**result, "dataset_id": request.dataset_id, "item_id": request.item_id, "dataset_revision": revision}
 
 
 class CaptionerSaveRequest(BaseModel):

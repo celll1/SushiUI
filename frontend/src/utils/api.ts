@@ -1,4 +1,66 @@
 import axios from "axios";
+
+export interface CaptionerOptions {
+  tag_source: "predicted" | "provided" | "merged";
+  tags: string[];
+  max_new_tokens: number;
+  device: "cpu" | "cuda:0";
+}
+export interface CaptionerDefaults extends CaptionerOptions {
+  save_caption_type: string;
+  max_image_bytes: number;
+}
+export interface CaptionerStatus {
+  loaded: boolean;
+  language?: string;
+  max_new_tokens?: number;
+  max_num_patches?: number;
+  tagger_weights_hash?: string;
+}
+export interface CaptionerPreview {
+  caption: string;
+  image_hash: string;
+  model_identity: string;
+  dataset_id?: number;
+  item_id?: number;
+  dataset_revision?: number;
+  termination: "eos" | "length_limit";
+  token_count: number;
+  warnings: string[];
+  used_tags: Array<{name: string; source: "predicted" | "provided"; score: number | null; score_calibrated: boolean}>;
+  timings_ms: Record<string, number>;
+}
+export const getCaptionerDefaults = async (): Promise<CaptionerDefaults> =>
+  (await api.get("/schema/captioner-defaults")).data;
+export const getCaptionerStatus = async (): Promise<CaptionerStatus> =>
+  (await api.get("/captioner/status")).data;
+export const loadCaptioner = async (path: string): Promise<CaptionerStatus> =>
+  (await api.post("/captioner/load", {path})).data;
+export const unloadCaptioner = async (): Promise<CaptionerStatus> =>
+  (await api.post("/captioner/unload")).data;
+export const predictCaptioner = async (image: File, requestId: string, options: CaptionerOptions): Promise<CaptionerPreview> => {
+  const form = new FormData();
+  form.append("image", image);
+  form.append("request_id", requestId);
+  form.append("tag_source", options.tag_source);
+  form.append("tags", JSON.stringify(options.tags));
+  form.append("max_new_tokens", String(options.max_new_tokens));
+  form.append("device", options.device);
+  return (await api.post("/captioner/predict", form, {headers: {"Content-Type": "multipart/form-data"}})).data;
+};
+export const predictCaptionerItem = async (datasetId: number, itemId: number, requestId: string, options: CaptionerOptions): Promise<CaptionerPreview> =>
+  (await api.post("/captioner/predict-item", {...options, dataset_id: datasetId, item_id: itemId, request_id: requestId})).data;
+export const cancelCaptionerRequest = async (requestId: string): Promise<void> => {
+  await api.post(`/captioner/requests/${requestId}/cancel`);
+};
+export const saveCaptionerPreview = async (preview: CaptionerPreview, captionType: string): Promise<{dataset_revision: number; caption_id: number}> => {
+  if (preview.dataset_id === undefined || preview.item_id === undefined || preview.dataset_revision === undefined) {
+    throw new Error("Dataset preview is required for caption persistence");
+  }
+  return (await api.post("/captioner/save", {dataset_id: preview.dataset_id, item_id: preview.item_id,
+    dataset_revision: preview.dataset_revision, image_hash: preview.image_hash, caption: preview.caption,
+    caption_type: captionType})).data;
+};
 import { wsClient } from "./websocket";
 import { resolveGlobalAttentionImpl, resolveGlobalAttentionMethod, resolveGlobalAttentionType } from "./attentionSettings";
 import { trainingFeatureUnsupportedReason } from "./trainingCapabilities";

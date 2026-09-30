@@ -50,6 +50,9 @@ def _native_adapter(architecture):
 
 def inspect_model(model_path):
     path = Path(model_path)
+    from core.models.minimax_music3.residual_unet import find_native_directory
+    if path.suffix.lower() == ".gguf" or find_native_directory(path) is not None:
+        return _inspect_music3(path)
     if path.is_dir():
         from core.models.anima.discovery import detect_anima_split_layout
         layout = detect_anima_split_layout(str(path))
@@ -132,6 +135,8 @@ def inspect_model(model_path):
                 metadata = handle.metadata() or {}
                 keys = list(handle.keys())
         architecture = metadata.get("model_type")
+        if architecture == "minimax_music3" or "diffusion_transformer.transformer.project_in.weight" in keys:
+            return _inspect_music3(path)
         if architecture is None and {"video_patch_proj.weight", "audio_patch_proj.weight", "condition_proj.weight", "blocks.0.attn.qkv_proj.weight"}.issubset(keys):
             architecture = "minimax_h3"
         if architecture is None and any(key.startswith(("transformer_blocks.", "single_transformer_blocks.",
@@ -281,3 +286,22 @@ def inspect_model(model_path):
     if architecture == "acestep":
         info["temporal_geometry"] = adapter.temporal_geometry(config)
     return info
+
+
+def _inspect_music3(path):
+    from core.models.minimax_music3 import residual_unet as adapter
+    from api.param_defaults import DIT_REWIRING_REGION_DEFAULTS
+    config,topology,geometry = adapter.inspect_artifact(path)
+    count = config['num_layers']
+    if not 3 <= count <= 4096:
+        raise ValueError('Native stream block count must be between 3 and 4096')
+    streams = [{'name':'main','block_count':count}]
+    edges = DIT_REWIRING_REGION_DEFAULTS['edge_blocks']
+    initial = build_spec('minimax_music3', streams, [dict(id='r0',stream='main',parent=None,
+        start_block=edges,end_block=count-edges,
+        down_factor=DIT_REWIRING_REGION_DEFAULTS['temporal_down_factor'],**OPERATORS)],config)
+    return dict(architecture='minimax_music3',streams=streams,base_config_sha256=digest(config),
+        block_layout_sha256=digest(streams),topology=topology,
+        topology_sha256=None if topology is None else digest(topology),
+        default_spec=adapter.default_topology(config),initial_spec=initial,
+        latent_scale_factor=1,pixel_alignment=1,temporal_geometry=geometry)

@@ -344,6 +344,8 @@ def _read_component_config(official: str, subdir: str, expected_class: str) -> D
         )
     with open(config_path, encoding="utf-8") as fh:
         config = json.load(fh)
+    if not isinstance(config, dict):
+        raise ValueError(f"MiniMax Music 3 {subdir} config must be an object")
     if config.get("_class_name") != expected_class:
         raise ValueError(
             f"MiniMax Music 3's {subdir}/config.json declares _class_name="

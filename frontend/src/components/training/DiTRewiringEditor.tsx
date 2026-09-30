@@ -18,6 +18,7 @@ const message = (error: unknown): string => {
 export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, onChange }: Props) {
   const [info, setInfo] = useState<DiTRewiringModelInfo | null>(null);
   const [plan, setPlan] = useState<DiTRewiringPlan | null>(null);
+  const [validatedSpec, setValidatedSpec] = useState<DiTRewiringSpec | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string>("");
   const [pixels, setPixels] = useState({ height: resolution, width: resolution });
@@ -47,9 +48,9 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
       setError("The inherited topology assertion differs from the checkpoint."); setPlan(null); return;
     }
     if (pixels.height % info.pixel_alignment || pixels.width % info.pixel_alignment) {
-      setError(`Image dimensions must be multiples of ${info.pixel_alignment}px.`); return;
+      setError(`Image dimensions must be multiples of ${info.pixel_alignment}px.`); setPlan(null); return;
     }
-    setPending(true);
+    setError(null); setPending(true);
     const timer = setTimeout(() => {
       previewDiTRewiring(current, pixels.height / info.latent_scale_factor, pixels.width / info.latent_scale_factor)
          .then(value => {
@@ -57,9 +58,9 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
           if (!configuring && info.topology_sha256 !== value.spec_sha256) {
             setError("The inherited topology assertion differs from the checkpoint."); setPlan(null); return;
           }
-          setPlan(value.plan); setError(null);
+          setValidatedSpec(current); setPlan(value.plan); setError(null);
         })
-        .catch(err => { if (!cancelled) setError(message(err)); })
+        .catch(err => { if (!cancelled) { setError(message(err)); setPlan(null); } })
         .finally(() => { if (!cancelled) setPending(false); });
     }, 120);
     return () => { cancelled = true; clearTimeout(timer); };
@@ -108,7 +109,7 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
         </label>)}
         <span>latent grid: {info ? `${pixels.height / info.latent_scale_factor} × ${pixels.width / info.latent_scale_factor}` : "…"}</span>
       </div>
-      {plan && <DiTRewiringGraph spec={current} plan={plan} selected={region?.id} onSelect={setSelected}
+      {plan && <DiTRewiringGraph spec={validatedSpec ?? current} plan={plan} selected={region?.id} onSelect={setSelected}
         onBoundaryChange={configuring ? (id, side, value) => editRegion(id, { [side]: value }) : undefined} />}
       {plan && <div className="flex flex-wrap gap-3">{Array.from(new Set(plan.blocks.map(b => b.tokens))).map(tokens =>
         <span key={tokens}>{plan.blocks.find(b => b.tokens === tokens)?.height}×{plan.blocks.find(b => b.tokens === tokens)?.width}: {tokens} tokens × {plan.blocks.filter(b => b.tokens === tokens).length} blocks</span>)}</div>}
@@ -141,7 +142,7 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
       <p className="text-gray-400">Block indices start at 0; end boundaries are exclusive. Drag skip endpoints or edit the interval and per-axis shrink factors. Fixed average pooling and residual update addition preserve parameter count. Uncalibrated quality may degrade.</p>
     </>}
     {info && !current && <p className="text-gray-400">{configuring ? "No preset is available for this layout. Supply a topology in the run configuration." : "The checkpoint uses the native DiT sequence."}</p>}
-    {pending && <p className="text-gray-400">Validating topology…</p>}
+    {pending && <p className="text-gray-400">Validating topology…{plan && " The graph shows the last validated configuration."}</p>}
     {error && <p role="alert" className="text-red-400">{error}</p>}
   </section>;
 }

@@ -1,6 +1,7 @@
 # DiT residual rewiring contract
 
-Status: implemented experimental option. Qwen-Image 2.1 has actual GPU/API
+Status: implemented experimental option; functional verification accepted by
+the owner on 2026-10-01. Qwen-Image 2.1 has actual GPU/API
 inference, LoRA/full training, checkpoint restore/resume and block-swap workflow
 verification. Other architectures have provisional native implementations and
 CPU contracts only, as requested by the owner. Frontend verification is static;
@@ -107,9 +108,12 @@ Keep presets, YAML editing, clone, export, and queues consistent.
 
 The uncalibrated Qwen probes show blur and granular artifacts. Shortening the
 deepest region from sixteen to four blocks improves some shapes but does not
-establish acceptable quality or universal performance gains. Calibration and
-fine-tuning quality, full/LoRA save-load-resume, production dtype gradients,
-checkpointing/offload, API round trips, and per-architecture gates remain required.
+establish acceptable quality or universal performance gains. Full/LoRA
+save-load-resume, dtype gradients, checkpointing/offload and API round trips
+have functional evidence below. The owner accepts functional verification for
+this delivery and defers quality-recovery training. Calibration quality remains
+unproven; non-Qwen GPU acceptance and consolidated frontend checks are deferred
+according to the owner's explicit verification scope.
 Do not infer reduced checkpoint/optimizer size from reduced token computation.
 
 The method was assessed from
@@ -228,14 +232,13 @@ These records are provenance, not GPU throughput measurements.
 
 ## Verified behavior and practical limits
 
-The 2026-10-01 consolidated CPU run covers all 21 `dit_rewiring*test.py` modules:
-205 tests and 95 subtests pass in 56.14 seconds with CUDA uninitialized. It covers
+The 2026-10-01 consolidated CPU run covers all 21 `dit_rewiring*test.py` modules
+and both MiniMax-H3 reload/native probe regressions: 231 tests and 95 subtests
+pass in 50.86 seconds with CUDA uninitialized. It covers
 independent residual output/gradient oracles, native block loops, FP32/BF16/FP16
 identity transport, metadata/shard/config refusals, supported training adapters,
 checkpoint restore/resume, adapter lifetime, inspection/preview APIs and acoustic
-export. Tiny CPU fixtures are not production quality or throughput tests. The separate
-MiniMax-H3 reload/native block-loop regression modules also pass 26 CPU tests
-with CUDA uninitialized.
+export. Tiny CPU fixtures are not production quality or throughput tests.
 
 Qwen GPU/API evidence from 2026-09-30 and 2026-10-01 is retained under
 `local/measurements/` (ignored machine-local artifacts). It includes:
@@ -297,6 +300,7 @@ verification is explicitly owner-run; the agent uses static source/API review.
 - Run the owner's consolidated frontend type/build and browser checks. No such
   commands are run by the agent.
 
-The full feature completion audit remains active until outstanding acceptance
-requirements have been resolved; this guide does not claim calibrated quality
-or production acceptance for every architecture/format.
+The owner accepts inference/training/save-restore functional verification for
+this delivery. The checks above remain the owner's consolidated manual pass;
+quality-recovery training is a separate deferred evaluation. This guide does
+not claim calibrated quality or production acceptance for every architecture/format.

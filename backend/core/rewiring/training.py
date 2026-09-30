@@ -21,6 +21,9 @@ def validate_training_rewiring(config, architecture):
 
 
 def validate_training_features(config):
+    from api.param_defaults import TRAINING_DEFAULTS
+    if float(config.get("block_skip_rate", TRAINING_DEFAULTS["block_skip_rate"])) > 0:
+        raise ValueError("Residual rewiring is incompatible with block_skip_rate")
     for key in ("dit_partition_training_enabled", "qwen_partition_training_enabled",
                 "dit_partition_global_adapter_enabled", "qwen_partition_global_adapter_enabled",
                 "tread_enable", "repa_enable", "blockskip_enable"):

@@ -3496,7 +3496,7 @@ paths:
                     type: array
                     description: Implemented backend architectures; topology and workflow compatibility are validated per request
                     items: {type: string}
-                    example: [qwen_image_21, krea2]
+                    example: [qwen_image_21, krea2, anima]
   /models/rewiring/inspect:
     post:
       tags: [models]
@@ -19201,6 +19201,11 @@ components:
           nullable: true
           description: Restored residual U-Net topology of the loaded model; null is the native sequence.
           example: null
+        dit_rewiring_token_stride:
+          type: integer
+          minimum: 1
+          description: Native image pixels per DiT token on each spatial axis, used for the restored-topology preview.
+          example: 16
         source_type:
           type: string
         source:
@@ -25735,7 +25740,8 @@ components:
           example: configure
           description: >-
             Inherit the checkpoint topology, or configure a new residual U-Net.
-            Supported on Qwen-Image 2.1 and Krea 2. Resume requires the same topology.
+            Supported on Qwen-Image 2.1, Krea 2 and Anima. Resume requires the same topology.
+            Incompatible with token/block skipping and positive stochastic block dropout.
         dit_rewiring_spec:
           allOf:
             - {$ref: '#/components/schemas/DiTRewiringSpec'}

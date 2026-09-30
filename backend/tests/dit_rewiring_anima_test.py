@@ -153,7 +153,6 @@ class AnimaRuntimeContracts(unittest.TestCase):
                 constructor.assert_not_called()
         self.assertFalse(torch.cuda.is_initialized())
 
-    @patch("core.rewiring.training.RUNTIME_ARCHITECTURES", ("anima",))
     def test_lora_resume_atomicity_and_topology_agreement(self):
         import tempfile
         from types import SimpleNamespace
@@ -253,15 +252,23 @@ class AnimaRuntimeContracts(unittest.TestCase):
             manager._load_lora_anima([good]); manager._unload_lora_anima()
             self.assertEqual(self.model._residual_unet_spec, self.spec)
 
-    def test_internal_default_preset(self):
+    def test_default_preset_and_training_request(self):
         from collections import Counter
         from types import SimpleNamespace
         from core.models.anima.anima_models import ANIMA_DIT_CONFIG
         from core.models.anima.residual_unet import default_topology, configure_training_topology
         from core.rewiring.spec import preview_plan
         model = SimpleNamespace(config=dict(ANIMA_DIT_CONFIG))
-        with patch("core.rewiring.training.RUNTIME_ARCHITECTURES", ("anima",)):
-            spec = configure_training_topology(model, {"dit_rewiring_mode": "configure"})
+        from api.routes import TrainingRunCreateRequest
+        from core.training.training_config import _build_train_section
+        with self.assertRaisesRegex(ValueError, "block_skip_rate"):
+            TrainingRunCreateRequest(training_method="lora", base_model_path="anima",
+                total_steps=1, dit_rewiring_mode="configure", block_skip_rate=0.1)
+        request = TrainingRunCreateRequest(training_method="lora", base_model_path="anima",
+            total_steps=1, dit_rewiring_mode="configure")
+        section = _build_train_section(request.model_dump(), total_steps=1, epochs=None,
+            train_unet=True, train_text_encoder=False, arch="anima")
+        spec = configure_training_topology(model, section)
         self.assertEqual(spec, default_topology(model.config))
         self.assertEqual(Counter(b["tokens"] for b in preview_plan(spec, 64, 64)["blocks"]),
                          {4096: 8, 1024: 16, 256: 4})

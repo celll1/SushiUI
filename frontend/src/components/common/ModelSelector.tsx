@@ -232,7 +232,7 @@ export default function ModelSelector({
                   v-prediction
                 </span>
               )}
-              {currentModel.dit_rewiring_spec && <DiTRewiringSummary spec={currentModel.dit_rewiring_spec} />}
+              {currentModel.dit_rewiring_spec && <DiTRewiringSummary spec={currentModel.dit_rewiring_spec} tokenStride={currentModel.dit_rewiring_token_stride} />}
             {loadedHybridSummary && (
                 <span className="rounded bg-amber-600/80 px-2 py-0.5 text-[10px] text-white">
                   merged

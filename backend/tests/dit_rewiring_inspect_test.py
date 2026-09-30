@@ -119,5 +119,113 @@ class InspectionContracts(unittest.TestCase):
             asyncio.run(check())
         self.assertFalse(torch.cuda.is_initialized())
 
+    def test_anima_native_file_split_shards_and_api(self):
+        import httpx
+        from fastapi import FastAPI
+        with patch.object(torch.cuda, "get_device_capability", return_value=(8, 9)), \
+             patch.object(torch.cuda, "_lazy_init"), patch.object(torch._C, "_cuda_init"):
+            from core.models.anima.anima_models import Anima
+        from core.models.anima.residual_unet import native_config, configure_training_topology
+        from core.models.common.single_file_format import save_single_file_state
+        from core.rewiring.spec import OPERATORS, build_spec
+        model = Anima(model_channels=24, num_blocks=7, num_heads=2,
+            mlp_ratio=1.0, crossattn_emb_channels=12, adaln_lora_dim=8, use_llm_adapter=False)
+        config = native_config(model)
+        topology = build_spec("anima", [{"name": "main", "block_count": 7}], [dict(
+            id="r0", stream="main", parent=None, start_block=1, end_block=6,
+            down_factor=[2, 2], **OPERATORS)], config)
+        tensors = {"net."+name: value for name, value in model.state_dict().items()}
+        metadata = {"model_type": "anima", "transformer_config": json.dumps(config),
+                    **checkpoint_metadata(topology)}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            folder = root/"split_files"/"diffusion_models"; folder.mkdir(parents=True)
+            source = folder/"anima.safetensors"
+            save_file(tensors, str(source), metadata=metadata)
+            with patch("safetensors.torch.load_file", side_effect=AssertionError("Tensor loading forbidden")), \
+                 patch.object(Anima, "__init__", side_effect=AssertionError("Model allocation forbidden")):
+                info = inspect_model(str(source))
+                self.assertEqual(info, inspect_model(str(root)))
+                self.assertEqual(info["architecture"], "anima")
+                self.assertEqual(info["topology"], topology)
+                self.assertEqual(info["streams"], [{"name": "main", "block_count": 7}])
+                self.assertIsNone(info["default_spec"])
+                resolved = configure_training_topology(model, {
+                    "dit_rewiring_mode": "configure", "dit_rewiring_spec": info["initial_spec"]})
+                self.assertEqual(resolved, info["initial_spec"])
+                sharded = root/"sharded.safetensors"
+                save_single_file_state(tensors, metadata, str(sharded), max_shard_bytes=12000)
+                self.assertEqual(info, inspect_model(str(sharded)))
+                app = FastAPI(); app.include_router(router, prefix="/api/v1")
+                async def check():
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                        for path in (source, root, Path(str(sharded)+".index.json")):
+                            response = await client.post("/api/v1/models/rewiring/inspect", json={"model_path": str(path)})
+                            self.assertEqual(response.status_code, 200, response.text)
+                            self.assertEqual(response.json(), info)
+                        schema = (await client.get("/api/v1/schema/dit-rewiring")).json()
+                        self.assertIn("anima", schema["runtime_architectures"])
+                        self.assertEqual(schema["presets"]["anima"]["regions"][1]["end_block"], 16)
+                        invalid = root/"adapter.safetensors"
+                        save_file({"lora_unet_blocks_0_self_attn_q_proj.lora_down.weight": torch.ones(2, 24)},
+                            str(invalid), metadata={"model_type": "anima"})
+                        reply = await client.post("/api/v1/models/rewiring/inspect", json={"model_path": str(invalid)})
+                        self.assertEqual(reply.status_code, 422)
+                asyncio.run(check())
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_anima_inspection_keeps_native_stack_and_cuda_unloaded(self):
+        import subprocess
+        from core.models.anima.config import ANIMA_DIT_CONFIG
+        keys = {name: torch.ones(1) for name in (
+            "blocks.0.self_attn.q_proj.weight", "blocks.0.cross_attn.q_proj.weight",
+            "blocks.0.adaln_modulation_self_attn.1.weight", "final_layer.linear.weight")}
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)/"native.safetensors"
+            save_file(keys, str(source))
+            script = r"""
+import sys
+sys.path.insert(0, sys.argv[1])
+import torch, safetensors
+from unittest.mock import patch
+with patch.object(torch.cuda, 'get_device_capability', return_value=(8, 9)), \
+     patch.object(torch.cuda, '_lazy_init'), patch.object(torch._C, '_cuda_init'):
+    import api.param_defaults
+assert not torch.cuda.is_initialized()
+original = safetensors.safe_open
+class HeaderOnly:
+    def __init__(self, *args, **kwargs): self.handle = original(*args, **kwargs)
+    def __enter__(self): self.handle.__enter__(); return self
+    def __exit__(self, *args): return self.handle.__exit__(*args)
+    def metadata(self): return self.handle.metadata()
+    def keys(self): return self.handle.keys()
+with patch.object(safetensors, 'safe_open', HeaderOnly), \
+     patch.object(torch.cuda, 'get_device_capability', side_effect=AssertionError('GPU discovery forbidden')), \
+     patch.object(torch.cuda, '_lazy_init', side_effect=AssertionError('CUDA forbidden')), \
+     patch.object(torch._C, '_cuda_init', side_effect=AssertionError('CUDA forbidden')):
+    from core.rewiring.inspect import inspect_model
+    info = inspect_model(sys.argv[2])
+assert info['architecture'] == 'anima'
+assert info['streams'][0]['block_count'] == 28
+assert info['default_spec']['regions'][1]['end_block'] == 16
+assert 'core.models.anima.anima_models' not in sys.modules
+assert 'core.models.anima.anima_loader' not in sys.modules
+assert not torch.cuda.is_initialized()
+"""
+            completed = subprocess.run([sys.executable, "-c", script,
+                str(Path(__file__).resolve().parents[1]), str(source)], capture_output=True, text=True, timeout=60)
+            self.assertEqual(completed.returncode, 0, completed.stdout+completed.stderr)
+            config = dict(ANIMA_DIT_CONFIG, patch_spatial=4)
+            save_file(keys, str(source), metadata={"model_type": "anima", "transformer_config": json.dumps(config)})
+            info = inspect_model(str(source))
+            self.assertEqual(info["latent_scale_factor"], 32)
+            self.assertEqual(info["pixel_alignment"], 32)
+            for value in (True, 0):
+                save_file(keys, str(source), metadata={"model_type": "anima", "transformer_config": json.dumps(dict(config, patch_spatial=value))})
+                with self.assertRaisesRegex(ValueError, "patch size"):
+                    inspect_model(str(source))
+        self.assertFalse(torch.cuda.is_initialized())
+
+
 if __name__ == "__main__":
     unittest.main()

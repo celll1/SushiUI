@@ -6,8 +6,9 @@ checkpointed residual execution, metadata-driven generation, LoRA/full training,
 checkpoint restore and adapter-stack compatibility checks. Actual 1024px API
 workflows verify generation, training samples, saved artifacts and resume, both
 resident and with block swap. The graphical editor is connected and statically
-reviewed; the owner will perform consolidated frontend checks. Krea 2 has native
-execution/artifact/training/LoRA generation integration and CPU contract checks.
+reviewed; the owner will perform consolidated frontend checks. Krea 2 and Anima
+have native execution/artifact/training/LoRA generation integration, model/editor
+inspection and CPU contract checks.
 GPU acceptance is restricted to Qwen-Image 2.1 by owner instruction; other models
 receive provisional implementation and CPU verification. Further architectures
 still require native execution/artifact adapters and capability gates.
@@ -401,10 +402,9 @@ equivalence and feature/config refusals. CUDA initialization is stubbed for the
 whole CPU test, including native forward's late imports. All 30 aggregate contracts
 pass; no Anima model weights or compute run on the GPU.
 
-This is an internal execution foundation with artifact restoration. Training/generation
-API integration, presets and editor discovery remain to be connected before
-Anima is advertised in the runtime capability list. It carries no real-model GPU,
-performance, quality or activation-offload equivalence claim.
+Anima's execution foundation is connected to artifact restoration and the
+training/generation scopes and editor discovery described below. It carries no
+real-model GPU, performance, quality or activation-offload equivalence claim.
 
 ## Anima artifact restoration
 
@@ -423,7 +423,8 @@ Modified config is refused before model construction. All 31 rewiring contracts
 pass, with the expanded four-test Anima suite also passing separately. Existing
 Anima scaled/scaleless quantized-loader matrix regression passes, and changed modules
 compile/import without CUDA initialization. Training/generation API topology scopes
-are not yet connected or advertised for Anima. No Anima GPU inference/training is run.
+and public discovery are connected as described below. No Anima GPU inference/training
+is run.
 
 
 ## Anima training and generation topology scopes
@@ -431,7 +432,7 @@ are not yet connected or advertised for Anima. No Anima GPU inference/training i
 The native model now exposes constructor geometry to the shared training and
 adapter resolvers. Component loading resolves inherited topology after latent
 space selection; LoRA resume validates topology before tensor mutation and
-installs it only after the complete checkpoint validates. The internal 28-block
+installs it only after the complete checkpoint validates. The 28-block
 preset is outer `[4, 24)` and inner `[12, 16)`, retaining eight full-grid,
 sixteen middle-grid and four deepest-grid blocks. Presets remain owned by
 param_defaults.py; an available preset does not by itself advertise runtime
@@ -442,10 +443,9 @@ weights, temporarily installs its topology and restores the base topology on
 unload or cleanup. All three Anima generation entry points attach effective
 spec/hash metadata, validate grid divisibility and refuse style injection and
 active FBCache before denoising. Loaded-model information includes the restored
-topology. These scopes have CPU coverage; public Anima configure capability and
-model/editor inspection remain withheld until their discovery path is connected.
-Internal configure/resume tests explicitly enable only the Anima capability in
-their test scope.
+topology. These scopes have CPU coverage; Anima is now exposed through the public
+configure capability and model/editor inspection described below. Configure and
+resume contracts use the public capability without a test-only override.
 
 Three additional CPU contracts cover the actual training adapter resume path,
 atomic failure, generation LoRA apply/unload and incompatible stacks, effective
@@ -456,3 +456,40 @@ failure is present in the unchanged base commit; this conversion change does not
 edit that route. Changed backend modules compile and import with CUDA untouched.
 No Anima GPU inference, training, speed or quality claim is made. All further
 real-model GPU acceptance remains limited to Qwen-Image 2.1 by owner instruction.
+
+
+## Anima discovery and public CPU integration
+
+Native constructor defaults live in a lightweight config module shared by the
+model and topology adapter. Header/key and split-path discovery also lives outside
+the model loader. Inspection reads Anima DiT files, shard indices (including the
+sibling-index fallback), and official split-files directories without allocating
+a model or reading tensor contents. Legacy native files use the shipped constructor
+geometry; saved full checkpoints use their declared geometry. Adapter-only files
+are refused. Anima joins the runtime capability list based on CPU contracts only,
+following the owner's provisional-integration boundary.
+
+Actual API inspection covers files, split directories, shards, restored metadata
+and custom seven-block initial layouts. The public training request/YAML resolver
+selects the standard 8/16/4 preset. A separate fresh process preloads API defaults
+with CUDA initialization blocked, then permits only header methods while forbidding
+GPU discovery/initialization; inspection passes without importing Anima's native
+model or loader. Nonstandard patch geometry reports its actual token stride.
+
+Loaded-model information includes dit_rewiring_token_stride. The read-only graph
+uses this native geometry instead of assuming sixteen pixels per token; the
+training editor already consumes inspection geometry and the public capability
+list. Frontend receives static review only. Owner checks should include Anima
+preset selection, reopening a custom run, and loaded-checkpoint previews with
+nonstandard patch size. GPU inference/training and performance/quality remain
+unverified for Anima.
+
+All 36 rewiring contracts pass, as do eighteen existing Anima LoRA/VAE-resume
+checks and the Anima scaled/scaleless quantized-loader matrix. Changed modules
+compile/import without CUDA initialization, and OpenAPI parses. Qwen remains the
+sole architecture with actual GPU generation/training/resume acceptance; no
+additional GPU run is needed for header discovery or read-only preview geometry.
+
+Positive stochastic block dropout is now refused by the shared request/YAML/runtime
+feature gate, before model loading or adapter mutation. This closes the gap between
+the planned feature boundary and Anima's native forward refusal.

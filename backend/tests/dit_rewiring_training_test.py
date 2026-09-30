@@ -106,7 +106,7 @@ class TrainingContracts(unittest.TestCase):
 
     def test_incompatible_options_do_not_mutate_model(self):
         m = model()
-        for key in ("dit_partition_training_enabled","tread_enable","repa_enable","blockskip_enable"):
+        for key in ("dit_partition_training_enabled","tread_enable","repa_enable","blockskip_enable","block_skip_rate"):
             with self.assertRaisesRegex(ValueError,"incompatible"):
                 configure_training_topology(m,{"dit_rewiring_mode":"configure",key:True})
             self.assertFalse(hasattr(m,"_residual_unet_spec"))

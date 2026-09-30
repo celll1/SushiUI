@@ -241,6 +241,7 @@ export interface ModelInfo {
   type: "sd15" | "sdxl" | "zimage" | "flux2" | "anima" | "lens" | "ideogram4" | "minit2i" | "krea2" | "qwen_image_21" | "sensenova" | "sensenova_sdxl_chimera" | "ltx2" | "acestep" | "minimax_h3" | "minimax_music3" | "yue2";
   is_v_prediction: boolean;
   dit_rewiring_spec?: DiTRewiringSpec | null;
+  dit_rewiring_token_stride?: number;
   model_hash: string;
   // Model-list entry fields (from GET /models)
   name?: string;

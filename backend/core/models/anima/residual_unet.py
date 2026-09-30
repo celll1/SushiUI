@@ -1,5 +1,5 @@
 """Anima image-grid residual execution through native cross-attention blocks."""
-import inspect
+from .config import ANIMA_DIT_CONFIG
 
 from core.rewiring.runtime import run_rewired_stream
 from core.rewiring.training import NO_RESUME_SPEC
@@ -7,10 +7,7 @@ from core.rewiring.spec import validate_model_identity
 
 
 def native_config(config):
-    from .anima_models import Anima
-    fields = {name: parameter.default for name, parameter in
-              inspect.signature(Anima.__init__).parameters.items()
-              if name not in {"self", "attn_mode", "split_attn"}}
+    fields = ANIMA_DIT_CONFIG
     if isinstance(config, dict):
         return {key: config.get(key, value) for key, value in fields.items()}
     return {key: getattr(config, key, value) for key, value in fields.items()}
@@ -78,7 +75,6 @@ def preflight_artifact(path, latent_channels=None):
     from pathlib import Path
     from safetensors import safe_open
     from core.rewiring.artifacts import read_artifact_topology
-    from .anima_models import ANIMA_DIT_CONFIG
     source = Path(path)
     if not source.exists() and Path(str(source)+".index.json").is_file():
         source = Path(str(source)+".index.json")

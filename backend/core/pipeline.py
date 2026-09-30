@@ -739,6 +739,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "source": source,
                     "type": "anima",
                     "dit_rewiring_spec": getattr(self.anima_components["transformer"], "_residual_unet_spec", None),
+                    "dit_rewiring_token_stride": self.anima_components["transformer"].patch_spatial * 8,
                     "is_v_prediction": False,  # flow matching
                     "model_hash": model_hash,
                 }
@@ -933,6 +934,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "model_hash": model_hash,
                     "is_distilled": self.krea2_components.get("is_distilled", False),
                     "dit_rewiring_spec": getattr(model_result["transformer"], "_residual_unet_spec", None),
+                    "dit_rewiring_token_stride": 16,
                 }
                 self.current_model_info.update(
                     self._fold_component_latent_identity(model_result, "krea2"))
@@ -960,6 +962,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "transformer_variant": model_result.get("transformer_variant", "bf16"),
                     "text_encoder_variant": model_result.get("text_encoder_variant", "bf16"),
                     "dit_rewiring_spec": getattr(model_result["transformer"], "_residual_unet_spec", None),
+                    "dit_rewiring_token_stride": 16,
                 }
                 self._save_last_model(source_type, source, pipeline_type)
                 print("[Pipeline] Qwen-Image 2.1 model loaded successfully")

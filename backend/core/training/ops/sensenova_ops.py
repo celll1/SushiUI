@@ -1311,6 +1311,11 @@ def load_components(trainer: Any) -> None:
 
         handler = SenseNovaArchHandler()
     handler.resolve_latent_refiner(trainer)
+    from core.models.sensenova.residual_unet import configure_training_topology
+    resume_path = getattr(trainer, "resume_from_checkpoint", None)
+    configure_training_topology(trainer.transformer, trainer.config,
+        resuming=bool(resume_path and Path(trainer.model_path).resolve() == Path(resume_path).resolve()),
+        pending_adapter_resume=bool(resume_path and getattr(trainer, "_manages_own_resume", False)))
     if getattr(trainer, "vae", None) is not None:
         trainer.vae.requires_grad_(False)
         trainer.vae.eval()

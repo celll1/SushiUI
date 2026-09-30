@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from torch import nn
 from torch.utils.checkpoint import checkpoint
 
+from core.rewiring.training import NO_RESUME_SPEC
 from core.rewiring.runtime import run_rewired_stream
 from core.rewiring.spec import checkpoint_metadata, validate_model_identity
 
@@ -60,19 +61,21 @@ def validate_topology_identity(spec, config):
 
 
 def restore_topology(model, spec):
+    decoder = getattr(getattr(model, "language_model", None), "model", None)
+    if spec is None:
+        for module in (model, decoder):
+            if module is not None:
+                module.__dict__.pop("_residual_unet_spec", None)
+                module.__dict__.pop("_residual_unet_native_config", None)
+        return
     resolved = native_config(model.config)
-    decoder = model.language_model.model
     if (_decoder_config(decoder.config) != resolved["llm_config"]
             or len(decoder.layers) != resolved["llm_config"]["num_hidden_layers"]):
         raise ValueError("SenseNova owner and decoder configs disagree")
-    graph = None if spec is None else validate_topology_identity(spec, model.config)
+    graph = validate_topology_identity(spec, model.config)
     for module in (model, decoder):
-        if graph is None:
-            module.__dict__.pop("_residual_unet_spec", None)
-            module.__dict__.pop("_residual_unet_native_config", None)
-        else:
-            module._residual_unet_spec = deepcopy(graph)
-            module._residual_unet_native_config = deepcopy(resolved)
+        module._residual_unet_spec = deepcopy(graph)
+        module._residual_unet_native_config = deepcopy(resolved)
 
 
 def model_topology_metadata(model):
@@ -216,3 +219,31 @@ def export_topology_metadata(model, config_dict, *, base_path=None, export_metad
     if base_path is not None and preflight_checkpoint(base_path) != spec:
         raise ValueError("SenseNova refiner export and base residual topologies disagree")
     return metadata
+
+
+def configure_training_topology(model, config, *, resuming=False, pending_adapter_resume=False,
+                                resume_spec=NO_RESUME_SPEC, install=True):
+    from types import SimpleNamespace
+    from core.rewiring.training import resolve_training_topology
+    from api.param_defaults import TRAINING_DEFAULTS
+    model_topology_metadata(model)
+    existing = getattr(model, "_residual_unet_spec", None)
+    declared = config.get("dit_rewiring_spec", TRAINING_DEFAULTS["dit_rewiring_spec"])
+    needs_identity = config.get("dit_rewiring_mode") == "configure" or existing is not None or declared is not None or (
+        resume_spec is not NO_RESUME_SPEC and resume_spec is not None)
+    native = {}
+    if needs_identity:
+        from .loader import _serializable_sensenova_config
+        native = _serializable_sensenova_config(model.config)
+    view = SimpleNamespace(config=native, _residual_unet_spec=existing)
+    staged = dict(config)
+    resolved = resolve_training_topology(view, staged, "sensenova", validate_topology_identity,
+        lambda owner, spec: None, resuming=resuming, pending_adapter_resume=pending_adapter_resume,
+        resume_spec=resume_spec, install=False)
+    if resolved is not None and int(config.get("batch_size", TRAINING_DEFAULTS["batch_size"])) != 1:
+        raise ValueError("SenseNova residual training currently requires batch_size 1")
+    if install:
+        restore_topology(model, resolved)
+        config["dit_rewiring_mode"] = config.get("dit_rewiring_mode", TRAINING_DEFAULTS["dit_rewiring_mode"])
+        config["dit_rewiring_spec"] = resolved
+    return resolved

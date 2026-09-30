@@ -1474,3 +1474,42 @@ build/type checks occur in this milestone.
 Validation: all shared residual contract files and existing SenseNova training
 core, packed-batch, full-save, LoRA and refiner contracts pass (203 total).
 Changed backend files compile and import; CUDA remains uninitialized.
+
+
+## SenseNova inherited training topology and LoRA resume (CPU milestone)
+
+SenseNova training resolves an installed checkpoint graph after VAE geometry
+and refiner selection, before freezing/staging the transformer. The common
+training resolver validates requested/inherited/resume agreement and existing
+feature refusals. A config view serializes the native NEOChat config for the
+common dictionary-based resolver; it does not replace the model config. Dense
+legacy configurations remain dense. A geometry change that invalidates an
+inherited graph must be corrected explicitly rather than silently reusing it.
+
+LoRA resume validates topology metadata before loading adapter tensors and uses
+the existing atomic adapter copy/rollback. Only after every adapter tensor loads
+does it install the graph on both NEOChat owner and generation decoder and update
+training config. A dense resume cannot erase an installed residual graph; wrong
+native identity and explicit inherited mismatches refuse. A failed tensor
+validation or partial copy leaves original graph, config and adapter weights.
+
+CPU contracts exercise dry resolution, inherited feature/batch refusals, real
+LoRA resume on both MoT branches, injected partial-copy rollback, graph/config
+installation after success, and checkpointed nonzero understanding/generation
+LoRA gradients. Understanding K/V projections are trainable in that probe to
+satisfy the existing differentiable-prefix contract. A loader-order probe checks
+geometry/refiner resolution before graph selection and freeze; its quantized
+base acceptance is stubbed, so it is not a real-base training acceptance claim.
+The native full-save/load and existing SenseNova training contracts remain the
+separate evidence for their own paths.
+
+Residual SenseNova training currently requires batch_size 1 because packed
+multi-image transport is not implemented. Dense packed training remains
+available. Public configure/presets, generation adapter lifetime and editor
+capability exposure are still pending; this milestone connects inherited and
+resume topology rather than advertising a new public architecture capability.
+GPU checks remain restricted to Qwen-Image 2.1, with no SenseNova GPU use.
+
+Validation: shared residual contracts plus existing SenseNova training core,
+packed-batch, full-save, LoRA and refiner contracts pass (205 total). Changed
+backend files compile and import with CUDA uninitialized.

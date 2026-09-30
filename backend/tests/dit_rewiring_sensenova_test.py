@@ -189,6 +189,121 @@ class SenseNovaRuntimeContracts(unittest.TestCase):
         self.assertEqual(self.model._residual_unet_spec, self.spec)
         self.assertFalse(torch.cuda.is_initialized())
 
+    def test_training_resolution_and_atomic_lora_resume(self):
+        import tempfile
+        from safetensors.torch import save_file
+        from core.models.sensenova.residual_unet import configure_training_topology, restore_topology
+        from core.rewiring.spec import checkpoint_metadata
+        from core.training.lora_trainer import LoRATrainer
+        from core.adapters import LoRALinearLayer
+        restore_topology(self.owner, self.spec)
+        config = {}
+        self.assertEqual(configure_training_topology(self.owner,config),self.spec)
+        for key in ("repa_enable","tread_enable","blockskip_enable","dit_partition_training_enabled"):
+            with self.assertRaisesRegex(ValueError,key):
+                configure_training_topology(self.owner,dict(config,**{key:True}))
+        with self.assertRaisesRegex(ValueError,"batch_size"):
+            configure_training_topology(self.owner,dict(config,batch_size=2))
+        restore_topology(self.owner,None)
+        settings = {}
+        self.assertEqual(configure_training_topology(self.owner,settings,resuming=True,
+            resume_spec=self.spec,install=False),self.spec)
+        self.assertEqual(settings,{})
+        self.assertFalse(hasattr(self.model,"_residual_unet_spec"))
+        self.model.requires_grad_(False)
+        layers = {}
+        for attr in ("q_proj_mot_gen","q_proj","k_proj","v_proj"):
+            name = "language_model.model.layers.0.self_attn."+attr
+            base = getattr(self.model.layers[0].self_attn,attr)
+            layer = LoRALinearLayer(base,2,2,name)
+            setattr(self.model.layers[0].self_attn,attr,layer);layers[name] = layer
+        trainer = SimpleNamespace(transformer=self.owner,config=settings,is_sensenova=True,
+            log_prefix="[SenseNovaResumeTest]",lora_rank=2,lora_alpha=2,
+            adapter_algorithm="lora",weight_decompose=False,adapter_config={},lora_layers=layers)
+        before = {f"{name}.{key}":tensor.detach().clone() for name,layer in layers.items()
+                  for key,tensor in layer.branch_tensors().items()}
+        tensors = {key:value+0.05 for key,value in before.items()}
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/"resume.safetensors"
+            metadata = dict(checkpoint_metadata(self.spec),model_type="sensenova",step="17")
+            save_file({"unrelated":torch.zeros(1)},str(path),metadata=metadata)
+            with self.assertRaisesRegex(ValueError,"missing required tensor"):
+                LoRATrainer.load_checkpoint(trainer,str(path))
+            self.assertEqual(settings,{})
+            self.assertFalse(hasattr(self.owner,"_residual_unet_spec"))
+            for name,layer in layers.items():
+                for key,tensor in layer.branch_tensors().items():
+                    torch.testing.assert_close(tensor,before[f"{name}.{key}"],rtol=0,atol=0)
+            save_file(tensors,str(path),metadata=metadata)
+            last = list(layers.values())[-1]
+            def fail(values):
+                with torch.no_grad():last.lora_down.weight.fill_(123)
+                raise RuntimeError("injected resume failure")
+            with patch.object(last,"load_tensors",side_effect=fail):
+                with self.assertRaisesRegex(RuntimeError,"injected resume failure"):
+                    LoRATrainer.load_checkpoint(trainer,str(path))
+            self.assertEqual(settings,{})
+            self.assertFalse(hasattr(self.owner,"_residual_unet_spec"))
+            for name,layer in layers.items():
+                for key,tensor in layer.branch_tensors().items():
+                    torch.testing.assert_close(tensor,before[f"{name}.{key}"],rtol=0,atol=0)
+            self.assertEqual(LoRATrainer.load_checkpoint(trainer,str(path)),17)
+            self.assertEqual(settings["dit_rewiring_spec"],self.spec)
+            self.assertEqual(self.owner._residual_unet_spec,self.spec)
+            self.assertEqual(self.model._residual_unet_spec,self.spec)
+            for name,layer in layers.items():
+                for key,tensor in layer.branch_tensors().items():
+                    torch.testing.assert_close(tensor,tensors[f"{name}.{key}"],rtol=0,atol=0)
+            save_file(tensors,str(path),metadata={"model_type":"sensenova"})
+            with patch("safetensors.torch.load_file",side_effect=AssertionError("weights read")):
+                with self.assertRaisesRegex(ValueError,"disagree"):
+                    LoRATrainer.load_checkpoint(trainer,str(path))
+        from core.training.ops.sensenova_ops import forward_und_prefix_layers,forward_gen_decoder_layers
+        prefix = forward_und_prefix_layers(self.model,self.text,self.text_indexes,self.text_mask,
+                                          checkpoint_layers=True)
+        result = forward_gen_decoder_layers(self.model,self.hidden,indexes=self.indexes,prefix_cache=prefix,
+                                            checkpoint_layers=True,trainable_prefix=True)
+        (result-torch.randn_like(result)).square().mean().backward()
+        for layer in layers.values():
+            self.assertIsNotNone(layer.lora_up.weight.grad)
+            self.assertTrue(torch.isfinite(layer.lora_up.weight.grad).all())
+            self.assertTrue(torch.count_nonzero(layer.lora_up.weight.grad))
+        self.assertFalse(torch.cuda.is_initialized())
+
+    def test_training_loader_resolves_after_geometry_before_freeze(self):
+        from core.models.sensenova.residual_unet import restore_topology
+        from core.training.ops import sensenova_ops
+        from contextlib import ExitStack
+        root = torch.nn.Module()
+        root.config = self.owner.config
+        root.language_model = torch.nn.Module(); root.language_model.model = self.model
+        root.fm_modules = torch.nn.ModuleDict({"fm_head":torch.nn.Identity()})
+        restore_topology(root,self.spec)
+        events = []
+        trainer = SimpleNamespace(model_path="checkpoint.safetensors",weight_dtype=torch.float32,
+            device=torch.device("cpu"),attention_backend="native",config={},blocks_to_swap=0,
+            arch=SimpleNamespace(resolve_latent_refiner=lambda owner:events.append("refiner")))
+        components = dict(transformer=root,config=root.config,tokenizer=object(),config_dict={})
+        original = root.requires_grad_
+        def freeze(flag):
+            self.assertEqual(trainer.config["dit_rewiring_spec"],self.spec)
+            events.append("freeze");return original(flag)
+        with ExitStack() as stack:
+            stack.enter_context(patch("core.models.sensenova.loader.load_sensenova_from_path",return_value=components))
+            stack.enter_context(patch.object(sensenova_ops,"_assert_supported_quantized_training_base"))
+            stack.enter_context(patch.object(sensenova_ops,"_assert_pixel_head_fm_decoder"))
+            stack.enter_context(patch("core.training.vae_swap.apply_latent_space",side_effect=lambda *a:events.append("geometry")))
+            stack.enter_context(patch.object(root,"requires_grad_",side_effect=freeze))
+            stack.enter_context(patch.object(sensenova_ops,"setup_attention_backend"))
+            stack.enter_context(patch("core.models.common.quantized_frozen_training.frozen_training_fused_requested",return_value=False))
+            sensenova_ops.load_components(trainer)
+        self.assertEqual(events,["geometry","refiner","freeze"])
+        self.assertTrue(root.training)
+        self.assertFalse(any(parameter.requires_grad for parameter in root.parameters()))
+        self.assertEqual(root._residual_unet_spec,self.spec)
+        self.assertEqual(self.model._residual_unet_spec,self.spec)
+        self.assertFalse(torch.cuda.is_initialized())
+
     @staticmethod
     def full_native_config():
         return dict(vision_config=dict(patch_size=16, hidden_size=16, llm_hidden_size=16,

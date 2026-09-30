@@ -1382,3 +1382,47 @@ connected workflows.
 All shared residual contracts and existing Ideogram LoRA/REPA cases pass
 (137 total). Changed-file compile, real imports and OpenAPI capability agreement
 pass with CUDA uninitialized.
+
+
+## SenseNova U1.5 native generation transport (CPU milestone)
+
+GPU verification remains restricted to Qwen-Image 2.1; every SenseNova check in
+this milestone uses reduced native decoder layers on CPU. The published MoT
+understanding branch remains dense and produces its original per-layer prefix
+KV. Only the generation image-token stream enters the shared nested residual
+transport. Native generation attention reads the same prefix at every resolution
+with `update_cache=False`; it creates image K/V at the current coarse grid.
+Spatial rotary positions follow average-pooled physical cell centers, while the
+text-time coordinate stays constant. The final full-grid restoration precedes
+`norm_mot_gen` and the existing generation head. No parameters are added.
+
+A native NEOChat config fingerprint binds dense LLM geometry, rotary/norm
+configuration and generation patch/channel geometry. Owner and decoder graphs
+are installed together after identity validation. Dense understanding forwards
+and their prefix caches bypass the residual runner. Both the inference decoder
+forward and the differentiable training loop use the same runner, retaining
+Module hooks and explicit non-reentrant checkpointing. The training loop keeps
+its existing detached/differentiable/four-phase boundary-leaf prefix checks.
+
+This milestone refuses packed multi-image plans, explicit generation masks,
+REPA taps, reference-style attention, mixed understanding/generation tokens,
+KV-appending calls and irregular spatial indexes before any generation block.
+It does not alter the existing dense packed-batch workflow. MoE and sliding
+attention are outside this provisional native implementation. Prepared inference
+flash buffers retain their prefix and use only the active current-image tail;
+immutable training prefixes can carry gradients into the understanding branch.
+
+CPU contracts check 96 -> 24 -> 6 -> 24 -> 96 token transitions, spatial centers,
+module hooks and parameter identity; native and explicit-training checkpoint
+output/gradient parity; nonzero generation and understanding gradients; exact
+zero-delta restoration; unchanged dense understanding outputs/KV; prepared
+flash-prefix retention; and atomic identity/layout refusals. Artifact loading,
+checkpoint save/resume, generation adapter lifetime, presets, inspection and
+public capability exposure remain pending for SenseNova. This native milestone
+is not a public acceptance or a SenseNova quality/performance claim.
+
+Validation: the shared residual contract files plus existing SenseNova training
+core and packed-batch contracts pass (134 total). The final stricter native
+layer-count/KV-shape checks pass a targeted 39-case rerun. Changed backend files
+compile and import with CUDA uninitialized. SenseNova remains outside public
+runtime capabilities until its remaining persistence and request paths connect.

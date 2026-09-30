@@ -1078,8 +1078,8 @@ and latent (patch2 four-channel) models execute, and the published l16 head widt
 52 follows the existing native attention padding route. This does not establish
 GPU offload, throughput or quality.
 
-MiniT2I remains outside public runtime capabilities. Training
-configure/inheritance/resume, generation adapter scopes, preset/model
+MiniT2I remains outside public runtime capabilities. Public training
+configuration, generation adapter scopes, preset/model
 inspection and editor exposure remain to be connected. GPU validation remains
 Qwen 2.1 only.
 
@@ -1122,3 +1122,33 @@ quality, throughput or training acceptance. GPU validation remains Qwen 2.1 only
 
 All 79 aggregate residual contracts and 74 existing MiniT2I LoRA/CFG/VAE cases
 pass (153 total), with changed-file compile/import leaving CUDA untouched.
+
+
+## MiniT2I training topology inheritance and resume
+
+MiniT2I training now resolves checkpoint topology after native latent-space setup
+and before gradient checkpointing, transformer freeze/train mode or device
+placement. The full checkpoint resume branch reuses this same loader. Inherited
+explicit/base/resume declarations must agree, and residual runs refuse REPA,
+TREAD, block skipping and partition training/global adapters through the common
+gates. Public configure requests/presets are still pending generation/editor
+integration; this milestone connects inherited saved graphs and LoRA resume.
+
+LoRA resume validates topology before reading or mutating branch tensors. Only a
+successful restore installs the resolved config and graph on both wrapper and
+MMJiT net. Missing branch tensors leave the original graph/config/weights intact;
+a dense resume file cannot erase the residual graph on a loaded checkpoint.
+
+CPU tests use real MiniT2I attention/MLP LoRA branches and the production
+flow-matching x0-to-velocity train_step with native gradient checkpointing. Loss,
+prediction/reconstruction monitoring and adapter gradients are finite, with
+nonzero gradients reaching trainable branches. Both normal and full-resume
+loaders reach topology resolution before checkpointing. The normal loader also
+completes native checkpoint setup, freezing, train-mode restoration and CPU
+placement. External component loading/latent swap are stubbed only for loader
+ordering checks; native execution is exercised independently. No MiniT2I GPU
+training, quality or speed acceptance is claimed; GPU validation is Qwen 2.1 only.
+
+All 81 aggregate residual contracts and 74 existing MiniT2I LoRA/CFG/VAE cases
+pass (155 total), with changed-file compile and real imports leaving CUDA
+untouched.

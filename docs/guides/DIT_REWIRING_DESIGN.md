@@ -885,7 +885,39 @@ not establish their GPU offload equivalence. All 66 aggregate rewiring contracts
 and 69 existing Lens LoRA/REPA/text-mask cases pass, with changed-file compile and
 real imports leaving CUDA untouched.
 
-Lens remains outside public runtime capabilities. Artifact save/restore,
+Lens remains outside public runtime capabilities. Directory artifact restore,
 training configuration/resume, generation adapter scopes and model/editor
 inspection must be connected before exposing it. No Lens GPU inference/training,
 performance or quality evidence is claimed; GPU acceptance stays Qwen-only.
+
+
+## Lens checkpoint artifact integration
+
+Full-parameter saves now include the canonical native transformer config and
+validated residual topology, and use the shared single-file/sharded writer. The
+writer returns the actual file or shard-index path so REPA sidecars retain their
+existing pairing. LoRA saves include the installed topology metadata; generation
+LoRA topology agreement/installation is still pending.
+
+Single-file and indexed-shard loads validate topology headers before reading
+weights or resolving companion components. Rewired files require a native
+transformer config whose stream identity matches the topology. The saved config
+constructs the native DiT directly, preserving layer counts, RoPE configuration
+and selected text feature layers even when the companion base has a different
+DiT config. Rewired weights must be complete with no unexpected keys before
+companion text encoder/VAE loading. Existing quantized-weight refusal and declared
+latent/VAE restoration remain in the path. Legacy files without saved native
+config retain the base-model construction route. Missing single-file stems
+resolve to their sibling shard index.
+
+CPU contracts exercise the actual full writer, ModelLoader dispatch, native DiT
+construction and forward for single-file, shard-index and missing-stem paths.
+External text encoder/tokenizer/VAE/scheduler loaders are stubbed; a base DiT
+from_pretrained call is forbidden. Every restored weight and native output agrees
+with the saved model, and text layer selection comes from saved config. Missing
+config, incompatible config and incomplete weights are refused before companion
+loading. No Lens GPU performance, quality or training acceptance is claimed.
+
+All 67 aggregate rewiring contracts plus 104 existing Lens LoRA/REPA/text-mask
+and VAE regression cases pass (171 total). Changed backend files compile and
+import with CUDA untouched. GPU validation remains limited to Qwen 2.1.

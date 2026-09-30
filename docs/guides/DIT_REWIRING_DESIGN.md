@@ -1902,3 +1902,44 @@ quantized-export suites pass 166 CPU cases and 48 subtests with CUDA uninitializ
 Public configure/presets, temporal editor/model discovery, arbitrary-length grid
 handling and complete audio workflow/resume seams remain pending. ACE-Step stays
 outside public runtime capabilities; GPU verification remains Qwen-Image 2.1 only.
+
+
+## ACE-Step versioned temporal tail extension (CPU milestone)
+
+New ACE-Step topology identities include sushi_residual_grid_policy with value
+zero_token_tail_v1 in the canonical native config. The native decoder computes
+the least common multiple of all cumulative region factors, appends zero hidden
+tokens after native input patch projection to the smallest aligned grid, and
+extends regular native RoPE coordinates over that tail. Residual transport still
+requires an exactly divisible execution grid. Restoration removes the synthetic
+tail before the native output norm/projection; native patch padding/cropping then
+preserves the requested audio-frame length. No parameters are added.
+
+These synthetic tokens participate in native attention/block execution after
+zero initialization; this is a defined sequence extension, not an attention
+padding mask. Partial boundary pooling and attention can therefore affect nearby
+predictions. CPU correctness does not establish sound quality; non-Qwen models
+remain provisional under the owner's GPU restriction.
+
+Graph hashes identify the policy. Legacy ACE-Step base-config hashes without the
+policy remain accepted and retain require_divisible execution rather than being
+silently reinterpreted. Full exports explicitly serialize the resolved policy;
+new/legacy native configs are canonical and idempotent. A checkpoint that declares
+zero_token_tail_v1 but carries a legacy topology hash refuses before model
+allocation. LoRA compatibility still compares the complete graph identity,
+including policy differences.
+
+Runtime audio metadata now includes native_token_grid, actual token_grid,
+transport_padding_tokens and grid_policy. For the seven-layer CPU fixture with
+patch size two and two factor-two regions, 250 audio frames yield 125 native tokens
+and 128 execution tokens (three synthetic tokens), with 64/32 middle/deep tokens.
+The native three-step generator returns exactly 250 frames without KV cache.
+
+CPU contracts cover lengths 45, 250 and one, exact layer token counts, finite
+nonzero audio gradients, checkpointed prediction/all-parameter-gradient agreement,
+identity-block restoration, policy roundtrip through actual full writer/native
+loader and legacy rejection of nondivisible grids. Shared residual, legacy
+ACE-Step and existing quantized-export suites pass 168 cases and 50 subtests.
+Changed backend files compile/import with CUDA uninitialized. Public presets,
+temporal editor/model discovery and full audio workflow/resume acceptance remain
+pending; GPU validation stays Qwen-Image 2.1 only.

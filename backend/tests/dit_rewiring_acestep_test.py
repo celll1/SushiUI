@@ -482,10 +482,15 @@ class AceStepRuntimeContracts(unittest.TestCase):
             refer_audio_order_mask=torch.arange(2), src_latents=torch.zeros(2,48,64),
             chunk_masks=torch.ones(2,48,64),is_covers=torch.zeros(2,dtype=torch.bool),
             silence_latent=torch.zeros(1,48,64),seed=94,infer_steps=3,dcw_enabled=False)
+        from core.models.acestep.residual_unet import GRID_POLICY_KEY
+        legacy_config=native_config(owner.config);legacy_config.pop(GRID_POLICY_KEY)
+        legacy=build_spec("acestep",spec["streams"],spec["regions"],legacy_config)
+        restore_topology(owner,legacy)
         with patch.object(owner,"prepare_condition",side_effect=AssertionError("No conditioning on invalid grid")):
             with self.assertRaisesRegex(ValueError,"not divisible"):
                 owner.generate_audio(**{**args,"src_latents":args["src_latents"][:,:45],
                                         "chunk_masks":args["chunk_masks"][:,:45]})
+        restore_topology(owner,spec)
         for sampler, method, calls in (("euler","ode",3),("heun","ode",5),("euler","sde",3)):
             with self.subTest(sampler=sampler,method=method):
                 seen = []
@@ -504,6 +509,12 @@ class AceStepRuntimeContracts(unittest.TestCase):
                 self.assertEqual(result["target_latents"].shape,(2,48,64))
                 self.assertTrue(torch.isfinite(result["target_latents"]).all())
                 self.assertEqual(owner.decoder._residual_unet_spec,spec)
+        with patch("core.models.acestep.vendor.modeling_acestep_v15_turbo.EncoderDecoderCache",
+                   side_effect=AssertionError("No residual KV cache")):
+            extended=owner.generate_audio(**{**args,"src_latents":torch.zeros(2,250,64),
+                "chunk_masks":torch.ones(2,250,64)},sampler_mode="euler",infer_method="ode")
+        self.assertEqual(extended["target_latents"].shape,(2,250,64))
+        self.assertTrue(torch.isfinite(extended["target_latents"]).all())
         restore_topology(owner,None)
         dense_seen = []
         def observe_dense(module, positional, kwargs):
@@ -540,12 +551,17 @@ class AceStepRuntimeContracts(unittest.TestCase):
         params={"seed":94}
         backend._acestep_rewiring_preflight(params,48)
         self.assertEqual(params["dit_rewiring_actual"]["input_frames"],48)
-        with self.assertRaises(ValidationError): backend._acestep_rewiring_preflight({},45)
+        with self.assertRaises(ValidationError): backend._acestep_rewiring_preflight({},0)
         self.assertEqual(self.model._residual_unet_spec,self.spec)
+        from core.models.acestep.residual_unet import native_config, GRID_POLICY_KEY
+        legacy_config=native_config(self.model.config);legacy_config.pop(GRID_POLICY_KEY)
+        legacy=build_spec("acestep",self.spec["streams"],self.spec["regions"],legacy_config)
+        restore_topology(self.model,legacy)
         with patch.object(backend,"_acestep_ensure_silence_latent",side_effect=AssertionError("No VAE staging")), \
                 patch.object(backend,"_acestep_move",side_effect=AssertionError("No model staging")), \
                 self.assertRaises(ValidationError):
             backend._generate_txt2aud_acestep({"audio_duration":1.8,"seed":94})
+        restore_topology(self.model,self.spec)
         import utils.audio_utils as audio
         with tempfile.TemporaryDirectory() as directory, patch.object(audio.settings,"outputs_dir",directory):
             filename=audio.save_audio_with_metadata(torch.zeros(2,480),48000,params,"txt2aud")
@@ -558,13 +574,65 @@ class AceStepRuntimeContracts(unittest.TestCase):
         self.assertIsNone(generation_metadata(self.model,45))
         self.assertFalse(torch.cuda.is_initialized())
 
+    def test_transport_tail_padding_restores_length_gradients_and_legacy_identity(self):
+        from core.models.acestep.residual_unet import restore_topology, generation_metadata, native_config, GRID_POLICY_KEY
+        restore_topology(self.model,self.spec)
+        for length, tokens in ((45,24),(250,128),(1,4)):
+            with self.subTest(length=length):
+                audio=torch.randn(2,length,4,requires_grad=True)
+                context=torch.randn(2,length,8,requires_grad=True)
+                seen=[]
+                hooks=[layer.register_forward_pre_hook(lambda module,args:seen.append(args[0].shape[1]))
+                       for layer in self.model.layers]
+                try:
+                    result=self.forward(hidden_states=audio,context_latents=context,
+                        attention_mask=torch.ones(2,length))[0]
+                finally:
+                    for hook in hooks:hook.remove()
+                self.assertEqual(result.shape,(2,length,4))
+                self.assertEqual(seen,[tokens,tokens//2,tokens//4,tokens//4,tokens//4,tokens//2,tokens])
+                self.assertEqual(generation_metadata(self.model,length)["token_grid"],[tokens,1])
+                result.square().mean().backward()
+                self.assertTrue(torch.isfinite(audio.grad).all())
+                self.assertGreater(torch.count_nonzero(audio.grad).item(),0)
+                self.model.zero_grad(set_to_none=True)
+        args=dict(hidden_states=self.audio[:,:45],context_latents=self.context[:,:45],attention_mask=torch.ones(2,45))
+        before=self.forward(**args)[0]
+        before.square().mean().backward()
+        gradients={name:value.grad.detach().clone() for name,value in self.model.named_parameters() if value.grad is not None}
+        self.model.zero_grad(set_to_none=True)
+        self.model.gradient_checkpointing_enable()
+        after=self.forward(**args)[0]
+        torch.testing.assert_close(before,after,rtol=0,atol=0)
+        after.square().mean().backward()
+        for name,value in self.model.named_parameters():
+            if name in gradients: torch.testing.assert_close(value.grad,gradients[name],rtol=0,atol=0)
+        self.model.gradient_checkpointing_disable()
+        handles=[patch.object(layer,"forward",side_effect=lambda hidden,*a,**k:(hidden,)) for layer in self.model.layers]
+        for handle in handles:handle.start()
+        try:
+            args=dict(hidden_states=self.audio[:,:45],context_latents=self.context[:,:45],attention_mask=torch.ones(2,45))
+            restored=self.forward(**args)[0]
+            restore_topology(self.model,None)
+            dense=self.forward(**args)[0]
+            torch.testing.assert_close(restored,dense,rtol=2e-5,atol=1e-6)
+        finally:
+            for handle in handles:handle.stop()
+        legacy_config=native_config(self.model.config);legacy_config.pop(GRID_POLICY_KEY)
+        legacy=build_spec("acestep",self.spec["streams"],self.spec["regions"],legacy_config)
+        restore_topology(self.model,legacy)
+        with self.assertRaisesRegex(ValueError,"not divisible"): generation_metadata(self.model,45)
+        self.assertEqual(generation_metadata(self.model,48)["grid_policy"],"require_divisible")
+        self.assertEqual(self.model._residual_unet_spec,legacy)
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_identity_decoder_padding_and_atomic_refusals(self):
         from core.models.acestep.residual_unet import restore_topology
         restore_topology(self.model,self.spec)
         masks = [dict(attention_mask=torch.zeros(2,48)),dict(encoder_attention_mask=torch.zeros(2,5)),
                  dict(past_key_values=object()),dict(output_attentions=True),dict(return_hidden_states=1),
                  dict(custom_layers_config={0:1}),dict(enable_early_exit=True),
-                 dict(hidden_states=self.audio[:,:45],context_latents=self.context[:,:45])]
+]
         with patch.object(self.model.proj_in,"forward",side_effect=AssertionError("Projection must not run")):
             for args in masks:
                 with self.subTest(args=list(args)),self.assertRaises(ValueError):self.forward(**args)

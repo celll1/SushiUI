@@ -9,7 +9,11 @@ from torch.utils.checkpoint import checkpoint
 
 from core.rewiring.training import NO_RESUME_SPEC
 from core.rewiring.runtime import run_rewired_stream
-from core.rewiring.spec import checkpoint_metadata, validate_model_identity, preview_plan
+from core.rewiring.spec import checkpoint_metadata, validate_model_identity, preview_plan, digest
+
+
+GRID_POLICY_KEY = "sushi_residual_grid_policy"
+GRID_POLICY = "zero_token_tail_v1"
 
 
 def native_config(config):
@@ -43,16 +47,40 @@ def native_config(config):
         value = resolved[key]
         if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
             raise ValueError(f"ACE-Step native {key} must be finite and positive")
+    policy = getattr(config, GRID_POLICY_KEY, GRID_POLICY)
+    if policy not in (GRID_POLICY, "require_divisible"):
+        raise ValueError("Unsupported ACE-Step residual grid policy")
+    resolved[GRID_POLICY_KEY] = policy
     return resolved
 
 
 def validate_topology_identity(spec, config):
     resolved = native_config(config)
+    identity = resolved
+    if isinstance(spec, dict) and spec.get("base_config_sha256") != digest(resolved) and GRID_POLICY_KEY in resolved:
+        identity = {key:value for key,value in resolved.items() if key != GRID_POLICY_KEY}
     graph = validate_model_identity(spec, "acestep",
-        [{"name": "main", "block_count": resolved["num_hidden_layers"]}], resolved)
+        [{"name": "main", "block_count": resolved["num_hidden_layers"]}], identity)
     if any(region["down_factor"][1] != 1 for region in graph["regions"]):
         raise ValueError("ACE-Step residual regions shrink the temporal axis only: [factor,1]")
     return graph
+
+
+def temporal_grid(spec, config, tokens):
+    resolved = native_config(config)
+    padded = tokens
+    policy = "require_divisible"
+    if resolved.get(GRID_POLICY_KEY) == GRID_POLICY and spec["base_config_sha256"] == digest(resolved):
+        factors = {}
+        alignment = 1
+        for region in spec["regions"]:
+            factor = factors.get(region["parent"], 1) * region["down_factor"][0]
+            factors[region["id"]] = factor
+            alignment = math.lcm(alignment, factor)
+        padded = ((tokens + alignment - 1) // alignment) * alignment
+        policy = GRID_POLICY
+    preview_plan(spec, padded, 1)
+    return padded, policy
 
 
 def restore_topology(model, spec):
@@ -89,7 +117,7 @@ def preflight_forward(model, length, attention_mask, encoder_mask, *, batch_size
     graph = validate_topology_identity(model._residual_unet_spec, model.config)
     if len(model.layers) != native_config(model.config)["num_hidden_layers"]:
         raise ValueError("ACE-Step actual decoder depth disagrees with native config")
-    preview_plan(graph, (length + model.patch_size - 1) // model.patch_size, 1)
+    temporal_grid(graph, model.config, (length + model.patch_size - 1) // model.patch_size)
     if model.config._attn_implementation not in ("eager", "sdpa"):
         raise ValueError("ACE-Step residual execution currently requires eager or SDPA attention")
     if past_key_values is not None or output_attentions or custom_layers_config is not None or enable_early_exit or return_hidden_states:
@@ -110,6 +138,12 @@ def run_rewired_decoder(model, hidden, positions, timestep_proj, encoder_hidden,
             or positions.shape[0] not in (1, hidden.shape[0]) or not torch.isfinite(positions).all()
             or not bool((positions[:,1:] - positions[:,:-1] == 1).all())):
         raise ValueError("ACE-Step residual positions must be a regular native temporal grid")
+    native_count = hidden.shape[1]
+    padded, _ = temporal_grid(spec, model.config, native_count)
+    if padded > native_count:
+        hidden = F.pad(hidden, (0, 0, 0, padded - native_count))
+        tail = torch.arange(1, padded - native_count + 1, device=positions.device)
+        positions = torch.cat((positions, positions[:, -1:] + tail), dim=1)
     cross_mask = None
     if encoder_mask is not None and not bool((encoder_mask == 1).all()):
         # Conditioning stays at native length; broadcast its key mask across every query grid.
@@ -144,8 +178,9 @@ def run_rewired_decoder(model, hidden, positions, timestep_proj, encoder_hidden,
             return checkpoint(block, states, use_reentrant=False)
         return block(states)
 
-    return run_rewired_stream(hidden, spec, "main", hidden.shape[1], 1, 0,
-                              context, execute, coarse_context)
+    restored = run_rewired_stream(hidden, spec, "main", hidden.shape[1], 1, 0,
+                                  context, execute, coarse_context)
+    return restored[:, :native_count]
 
 
 def export_metadata(model):
@@ -157,7 +192,9 @@ def export_metadata(model):
     if config is not None and hasattr(config, "to_dict"):
         raw = config.to_dict()
         if metadata:
-            validate_topology_identity(model._residual_unet_spec, raw)
+            graph = validate_topology_identity(model._residual_unet_spec, raw)
+            resolved = native_config(raw)
+            raw[GRID_POLICY_KEY] = GRID_POLICY if graph["base_config_sha256"] == digest(resolved) and resolved.get(GRID_POLICY_KEY) == GRID_POLICY else "require_divisible"
         metadata["acestep_config"] = json.dumps(raw, allow_nan=False)
     elif metadata:
         raise ValueError("Rewired ACE-Step export requires native wrapper config")
@@ -184,6 +221,8 @@ def preflight_checkpoint(path):
         if config is None or type(config.get("num_hidden_layers")) is not int:
             raise ValueError("Rewired ACE-Step requires embedded native config and explicit depth")
         validate_topology_identity(graph, config)
+        if config.get(GRID_POLICY_KEY) == GRID_POLICY and graph["base_config_sha256"] != digest(native_config(config)):
+            raise ValueError("ACE-Step explicit grid policy disagrees with checkpoint topology")
         native_keys = [key.removeprefix("net.") for key in keys]
         blocks = {int(match.group(1)) for key in native_keys
                   if (match := re.match(r"decoder\.layers\.(\d+)\.", key))}
@@ -253,6 +292,7 @@ def generation_metadata(model, length):
         raise ValueError("ACE-Step residual audio length must be a positive native frame count")
     patch = native_config(model.config)["patch_size"]
     tokens = (length + patch - 1) // patch
-    preview_plan(topology, tokens, 1)
+    padded, policy = temporal_grid(topology, model.config, tokens)
     return dict(spec=topology, spec_sha256=digest(topology), kv_cache=False,
-                input_frames=length, token_grid=[tokens, 1])
+                input_frames=length, native_token_grid=[tokens, 1], token_grid=[padded, 1],
+                transport_padding_tokens=padded - tokens, grid_policy=policy)

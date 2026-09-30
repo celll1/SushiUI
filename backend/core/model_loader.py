@@ -3180,6 +3180,8 @@ class ModelLoader:
 
         Returns a component dict consumed by PipelineManager.load_model().
         """
+        if isinstance(path, str) and path.endswith(".safetensors") and not os.path.isfile(path) and os.path.isfile(path + ".index.json"):
+            path += ".index.json"
         if isinstance(path, str) and (
             path.endswith(".safetensors") or path.endswith(".safetensors.index.json")
         ) and os.path.isfile(path):

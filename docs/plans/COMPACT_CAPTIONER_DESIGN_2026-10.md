@@ -1,6 +1,6 @@
 # SigLIP2とFoveaTagに対応する軽量captionerの実装設計
 
-2026-10-01。状態: **SigLIP2基盤実装済み、製品接続は未実装**。本書の初期モデル構成、API、実験値は提案であり、
+2026-10-01。状態: **SigLIP2学習と推論コア実装済み、APIとUIは未接続**。本書の初期モデル構成、API、実験値は提案であり、
 品質や速度の実測結果ではない。既存のSigLIP2 taggerを画像encoderとして共有し、
 画像の空間特徴と明示的なタグ概念から、短い自然言語captionを生成する専用decoderを学習する。
 蓄積済みのimage、tags、captionの組を教師データとして使う。
@@ -380,14 +380,27 @@ frontend build/type-checkはrepo ownerが行う。
 - `backend/tests/compact_captioner_test.py`。CPUで実transformers tiny SigLIP2を用いた特徴一致、
   座標/padding、concept入力、causal/逐次cache一致、EOS/長さ制限/cancel、人工caption overfitを検証。
 
-この段階の生成はtoken IDsであり、実datasetから学習した自然文モデルはまだ存在しない。
-CaptionConfigの構造値はすべて明示引数とし、API defaultや公開schemaはまだ追加しない。
-checkpoint/tagger hashによるロード拒否、alias辞書の製品接続、tokenizer、dataset snapshot、
-feature cache、concept dropout、run管理、API/UI、保存/exportは後続実装である。
-FeatureProvider自体はGPU調停lockやmodel lifetimeを所有せず、管理層が導入されるまでは
-並行reload/unloadする本番managerへ接続しない。
+追加実装ではbyte-level BPE tokenizer、自然文列とtag列を分けたdataset snapshot、
+画像hashと重複groupによるholdout分割、容量制限付きraw feature cacheを導入した。
+trainerは画像単位のtarget抽選、source混合、concept dropout、AdamW、validation CE、
+atomic checkpointを持ち、optimizer、scheduler、RNG、snapshotとbatch位置を保存して再開する。
+長すぎるtargetは黙って切らず除外数を記録し、必要なsplitが空なら拒否する。
+cache容量見積もりは最初の画像を基準とする概算であり、NaFlexの全画像分布を測った値ではない。
 
-初期基盤と既存tagger回帰のCPUテスト19件が通過し、fp32/bf16/fp16でloss/backward/生成を確認した。
+bundleはsafetensors、tokenizer、config、selectorと依存taggerのidentityを検証する。
+alias辞書はbundleに固定し、optimizerを除いた推論exportを別に作れる。
+`inference.py`は既存taggerのencoderを借用し、reload/unloadと排他して一回の特徴抽出から本文を返す。
+GPU上のcaption decoderは要求終了時にCPUへ戻すため、その移動を含めた速度を今後測定する。
+CaptionConfigの構造値はすべて明示引数とし、実行設定のdefaultはparam_defaults.pyに置く。
+
+run persistence、APIと公開schema、UI、datasetへの自然文保存、batch実行は未実装である。
+GPU trainerの初期allocationは既存coordinatorでgenerationと排他するが、
+caption推論のGPU slot接続とworktree間の調整はまだ必要である。
+実datasetから学習した自然文モデルはまだ存在せず、品質によるbest選択も未実装である。
+
+基盤と追加コアのCPUテスト23件が通過した。中断後の再開は連続学習と重みが完全一致し、
+export、依存不一致拒否、caption推論、borrow中のunload待機も確認した。
+初期基盤ではfp32/bf16/fp16でloss/backward/生成を確認した。
 変更backendのpy_compileと実importも通過した。これは小型人工例での動作検証である。
 検証時はCPUのみを使い、CUDA context未初期化をassertする。実checkpointのロード、GPU学習、
 速度benchmark、server restartは行わず、別ワークツリーのVRAM利用と競合させない。

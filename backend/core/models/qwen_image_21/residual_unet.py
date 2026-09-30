@@ -88,7 +88,7 @@ _NO_RESUME_SPEC = object()
 
 
 def configure_training_topology(model, config, *, resuming=False, pending_adapter_resume=False,
-                                resume_spec=_NO_RESUME_SPEC):
+                                resume_spec=_NO_RESUME_SPEC, install=True):
     from core.rewiring.training import validate_training_features, validate_training_rewiring
 
     mode, requested = validate_training_rewiring(config, "qwen_image_21")
@@ -117,9 +117,10 @@ def configure_training_topology(model, config, *, resuming=False, pending_adapte
             raise ValueError("Resume requires the checkpoint topology without edits")
     if resolved is not None:
         validate_training_features(config)
-    restore_topology(model, resolved)
-    config["dit_rewiring_mode"] = mode
-    config["dit_rewiring_spec"] = resolved
+    if install:
+        restore_topology(model, resolved)
+        config["dit_rewiring_mode"] = mode
+        config["dit_rewiring_spec"] = resolved
     return resolved
 
 

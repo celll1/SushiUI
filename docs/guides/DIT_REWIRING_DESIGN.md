@@ -172,4 +172,29 @@ actual grid, and disables KV caching. PNG/gallery parameters record the effectiv
 spec/hash and cache policy. Loaded full-model topology is shown read-only through
 the shared graph in the model selector. Real AdapterSession CPU contracts cover
 these installation/refusal/lifetime paths; denoising in this test is a stub.
-Production GPU generation and frontend rendering remain unverified.
+Production-path Qwen GPU generation is verified below; frontend rendering is pending.
+
+## GPU verification (2026-09-30)
+
+The formal metadata-driven Qwen path generated 1024px/40-step output through actual
+in-process FastAPI routes on an RTX 6000 Ada. Its output is pixel-identical to the
+prior deepest-four-block probe. PNG spec/hash/cache metadata and topology cleanup
+were verified. Full request time was 19.27s; peak allocated memory was 9.21 GiB.
+This is a single measurement including prompt encoding and VAE decode.
+
+The actual transformer completed BF16 LoRA steps at 4096 image/16 text tokens,
+rank 4, 128 attention adapters, with all 32 blocks checkpointed and bounded INT8
+prefetch backward. The production checkpoint writer and LoRATrainer loader
+restored saved parameters exactly. With deterministic CUDA/math SDPA, checkpoint
+plus optimizer resume reproduced the next loss, gradients, and updated parameters
+bit-for-bit. Default automatic attention yielded matching resumed loss but small
+update differences; its bitwise determinism is not established. Warm synthetic
+steps took 1.23–1.30s with automatic attention and 2.38–2.45s with deterministic
+math attention; these exclude dataset/encoder/decoder/scheduler workflow.
+
+LoRA resume now delays topology installation until weight validation/loading
+succeeds. A regression test rejects an incomplete checkpoint while preserving
+native topology and configuration. Sixteen CPU contract tests pass.
+Full-size full-parameter training, run-level scheduler/RNG resume, block swap,
+actual dataset workflows, calibration quality, frontend acceptance, and additional
+architecture adapters remain outstanding.

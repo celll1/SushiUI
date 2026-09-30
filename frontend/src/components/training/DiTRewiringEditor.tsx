@@ -49,11 +49,13 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
     if (!configuring && spec && !info.topology) {
       setError("The inherited topology assertion differs from the checkpoint."); setPlan(null); return;
     }
-    if (!info.temporal_geometry && (pixels.height % info.pixel_alignment || pixels.width % info.pixel_alignment)) {
-      setError(`Image dimensions must be multiples of ${info.pixel_alignment}px.`); setPlan(null); return;
+    const heightScale = info.video_geometry?.height_scale_factor ?? info.latent_scale_factor;
+    const widthScale = info.video_geometry?.width_scale_factor ?? info.latent_scale_factor;
+    if (!info.temporal_geometry && (pixels.height % (info.video_geometry ? heightScale : info.pixel_alignment) || pixels.width % (info.video_geometry ? widthScale : info.pixel_alignment))) {
+      setError(`Spatial dimensions must align to the native grid (${heightScale}×${widthScale}px per token).`); setPlan(null); return;
     }
-    let tokenHeight = pixels.height / info.latent_scale_factor;
-    let tokenWidth = pixels.width / info.latent_scale_factor;
+    let tokenHeight = pixels.height / heightScale;
+    let tokenWidth = pixels.width / widthScale;
     if (info.temporal_geometry) {
       try {
         tokenHeight = temporalRewiringGrid(current, frames ?? info.temporal_geometry.preview_frames,
@@ -178,18 +180,19 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
         }}>Start custom layout</button>}
     </div>
     {current && <>
+      {info?.video_geometry && <p className="my-2 text-gray-400">Spatial grids and skip connections apply independently to each video frame. Frame count and audio tokens stay at native resolution.</p>}
       <div className="flex flex-wrap items-center gap-3">
         {info?.temporal_geometry ? <label>Clip frames ({info.temporal_geometry.frame_rate}/s)
           <input type="number" aria-label="Preview audio frames" min={1} step={1}
             value={frames ?? info.temporal_geometry.preview_frames} className="ml-2 w-24 rounded bg-gray-800 p-1"
             onChange={e => setFrames(Number(e.target.value))} />
         </label> : (["height", "width"] as const).map(axis => <label key={axis}>{axis} (px)
-          <input type="number" aria-label={`Preview ${axis}`} min={info?.pixel_alignment} step={info?.pixel_alignment}
+          <input type="number" aria-label={`Preview ${axis}`} min={info?.video_geometry ? (axis === "height" ? info.video_geometry.height_scale_factor : info.video_geometry.width_scale_factor) : info?.pixel_alignment} step={info?.video_geometry ? (axis === "height" ? info.video_geometry.height_scale_factor : info.video_geometry.width_scale_factor) : info?.pixel_alignment}
             value={pixels[axis]} className="ml-2 w-24 rounded bg-gray-800 p-1"
             onChange={e => setPixels(p => ({ ...p, [axis]: Number(e.target.value) }))} />
         </label>)}
         {info?.temporal_geometry ? <span>{timeGrid ? `${timeGrid.native} native tokens → ${timeGrid.padded} transport tokens (${timeGrid.padded - timeGrid.native} tail tokens)` : "…"}; final audio length is preserved.</span>
-          : <span>latent grid: {info ? `${pixels.height / info.latent_scale_factor} × ${pixels.width / info.latent_scale_factor}` : "…"}</span>}
+          : <span>latent grid: {info ? `${pixels.height / (info.video_geometry?.height_scale_factor ?? info.latent_scale_factor)} × ${pixels.width / (info.video_geometry?.width_scale_factor ?? info.latent_scale_factor)}` : "…"}</span>}
       </div>
       {plan && <DiTRewiringGraph spec={validatedSpec ?? current} plan={plan} selected={region?.id} onSelect={selectRegion}
         onBoundaryChange={configuring ? (id, side, value) => editRegion(id, { [side]: value }) : undefined} />}

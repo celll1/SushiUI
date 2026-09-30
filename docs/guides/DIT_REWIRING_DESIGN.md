@@ -21,8 +21,10 @@ artifact contracts and directory-loader graph restoration with CPU checks. Zero
 block swap retains residual execution and its offload ordering. Training retains
 the inner transformer reference. Inherited training and LoRA resume restore the
 graph with CPU native-training checks. Generation LoRA scopes validate metadata
-before staging and restore the base graph on exit. Full resume dispatch, companion
-references, public configure, presets and editor integration remain pending.
+before staging and restore the base graph on exit. Public configure, presets,
+header inspection and graphical editor/model discovery are connected; frontend
+validation remains with the owner. Full resume dispatch, companion references and
+generated artifact metadata remain pending.
 GPU acceptance is restricted to Qwen-Image 2.1 by owner instruction; other models
 receive provisional implementation and CPU verification. Further architectures
 still require native execution/artifact adapters and capability gates.
@@ -2162,3 +2164,36 @@ missing YuE2. These are separate existing acceptance issues, not a green suite.
 LTX-2 public configure/presets/editor/model discovery, generated artifact metadata
 and full companion/resume dispatch remain pending. Video quality and speed remain
 unmeasured; GPU acceptance is Qwen-Image 2.1 only.
+
+### LTX-2 public configuration and graphical discovery
+
+The runtime schema includes LTX-2. A new native 48-block configuration defaults
+to outer [4,44) and inner [22,26), each pooling spatially by 2x2. This leaves eight
+full-grid, thirty-six middle-grid and four deepest blocks. At a 1024px frame and
+the native spatial VAE factor 32, those grids are 32x32, 16x16 and 8x8 tokens.
+Other native depths require an explicit graph; presets never guess custom depth.
+The canonical preset remains solely in api.param_defaults.
+
+Model inspection recognizes native LTX-2 directories, full single files and
+shards. Geometry and block/projection headers are checked without reading tensor
+bytes. Ordinary Diffusers components can declare geometry in config.json when
+headers have no topology/native-config metadata; rewired files still require
+embedded native configuration. Conflicting geometry, incomplete AV headers and
+adapter-only files refuse before model allocation.
+
+OpenAPI, loaded-model information and the frontend share video_geometry with
+native time, height and width scales and independent_spatial_frames_v1. Axis
+scales can differ; the editor uses each native scale to validate pixel dimensions
+and calculate per-frame token grids. The existing draggable layer boundaries,
+spatial factors and skip arrows apply to these grids. Editor and restored-model
+summary explicitly state that native frame counts and audio tokens remain
+unscaled and that skips/pooling do not cross frame boundaries. Frontend review is
+static; the owner performs consolidated build/type/render checks.
+
+Public schema/inspect/validate ASGI checks and native header contracts verify the
+48-block preset, explicit configure, dense config-only directories, single/shard
+identity, axis-specific geometry and early invalid-depth refusal. Backend files
+compile/import and OpenAPI parses. LTX-2, shared training, legacy LoRA and existing
+inspection suites pass 44 cases and 23 subtests with CUDA uninitialized. GPU
+validation remains Qwen-Image 2.1 only. Full artifact companions/resume dispatch,
+generated metadata and complete video workflow acceptance remain pending.

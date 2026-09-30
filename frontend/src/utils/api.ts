@@ -243,6 +243,7 @@ export interface ModelInfo {
   dit_rewiring_spec?: DiTRewiringSpec | null;
   dit_rewiring_token_stride?: number;
   dit_rewiring_temporal_geometry?: DiTRewiringTemporalGeometry;
+  dit_rewiring_video_geometry?: DiTRewiringVideoGeometry;
   model_hash: string;
   // Model-list entry fields (from GET /models)
   name?: string;
@@ -9525,6 +9526,10 @@ export function temporalRewiringGrid(spec: DiTRewiringSpec, frames: number,
   }
   return { native, padded: Math.ceil(native / alignment) * alignment };
 }
+export interface DiTRewiringVideoGeometry {
+  temporal_scale_factor: number; height_scale_factor: number; width_scale_factor: number;
+  grid_policy: "independent_spatial_frames_v1";
+}
 export interface DiTRewiringModelInfo {
   architecture: string; streams: DiTRewiringSpec["streams"];
   base_config_sha256: string; block_layout_sha256: string;
@@ -9532,6 +9537,7 @@ export interface DiTRewiringModelInfo {
   initial_spec: DiTRewiringSpec;
   latent_scale_factor: number; pixel_alignment: number;
   temporal_geometry?: DiTRewiringTemporalGeometry;
+  video_geometry?: DiTRewiringVideoGeometry;
 }
 export const getDiTRewiringSchema = async (): Promise<{
   presets: Record<string, unknown>; runtime_architectures: string[];

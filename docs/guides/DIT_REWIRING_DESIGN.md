@@ -6,7 +6,7 @@ checkpointed residual execution, metadata-driven generation, LoRA/full training,
 checkpoint restore and adapter-stack compatibility checks. Actual 1024px API
 workflows verify generation, training samples, saved artifacts and resume, both
 resident and with block swap. The graphical editor is connected and statically
-reviewed; the owner will perform consolidated frontend checks. Krea 2, Anima and Z-Image
+reviewed; the owner will perform consolidated frontend checks. Krea 2, Anima, Z-Image and Flux2
 have native execution/artifact/training/LoRA generation integration, model/editor
 inspection and CPU contract checks.
 GPU acceptance is restricted to Qwen-Image 2.1 by owner instruction; other models
@@ -721,8 +721,7 @@ clone restoration, dense forward restoration and feature/grid refusals. All 54
 aggregate CPU contracts and changed-file compile/real imports pass with CUDA
 untouched.
 
-This remains internal: public training configuration, presets and model/editor
-discovery must be connected before Flux2 joins public capabilities. Legacy dense
+Public configuration, presets and model/editor discovery are connected below. Legacy dense
 wrapper paths are not accepted by this new-path CPU check. No Flux2 GPU workflow,
 performance or quality evidence is claimed. Only Qwen-Image 2.1 receives actual
 GPU acceptance under the owner's instruction.
@@ -748,7 +747,7 @@ that the checkpoint config governs reconstruction. Missing/mismatched config
 fails before tensor reading/downloads, and a legacy dense header remains accepted.
 Four Flux2 contracts and 50 existing LoRA/VAE regression cases pass; changed files
 compile and import with CUDA untouched. This is CPU artifact evidence only;
-public training configuration and inspection remain pending for Flux2.
+public configuration and inspection are connected below.
 
 ## Flux2 training inheritance
 
@@ -756,10 +755,8 @@ Both normal component loading and full-checkpoint-as-base loading now resolve
 the installed topology after latent-space application and before checkpointing,
 attention configuration or freezing. This catches incompatible latent edits and
 training features before the model proceeds. The shared resolver supplies the
-same inherit-versus-resume agreement rules as Qwen/Krea/Anima/Z-Image. Flux2 stays
-outside public capabilities until its presets and inspection
-are connected; this step supports internal checkpoint inheritance, not a public
-configure option.
+same inherit-versus-resume agreement rules as Qwen/Krea/Anima/Z-Image. Public
+configuration is connected below, using the same resolver.
 
 LoRA resume validates topology without installing it, then validates/loads branch
 tensors before committing the topology and run config. CPU tests use the real
@@ -804,4 +801,47 @@ a deliberate stop before staging and checked for finally restoration. This
 does not prove full GPU generation or performance/quality. All 60 aggregate
 rewiring contracts and 50 existing Flux2 LoRA/VAE cases pass; changed backend
 files compile and import with CUDA untouched. Public presets/model inspection
-and model-info connection remain pending.
+and model-info connection are described below.
+
+## Flux2 public configuration and editor discovery
+
+Flux2 joins runtime capabilities as a provisional CPU-verified integration.
+The authoritative preset in `api/param_defaults.py` targets the pinned native
+five-double/twenty-single layout. All five double blocks stay full resolution;
+single blocks use outer `[4,16)` and inner `[8,12)` regions with 2x2 pooling each.
+At 1024px this gives thirteen full-grid blocks, eight 1024-image-token blocks
+and four 256-image-token blocks. The image-token-times-block sum is 61% of dense;
+this is neither a FLOP nor a speed estimate, since streams have different work
+and auxiliary text, attention and pooling remain. No real Flux2 quality or
+calibration claim is made.
+
+Other native block-count pairs have no guessed preset. They require an explicit
+layout; inspection provides a one-region initial template and both stream
+counts, and custom configuration is accepted after native identity validation.
+The existing editor fetches runtime capabilities dynamically and already renders
+one graph per stream, including the dense double stream. Its stream selection,
+region bounds and parent choices use the selected stream's own count. No separate
+frontend defaults are introduced. Owner build/type/browser checks remain pending.
+
+File/index inspection reads config and safe tensor headers only, validates native
+double/single block counts, and rejects adapter-only files. Native constructor
+config metadata is required for Flux2 files; legacy files without that declaration
+cannot seed the editor. Native-class directories are inspected through their
+constructor config. Single files, shard indices and missing stems resolved to
+indices expose identical topology/config hashes and both streams. The public
+inspect and preview endpoints return these layouts without model allocation or
+tensor loading; invalid declarations return 422. OpenAPI describes this surface.
+
+Both Pipeline load branches report the saved topology and packed token stride.
+The native-config fallback now reaches Flux2 instead of being swallowed by the
+generic Z-Image transformer branch. CPU tests use a real tiny five-double/twenty-
+single model for preset execution, and a three-double/seven-single model for
+custom configuration, header/ASGI inspection and both Pipeline load branches.
+Only model loading is stubbed in the latter Pipeline checks; all native artifact
+round trips were verified separately above. GPU acceptance remains Qwen-only.
+
+All 63 aggregate rewiring contracts and 50 existing Flux2 LoRA/VAE cases pass.
+Changed backend files compile and import with CUDA untouched; the OpenAPI runtime
+capability example matches the actual schema response. Frontend capability and
+per-stream graph wiring were statically checked; owner build/type/browser review
+is still required.

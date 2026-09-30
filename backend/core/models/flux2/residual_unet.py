@@ -60,8 +60,22 @@ def configure_training_topology(model, config, *, resuming=False, pending_adapte
                                 resume_spec=NO_RESUME_SPEC, install=True):
     from core.rewiring.training import resolve_training_topology
     return resolve_training_topology(native_model(model), config, "flux2",
-        validate_topology_identity, restore_topology, resuming=resuming,
+        validate_topology_identity, restore_topology, default_topology, resuming=resuming,
         pending_adapter_resume=pending_adapter_resume, resume_spec=resume_spec, install=install)
+
+
+def default_topology(config):
+    from copy import deepcopy
+    from api.param_defaults import DIT_REWIRING_PRESETS
+    from core.rewiring.spec import build_spec, OPERATORS
+    resolved = native_config(config)
+    preset = deepcopy(DIT_REWIRING_PRESETS["flux2"])
+    streams = [{"name": "double", "block_count": resolved["num_layers"]},
+               {"name": "single", "block_count": resolved["num_single_layers"]}]
+    if streams != preset["streams"]:
+        return None
+    return validate_topology_identity(build_spec("flux2", streams,
+        [dict(region, **OPERATORS) for region in preset["regions"]], resolved), resolved)
 
 
 def generation_token_stride(vae):

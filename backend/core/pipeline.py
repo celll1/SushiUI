@@ -681,6 +681,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 torch.cuda.empty_cache()
                 print("[VRAM] All FLUX.2 components moved to CPU. Will load to GPU as needed.")
 
+                from core.models.flux2.residual_unet import generation_token_stride
                 # FLUX.2 info
                 model_type = "flux2"
                 is_v_prediction = False  # FLUX.2 uses flow matching
@@ -695,6 +696,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "source": source,
                     "type": model_type,
                     "is_v_prediction": is_v_prediction,
+                    "dit_rewiring_spec": getattr(model_result["transformer"], "_residual_unet_spec", None),
+                    "dit_rewiring_token_stride": generation_token_stride(model_result.get("vae")),
                     "model_hash": model_hash,
                 }
 
@@ -1328,7 +1331,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 print("[Pipeline] SenseNova model loaded successfully")
                 return
 
-            if isinstance(model_result, dict) and "transformer" in model_result:
+            if isinstance(model_result, dict) and "transformer" in model_result and not hasattr(
+                    getattr(model_result["transformer"], "config", None), "num_single_layers"):
                 # Z-Image component-based model
                 print("[Pipeline] Z-Image model detected (component-based dict returned)")
                 self.zimage_components = model_result
@@ -1408,6 +1412,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     torch.cuda.empty_cache()
                     print("[VRAM] All FLUX.2 components moved to CPU. Will load to GPU as needed.")
 
+                    from core.models.flux2.residual_unet import generation_token_stride
                     # FLUX.2 info
                     model_type = "flux2"
                     is_v_prediction = False  # FLUX.2 uses Flow Matching with velocity prediction
@@ -1422,6 +1427,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                         "source": source,
                         "type": model_type,
                         "is_v_prediction": is_v_prediction,
+                        "dit_rewiring_spec": getattr(model_result["transformer"], "_residual_unet_spec", None),
+                        "dit_rewiring_token_stride": generation_token_stride(model_result.get("vae")),
                         "model_hash": model_hash
                     }
                     self.current_model_info.update(

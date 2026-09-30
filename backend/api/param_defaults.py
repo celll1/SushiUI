@@ -12,6 +12,7 @@ CAPTIONER_DEFAULTS: Dict[str, Any] = {
     "tag_source": "predicted", "tags": [], "max_new_tokens": 96,
     "device": "cpu", "max_num_patches": 256, "allowed_categories": ["General"],
     "max_concepts": 64,
+    "save_caption_type": "compact_caption",
 }
 CAPTIONER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "device": "cpu", "max_num_patches": 256, "allowed_categories": ["General"],

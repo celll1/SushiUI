@@ -266,6 +266,9 @@ def load_minit2i_components(
             "vae_scale_factor": VAE_SCALE_FACTOR,
         }
 
+    if model_path.endswith(".safetensors") and not os.path.isfile(model_path) and os.path.isfile(model_path + ".index.json"):
+        model_path += ".index.json"
+
     is_single_file = os.path.isfile(model_path) and (
         model_path.endswith(".safetensors") or model_path.endswith(".safetensors.index.json")
     )
@@ -310,7 +313,8 @@ def load_minit2i_components(
         transformer_dir = os.path.join(model_path, "transformer")
         if not os.path.isdir(transformer_dir):
             transformer_dir = model_path  # allow pointing directly at the transformer dir
-        transformer = MiniT2IMMJiTModel.from_pretrained(transformer_dir, torch_dtype=torch_dtype)
+        from core.models.minit2i.residual_unet import load_directory_transformer
+        transformer = load_directory_transformer(transformer_dir, torch_dtype)
         variant = _detect_variant_name(transformer)
 
         scheduler_dir = os.path.join(model_path, "scheduler")

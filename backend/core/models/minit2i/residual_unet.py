@@ -66,6 +66,64 @@ def model_topology_metadata(model):
     return {} if spec is None else checkpoint_metadata(validate_topology_identity(spec, net))
 
 
+def preflight_checkpoint(path):
+    import json
+    from pathlib import Path
+    from safetensors import safe_open
+    from core.rewiring.artifacts import read_artifact_topology
+    source = Path(path)
+    if not source.exists() and Path(str(source) + ".index.json").is_file():
+        source = Path(str(source) + ".index.json")
+    spec = read_artifact_topology(source)
+    if spec is None:
+        return None, None
+    if str(source).endswith(".safetensors.index.json"):
+        with source.open(encoding="utf-8") as handle:
+            metadata = json.load(handle).get("metadata") or {}
+    else:
+        with safe_open(str(source), framework="pt", device="cpu") as handle:
+            metadata = handle.metadata() or {}
+    declaration = metadata.get("mmjit_config")
+    if not isinstance(declaration, str):
+        raise ValueError("Rewired MiniT2I checkpoint requires native mmjit_config JSON")
+    config = json.loads(declaration)
+    if not isinstance(config, dict):
+        raise ValueError("MiniT2I mmjit_config must be an object")
+    config = native_config(config)
+    validate_topology_identity(spec, config)
+    return spec, config
+
+
+def load_directory_transformer(path, torch_dtype):
+    import json
+    from pathlib import Path
+    from .vendor.transformer import MiniT2IMMJiTModel
+    from core.rewiring.artifacts import read_directory_topology
+    from core.models.common.single_file_format import read_state_dict
+    from core.models.common.quantized_checkpoint_guard import refuse_quantized_state_dict
+    directory = Path(path)
+    spec = read_directory_topology(directory)
+    if spec is None:
+        return MiniT2IMMJiTModel.from_pretrained(path, torch_dtype=torch_dtype)
+    with (directory / "config.json").open(encoding="utf-8") as handle:
+        config = json.load(handle)
+    if not isinstance(config, dict):
+        raise ValueError("MiniT2I native directory config must be an object")
+    config = native_config(config)
+    validate_topology_identity(spec, config)
+    source = directory / "diffusion_pytorch_model.safetensors.index.json"
+    if not source.is_file():source = directory / "diffusion_pytorch_model.safetensors"
+    state, _ = read_state_dict(str(source))
+    refuse_quantized_state_dict(state, arch="minit2i", path=str(source))
+    model = MiniT2IMMJiTModel(**config)
+    info = model.load_state_dict(state, strict=False)
+    if info.missing_keys or info.unexpected_keys:
+        raise ValueError("Rewired MiniT2I directory weights do not match native config")
+    model.to(torch_dtype).to("cpu").eval()
+    restore_topology(model, spec)
+    return model
+
+
 def run_rewired_minit2i(net, img, t, context, attn_mask):
     from .vendor.mmjit import get_2d_sincos_pos_embed, AttentionMode
     spec = validate_topology_identity(net._residual_unet_spec, net)

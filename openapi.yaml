@@ -65,6 +65,101 @@ tags:
     description: Developer-mode diagnostics (VRAM inspection)
 
 paths:
+  /captioner/load:
+    post:
+      tags: [captioner]
+      summary: Load a verified captioner bundle against the current PyTorch tagger
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerLoadRequest'}
+            example: {path: training/captioner/run/checkpoint_00000100}
+      responses:
+        '200':
+          description: Loaded captioner status
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaptionerStatusResponse'}
+        '400': {description: Invalid or incompatible bundle, missing tagger, or ONNX unsupported}
+        '404': {description: Bundle not found}
+  /captioner/status:
+    get:
+      tags: [captioner]
+      summary: Read captioner identity and generation limits
+      responses:
+        '200':
+          description: Loaded flag, language, identity hashes, source modes and output limits
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaptionerStatusResponse'}
+  /captioner/unload:
+    post:
+      tags: [captioner]
+      summary: Release captioner without unloading its borrowed tagger
+      responses:
+        '200':
+          description: Unloaded captioner status
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaptionerStatusResponse'}
+  /captioner/predict:
+    post:
+      tags: [captioner]
+      summary: Generate a caption from an uploaded image and optional concepts
+      description: Uses the loaded tagger once. Device must match the tagger. GPU admission refuses to proceed without trainer pause acknowledgement. Cancel by request_id; no caption is automatically saved.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [image, request_id]
+              properties:
+                image: {type: string, format: binary}
+                request_id: {type: string, format: uuid}
+                tag_source: {type: string, enum: [predicted, provided, merged], default: predicted}
+                tags: {type: string, default: '[]', description: JSON array of tag names}
+                max_new_tokens: {type: integer, minimum: 1, default: 96}
+                device: {type: string, enum: [cpu, 'cuda:0'], default: cpu}
+      responses:
+        '200':
+          description: Caption, raw concept scores, warnings, termination, token count, image/model identity, and phase timings
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaptionerPredictionResponse'}
+        '400': {description: Invalid image, settings, unsupported backend or mismatched tagger}
+        '409': {description: Request id busy, trainer pause failed, or request cancelled}
+        '413': {description: Image exceeds configured byte limit}
+  /captioner/predict-item:
+    post:
+      tags: [captioner]
+      summary: Preview caption for a registered dataset image
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerItemPredictRequest'}
+            example: {dataset_id: 1, item_id: 10, request_id: 'e667ba4b-57bf-4590-8156-3e56ddac33c0'}
+      responses:
+        '200':
+          description: Prediction with scoped item id and dataset revision for explicit save
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaptionerPredictionResponse'}
+        '400': {description: Invalid settings, image path or tagger identity}
+        '404': {description: Dataset image item not found}
+        '409': {description: Busy, cancelled, changed image or trainer pause failed}
+        '413': {description: Image exceeds configured byte limit}
+  /captioner/requests/{request_id}/cancel:
+    post:
+      tags: [captioner]
+      summary: Request cancellation at the next caption decoder step
+      parameters:
+        - {name: request_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Cancellation requested; worker retains GPU slot until it exits}
+        '404': {description: Request is no longer active}
   /captioner/save:
     post:
       tags: [captioner]
@@ -11274,6 +11369,54 @@ components:
       bearerFormat: JWT
 
   schemas:
+    CaptionerStatusResponse:
+      type: object
+      required: [loaded]
+      additionalProperties: true
+      properties:
+        loaded: {type: boolean}
+    CaptionerPredictionResponse:
+      type: object
+      additionalProperties: true
+      required: [caption, used_tags, warnings, termination, token_count, image_hash, model_identity, timings_ms]
+      description: Dataset previews additionally carry dataset_id, item_id and dataset_revision.
+      properties:
+        caption: {type: string}
+        used_tags:
+          type: array
+          items: {$ref: '#/components/schemas/CaptionerUsedTag'}
+        warnings: {type: array, items: {type: string}}
+        termination: {type: string, enum: [eos, length_limit]}
+        token_count: {type: integer}
+        image_hash: {type: string}
+        model_identity: {type: string}
+        timings_ms: {type: object, additionalProperties: {type: number}}
+    CaptionerUsedTag:
+      type: object
+      required: [name, source, score, score_calibrated]
+      properties:
+        name: {type: string}
+        source: {type: string, enum: [predicted, provided]}
+        score: {type: number, nullable: true, description: Raw sigmoid for predictions; null for supplied tags}
+        score_calibrated: {type: boolean}
+    CaptionerLoadRequest:
+      type: object
+      additionalProperties: false
+      required: [path]
+      properties:
+        path: {type: string, minLength: 1, description: Local immutable bundle directory, example: training/captioner/run/checkpoint_00000100}
+    CaptionerItemPredictRequest:
+      type: object
+      additionalProperties: false
+      required: [dataset_id, item_id, request_id]
+      properties:
+        dataset_id: {type: integer, minimum: 1}
+        item_id: {type: integer, minimum: 1}
+        request_id: {type: string, format: uuid}
+        tag_source: {type: string, enum: [predicted, provided, merged], default: predicted}
+        tags: {type: array, items: {type: string}, default: []}
+        max_new_tokens: {type: integer, minimum: 1, default: 96}
+        device: {type: string, enum: [cpu, 'cuda:0'], default: cpu}
     CaptionerSaveRequest:
       type: object
       additionalProperties: false

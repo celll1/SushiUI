@@ -2,6 +2,9 @@
 
 import json
 import asyncio
+import io
+import threading
+from uuid import uuid4
 from pathlib import Path
 import sys
 
@@ -178,3 +181,208 @@ def test_openapi_has_unique_keys_and_save_contract_matches():
     assert schemas["CaptionerSaveRequest"]["properties"]["caption_type"]["default"] == CAPTIONER_DEFAULTS["save_caption_type"]
     for route in router.routes:
         assert route.path in spec["paths"]
+
+
+@pytest.fixture
+def inference_bundle(tmp_path, monkeypatch):
+    import api.captioner_routes as routes
+    from captioner_training_test import manager
+    from core.tagger.siglip2_inference_manager import SigLIP2InferenceManager
+    from core.captioner.artifact import save_bundle, tagger_identity
+    from core.captioner.concepts import ConceptSelector
+    from core.captioner.model import CaptionConfig, CompactCaptioner
+    from core.captioner.tokenizer import CaptionTokenizer
+    from core.captioner.inference import CaptionInferenceManager
+    from PIL import Image
+    tagger = SigLIP2InferenceManager()
+    for key, value in vars(manager()).items():
+        setattr(tagger, key, value)
+    tagger.device = "cpu"
+    identity = tagger_identity(tagger, max_num_patches=4)
+    tokenizer = CaptionTokenizer.train(["A girl."], vocab_size=280, min_frequency=1)
+    model = CompactCaptioner(CaptionConfig(3, 3, 2, tokenizer.vocab_size, 12, 3, 1, 24, 2, 32, 0.0,
+                                          9, 0, 1, 2))
+    selector = ConceptSelector(identity["names"], identity["categories"], max_concepts=2,
+                               allowed_categories=["General"])
+    root = tmp_path / "bundle"
+    save_bundle(root, model=model, tokenizer=tokenizer, selector=selector, identity=identity,
+                training_state=None, snapshot_hash="synthetic", aliases={}, language="en")
+    inference = CaptionInferenceManager(tagger)
+    monkeypatch.setattr(routes, "_caption_manager", inference)
+    image = io.BytesIO()
+    Image.new("RGB", (8, 8), (30, 60, 90)).save(image, format="PNG")
+    return inference, root, image.getvalue()
+
+
+def test_upload_and_item_preview_then_explicit_save(environment, inference_bundle, monkeypatch):
+    client, factory, path, payload = environment
+    inference, bundle, content = inference_bundle
+    import database
+    monkeypatch.setattr(database, "DatasetsSessionLocal", factory)
+    response = client.post("/api/v1/captioner/load", json={"path": str(bundle)})
+    assert response.status_code == 200 and response.json()["loaded"]
+    calls = []
+    original = inference.tagger.model.forward_features
+    def count(*args):
+        calls.append(1)
+        return original(*args)
+    monkeypatch.setattr(inference.tagger.model, "forward_features", count)
+    response = client.post("/api/v1/captioner/predict", files={"image": ("image.png", content, "image/png")},
+        data={"request_id": str(uuid4()), "tag_source": "merged", "tags": '["blue hair"]', "max_new_tokens": "3"})
+    assert response.status_code == 200, response.text
+    assert len(calls) == 1 and response.json()["used_tags"][0]["name"] == "blue hair"
+    path.write_bytes(content)
+    preview = client.post("/api/v1/captioner/predict-item", json={"dataset_id": payload["dataset_id"],
+        "item_id": payload["item_id"], "request_id": str(uuid4()), "max_new_tokens": 3})
+    assert preview.status_code == 200, preview.text
+    assert len(calls) == 2 and preview.json()["image_hash"] == file_hash(path)
+    assert not path.with_suffix(".json").exists()
+    saved = client.post("/api/v1/captioner/save", json={**payload, "image_hash": preview.json()["image_hash"],
+        "dataset_revision": preview.json()["dataset_revision"], "caption": "Reviewed natural caption."})
+    assert saved.status_code == 200, saved.text
+    assert client.post("/api/v1/captioner/unload").json() == {"loaded": False}
+    assert inference.tagger.model is not None
+
+
+def test_inference_refusals_and_upload_limit(environment, inference_bundle, monkeypatch):
+    client, _, _, _ = environment
+    inference, bundle, content = inference_bundle
+    request = {"request_id": str(uuid4()), "max_new_tokens": "3"}
+    files = {"image": ("image.png", content, "image/png")}
+    response = client.post("/api/v1/captioner/predict", data=request, files=files)
+    assert response.status_code == 400 and response.json()["code"] == "captioner_not_loaded"
+    assert client.post("/api/v1/captioner/load", json={"path": str(bundle)}).status_code == 200
+    assert client.post("/api/v1/captioner/predict", data={**request, "max_new_tokens": "99"}, files=files).status_code == 400
+    assert client.post("/api/v1/captioner/predict", data={**request, "tags": "broken"}, files=files).status_code == 400
+    monkeypatch.setitem(CAPTIONER_DEFAULTS, "max_image_bytes", 1)
+    assert client.post("/api/v1/captioner/predict", data=request, files=files).status_code == 413
+    assert client.post(f"/api/v1/captioner/requests/{uuid4()}/cancel").status_code == 404
+
+
+def test_explicit_cancel_waits_for_worker_and_releases_lifecycle(environment, inference_bundle, monkeypatch):
+    client, _, _, _ = environment
+    inference, bundle, content = inference_bundle
+    inference.load(bundle)
+    started, exited = threading.Event(), threading.Event()
+    def predict(*args, cancelled, **kwargs):
+        started.set()
+        try:
+            for _ in range(1000):
+                if cancelled():
+                    raise InterruptedError("Caption generation cancelled")
+                threading.Event().wait(0.001)
+            raise AssertionError("Cancellation did not reach worker")
+        finally:
+            exited.set()
+    monkeypatch.setattr(inference, "predict", predict)
+    import api.captioner_routes as routes
+    from core.model_state_coordinator import model_state_coordinator
+    async def exercise():
+        transport = httpx.ASGITransport(app=client.app, raise_app_exceptions=False)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
+            request_id = str(uuid4())
+            task = asyncio.create_task(http.post("/api/v1/captioner/predict",
+                data={"request_id": request_id}, files={"image": ("image.png", content)}))
+            assert await asyncio.to_thread(started.wait, 2)
+            assert model_state_coordinator.snapshot()["active_generations"] == 1
+            cancel = await http.post(f"/api/v1/captioner/requests/{request_id}/cancel")
+            assert cancel.status_code == 200
+            result = await task
+            assert result.status_code == 409 and result.json()["code"] == "captioner_cancelled"
+            assert exited.is_set() and request_id not in routes._requests
+            assert model_state_coordinator.snapshot()["active_generations"] == 0
+    asyncio.run(exercise())
+
+
+def test_strict_gpu_admission_requires_pause_ack_without_touching_cuda(monkeypatch):
+    import core.gpu_coordinator as module
+    from types import SimpleNamespace
+    monkeypatch.setattr(module, "_generation_device_index", lambda: 0)
+    coordinator = module.GPUCoordinator()
+    handle = SimpleNamespace(device_index=0, pause_event=threading.Event(), resumed_event=threading.Event())
+    handle.pause_event.set()
+    coordinator._handles = [handle]
+    monkeypatch.setattr(coordinator, "_begin_pause_cycle", lambda *args: [])
+    async def exercise():
+        with pytest.raises(RuntimeError, match="not acknowledged"):
+            async with coordinator.generation_slot(3, timeout=0, require_pause_ack=True):
+                pytest.fail("Unacknowledged trainer was admitted")
+        assert coordinator._active_generations == 0
+        assert not handle.pause_event.is_set()
+    asyncio.run(exercise())
+
+
+def test_repeated_task_cancellation_keeps_slot_until_worker_exits(inference_bundle, monkeypatch):
+    inference, bundle, content = inference_bundle
+    inference.load(bundle)
+    entered, release, cancellation = threading.Event(), threading.Event(), threading.Event()
+    def predict(*args, cancelled, **kwargs):
+        entered.set()
+        while not cancelled():
+            threading.Event().wait(0.001)
+        cancellation.set()
+        assert release.wait(2)
+        raise InterruptedError("cancelled")
+    monkeypatch.setattr(inference, "predict", predict)
+    import api.captioner_routes as routes
+    from core.model_state_coordinator import model_state_coordinator
+    from types import SimpleNamespace
+    async def disconnected():
+        return False
+    async def exercise():
+        task = asyncio.create_task(routes._predict_caption(SimpleNamespace(is_disconnected=disconnected), uuid4(),
+            content, tag_source="predicted", tags=[], max_new_tokens=3, device="cpu"))
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            task.cancel()
+            assert await asyncio.to_thread(cancellation.wait, 2)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert model_state_coordinator.snapshot()["active_generations"] == 1
+        finally:
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert model_state_coordinator.snapshot()["active_generations"] == 0
+    asyncio.run(exercise())
+
+
+def test_cancel_during_gpu_pause_wait_drains_pause_worker(monkeypatch):
+    import core.gpu_coordinator as module
+    from types import SimpleNamespace
+    coordinator = module.GPUCoordinator()
+    started, release = threading.Event(), threading.Event()
+    handle = SimpleNamespace(device_index=0, pause_event=threading.Event(), resumed_event=threading.Event())
+    coordinator._handles = [handle]
+    def begin(*args):
+        handle.pause_event.set()
+        started.set()
+        assert release.wait(2)
+        handle.resumed_event.set()
+        return [handle]
+    resumed = []
+    def grace():
+        resumed.extend(coordinator._currently_paused)
+        handle.pause_event.clear()
+        coordinator._currently_paused.clear()
+    monkeypatch.setattr(coordinator, "_begin_pause_cycle", begin)
+    monkeypatch.setattr(coordinator, "_start_grace_timer", grace)
+    async def enter():
+        async with coordinator.generation_slot(3, require_pause_ack=True):
+            pytest.fail("Cancelled admission reached inference")
+    async def exercise():
+        task = asyncio.create_task(enter())
+        try:
+            assert await asyncio.to_thread(started.wait, 2)
+            task.cancel()
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert coordinator._active_generations == 1
+        finally:
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert coordinator._active_generations == 0 and resumed == [handle]
+        assert not handle.pause_event.is_set()
+    asyncio.run(exercise())

@@ -1028,3 +1028,33 @@ step controls were statically reviewed; owner build/type checking remains pendin
 No official weights, GPU, running API or server were used. Conditioner adapters
 and public LoRA training/save/resume remain to be connected; this generation
 capability does not enable training methods.
+
+
+### Native DiT/caption LoRA trainer lifecycle foundation
+
+The arch handler now declares MingImage01LoRAAdapter. It freezes the native
+base/conditioner/VAE and wraps selected main/refiner attention slots, with an
+optional caption-projection-only scope via train_adapter. The common trainer
+owns optimizer groups, checkpoint writes and weight restoration; caption groups
+read adapter_lr from config, preserve explicit zero, and otherwise use DiT LR.
+Saved files carry architecture/profile/rank/alpha and residual U-Net metadata.
+Resume checks these identities and exact target tensor scope before mutating
+branches. Adapter-owned topology resolution is deferred until resume weights
+are validated rather than treating an adapter file as a base checkpoint.
+
+Four CPU cases use real LoRATrainer for one native Design/Layer training step in
+attention-only and caption-only scopes. They prove finite parameter updates,
+frozen base and conditioner, common safetensors export, exact branch weight
+restoration in a new trainer, generation-session output equivalence and atomic
+profile/scope mismatch refusal. The Layer tiny-package fixture explicitly
+initializes learned padding before serialization: native torch.empty values
+are checkpoint-owned and previously left this synthetic fixture undefined.
+Official parameter construction/loading is unchanged. Twenty-one related cases
+pass; the final four-case rerun additionally checks zero/explicit adapter rates.
+Changed files compile and real-import with CUDA initialization forbidden.
+
+These tests temporarily open the internal training-method table; the public
+training capability remains closed. API/runner/UI method and projection-scope
+wiring, optimizer/RNG/scaler continuation through an actual resumed LoRA loop,
+and conditioner adapter ownership remain next work. No live API, server,
+official weights or GPU execution was used. Full Qwen parity is still pending.

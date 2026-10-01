@@ -236,7 +236,7 @@ class LoRATrainer(BaseTrainer):
 
         adapter_only = (self.config.get("train_adapter") is True
                         and getattr(getattr(self, "arch", None), "name", None)
-                        in {"qwen_image_21", "anima"})
+                        in {"qwen_image_21", "anima", "ming_image_01"})
         if self.train_unet or adapter_only:
             unet_count = self.adapter.apply_lora_to_unet(self.lora_layers)
             print(f"{self.log_prefix} Injected {unet_count} LoRA layers into U-Net/Transformer")
@@ -317,9 +317,20 @@ class LoRATrainer(BaseTrainer):
                         f"does not match this run's {value!r}"
                     )
 
+        if getattr(self, "is_ming_image_01", False):
+            expected = {"model_type": "ming_image_01",
+                "ming_image_01_profile": self.ming_image_01_components.artifact.profile,
+                "lora_rank": str(self.lora_rank), "lora_alpha": str(self.lora_alpha)}
+            for field, value in expected.items():
+                if metadata.get(field) != value:
+                    raise ValueError(f"Ming LoRA resume {field} does not match this run")
+
         configure_topology = None
         if getattr(self, "is_qwen_image_21", False):
             from core.models.qwen_image_21.residual_unet import configure_training_topology
+            configure_topology = configure_training_topology
+        elif getattr(self, "is_ming_image_01", False):
+            from core.models.ming_image_01.residual_unet import configure_training_topology
             configure_topology = configure_training_topology
         elif getattr(self, "is_krea2", False):
             from core.models.krea2.residual_unet import configure_training_topology
@@ -427,6 +438,12 @@ class LoRATrainer(BaseTrainer):
                         f"LoRA checkpoint metadata {field}={actual:g} conflicts "
                         f"with the current run's {float(expected):g}"
                     )
+
+        if getattr(self, "is_ming_image_01", False):
+            expected_keys = {f"{name}.{tensor}" for name, layer in self.lora_layers.items()
+                             for tensor in (*layer.branch_tensors(), "alpha")}
+            if set(checkpoint) != expected_keys:
+                raise ValueError("Ming LoRA resume target scope does not match this run")
 
         prepared = []
         for lora_name, lora_layer in self.lora_layers.items():

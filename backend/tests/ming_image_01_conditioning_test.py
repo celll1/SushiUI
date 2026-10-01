@@ -181,6 +181,10 @@ def write_tiny_package(tmp_path, *, profile="generation_edit"):
     elif profile != "generation_edit":
         raise ValueError(profile)
     transformer = create_transformer(transformer_config, device="cpu", dtype=torch.float32)
+    if profile == "layer_decompose":
+        with torch.no_grad():
+            transformer.x_pad_token.fill_(.02)
+            transformer.cap_pad_token.fill_(.03)
     from core.models.ming_image_01.residual_unet import native_config, restore_topology, model_topology_metadata
     from core.rewiring.spec import OPERATORS, build_spec
     topology = build_spec("ming_image_01", [{"name": "main", "block_count": 6}], [

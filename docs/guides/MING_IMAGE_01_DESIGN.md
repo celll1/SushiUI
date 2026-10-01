@@ -2194,3 +2194,22 @@ acceptance. Changed files compile and import with CUDA forbidden. The main API,
 GPU and official weights remain untouched. Public generation partition dispatch,
 full-base summary consumption, exact global-LoRA pending-gradient continuation,
 global UI, converter preservation and remaining parity work are still pending.
+
+
+### Offline conversion preserves global sidecars
+
+The native DiT offline converter now validates any independent global sidecar
+before quantization starts and writes that validated payload into the staged
+package. Summary tensors retain their original floating precision and values;
+they are not folded into quantized native DiT shards. A malformed or incomplete
+sidecar refuses conversion before progress or destination publication. Existing
+atomic staging and cancellation behavior remains in force.
+
+Nine unique affected CPU cases pass: four new Design/Layer INT8/ConvRot conversions
+cover FP32 and BF16 global storage, restored nested U-Net topology, unchanged
+companion files and an unchanged source tree; three new missing/invalid/nonfinite
+sidecar refusals; and two existing cancellation/failure cleanup cases. Converted
+packages reload their detached global tensors through the native loader. Changed
+files compile and import with CUDA forbidden. This verifies offline conversion,
+not CUDA kernels or public global-partition generation. Main API/GPU remains
+untouched; remaining Qwen parity and owner frontend/GPU acceptance stay pending.

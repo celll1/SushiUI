@@ -47,6 +47,10 @@ def convert_package(source, destination, *, format_, device="cpu", max_shard_byt
         if any(h.dtype not in {"F16", "BF16", "F32"} or key.endswith((".weight_scale", ".comfy_quant"))
                for key,h in headers.items()):
             raise ValueError(f"Ming conversion requires original floating weights: {component}")
+    from .partition_global import payload_from_directory, write_payload
+    global_payload = payload_from_directory(artifact.root,
+        latent_channels=artifact.configs["transformer"]["in_channels"],
+        hidden_dim=artifact.configs["transformer"]["dim"])
     from .conditioner_quantization import prepare_conditioner_components
     prepare_conditioner_components(artifact,torch.float32,"eager")
     topology = read_directory_topology(artifact.components["transformer"])
@@ -144,6 +148,9 @@ def convert_package(source, destination, *, format_, device="cpu", max_shard_byt
         (staging/"quantization.json").write_text(json.dumps(report,indent=2,sort_keys=True,allow_nan=False)+"\n",encoding="utf-8")
         if (artifact.root/"training.json").is_file():
             shutil.copy2(artifact.root/"training.json",staging/"training.json")
+        if global_payload is not None:
+            from types import SimpleNamespace
+            write_payload(SimpleNamespace(_ming_partition_global_payload=global_payload),staging)
         write_manifest(staging,source=artifact.source)
         exported = inspect_artifact(staging)
         if exported.config_fingerprint != artifact.config_fingerprint or read_directory_topology(transformer_dir) != topology:

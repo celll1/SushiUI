@@ -120,3 +120,67 @@ def test_incompatible_transport_refused(problem):
     elif problem == "frames": aux["ming_frame_weights"] = torch.ones(3, 2)
     else: refs = refs[:1]
     with pytest.raises(ValueError): native_step_batch(batch.clean, packed, aux, refs)
+
+
+
+@pytest.mark.parametrize("profile", ["generation_edit", "layer_decompose"])
+def test_common_record_assembly_reencodes_trainable_conditioning_for_each_mnt(tmp_path, profile):
+    from core.models.ming_image_01.dataset import annotate_datasets, prepare_shared_latents, shared_inputs_for_mnt
+    from ming_image_01_dataset_test import shared_dataset, sidecar_path
+    dataset = shared_dataset(tmp_path, 3)
+    if profile == "generation_edit": sidecar_path(tmp_path / "canvas.png").unlink()
+    annotate_datasets([dataset], profile=profile)
+    # Design's extra RGBAs are ordinary separate samples; use one logical sample.
+    pairs = [(dataset.items[0], dataset)]
+    pairs[0][0]["width"] = pairs[0][0]["height"] = 32
+    value = components(profile)
+    value.conditioner.set_trainable({"language", "vision", "connector", "queries", "projections"})
+    owner = shared_owner(value)
+    owner.bucket_strategy = "crop"
+    owner.ming_prompt_resolution = 32
+    owner.ming_image_01_components = value
+    prepared_batch = prepare_shared_latents(owner, pairs)
+    assert prepared_batch.clean.shape == (1, 16, 1 if profile == "generation_edit" else 3, 4, 4)
+    assert prepared_batch.frozen_conditioning is None and value.vae.device.type == "cpu"
+    optimizer = torch.optim.AdamW([p for module in (value.transformer, value.conditioner)
+                                  for p in module.parameters() if p.requires_grad], lr=.001)
+    previous_packed = None
+    for step in range(2):
+        packed, aux, refs = shared_inputs_for_mnt(owner, prepared_batch)
+        assert packed.grad_fn is not None and packed is not previous_packed
+        assert aux["ming_frame_weights"].shape[1] == prepared_batch.clean.shape[2]
+        args = step_args(native_step_batch(prepared_batch.clean, packed, aux, refs), torch.ones_like(prepared_batch.clean))
+        args["timesteps"] = torch.tensor([.2 + .5*step])
+        args["cfg_drop_mask"] = torch.tensor([False])
+        args["batch_captions"] = ["word5"]
+        owner._execute_forward_backward(**args)
+        assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in value.conditioner.parameters())
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        previous_packed = packed
+    assert prepared_batch.frozen_conditioning is None and not torch.cuda.is_initialized()
+
+
+def test_frozen_record_conditioning_reused_only_until_trainability_changes(tmp_path):
+    from core.models.ming_image_01.dataset import annotate_datasets, prepare_shared_latents, shared_inputs_for_mnt
+    from ming_image_01_dataset_test import shared_dataset
+    dataset = shared_dataset(tmp_path)
+    annotate_datasets([dataset], profile="layer_decompose")
+    item = dataset.items[0]
+    item["width"] = item["height"] = 32
+    value = components("layer_decompose")
+    value.conditioner.set_trainable(set())
+    owner = shared_owner(value)
+    owner.bucket_strategy, owner.ming_prompt_resolution = "resize", 32
+    owner.ming_image_01_components = value
+    prepared_batch = prepare_shared_latents(owner, [(item, dataset)])
+    first, _, _ = shared_inputs_for_mnt(owner, prepared_batch)
+    cached = prepared_batch.frozen_conditioning
+    assert cached is not None and not first.requires_grad
+    second, _, _ = shared_inputs_for_mnt(owner, prepared_batch)
+    assert prepared_batch.frozen_conditioning is cached
+    torch.testing.assert_close(first, second, rtol=0, atol=0)
+    value.conditioner.set_trainable({"queries"})
+    third, _, _ = shared_inputs_for_mnt(owner, prepared_batch)
+    assert third.requires_grad and prepared_batch.frozen_conditioning is None
+    assert not torch.cuda.is_initialized()

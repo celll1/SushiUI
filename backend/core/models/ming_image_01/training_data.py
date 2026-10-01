@@ -77,7 +77,7 @@ def encode_frames(vae, pixels):
     return torch.stack(encoded, dim=2)
 
 
-def prepare_training_batch(components, *, prompts, references, target_pixels, frame_weights, resolution):
+def prepare_latent_batch(components, *, prompts, references, target_pixels, frame_weights, resolution):
     """Explicit supervision owns slot zero; references never become loss targets."""
     if target_pixels.ndim != 5:
         raise ValueError("Ming target pixels require native batch/channel/frame axes")
@@ -106,7 +106,30 @@ def prepare_training_batch(components, *, prompts, references, target_pixels, fr
                 continue
             images = pixels.reshape(-1, 4, height, width).permute(1, 0, 2, 3).unsqueeze(0)
             latent_references.append(encode_frames(components.vae, images)[0])
-    condition = encode_inputs(components.conditioner, prepared,
-                              requires_grad=not components.conditioner.cacheable)
-    return MingTrainingBatch(clean, condition, frame_weights.detach(),
-                             latent_references if any_reference else None)
+    return MingLatentBatch(clean, prepared, frame_weights.detach(),
+                           latent_references if any_reference else None, components.conditioner)
+
+
+@dataclass
+class MingLatentBatch:
+    clean: torch.Tensor
+    prepared: object
+    frame_weights: torch.Tensor
+    reference_latents: list[torch.Tensor | None] | None
+    conditioner: object
+    frozen_conditioning: MingConditioning | None = None
+
+    def for_step(self):
+        trainable = not self.conditioner.cacheable
+        if trainable:
+            self.frozen_conditioning = None
+        condition = self.frozen_conditioning
+        if condition is None:
+            condition = encode_inputs(self.conditioner, self.prepared, requires_grad=trainable)
+            if not trainable:
+                self.frozen_conditioning = condition.detached()
+        return MingTrainingBatch(self.clean, condition, self.frame_weights, self.reference_latents)
+
+
+def prepare_training_batch(components, **kwargs):
+    return prepare_latent_batch(components, **kwargs).for_step()

@@ -107,3 +107,16 @@ preserved while unused feature columns are padded with zero. CPU tests compare
 all model/conditioner gradients with an unsplit batch under the same noise,
 sigmas and CFG-drop mask. This execution bridge is connected to shared backward;
 normal item assembly/cache and complete resume remain pending.
+
+
+### Common MNT preparation
+
+`prepare_shared_latents` reads the record's paired pixels at each selected bucket
+and applies the crop planner's explicit box, or the shared crop/resize/random
+strategy. Random crop uses the common Python RNG stream. All references and
+RGBA targets use the same selected window. Native VAE work happens once before
+MNT; `MingLatentBatch.for_step` owns fresh trainable conditioning or batch-local
+frozen reuse. This avoids repeated VAE work and avoids retaining a consumed
+trainable encoder graph across optimizer updates. Common assembly and MNT call
+these seams directly. Persistent cache, full normal-run verification and exact
+optimizer resume still remain separate pending work.

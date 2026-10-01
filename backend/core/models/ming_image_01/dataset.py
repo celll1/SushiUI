@@ -168,16 +168,20 @@ def load_pixels(record, *, caption, width, height, crop_box=None, flip_horizonta
                         torch.tensor(record.weights, dtype=torch.float32), caption)
 
 
-def prepare_record_batch(components, items, *, resolution):
-    from .training_data import prepare_training_batch
+def prepare_record_latents(components, items, *, resolution):
+    from .training_data import prepare_latent_batch
     if not items or any(item.record.profile != components.artifact.profile for item in items):
         raise ValueError("Ming records and loaded profile disagree")
     sizes = {tuple(item.pixels.shape) for item in items}
     if len(sizes) != 1:
         raise ValueError("Ming batches require matching grids and target-frame counts")
-    return prepare_training_batch(components, prompts=[item.caption for item in items],
+    return prepare_latent_batch(components, prompts=[item.caption for item in items],
         references=[item.references for item in items], target_pixels=torch.stack([item.pixels for item in items]),
         frame_weights=torch.stack([item.weights for item in items]), resolution=resolution)
+
+
+def prepare_record_batch(components, items, *, resolution):
+    return prepare_record_latents(components, items, resolution=resolution).for_step()
 
 
 def pixel_cache_identity(record, *, width, height, crop_box, flip_horizontal):
@@ -245,3 +249,45 @@ def homogeneous_batches(batches):
             groups.setdefault(key, []).append(pair)
         result.extend(groups.values())
     return result
+
+
+def prepare_shared_latents(trainer, pairs):
+    """Encode paired native pixels once per logical batch before the MNT window."""
+    import random
+    items = []
+    strategy = trainer.bucket_strategy
+    for item, _dataset in pairs:
+        record = item["_ming_record"]
+        width = item.get("bucket_width") or item["width"]
+        height = item.get("bucket_height") or item["height"]
+        spec = item.get("_crop_spec")
+        crop = spec.crop_box if spec is not None else None
+        if crop is None and strategy != "resize":
+            ow, oh = record.source_size
+            if strategy == "crop":
+                cw, ch = min(ow, max(1, round(oh * width / height))), min(oh, max(1, round(ow * height / width)))
+                crop = ((ow-cw)//2, (oh-ch)//2, cw, ch)
+            elif strategy == "random_crop":
+                scale = max(1, width/ow, height/oh)
+                cw, ch = min(ow, max(1, round(width/scale))), min(oh, max(1, round(height/scale)))
+                crop = (random.randint(0, ow-cw), random.randint(0, oh-ch), cw, ch)
+            else:
+                raise ValueError("Unknown Ming paired bucket strategy")
+        items.append(load_pixels(record, caption=item.get("caption", ""), width=width, height=height, crop_box=crop))
+    components = trainer.ming_image_01_components
+    components.vae.to(device=trainer.device)
+    try:
+        return prepare_record_latents(components, items, resolution=trainer.ming_prompt_resolution)
+    finally:
+        components.vae.to(device="cpu")
+
+
+def shared_inputs_for_mnt(trainer, prepared):
+    from .training_data import shared_step_inputs
+    conditioner = prepared.conditioner
+    conditioner.to(device=trainer.device)
+    try:
+        return shared_step_inputs(prepared.for_step())
+    finally:
+        if conditioner.cacheable:
+            conditioner.to(device="cpu")

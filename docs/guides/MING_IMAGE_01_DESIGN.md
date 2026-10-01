@@ -1,6 +1,6 @@
 # Ming-Image 0.1 integration contract
 
-Status: implementation in progress. Native Design/Layer generation, DiT/caption LoRA and full fine-tuning are connected to public API configuration, shared runner and UI capability wiring. CPU tiny-package generation, training, U-Net restoration, batch-boundary resume and previews are verified; advanced Qwen feature parity and official-weight GPU acceptance remain open. Established 2026-10-01 against SushiUI
+Status: native Design/Layer implementation and public wiring are in place, including U-Net, partition/global, guidance/null objectives, quantized training/export, styles, debug/timing and live previews. [Source/wiring parity audit](../audits/MING_IMAGE_01_PARITY_AUDIT.md) records implemented surfaces, native differences and remaining acceptance. Recorded checks use CPU small native models and doubles; official-weight GPU/API and owner frontend/UI acceptance are unverified. Established 2026-10-01 against SushiUI
 `2b28c3b4`. This contract preserves the requested Qwen-Image 2.1 feature
 scope, including residual U-Net conversion. It is not a claim of measured
 Ming support. [Completed source audit](../audits/MING_IMAGE_01_SOURCE_AUDIT.md)
@@ -8,7 +8,7 @@ records exact upstream source/model revisions and licensing constraints.
 
 ## Implementation evidence by milestone
 
-The entries below record successive implementation stages; later stages supersede earlier staged-boundary notes. The current public training methods are native `full_finetune` and DiT/caption `lora`. Advanced Qwen parity remains active; ReLoRA and conditioner LoRA retain Qwen's explicit refusals.
+The entries below record successive implementation stages; later stages supersede earlier staged-boundary notes. The current public training methods are native `full_finetune` and DiT/caption `lora`. The current source/wiring parity audit is linked above; ReLoRA and conditioner LoRA retain Qwen's explicit refusals.
 
 The native-package inspector and manifest writer are implemented in `backend/core/models/ming_image_01/artifact.py`, with a CPU-only CLI at `tools/inspect_ming_image_01.py`. The targeted artifact suite passes 22 tests, including profile identity, processor drift, package escape, shard/index errors and malformed weight spans. Both pinned official configuration snapshots pass config-only inspection. No model weights, CUDA context or running API were used. This evidence proves preflight only; it does not prove native state loading or functional generation/training.
 

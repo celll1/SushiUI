@@ -392,3 +392,24 @@ frame/grid boundaries are enforced before batch ledgers. Content/roles/weights
 also enter shared fingerprints, concept digests and resume ledgers. Cache,
 optimization-loop and exact optimizer-resume orchestration remain pending; capabilities
 stay unavailable until connected. No main API, official weights or GPU was used.
+
+
+### Shared forward/backward transport
+
+`shared_step_inputs` carries the two conditioning streams as one differentiable
+transport tensor with explicit sequence/width layout, zero padding only unused
+feature columns. Native dispatch reconstructs both streams, target-frame weights
+and ragged references before calling the registered handler. The common
+`_execute_forward_backward` now selects this native path; conventional backward,
+gradient accumulation, fixed MNT noise and per-item metrics remain shared.
+The common two-stage microbatch helper returns the accumulated transport
+cotangent to the conditioner once after chunk backwards.
+
+Seven dedicated CPU cases verify transport/layout rejection and both profiles'
+real tiny native backward. Full-batch versus three microchunks matches losses,
+per-item metrics and gradients across DiT and all five conditioner groups with
+CFG-drop masks, explicit noise and gradient accumulation; AdamW changes weights.
+An initial test-only component accessor mismatch was corrected and its two
+cases pass. This is not a GPU OOM-recovery or precision claim. Common dataset
+assembly/cache and optimizer/RNG/scaler resume are still required before normal
+training capabilities become available.

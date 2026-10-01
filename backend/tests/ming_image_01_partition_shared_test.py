@@ -15,7 +15,8 @@ def test_public_partition_trains_all_profiles_and_methods(tmp_path,profile,metho
     import yaml
     root=source(tmp_path,profile)
     request=TrainingRunCreateRequest(training_method=method,base_model_path=str(root),train_text_encoder=False,
-        ming_conditioner_groups=[],dit_partition_training_enabled=True,dit_partition_mode="fixed",
+        ming_conditioner_groups=[],dit_gradient_checkpointing_blocks=2,dit_partition_gradient_checkpointing_blocks=1,
+        dit_partition_training_enabled=True,dit_partition_mode="fixed",
         dit_partition_fixed_count=4,dit_partition_split_ratio_min=.5,dit_partition_split_ratio_max=.5,
         qwen_full_kv_query_chunk_tokens=17,qwen_guidance_loss_weight=1.,total_steps=2,seed=17)
     _check_ming_conditioner_params(request)
@@ -39,6 +40,7 @@ def test_public_partition_trains_all_profiles_and_methods(tmp_path,profile,metho
     assert all(block.attention.processor._query_chunk_tokens==17 for group in ('layers','noise_refiner','context_refiner')
                for block in getattr(value.transformer,group))
     assert any(not torch.equal(p,dict(value.transformer.named_parameters())[k]) for k,p in before.items())
+    assert value.transformer._training_gradient_checkpointing_blocks==2
     assert metrics["ming_partition_count"]==4.
     assert not torch.cuda.is_initialized()
 

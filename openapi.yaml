@@ -26654,7 +26654,8 @@ components:
             Optional checkpointed transformer-block count for architectures
             that declare partial DiT checkpoint support. Null selects the
             architecture policy; validation against the actual depth occurs
-            before training begins.
+            before training begins. Ming applies this count to main-stream blocks only;
+            its refiners follow the global gradient_checkpointing switch.
         dit_partition_gradient_checkpointing_blocks:
           type: integer
           nullable: true
@@ -26663,6 +26664,7 @@ components:
           description: >-
             Optional checkpointed-block count during complete-coverage DiT
             partition forwards. Null inherits the resolved full-frame count.
+            Ming resolves the actual checkpoint depth and restores its full-frame count after each partition call.
         dit_rewiring_mode:
           type: string
           enum: [inherit, configure]

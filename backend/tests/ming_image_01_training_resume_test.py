@@ -36,7 +36,7 @@ from core.models.ming_image_01.training_resume import RUNTIME_KEY
     pytest.param("cpu_prefetch", [], "generation_edit", False, None, None, None, "global_lora", id="global_lora_pending_resume_design"),
     pytest.param("cpu_prefetch", [], "layer_decompose", False, None, None, .5, "global_lora", id="global_lora_pending_resume_layer"),
 ])
-def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monkeypatch, text_mode, groups, profile, caption_only, quantization, conditioner_quant, cfg_rate, guidance_enabled, rejection=None):
+def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monkeypatch, text_mode, groups, profile, caption_only, quantization, conditioner_quant, cfg_rate, guidance_enabled, rejection=None, optimizer_type=None):
     from core.training import latent_cache
     from core.training.ops import ming_image_01_ops
     monkeypatch.setattr(latent_cache, "get_cache_base_dir", lambda: str(tmp_path / "cache"))
@@ -148,6 +148,7 @@ def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monke
             save_every_n_steps=2, sample_every_n_steps=0, enable_bucketing=False,
             max_step_saves_to_keep=4, max_optimizer_saves_to_keep=4,
             base_resolutions=[128 if guidance_enabled in {"partition","global","global_lora"} else 64], latent_encoding_mode="swap_onthefly", text_encoding_mode=text_mode,
+            **({"optimizer_type": optimizer_type} if optimizer_type else {}),
             resume_from_checkpoint=resume)
     baseline = trainer(tmp_path / "baseline" / "run")
     train(baseline)
@@ -155,20 +156,28 @@ def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monke
         assert null_forwards, "Guidance configuration never selected a null forward"
     baseline_traces = traces.copy()
     assert len(baseline_traces) == 8
-    checkpoint_step=6 if guidance_enabled == "global_lora" else 2
+    checkpoint_step=6 if guidance_enabled == "global_lora" or optimizer_type else 2
     stem=f"run_step_{checkpoint_step:06d}"
     checkpoint = baseline.output_dir / (stem+".safetensors" if guidance_enabled == "global_lora" else stem)
     state = json.loads((baseline.output_dir / (stem+"_state.json")).read_text())
     assert state["epoch"] == 0 and state["batch_idx"] == checkpoint_step//2
     payload = torch.load(baseline.output_dir / (stem+"_optimizer.pt"), map_location="cpu", weights_only=True)
     assert payload[RUNTIME_KEY]["gradients"], "The checkpoint should retain two of four accumulated backwards"
+    if optimizer_type == 'adafactor':
+        assert type(baseline.optimizer).__name__ == 'Adafactor'
+        assert payload['_sushi_opt_class'] == 'Adafactor'
+        assert payload['state'], 'Adafactor checkpoint must retain established statistics'
+        assert any({'exp_avg_sq_row','exp_avg_sq_col'} <= values.keys()
+            for values in payload['state'].values()), 'Factored statistics were never exercised'
     if guidance_enabled == "global_lora":
         assert payload['state'], 'Resume must include existing optimizer moments'
         gradients=payload[RUNTIME_KEY]['gradients']
         assert any('ming_partition_global_adapter' in name and value.count_nonzero() for name,value in gradients.items())
         saved_names={index:name for group,names in zip(payload['param_groups'],payload['_sushi_param_names'])
             for index,name in zip(group['params'],names)}
-        assert any('ming_partition_global_adapter' in saved_names[index] and values['exp_avg'].count_nonzero()
+        moment_keys = ('exp_avg_sq_row','exp_avg_sq_col','exp_avg_sq') if optimizer_type == 'adafactor' else ('exp_avg',)
+        assert any('ming_partition_global_adapter' in saved_names[index]
+            and any(key in values and values[key].count_nonzero() for key in moment_keys)
             for index,values in payload['state'].items())
     destination = tmp_path / "resumed" / "run"
     destination.mkdir(parents=True)
@@ -230,7 +239,9 @@ def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monke
     actual = resumed.optimizer.state_dict()["state"]
     assert expected.keys() == actual.keys()
     for index, values in expected.items():
-        assert all(torch.equal(value, actual[index][key]) for key, value in values.items())
+        assert values.keys() == actual[index].keys()
+        assert all(torch.equal(value, actual[index][key]) if torch.is_tensor(value)
+            else value == actual[index][key] for key, value in values.items())
     assert baseline._optimizer_update_step == resumed._optimizer_update_step == 2
     assert baseline.lr_scheduler.last_epoch == resumed.lr_scheduler.last_epoch
     if quantization:
@@ -320,3 +331,11 @@ def test_resume_save_guard_only_covers_unrestored_ming(ming,pending,expected):
     from core.training.base_trainer import BaseTrainer
     owner=SimpleNamespace(is_ming_image_01=ming,_ming_pending_runtime=pending,log_prefix='test')
     assert BaseTrainer._refuse_save_before_ming_runtime_restore(owner) is expected
+
+
+@pytest.mark.parametrize('profile',['generation_edit','layer_decompose'])
+@pytest.mark.parametrize('method',['full_finetune','lora'])
+def test_adafactor_established_state_pending_global_resume(tmp_path,monkeypatch,profile,method):
+    test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path,monkeypatch,
+        'cpu_prefetch',[],profile,False,None,None,.5 if profile=='layer_decompose' else None,
+        'global_lora' if method=='lora' else 'global',optimizer_type='adafactor')

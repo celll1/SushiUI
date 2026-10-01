@@ -2487,3 +2487,23 @@ Ming now emits native post-step latents and predicted-clean latents through the 
 Design selects its image frame; Layer selects `layer_1`, matching the result group's primary image rather than showing auxiliary canvas zero. The shared factory defaults Ming to predicted-clean preview and invokes a bounded native VAE decoder instead of a foreign latent projection. Only sample zero is decoded; native latent area resampling limits the decoded image's longest edge to 256 pixels. RGBA is composited onto a checkerboard for the existing JPEG WebSocket display, while final generated images and saved training diagnostics retain RGBA. Native decoder/preview interval/disabled demand use the shared callback factory; a preview decode failure remains a diagnostic error without aborting generation.
 
 Twenty-four unique CPU cases passed: seventeen new cases cover actual guided Design/Layer plain/style/partition nested-U-Net scheduler oracles, exact baseline trajectories, unchanged DiT call counts, scheduler callback/cancel/nested restoration, prediction storage ownership, declined-step demand, real bounded VAE decoding without parameter/RNG mutation, transparent checkerboard rendering, invalid primary-frame geometry and the real manager/shared factory using mocked transport; two updated native manager progress cases and five shared callback-demand regressions also pass. All changed backend modules compile/import and OpenAPI parses with CUDA forbidden. No real WebSocket/API, GPU, official weights or main use occurred. The final source-based Qwen feature audit and owner acceptance remain active.
+
+
+### CPU-only Adafactor established-state continuation
+
+The pending-gradient exact-resume evidence now also covers the actual factory's
+transformers Adafactor for Design/Layer full and LoRA training. Four new cases
+checkpoint at logical step 6 after the first optimizer update, retain two of
+four accumulated backwards, require established row/column factored statistics,
+and compare native conditioning/noise/sigma/partition predictions, all model and
+global/adapter weights, tensor/scalar optimizer state, update counts and scheduler
+with uninterrupted execution. They combine MNT2/GAS4, saved single-stage U-Net, full-KV query
+chunks, global partitions and native guidance; Layer also exercises sigma-null.
+This remains a completed-logical-batch CPU boundary. Unfinished MNT/region
+recovery, other optimizer families and actual GPU scaler/optimizer behavior are
+not established. No running API, main GPU or official weights are used.
+
+Milestone verification: all four new Adafactor cases and four affected existing
+AdamW full/global-LoRA cases pass (eight cases). The changed test module compiles
+and imports with CUDA initialization forbidden. Owner build/UI and official GPU
+acceptance remain pending.

@@ -24,6 +24,7 @@ from ming_image_01_training_batch_test import components
 def owner(value, groups, rates, *, train_dit=True):
     return SimpleNamespace(ming_image_01_components=value, transformer=value.transformer, ming_conditioner_trainable_groups=groups,
         ming_conditioner_lrs=rates, train_unet=train_dit, unet_lr=.001, learning_rate=.001,
+        config={"ming_conditioner_groups": sorted(groups), "ming_conditioner_lrs": rates},
         gradient_checkpointing=False, is_ming_image_01=True, log_prefix="[CPU]")
 
 
@@ -50,7 +51,7 @@ def test_actual_shared_factory_and_unique_optimizer_ownership(groups, train_dit)
     assert not torch.cuda.is_initialized()
 
 
-@pytest.mark.parametrize("groups,rates", [({"foreign"}, {}), ({"language"}, {}), ({"language"}, {"language": 0})])
+@pytest.mark.parametrize("groups,rates", [({"foreign"}, {}), ({"language"}, {}), ({"language"}, {"language": -1})])
 def test_bad_training_ownership_or_rates_refused(groups, rates):
     trainer = owner(components("generation_edit"), groups, rates)
     adapter = MingImage01FullParameterAdapter(trainer, conditioner_groups=groups, conditioner_lrs=rates)

@@ -34,8 +34,8 @@ def optimizer_groups(transformer, conditioner, *, dit_lr: float, conditioner_lrs
         if not parameters:
             continue
         rate = rates.get(name)
-        if not isinstance(rate, (float, int)) or isinstance(rate, bool) or not 0 < rate < float("inf"):
-            raise ValueError(f"Ming trainable component requires a positive finite rate: {name}")
+        if not isinstance(rate, (float, int)) or isinstance(rate, bool) or not 0 <= rate < float("inf"):
+            raise ValueError(f"Ming trainable component requires a nonnegative finite rate: {name}")
         result.append({"name": name, "params": parameters, "lr": rate})
     if not result:
         raise ValueError("Ming training requires at least one trainable component")

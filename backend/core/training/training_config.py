@@ -336,6 +336,10 @@ def _build_train_section(
         train["optimizer_state_host_resident"] = True
 
     # Component learning rates
+    if arch == "ming_image_01" or p.get("ming_conditioner_groups") is not None or p.get("ming_conditioner_lrs") is not None:
+        from core.models.ming_image_01.training_options import validate_groups, validate_rates
+        train["ming_conditioner_groups"] = validate_groups(p.get("ming_conditioner_groups", _TD["ming_conditioner_groups"]))
+        train["ming_conditioner_lrs"] = validate_rates(p.get("ming_conditioner_lrs", _TD["ming_conditioner_lrs"]))
     train["train_adapter"] = p.get("train_adapter", _TD["train_adapter"])
     train["adapter_lr"] = p.get("adapter_lr", _TD["adapter_lr"])
     if p.get("full_finetune_dequantize_int8_base", _TD["full_finetune_dequantize_int8_base"]):

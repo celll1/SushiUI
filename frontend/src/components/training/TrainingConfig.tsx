@@ -10,6 +10,7 @@ import NumberInput from "../common/NumberInput";
 import VisionEncoderSelector from "../common/VisionEncoderSelector";
 import TimestepDistributionGraph from "./TimestepDistributionGraph";
 import QwenTrainingObjective from "./QwenTrainingObjective";
+import MingConditionerTraining from "./MingConditionerTraining";
 import DiTRewiringEditor from "./DiTRewiringEditor";
 import GpuSelect from "./GpuSelect";
 import VaeSwapSourceSelector from "./VaeSwapSourceSelector";
@@ -880,6 +881,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // shown only for it rather than as a knob that silently does nothing.
   const isMiniMaxH3Model = getModelArchitecture(baseModelPath) === "minimax_h3";
   const isQwenImage21Model = getModelArchitecture(baseModelPath) === "qwen_image_21";
+  const isMingImageModel = getModelArchitecture(baseModelPath) === "ming_image_01";
   const isQwenConvRotModel = isQwenImage21Model && /int8[_-]convrot/i.test(baseModelPath);
 
   function isSDOrSDXLModel(modelPath: string): boolean {
@@ -924,6 +926,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const getRequestData = useCallback((): any => {
     return {
       ...passThroughParams(params),
+      ming_conditioner_groups: isMingImageModel && trainingMethod === "full_finetune" ? params.ming_conditioner_groups : null,
+      ming_conditioner_lrs: isMingImageModel && trainingMethod === "full_finetune" ? params.ming_conditioner_lrs : null,
       train_adapter: (trainingMethod === "lora" || trainingMethod === "full_finetune") &&
         (isQwenImage21Model || isAnimaModel(baseModelPath)) ? params.train_adapter : null,
       adapter_lr: (trainingMethod === "lora" || trainingMethod === "full_finetune") &&
@@ -4470,6 +4474,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </div>}
 
             </div>
+
+            {isMingImageModel && trainingMethod === "full_finetune" && (
+              <MingConditionerTraining groups={params.ming_conditioner_groups} rates={params.ming_conditioner_lrs}
+                trainTextEncoder={Boolean(params.train_text_encoder)}
+                onGroups={value => updateParam("ming_conditioner_groups", value)}
+                onRates={value => updateParam("ming_conditioner_lrs", value)} />
+            )}
 
             {/* U-Net Learning Rate */}
             {trainUnet && (

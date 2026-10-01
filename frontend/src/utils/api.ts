@@ -7232,6 +7232,8 @@ export interface SamplePrompt {
   reference_image_path?: string;
 }
 
+export type MingConditionerGroup = "language" | "vision" | "connector" | "queries" | "projections";
+
 export interface TrainingRunCreateRequest {
   dataset_id?: number;  // Deprecated - use dataset_configs instead
   dataset_configs?: DatasetConfigItem[];  // Multiple datasets with filters
@@ -7407,6 +7409,8 @@ export interface TrainingRunCreateRequest {
   train_unet?: boolean;
   train_text_encoder?: boolean;
   unet_lr?: number | null;
+  ming_conditioner_groups?: MingConditionerGroup[] | null;
+  ming_conditioner_lrs?: Partial<Record<MingConditionerGroup, number>> | null;
   train_adapter?: boolean | null;
   adapter_lr?: number | null;
   full_finetune_dequantize_int8_base?: boolean;

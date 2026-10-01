@@ -2213,3 +2213,22 @@ packages reload their detached global tensors through the native loader. Changed
 files compile and import with CUDA forbidden. This verifies offline conversion,
 not CUDA kernels or public global-partition generation. Main API/GPU remains
 untouched; remaining Qwen parity and owner frontend/GPU acceptance stay pending.
+
+
+### Global training form wiring
+
+The shared tiled-training form exposes global summaries for Ming as well as Qwen,
+including the existing server-default rank and token controls. Ming explains its
+LoRA/full-bundle storage and Layer's all-target-frame summaries. Input handlers
+clamp rank/tokens to the public 512/256 limits. Synchronized CUDA profiling stays
+Qwen-only until Ming timing is implemented.
+
+A preset or model/component transition that leaves Ming global mode enabled while
+tiled training or DiT training is disabled now shows a visible recovery action,
+even when the nested controls are hidden. Submit refuses that combination before
+sending a request; users can disable the preserved global setting from the warning.
+The existing canonical parameter pass-through and preset restoration retain all
+three global fields. No endpoint/default/type contract changed. Static review
+covers the control gates, server-default values, restoration and error path.
+Owner-run frontend build/type checking and interactive acceptance are pending;
+these do not block remaining backend and Qwen-parity implementation.

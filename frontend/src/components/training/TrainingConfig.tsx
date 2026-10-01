@@ -2190,6 +2190,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       return;
     }
 
+    if (isMingImageModel && params.dit_partition_global_adapter_enabled &&
+        (!params.dit_partition_training_enabled || !trainUnet)) {
+      setError("Ming global summaries require tiled training and DiT training. Enable both or disable global summaries.");
+      return;
+    }
+
     if (isMingImageModel && trainingMethod === "lora" && trainTextEncoder) {
       setError("Ming LoRA currently requires a frozen conditioner. Disable text encoder training.");
       return;
@@ -6390,6 +6396,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   Processes every image region before one optimizer step and may lower peak activation,
                   but removes target attention between regions. This is not numerically equivalent to a full forward.
                 </p>
+                {isMingImageModel && params.dit_partition_global_adapter_enabled &&
+                  (!params.dit_partition_training_enabled || !trainUnet) && (
+                    <p className="text-xs text-amber-400">
+                      Global summaries require tiled training and DiT training. Restore both settings or disable global summaries before submitting.
+                      <button type="button" onClick={() => updateParam("dit_partition_global_adapter_enabled", false)} className="ml-2 underline">Disable global summaries</button>
+                    </p>
+                  )}
                 {isQwenConvRotModel && <div>
                   <label className="block text-xs text-gray-400 mb-1">ConvRot Training Backward Cache</label>
                   <select
@@ -6515,8 +6528,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         Empty preserves the resolved full-frame checkpoint count; a lower override can increase peak VRAM. {isQwenImage21Model && "Zero was slower and larger in the SM89 probe."}
                       </p>
                     </div>
-                    {isQwenImage21Model && <>
-                    <label className="flex items-center gap-2 self-end pb-1 text-xs text-gray-300 cursor-pointer">
+                    {isQwenImage21Model && <label className="flex items-center gap-2 self-end pb-1 text-xs text-gray-300 cursor-pointer">
                       <input
                         type="checkbox"
                         checked={params.dit_partition_profile ?? DEFAULT_PARAMS.dit_partition_profile}
@@ -6524,7 +6536,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         className="w-4 h-4"
                       />
                       Synchronized CUDA timing
-                    </label>
+                    </label>}
                     <label className="col-span-2 flex items-center gap-2 text-xs text-gray-300 cursor-pointer">
                       <input
                         type="checkbox"
@@ -6541,7 +6553,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                           <input
                             type="number" min={1} max={512}
                             value={params.dit_partition_global_rank ?? DEFAULT_PARAMS.dit_partition_global_rank}
-                            onChange={(e) => updateParam("dit_partition_global_rank", Math.max(1, parseInt(e.target.value) || DEFAULT_PARAMS.dit_partition_global_rank))}
+                            onChange={(e) => updateParam("dit_partition_global_rank", Math.min(512, Math.max(1, parseInt(e.target.value) || DEFAULT_PARAMS.dit_partition_global_rank)))}
                             className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
                           />
                         </div>
@@ -6550,16 +6562,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                           <input
                             type="number" min={1} max={256}
                             value={params.dit_partition_global_tokens ?? DEFAULT_PARAMS.dit_partition_global_tokens}
-                            onChange={(e) => updateParam("dit_partition_global_tokens", Math.max(1, parseInt(e.target.value) || DEFAULT_PARAMS.dit_partition_global_tokens))}
+                            onChange={(e) => updateParam("dit_partition_global_tokens", Math.min(256, Math.max(1, parseInt(e.target.value) || DEFAULT_PARAMS.dit_partition_global_tokens)))}
                             className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
                           />
                         </div>
                         <p className="col-span-2 text-xs text-gray-500">
-                          Carries learned global content into each tile. Saved with the LoRA checkpoint; full-frame generation ignores this training-only branch.
+                          Carries learned global content into each tile. {isMingImageModel ? "Saved with LoRA or full-parameter checkpoints; Layer summaries include every target layer. Full-frame generation ignores the summary branch." : "Saved with the LoRA checkpoint; full-frame generation ignores this training-only branch."}
                         </p>
                       </>
                     )}
-                    </>}
                   </div>
                 )}
               </div>

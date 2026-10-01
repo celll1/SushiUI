@@ -170,14 +170,14 @@ def load_pixels(record, *, caption, width, height, crop_box=None, flip_horizonta
                         pixel_cache_identity(record, width=width, height=height, crop_box=crop_box, flip_horizontal=flip_horizontal))
 
 
-def prepare_record_latents(components, items, *, resolution, cache_context=None, vae_device=None):
+def prepare_record_latents(components, items, *, resolution, cache_context=None, vae_device=None, residency=None):
     from .training_data import prepare_latent_batch
     if not items or any(item.record.profile != components.artifact.profile for item in items):
         raise ValueError("Ming records and loaded profile disagree")
     sizes = {tuple(item.pixels.shape) for item in items}
     if len(sizes) != 1:
         raise ValueError("Ming batches require matching grids and target-frame counts")
-    options = {"vae_device": vae_device}
+    options = {"vae_device": vae_device, "residency": residency}
     if cache_context is not None:
         from .cache import latent_identity, conditioning_identity, validate_cache_context
         context = cache_context
@@ -301,7 +301,7 @@ def prepare_shared_latents(trainer, pairs):
     components = trainer.ming_image_01_components
     return prepare_record_latents(components, items, resolution=trainer.ming_prompt_resolution,
                                   cache_context=getattr(trainer, "ming_cache_context", None),
-                                  vae_device=trainer.device)
+                                  vae_device=trainer.device, residency=getattr(trainer, "ming_training_residency", None))
 
 
 def shared_inputs_for_mnt(trainer, prepared):

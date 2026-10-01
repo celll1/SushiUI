@@ -1,6 +1,7 @@
 """Native RGBA supervision and independent-frame VAE training batches."""
 
 from dataclasses import dataclass
+from contextlib import nullcontext
 
 import torch
 
@@ -78,7 +79,7 @@ def encode_frames(vae, pixels):
 
 
 def prepare_latent_batch(components, *, prompts, references, target_pixels, frame_weights, resolution,
-                         tensor_cache=None, latent_key=None, conditioning_key=None, vae_device=None):
+                         tensor_cache=None, latent_key=None, conditioning_key=None, vae_device=None, residency=None):
     """Explicit supervision owns slot zero; references never become loss targets."""
     if target_pixels.ndim != 5:
         raise ValueError("Ming target pixels require native batch/channel/frame axes")
@@ -108,20 +109,21 @@ def prepare_latent_batch(components, *, prompts, references, target_pixels, fram
         clean = cached["clean"]
         latent_references = [cached.get(f"reference_{index}") for index in range(batch)]
     else:
-        try:
-            if vae_device is not None:
-                components.vae.to(device=vae_device)
-            clean = encode_frames(components.vae, target_pixels)
-            latent_references = []
-            for pixels in prepared.references:
-                if pixels is None:
-                    latent_references.append(None)
-                    continue
-                images = pixels.reshape(-1, 4, height, width).permute(1, 0, 2, 3).unsqueeze(0)
-                latent_references.append(encode_frames(components.vae, images)[0])
-        finally:
-            if vae_device is not None:
-                components.vae.to(device="cpu")
+        with residency("vae") if residency is not None else nullcontext():
+            try:
+                if residency is None and vae_device is not None:
+                    components.vae.to(device=vae_device)
+                clean = encode_frames(components.vae, target_pixels)
+                latent_references = []
+                for pixels in prepared.references:
+                    if pixels is None:
+                        latent_references.append(None)
+                        continue
+                    images = pixels.reshape(-1, 4, height, width).permute(1, 0, 2, 3).unsqueeze(0)
+                    latent_references.append(encode_frames(components.vae, images)[0])
+            finally:
+                if residency is None and vae_device is not None:
+                    components.vae.to(device="cpu")
         if tensor_cache is not None and latent_key is not None:
             payload = {"clean": clean.detach().cpu()}
             payload.update({f"reference_{index}": value.detach().cpu()
@@ -129,7 +131,7 @@ def prepare_latent_batch(components, *, prompts, references, target_pixels, fram
             tensor_cache.write("latents", latent_key, payload)
     return MingLatentBatch(clean, prepared, frame_weights.detach(),
                            latent_references if any_reference else None, components.conditioner,
-                           tensor_cache=tensor_cache, conditioning_key=conditioning_key)
+                           tensor_cache=tensor_cache, conditioning_key=conditioning_key, residency=residency)
 
 
 
@@ -143,6 +145,7 @@ class MingLatentBatch:
     frozen_conditioning: MingConditioning | None = None
     tensor_cache: object = None
     conditioning_key: str | None = None
+    residency: object = None
 
     def for_step(self, *, encoder_device=None):
         trainable = not self.conditioner.cacheable
@@ -157,13 +160,14 @@ class MingLatentBatch:
             if cached is not None:
                 condition = MingConditioning(cached["queries"], cached["direct"])
         if condition is None:
-            try:
-                if encoder_device is not None:
-                    self.conditioner.to(device=encoder_device)
-                condition = encode_inputs(self.conditioner, self.prepared, requires_grad=trainable)
-            finally:
-                if encoder_device is not None and not trainable:
-                    self.conditioner.to(device="cpu")
+            with self.residency("conditioner") if self.residency is not None else nullcontext():
+                try:
+                    if self.residency is None and encoder_device is not None:
+                        self.conditioner.to(device=encoder_device)
+                    condition = encode_inputs(self.conditioner, self.prepared, requires_grad=trainable)
+                finally:
+                    if self.residency is None and encoder_device is not None and not trainable:
+                        self.conditioner.to(device="cpu")
             if not trainable and self.tensor_cache is not None and self.conditioning_key is not None:
                 self.tensor_cache.write("conditioning", self.conditioning_key,
                     {"queries": condition.queries.detach().cpu(), "direct": condition.direct.detach().cpu()},

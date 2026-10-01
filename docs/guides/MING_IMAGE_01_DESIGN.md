@@ -531,3 +531,22 @@ focused precision/meta tests pass after adding parameter-device reconstruction,
 including exact trigonometric outputs at long position indices. Compile and real
 imports pass with CUDA initialization forbidden. GPU numerical acceptance,
 advanced attention backends and full common training remain pending.
+
+### Native training encoder phases
+
+Shared native batch preparation now carries a caller-owned residency policy.
+For swap and persistent-cache misses, the policy stages the DiT on CPU during
+VAE/conditioner encoding, releases the VAE or frozen conditioner, then restores
+the DiT to the trainer device. On-the-fly mode leaves the DiT in place. Trainable
+conditioning remains resident for its live backward graph. CPU execution does
+not transfer the DiT. Phase overlap refuses; failure cleanup restores the DiT
+and clears the phase state. Complete cache hits invoke no encoder phase.
+The generic loop no longer duplicates VAE offloading for native Ming batches.
+
+53 affected residency/cache/shared-step CPU tests pass. Transfer ordering uses
+symbolic devices with spy components; cache reuse and consecutive trainable
+conditioning backward use tiny native CPU models. Compile and real imports are
+CUDA guarded. These checks do not prove physical GPU residency, official-weight
+memory fit or optimizer-state movement. CPU prefetch still explicitly refuses at
+the native worker seam, and eager prefill/swap-buffer scheduling remain pending.
+The temporary generic on-the-fly dispatch and normal-training refusal remain.

@@ -15705,6 +15705,8 @@ class BaseTrainer(ABC):
         if getattr(self, "is_ming_image_01", False):
             from core.models.ming_image_01.cache import attach_startup_snapshot
             attach_startup_snapshot(self, latent_mode=latent_encoding_mode, text_mode=text_encoding_mode)
+            from core.models.ming_image_01.training_residency import configure_training_residency
+            configure_training_residency(self, latent_mode=latent_encoding_mode, text_mode=text_encoding_mode)
             latent_encoding_mode = text_encoding_mode = "onthefly_gpu"
             self.ming_prompt_resolution = max(base_resolutions or _TRAINING_DEFAULTS["base_resolutions"])
 
@@ -19475,6 +19477,7 @@ class BaseTrainer(ABC):
                     # allocator cache and is reused by the train step (calling empty_cache
                     # every batch would hurt throughput).
                     if (not _sensenova_text_batch_active
+                            and not getattr(self, "is_ming_image_01", False)
                             and latent_encoding_mode == "onthefly_gpu" and self.vae is not None):
                         self.vae.to(device="cpu", dtype=self.vae_dtype)
 

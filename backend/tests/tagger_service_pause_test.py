@@ -46,7 +46,8 @@ def test_decision_is_offloaded_and_restored_when_the_pause_ends():
     thread.join(timeout=5)
     assert not thread.is_alive()
     assert calls == [("offload", "none"), ("restore",)]
-    assert not handle.resumed_event.is_set() and not handle.restored_event.is_set()
+    assert not handle.resumed_event.is_set() and handle.restored_event.is_set()
+    assert handle.restored_event.wait(timeout=0)
     assert handle.pending_decision is None
 
 

@@ -26,13 +26,14 @@ def validate_gpu_index(gpu_index: Any) -> None:
 
 
 def find_output_dir_owner(training_db, output_dir: str) -> Optional[str]:
-    """The training run of any kind (diffusion/VAE, tagger, style) whose output_dir is `output_dir`, as
+    """The training run of any kind whose output_dir is `output_dir`, as
     "<kind> <id>", else None."""
-    from database.models import StyleTrainingRun, TaggerTrainingRun, TrainingRun
+    from database.models import CaptionerTrainingRun, StyleTrainingRun, TaggerTrainingRun, TrainingRun
     target = os.path.normcase(os.path.abspath(output_dir))
     for kind, key, column in (("training run", TrainingRun.id, TrainingRun.output_dir),
                               ("tagger training run", TaggerTrainingRun.run_id, TaggerTrainingRun.output_dir),
-                              ("style training run", StyleTrainingRun.run_id, StyleTrainingRun.output_dir)):
+                              ("style training run", StyleTrainingRun.run_id, StyleTrainingRun.output_dir),
+                              ("captioner training run", CaptionerTrainingRun.run_id, CaptionerTrainingRun.output_dir)):
         for run_key, other in training_db.query(key, column).filter(column.isnot(None)).all():
             if other and os.path.normcase(os.path.abspath(other)) == target:
                 return f"{kind} {run_key}"

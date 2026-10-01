@@ -1147,6 +1147,88 @@ class TrainingMetrics(TrainingBase):
 
 
 
+class CaptionerBatch(TrainingBase):
+    __tablename__ = "captioner_batches"
+    job_id = Column(String, primary_key=True)
+    dataset_id = Column(Integer, nullable=False)
+    bundle_path = Column(String, nullable=False)
+    manifest_hash = Column(String, nullable=False)
+    options = Column(JSON, nullable=False)
+    status = Column(String, nullable=False)
+    error = Column(Text, nullable=True)
+    error_code = Column(String, nullable=True)
+    created_at = Column(DateTime, default=get_local_now)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
+    def to_dict(self):
+        return {"job_id": self.job_id, "dataset_id": self.dataset_id, "bundle_path": self.bundle_path,
+                "manifest_hash": self.manifest_hash, "options": self.options, "status": self.status,
+                "error": self.error, "error_code": self.error_code,
+                "created_at": self.created_at.isoformat(), "updated_at": self.updated_at.isoformat()}
+
+
+class CaptionerBatchItem(TrainingBase):
+    __tablename__ = "captioner_batch_items"
+    job_id = Column(String, ForeignKey("captioner_batches.job_id"), primary_key=True)
+    item_id = Column(Integer, primary_key=True)
+    position = Column(Integer, nullable=False)
+    status = Column(String, nullable=False)
+    attempts = Column(Integer, nullable=False)
+    preview = Column(JSON, nullable=True)
+    saved = Column(JSON, nullable=True)
+    save_intent = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    error_code = Column(String, nullable=True)
+
+    def to_dict(self):
+        return {"item_id": self.item_id, "position": self.position, "status": self.status,
+                "attempts": self.attempts, "preview": self.preview, "error": self.error,
+                "error_code": self.error_code, "saved": self.saved,
+                "pending_save": self.save_intent is not None,
+                "reviewed_caption": (self.save_intent or self.saved or {}).get("caption"),
+                "reviewed_caption_type": (self.save_intent or self.saved or {}).get("caption_type")}
+
+
+class CaptionerTrainingRun(TrainingBase):
+    __tablename__ = "captioner_training_runs"
+    run_id = Column(String, primary_key=True)
+    run_name = Column(String, nullable=False)
+    output_dir = Column(String, unique=True, nullable=False)
+    status = Column(String, nullable=False)
+    config = Column(JSON, nullable=False)
+    tagger_config = Column(JSON, nullable=False)
+    dataset_configs = Column(JSON, nullable=False)
+    aliases = Column(JSON, nullable=False)
+    progress = Column(JSON, nullable=False)
+    checkpoints = Column(JSON, nullable=False)
+    resume_seq = Column(Integer, nullable=False)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=get_local_now)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
+    def to_dict(self):
+        return {"run_id": self.run_id, "run_name": self.run_name, "output_dir": self.output_dir,
+                "status": self.status, "config": self.config, "tagger": self.tagger_config,
+                "dataset_configs": self.dataset_configs, "progress": self.progress,
+                "checkpoints": self.checkpoints, "resume_seq": self.resume_seq, "error": self.error,
+                "alias_count": len(self.aliases),
+                "created_at": self.created_at.isoformat() if self.created_at else None,
+                "updated_at": self.updated_at.isoformat() if self.updated_at else None}
+
+
+class CaptionerTrainingEvent(TrainingBase):
+    __tablename__ = "captioner_training_events"
+    id = Column(Integer, primary_key=True)
+    run_id = Column(String, ForeignKey("captioner_training_runs.run_id"), nullable=False, index=True)
+    resume_seq = Column(Integer, nullable=False)
+    payload = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=get_local_now)
+
+    def to_dict(self):
+        return {"id": self.id, "run_id": self.run_id, "resume_seq": self.resume_seq,
+                "payload": self.payload, "timestamp": self.created_at.isoformat()}
+
+
 class TaggerTrainingRun(TrainingBase):
     """Training run for SigLIP2-based image tagger."""
     __tablename__ = "tagger_training_runs"

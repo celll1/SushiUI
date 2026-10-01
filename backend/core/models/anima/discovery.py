@@ -137,5 +137,3 @@ def _find_first(directory: Path, patterns: List[str]) -> Optional[Path]:
     # Last resort: any .safetensors in the directory
     sf = sorted(directory.glob("*.safetensors"))
     return sf[0] if sf else None
-
-

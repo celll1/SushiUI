@@ -15703,6 +15703,8 @@ class BaseTrainer(ABC):
             latent_encoding_mode = "onthefly_gpu"
 
         if getattr(self, "is_ming_image_01", False):
+            from core.models.ming_image_01.cache import attach_startup_snapshot
+            attach_startup_snapshot(self, latent_mode=latent_encoding_mode, text_mode=text_encoding_mode)
             latent_encoding_mode = text_encoding_mode = "onthefly_gpu"
             self.ming_prompt_resolution = max(base_resolutions or _TRAINING_DEFAULTS["base_resolutions"])
 

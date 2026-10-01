@@ -47,6 +47,8 @@ def load_components(trainer):
     from core.models.ming_image_01.loader import load_components as native_load
     from core.models.ming_image_01.training_options import resolve_ownership
     from core.models.ming_image_01.residual_unet import configure_training_topology
+    from core.models.ming_image_01.cache import configured_modes, capture_startup_snapshot
+    configured_modes(trainer.config)
     components = native_load(trainer.model_path, dtype=trainer.weight_dtype, conditioner_attention="eager")
     configure_training_topology(components.transformer, trainer.config,
                                 resuming=bool(getattr(trainer, "resume_from_checkpoint", None)))
@@ -61,6 +63,7 @@ def load_components(trainer):
     trainer.scheduler = trainer.noise_scheduler = components.scheduler
     trainer.unet = trainer.text_encoder_2 = trainer.tokenizer_2 = trainer.t5_tokenizer = None
     trainer.tokenizer = components.processor.tokenizer
+    capture_startup_snapshot(trainer)
 
 
 def encode_prompt(trainer, prompt, *, requires_grad=False):

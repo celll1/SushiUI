@@ -294,5 +294,16 @@ def test_native_package_loader_round_trip(tmp_path, monkeypatch):
     BaseTrainer._load_checkpoint_as_base(train_owner, str(exported_manifest))
     assert train_owner.model_path == str(exported_manifest)
     assert train_owner.transformer._residual_unet_spec == topology
+    from core.models.ming_image_01.cache import attach_startup_snapshot
+    cache_owner = SimpleNamespace(model_path=str(exported_manifest), weight_dtype=torch.float32,
+        vae_dtype=torch.float32, device="cpu", output_dir=tmp_path / "cache-run",
+        config={"ming_conditioner_groups": [], "latent_encoding_mode": "pre_encoded_cache",
+                "text_encoding_mode": "pre_encoded_cache"}, resume_from_checkpoint=None)
+    BaseTrainer._load_model_components(cache_owner)
+    assert cache_owner.ming_cache_snapshot["vae_weights"]
+    assert cache_owner.ming_cache_snapshot["conditioner_weights"]
+    attach_startup_snapshot(cache_owner, latent_mode="pre_encoded_cache", text_mode="pre_encoded_cache")
+    assert cache_owner.ming_cache_context["cache"].root == cache_owner.output_dir / "ming_cache"
+    assert cache_owner.ming_cache_context["conditioning_enabled"]
 
     assert not torch.cuda.is_initialized()

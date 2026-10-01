@@ -9,8 +9,8 @@ from .residency import MingPhaseResidency
 
 
 @torch.no_grad()
-def sample_image(trainer, ctx):
-    from api.param_defaults import MING_IMAGE_01_GENERATION_DEFAULTS
+def generate_sample(trainer, ctx, *, step_progress_callback=None):
+    from api.param_defaults import TRAINING_DEFAULTS
     components = trainer.ming_image_01_components
     if ctx.negative_prompt:
         raise ValueError("Ming native guidance uses zero conditioning; negative prompts are unsupported")
@@ -21,7 +21,7 @@ def sample_image(trainer, ctx):
     if paths:
         with Image.open(paths[0]) as image:
             images.append(image.convert("RGBA"))
-    layers = (trainer.config.get("ming_image_01_layers", MING_IMAGE_01_GENERATION_DEFAULTS["ming_image_01_layers"])
+    layers = (trainer.config.get("ming_image_01_sample_layers", TRAINING_DEFAULTS["ming_image_01_sample_layers"])
               if components.artifact.profile == "layer_decompose" else 1)
     task = ("layer-decompose" if components.artifact.profile == "layer_decompose"
             else "image-edit" if images else "text-to-image")
@@ -45,8 +45,8 @@ def sample_image(trainer, ctx):
                 cpu_text_encoding=getattr(trainer, "_text_encoding_mode", "") == "cpu_prefetch")
             def progress(index, total, timestep, latents):
                 trainer._check_stop_requested()
-                if ctx.step_progress_callback is not None:
-                    ctx.step_progress_callback(index + 1, total)
+                if step_progress_callback is not None:
+                    step_progress_callback(index + 1, total)
             def cancelled():
                 trainer._check_stop_requested()
                 return False

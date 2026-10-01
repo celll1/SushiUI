@@ -9511,15 +9511,23 @@ def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool = False
                 # Music3's official/ tree uses modular_model_index.json, not
                 # model_index.json, so it fails this check too.
                 is_valid = ModelLoader.is_valid_diffusers_directory(item_path)
-                if not is_valid and architecture not in ("anima", "lens", "krea2", "qwen_image_21", "minimax_music3"):
+                if not is_valid and architecture not in ("anima", "lens", "krea2", "qwen_image_21", "ming_image_01", "minimax_music3"):
                     continue
+                native_profile = {}
+                if architecture == "ming_image_01":
+                    from core.models.ming_image_01.artifact import inspect_artifact
+                    try:
+                        native_profile["profile"] = inspect_artifact(item_path, require_weights=False).profile
+                    except (OSError, ValueError):
+                        continue
                 models.append({
                     "name": item,
                     "path": item_path,
                     "type": "diffusers",
                     "source_type": "diffusers",
                     "source_dir": models_dir,
-                    "architecture": architecture
+                    "architecture": architecture,
+                    **native_profile,
                 })
             elif item.endswith('.safetensors.index.json'):
                 # Sharded single-file save: one entry, size = sum of its shards.
@@ -15844,6 +15852,7 @@ class TrainingRunCreateRequest(BaseModel):
     # Sample generation parameters
     sample_width: int = TRAINING_DEFAULTS["sample_width"]
     sample_height: int = TRAINING_DEFAULTS["sample_height"]
+    ming_image_01_sample_layers: int = Field(default=TRAINING_DEFAULTS["ming_image_01_sample_layers"], ge=1, strict=True)
     sample_steps: int = TRAINING_DEFAULTS["sample_steps"]
     sample_cfg_scale: float = TRAINING_DEFAULTS["sample_cfg_scale"]
     sample_sampler: str = TRAINING_DEFAULTS["sample_sampler"]

@@ -142,7 +142,7 @@ export const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [
   "outpaint_known_loss_weight", "outpaint_seam_loss_boost", "outpaint_seam_ring_width",
   "outpaint_seam_grad_lambda", "outpaint_loss_normalize",
   "sample_every", "sample_prompts", "sample_width", "sample_height",
-  "sample_steps", "sample_cfg_scale", "sample_sampler", "sample_schedule_type", "sample_seed",
+  "ming_image_01_sample_layers", "sample_steps", "sample_cfg_scale", "sample_sampler", "sample_schedule_type", "sample_seed",
   "sample_cfg_schedule_type", "sample_cfg_schedule_min", "sample_cfg_schedule_max", "sample_cfg_schedule_power",
   "sample_cfg_rescale_snr_alpha", "sample_dynamic_threshold_percentile", "sample_dynamic_threshold_mimic_scale",
   "sample_nag_enable", "sample_nag_scale", "sample_nag_tau", "sample_nag_alpha", "sample_nag_sigma_end", "sample_nag_negative_prompt",

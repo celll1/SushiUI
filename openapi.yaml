@@ -19861,6 +19861,10 @@ components:
     ModelInfo:
       type: object
       properties:
+        profile:
+          type: string
+          enum: [generation_edit, layer_decompose]
+          description: Native Ming artifact profile, read from package config without loading weights.
         name:
           type: string
         path:
@@ -28477,10 +28481,16 @@ components:
           type: 'integer'
           default: 1024
           description: Requested training-preview height in pixels; architectures may align it to their latent or token grid.
+        ming_image_01_sample_layers:
+          type: integer
+          minimum: 1
+          default: 3
+          example: 3
+          description: Number of RGBA layers in Ming Layer training previews, excluding the auxiliary canvas. Design previews always produce one image. Stored per run.
         sample_steps:
           type: 'integer'
           default: 28
-          description: Number of denoising steps for each training preview.
+          description: Number of denoising steps for each training preview; omitted values resolve per architecture and Ming artifact profile.
         sample_cfg_scale:
           type: 'number'
           default: 7.0

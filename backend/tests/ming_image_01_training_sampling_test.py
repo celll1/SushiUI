@@ -28,7 +28,7 @@ def test_native_trainer_preview_restores_training_and_saves_all_rgba(tmp_path, m
     owner = FullParameterTrainer(model_path=str(root), output_dir=str(tmp_path / "run"),
         device="cpu", weight_dtype="fp32", training_dtype="fp32", vae_dtype="fp32",
         mixed_precision=False, attention_backend="native",
-        train_config={"ming_conditioner_groups": ["vision", "projections"], "ming_image_01_layers": 2})
+        train_config={"ming_conditioner_groups": ["vision", "projections"], "ming_image_01_sample_layers": 2})
     reference_path = tmp_path / "reference.png"
     Image.new("RGBA", (64, 64), (100, 80, 60, 100)).save(reference_path)
     modules = (owner.transformer, owner.text_encoder, owner.vae)

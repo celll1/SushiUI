@@ -91,3 +91,8 @@ def vae_decode(trainer, latents, **kwargs):
         scale = torch.as_tensor(trainer.vae.config.scaling_factor, device=value.device, dtype=value.dtype)
         result.append(trainer.vae.decode(value / scale + shift, return_dict=False)[0].squeeze(2))
     return torch.stack(result, dim=2)
+
+
+def generate_sample(trainer, ctx, *, step_progress_callback=None):
+    from core.models.ming_image_01 import training_sampling
+    return training_sampling.generate_sample(trainer, ctx, step_progress_callback=step_progress_callback)

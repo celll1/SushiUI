@@ -59,6 +59,7 @@ interface ModelInfo {
   path: string;
   type: string;
   architecture: string;
+  profile?: "generation_edit" | "layer_decompose";
   size_gb?: number;
   source_dir: string;
 }
@@ -338,8 +339,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   }, []);
   const sampleWidth = params.sample_width ?? DEFAULT_PARAMS.sample_width!;
   const sampleHeight = params.sample_height ?? DEFAULT_PARAMS.sample_height!;
+  const sampleDefaultArch = availableModels.find(model => model.path === baseModelPath)?.profile === "layer_decompose"
+    ? "ming_image_01_layer" : getModelArchitecture(baseModelPath);
   const selectedSampleDefaults = trainingSampleDefaultsByArch
-    ? (trainingSampleDefaultsByArch[getModelArchitecture(baseModelPath)]
+    ? ((sampleDefaultArch && trainingSampleDefaultsByArch[sampleDefaultArch])
       || trainingSampleDefaultsByArch["_default"])
     : undefined;
   const sampleStepsDefault = (selectedSampleDefaults?.sample_steps as number | undefined)
@@ -1484,16 +1487,16 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
   useEffect(() => {
     if (!baseModelPath) return;
+    const modelKey = `${baseModelPath}:${sampleDefaultArch ?? ""}`;
     if (restoringFromYAMLRef.current) {
-      lastSampleDefaultsModelRef.current = baseModelPath;
+      lastSampleDefaultsModelRef.current = modelKey;
       return;
     }
     if (!trainingSampleDefaultsByArch) return;
-    if (lastSampleDefaultsModelRef.current === baseModelPath) return;
-    lastSampleDefaultsModelRef.current = baseModelPath;
+    if (lastSampleDefaultsModelRef.current === modelKey) return;
+    lastSampleDefaultsModelRef.current = modelKey;
     if (sampleDefaultsExplicitlySetRef.current) return;
-    const arch = getModelArchitecture(baseModelPath);
-    const overlay = (arch && trainingSampleDefaultsByArch[arch])
+    const overlay = (sampleDefaultArch && trainingSampleDefaultsByArch[sampleDefaultArch])
       || trainingSampleDefaultsByArch["_default"];
     if (!overlay) return;
     setParams(prev => ({
@@ -1501,7 +1504,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       sample_steps: overlay.sample_steps as number,
       sample_cfg_scale: overlay.sample_cfg_scale as number,
     }));
-  }, [baseModelPath, trainingSampleDefaultsByArch]);
+  }, [baseModelPath, sampleDefaultArch, trainingSampleDefaultsByArch]);
 
   useEffect(() => {
     if (!baseModelPath || !trainingGuidanceLossDefaultsByArch) return;
@@ -8162,6 +8165,17 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
+            {isMingImageModel && availableModels.find(model => model.path === baseModelPath)?.profile === "layer_decompose" && <div>
+              <label className="block text-xs text-gray-400 mb-1">Layer preview layers</label>
+              <input type="number" min="1" step="1"
+                value={params.ming_image_01_sample_layers ?? DEFAULT_PARAMS.ming_image_01_sample_layers ?? ""}
+                onChange={e => {
+                  const value = Number(e.target.value);
+                  if (Number.isInteger(value) && value >= 1) updateParam("ming_image_01_sample_layers", value);
+                }}
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500" />
+              <p className="text-xs text-gray-500 mt-1">Auxiliary canvas + selected RGBA layers. A reference image is required.</p>
+            </div>}
             {sampleSamplerSupported && <div>
               <label className="block text-xs text-gray-400 mb-1">Sampler</label>
               <select

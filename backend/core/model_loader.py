@@ -8,7 +8,7 @@ from safetensors.torch import load_file
 from pathlib import Path
 
 ModelSource = Literal["safetensors", "diffusers", "huggingface", "gguf"]
-ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens", "ideogram4", "minit2i", "krea2", "qwen_image_21", "ltx2", "acestep", "minimax_h3", "minimax_music3", "sensenova", "sensenova_sdxl_chimera", "yue2"]
+ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens", "ideogram4", "minit2i", "krea2", "qwen_image_21", "ming_image_01", "ltx2", "acestep", "minimax_h3", "minimax_music3", "sensenova", "sensenova_sdxl_chimera", "yue2"]
 
 class ModelLoader:
     """Handles loading models from various sources"""
@@ -211,7 +211,7 @@ class ModelLoader:
                     "prediction_target": "velocity",
                     "source": "inferred"
                 }
-            elif model_type == "qwen_image_21":
+            elif model_type in ("qwen_image_21", "ming_image_01"):
                 return {
                     "noise_process": "flow",
                     "prediction_target": "velocity",
@@ -643,6 +643,10 @@ class ModelLoader:
         # not a filesystem path — handled by the in-memory build path in the loader.
         if isinstance(model_path, str) and model_path.startswith("scratch:minit2i:"):
             return "minit2i"
+
+        from core.models.ming_image_01.discovery import discover_native_package
+        if discover_native_package(model_path) is not None:
+            return "ming_image_01"
 
         # Chimera is a directory artifact with its own completion manifest.
         # Match it before every broad diffusers/SDXL directory heuristic.
@@ -2293,6 +2297,9 @@ class ModelLoader:
             print(f"[ModelLoader] Loading as FLUX.2 Klein (Flux2Transformer2DModel)")
             return ModelLoader.load_flux2_from_safetensors(file_path, device, torch.bfloat16)
 
+        if model_type == "ming_image_01":
+            return ModelLoader.load_ming_image_01_from_path(file_path, torch_dtype)
+
         if model_type == "qwen_image_21":
             print("[ModelLoader] Loading as Qwen-Image 2.1 (split artifact)")
             return ModelLoader.load_qwen_image_21_from_path(file_path, torch.bfloat16)
@@ -2792,6 +2799,9 @@ class ModelLoader:
             print(f"[ModelLoader] Loading as Krea 2 (diffusers directory)")
             return ModelLoader.load_krea2_from_path(model_path, torch.bfloat16)
 
+        if model_type == "ming_image_01":
+            return ModelLoader.load_ming_image_01_from_path(model_path, torch_dtype)
+
         if model_type == "qwen_image_21":
             print("[ModelLoader] Loading as Qwen-Image 2.1")
             return ModelLoader.load_qwen_image_21_from_path(model_path, torch.bfloat16)
@@ -3243,6 +3253,14 @@ class ModelLoader:
         """
         from core.models.krea2.krea2_loader import load_krea2_components
         return load_krea2_components(model_path=path, torch_dtype=torch_dtype)
+
+    @staticmethod
+    def load_ming_image_01_from_path(path: str, torch_dtype: torch.dtype = torch.bfloat16) -> dict:
+        from core.models.ming_image_01.loader import load_components
+        native = load_components(path, dtype=torch_dtype, conditioner_attention="eager")
+        return {"type": "ming_image_01", "ming_native": native,
+                "transformer": native.transformer, "text_encoder": native.conditioner,
+                "vae": native.vae, "processor": native.processor, "scheduler": native.scheduler}
 
     @staticmethod
     def load_qwen_image_21_from_path(

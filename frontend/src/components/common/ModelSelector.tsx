@@ -6,6 +6,7 @@ import Button from "./Button";
 import Select from "./Select";
 import MiniMaxH3ReferenceBankPanel from "./MiniMaxH3ReferenceBankPanel";
 import DiTRewiringSummary from "./DiTRewiringSummary";
+import ModelParameterStructure from "./ModelParameterStructure";
 import DiTAcousticExportPanel from "./DiTAcousticExportPanel";
 import { ChevronDown, ChevronUp, Folder } from "lucide-react";
 import { useStartup } from "@/contexts/StartupContext";
@@ -233,6 +234,7 @@ export default function ModelSelector({
                   v-prediction
                 </span>
               )}
+              <ModelParameterStructure info={currentModel} />
               {currentModel.dit_rewiring_spec && <DiTRewiringSummary spec={currentModel.dit_rewiring_spec} tokenStride={currentModel.dit_rewiring_token_stride} temporalGeometry={currentModel.dit_rewiring_temporal_geometry} videoGeometry={currentModel.dit_rewiring_video_geometry} parameterCounts={currentModel.dit_rewiring_parameter_counts} />}
               {["yue2", "minimax_music3"].includes(currentModel.type) && currentModel.source.toLowerCase().endsWith(".safetensors") &&
                 <DiTAcousticExportPanel key={currentModel.source} modelPath={currentModel.source} onExported={path => {

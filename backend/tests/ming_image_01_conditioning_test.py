@@ -132,7 +132,7 @@ def test_loader_refuses_incomplete_native_state():
         _strict_loading_info({"missing_keys": ["vision.weight"]}, "mllm")
 
 
-def test_native_package_loader_round_trip(tmp_path):
+def test_native_package_loader_round_trip(tmp_path, monkeypatch):
     import json
     from tokenizers import Tokenizer
     from tokenizers.models import WordLevel
@@ -228,6 +228,30 @@ def test_native_package_loader_round_trip(tmp_path):
     manifest = write_manifest(tmp_path)
     assert inspect_model(manifest)["topology"] == topology
     assert all(torch.equal(value, restored.transformer.state_dict()[key]) for key, value in transformer.state_dict().items())
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    from core.model_loader import ModelLoader
+    from core.pipeline import DiffusionPipelineManager
+    assert ModelLoader.detect_model_type(str(tmp_path)) == "ming_image_01"
+    assert ModelLoader.detect_model_type(str(manifest)) == "ming_image_01"
+    manager = DiffusionPipelineManager()
+    manager.device = "cpu"
+    monkeypatch.setattr(manager, "_save_last_model", lambda *args: None)
+    manager.load_model("diffusers", str(tmp_path), force_reload=True)
+    assert manager.current_pipeline_kind == "ming_image_01"
+    assert manager.current_model_info["profile"] == "generation_edit"
+    assert manager.current_model_info["dit_rewiring_spec"] == topology
+    assert not manager.current_model_info["is_video"]
+    assert manager.current_model_info["latent_channels"] == 16
+    assert manager._sushi_wiring.te_out_dim == 8
+    from core.models.component_registry import scan_model
+    scanned = scan_model(str(tmp_path), "diffusers")
+    assert scanned["arch"] == "ming_image_01" and scanned["latent_ndim"] == 5
+    assert scanned["is_video"] is False
+    assert manager.current_model_info["generation_available"] is False
+    loaded_refs = list(manager._iter_loaded_components())
+    assert any(value is manager.ming_image_01_components["text_encoder"] for _, value in loaded_refs)
+    manager._cleanup_component_architectures()
+    assert manager.ming_image_01_components is None and not manager.is_ming_image_01_model
     from core.models.ming_image_01.checkpoint import save_bundle
     destination = tmp_path.parent / (tmp_path.name + "-export")
     exported_manifest = save_bundle(restored, destination, max_shard_bytes=262144)

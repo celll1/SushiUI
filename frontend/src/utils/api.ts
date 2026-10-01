@@ -458,8 +458,21 @@ export interface MiniMaxH3HybridProvenance {
 export interface ModelInfo {
   source_type: string;
   source: string;
-  type: "sd15" | "sdxl" | "zimage" | "flux2" | "anima" | "lens" | "ideogram4" | "minit2i" | "krea2" | "qwen_image_21" | "sensenova" | "sensenova_sdxl_chimera" | "ltx2" | "acestep" | "minimax_h3" | "minimax_music3" | "yue2";
+  type: "sd15" | "sdxl" | "zimage" | "flux2" | "anima" | "lens" | "ideogram4" | "minit2i" | "krea2" | "qwen_image_21" | "ming_image_01" | "sensenova" | "sensenova_sdxl_chimera" | "ltx2" | "acestep" | "minimax_h3" | "minimax_music3" | "yue2";
   is_v_prediction: boolean;
+  generation_available?: boolean;
+  profile?: "generation_edit" | "layer_decompose";
+  component_parameter_counts?: Record<string, {
+    parameters: number; trainable_parameters: number; logical_parameter_bytes: number;
+    bytes_by_dtype: Record<string, number>; logical_bytes_by_device: Record<string, number>;
+  }>;
+  main_blocks?: number;
+  noise_refiner_blocks?: number;
+  context_refiner_blocks?: number;
+  total_loaded_parameters?: number;
+  trainable_parameters?: number;
+  conditioner_cacheable?: boolean;
+  serialized_storage?: Record<string, {tensor_count: number; tensor_elements: number; storage_bytes: number; bytes_by_dtype: Record<string, number>}>;
   dit_rewiring_spec?: DiTRewiringSpec | null;
   dit_rewiring_parameter_counts?: DiTRewiringParameterCounts | null;
   dit_rewiring_token_stride?: number;

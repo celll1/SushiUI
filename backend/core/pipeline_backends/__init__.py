@@ -13,6 +13,7 @@ from core.pipeline_backends.ideogram4 import Ideogram4Mixin
 from core.pipeline_backends.minit2i import MiniT2IMixin
 from core.pipeline_backends.krea2 import Krea2Mixin
 from core.pipeline_backends.qwen_image_21 import QwenImage21Mixin
+from core.pipeline_backends.ming_image_01 import MingImage01Mixin
 from core.pipeline_backends.ltx2 import LTX2Mixin
 from core.pipeline_backends.acestep import AceStepMixin
 from core.pipeline_backends.minimax_h3 import MiniMaxH3Mixin
@@ -30,6 +31,7 @@ __all__ = [
     "MiniT2IMixin",
     "Krea2Mixin",
     "QwenImage21Mixin",
+    "MingImage01Mixin",
     "LTX2Mixin",
     "AceStepMixin",
     "MiniMaxH3Mixin",

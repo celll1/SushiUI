@@ -28,6 +28,13 @@ and verify most changes without touching the UI. This file is the durable,
 checked-in subset of repo conventions for coding agents; read it before making
 changes.
 
+Ming-Image 0.1 is additionally registered for native package loading and
+inspection (`ModelType` now has 18 entries). Its platform generation and common
+trainer remain disabled during staged integration; see
+`docs/guides/MING_IMAGE_01_DESIGN.md`. It is not included in the 17 working
+generation architectures or the 16 training handlers above. Layer's native
+frame axis denotes ordered RGBA image layers, not video.
+
 ## Non-negotiable rules
 
 - **`backend/api/param_defaults.py` is the single source of truth for every

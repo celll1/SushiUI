@@ -19866,6 +19866,47 @@ components:
       type: object
       additionalProperties: true
       properties:
+        generation_available:
+          type: boolean
+          description: False for a loadable native model whose platform generation execution is not yet enabled.
+        profile:
+          type: string
+          enum: [generation_edit, layer_decompose]
+          description: Ming native Design or Layer checkpoint profile.
+        component_parameter_counts:
+          type: object
+          additionalProperties:
+            type: object
+            required: [parameters, trainable_parameters, logical_parameter_bytes, bytes_by_dtype, logical_bytes_by_device]
+            properties:
+              parameters: {type: integer, minimum: 0}
+              trainable_parameters: {type: integer, minimum: 0}
+              logical_parameter_bytes: {type: integer, minimum: 0}
+              bytes_by_dtype:
+                type: object
+                additionalProperties: {type: integer, minimum: 0}
+              logical_bytes_by_device:
+                type: object
+                additionalProperties: {type: integer, minimum: 0}
+          description: Unique loaded parameter objects by DiT and native conditioner/VAE ownership group. Logical bytes are not measured VRAM; buffers and quantization payloads are excluded.
+        main_blocks: {type: integer, minimum: 0}
+        noise_refiner_blocks: {type: integer, minimum: 0}
+        context_refiner_blocks: {type: integer, minimum: 0}
+        total_loaded_parameters: {type: integer, minimum: 0}
+        trainable_parameters: {type: integer, minimum: 0}
+        conditioner_cacheable: {type: boolean}
+        serialized_storage:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              tensor_count: {type: integer, minimum: 0}
+              tensor_elements: {type: integer, minimum: 0}
+              storage_bytes: {type: integer, minimum: 0}
+              bytes_by_dtype:
+                type: object
+                additionalProperties: {type: integer, minimum: 0}
+          description: CPU-read component tensor-header storage census, kept separate from parameter objects.
         dit_rewiring_spec:
           allOf: [{$ref: '#/components/schemas/DiTRewiringSpec'}]
           nullable: true

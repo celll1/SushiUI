@@ -75,6 +75,8 @@ def flow_loss(transformer, *, clean: torch.Tensor, noise: torch.Tensor,
         if len(reference_latents) != batch:
             raise ValueError("Ming references require one native tensor per training item")
         for reference in reference_latents:
+            if reference is None:
+                continue
             if (reference.ndim != 4 or reference.shape[0] != clean.shape[1]
                     or reference.shape[1] < 1 or reference.shape[2:] != (height, width)):
                 raise ValueError("Ming references must preserve native channel/frame/grid axes")

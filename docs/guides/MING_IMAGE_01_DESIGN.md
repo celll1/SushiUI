@@ -128,6 +128,17 @@ be adopted without matching SushiUI cancellation semantics.
 
 ## Training and component lifecycle
 
+The native training-batch bridge now preserves RGBA target frames independently
+through VAE encoding and keeps ragged edit references outside target supervision.
+`MingTrainingBatch` slices both conditioning streams, frame weights and references
+together for microbatching. Explicit per-frame weights determine slot-zero
+supervision. `ming_image_01_ops.train_step` consumes shared MNT noise and timestep
+sampling, applies the native clean-minus-noise sign, weighted reconstruction loss
+and per-item exposure metrics. Tiny CPU VAE/MLLM/DiT backward and optimizer updates
+verify language gradients and independent alpha/frame order. Shared trainer
+registration, dataset role manifests, optimizer resume and UI/API wiring remain
+pending; this bridge alone does not enable training requests.
+
 The default full-parameter scope can freeze the conditioner, but full TE
 training is required parity, not a future optional omission. Provide explicit
 component groups and independent learning rates. Frozen conditioning can be

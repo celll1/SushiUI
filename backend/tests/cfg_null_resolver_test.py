@@ -283,6 +283,7 @@ def test_only_the_delivered_architectures_declare_a_stage():
             "qwen_image_21", "ltx2", "sensenova_sdxl_chimera",
         )},
         "minit2i": "collated",
+        "ming_image_01": "collated",
         "lens": "collated",
         "sensenova": "encode",
     }
@@ -373,7 +374,7 @@ def test_defaults_are_the_single_source_of_truth():
     assert CFG_UNCOND_DROP_DEFAULTS_BY_ARCH == {
         **{arch: 0.0 for arch in (
             "sd15", "sdxl", "zimage", "anima", "flux2", "krea2",
-            "qwen_image_21", "ltx2", "lens", "sensenova",
+            "qwen_image_21", "ltx2", "lens", "sensenova", "ming_image_01",
             "sensenova_sdxl_chimera",
         )},
         "minit2i": 0.1,

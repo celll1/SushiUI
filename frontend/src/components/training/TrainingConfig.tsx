@@ -5562,10 +5562,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   same encoding as caption dropout but keeps its own run-level
                   probability and metrics. On other models it builds the
                   architecture-specific null. A run that sets both is refused.
-                  A nonzero rate is also refused together with reference
-                  images: the null trained here is the text-only one, while a
-                  reference-conditioned generation blends against the
-                  reference-conditioned branch at the default img_cfg_scale 1.
+                  {isMingImageModel ? (
+                    <>Ming zeros both encoded streams at their original lengths and
+                      keeps native reference latents and Layer supervision intact.</>
+                  ) : (
+                    <>A nonzero rate is also refused together with reference
+                      images: the null trained here is the text-only one, while a
+                      reference-conditioned generation blends against the
+                      reference-conditioned branch at the default img_cfg_scale 1.</>
+                  )}
                 </p>
                 <label className="flex items-center space-x-2 cursor-pointer mt-2">
                   <input

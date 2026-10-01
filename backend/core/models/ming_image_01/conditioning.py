@@ -21,6 +21,17 @@ class MingConditioning:
         return MingConditioning(self.queries.detach(), self.direct.detach())
 
 
+def apply_cfg_null_conditioning(conditioning: MingConditioning, drop_mask: torch.Tensor):
+    if (conditioning.queries.ndim != 3 or conditioning.direct.ndim != 3
+            or conditioning.queries.shape[0] != conditioning.direct.shape[0]
+            or drop_mask.dtype != torch.bool or drop_mask.shape != (conditioning.queries.shape[0],)):
+        raise ValueError("Ming CFG dropout requires dual batched streams and a boolean [B] mask")
+    def rewrite(value):
+        mask = drop_mask.to(device=value.device).reshape(-1, 1, 1)
+        return torch.where(mask, torch.zeros_like(value), value)
+    return MingConditioning(rewrite(conditioning.queries), rewrite(conditioning.direct))
+
+
 def create_projection_modules(config: dict, language_width: int, connector_width: int):
     modules = nn.Module()
     modules.query_tokens_dict = nn.ParameterDict({

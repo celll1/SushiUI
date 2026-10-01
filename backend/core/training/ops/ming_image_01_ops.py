@@ -40,6 +40,7 @@ def train_step(trainer, batch, *, timesteps=None, cfg_drop_mask=None):
     loss = (1 - weight) * result.loss + weight * reconstruction
     if getattr(trainer, "_collect_concept_sample_loss", False):
         trainer._pending_concept_sample_loss = ((1 - weight) * result.per_item_loss + weight * per_item_recon).detach()
+    trainer._last_loss_per_sample = result.per_item_loss.detach()
     return loss, result.loss.detach(), reconstruction.detach()
 
 

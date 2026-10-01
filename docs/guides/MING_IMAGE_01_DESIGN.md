@@ -8,7 +8,7 @@ records exact upstream source/model revisions and licensing constraints.
 
 ## Implementation evidence by milestone
 
-The entries below record successive implementation stages; later stages supersede earlier staged-boundary notes. The current public training methods are native `full_finetune` and DiT/caption `lora`. Conditioner adapters, ReLoRA and advanced parity are still being implemented.
+The entries below record successive implementation stages; later stages supersede earlier staged-boundary notes. The current public training methods are native `full_finetune` and DiT/caption `lora`. Advanced Qwen parity remains active; ReLoRA and conditioner LoRA retain Qwen's explicit refusals.
 
 The native-package inspector and manifest writer are implemented in `backend/core/models/ming_image_01/artifact.py`, with a CPU-only CLI at `tools/inspect_ming_image_01.py`. The targeted artifact suite passes 22 tests, including profile identity, processor drift, package escape, shard/index errors and malformed weight spans. Both pinned official configuration snapshots pass config-only inspection. No model weights, CUDA context or running API were used. This evidence proves preflight only; it does not prove native state loading or functional generation/training.
 
@@ -74,7 +74,7 @@ resolved with the owner; they must not silently become no-ops.
 | Reference Guide | Qwen pipeline and reference-guide configuration | Ming flow-latent blend with its normalization, strength/window and protected channels; oracle for blend endpoints and exclusions |
 | Style-KV and style-combine controls | Qwen `reference_guides`/`style_transfers` pipeline paths | New joint-attention style operator, mask/reference isolation, stack/combine/step windows; Qwen's segmented prefix mechanism cannot be copied |
 | Prompt enhancement | `core/extensions/qwen_image_21_prompt_upsampler.py`; `Qwen21PromptUpsample.tsx` | Ming templates through existing local provider/cache, preview/apply/cancel/error states; no automatic external service call |
-| LoRA load/unload, strengths and windows | Qwen backend `AdapterSession`; `core/models/qwen_image_21/lora.py` | Explicit target map for attention/refiners/FFN as configured; multiple adapters, shape/base mismatch errors; cleanup and topology restoration in finally |
+| LoRA load/unload, strengths and windows | Qwen backend `AdapterSession`; `core/models/qwen_image_21/lora.py` | Explicit target map for attention/refiners and caption projection matching Qwen's shipped target scope; multiple adapters, shape/base mismatch errors; cleanup and topology restoration in finally |
 | Full DiT and/or TE training, independent LR | `core/training/ops/qwen_image_21_ops.py`; component wiring; Qwen design 9.1 | DiT and full Ming conditioner independently selectable; trainable MLLM/vision/connector/projections/query ownership explicit; frozen VAE; live graphs when a conditioner component trains |
 | LoRA on floating/quantized base | Qwen training adapter and ops | Ordinary supported algorithms through capability tables; exact target/key mapping and merge/export; quantized forward/backward identity recorded |
 | Training objectives | Qwen ops guidance selection/loss and sigma-null schedule | Native time/sign oracle, reconstruction loss, guidance-loss schedules/mix/cap and sigma-null conditioning; zero branch replaces encoded empty text; test gradient routing and frozen teacher |
@@ -1702,3 +1702,57 @@ pending. No live HTTP, CUDA allocation, official payload or main modification
 was used. Conditioner conversion authoring, optimized ConvRot backward/cache,
 adapter families, partition/global/style and remaining objectives still require
 subsequent implementation and final acceptance; the full goal remains active.
+
+
+### Native dual-zero CFG null training milestone and adapter scope audit
+
+Ming now declares the `collated` CFG-null stage in both its training handler and
+API capability mirror. Native inference zeros both conditioning streams at the
+positive sequence lengths; an empty-caption encoding would be a different
+condition. The handler applies the shared collated hook to the current MNT
+label, builds an out-of-place dual-stream rewrite, and passes a replaced native
+batch to the objective. Cached conditional tensors, query lengths, reference
+latents, Layer auxiliary/layer weights and target supervision are retained.
+Selected rows have zero conditioning gradients; later MNT labels start from
+the original batch. Direct objective callers use the same rewrite helper.
+
+Existing `cfg_uncond_drop_rate` tri-state resolution, request validation/YAML,
+shared Bernoulli draws, per-MNT versus per-window selection, caption-dropout
+conflict handling and split loss metrics are wired without new request fields.
+The only new default is Ming's explicit 0.0 entry in the central per-architecture
+SSOT; the shared optional request default remains null. Split metrics consume
+the native frame-weighted prediction loss, separately from reconstruction loss.
+Frontend capability/default-driven controls now become available and their
+Ming-specific explanation says native references are preserved. Existing
+non-Ming reference explanatory behavior is unchanged. OpenAPI records the
+native dual-zero construction and omitted-rate default.
+
+Sixty-three unique affected CPU cases pass across the staged checks: seven new
+Ming CFG-null cases, one new pending-gradient resume case, and fifty-five
+existing shared resolver/native objective regressions. Actual Design/Layer full
+and ordinary LoRA loops consume public request-model/YAML/runner settings,
+execute two MNT backward passes with zero streams, update weights and publish
+per-item metrics before the shared loop consumes them. Layer references and
+zero-weight auxiliary supervision stay present. Out-of-place masking tests
+check independent later labels, exact zero-branch shape and selected-row versus
+conditional-row gradients; invalid masks are refused. A Layer MNT2/GAS4 resume
+with rate 0.5 and per-MNT redraw matches uninterrupted conditioning, predictions,
+weights, optimizer moments and scheduler state after a pending-gradient seam.
+The fixed delivered-stage/default test expectations were updated for the new
+Ming declaration; the resolver/handler mirror and collated-hook placement gates
+pass. Compile/real CUDA-guarded imports, spec/default checks and UI static review
+supplement this evidence. Owner build/type/UI and official-weight GPU acceptance
+remain pending; no live API, CUDA allocation or main modification occurred.
+
+The adapter scope audit reads the authoritative generation/training pair tables:
+both Qwen and Ming currently enable only `(lora, false)`. Their target inventory
+is attention plus the explicitly selected caption projection, not configurable
+FFN adapters. Qwen's conditioner LoRA, ReLoRA and LoHa/LoKr/DoRA refusals remain
+refusals here. Earlier historical notes calling those families or conditioner
+adapters pending must not be interpreted as an obligation to enable algorithms
+Qwen does not ship. The design introduction/target row now reflect that boundary.
+Global partition adapters are a separate shipped Qwen feature and remain in
+scope, as do partition inference/training, optimized ConvRot backward/cache,
+conditioner conversion authoring, style operators, guidance objectives and final
+acceptance. Ordinary adapter capability parity does not complete those features
+or the full goal.

@@ -27510,6 +27510,9 @@ components:
           maximum: 1
           default: null
           description: >-
+            Ming-Image 0.1 zeros both collated conditioning streams at their
+            positive sequence lengths, matching native inference CFG. References
+            and target supervision remain intact; its omitted-rate default is 0.0.
             Per-sample probability of training an item against the SAME null
             condition the architecture's inference CFG uncond branch builds.
             For shared-model CFG architectures whose inference null is an

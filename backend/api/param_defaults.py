@@ -3591,6 +3591,7 @@ CFG_UNCOND_DROP_DEFAULTS_BY_ARCH: Dict[str, float] = {
     "flux2": 0.0,
     "krea2": 0.0,
     "qwen_image_21": 0.0,
+    "ming_image_01": 0.0,
     "ltx2": 0.0,
     "minit2i": 0.1,
     "lens": 0.0,

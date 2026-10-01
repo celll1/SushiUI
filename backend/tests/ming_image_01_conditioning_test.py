@@ -204,6 +204,21 @@ def test_native_package_loader_round_trip(tmp_path):
     assert restored.artifact.profile == "generation_edit"
     assert restored.transformer.config.n_layers == 6
     assert restored.transformer._residual_unet_spec == topology
+    from core.models.ming_image_01.inspection import loaded_model_info
+    info = loaded_model_info(restored)
+    json.dumps(info, allow_nan=False)
+    assert info["total_loaded_parameters"] == sum(p.numel() for m in
+        (restored.transformer, restored.conditioner, restored.vae) for p in m.parameters())
+    assert info["trainable_parameters"] == 0 and info["conditioner_cacheable"]
+    assert info["main_blocks"] == 6 and info["noise_refiner_blocks"] == info["context_refiner_blocks"] == 1
+    assert info["component_parameter_counts"]["dit"]["parameters"] == info["dit_rewiring_parameter_counts"]["total"]
+    restored.conditioner.set_trainable({"vision", "projections"})
+    trainable = loaded_model_info(restored)
+    assert trainable["trainable_parameters"] == sum(p.numel() for p in restored.conditioner.parameters() if p.requires_grad)
+    assert trainable["component_parameter_counts"]["vision"]["trainable_parameters"] > 0
+    assert trainable["component_parameter_counts"]["language"]["trainable_parameters"] == 0
+    assert not trainable["conditioner_cacheable"]
+    restored.conditioner.set_trainable(set())
     from core.rewiring.inspect import inspect_model
     from core.models.ming_image_01.artifact import write_manifest
     inspected = inspect_model(tmp_path)

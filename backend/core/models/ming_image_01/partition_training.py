@@ -29,6 +29,8 @@ def _backward_regions(trainer,batch,*,sigma,noise,plan,backward_scale,drop_mask=
             box=region.input
             tiles=clean[...,box.top*2:box.bottom*2,box.left*2:box.right*2]
             validate_forward(trainer.transformer,list(tiles.unbind()),2,1,topology)
+    from .partition_timing import MingPartitionTiming
+    timing=MingPartitionTiming(trainer,clean)
     weights=batch.frame_weights.to(device=clean.device,dtype=torch.float32)
     conditioning=MingConditioning(batch.conditioning.queries.to(clean),batch.conditioning.direct.to(clean))
     references=None if batch.reference_latents is None else [None if v is None else v.to(clean) for v in batch.reference_latents]
@@ -47,7 +49,7 @@ def _backward_regions(trainer,batch,*,sigma,noise,plan,backward_scale,drop_mask=
             refs=None if references is None else [references[i] for i in indices.tolist()]
             step_time=time[indices]
         context=torch.autocast(device_type=clean.device.type,dtype=trainer.training_dtype) if trainer.mixed_precision else nullcontext()
-        with context:
+        with timing.measure("forward"),context:
             global_adapter=getattr(trainer.transformer,"ming_partition_global_adapter",None)
             residual=None if global_adapter is None else global_adapter(noisy if indices is None else noisy[indices],region.input)
             output=trainer.transformer(list(x.unbind()),step_time,list(queries.unbind()),
@@ -92,8 +94,9 @@ def _backward_regions(trainer,batch,*,sigma,noise,plan,backward_scale,drop_mask=
         loss=(1-recon_weight)*pred_loss+recon_weight*recon_loss
         scaled=fraction*loss*backward_scale
         retain=shared_graph and index+1<len(plan.regions)
-        if getattr(trainer,"use_grad_scaler",False):trainer.grad_scaler.scale(scaled).backward(retain_graph=retain)
-        else:scaled.backward(retain_graph=retain)
+        with timing.measure("backward"):
+            if getattr(trainer,"use_grad_scaler",False):trainer.grad_scaler.scale(scaled).backward(retain_graph=retain)
+            else:scaled.backward(retain_graph=retain)
         totals+=fraction*torch.stack((loss.detach(),pred_loss.detach(),recon_loss.detach()))
         pred_items+=fraction*per_item.detach()
         loss_items+=fraction*((1-recon_weight)*per_item+recon_weight*recon_items).detach()
@@ -101,8 +104,7 @@ def _backward_regions(trainer,batch,*,sigma,noise,plan,backward_scale,drop_mask=
     trainer._last_loss_per_sample=pred_items
     if getattr(trainer,"_collect_concept_sample_loss",False):trainer._pending_concept_sample_loss=loss_items
     for name,value in metrics.items():trainer.log_extra_metric(name,value)
-    trainer.log_extra_metric("ming_partition_count",float(len(plan.regions)))
-    trainer.log_extra_metric("ming_partition_largest_tokens",float(plan.largest_input_tokens))
+    timing.finish(plan,trainer.transformer)
     from .training_debug import save_debug
     save_debug(trainer,debug_save_path,clean=clean,noisy=noisy,target=target,prediction=debug_prediction,
         sigma=sigma,frame_weights=weights,loss=totals[0],recon_loss=totals[2],unconditional=debug_null,

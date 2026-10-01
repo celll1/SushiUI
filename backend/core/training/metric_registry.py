@@ -441,3 +441,12 @@ EXTRA_METRIC_DEFS = {
                                     "family": "bounded_diagnostic", "scale_group": "grad_ratio",
                                     "range": _AUTO_0, "sampling": "dense"},
 }
+
+
+# Native Ming metrics share chart units with their Qwen counterparts.
+for _name,_definition in tuple(EXTRA_METRIC_DEFS.items()):
+    if _name.startswith(('qwen_partition_', 'qwen_guidance_')):
+        EXTRA_METRIC_DEFS[_name.replace('qwen_', 'ming_', 1)]={
+            **_definition,'label':_definition['label'].replace('Qwen','Ming',1)}
+EXTRA_METRIC_DEFS['ming_partition_largest_tokens']['label']='Ming largest target tokens (all frames)'
+EXTRA_METRIC_DEFS['ming_partition_total_input_tokens']['label']='Ming total target tokens (all frames)'

@@ -6549,7 +6549,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         Empty preserves the resolved full-frame checkpoint count; a lower override can increase peak VRAM. {isQwenImage21Model && "Zero was slower and larger in the SM89 probe."}
                       </p>
                     </div>
-                    {isQwenImage21Model && <label className="flex items-center gap-2 self-end pb-1 text-xs text-gray-300 cursor-pointer">
+                    {(isQwenImage21Model || isMingImageModel) && <label className="flex items-center gap-2 self-end pb-1 text-xs text-gray-300 cursor-pointer">
                       <input
                         type="checkbox"
                         checked={params.dit_partition_profile ?? DEFAULT_PARAMS.dit_partition_profile}
@@ -8457,9 +8457,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </p>
             </div>
           )}
-          {debugLatents && (isQwenImage21Model || isMingImage01Model) && (
+          {debugLatents && (isQwenImage21Model || isMingImageModel) && (
             <div>
-              <label className="block text-sm text-gray-400 mb-1.5">{isMingImage01Model ? "Ming Debug Comparison" : "Qwen Debug Comparison"}</label>
+              <label className="block text-sm text-gray-400 mb-1.5">{isMingImageModel ? "Ming Debug Comparison" : "Qwen Debug Comparison"}</label>
               <select
                 value={params.qwen_debug_latent_view ?? (trainingDefaults?.qwen_debug_latent_view as string | undefined) ?? ""}
                 onChange={(e) => updateParam("qwen_debug_latent_view", e.target.value as "latent" | "pixel")}

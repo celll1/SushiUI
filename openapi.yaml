@@ -26792,6 +26792,7 @@ components:
         dit_partition_profile:
           type: boolean
           default: false
+          description: Opt-in synchronized CUDA forward/backward timing for Qwen/Ming partition training; null guidance forwards are included. CPU emits host wall time only. Profiling adds synchronization overhead; CUDA peak memory is process-wide and is not reset.
         dit_partition_global_adapter_enabled:
           type: boolean
           default: false

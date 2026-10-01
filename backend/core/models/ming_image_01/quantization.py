@@ -45,7 +45,7 @@ def prepare_quantized_transformer(artifact, dtype):
 
     headers = artifact.tensor_headers["transformer"]
     for name, component in artifact.tensor_headers.items():
-        if name not in {"transformer", "mllm", "connector"} and any(key.endswith((".weight_scale", ".comfy_quant")) or
+        if name not in {"transformer", "mllm", "connector", "mlp"} and any(key.endswith((".weight_scale", ".comfy_quant")) or
                 (key.endswith(".weight") and h.dtype in _QUANTIZED) for key, h in component.items()):
             raise ValueError(f"Ming quantized {name} loading is not implemented")
     if all(h.dtype in _FLOATS and not key.endswith((".weight_scale", ".comfy_quant"))

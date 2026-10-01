@@ -1648,3 +1648,57 @@ Packed `mlp` projections, optimized ConvRot training, adapter families,
 partition/global/style, remaining objective parity and final owner acceptance
 remain active stages. This milestone supersedes the previous conditioner
 full-materialization pending boundary; it does not close the full parity goal.
+
+
+### Prepared quantized conditioner projection milestone
+
+The native `mlp` component now accepts INT8, E4M3 fallback and declared ConvRot
+Linear weights for `proj_in`, `proj_out` and `proj_directvlm.1`. Its projection
+modules are built from the validated language/connector/native projection
+configs on meta, then use the same strict slot validator and CPU shard loader
+as DiT/MLLM/connector. This preflight precedes companion weight payload loading.
+Query-token Parameters and RMSNorm weights remain floating; packed queries,
+packed normalization, missing/wrong scales and unknown slots are refused.
+Packed payload dtype and FP32 scales are retained while ordinary query/norm/bias
+weights use the requested compute dtype. No whole packed-projection dtype cast
+occurs during conditioner assembly.
+
+A shared projection constructor now serves both ordinary native assembly and
+meta preflight. Native attachment retains the prior Parameter registration
+order (queries, connector, then projections) to preserve optimizer ownership and
+resume compatibility. Native bundle checkpointing preserves packed projections;
+the offline DiT converter and run-scoped ConvRot inference export preflight and
+copy all prepared conditioner components verbatim, without requantizing their
+stored payloads. VAE quantization remains unsupported. This supersedes the
+previous packed-`mlp` refusal and floating-projection export boundary.
+
+Full training of selected packed projections uses the existing explicit one-time
+materialization opt-in and separate conditioner lossy-origin report. Without
+that opt-in, selected packed projections fail before optimizer creation. Floating
+query tokens can still learn through frozen packed projections with the existing
+dequantization autograd path. The prepared-artifact precision capability reason
+now names projections as well as MLLM/connector; runtime text-encoder
+requantization remains unsupported. Existing API types/defaults and UI selectors
+are unchanged; no new default or request parameter is introduced.
+
+Forty-four unique affected CPU cases pass in this milestone: twenty new packed-
+projection cases, ten existing conditioning cases, nine full-adapter cases and
+five resume cases. Actual Design/Layer RGBA inference and bundle roundtrips cover
+FP32/BF16 mixed INT8/E4M3 and real Comfy ConvRot projections. Full projection
+training updates formerly packed weights and starts fresh from the floating
+checkpoint without the opt-in. Floating-query training preserves frozen packed
+projection bytes; a combined packed MLLM/connector/projection Layer fixture also
+trains queries, preserves all seven packed Linears and restores its full
+checkpoint in both plain and ConvRot formats. DiT ConvRot training export keeps
+prepared projection bytes unchanged and restores U-Net topology.
+
+Two new materialized-projection MNT2/GAS4 pending-gradient resume cases match
+uninterrupted predictions, weights, optimizer moments and scheduler state using
+the documented canonicalized CPU storage fixture. Existing packed-language/
+connector and floating-projection resume regressions also pass. Compile and real
+CUDA-guarded imports supplement the cases; frontend capability/type paths were
+reviewed statically. Owner build/type/UI and official-weight GPU acceptance stay
+pending. No live HTTP, CUDA allocation, official payload or main modification
+was used. Conditioner conversion authoring, optimized ConvRot backward/cache,
+adapter families, partition/global/style and remaining objectives still require
+subsequent implementation and final acceptance; the full goal remains active.

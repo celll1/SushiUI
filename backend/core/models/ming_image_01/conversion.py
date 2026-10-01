@@ -42,7 +42,7 @@ def convert_package(source, destination, *, format_, device="cpu", max_shard_byt
     if os.path.lexists(destination):
         raise FileExistsError(destination)
     for component, headers in artifact.tensor_headers.items():
-        if component in {"mllm","connector"}:
+        if component in {"mllm","connector","mlp"}:
             continue
         if any(h.dtype not in {"F16", "BF16", "F32"} or key.endswith((".weight_scale", ".comfy_quant"))
                for key,h in headers.items()):

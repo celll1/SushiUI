@@ -72,3 +72,31 @@ class MingPartitionExecutor:
     def close(self):
         self.base_global=None
         self.closed=True
+
+
+def normalize_partition_config(value):
+    from api.param_defaults import GENERATION_DEFAULTS
+    from core.inference.qwen_image_21_partition import normalize_partition_config as normalize
+    try:return normalize(value,defaults=GENERATION_DEFAULTS['ming_image_01_partition'])
+    except ValueError as exc:
+        raise ValueError(str(exc).replace('qwen_image_21_partition','ming_image_01_partition').replace('Qwen','Ming')) from exc
+
+
+def resolve_partition_plan(value,height,width,frames):
+    from core.inference.qwen_image_21_partition import resolve_partition_plan as resolve
+    settings=normalize_partition_config(value)
+    if type(frames) is not int or frames<1:raise ValueError('Ming target frames must be a positive integer')
+    if settings['mode']=='auto':
+        settings['max_target_tokens']//=frames
+        if settings['max_target_tokens']<1:raise ValueError('Ming token ceiling is too small for its target frames')
+    try:return resolve(settings,height,width)
+    except ValueError as exc:raise ValueError(str(exc).replace('Qwen','Ming')) from exc
+
+
+def plan_metadata(plan,frames,*,global_adapter):
+    from dataclasses import asdict
+    return {'version':1,'mode':plan.mode,'patch_height':plan.height,'patch_width':plan.width,
+        'target_frames':frames,'full_target_tokens':frames*plan.height*plan.width,
+        'largest_input_tokens':frames*max(b.tokens for b in plan.inputs),'kv_cache':False,
+        'global_adapter':global_adapter,
+        'regions':[{'core':asdict(c),'input':asdict(b)} for c,b in zip(plan.cores,plan.inputs)]}

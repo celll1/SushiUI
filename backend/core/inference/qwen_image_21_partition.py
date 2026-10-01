@@ -15,8 +15,8 @@ MAX_REGIONS = 64
 MAX_LAYOUT_DEPTH = 8
 
 
-def normalize_partition_config(value):
-    defaults = GENERATION_DEFAULTS["qwen_image_21_partition"]
+def normalize_partition_config(value, *, defaults=None):
+    defaults = GENERATION_DEFAULTS["qwen_image_21_partition"] if defaults is None else defaults
     if value is None or value == "":
         return copy.deepcopy(defaults)
     if isinstance(value, str):
@@ -99,8 +99,8 @@ class GenerationPlan:
                             for core, box in zip(self.cores, self.inputs)]}
 
 
-def resolve_partition_plan(value, height, width):
-    settings = normalize_partition_config(value)
+def resolve_partition_plan(value, height, width, *, defaults=None):
+    settings = normalize_partition_config(value, defaults=defaults)
     if settings["mode"] == "off":
         return None
     if height < 2 or width < 2 or height % 2 or width % 2:

@@ -353,7 +353,7 @@ def save_image_with_metadata(
     if (model_info or {}).get("type") == "ming_image_01" and params.get("ming_image_01_layers") is not None:
         metadata.add_text("ming_image_01_layers", str(params["ming_image_01_layers"]))
 
-    for key in ("qwen_image_21_partition", "qwen_image_21_partition_actual", "dit_rewiring_actual", "ming_image_01_actual"):
+    for key in ("ming_image_01_partition", "ming_image_01_partition_actual", "qwen_image_21_partition", "qwen_image_21_partition_actual", "dit_rewiring_actual", "ming_image_01_actual"):
         if params.get(key) is not None:
             import json
             metadata.add_text(key, json.dumps(params[key], ensure_ascii=False))

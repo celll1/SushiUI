@@ -7,11 +7,12 @@ import { area, partitionPreview, replaceNode, strips } from "@/utils/qwenPartiti
 
 const colors = ["#60a5fa", "#fbbf24", "#34d399", "#f472b6", "#a78bfa", "#fb923c"];
 type Props = { value?: QwenPartitionConfig | null; onChange: (v: QwenPartitionConfig) => void;
-  width?: number; height?: number; background?: string | null };
+  width?: number; height?: number; background?: string | null;
+  architecture?: "qwen_image_21" | "ming_image_01"; targetFrames?: number };
 
-export default function QwenPartitionControls({ value, onChange, width, height, background }: Props) {
+export default function QwenPartitionControls({ value, onChange, width, height, background, architecture = "qwen_image_21", targetFrames = 1 }: Props) {
   const { generationDefaults } = useStartup();
-  const defaults = generationDefaults?.txt2img?.qwen_image_21_partition;
+  const defaults = generationDefaults?.txt2img?.[architecture === "ming_image_01" ? "ming_image_01_partition" : "qwen_image_21_partition"];
   const config = value ?? defaults;
   const [selected, setSelected] = useState("");
   const [drag, setDrag] = useState<string | null>(null);
@@ -23,7 +24,7 @@ export default function QwenPartitionControls({ value, onChange, width, height, 
   const change = (patch: Partial<QwenPartitionConfig>) => onChange({ ...config, ...patch });
   let preview: ReturnType<typeof partitionPreview> | null = null;
   let error = "";
-  try { preview = partitionPreview(config, h, w); } catch (e) { error = (e as Error).message; }
+  try { preview = partitionPreview({ ...config, max_target_tokens: Math.floor(config.max_target_tokens / targetFrames) }, h, w); } catch (e) { error = (e as Error).message; }
   const remember = () => setHistory(previous => [...previous.slice(-19), config.layout]);
   const layout = (node: QwenPartitionSplit | null) => { remember(); change({ mode: "manual", layout: node }); setSelected(""); };
   const move = (event: React.PointerEvent<SVGSVGElement>) => {
@@ -42,20 +43,21 @@ export default function QwenPartitionControls({ value, onChange, width, height, 
     change({ layout: replaceNode(config.layout, drag, node => node && ({ ...node, ratio: (cut - start) / (end - start) })) });
   };
   return <details className="rounded border border-gray-700 p-3 my-2">
-    <summary className="cursor-pointer text-sm">Qwen partition generation · {config.mode}</summary>
+    <summary className="cursor-pointer text-sm">{architecture === "ming_image_01" ? "Ming" : "Qwen"} partition generation · {config.mode}</summary>
     <div className="flex flex-wrap gap-3 my-3 text-sm">
       <label>Mode <select value={config.mode} onChange={e => change({ mode: e.target.value as QwenPartitionConfig["mode"] })}
         className="bg-gray-900 border rounded p-1 ml-2"><option value="off">Off</option><option value="auto">Auto</option><option value="manual">Manual</option></select></label>
-      {config.mode === "auto" && <label>Max latent image tokens <input type="number" min={1} step={1}
+      {config.mode === "auto" && <label>Max target tokens <input type="number" min={1} step={1}
         value={config.max_target_tokens} onChange={e => { if (e.target.value) change({ max_target_tokens: Number(e.target.value) }); }}
         className="bg-gray-900 border rounded p-1 ml-2 w-24" /></label>}
-      {config.mode !== "off" && <label>Halo (latent pixels) <input type="number" min={0} step={2}
+      {config.mode !== "off" && <label>Halo ({architecture === "ming_image_01" ? "spatial patch tokens" : "latent pixels"}) <input type="number" min={0} step={2}
         value={config.halo_tokens} onChange={e => { if (e.target.value) change({ halo_tokens: Number(e.target.value) }); }}
         className="bg-gray-900 border rounded p-1 ml-2 w-20" /></label>}
     </div>
     {config.mode === "off" ? <p className="text-xs text-gray-400">Full-frame path. Global adapters are unused.</p> : <>
-      <p className="text-xs text-gray-400">{w * 16} × {h * 16} px · {w} × {h} latent · {preview?.regions.length ?? "?"} regions
-        {preview && ` · largest input ${Math.max(...preview.regions.map(r => area(r.input)))} tokens`}. Reference Guide and Style Transfer are unavailable with multiple regions.</p>
+      <p className="text-xs text-gray-400">{w * 16} × {h * 16} px · {w} × {h} {architecture === "ming_image_01" ? "patch grid" : "latent"} · {preview?.regions.length ?? "?"} regions
+        {preview && ` · largest input ${Math.max(...preview.regions.map(r => area(r.input) * targetFrames))} tokens`}. Reference Guide and Style Transfer are unavailable with multiple regions.</p>
+      {architecture === "ming_image_01" && <p className="text-xs text-gray-400">All {targetFrames} target frames, including the Layer auxiliary canvas, count toward the ceiling. References and captions stay complete; their attention is recomputed per region. Global summaries are used when saved in the base or LoRA.</p>}
       {config.mode === "manual" && <div className="flex flex-wrap gap-2 my-2 text-xs">
         {[2, 3, 6].map(n => <button key={n} type="button" onClick={() => layout(strips(n, "x"))}> {n} columns </button>)}
         <button type="button" onClick={() => layout({ axis: "y", ratio: 0.5, first: strips(3, "x"), second: strips(3, "x") })}>2 × 3</button>

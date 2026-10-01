@@ -142,6 +142,7 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     # architecture has an equivalent knob at the API layer.
     "sensenova_kv_cache_streaming": ["sensenova_kv_cache_streaming"],
     "qwen_image_21_kv_cache": ["qwen_image_21_kv_cache"],
+    "ming_image_01_partition": ["ming_image_01_partition"],
     "qwen_image_21_partition": ["qwen_image_21_partition"],
     # Per-block CPU offload swap count. Enable-gated (see the file-header
     # convention above): the image routes (txt2img/img2img/inpaint/outpaint)
@@ -195,6 +196,7 @@ FEATURE_LABELS: Dict[str, str] = {
     "sensenova_mot_phase_eviction": "sensenova_mot_phase_eviction (SenseNova U1.5 per-phase weight-half CPU eviction)",
     "sensenova_kv_cache_streaming": "sensenova_kv_cache_streaming (SenseNova U1.5 per-layer prefix KV cache CPU streaming)",
     "qwen_image_21_kv_cache": "qwen_image_21_kv_cache (Qwen-Image 2.1 condition KV cache)",
+    "ming_image_01_partition": "Ming-Image 0.1 partition generation",
     "qwen_image_21_partition": "Qwen-Image 2.1 partition generation",
     "block_swap": "enable_block_swap/blocks_to_swap (per-block CPU offload)",
     "vae_tiling": "vae_tiling (VAE decode tiling)",
@@ -919,6 +921,9 @@ for _a in [a for a in _ALL_ARCHS if a != "sensenova"]:
 for _a in [a for a in _ALL_ARCHS if a != "sensenova"]:
     _add(_a, "sensenova_kv_cache_streaming",
          "sensenova_kv_cache_streaming is a SenseNova U1.5-specific per-layer prefix KV cache CPU streaming parameter; this architecture does not consult it")
+
+for _a in [a for a in _ALL_ARCHS if a != "ming_image_01"]:
+    _add(_a, "ming_image_01_partition", "Partition generation requires Ming-Image 0.1")
 
 for _a in [a for a in _ALL_ARCHS if a != "qwen_image_21"]:
     _add(_a, "qwen_image_21_partition", "Partition generation requires Qwen-Image 2.1")
@@ -2296,6 +2301,10 @@ def check_arch_capabilities(params: Dict[str, Any], arch: str,
             # but is armed by the OPPOSITE entries (is_style_transfer=True),
             # so it cannot use the generic per-key _is_user_set check.
             if not _is_style_transfer_set(params):
+                continue
+        elif feature == "ming_image_01_partition":
+            from core.models.ming_image_01.partition_generation import normalize_partition_config
+            if normalize_partition_config(params.get(feature))["mode"] == "off":
                 continue
         elif feature == "qwen_image_21_partition":
             from core.inference.qwen_image_21_partition import normalize_partition_config

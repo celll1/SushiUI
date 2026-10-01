@@ -9,6 +9,12 @@ from PIL import Image, ImageChops, ImageFilter, ImageOps
 
 
 class MingImage01Mixin:
+    def _validate_ming_partition_arch(self,params):
+        from core.models.ming_image_01.partition_generation import normalize_partition_config
+        if normalize_partition_config(params.get("ming_image_01_partition"))["mode"] != "off" and not getattr(self,"is_ming_image_01_model",False):
+            from api.error_handlers import ValidationError
+            raise ValidationError("Partitioned generation requires Ming-Image 0.1")
+
     def _install_ming_image_01(self, result, *, model_id, source_type, source):
         from core.models.ming_image_01.inspection import loaded_model_info
         from core.models.components.wiring import MING_IMAGE_01_WIRING
@@ -60,6 +66,12 @@ class MingImage01Mixin:
         layers = resolved["ming_image_01_layers"] if profile == "layer_decompose" else 1
         if type(layers) is not int or layers < 1:
             raise ValidationError("Ming layer count must be a positive integer")
+        from core.models.ming_image_01.partition_generation import resolve_partition_plan,plan_metadata
+        frames=layers+1 if profile=="layer_decompose" else 1
+        try:
+            plan=resolve_partition_plan(resolved.get("ming_image_01_partition"),height//16,width//16,frames)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
         generator = MingGenerator(components)
         try:
             generator.sampler.profile.validate_task(task, has_reference_image=bool(images), num_layers=layers)
@@ -94,6 +106,8 @@ class MingImage01Mixin:
         self.current_attention_type = resolved["attention_type"]
         if resolved["negative_prompt"]:
             raise ValidationError("Ming native CFG uses zero conditioning; negative prompts are unsupported")
+        if plan is not None and guides:
+            raise ValidationError("Ming partitioned generation currently excludes Reference Guide and Style Transfer")
         pending = [key for key in ("text_encoder_quantization", "enable_block_swap",
                                   "keep_models_hot", "loop_decode", "vae_tile_threshold", "vae_tile_mode",
                                   "vae_tile_global_norm", "color_flatten_strength")
@@ -121,12 +135,22 @@ class MingImage01Mixin:
                 from core.rewiring.spec import digest, preview_plan
                 try:
                     preview_plan(topology, height // 16, width // 16)
+                    if plan is not None:
+                        for box in plan.inputs:preview_plan(topology,box.height,box.width)
                 except ValueError as exc:
                     raise ValidationError(str(exc)) from exc
                 params["dit_rewiring_actual"] = {"spec": topology, "spec_sha256": digest(topology),
                                                 "native_layout": "target_reference_padding_caption_v1", "kv_cache": False}
             else:
                 params.pop("dit_rewiring_actual", None)
+            has_global=bool(getattr(components.transformer,"_ming_partition_global_payload",None) or
+                any(entry["strength"] for entry in getattr(components.transformer,"_ming_partition_global_generation",[])))
+            if plan is not None:
+                params["ming_image_01_partition_actual"]=plan_metadata(plan,frames,global_adapter=has_global)
+                if not has_global:add_warning("Ming partitioned generation has no global adapter; cross-region target attention is absent.","ming_partition_no_global_adapter")
+            else:
+                params.pop("ming_image_01_partition_actual",None)
+                if has_global:add_warning("Ming full-frame generation ignores partition-global summaries.","ming_partition_global_adapter_ignored")
             if resolved["vae_tiling"]:
                 components.vae.enable_tiling()
             else:
@@ -153,7 +177,7 @@ class MingImage01Mixin:
                     resolution=round(math.sqrt(width * height)), steps=steps, cfg=float(cfg), seed=seed,
                     requested_layers=layers, negative_prompt=resolved["negative_prompt"], output_type="pil",
                     cancelled=lambda: self.cancel_requested, step_callback=callback, phase_context=phase,
-                    reference_guides=guides)
+                    reference_guides=guides,partition_plan=plan)
             except MingGenerationCancelled as exc:
                 raise RuntimeError("Generation cancelled by user") from exc
             model_info["dit_rewiring_spec"] = topology
@@ -216,5 +240,7 @@ class MingImage01Mixin:
             progress_callback=progress_callback, step_callback=step_callback)
         for group in output.groups:
             group.values[0].paste(placed, rect[:2])
-        params.update({key: value for key, value in working.items() if key == "dit_rewiring_actual"})
+        for key in ("dit_rewiring_actual","ming_image_01_partition_actual"):
+            if key in working:params[key]=working[key]
+            else:params.pop(key,None)
         return output.validate(), seed, ancestral

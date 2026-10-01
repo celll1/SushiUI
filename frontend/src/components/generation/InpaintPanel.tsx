@@ -34,6 +34,7 @@ import Qwen21PromptUpsample from "../common/Qwen21PromptUpsample";
 import MingPromptUpsample from "../common/MingPromptUpsample";
 import { maybeUpsampleMingPrompt } from "@/utils/mingPromptUpsample";
 import QwenPartitionControls from "../common/QwenPartitionControls";
+import MingPartitionControls from "../common/MingPartitionControls";
 import MingLayerControls from "../common/MingLayerControls";
 import MingOutputGroups from "../common/MingOutputGroups";
 import { imageDefaultsArchKey } from "@/utils/archConstraints";
@@ -109,6 +110,7 @@ import { maybeUpsampleQwen21Prompt } from "@/utils/qwen21PromptUpsample";
 
 interface InpaintParams {
   ming_image_01_layers?: number;
+  ming_image_01_partition?: import("@/utils/api").QwenPartitionConfig | null;
   qwen_image_21_partition?: import("@/utils/api").QwenPartitionConfig | null;
   qwen_image_21_kv_cache?: boolean;
   prompt: string;
@@ -279,6 +281,7 @@ interface InpaintParams {
 const DEFAULT_PARAMS: InpaintParams = {
   prompt: "",
   ming_image_01_layers: undefined,
+  ming_image_01_partition: undefined,
   qwen_image_21_partition: undefined,
   negative_prompt: "",
   steps: 20,
@@ -4986,6 +4989,10 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
           width={params.width} height={params.height}
           onChange={(qwen_image_21_partition) => setParams(previous => ({ ...previous, qwen_image_21_partition }))} />
       )}
+      <MingPartitionControls value={params.ming_image_01_partition} layers={params.ming_image_01_layers}
+        background={inputImagePreview}
+        width={params.width} height={params.height}
+        onChange={ming_image_01_partition => setParams(previous => ({ ...previous, ming_image_01_partition }))} />
       {!isVideo && (
         <div className="flex flex-wrap items-center gap-1.5 rounded bg-gray-800 px-2 py-1.5">
           <label className="flex cursor-pointer items-center gap-2">

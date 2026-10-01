@@ -567,6 +567,7 @@ class GenerationParams(BaseModel):
     sensenova_kv_cache_streaming: bool = GENERATION_DEFAULTS["sensenova_kv_cache_streaming"]
     qwen_image_21_kv_cache: bool = GENERATION_DEFAULTS["qwen_image_21_kv_cache"]
     ming_image_01_layers: int = Field(GENERATION_DEFAULTS["ming_image_01_layers"], ge=1, strict=True)
+    ming_image_01_partition: Optional[Dict[str, Any]] = GENERATION_DEFAULTS["ming_image_01_partition"]
     qwen_image_21_partition: Optional[Dict[str, Any]] = GENERATION_DEFAULTS["qwen_image_21_partition"]
     sampler: str = "euler"
     schedule_type: str = "uniform"
@@ -651,6 +652,12 @@ class GenerationParams(BaseModel):
     # Preview mode
     preview_predicted_x0: bool = False  # Show predicted x0 instead of current latent in preview
 
+    @field_validator("ming_image_01_partition", mode="before")
+    @classmethod
+    def _ming_partition_config(cls, value):
+        from core.models.ming_image_01.partition_generation import normalize_partition_config
+        return normalize_partition_config(value)
+
     @field_validator("qwen_image_21_partition", mode="before")
     @classmethod
     def _partition_config(cls, value):
@@ -662,6 +669,17 @@ class Txt2ImgRequest(GenerationParams):
 
 class Img2ImgRequest(GenerationParams):
     denoising_strength: float = 0.75
+
+
+def _parse_ming_partition(value, *, arch=None):
+    from core.models.ming_image_01.partition_generation import normalize_partition_config
+    try:
+        config = normalize_partition_config(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if arch is not None and config["mode"] != "off" and arch != "ming_image_01":
+        raise HTTPException(status_code=400, detail="Partitioned generation requires Ming-Image 0.1")
+    return config
 
 
 def _parse_qwen_partition(value, *, arch=None):
@@ -1267,6 +1285,7 @@ async def generate_txt2img(
     sensenova_kv_cache_streaming: bool = Form(GENERATION_DEFAULTS["sensenova_kv_cache_streaming"]),  # SenseNova U1.5 per-phase KV cache CPU streaming; other archs ignore it
     qwen_image_21_kv_cache: bool = Form(GENERATION_DEFAULTS["qwen_image_21_kv_cache"]),
     ming_image_01_layers: int = Form(GENERATION_DEFAULTS["ming_image_01_layers"], ge=1),
+    ming_image_01_partition: str = Form(json.dumps(GENERATION_DEFAULTS["ming_image_01_partition"])),
     qwen_image_21_partition: str = Form(json.dumps(GENERATION_DEFAULTS["qwen_image_21_partition"])),
     sampler: str = Form("euler"),
     schedule_type: str = Form("uniform"),
@@ -1500,6 +1519,7 @@ async def generate_txt2img(
             "sensenova_kv_cache_streaming": sensenova_kv_cache_streaming,
             "qwen_image_21_kv_cache": qwen_image_21_kv_cache,
             "ming_image_01_layers": ming_image_01_layers,
+            "ming_image_01_partition": _parse_ming_partition(ming_image_01_partition),
             "qwen_image_21_partition": _parse_qwen_partition(qwen_image_21_partition),
             "sampler": sampler,
             "schedule_type": schedule_type,
@@ -1638,6 +1658,7 @@ async def generate_txt2img(
 
         # Warn about parameters the loaded architecture silently ignores
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
+        _parse_ming_partition(params.get("ming_image_01_partition"), arch=_current_arch)
         _parse_qwen_partition(params.get("qwen_image_21_partition"), arch=_current_arch)
         check_arch_capabilities(params, _current_arch, defaults=_img_defaults)
 
@@ -2273,6 +2294,7 @@ async def generate_img2img(
     sensenova_kv_cache_streaming: bool = Form(GENERATION_DEFAULTS["sensenova_kv_cache_streaming"]),  # SenseNova U1.5 per-phase KV cache CPU streaming; other archs ignore it
     qwen_image_21_kv_cache: bool = Form(GENERATION_DEFAULTS["qwen_image_21_kv_cache"]),
     ming_image_01_layers: int = Form(GENERATION_DEFAULTS["ming_image_01_layers"], ge=1),
+    ming_image_01_partition: str = Form(json.dumps(GENERATION_DEFAULTS["ming_image_01_partition"])),
     qwen_image_21_partition: str = Form(json.dumps(GENERATION_DEFAULTS["qwen_image_21_partition"])),
     denoising_strength: float = Form(0.75),
     img2img_fix_steps: bool = Form(True),
@@ -2525,6 +2547,7 @@ async def generate_img2img(
             "sensenova_kv_cache_streaming": sensenova_kv_cache_streaming,
             "qwen_image_21_kv_cache": qwen_image_21_kv_cache,
             "ming_image_01_layers": ming_image_01_layers,
+            "ming_image_01_partition": _parse_ming_partition(ming_image_01_partition),
             "qwen_image_21_partition": _parse_qwen_partition(qwen_image_21_partition),
             "denoising_strength": denoising_strength,
             "img2img_fix_steps": img2img_fix_steps,
@@ -2635,6 +2658,7 @@ async def generate_img2img(
 
         # Warn about parameters the loaded architecture silently ignores
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
+        _parse_ming_partition(params.get("ming_image_01_partition"), arch=_current_arch)
         _parse_qwen_partition(params.get("qwen_image_21_partition"), arch=_current_arch)
         check_arch_capabilities(params, _current_arch, defaults=_img_defaults)
 
@@ -7723,6 +7747,7 @@ async def generate_inpaint(
     sensenova_kv_cache_streaming: bool = Form(GENERATION_DEFAULTS["sensenova_kv_cache_streaming"]),  # SenseNova U1.5 per-phase KV cache CPU streaming; other archs ignore it
     qwen_image_21_kv_cache: bool = Form(GENERATION_DEFAULTS["qwen_image_21_kv_cache"]),
     ming_image_01_layers: int = Form(GENERATION_DEFAULTS["ming_image_01_layers"], ge=1),
+    ming_image_01_partition: str = Form(json.dumps(GENERATION_DEFAULTS["ming_image_01_partition"])),
     qwen_image_21_partition: str = Form(json.dumps(GENERATION_DEFAULTS["qwen_image_21_partition"])),
     denoising_strength: float = Form(0.75),
     img2img_fix_steps: bool = Form(True),
@@ -8008,6 +8033,7 @@ async def generate_inpaint(
             "sensenova_kv_cache_streaming": sensenova_kv_cache_streaming,
             "qwen_image_21_kv_cache": qwen_image_21_kv_cache,
             "ming_image_01_layers": ming_image_01_layers,
+            "ming_image_01_partition": _parse_ming_partition(ming_image_01_partition),
             "qwen_image_21_partition": _parse_qwen_partition(qwen_image_21_partition),
             "denoising_strength": denoising_strength,
             "img2img_fix_steps": img2img_fix_steps,
@@ -8145,6 +8171,7 @@ async def generate_inpaint(
 
         # Warn about parameters the loaded architecture silently ignores
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
+        _parse_ming_partition(params.get("ming_image_01_partition"), arch=_current_arch)
         _parse_qwen_partition(params.get("qwen_image_21_partition"), arch=_current_arch)
         check_arch_capabilities(params, _current_arch, defaults=_img_defaults)
 
@@ -8334,6 +8361,7 @@ async def generate_outpaint(
     cfg_scale: Optional[float] = Form(None),
     qwen_image_21_kv_cache: bool = Form(OUTPAINT_DEFAULTS["qwen_image_21_kv_cache"]),
     ming_image_01_layers: int = Form(OUTPAINT_DEFAULTS["ming_image_01_layers"], ge=1),
+    ming_image_01_partition: str = Form(json.dumps(OUTPAINT_DEFAULTS["ming_image_01_partition"])),
     qwen_image_21_partition: str = Form(json.dumps(OUTPAINT_DEFAULTS["qwen_image_21_partition"])),
     # KNOWN GAP: this signature has no `cfg_norm`/`timestep_shift`/
     # `img_cfg_scale` Form() params, but openapi.yaml's OutpaintRequest
@@ -8683,6 +8711,7 @@ async def generate_outpaint(
             "cfg_scale": cfg_scale,
             "qwen_image_21_kv_cache": qwen_image_21_kv_cache,
             "ming_image_01_layers": ming_image_01_layers,
+            "ming_image_01_partition": _parse_ming_partition(ming_image_01_partition),
             "qwen_image_21_partition": _parse_qwen_partition(qwen_image_21_partition),
             "denoising_strength": denoising_strength,
             "img2img_fix_steps": img2img_fix_steps,
@@ -8867,6 +8896,7 @@ async def generate_outpaint(
 
         # Warn about parameters the loaded architecture silently ignores
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
+        _parse_ming_partition(params.get("ming_image_01_partition"), arch=_current_arch)
         _parse_qwen_partition(params.get("qwen_image_21_partition"), arch=_current_arch)
         check_arch_capabilities(params, _current_arch, defaults=_img_defaults)
 

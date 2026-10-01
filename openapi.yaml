@@ -14474,6 +14474,19 @@ components:
           nullable: true
           default: null
         halo_tokens: {type: integer, minimum: 0, multipleOf: 2, default: 16}
+    MingImage01Partition:
+      description: Ming native target patch partitions. The token ceiling counts all target frames; references and captions remain complete. Geometry is snapped to 32 output pixels. No KV cache.
+      type: object
+      additionalProperties: false
+      properties:
+        version: {type: integer, enum: [1], default: 1}
+        mode: {type: string, enum: ['off', auto, manual], default: 'off'}
+        max_target_tokens: {type: integer, minimum: 1, default: 4096}
+        layout:
+          allOf: [{ $ref: '#/components/schemas/QwenImage21Split' }]
+          nullable: true
+          default: null
+        halo_tokens: {type: integer, minimum: 0, multipleOf: 2, default: 16}
     GenerationParams:
       type: object
       description: |
@@ -14637,6 +14650,13 @@ components:
           default: 3
           example: 3
           description: Requested ordered RGBA layers for Ming Layer. The native output also includes one auxiliary canvas, making N+1 frames. Ignored by Design and other architectures; requires a Layer profile and reference image for decomposition.
+        ming_image_01_partition:
+          allOf:
+            - $ref: '#/components/schemas/MingImage01Partition'
+          nullable: true
+          description: Ming-only complete-coverage partition generation for Design and Layer. Multipart requests encode JSON. Off keeps the full-frame path; multiple regions exclude Reference Guide and Style Transfer. Auto counts target frames times native patch-grid area; auxiliary Layer canvas counts as a target frame. Saved full-base and LoRA global summaries are applied without KV caching.
+          default: {version: 1, mode: 'off', max_target_tokens: 4096, layout: null, halo_tokens: 16}
+          example: {version: 1, mode: auto, max_target_tokens: 4096, layout: null, halo_tokens: 16}
         qwen_image_21_partition:
           allOf:
             - $ref: '#/components/schemas/QwenImage21Partition'

@@ -134,7 +134,7 @@ def test_shared_dispatch_and_public_metadata_static_contract():
     assert '"RGBA" if data.get("model_type") == "ming_image_01"' in routes
     assert '"native_frame_count", "frame_roles"' in routes
     frontend=(root/'frontend/src/components/training/TrainingConfig.tsx').read_text(encoding='utf-8')
-    assert 'debugLatents && (isQwenImage21Model || isMingImage01Model)' in frontend
+    assert 'debugLatents && (isQwenImage21Model || isMingImageModel)' in frontend
 
 
 @pytest.mark.parametrize('profile',['generation_edit','layer_decompose'])

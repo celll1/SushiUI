@@ -441,3 +441,28 @@ also passes. These tests drive native preparation and actual shared backward;
 they do not claim a complete normal training request, optimizer resume or GPU
 acceptance. Normal startup remains staged until persistent caches, checkpoint
 resume, sampling and execution-policy wiring are complete.
+
+
+### Persistent native cache foundation
+
+The native CPU tensor cache stores independent-frame targets and sparse ragged
+reference latents, or both frozen conditioning streams, in safetensors. Atomic
+replacement and cancellation cleanup preserve an existing published entry.
+Reads require exact identity, roles, shapes and dtypes; payload checksums and
+finite/layout checks turn corruption into a miss. Conditioning reads/writes
+refuse a trainable conditioner so persistent reuse cannot cut its gradient.
+
+Identity builders include paired pixel identities, actual VAE/conditioner weight
+content, configs/tokenizer/processor identity, dtype and execution policy;
+conditioning additionally includes ordered captions, resolution and topology.
+CPU module fingerprints are taken before residency changes and never move a
+model implicitly. Callers must supply their encoder attention/tiling/runtime
+policy in the execution descriptor. Large weight fingerprints are startup work,
+not per-iteration probes.
+
+15 dedicated CPU tests pass for FP32/BF16 roundtrip, sparse references, dual
+streams, corruption, incompatible requests, model/content/policy invalidation,
+trainability refusal and cancellation preserving an existing entry. This is
+the persistence foundation; common encoding-mode selection and producer/consumer
+connections are still pending. The temporary on-the-fly override remains until
+that integration is complete. No GPU/API or official model weights were used.

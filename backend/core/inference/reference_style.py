@@ -255,7 +255,9 @@ def _stats_over_tokens(x: torch.Tensor, eps: float) -> Tuple[torch.Tensor, torch
     ``[B, S, H, D]`` tensors -- i.e. the S axis, one axis before the head axis)."""
     token_dim = -3
     mean = x.mean(dim=token_dim, keepdim=True)
-    std = x.std(dim=token_dim, keepdim=True) + eps
+    # A one-token U-Net bottleneck has zero variance, not undefined sample variance.
+    correction = 0 if x.shape[token_dim] == 1 else 1
+    std = x.std(dim=token_dim, keepdim=True, correction=correction) + eps
     return mean, std
 
 

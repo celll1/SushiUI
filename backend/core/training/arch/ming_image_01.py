@@ -1,4 +1,4 @@
-"""Native Ming generation-independent full-training handler."""
+"""Native Ming Design/Layer training handler."""
 
 from core.training.arch.base_arch import ArchHandler
 from core.models.components.wiring import MING_IMAGE_01_WIRING
@@ -17,6 +17,10 @@ class MingImage01ArchHandler(ArchHandler):
         super().__init__(trainer)
         if trainer is not None and getattr(trainer, "transformer", None) is not None:
             self.wiring = self.wiring.replace(te_out_dim=trainer.transformer.config.cap_feat_dim)
+
+    def lora_adapter_class(self):
+        from core.training.adapters.ming_image_01_adapter import MingImage01LoRAAdapter
+        return MingImage01LoRAAdapter
 
     def load_components(self, trainer):
         from core.training.ops.ming_image_01_ops import load_components

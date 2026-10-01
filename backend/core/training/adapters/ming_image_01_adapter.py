@@ -1,4 +1,4 @@
-"""Ming full-parameter ownership, component rates and native bundle export."""
+"""Ming full/LoRA ownership, component rates and native checkpoint exports."""
 
 from pathlib import Path
 from contextlib import nullcontext
@@ -6,7 +6,8 @@ from core.models.ming_image_01.block_offload import execution_device, move_compo
 
 from core.models.ming_image_01.checkpoint import save_bundle
 from core.models.ming_image_01.training import optimizer_groups
-from .base_adapter import BaseFullParameterAdapter, reject_quantized_base, resolve_component_lr
+from .base_adapter import (BaseFullParameterAdapter, BaseLoRAAdapter, LORA_COMPONENT_UNET,
+    LORA_COMPONENT_ADAPTER, reject_quantized_base, resolve_component_lr)
 
 
 class MingImage01FullParameterAdapter(BaseFullParameterAdapter):
@@ -88,3 +89,56 @@ class MingImage01FullParameterAdapter(BaseFullParameterAdapter):
             if failures:
                 raise RuntimeError("Ming checkpoint component residency restoration failed") from failures[0]
         return written
+
+
+class MingImage01LoRAAdapter(BaseLoRAAdapter):
+    def apply_lora_to_unet(self, lora_layers):
+        from core.models.ming_image_01.lora import iter_lora_slots, flatten_to_key
+        from core.adapters import is_adapter_covered
+        owner = self.trainer
+        components = owner.ming_image_01_components
+        if owner.ming_conditioner_trainable_groups:
+            raise ValueError("Ming conditioner LoRA is not yet connected; freeze native conditioner groups")
+        components.transformer.requires_grad_(False).train()
+        components.conditioner.set_trainable(set())
+        components.conditioner.eval()
+        components.vae.requires_grad_(False).eval()
+        slots = list(iter_lora_slots(components.transformer, attention=owner.train_unet,
+            projection=owner.config.get("train_adapter") is True))
+        count = 0
+        for parent, attr, path in slots:
+            current = parent[attr] if isinstance(attr, int) else getattr(parent, attr)
+            if is_adapter_covered(current):
+                continue
+            name = flatten_to_key(path)
+            layer = self.build_branch(current, name)
+            if isinstance(attr, int): parent[attr] = layer
+            else: setattr(parent, attr, layer)
+            component = LORA_COMPONENT_ADAPTER if path == "cap_embedder.1" else LORA_COMPONENT_UNET
+            self.register_lora_layer(lora_layers, name, layer, component)
+            count += 1
+        if not count:
+            raise ValueError("Ming LoRA requires native DiT attention or caption projection targets")
+        if owner.gradient_checkpointing:
+            components.transformer.enable_gradient_checkpointing()
+        return count
+
+    def apply_lora_to_text_encoders(self, lora_layers):
+        raise ValueError("Ming conditioner LoRA is not yet connected")
+
+    def arch_param_groups(self, lora_layers):
+        owner = self.trainer
+        return self.component_param_groups(lora_layers, {
+            LORA_COMPONENT_UNET: lambda: resolve_component_lr(owner, "unet_lr", label="Ming DiT LoRA"),
+            LORA_COMPONENT_ADAPTER: lambda: (float(owner.config["adapter_lr"])
+                if owner.config.get("adapter_lr") is not None
+                else resolve_component_lr(owner, "unet_lr", label="Ming caption LoRA")),
+        })
+
+    def checkpoint_metadata(self, lora_layers, step, epoch):
+        from core.models.ming_image_01.residual_unet import model_topology_metadata
+        return {"model_type": "ming_image_01", "modelspec.architecture": "ming_image_01",
+                "ming_image_01_profile": self.trainer.ming_image_01_components.artifact.profile,
+                "lora_rank": str(self.lora_rank), "lora_alpha": str(self.lora_alpha),
+                "step": str(step), "epoch": str(epoch), "format": "pt",
+                **model_topology_metadata(self.trainer.transformer)}

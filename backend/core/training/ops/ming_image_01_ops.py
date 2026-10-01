@@ -51,7 +51,8 @@ def load_components(trainer):
     configured_modes(trainer.config)
     components = native_load(trainer.model_path, dtype=trainer.weight_dtype, conditioner_attention="eager")
     configure_training_topology(components.transformer, trainer.config,
-                                resuming=bool(getattr(trainer, "resume_from_checkpoint", None)))
+                                resuming=bool(getattr(trainer, "resume_from_checkpoint", None)),
+                                pending_adapter_resume=bool(getattr(trainer, "_manages_own_resume", False)))
     groups, rates = resolve_ownership(trainer.config)
     trainer.ming_image_01_components = components
     trainer.ming_conditioner_trainable_groups, trainer.ming_conditioner_lrs = groups, rates

@@ -41,6 +41,7 @@ class MingPixelItem:
     references: list[Image.Image]
     weights: torch.Tensor
     caption: str
+    pixel_identity: str | None = None
 
 
 def sidecar_path(primary):
@@ -165,19 +166,42 @@ def load_pixels(record, *, caption, width, height, crop_box=None, flip_horizonta
     targets = [torch.from_numpy(np.asarray(image).copy()).permute(2, 0, 1).float() / 127.5 - 1
                for image in images[:len(record.targets)]]
     return MingPixelItem(record, torch.stack(targets, dim=1), images[len(record.targets):],
-                        torch.tensor(record.weights, dtype=torch.float32), caption)
+                        torch.tensor(record.weights, dtype=torch.float32), caption,
+                        pixel_cache_identity(record, width=width, height=height, crop_box=crop_box, flip_horizontal=flip_horizontal))
 
 
-def prepare_record_latents(components, items, *, resolution):
+def prepare_record_latents(components, items, *, resolution, cache_context=None, vae_device=None):
     from .training_data import prepare_latent_batch
     if not items or any(item.record.profile != components.artifact.profile for item in items):
         raise ValueError("Ming records and loaded profile disagree")
     sizes = {tuple(item.pixels.shape) for item in items}
     if len(sizes) != 1:
         raise ValueError("Ming batches require matching grids and target-frame counts")
+    options = {"vae_device": vae_device}
+    if cache_context is not None:
+        from .cache import latent_identity, conditioning_identity, validate_cache_context
+        context = cache_context
+        validate_cache_context(components, context)
+        if any(item.pixel_identity is None for item in items):
+            raise ValueError("Ming persistent records require paired pixel identities")
+        pixels = [item.pixel_identity for item in items]
+        options["tensor_cache"] = context["cache"]
+        if context["latent_enabled"]:
+            if components.vae.dtype != context["vae_dtype"]:
+                raise ValueError("Ming VAE precision changed after cache identity capture")
+            options["latent_key"] = latent_identity(pixels=pixels, vae_weights=context["vae_weights"],
+                vae_config=context["vae_config"], dtype=components.vae.dtype, execution=context["execution"])
+        if context["conditioning_enabled"] and components.conditioner.cacheable:
+            dtype = next(components.conditioner.parameters()).dtype
+            if dtype != context["conditioner_dtype"]:
+                raise ValueError("Ming conditioner precision changed after cache identity capture")
+            options["conditioning_key"] = conditioning_identity(pixels=pixels,
+                captions=[item.caption for item in items], artifact_config=context["artifact_config"],
+                conditioner_weights=context["conditioner_weights"], resolution=resolution, dtype=dtype,
+                topology=getattr(components.transformer, "_residual_unet_spec", None), execution=context["execution"])
     return prepare_latent_batch(components, prompts=[item.caption for item in items],
         references=[item.references for item in items], target_pixels=torch.stack([item.pixels for item in items]),
-        frame_weights=torch.stack([item.weights for item in items]), resolution=resolution)
+        frame_weights=torch.stack([item.weights for item in items]), resolution=resolution, **options)
 
 
 def prepare_record_batch(components, items, *, resolution):
@@ -275,19 +299,11 @@ def prepare_shared_latents(trainer, pairs):
                 raise ValueError("Unknown Ming paired bucket strategy")
         items.append(load_pixels(record, caption=item.get("caption", ""), width=width, height=height, crop_box=crop))
     components = trainer.ming_image_01_components
-    components.vae.to(device=trainer.device)
-    try:
-        return prepare_record_latents(components, items, resolution=trainer.ming_prompt_resolution)
-    finally:
-        components.vae.to(device="cpu")
+    return prepare_record_latents(components, items, resolution=trainer.ming_prompt_resolution,
+                                  cache_context=getattr(trainer, "ming_cache_context", None),
+                                  vae_device=trainer.device)
 
 
 def shared_inputs_for_mnt(trainer, prepared):
     from .training_data import shared_step_inputs
-    conditioner = prepared.conditioner
-    conditioner.to(device=trainer.device)
-    try:
-        return shared_step_inputs(prepared.for_step())
-    finally:
-        if conditioner.cacheable:
-            conditioner.to(device="cpu")
+    return shared_step_inputs(prepared.for_step(encoder_device=trainer.device))

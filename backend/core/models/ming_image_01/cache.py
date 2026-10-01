@@ -133,3 +133,45 @@ class MingTensorCache:
             return tensors
         except (OSError, ValueError, KeyError, TypeError, RuntimeError, SafetensorError):
             return None
+
+
+
+def expected_conditioning(conditioner, prepared):
+    native = conditioner.native
+    inputs = prepared.model_inputs
+    patch = native.config.llm_config.image_patch_token
+    _, labels, mask, _ = native.append_input_ids_with_multiscale_learnable_tokens(
+        inputs["input_ids"], inputs["attention_mask"], native.img_gen_scales,
+        patch+1, patch+2, patch)
+    use_input = (labels < 0).to(mask.dtype) * mask
+    length = int(use_input.cumsum(-1).argmax(-1).max()) + 1
+    batch = inputs["input_ids"].shape[0]
+    dtype = next(conditioner.parameters()).dtype
+    return {"queries": ((batch, native.img_gen_scales[-1]**2, native.proj_out.out_features), dtype),
+            "direct": ((batch, length, native.proj_directvlm[1].out_features), dtype)}
+
+
+def snapshot_cache_context(components, cache, *, execution, latent_enabled, conditioning_enabled):
+    """Snapshot frozen CPU producer identity before any execution residency changes."""
+    if conditioning_enabled and not components.conditioner.cacheable:
+        raise ValueError("Persistent Ming conditioning requires frozen ownership")
+    return dict(cache=cache, execution=execution, latent_enabled=latent_enabled,
+        conditioning_enabled=conditioning_enabled,
+        vae_weights=module_fingerprint(components.vae) if latent_enabled else None,
+        conditioner_weights=module_fingerprint(components.conditioner) if conditioning_enabled else None,
+        vae_config=dict(components.vae.config), artifact_config=components.artifact.config_fingerprint,
+        vae_dtype=components.vae.dtype, conditioner_dtype=next(components.conditioner.parameters()).dtype,
+        vae_versions=parameter_versions(components.vae),
+        conditioner_versions=parameter_versions(components.conditioner))
+
+
+
+def parameter_versions(module):
+    return tuple((id(value), value._version) for value in module.parameters())
+
+
+def validate_cache_context(components, context):
+    if context["latent_enabled"] and parameter_versions(components.vae) != context["vae_versions"]:
+        raise ValueError("Ming VAE weights changed after cache identity capture; recreate the cache context")
+    if context["conditioning_enabled"] and parameter_versions(components.conditioner) != context["conditioner_versions"]:
+        raise ValueError("Ming conditioner weights changed after cache identity capture; recreate the cache context")

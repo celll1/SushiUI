@@ -99,4 +99,6 @@ class MingConditioner(nn.Module):
             llm_hidden_states=None)
         if queries is None or direct is None:
             raise ValueError("Ming 0.1 requires both released conditioning streams")
-        return MingConditioning(queries, direct)
+        # The native CUDA query connector autocasts; transport uses the module dtype.
+        dtype = next(self.parameters()).dtype
+        return MingConditioning(queries.to(dtype=dtype), direct.to(dtype=dtype))

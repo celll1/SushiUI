@@ -77,7 +77,8 @@ def encode_frames(vae, pixels):
     return torch.stack(encoded, dim=2)
 
 
-def prepare_latent_batch(components, *, prompts, references, target_pixels, frame_weights, resolution):
+def prepare_latent_batch(components, *, prompts, references, target_pixels, frame_weights, resolution,
+                         tensor_cache=None, latent_key=None, conditioning_key=None, vae_device=None):
     """Explicit supervision owns slot zero; references never become loss targets."""
     if target_pixels.ndim != 5:
         raise ValueError("Ming target pixels require native batch/channel/frame axes")
@@ -96,18 +97,40 @@ def prepare_latent_batch(components, *, prompts, references, target_pixels, fram
         raise ValueError("Ming frame weights require nonnegative [B, F] with supervised items")
     prepared = prepare_inputs(components.processor, prompts, references=references,
                               width=width, height=height, resolution=resolution)
-    clean = encode_frames(components.vae, target_pixels)
-    latent_references = []
     any_reference = any(value is not None for value in prepared.references)
-    if any_reference:
-        for pixels in prepared.references:
-            if pixels is None:
-                latent_references.append(None)
-                continue
-            images = pixels.reshape(-1, 4, height, width).permute(1, 0, 2, 3).unsqueeze(0)
-            latent_references.append(encode_frames(components.vae, images)[0])
+    expected = {"clean": ((batch, 16, frames, height//8, width//8), components.vae.dtype)}
+    for index, pixels in enumerate(prepared.references):
+        if pixels is not None:
+            expected[f"reference_{index}"] = ((16, pixels.shape[0]//4, height//8, width//8), components.vae.dtype)
+    cached = (tensor_cache.read("latents", latent_key, expected=expected)
+              if tensor_cache is not None and latent_key is not None else None)
+    if cached is not None:
+        clean = cached["clean"]
+        latent_references = [cached.get(f"reference_{index}") for index in range(batch)]
+    else:
+        try:
+            if vae_device is not None:
+                components.vae.to(device=vae_device)
+            clean = encode_frames(components.vae, target_pixels)
+            latent_references = []
+            for pixels in prepared.references:
+                if pixels is None:
+                    latent_references.append(None)
+                    continue
+                images = pixels.reshape(-1, 4, height, width).permute(1, 0, 2, 3).unsqueeze(0)
+                latent_references.append(encode_frames(components.vae, images)[0])
+        finally:
+            if vae_device is not None:
+                components.vae.to(device="cpu")
+        if tensor_cache is not None and latent_key is not None:
+            payload = {"clean": clean.detach().cpu()}
+            payload.update({f"reference_{index}": value.detach().cpu()
+                            for index, value in enumerate(latent_references) if value is not None})
+            tensor_cache.write("latents", latent_key, payload)
     return MingLatentBatch(clean, prepared, frame_weights.detach(),
-                           latent_references if any_reference else None, components.conditioner)
+                           latent_references if any_reference else None, components.conditioner,
+                           tensor_cache=tensor_cache, conditioning_key=conditioning_key)
+
 
 
 @dataclass
@@ -118,16 +141,35 @@ class MingLatentBatch:
     reference_latents: list[torch.Tensor | None] | None
     conditioner: object
     frozen_conditioning: MingConditioning | None = None
+    tensor_cache: object = None
+    conditioning_key: str | None = None
 
-    def for_step(self):
+    def for_step(self, *, encoder_device=None):
         trainable = not self.conditioner.cacheable
         if trainable:
             self.frozen_conditioning = None
+            self.conditioning_key = None
         condition = self.frozen_conditioning
+        if condition is None and self.tensor_cache is not None and self.conditioning_key is not None:
+            from .cache import expected_conditioning
+            cached = self.tensor_cache.read("conditioning", self.conditioning_key,
+                expected=expected_conditioning(self.conditioner, self.prepared), conditioner=self.conditioner)
+            if cached is not None:
+                condition = MingConditioning(cached["queries"], cached["direct"])
         if condition is None:
-            condition = encode_inputs(self.conditioner, self.prepared, requires_grad=trainable)
-            if not trainable:
-                self.frozen_conditioning = condition.detached()
+            try:
+                if encoder_device is not None:
+                    self.conditioner.to(device=encoder_device)
+                condition = encode_inputs(self.conditioner, self.prepared, requires_grad=trainable)
+            finally:
+                if encoder_device is not None and not trainable:
+                    self.conditioner.to(device="cpu")
+            if not trainable and self.tensor_cache is not None and self.conditioning_key is not None:
+                self.tensor_cache.write("conditioning", self.conditioning_key,
+                    {"queries": condition.queries.detach().cpu(), "direct": condition.direct.detach().cpu()},
+                    conditioner=self.conditioner)
+        if not trainable and self.frozen_conditioning is None:
+            self.frozen_conditioning = condition.detached()
         return MingTrainingBatch(self.clean, condition, self.frame_weights, self.reference_latents)
 
 

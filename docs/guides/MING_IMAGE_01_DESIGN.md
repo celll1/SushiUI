@@ -466,3 +466,35 @@ trainability refusal and cancellation preserving an existing entry. This is
 the persistence foundation; common encoding-mode selection and producer/consumer
 connections are still pending. The temporary on-the-fly override remains until
 that integration is complete. No GPU/API or official model weights were used.
+
+
+### Native cache producers and consumers
+
+Record preparation now accepts an explicit frozen CPU cache-context snapshot.
+It binds actual producer weights/config/precision, paired pixel identities and
+execution policy to the native keys. Latent hits restore targets and sparse
+references without invoking or staging the VAE. Frozen-conditioning hits restore
+both native streams without invoking or staging the conditioner. Misses execute
+the encoder and atomically publish its CPU result. Caption edits reuse the VAE
+entry while selecting new conditioning; trainable conditioning always gets a new
+live graph. Parameter-version and dtype drift refuse a stale context.
+
+The shared native preparation/MNT seams consume this context when attached to the
+trainer. A fresh model/context with identical weights also reuses the published
+entries. CPU integration verifies identical cached/uncached losses, DiT backward,
+trainable encoder gradients and no encoder `.to` calls on a complete hit. The
+initial affected run passed 29 cases and exposed an in-memory object-reuse defect;
+that was corrected with two targeted passes. Residency refinements pass eight
+selected cases. Thirteen conditioning/cache/shared-gradient checks additionally
+pass after canonical output dtype and transfer-cleanup changes.
+
+Native CUDA query-connector autocast can produce a different dtype from the
+direct stream when model weights are FP32. The wrapper now returns both streams
+in the module dtype; casts preserve values and gradients. A CPU mixed-output
+oracle verifies this boundary without claiming GPU numerical acceptance.
+
+Startup snapshot capture, encoding-mode selection, eager prefill and swap-buffer
+policy still need connection before the temporary on-the-fly override can be
+removed. This producer/consumer integration does not enable normal training or
+prove exact optimizer resume. Persistent cache contexts are never inferred from
+file paths or nominal model names alone.

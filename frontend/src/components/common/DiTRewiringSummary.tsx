@@ -43,6 +43,7 @@ export default function DiTRewiringSummary({ spec, tokenStride, temporalGeometry
       ? `Read-only acoustic NAR topology. Preview: ${temporalGeometry.preview_frames} audio tokens (${(temporalGeometry.preview_frames / temporalGeometry.frame_rate).toFixed(2)}s). Actual chunks follow the generated codec sequence and native context limit. START and END tokens stay at full resolution; autoregressive generation and its immutable prefix KV are preserved.`
       : temporalGeometry ? `Read-only temporal topology. Preview at ${temporalGeometry.preview_frames / temporalGeometry.frame_rate}s; actual clip length follows the generation request. Decoder KV caching is disabled.`
       : videoGeometry ? `Per-frame spatial topology at ${width}×${height}px. Frames and audio tokens retain native resolution; pooling and skip connections never cross frame boundaries.`
+      : spec.architecture === "ming_image_01" ? `Per-target-layer topology at ${width}×${height}px. Reference, caption and padding tokens retain native resolution; pooling and skips never cross layer boundaries. These tokens add attention cost beyond the graph. Denoising prefix KV caching is unsupported; frozen conditioner outputs can be cached.`
       : `Read-only restored topology. Preview at ${width}×${height}px; image dimensions follow the generation request. Image-token KV caching is disabled during rewired execution; immutable prefix KV remains available.`}</p>
     <DiTParameterSummary counts={parameterCounts} plan={plan} />
     {plan && <DiTRewiringGraph spec={spec} plan={plan} />}

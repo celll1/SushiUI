@@ -164,12 +164,20 @@ def test_native_package_loader_round_trip(tmp_path):
               "diffusion_c_input_dim": 8}
     (projection_dir / "config.json").write_text(json.dumps(config))
     save_file(original.projection_state_dict(), projection_dir / "model.safetensors")
-    transformer_config = {"dim": 24, "n_layers": 2, "n_refiner_layers": 1, "n_heads": 3,
+    transformer_config = {"dim": 24, "n_layers": 6, "n_refiner_layers": 1, "n_heads": 3,
                           "n_kv_heads": 3, "cap_feat_dim": 8, "in_channels": 16,
                           "axes_dims": [2, 2, 4], "axes_lens": [128, 32, 32],
                           "alignment_padding_mode": "zero_masked", "multi_frame_output": False}
     transformer = create_transformer(transformer_config, device="cpu", dtype=torch.float32)
+    from core.models.ming_image_01.residual_unet import native_config, restore_topology, model_topology_metadata
+    from core.rewiring.spec import OPERATORS, build_spec
+    topology = build_spec("ming_image_01", [{"name": "main", "block_count": 6}], [
+        dict(id="r0", stream="main", parent=None, start_block=1, end_block=5, down_factor=[2, 2], **OPERATORS)
+    ], native_config(transformer))
+    restore_topology(transformer, topology)
     transformer.save_pretrained(tmp_path / "transformer")
+    save_file(transformer.state_dict(), tmp_path / "transformer" / "diffusion_pytorch_model.safetensors",
+              metadata=model_topology_metadata(transformer))
     vae = AutoencoderKLQwenImage(base_dim=32, dim_mult=[1, 1, 1, 1], num_res_blocks=1,
                                 input_channels=4, z_dim=16, latents_mean=None, latents_std=None)
     vae.register_to_config(scaling_factor=8.0064, shift_factor=0.0)
@@ -194,6 +202,15 @@ def test_native_package_loader_round_trip(tmp_path):
     assert restored.vae.config.shift_factor == 0.0
     assert all(torch.equal(value, restored.conditioner.native.state_dict()[key]) for key, value in original.native.state_dict().items())
     assert restored.artifact.profile == "generation_edit"
-    assert restored.transformer.config.n_layers == 2
+    assert restored.transformer.config.n_layers == 6
+    assert restored.transformer._residual_unet_spec == topology
+    from core.rewiring.inspect import inspect_model
+    from core.models.ming_image_01.artifact import write_manifest
+    inspected = inspect_model(tmp_path)
+    assert inspected["architecture"] == "ming_image_01"
+    assert inspected["topology"] == topology
+    assert inspected["parameter_counts"]["total"] == sum(p.numel() for p in transformer.parameters())
+    manifest = write_manifest(tmp_path)
+    assert inspect_model(manifest)["topology"] == topology
     assert all(torch.equal(value, restored.transformer.state_dict()[key]) for key, value in transformer.state_dict().items())
     assert not torch.cuda.is_initialized()

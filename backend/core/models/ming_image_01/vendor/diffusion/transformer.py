@@ -601,6 +601,11 @@ class DiffusionTransformer(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrigin
         assert patch_size in self.all_patch_size
         assert f_patch_size in self.all_f_patch_size
 
+        topology = getattr(self, "_residual_unet_spec", None)
+        target_shape = tuple(x[0].shape)
+        if topology is not None:
+            from ...residual_unet import validate_forward
+            validate_forward(self, x, patch_size, f_patch_size, topology)
         bsz = len(x)
         device = x[0].device
         t = t * self.t_scale
@@ -725,7 +730,11 @@ class DiffusionTransformer(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrigin
                 unified_attn_mask, cap_inner_pad_mask, x_item_seqlens
             )
 
-        if torch.is_grad_enabled() and self.gradient_checkpointing:
+        if topology is not None:
+            from ...residual_unet import run_rewired_ming
+            unified = run_rewired_ming(self, unified, adaln_input, unified_freqs_cis,
+                unified_attn_mask, x_pos_ids, target_shape, patch_size, topology)
+        elif torch.is_grad_enabled() and self.gradient_checkpointing:
             for layer in self.layers:
                 unified = self._gradient_checkpointing_func(
                     layer, unified, unified_attn_mask, unified_freqs_cis, adaln_input

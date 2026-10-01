@@ -3857,12 +3857,16 @@ paths:
                     type: array
                     description: Implemented backend architectures; topology and workflow compatibility are validated per request
                     items: {type: string}
-                    example: [qwen_image_21, krea2, anima, zimage, flux2, lens, minit2i, ideogram4, sensenova, acestep, ltx2, minimax_h3]
+                    example: [ming_image_01, qwen_image_21, krea2, anima, zimage, flux2, lens, minit2i, ideogram4, sensenova, acestep, ltx2, minimax_h3]
   /models/rewiring/inspect:
     post:
       tags: [models]
       summary: Inspect native topology and checkpoint rewiring without loading weights
       description: >-
+        Ming-Image 0.1 requires a complete native Design/Layer package or its manifest;
+        inspection validates component headers and returns main-stream topology and
+        logical DiT parameter counts. Reference, caption and padding tokens remain
+        native; each target layer is reduced spatially on its own.
         Reads Qwen-Image 2.1, Krea 2, Anima, Z-Image, Flux2, Lens, MiniT2I,
         Ideogram 4, SenseNova, ACE-Step, LTX-2 and MiniMax-H3 configs and checkpoint headers. MiniMax-H3
         reads its Comfy-style DiT header and companion native config; references and audio

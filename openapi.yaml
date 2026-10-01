@@ -26896,9 +26896,12 @@ components:
           enum: [auto, cached_bf16, prefetch_bf16, transient_bf16, dequant]
           default: auto
           description: >-
-            Frozen ConvRot base execution policy for Qwen LoRA training. Auto
-            uses the measured two-block BF16 backward ring with one-block
-            asynchronous dequant lookahead.
+            Frozen ConvRot base execution policy for Qwen and Ming LoRA training.
+            Auto uses bounded BF16 backward caching with asynchronous dequant
+            lookahead for compatible ConvRot/CUDA/BF16 bases; otherwise dequant.
+            Ming includes noise/context refiners and main layers in the bounded
+            block mapping. Ming performance is not yet measured. Cached modes
+            cannot be combined with block swap; full finetuning uses dequant.
         qwen_convrot_backward_cache_blocks:
           type: integer
           minimum: 1

@@ -20,6 +20,10 @@ def generation_adapters(components, configs, *, resolve_path, warn=None):
             raise AdapterIncompatible("Ming adapters require model_type=ming_image_01 metadata", code="ming_adapter_architecture_mismatch")
         if file.metadata.get("ming_image_01_profile") != components.artifact.profile:
             raise AdapterIncompatible("Ming adapter profile does not match the loaded checkpoint", code="ming_adapter_profile_mismatch")
+        from .convrot_training import validate_generation_metadata
+        try:validate_generation_metadata(model,file.metadata)
+        except ValueError as exc:
+            raise AdapterIncompatible(str(exc),code="ming_base_forward_mismatch") from exc
         from .partition_global import GLOBAL_NAME,lora_generation_branch
         try:branch=lora_generation_branch(model,file.tensors,file.metadata)
         except (ValueError,TypeError,KeyError) as exc:

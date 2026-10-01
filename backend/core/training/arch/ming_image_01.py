@@ -1,12 +1,16 @@
 """Native Ming Design/Layer training handler."""
 
-from core.training.arch.base_arch import ArchHandler
+from core.training.arch.base_arch import (ArchHandler, declare_adapter_capability,
+    PHASE2_PENDING, QUANTIZED_ADDITIVE_PENDING)
 from core.models.components.wiring import MING_IMAGE_01_WIRING
 
 
 class MingImage01ArchHandler(ArchHandler):
     name = "ming_image_01"
     wiring = MING_IMAGE_01_WIRING
+    adapter_capability = declare_adapter_capability("ming_image_01",
+        additive_family=True, initial_dora="deferred", additive_reason=PHASE2_PENDING,
+        quantized_base_reason=QUANTIZED_ADDITIVE_PENDING)
     pixel_align = 16
     timestep_convention = "t0"
     velocity_sign = "x0_minus_eps"

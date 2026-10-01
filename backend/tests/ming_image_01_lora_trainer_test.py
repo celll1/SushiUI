@@ -26,11 +26,33 @@ def make_owner(root, output, *, projection_only=False, resume=None):
 @pytest.mark.parametrize("projection_only", [False, True])
 @pytest.mark.parametrize("profile", ["generation_edit", "layer_decompose"])
 def test_native_lora_shared_trainer_save_resume_and_generation(tmp_path, monkeypatch, projection_only, profile):
-    monkeypatch.setitem(TRAINING_UNSUPPORTED, "ming_image_01", {})
     root = tmp_path/"package"
     root.mkdir()
     write_tiny_package(root, profile=profile)
-    owner = make_owner(root, tmp_path/"run", projection_only=projection_only)
+    from api.routes import TrainingRunCreateRequest, _check_ming_conditioner_params, _check_adapter_params
+    from core.training.training_config import TrainingConfigGenerator
+    from core.training.train_runner import _prepare_training_process_config
+    import yaml
+    request = TrainingRunCreateRequest(training_method="lora", base_model_path=str(root),
+        total_steps=1, train_unet=not projection_only, train_text_encoder=False,
+        train_adapter=projection_only, ming_conditioner_groups=[],
+        lora_rank=2, lora_alpha=2, base_resolutions=[64],
+        text_encoding_mode="swap_onthefly", latent_encoding_mode="swap_onthefly")
+    _check_ming_conditioner_params(request)
+    _check_adapter_params(request)
+    payload = request.model_dump()
+    payload["_explicit_fields"] = sorted(request.model_fields_set)
+    serialized = TrainingConfigGenerator.generate_lora_config(payload, run_name="run",
+        base_model_path=str(root), output_dir=str(tmp_path/"run"))
+    process, train, network, method = _prepare_training_process_config(yaml.safe_load(serialized), str(root))
+    assert method == "lora" and not train["train_text_encoder"]
+    assert network["linear"] == 2 and network["linear_alpha"] == 2
+    assert train["train_unet"] == (not projection_only) and train["train_adapter"] == projection_only
+    assert "lora" not in TRAINING_UNSUPPORTED.get("ming_image_01", {})
+    owner = LoRATrainer(model_path=str(root), output_dir=process["training_folder"],
+        lora_rank=network["linear"], lora_alpha=network["linear_alpha"], device="cpu", weight_dtype="fp32", training_dtype="fp32",
+        vae_dtype="fp32", mixed_precision=False, attention_backend="native",
+        train_unet=train["train_unet"], train_text_encoder=train["train_text_encoder"], train_config=train)
     if projection_only:
         owner.config["adapter_lr"] = 0.
         assert owner.setup_trainable_parameters()[0]["lr"] == 0.

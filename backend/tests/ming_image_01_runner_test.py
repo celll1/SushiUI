@@ -66,7 +66,7 @@ def test_public_full_request_to_runner_to_native_training(tmp_path, profile, tra
     assert not torch.cuda.is_initialized()
 
 
-@pytest.mark.parametrize("method", ["lora", "relora", "controlnet", "vae_decoder"])
+@pytest.mark.parametrize("method", ["relora", "controlnet", "vae_decoder"])
 def test_non_native_methods_remain_refused_before_load(method):
     with pytest.raises(ValueError, match="pending|does not support|ControlNet"):
         preflight_training({}, method=method)
@@ -93,3 +93,13 @@ def test_minimal_native_full_yaml_inherits_auto_prediction(tmp_path):
     _, train, _, _ = _prepare_training_process_config(config, str(root))
     assert train["noise_process"] == "auto"
     assert not torch.cuda.is_initialized()
+
+
+@pytest.mark.parametrize("config,message", [
+    ({"train_text_encoder": True}, "conditioner LoRA"),
+    ({"ming_conditioner_groups": ["language"]}, "conditioner LoRA"),
+    ({"train_unet": False}, "requires DiT"),
+])
+def test_native_lora_preflight_rejects_unconnected_or_empty_scope(config, message):
+    with pytest.raises(ValueError, match=message):
+        preflight_training(config, method="lora")

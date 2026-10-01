@@ -6417,7 +6417,7 @@ paths:
         the export for a resumable checkpoint. A completed run may retry a
         failed automatic export. INT8 ConvRot supports Qwen-Image 2.1 and Ming-Image 0.1.
         Ming emits a six-component native package with a quantized DiT and
-        floating companion components; its U-Net topology is retained.
+        preserved companion components; its U-Net topology is retained.
       parameters:
         - name: run_id
           in: path
@@ -27405,8 +27405,8 @@ components:
             Optional inference export after normal full fine-tune completion.
             It is separate from the floating resumable checkpoint; no periodic
             export is performed. INT8 ConvRot is currently implemented for
-            Qwen-Image 2.1 and Ming-Image 0.1. Ming keeps companion components
-            floating and writes a separate six-component native package.
+            Qwen-Image 2.1 and Ming-Image 0.1. Ming preserves companion stored
+            precision and writes a separate six-component native package.
         ming_conditioner_groups:
           type: array
           nullable: true

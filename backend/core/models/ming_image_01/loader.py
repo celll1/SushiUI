@@ -61,6 +61,9 @@ def load_components(path, *, dtype, conditioner_attention: str) -> MingComponent
         raise ValueError("Ming conditioner supports eager or flash_attention_2, not SDPA")
     from .quantization import prepare_quantized_transformer, load_quantized_transformer
     quantized_transformer = prepare_quantized_transformer(artifact, dtype)
+    from .conditioner_quantization import prepare_conditioner_components
+    from .quantization import load_quantized_component
+    packed_conditioners = prepare_conditioner_components(artifact,dtype,conditioner_attention)
     from diffusers import FlowMatchEulerDiscreteScheduler
     from safetensors.torch import load_file
     from transformers import Qwen2Config, Qwen2ForCausalLM
@@ -75,19 +78,32 @@ def load_components(path, *, dtype, conditioner_attention: str) -> MingComponent
 
     config = BailingMM2Config.from_dict(artifact.configs["mllm"])
     config._attn_implementation = conditioner_attention
-    native, info = BailingMM2NativeForConditionalGeneration.from_pretrained(
-        str(artifact.components["mllm"]), config=config, torch_dtype=dtype,
-        local_files_only=True, low_cpu_mem_usage=True, output_loading_info=True)
-    _strict_loading_info(info, "mllm")
+    if "mllm" in packed_conditioners:
+        native = load_quantized_component(packed_conditioners["mllm"],artifact,"mllm",dtype)
+    else:
+        native, info = BailingMM2NativeForConditionalGeneration.from_pretrained(
+            str(artifact.components["mllm"]), config=config, torch_dtype=dtype,
+            local_files_only=True, low_cpu_mem_usage=True, output_loading_info=True)
+        _strict_loading_info(info, "mllm")
     connector_config = Qwen2Config.from_dict(artifact.configs["connector"])
-    connector, info = Qwen2ForCausalLM.from_pretrained(
-        str(artifact.components["connector"]), config=connector_config,
-        attn_implementation="eager", torch_dtype=dtype, local_files_only=True,
-        low_cpu_mem_usage=True, output_loading_info=True)
-    _strict_loading_info(info, "connector")
+    if "connector" in packed_conditioners:
+        connector = load_quantized_component(packed_conditioners["connector"],artifact,"connector",dtype)
+    else:
+        connector, info = Qwen2ForCausalLM.from_pretrained(
+            str(artifact.components["connector"]), config=connector_config,
+            attn_implementation="eager", torch_dtype=dtype, local_files_only=True,
+            low_cpu_mem_usage=True, output_loading_info=True)
+        _strict_loading_info(info, "connector")
     conditioner = MingConditioner(native, connector, artifact.configs["mlp"])
     conditioner.load_projection_state(load_file(str(artifact.components["mlp"] / "model.safetensors"), device="cpu"))
-    conditioner.to(dtype=dtype).eval()
+    if packed_conditioners:
+        # Cast only newly attached floating projections; preserve packed codes and FP32 scales.
+        for name in ("queries","projections"):
+            for module in conditioner.component_groups()[name]:
+                module.to(dtype=dtype)
+        conditioner.eval()
+    else:
+        conditioner.to(dtype=dtype).eval()
     _restore_native_rope(conditioner)
     conditioner.set_trainable(set())
     tokenizer = BailingTokenizer.from_pretrained(str(artifact.components["mllm"]), local_files_only=True)

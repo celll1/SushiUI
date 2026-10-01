@@ -1525,3 +1525,67 @@ Backend compile/real imports, spec parsing and frontend static review supplement
 the CPU cases; owner build/type/UI checks and official GPU acceptance are pending.
 Conditioner quantization/adapters, optimized ConvRot training, partition/global/
 style and remaining objective parity remain active.
+
+
+### Prepared MLLM/connector weight-only quantization milestone
+
+Native loading now accepts packed INT8, E4M3 fallback and declared ConvRot Linear
+weights inside `mllm` and `connector` as well as DiT. Their formats are inferred
+from validated checkpoint headers/markers; `text_encoder_quantization` remains
+an unsupported runtime re-quantization control, matching Qwen's prepared-artifact
+precision boundary. Its capability explanation now names the prepared MLLM/
+connector path. The separate `mlp` component's packed projections/queries, and
+quantized VAE, remain explicitly refused; no support is inferred from this
+milestone for arbitrary integer tensors, non-Linear weights or packed tied
+embedding/output-head aliases.
+
+The meta slot validator and CPU shard assignment are shared with native DiT.
+Both conditioner components are constructed/preflighted on meta before loading
+any companion weight payload. Supported markers are read under the existing
+bounded CPU marker contract; keys, shapes, Linear ownership, per-row FP32 scales
+and declarations are validated before assignment. Scale payloads must be finite
+and positive. Packed I8/E4M3 codes keep their dtype, FP32 row scales remain FP32,
+and ordinary floating weights/biases use the requested compute dtype. Only the
+new floating projection/query modules are cast after conditioner assembly; a
+whole-conditioner dtype cast would corrupt FP8 codes and lower scale precision.
+Nonpersistent native RoPE is restored with the existing FP32 preservation path.
+
+Declared floating embedding/output-head aliases omitted by HF serialization are
+restored by their meta Parameter identity after shard assignment. If both alias
+copies are present, disagreement is refused rather than silently selecting one.
+Packed tied aliases are refused. Native vision activation-dtype discovery and
+the language FlashAttention FP32-recasting fallback read a packed Linear's
+`compute_dtype`; ordinary floating fallback behavior is preserved. The upstream
+vendor note and legal adaptation ledger record these local compatibility edits.
+FlashAttention kernels/GPU execution themselves were not exercised.
+
+Native bundle save/reload preserves packed conditioner payloads. The offline
+DiT converter and run-scoped inference export now validate and copy prepared
+MLLM/connector components verbatim rather than refusing them or applying another
+lossy quantization. This supersedes earlier "all companions floating" statements:
+companions retain their stored precision; DiT still must be floating before its
+ConvRot conversion. Quantized companion structural preflight uses meta models,
+not payload loading or physical model allocation. Full native checkpoint
+selection likewise permits preserved packed conditioner components while
+requiring floating DiT/projections/VAE. Full fine-tuning of selected packed
+conditioner groups still meets the explicit packed-base refusal; conditioner
+materialization/training and packed `mlp` support are pending subsequent stages.
+Frozen-conditioner ordinary LoRA training is connected through the existing
+shared loop and cache lifecycle.
+
+Across this milestone, 46 unique affected CPU cases pass: 24 new prepared-
+conditioner tests, 10 existing plain native DiT packed-bundle tests and 12
+existing native DiT ConvRot tests. New coverage includes Design/Layer actual
+RGBA generation and native bundle roundtrip in FP32/BF16, real Comfy ConvRot
+conditioning for both meta-built components, packed vision reference encoding
+in FP16/BF16, malformed header refusal before weight payload loading, declared
+alias restoration/rejection, DiT ConvRot inference export with byte-identical
+prepared conditioner files, and real two-step frozen-conditioner LoRA updates
+under swap, CPU prefetch and persistent condition-cache modes. Packed conditioner
+bytes remain unchanged through those training runs. No official weights,
+physical GPU allocation or live HTTP API was used; the main checkout is untouched.
+Compile/real imports and spec parsing supplement the cases. Frontend behavior
+continues to use the existing artifact picker/structure display and dynamic
+capability explanation; owner build/type/UI verification remains pending.
+Conditioner full materialization/packed projections, optimized ConvRot training,
+adapters, partition/global/style and remaining objective parity remain active.

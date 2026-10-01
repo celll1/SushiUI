@@ -637,7 +637,7 @@ for _feature, _reason in {
     "advanced_cfg": "dynamic thresholding and CFG rescale are not wired into the native Ming loop",
     "attention_impl": "Ming DiT uses the common conduit; the legacy implementation is unavailable",
     "unet_quantization": "Ming supports runtime INT8 attention/FFN conversion; other runtime quantization formats are pending",
-    "text_encoder_quantization": "Ming conditioner quantization is awaiting integration",
+    "text_encoder_quantization": "Ming MLLM/connector precision is selected by the prepared artifact; runtime re-quantization is not enabled",
     "style_transfer": "Ming style conditioning is awaiting integration",
     "vae_drift_correction": "VAE drift correction is not wired into native Ming editing",
     "flatten_in_loop": "in-loop flattening is not wired into the native Ming loop",

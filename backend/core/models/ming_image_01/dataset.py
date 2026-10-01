@@ -339,12 +339,52 @@ def load_shared_items(trainer, pairs, *, epoch=None, batch_position=None):
     return items
 
 
+def shared_conditioning_context(trainer, pairs):
+    from .cache import dataset_cache_context
+    context = getattr(trainer, "ming_cache_context", None)
+    if context is None or not context.get("dataset_owned"):
+        return context
+    ids = [getattr(dataset, "unique_id", None) for _item, dataset in pairs]
+    if not ids or any(not isinstance(value, str) or not value for value in ids):
+        raise ValueError("Ming persistent batches require stable dataset IDs")
+    # Batch padding is native; its owner is stable even for mixed-dataset batches.
+    return dataset_cache_context({**context, "latent_enabled": False},
+        base_cache_dir=context["dataset_cache_base"], dataset_unique_id=min(ids))
+
+
+def prepare_shared_items_latents(trainer, pairs, items):
+    from .cache import dataset_cache_context
+    from .training_data import MingLatentBatch
+    context = getattr(trainer, "ming_cache_context", None)
+    components = trainer.ming_image_01_components
+    policy = getattr(trainer, "ming_training_residency", None)
+    options = dict(resolution=trainer.ming_prompt_resolution, vae_device=trainer.device, residency=policy)
+    if context is None or not context.get("dataset_owned"):
+        return prepare_record_latents(components, items, cache_context=context, **options)
+    if len(items) != len(pairs):
+        raise ValueError("Ming native items and dataset ownership must align")
+    record_cache_options(components, items, resolution=trainer.ming_prompt_resolution)
+    condition_context = shared_conditioning_context(trainer, pairs)
+    if not context["latent_enabled"]:
+        return prepare_record_latents(components, items, cache_context=condition_context, **options)
+    clean, references = [], []
+    for item, (_source, dataset) in zip(items, pairs):
+        item_context = dataset_cache_context({**context, "conditioning_enabled": False},
+            base_cache_dir=context["dataset_cache_base"], dataset_unique_id=dataset.unique_id)
+        encoded = prepare_record_latents(components, [item], cache_context=item_context, **options)
+        clean.append(encoded.clean.detach().cpu())
+        reference = None if encoded.reference_latents is None else encoded.reference_latents[0]
+        references.append(None if reference is None else reference.detach().cpu())
+    source = prepare_record_conditioning(components, items, resolution=trainer.ming_prompt_resolution,
+        cache_context=condition_context, residency=policy)
+    return MingLatentBatch(torch.cat(clean), source.prepared, torch.stack([item.weights for item in items]),
+        references if any(value is not None for value in references) else None, source.conditioner,
+        tensor_cache=source.tensor_cache, conditioning_key=source.conditioning_key, residency=policy)
+
+
 def prepare_shared_latents(trainer, pairs):
     """Encode paired native pixels once per logical batch before the MNT window."""
-    return prepare_record_latents(trainer.ming_image_01_components, load_shared_items(trainer, pairs),
-                                  resolution=trainer.ming_prompt_resolution,
-                                  cache_context=getattr(trainer, "ming_cache_context", None),
-                                  vae_device=trainer.device, residency=getattr(trainer, "ming_training_residency", None))
+    return prepare_shared_items_latents(trainer, pairs, load_shared_items(trainer, pairs))
 
 
 def shared_inputs_for_mnt(trainer, prepared):
@@ -362,11 +402,11 @@ def prefill_shared_batches(trainer, batches, *, epoch, batch_offset=0, progress_
         options = dict(resolution=trainer.ming_prompt_resolution, cache_context=context,
                        residency=getattr(trainer, "ming_training_residency", None))
         if context["latent_enabled"]:
-            prepared = prepare_record_latents(trainer.ming_image_01_components, items,
-                                             vae_device=trainer.device, **options)
+            prepared = prepare_shared_items_latents(trainer, pairs, items)
             if context["conditioning_enabled"]:
                 prepared.for_step(encoder_device=trainer.device)
         else:
+            options["cache_context"] = shared_conditioning_context(trainer, pairs)
             prepared = prepare_record_conditioning(trainer.ming_image_01_components, items, **options)
             prepared.for_step(encoder_device=trainer.device)
         del prepared, items

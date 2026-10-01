@@ -277,7 +277,7 @@ def test_startup_snapshot_attaches_requested_modes_without_hiding_trainable_te(t
     assert owner.ming_cache_snapshot["latent_enabled"] and not owner.ming_cache_snapshot["conditioning_enabled"]
     attach_startup_snapshot(owner, latent_mode="pre_encoded_cache", text_mode="pre_encoded_cache")
     assert owner.ming_cache_context["latent_enabled"] and not owner.ming_cache_context["conditioning_enabled"]
-    assert owner.ming_cache_context["cache"].root == owner.output_dir / "ming_cache"
+    assert owner.ming_cache_context["dataset_owned"] and owner.ming_cache_context["cache"] is None
     attach_startup_snapshot(owner, latent_mode="onthefly_gpu", text_mode="onthefly_gpu")
     assert owner.ming_cache_context is None
 
@@ -396,4 +396,66 @@ def test_native_dataset_cache_rejects_escaping_ids(tmp_path, dataset_id):
     _, _, context = cached_record_setup(tmp_path)
     with pytest.raises(ValueError, match="identity"):
         dataset_cache_context(context, base_cache_dir=tmp_path / "datasets", dataset_unique_id=dataset_id)
+    assert not (tmp_path / "datasets").exists()
+
+
+def test_owned_mixed_dataset_prefill_hits_and_namespace_rebuild(tmp_path, monkeypatch):
+    import shutil
+    from dataclasses import replace
+    from core.models.ming_image_01.dataset import (prefill_shared_batches, prepare_shared_latents,
+        shared_inputs_for_mnt, prepare_record_latents)
+    from core.models.ming_image_01.training_data import native_step_batch
+    from core.training.latent_cache import list_vae_namespaces
+    from ming_image_01_training_batch_test import trainer
+    value, item, context = cached_record_setup(tmp_path)
+    second_item = replace(item, caption="word5 word6")
+    baseline = prepare_record_latents(value, [item, second_item], resolution=32).for_step()
+    owner = trainer(value)
+    owner.ming_image_01_components = value
+    owner.ming_cache_context = {**context, "cache": None, "dataset_owned": True, "dataset_cache_base": tmp_path / "datasets"}
+    owner.bucket_strategy, owner.ming_prompt_resolution = "resize", 32
+    owner._check_stop_requested = lambda: None
+    pairs = [({"_ming_record": item.record, "width": 32, "height": 32, "caption": entry.caption},
+              SimpleNamespace(unique_id=uid)) for entry, uid in [(item, "dataset-b"), (second_item, "dataset-a")]]
+    prefill_shared_batches(owner, [pairs], epoch=0)
+    listings = {uid: list_vae_namespaces(str(tmp_path / "datasets"), uid) for uid in ("dataset-a", "dataset-b")}
+    assert all(len(entries) == 1 and entries[0]["entries"] == 1 for entries in listings.values())
+    original_encode = value.vae.encode
+    def forbidden(*a, **k): raise AssertionError("Dataset cache hit executed encoder")
+    monkeypatch.setattr(value.vae, "encode", forbidden)
+    monkeypatch.setattr(value.conditioner, "forward", forbidden)
+    prepared = prepare_shared_latents(owner, pairs)
+    packed, aux, refs = shared_inputs_for_mnt(owner, prepared)
+    cached = native_step_batch(prepared.clean, packed, aux, refs)
+    torch.testing.assert_close(cached.clean, baseline.clean)
+    torch.testing.assert_close(cached.conditioning.queries, baseline.conditioning.queries)
+    torch.testing.assert_close(cached.conditioning.direct, baseline.conditioning.direct)
+    for a, b in zip(cached.reference_latents, baseline.reference_latents): torch.testing.assert_close(a, b)
+    # Rebatching/reordering still reuses per-item VAE entries.
+    prepare_shared_latents(owner, [pairs[1]])
+    shutil.rmtree(listings["dataset-a"][0]["path"])
+    calls = []
+    def counted(*a, **k):
+        calls.append(1)
+        return original_encode(*a, **k)
+    monkeypatch.setattr(value.vae, "encode", counted)
+    rebuilt = prepare_shared_latents(owner, pairs)
+    shared_inputs_for_mnt(owner, rebuilt)
+    assert len(calls) == len(item.record.targets) + len(item.record.references)
+    assert list_vae_namespaces(str(tmp_path / "datasets"), "dataset-b")[0]["entries"] == 1
+    assert not torch.cuda.is_initialized()
+
+
+def test_owned_cache_requires_dataset_identity_before_encoding(tmp_path, monkeypatch):
+    from core.models.ming_image_01.dataset import prepare_shared_latents
+    from ming_image_01_training_batch_test import trainer
+    value, item, context = cached_record_setup(tmp_path)
+    owner = trainer(value)
+    owner.ming_image_01_components = value
+    owner.ming_cache_context = {**context, "cache": None, "dataset_owned": True, "dataset_cache_base": tmp_path / "datasets"}
+    owner.bucket_strategy, owner.ming_prompt_resolution = "resize", 32
+    monkeypatch.setattr(value.vae, "encode", lambda *a, **k: (_ for _ in ()).throw(AssertionError("Unexpected encoder")))
+    pair = ({"_ming_record": item.record, "width": 32, "height": 32, "caption": "word5"}, None)
+    with pytest.raises(ValueError, match="stable dataset IDs"):
+        prepare_shared_latents(owner, [pair])
     assert not (tmp_path / "datasets").exists()

@@ -1244,3 +1244,47 @@ loads/saves already-converted DiT artifacts; production offline ConvRot
 conversion, conditioner quantization, quantized-base training and the remaining
 Qwen feature parity are still in progress. Frontend continues to use the common
 native-package export controls; owner build/type checks remain deferred.
+
+### Offline native DiT conversion milestone
+
+`subapps/ming_image_01_convert.py` converts a complete floating native Ming
+package to `int8` (the shared INT8/E4M3 error-selection policy) or
+`int8_convrot` (shared FP32 Hadamard rotation and rowwise INT8 quantization).
+CPU is the default; CUDA is used only if explicitly requested. For example,
+from a checkout with its repo virtualenv:
+
+```powershell
+venv/Scripts/python.exe subapps/ming_image_01_convert.py "SOURCE_PACKAGE" "NEW_PACKAGE" --format int8_convrot --device cpu
+```
+
+`--max-shard-mib` optionally changes the shared 4 GiB output threshold. The
+source must be floating point and match its native DiT key/shape contract;
+already-quantized packages are refused to prevent a second lossy quantization.
+The destination must be new and outside the source. Transformer topology is
+validated and propagated to every shard/index; unchanged configs and native
+processor identity are checked before atomic package publication.
+
+Companion MLLM/connector/projections/VAE/scheduler files are copied verbatim;
+no companion model is constructed or loaded. DiT structure is constructed on
+meta for selection/shape checks, and source tensors are mapped one file at a
+time. The output writer buffers a shard plus the current tensor/quantization
+working set; this is not a fixed RAM ceiling. Source files are never changed.
+The existing Ming policy excludes input/output, time, caption and modulation
+bridges. ConvRot additionally requires input width divisible by 256. The
+provisional policy is not an official-model quality or speed claim.
+
+`quantization.json` records selection, exclusions, per-layer plain INT8 audit
+or ConvRot declarations and source config identity. Undefined zero-weight audit
+metrics use JSON null plus named `undefined_metrics` rather than NaN/Infinity.
+Cancellation or conversion failure removes temporary output without publishing
+a partial package. Existing training metadata is copied when present.
+
+Nine CPU cases pass: both profiles in both formats produce sharded native
+packages restored through the production ModelLoader and finite U-Net RGBA
+sampling; protected weights and all companion files retain exact contents.
+The converter is tested with companion loaders forbidden. Other cases cover
+interruption/failure cleanup, destination/already-quantized refusal, the real CLI
+entry's CPU default and zero-weight audit/reload. Compile and guarded real
+imports are checked at this milestone. No official weights, HTTP API, server or
+CUDA allocation is used. Conditioner quantization, quantized-base training and
+the remaining Qwen parity work stay active; owner UI/build acceptance is deferred.

@@ -304,3 +304,58 @@ def test_bad_mode_refused_before_native_weight_load(monkeypatch):
     monkeypatch.setattr(loader, "load_components", lambda *a, **k: (_ for _ in ()).throw(AssertionError("Weights loaded before mode validation")))
     with pytest.raises(ValueError, match="Unsupported Ming"):
         load_components(SimpleNamespace(config={"text_encoding_mode": True}))
+
+
+@pytest.mark.parametrize("latent,condition", [(True, True), (True, False), (False, True)])
+def test_epoch_prefill_populates_only_requested_producers_and_consumption_reuses(tmp_path, monkeypatch, latent, condition):
+    from core.models.ming_image_01.dataset import prefill_shared_batches, prepare_shared_latents, shared_inputs_for_mnt
+    from core.models.ming_image_01.cache import snapshot_cache_context
+    from ming_image_01_training_batch_test import trainer
+    value, item, original = cached_record_setup(tmp_path)
+    context = snapshot_cache_context(value, original["cache"], execution=original["execution"],
+                                     latent_enabled=latent, conditioning_enabled=condition)
+    owner = trainer(value)
+    owner.ming_image_01_components, owner.ming_cache_context = value, context
+    owner.bucket_strategy, owner.ming_prompt_resolution, owner.run_seed = "random_crop", 32, 998
+    owner._current_epoch, owner._current_batch_position = 2, 5
+    owner._check_stop_requested = lambda: None
+    pairs = [({"_ming_record": item.record, "width": 32, "height": 32, "caption": "word5"}, None)]
+    if not latent:
+        monkeypatch.setattr(value.vae, "encode", lambda *a, **k: (_ for _ in ()).throw(AssertionError("TE prefill ran VAE")))
+    if not condition:
+        monkeypatch.setattr(value.conditioner, "forward", lambda *a, **k: (_ for _ in ()).throw(AssertionError("Latent prefill ran TE")))
+    progress = []
+    prefill_shared_batches(owner, [pairs], epoch=2, batch_offset=5, progress_callback=lambda **kw: progress.append(kw))
+    root = tmp_path / "cache"
+    assert bool(list((root / "latents").glob("*.safetensors"))) == latent
+    assert bool(list((root / "conditioning").glob("*.safetensors"))) == condition
+    assert progress == [{"phase": "latent_cache" if latent else "text_encoder_cache", "step": 1, "total": 1}]
+    if latent and condition:
+        def forbidden(*a, **k): raise AssertionError("Prefilled native consumption ran encoder")
+        for encoder in (value.vae, value.conditioner):
+            monkeypatch.setattr(encoder, "to", forbidden)
+        monkeypatch.setattr(value.vae, "encode", forbidden)
+        monkeypatch.setattr(value.conditioner, "forward", forbidden)
+        prepared = prepare_shared_latents(owner, pairs)
+        shared_inputs_for_mnt(owner, prepared)
+    assert not torch.cuda.is_initialized()
+
+
+def test_epoch_prefill_stop_does_not_publish_future_batch(tmp_path):
+    from core.models.ming_image_01.dataset import prefill_shared_batches
+    from ming_image_01_training_batch_test import trainer
+    value, item, context = cached_record_setup(tmp_path)
+    owner = trainer(value)
+    owner.ming_image_01_components, owner.ming_cache_context = value, context
+    owner.bucket_strategy, owner.ming_prompt_resolution = "resize", 32
+    calls = []
+    def stop():
+        calls.append(1)
+        if len(calls) == 2: raise KeyboardInterrupt("stop")
+    owner._check_stop_requested = stop
+    pair = ({"_ming_record": item.record, "width": 32, "height": 32, "caption": "word5"}, None)
+    second = ({**pair[0], "caption": "word6"}, None)
+    with pytest.raises(KeyboardInterrupt):
+        prefill_shared_batches(owner, [[pair], [second]], epoch=0)
+    assert len(list((tmp_path / "cache" / "conditioning").glob("*.safetensors"))) == 1
+    assert not list((tmp_path / "cache").rglob("*.tmp"))

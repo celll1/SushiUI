@@ -567,3 +567,22 @@ silently continue under a different crop algorithm.
 import pass. This is the pixel preparation seam for prefill/prefetch, not their
 completed scheduling. Epoch prefill, bounded buffers and CPU worker lifecycle
 remain pending; normal Ming training remains unavailable. No GPU/API was used.
+
+### Epoch native persistent-cache prefill
+
+The common trainer now invokes native prefill after the epoch's final batch plan
+and resume suffix are resolved, before consuming its first batch. Prefill uses
+that epoch and absolute batch offset through the replayable pixel-loading seam.
+Only requested persistent producers run: latent-only never runs the conditioner,
+and conditioner-only never runs the VAE. Dual-stream conditioning resolution is
+shared with normal/MNT consumption. Prefill holds only one pixel/prepared batch
+at a time; entries are atomically published and a stop before a later batch does
+not publish that batch. Progress uses the existing latent/text cache phases.
+
+57 affected native cache/residency/shared-step CPU tests pass, including complete
+prefill followed by consumption with both encoder execution and transfers
+forbidden. Compile and real imports pass with CUDA initialization forbidden.
+GPU memory/performance and the full common train loop remain unverified. Grouped
+swap-buffer scheduling, CPU prefetch and force-recache propagation still need
+connection before removing the temporary generic dispatch and normal-training
+refusal. Resolution/caption changes continue selecting content-bound cache keys.

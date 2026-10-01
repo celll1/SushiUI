@@ -18368,6 +18368,12 @@ class BaseTrainer(ABC):
                         except Exception:
                             pass
 
+                if getattr(self, "is_ming_image_01", False):
+                    from core.models.ming_image_01.dataset import prefill_shared_batches
+                    prefill_shared_batches(self, batches, epoch=epoch,
+                        batch_offset=int(getattr(self, "_epoch_batch_offset", 0) or 0),
+                        progress_callback=progress_callback)
+
                 for batch_idx, batch in enumerate(tqdm(batches, desc=f"Epoch {epoch+1}/{num_epochs} ({epoch_steps} steps)")):
                     _exposure_items = batch
                     self._current_batch_position = (

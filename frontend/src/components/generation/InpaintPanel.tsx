@@ -4956,7 +4956,7 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
           onApply={(prompt) => setParams((previous) => ({ ...previous, prompt }))}
         />
       )}
-      <MingLayerControls value={params.ming_image_01_layers}
+      <MingLayerControls mode="inpaint" value={params.ming_image_01_layers}
         onChange={ming_image_01_layers => setParams(previous => ({ ...previous, ming_image_01_layers }))} />
       <MingOutputGroups panel="inpaint" />
       {loadedArchType === "qwen_image_21" && (

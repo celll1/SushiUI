@@ -1806,7 +1806,7 @@ async def generate_txt2img(
         complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed}, generation_id=_gen_id)
         return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings(_gen_id)}
 
-    except GenerationError as e:
+    except APIError as e:
         # Re-raise custom errors as-is
         fail_generation(str(e), generation_id=_gen_id)
         attach_error_context(e, _gen_id)
@@ -2807,7 +2807,7 @@ async def generate_img2img(
         complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed}, generation_id=_gen_id)
         return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings(_gen_id)}
 
-    except GenerationError as e:
+    except APIError as e:
         # Re-raise custom errors as-is
         fail_generation(str(e), generation_id=_gen_id)
         attach_error_context(e, _gen_id)
@@ -8299,7 +8299,7 @@ async def generate_inpaint(
         complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed}, generation_id=_gen_id)
         return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings(_gen_id)}
 
-    except GenerationError as e:
+    except APIError as e:
         # Re-raise custom errors as-is
         fail_generation(str(e), generation_id=_gen_id)
         attach_error_context(e, _gen_id)
@@ -9019,7 +9019,7 @@ async def generate_outpaint(
         complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed}, generation_id=_gen_id)
         return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings(_gen_id)}
 
-    except GenerationError as e:
+    except APIError as e:
         # Re-raise custom errors as-is
         fail_generation(str(e), generation_id=_gen_id)
         attach_error_context(e, _gen_id)

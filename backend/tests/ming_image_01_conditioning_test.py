@@ -247,7 +247,7 @@ def test_native_package_loader_round_trip(tmp_path, monkeypatch):
     scanned = scan_model(str(tmp_path), "diffusers")
     assert scanned["arch"] == "ming_image_01" and scanned["latent_ndim"] == 5
     assert scanned["is_video"] is False
-    assert manager.current_model_info["generation_available"] is False
+    assert manager.current_model_info["generation_available"] is True
     loaded_refs = list(manager._iter_loaded_components())
     assert any(value is manager.ming_image_01_components["text_encoder"] for _, value in loaded_refs)
     manager._cleanup_component_architectures()

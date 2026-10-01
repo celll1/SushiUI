@@ -16,17 +16,17 @@ The native component loader and selectable language/vision/connector/query/proje
 
 Native sampling now has a task/profile adapter, transformer argument bridge, zero CFG branches, ordered Layer result groups and cancellation cleanup. Sixteen targeted CPU sampling tests pass: flow sign/time and Euler endpoint, CFG formula, deterministic RGBA Design output, native reference editing, Layer N+1 output, explicit frame-major regrouping, cancellation/reuse and preflight refusals. A consolidated affected suite also passed 40 tests before the final sampler validation additions. This is small-model functional evidence; the platform API/UI and official-model quality gates remain open.
 
-Ming target-only residual U-Net execution and checkpoint topology restoration are now implemented. Eight CPU tests cover nested transport with ragged auxiliary lengths, independent Layer frame grids, all-main-block gradients, identity reconstruction, gradient checkpointing, profile identity/resume conflicts, the deepest-four-block preset and exact native DiT parameter counts. The seven conditioner tests also exercise a full tiny package with saved topology: strict loading restores it, and both package and manifest inspection report the same topology and parameter census. The affected batch passes 15 tests. Shared inspection/editor contracts remain unchanged; Ming previews describe per-target-layer grids and preserved auxiliary-token overhead. Trainer registration, common trainer/export API integration and production UI wiring are still pending.
+Ming target-only residual U-Net execution and checkpoint topology restoration are now implemented. Eight CPU tests cover nested transport with ragged auxiliary lengths, independent Layer frame grids, all-main-block gradients, identity reconstruction, gradient checkpointing, profile identity/resume conflicts, the deepest-four-block preset and exact native DiT parameter counts. The seven conditioner tests also exercise a full tiny package with saved topology: strict loading restores it, and both package and manifest inspection report the same topology and parameter census. The affected batch passes 15 tests. Shared inspection/editor contracts remain unchanged; Ming previews describe per-target-layer grids and preserved auxiliary-token overhead. Trainer registration, common trainer/export API integration and advanced generation wiring are still pending.
 
 The native flow objective now accepts explicit sigma, ordered target-frame supervision weights, ragged reference latents and aligned dual-stream CFG dropout. Ten CPU tests cover the native time/sign, target-only weighted loss, both profiles' U-Net/conditioning gradients, malformed supervision refusal and independent component learning-rate ownership. These are objective primitives; the common trainer, datasets, checkpoint/resume and API registration remain unconnected.
 
 Native component-bundle export is implemented in `checkpoint.py`: all six native components plus tokenizer/processor are written to a sibling staging directory, verified, then published without overwriting an existing destination. DiT uses the shared sharded-state writer with identical topology metadata on every shard and index. Export requires explicitly CPU-offloaded components and does not change residency or training mode. The seven conditioner/package tests now also round-trip a forced-sharded full bundle, compare all DiT/conditioner/VAE states and conditioning outputs, and verify collision refusal and mid-export cancellation cleanup. This proves the native inference bundle format; common trainer optimizer/RNG/scaler resume and export API integration remain pending.
 
-Native prompt/vision preparation and generation orchestration now share `prompting.py` and `generation.py`. Official HUMAN/system/assistant templates and processor vision geometry are retained; VAE references separately use the explicitly requested 16-pixel-aligned grid, preserve RGBA channels and remain ordered. Mixed reference counts are retained for training but rejected for a rectangular generation batch. Nine CPU tests cover native chat/image tokens, reference alpha/order, text batches, full language/vision/projection gradients, end-to-end tiny Design image-edit and Layer RGBA generation, early cancellation and caller-owned residency-context release after step failure. This does not yet register platform generation routes, residency policies or frozen-conditioning caches.
+Native prompt/vision preparation and generation orchestration now share `prompting.py` and `generation.py`. Official HUMAN/system/assistant templates and processor vision geometry are retained; VAE references separately use the explicitly requested 16-pixel-aligned grid, preserve RGBA channels and remain ordered. Mixed reference counts are retained for training but rejected for a rectangular generation batch. Nine CPU tests cover native chat/image tokens, reference alpha/order, text batches, full language/vision/projection gradients, end-to-end tiny Design image-edit and Layer RGBA generation, early cancellation and caller-owned residency-context release after step failure. Platform generation/residency is connected below; frozen-conditioning caches remain pending.
 
 `inspection.loaded_model_info` now provides the loaded structure snapshot for platform wiring: unique DiT/language/vision/connector/projection/query/VAE parameter ownership, trainable counts, logical dtype/device bytes, separate serialized header storage, refiner/main depth, checkpoint topology and conditioner cache eligibility. It makes no VRAM measurement and explicitly excludes buffers/quantization payloads from loaded parameter-object counts. The seven package tests check JSON serialization, exact full ownership totals, DiT analytical census agreement and trainability/cache transitions. Current-model API/frontend consumption is implemented in the following stage.
 
-Ming native directory/manifest detection, CPU component loading and lifecycle registration now use the common `ModelLoader` and `DiffusionPipelineManager`. The current-model response carries the complete structure snapshot; the model selector renders component parameter distribution, trainable/frozen ownership, dtype/logical bytes and separate serialized storage alongside the restored U-Net graph. Native Layer frames are explicitly classified as image layers, never video. Ten affected CPU tests pass, including real common `load_model`, topology restoration, current-model/wiring fields, scan classification and inventory cleanup. Frontend types/OpenAPI match and have been reviewed statically; owner build/type checking remains pending. This stage is load/inspect only: `generation_available=false`, and image-generation dispatch explicitly refuses until the platform generation backend is connected. No running API or GPU was used.
+Ming native directory/manifest detection, CPU component loading and lifecycle registration now use the common `ModelLoader` and `DiffusionPipelineManager`. The current-model response carries the complete structure snapshot; the model selector renders component parameter distribution, trainable/frozen ownership, dtype/logical bytes and separate serialized storage alongside the restored U-Net graph. Native Layer frames are explicitly classified as image layers, never video. Ten affected CPU tests pass, including real common `load_model`, topology restoration, current-model/wiring fields, scan classification and inventory cleanup. Frontend types/OpenAPI match and have been reviewed statically; owner build/type checking remains pending. Basic native generation is now connected: `generation_available=true` denotes functional dispatch, not official-weight GPU acceptance. No running API or GPU was used.
 
 ## Identity and ownership
 
@@ -222,7 +222,7 @@ CPU contract tests check JSON rejection of invalid counts, multipart consumers,
 profile defaults, explicit overrides and OpenAPI synchronization. Frontend
 static review includes model/profile switches, queue allowlists, transfers and
 recipe restoration. Settings and rich-result transport are connected;
-platform sampling remains disabled pending generation-mixin/residency gates.
+basic native sampling is connected; advanced parity and official-weight GPU acceptance remain pending.
 
 ## Ordered output persistence
 
@@ -250,9 +250,44 @@ to the recent-results feed, and offer a complete per-panel group viewer with
 role labels and original RGBA PNG downloads. Studio imports every image into
 its assets/result shelf, while the primary output owns the initial timeline
 clip. Loop continuation still uses the primary output. Frontend review is
-static; owner build/render validation remains pending. Platform sampling is
-still disabled until generation-mixin and residency gates pass. Thumbnails
+static; owner build/render validation remains pending. Basic native platform sampling is connected and CPU-verified. Thumbnails
 may use a white alpha preview, while full PNG files retain native alpha.
+
+## Native platform generation
+
+The shared manager dispatches native Ming text-to-image/edit requests and
+ordered Layer decomposition through `MingGenerator`. Profile defaults come
+from the central resolver; explicit parameters and seed zero are preserved.
+Pixel dimensions must fit the native 16-pixel grid. The processor's native
+resolution bucket follows the requested pixel area and never substitutes the
+output grid. Native CFG uses zero conditioning, with nonempty negative prompts
+explicitly refused until an extension passes its semantic gate.
+
+`MingPhaseResidency` moves the conditioner first, returns it to CPU, then stages
+DiT/VAE, without changing storage dtype. Each exit attempts cleanup of every
+component; staging/callback/cancellation failures unwind and the next request
+can recover. CPU text encoding is honored. This is whole-component offload,
+not a low-memory or minimum-VRAM promise; quantization, block swap, frozen cache,
+adapters, style and reference-guide integration remain in scope and pending.
+Requested unwired runtime options are refused before heavy residency.
+
+Design inpaint supplies a masked-alpha reference and composites all four
+channels, preserving unmasked RGBA pixels. Design outpaint shares placement/
+canvas geometry, restores the placed RGBA crop without a mask and preserves
+those pixels exactly. Layer inpaint/outpaint is refused before model staging.
+Restored nested U-Net runs through the same native reference/Layer layout and
+records its actual spec/digest. Current-model `generation_available=true`
+indicates connected basic dispatch; it does not certify official-model GPU
+quality, memory or throughput. Progress currently reports denoising steps
+without an incompatible TAESD preview.
+
+Thirty-one affected CPU tests verify the actual manager, deterministic
+reference batches for both profiles, native RGBA operations, independent
+Layer frames through restored nested U-Net, early invalid-request refusal,
+request-owned generation-time model snapshots and cancellation/callback reuse.
+All four image routes retain typed API validation errors as 400 responses; unexpected failures remain 500. Native reference selectors are visible for Ming in txt2img/edit panels.
+Official weights and live API/GPU were not used. Shared trainer, advanced
+parity and owner frontend/GPU acceptance remain pending.
 
 ## Verification and release gates
 

@@ -207,7 +207,7 @@ FEATURE_LABELS: Dict[str, str] = {
 # ARCH_UNSUPPORTED[arch][feature] = short factual reason the feature has no
 # effect on that architecture.
 # ---------------------------------------------------------------------------
-_DIT_ARCHS = ["zimage", "flux2", "ideogram4", "lens", "minit2i", "anima", "krea2", "qwen_image_21", "ltx2", "acestep",
+_DIT_ARCHS = ["zimage", "flux2", "ideogram4", "lens", "minit2i", "anima", "krea2", "qwen_image_21", "ming_image_01", "ltx2", "acestep",
               "minimax_h3", "minimax_music3", "sensenova", "yue2"]
 # Both Spectrum and FBCache are wired for every image DiT arch through the
 # same shared pattern (spectrum_params=params -> build_output_forecaster() /
@@ -218,8 +218,8 @@ _DIT_ARCHS = ["zimage", "flux2", "ideogram4", "lens", "minit2i", "anima", "krea2
 # core/pipeline_backends/ltx2.py). Only krea2, acestep and minimax_music3
 # have no such codepath at all. MiniMax-H3 implements paired video/audio
 # final-output forecasting and guarded whole-state FBCache.
-_SPECTRUM_UNSUPPORTED = ["krea2", "qwen_image_21", "acestep", "minimax_music3", "sensenova"]
-_FBCACHE_UNSUPPORTED = ["krea2", "qwen_image_21", "acestep", "minimax_music3", "sensenova"]
+_SPECTRUM_UNSUPPORTED = ["krea2", "qwen_image_21", "ming_image_01", "acestep", "minimax_music3", "sensenova"]
+_FBCACHE_UNSUPPORTED = ["krea2", "qwen_image_21", "ming_image_01", "acestep", "minimax_music3", "sensenova"]
 
 ARCH_UNSUPPORTED: Dict[str, Dict[str, str]] = {}
 
@@ -625,6 +625,28 @@ for _feature, _reason in {
 }.items():
     _add("qwen_image_21", _feature, _reason)
 
+for _feature, _reason in {
+    "negative_prompt": "Ming native guidance uses zero conditioning rather than a negative prompt",
+    "nag": "NAG is not implemented by the native Ming flow sampler",
+    "controlnets": "Ming has no compatible ControlNet module",
+    "cfg_schedule": "Ming native generation applies constant native CFG",
+    "advanced_cfg": "dynamic thresholding and CFG rescale are not wired into the native Ming loop",
+    "attention_type": "Ming uses its native conditioner and joint DiT attention",
+    "attention_impl": "Ming uses its native attention implementation",
+    "unet_quantization": "Ming runtime quantization is awaiting integration",
+    "text_encoder_quantization": "Ming conditioner quantization is awaiting integration",
+    "style_transfer": "Ming style conditioning is awaiting integration",
+    "vae_drift_correction": "VAE drift correction is not wired into native Ming editing",
+    "flatten_in_loop": "in-loop flattening is not wired into the native Ming loop",
+    "block_swap": "Ming currently uses sequential whole-component CPU offload",
+    "block_swap_pinned_memory": "Ming generation block-swap staging is awaiting integration",
+    "block_swap_h2d_only": "Ming generation block-swap staging is awaiting integration",
+    "block_swap_ring_size": "Ming generation block-swap staging is awaiting integration",
+    "te_override": "Ming requires its manifest-paired MLLM, connector, projections and processor",
+    "vae_override": "Ming requires its native 16-latent-channel RGBA VAE",
+}.items():
+    _add("ming_image_01", _feature, _reason)
+
 # LTX-2.3 is a video model with its own flow-matching sampler; the image-oriented
 # guidance/conditioning features do not apply.
 _add("ltx2", "advanced_cfg",
@@ -898,10 +920,8 @@ for _a in [a for a in _ALL_ARCHS if a != "qwen_image_21"]:
     _add(_a, "qwen_image_21_kv_cache",
          "qwen_image_21_kv_cache is specific to Qwen-Image 2.1 condition-token attention; this architecture does not consult it")
 
-# Every generation architecture now has a block-offload consumer. The original
-# DiT wrappers share FrozenSequentialTransferEngine; SD, Krea, ACE-Step and
-# MiniMax Music use FrozenModuleOffloadConductor, while SenseNova uses its
-# two-branch conductor. Missing entries therefore correctly mean supported.
+# Wired block-offload backends use shared sequential/module conductors;
+# architectures with only component offload declare their exception above.
 _add("sensenova", "block_swap_ring_size",
      "SenseNova's two interleaved MoT branches require the conductor's fixed two-slot ring; other ring sizes are ignored")
 

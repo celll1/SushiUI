@@ -23,6 +23,7 @@ from diffusers import (
 from config.settings import settings
 from extensions.base_extension import BaseExtension
 from core.model_loader import ModelLoader, ModelSource
+from core.models.ming_image_01.results import MingGenerationOutput
 from core.prompts.processors import PromptEditingProcessor
 from core.inference.schedulers import get_scheduler
 from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
@@ -4281,7 +4282,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         return self._generate_img2txt_sensenova(
             params, image, progress_callback=progress_callback)
 
-    def generate_txt2img(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Union[Image.Image, torch.Tensor], int, int]:
+    def generate_txt2img(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Union[Image.Image, torch.Tensor, MingGenerationOutput], int, int]:
         """Generate image from text
 
         Args:
@@ -4295,6 +4296,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             when params["loop_decode"] == "none" (SD1.5/SDXL legacy path only,
             see custom_sampling_loop's Stage-3 site) -- callers must check
             isinstance(image, Image.Image) before treating it as a decoded image.
+            Ming returns a request-owned MingGenerationOutput with all ordered
+            RGBA frames; routes must handle it before the generic latent path.
         """
         # VAE tiling flag for this request (read by all decode paths, incl. the
         # per-architecture handlers dispatched just below).
@@ -4339,7 +4342,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if self.is_krea2_model:
             return self._generate_txt2img_krea2(params, progress_callback, step_callback)
         if self.is_ming_image_01_model:
-            return self._ming_generation_pending()
+            return self._generate_txt2img_ming_image_01(params, progress_callback, step_callback)
         if self.is_qwen_image_21_model:
             return self._generate_txt2img_qwen_image_21(params, progress_callback, step_callback)
 
@@ -5004,7 +5007,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
         return image, actual_seed, actual_ancestral_seed
 
-    def generate_img2img(self, params: Dict[str, Any], init_image: Optional[Image.Image] = None, progress_callback=None, step_callback=None) -> tuple[Union[Image.Image, torch.Tensor], int, int]:
+    def generate_img2img(self, params: Dict[str, Any], init_image: Optional[Image.Image] = None, progress_callback=None, step_callback=None) -> tuple[Union[Image.Image, torch.Tensor, MingGenerationOutput], int, int]:
         """Generate image from image
 
         Returns:
@@ -5069,7 +5072,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if self.is_krea2_model:
             return self._generate_img2img_krea2(params, init_image, progress_callback, step_callback)
         if self.is_ming_image_01_model:
-            return self._ming_generation_pending()
+            return self._generate_img2img_ming_image_01(params, init_image, progress_callback, step_callback)
         if self.is_qwen_image_21_model:
             return self._generate_img2img_qwen_image_21(
                 params, init_image, progress_callback, step_callback
@@ -5772,7 +5775,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         mask_image: Image.Image,
         progress_callback=None,
         step_callback=None
-    ) -> tuple[Image.Image, int, int]:
+    ) -> tuple[Union[Image.Image, MingGenerationOutput], int, int]:
         """Generate inpainted image
 
         Returns:
@@ -5840,7 +5843,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if self.is_krea2_model:
             return self._generate_inpaint_krea2(params, init_image, mask_image, progress_callback, step_callback)
         if self.is_ming_image_01_model:
-            return self._ming_generation_pending()
+            return self._generate_inpaint_ming_image_01(params, init_image, mask_image, progress_callback, step_callback)
         if self.is_qwen_image_21_model:
             return self._generate_inpaint_qwen_image_21(
                 params, init_image, mask_image, progress_callback, step_callback
@@ -6539,7 +6542,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         input_image: Image.Image,
         progress_callback=None,
         step_callback=None,
-    ) -> tuple[Image.Image, int, int]:
+    ) -> tuple[Union[Image.Image, MingGenerationOutput], int, int]:
         """Generate an outpainted image: place ``input_image`` inside a larger
         canvas and generate everything outside it, preserving the placed
         region byte-exact.
@@ -6568,6 +6571,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             tuple: (image, actual_seed, actual_ancestral_seed) -- same shape
             as generate_inpaint's return contract.
         """
+        if self.is_ming_image_01_model:
+            return self._generate_outpaint_ming_image_01(params, input_image, progress_callback, step_callback)
+
         from core.inference.outpaint_utils import (
             build_outpaint_canvas,
             build_outpaint_mask,

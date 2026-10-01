@@ -901,6 +901,7 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
   // FLUX.2 has no backend-enforced cap; 10 is this UI's own upload-grid limit.
   const isSenseNovaModel = currentModelInfo?.model_info?.type === "sensenova";
   const isQwenImage21Model = currentModelInfo?.model_info?.type === "qwen_image_21";
+  const isMingImageModel = currentModelInfo?.model_info?.type === "ming_image_01";
   // Qwen accepts ten images total; Img2Img already consumes one primary image.
   const maxRefImages = isSenseNovaModel ? 5 : isQwenImage21Model ? 9 : 10;
 
@@ -4702,11 +4703,13 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
         )}
 
         {/* Native edit / reference-conditioning images. */}
-        {(currentModelInfo?.model_info?.type === "flux2" || isSenseNovaModel || isQwenImage21Model || params.vision_encoder_path) && (
+        {(currentModelInfo?.model_info?.type === "flux2" || isSenseNovaModel || isQwenImage21Model || isMingImageModel || params.vision_encoder_path) && (
           <Card
             title={
               currentModelInfo?.model_info?.type === "flux2"
                 ? "FLUX.2 Image Edit (Reference Images)"
+                : isMingImageModel
+                ? "Ming Image 0.1 (Reference Images)"
                 : isQwenImage21Model
                 ? "Qwen-Image 2.1 (Reference Images)"
                 : isSenseNovaModel

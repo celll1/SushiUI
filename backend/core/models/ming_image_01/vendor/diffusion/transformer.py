@@ -744,14 +744,14 @@ class DiffusionTransformer(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrigin
             from ...residual_unet import run_rewired_ming
             unified = run_rewired_ming(self, unified, adaln_input, unified_freqs_cis,
                 unified_attn_mask, x_pos_ids, target_shape, patch_size, topology)
-        elif torch.is_grad_enabled() and self.gradient_checkpointing:
-            for layer in self.layers:
-                unified = self._gradient_checkpointing_func(
-                    layer, unified, unified_attn_mask, unified_freqs_cis, adaln_input
-                )
         else:
-            for layer in self.layers:
-                unified = layer(unified, unified_attn_mask, unified_freqs_cis, adaln_input)
+            limit = getattr(self, "_training_gradient_checkpointing_blocks", len(self.layers))
+            for index, layer in enumerate(self.layers):
+                if torch.is_grad_enabled() and self.gradient_checkpointing and index < limit:
+                    unified = self._gradient_checkpointing_func(
+                        layer, unified, unified_attn_mask, unified_freqs_cis, adaln_input)
+                else:
+                    unified = layer(unified, unified_attn_mask, unified_freqs_cis, adaln_input)
 
         unified = self.all_final_layer[f"{patch_size}-{f_patch_size}"](unified, adaln_input)
         unified = list(unified.unbind(dim=0))

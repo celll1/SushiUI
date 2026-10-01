@@ -1995,3 +1995,32 @@ Partition checkpoint block overrides, exact pending-gradient resume, native
 debug/cancellation/error acceptance, generation parity, UI exposure and global
 adapters remain pending. In particular, the existing partition checkpointing
 parameter has not yet been implemented for Ming and must not be reported ready.
+
+
+### Partial checkpointing configuration milestone
+
+The canonical full-frame and partition checkpoint-block controls now execute on
+Ming's main stream. Runner preflight resolves `n_layers` from the native artifact
+config without reading weight payloads, instead of relying on a fixed class
+constant. Strict limits reject boolean/fractional/out-of-depth values and
+conflicting legacy aliases. Fresh/checkpoint component loading installs the
+full-frame limit. Dense main-block execution now honors the same prefix limit
+as residual U-Net transport. Noise/context refiners retain native global gradient
+checkpointing behavior; the main-stream count does not disable their recompute.
+Global `gradient_checkpointing=false` still disables all checkpoint execution.
+
+Partition backward temporarily applies its optional block count and restores
+both a previous value and a previously absent attribute in `finally`. Null
+inherits full-frame execution, preserving memory policy without automatically
+spending partition savings. This supersedes the earlier pending block-override
+note. OpenAPI explains the main/refiner distinction and restoration semantics.
+
+Sixteen unique targeted CPU cases pass: six actual native dense/nested U-Net
+forward/all-gradient checks at main counts 0/2/6, two exception-restoration checks,
+four strict bound/type checks, and four public Design/Layer full/ordinary-LoRA
+MNT2/GAS2 partition loops with full-frame count 2 and partition count 1. Public
+runner preflight accepts native depth 6 rather than assuming official depth;
+post-training restoration is asserted. Changed backend files compile and import
+with CUDA forbidden. Main API/GPU and official payload remain unused. Physical
+GPU memory/recompute performance, pending-gradient partition resume, final public
+UI/debug/error paths, global adapters and broader parity acceptance remain work.

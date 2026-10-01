@@ -83,6 +83,8 @@ def load_components(trainer):
     trainer.scheduler = trainer.noise_scheduler = components.scheduler
     trainer.unet = trainer.text_encoder_2 = trainer.tokenizer_2 = trainer.t5_tokenizer = None
     trainer.tokenizer = components.processor.tokenizer
+    from core.models.ming_image_01.checkpointing import configure
+    configure(trainer.transformer, trainer.config)
     setup_attention_backend(trainer)
     capture_startup_snapshot(trainer)
 

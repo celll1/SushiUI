@@ -1617,6 +1617,12 @@ def _apply_dit_checkpoint_contract(
     architecture = ModelLoader.detect_model_type(base_model_path)
     handler = ARCH_REGISTRY.get(architecture)
     depth = getattr(handler, "dit_checkpoint_block_count", None) if handler else None
+    if architecture == "ming_image_01":
+        from core.models.ming_image_01.artifact import inspect_artifact
+        from core.models.ming_image_01.checkpointing import block_limit
+        depth = inspect_artifact(base_model_path, require_weights=False).configs["transformer"]["n_layers"]
+        block_limit(train_config, depth)
+        block_limit(train_config, depth, partition=True)
     supports_partition = bool(
         getattr(handler, "supports_dit_partition_training", False)) if handler else False
     if canonical_base is not None and depth is None:

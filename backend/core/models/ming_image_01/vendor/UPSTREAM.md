@@ -10,3 +10,5 @@ Additional adaptations preserve native default/partial RoPE, expose an explicit 
 - Vision activation-dtype discovery and language FlashAttention recasting use a packed Linear's `compute_dtype`, preserving the floating fallback for ordinary checkpoints.
 
 - DiT accepts optional full-canvas target spatial coordinates; that path packs target tiles and full reference grids independently and reconstructs target frames only. The ordinary native path retains its original reference-output behavior.
+
+- Main-stream gradient checkpointing accepts an explicit prefix block limit; refiners retain the native global switch.

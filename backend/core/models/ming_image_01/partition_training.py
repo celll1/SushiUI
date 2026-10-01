@@ -9,7 +9,7 @@ from .conditioning import MingConditioning
 from .guidance import prepare_guidance,guidance_loss,frame_error
 
 
-def backward_regions(trainer,batch,*,sigma,noise,plan,backward_scale,drop_mask=None):
+def _backward_regions(trainer,batch,*,sigma,noise,plan,backward_scale,drop_mask=None):
     if not math.isfinite(backward_scale) or backward_scale < 0:
         raise ValueError("Ming partition backward scale must be finite and nonnegative")
     clean=batch.clean.to(device=trainer.device,dtype=trainer.training_dtype)
@@ -127,3 +127,9 @@ def training_plan(trainer,clean):
         halo=value("halo_tokens"),seed=value("seed"),epoch=int(getattr(trainer,"_current_epoch",0)),
         occurrence=int(getattr(trainer,"_current_batch_position",0)),
         split_ratio_min=value("split_ratio_min"),split_ratio_max=value("split_ratio_max"))
+
+
+def backward_regions(trainer,batch,**kwargs):
+    from .checkpointing import partition_scope
+    with partition_scope(trainer.transformer,trainer.config):
+        return _backward_regions(trainer,batch,**kwargs)

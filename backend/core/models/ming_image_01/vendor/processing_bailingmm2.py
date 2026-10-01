@@ -86,7 +86,7 @@ def get_text_from_prompt(prompt):
 
     patterns = [r'\"(.*?)\"', r'‘(.*?)’', r'“(.*?)”']
 
-        
+
     import re
     texts = []
     patterns = [r'\"(.*?)\"', r'‘(.*?)’', r'“(.*?)”']
@@ -103,10 +103,10 @@ def get_text_from_prompt(prompt):
                 if prompt.lower().find(kw) < text_start:
                     is_remove = True
                     break
-        
+
         if is_remove:
             texts = []
-    
+
     text = " ".join(texts[-1:])
     if len(text) > 0:
         text = f'Text "{text}"'
@@ -172,9 +172,9 @@ def transform_reference_images(
     ori_h = ref_pil.size[1]
     ori_w = ref_pil.size[0]
     closest_size, _ = process_ratio(ori_h=ori_h, ori_w=ori_w, highres=image_gen_resolution)
-    
+
     ref_pils = [torchvision.transforms.functional.resize(i, closest_size, interpolation=torchvision.transforms.InterpolationMode.BILINEAR) for i in images]
-    
+
     ref_tensor = torch.cat([
         ((torchvision.transforms.functional.to_tensor(i) - 0.5) * 2.0).unsqueeze(0)
         for i in ref_pils
@@ -299,7 +299,7 @@ class BailingMM2Processor(ProcessorMixin):
 
 
         default_image_gen_height, default_image_gen_width = get_default_image_gen_hw(image_gen_highres, image_gen_aspect_ratio)
-        
+
         image_gen_inputs.update({
             "image_gen_text": text_in_text,
             "image_gen_highres": image_gen_highres,
@@ -310,7 +310,7 @@ class BailingMM2Processor(ProcessorMixin):
         if images is not None:
             image_inputs = self.image_processor(images=images, videos=None, **output_kwargs["images_kwargs"])
             image_grid_thw = image_inputs["image_grid_thw"]
-            
+
             text = self._expand_image_tokens(text, image_grid_thw)
 
             # image_gen_pixel_values_reference, image_gen_height, image_gen_width = None, 512, 512
@@ -320,7 +320,7 @@ class BailingMM2Processor(ProcessorMixin):
                 elif not isinstance(image_gen_ref_images, list) and not isinstance(image_gen_ref_images[0], PIL.Image.Image):
                     raise ValueError("Invalid input image_gen_ref_images. Please provide a PIL.Image.Image, or a list of PIL.Image.Image")
 
-                assert len(image_gen_ref_images) == len(text) # same batch_size 
+                assert len(image_gen_ref_images) == len(text) # same batch_size
 
                 image_gen_pixel_values_reference, image_gen_height_list, image_gen_width_list = transform_reference_images(
                     image_gen_ref_images,
@@ -328,7 +328,7 @@ class BailingMM2Processor(ProcessorMixin):
                     image_gen_highres,
                     image_gen_input_channels,
                 )
-            
+
                 image_gen_inputs.update({
                     "image_gen_pixel_values_reference": image_gen_pixel_values_reference,
                     "image_gen_height": torch.LongTensor([image_gen_height_list] * len(text)),
@@ -411,7 +411,7 @@ class BailingMM2Processor(ProcessorMixin):
                     text += content['text']
             text += self.tokenizer.eos_token
         text += ASSISTANT_PREFIX
-        
+
         return text
 
     def process_vision_info(

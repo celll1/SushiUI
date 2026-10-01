@@ -133,6 +133,15 @@ class BailingMoeV2RMSNorm(nn.Module):
 ALL_LAYERNORM_LAYERS.append(BailingMoeV2RMSNorm)
 
 
+def _native_default_rope(config, device=None, seq_len=None):
+    # Preserve Ming's partial rotary width across Transformers versions.
+    head_dim = config.head_dim or config.hidden_size // config.num_attention_heads
+    dim = int(head_dim * config.partial_rotary_factor)
+    inv_freq = 1.0 / (config.rope_theta ** (
+        torch.arange(0, dim, 2, device=device, dtype=torch.int64).float() / dim))
+    return inv_freq, 1.0
+
+
 class BailingMoeV2RotaryEmbedding(nn.Module):
     def __init__(self, config: BailingMoeV2Config, device=None):
         super().__init__()
@@ -145,7 +154,7 @@ class BailingMoeV2RotaryEmbedding(nn.Module):
         self.original_max_seq_len = config.max_position_embeddings
 
         self.config = config
-        self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
+        self.rope_init_fn = _native_default_rope if self.rope_type == "default" else ROPE_INIT_FUNCTIONS[self.rope_type]
 
         inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
@@ -154,7 +163,7 @@ class BailingMoeV2RotaryEmbedding(nn.Module):
     @torch.no_grad()
     @dynamic_rope_update  # power user: used with advanced RoPE types (e.g. dynamic rope)
     def forward(self, x, position_ids):
-        position_ids = position_ids[:, 0, :] 
+        position_ids = position_ids[:, 0, :]
         inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1).to(x.device)
         position_ids_expanded = position_ids[:, None, :].float()
 
@@ -171,8 +180,8 @@ class BailingMoeV2RotaryEmbedding(nn.Module):
     def reset_parameters(self) -> None:
         new_inv_freq, self.attention_scaling = self.rope_init_fn(self.config, None)
         self.inv_freq.copy_(new_inv_freq)
-    
-    
+
+
 class BailingMoeV2RotaryEmbedding3D(nn.Module):
     def __init__(self, config: BailingMoeV2Config, device=None):
         super().__init__()
@@ -183,7 +192,7 @@ class BailingMoeV2RotaryEmbedding3D(nn.Module):
         self.original_max_seq_len = config.max_position_embeddings
 
         self.config = config
-        self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_init_type]
+        self.rope_init_fn = _native_default_rope
 
         inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
@@ -226,13 +235,13 @@ def rotate_half(x):
 
 
 def apply_3d_rotary_pos_emb(
-    q, 
-    k, 
-    cos, 
-    sin, 
-    mrope_section=[8, 12, 12], 
-    unsqueeze_dim=1, 
-    rope_type="m_rope", 
+    q,
+    k,
+    cos,
+    sin,
+    mrope_section=[8, 12, 12],
+    unsqueeze_dim=1,
+    rope_type="m_rope",
     rotary_half=True
 ):
     """Applies Rotary Position Embedding with Multimodal Sections to the query and key tensors (https://qwenlm.github.io/blog/qwen2-vl/).
@@ -791,7 +800,7 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
                     )
             if image_mask is not None and audio_mask is not None:
                 assert torch.logical_and(image_mask, audio_mask).sum() == 0
-            
+
             image_topk_idx, image_topk_weight, image_router_logits = self.image_gate(hidden_states)
             audio_topk_idx, audio_topk_weight, audio_router_logits = self.audio_gate(hidden_states)
             topk_idx, topk_weight, router_logits = self.gate(hidden_states)
@@ -956,14 +965,14 @@ class BailingMoeV2Attention(nn.Module):
             kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
         cos, sin = position_embeddings
         query_states, key_states = apply_3d_rotary_pos_emb(
-            query_states, 
-            key_states, 
-            cos, 
-            sin, 
-            mrope_section=self.rope_scaling["mrope_section"], 
+            query_states,
+            key_states,
+            cos,
+            sin,
+            mrope_section=self.rope_scaling["mrope_section"],
             rope_type=self.config.rope_scaling["type"]
         )
-        
+
         if past_key_value is not None:
             cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
@@ -1005,7 +1014,7 @@ class BailingMoeV2Attention(nn.Module):
 
         if not output_attentions:
             attn_weights = None
-        
+
         if not self.training:
             del query_states, key_states, value_states
 
@@ -1489,7 +1498,7 @@ class BailingMoeV2Model(BailingMoeV2PreTrainedModel):
         else:
             self.rotary_emb = BailingMoeV2RotaryEmbedding(config=config)
         self.gradient_checkpointing = False
-        config.spatial_merge_size = 2 
+        config.spatial_merge_size = 2
         config.tokens_per_second = 2
         self.rope_deltas = None
         # Initialize weights and apply final processing
@@ -1500,7 +1509,7 @@ class BailingMoeV2Model(BailingMoeV2PreTrainedModel):
 
     def set_input_embeddings(self, value):
         self.word_embeddings = value
- 
+
     def prompt_wrap_vision(self, input_ids, inputs_embeds, vision_embeds, vision_token_id):
         if vision_embeds is None or input_ids is None:
             return inputs_embeds
@@ -1516,7 +1525,7 @@ class BailingMoeV2Model(BailingMoeV2PreTrainedModel):
                 f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {n_image_features}"
             )
         vision_mask = (input_ids == vision_token_id).unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
-        
+
         image_embeds = vision_embeds.to(inputs_embeds.device, inputs_embeds.dtype)
         inputs_embeds = inputs_embeds.masked_scatter(vision_mask, image_embeds)
 
@@ -1530,7 +1539,7 @@ class BailingMoeV2Model(BailingMoeV2PreTrainedModel):
         router_mask_audio = build_modality_mask(placeholder_audio_loc_lens, inputs_embeds.shape[:-1])
         router_mask_audio = router_mask_audio.to(inputs_embeds.device)
         return inputs_embeds, router_mask_audio
-     
+
     def prompt_wrap_navit(self, input_ids, config, query_embeds_image=None, query_embeds_video=None, query_embeds_audio=None,
         query_embeds_audio_lengths=None, placeholder_audio_loc_lens=None, target_embeds=None):
         inputs_embeds = self.word_embeddings(input_ids)
@@ -1568,11 +1577,11 @@ class BailingMoeV2Model(BailingMoeV2PreTrainedModel):
         query_embeds_audio: Optional[torch.Tensor] = None,
         query_embeds_audio_lengths: Optional[torch.Tensor] = None,
         placeholder_audio_loc_lens: Optional[torch.Tensor] = None,
-        target_embeds: Optional[torch.Tensor] = None, 
+        target_embeds: Optional[torch.Tensor] = None,
         past_key_values: Optional[List[torch.FloatTensor]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         image_grid_thw: Optional[torch.Tensor] = None,
-        image_grid_thw_video: Optional[torch.Tensor] = None, 
+        image_grid_thw_video: Optional[torch.Tensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
@@ -1782,7 +1791,7 @@ class BailingMoeV2Model(BailingMoeV2PreTrainedModel):
 
 
 class BailingMoeV2ForCausalLM(BailingMoeV2PreTrainedModel, GenerationMixin):
-    _tied_weights_keys = ["lm_head.weight"]
+    _tied_weights_keys = {"lm_head.weight": "model.word_embeddings.weight"}
 
     def __init__(self, config: BailingMoeV2Config):
         super().__init__(config)
@@ -2031,4 +2040,3 @@ class BailingMoeV2ForCausalLM(BailingMoeV2PreTrainedModel, GenerationMixin):
                 tuple(past_state.index_select(0, beam_idx.to(past_state.device)) for past_state in layer_past),
             )
         return reordered_past
-

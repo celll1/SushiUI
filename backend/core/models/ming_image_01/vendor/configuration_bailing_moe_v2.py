@@ -82,4 +82,3 @@ class BailingMoeV2Config(PretrainedConfig):
         self.router_type = router_type
         super().__init__(pad_token_id=pad_token_id, tie_word_embeddings=tie_word_embeddings, **kwargs)
         self._attn_implementation = _attn_implementation
-

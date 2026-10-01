@@ -76,8 +76,6 @@ class BailingTokenizer(PreTrainedTokenizerFast):
         add_eos_token=False,
         **kwargs,
     ):
-        self.add_bos_token = add_bos_token
-
         self._gmask_token = (
             AddedToken(gmask_token, lstrip=False, rstrip=False, normalized=False)
             if isinstance(gmask_token, str)
@@ -111,6 +109,7 @@ class BailingTokenizer(PreTrainedTokenizerFast):
             **kwargs,
         )
 
+        self.add_bos_token = add_bos_token
         self.check_special_tokens()
 
     def check_special_tokens(self):

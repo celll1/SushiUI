@@ -47,7 +47,7 @@ class ConditionedTransformer(nn.Module):
         #if text_encoder_norm or use_identity_mlp:
         #    assert use_identity_mlp and text_encoder_norm
 
-    
+
     @property
     def dtype(self):
         return next(self.transformer.parameters()).dtype
@@ -68,14 +68,14 @@ class ConditionedTransformer(nn.Module):
 
             if self.text_encoder_norm:
                 encoder_hidden_states = F.normalize(encoder_hidden_states, dim=-1) * 1000.0  # 1000 matches the original text encoder norm
-            
+
             encoder_hidden_states = self.mlp(encoder_hidden_states)
-            
+
             if extra_vit_input is not None:
                 encoder_hidden_states = torch.cat((encoder_hidden_states, extra_vit_input), dim=1)
 
             encoder_hidden_states = list(encoder_hidden_states.unbind(dim=0))
-            
+
         hidden_states = self.transformer(
                     x=hidden_states,
                     cap_feats=encoder_hidden_states,
@@ -120,9 +120,9 @@ def latent_mean_variance(latents: torch.Tensor, per_channel: bool = True, unbias
     return mean_v, var_v
 
 class ImageGenerator(torch.nn.Module):
-    def __init__(self, 
-            model_path, 
-            vision_dim=2560, 
+    def __init__(self,
+            model_path,
+            vision_dim=2560,
             scheduler_path=None,
             mlp_state_dict=None,
             torch_dtype=torch.float32,
@@ -166,7 +166,7 @@ class ImageGenerator(torch.nn.Module):
                     torch_dtype=torch_dtype,
                 )
                 self.vae_sample_mode = "sample"
-        
+
         self.vae.input_channels = 4 if ('input_channels' in self.vae.config and self.vae.config.input_channels == 4) or ('in_channels' in self.vae.config and self.vae.config.in_channels == 4) else 3
         if self.vae.input_channels != self.inference_profile.vae_input_channels:
             raise ValueError(
@@ -180,7 +180,7 @@ class ImageGenerator(torch.nn.Module):
                 f"contract: checkpoint={self.vae_sample_mode}, "
                 f"capability={self.inference_profile.vae_sample_mode}"
             )
-        
+
         # self.vae.to(self.torch_type).to(self.device)
         self.vae.requires_grad_(False)
 
@@ -215,9 +215,9 @@ class ImageGenerator(torch.nn.Module):
 
         self.pipelines = ImageGenerationPipeline(
             vae=self.vae,
-            transformer=self.train_model,  
-            text_encoder=None, 
-            tokenizer=None,                          
+            transformer=self.train_model,
+            text_encoder=None,
+            tokenizer=None,
             scheduler=self.noise_scheduler,
         ).to(device)
 
@@ -226,7 +226,7 @@ class ImageGenerator(torch.nn.Module):
         return next(self.train_model.parameters()).device
 
     def set_trainable_params(self, trainable_params):
-        
+
         self.vae.requires_grad_(False)
 
         if trainable_params == 'all':
@@ -249,7 +249,7 @@ class ImageGenerator(torch.nn.Module):
             name_parameters_trainable.append(n)
             num_parameters_trainable += p.data.nelement()
         logger.info(f"number of all Diffusion parameters: {num_parameters}, trainable: {num_parameters_trainable}")
-    
+
 
     def sample(self, encoder_hidden_states, steps=None, cfg=None, cfg_mode=1, seed=42, height=512, width=512, use_dynamic_shifting=False, extra_vit_input=None, ref_x=None, directvlm_hidden_states=None, num_frames_per_prompt=1):
         sampling = self.inference_profile.resolve_sampling_parameters(
@@ -265,7 +265,7 @@ class ImageGenerator(torch.nn.Module):
             )
             encoder_hidden_states = list(encoder_hidden_states.unbind(dim=0))
             negative_prompt_embeds= [en * 0 for en in encoder_hidden_states]
-        
+
         encoder_hidden_states_2 = directvlm_hidden_states
         negative_prompt_embeds_2 = None
         if encoder_hidden_states_2 is not None:
@@ -295,4 +295,4 @@ class ImageGenerator(torch.nn.Module):
             num_frames_per_prompt=num_frames_per_prompt,
         ).images
 
-        return image  
+        return image

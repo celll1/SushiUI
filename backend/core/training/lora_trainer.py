@@ -440,6 +440,17 @@ class LoRATrainer(BaseTrainer):
                     )
 
         if getattr(self, "is_ming_image_01", False):
+            import json
+            from core.models.ming_image_01.partition_global import GLOBAL_NAME
+            current=getattr(self.transformer,GLOBAL_NAME,None)
+            actual=metadata.get(GLOBAL_NAME)
+            if (current is None) != (actual is None):
+                raise ValueError("Ming global adapter checkpoint ownership does not match this run")
+            if current is not None:
+                decoded=json.loads(actual);expected=current.metadata()
+                if (not isinstance(decoded,dict) or set(decoded)!=set(expected)
+                        or any(type(v) is not type(expected[k]) for k,v in decoded.items()) or decoded!=expected):
+                    raise ValueError("Ming global adapter checkpoint metadata conflicts with this run")
             expected_keys = {f"{name}.{tensor}" for name, layer in self.lora_layers.items()
                              for tensor in (*layer.branch_tensors(), "alpha")}
             if set(checkpoint) != expected_keys:

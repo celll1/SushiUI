@@ -31,6 +31,8 @@ from core.models.ming_image_01.training_resume import RUNTIME_KEY
     pytest.param("cpu_prefetch", [], "layer_decompose", False, None, None, .5, "query_chunk", id="query_chunk_guidance_sigma_null_mnt_layer"),
     pytest.param("cpu_prefetch", [], "generation_edit", False, None, None, None, "partition", id="partition_guidance_mnt_design"),
     pytest.param("cpu_prefetch", [], "layer_decompose", False, None, None, .5, "partition", id="partition_guidance_sigma_null_mnt_layer"),
+    pytest.param("cpu_prefetch", [], "generation_edit", False, None, None, None, "global", id="global_partition_guidance_mnt_design"),
+    pytest.param("cpu_prefetch", [], "layer_decompose", False, None, None, .5, "global", id="global_partition_guidance_sigma_null_mnt_layer"),
 ])
 def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monkeypatch, text_mode, groups, profile, caption_only, quantization, conditioner_quant, cfg_rate, guidance_enabled):
     from core.training import latent_cache
@@ -79,7 +81,7 @@ def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monke
         traces[-1] += (result.prediction.detach().clone(),)
         return result
     monkeypatch.setattr(ming_image_01_ops, "flow_loss", recorded_loss)
-    if guidance_enabled == "partition":
+    if guidance_enabled in {"partition","global"}:
         from core.models.ming_image_01 import partition_training
         original_regions = partition_training._backward_regions
         def recorded_regions(owner, batch, **kwargs):
@@ -108,11 +110,13 @@ def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monke
             qwen_cfg_null_sigma_schedule=cfg_rate is not None)
     if guidance_enabled == "query_chunk":
         config["qwen_full_kv_query_chunk_tokens"] = 17
-    if guidance_enabled == "partition":
+    if guidance_enabled in {"partition","global"}:
         config.update(dit_partition_training_enabled=True,dit_partition_mode="fixed",dit_partition_fixed_count=2,
             dit_partition_split_ratio_min=.5,dit_partition_split_ratio_max=.5,dit_partition_seed=19,
             dit_gradient_checkpointing_blocks=2,dit_partition_gradient_checkpointing_blocks=1,
             qwen_full_kv_query_chunk_tokens=17)
+    if guidance_enabled == "global":
+        config.update(dit_partition_global_adapter_enabled=True,dit_partition_global_rank=8,dit_partition_global_tokens=3)
     if cfg_rate is not None:
         config.update(cfg_uncond_drop_rate=cfg_rate,cfg_uncond_drop_per_mnt=True)
     if quantization or conditioner_quant:
@@ -137,7 +141,7 @@ def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monke
             multi_noise_timesteps=2, gradient_accumulation_steps=4,
             save_every_n_steps=2, sample_every_n_steps=0, enable_bucketing=False,
             max_step_saves_to_keep=4, max_optimizer_saves_to_keep=4,
-            base_resolutions=[128 if guidance_enabled == "partition" else 64], latent_encoding_mode="swap_onthefly", text_encoding_mode=text_mode,
+            base_resolutions=[128 if guidance_enabled in {"partition","global"} else 64], latent_encoding_mode="swap_onthefly", text_encoding_mode=text_mode,
             resume_from_checkpoint=resume)
     baseline = trainer(tmp_path / "baseline" / "run")
     train(baseline)

@@ -6,6 +6,8 @@ from core.training.partition import PartitionBox
 
 
 class MingPartitionGlobalAdapter(nn.Module):
+    ADAPTER_ALGORITHM="ming_partition_global"
+    WEIGHT_DECOMPOSE=False
     def __init__(self,latent_channels,hidden_dim,*,rank,summary_tokens,dtype=torch.float32):
         super().__init__()
         if any(type(value) is not int or value <= 0 for value in (latent_channels,hidden_dim,rank,summary_tokens)):
@@ -51,6 +53,16 @@ class MingPartitionGlobalAdapter(nn.Module):
         weights=torch.softmax(torch.einsum("bnr,bsr->bns",queries,summaries)*self.rank**-.5,
             dim=-1,dtype=torch.float32).to(summaries.dtype)
         return self.out(torch.einsum("bns,bsr->bnr",weights,summaries))
+
+    def branch_tensors(self):
+        return {"key.weight":self.key.weight,"value.weight":self.value.weight,"query.weight":self.query.weight,
+            "summary_queries":self.summary_queries,"out.weight":self.out.weight}
+
+    def trainable_parameters(self):
+        return iter(self.parameters())
+
+    def spec_constants(self):
+        return ()
 
     def metadata(self):
         return {"schema_version":1,"algorithm":"ming_partition_global","latent_channels":self.latent_channels,
@@ -122,7 +134,7 @@ def write_payload(model,directory):
     save_file(payload["state"],str(directory/"adapter.safetensors"))
 
 
-def prepare_full_training(trainer):
+def prepare_full_training(trainer,*,adapter_dtype=None,allow_adapter_resume=False):
     from api.param_defaults import TRAINING_DEFAULTS
     config=trainer.config;model=trainer.transformer
     def value(name):
@@ -140,6 +152,7 @@ def prepare_full_training(trainer):
     if not config.get("dit_partition_training_enabled",config.get("qwen_partition_training_enabled",False)):
         raise ValueError("Ming global adapter requires spatial partition training")
     rank,tokens=value("rank"),value("tokens")
+    dtype=trainer.weight_dtype if adapter_dtype is None else adapter_dtype
     if existing is not None:
         if (existing.rank,existing.summary_tokens)!=(rank,tokens):raise ValueError("Ming global adapter dimensions changed")
         return existing.requires_grad_(True)
@@ -147,10 +160,10 @@ def prepare_full_training(trainer):
         if (payload["metadata"]["rank"],payload["metadata"]["summary_tokens"])!=(rank,tokens):
             raise ValueError("Ming global adapter dimensions changed from the checkpoint")
         adapter=from_payload(payload["metadata"],payload["state"],latent_channels=model.in_channels,
-            hidden_dim=model.dim,dtype=trainer.weight_dtype)
+            hidden_dim=model.dim,dtype=dtype)
     else:
-        if getattr(trainer,"_loaded_checkpoint_path",None):raise ValueError("Cannot add a missing Ming global adapter during resume")
-        adapter=MingPartitionGlobalAdapter(model.in_channels,model.dim,rank=rank,summary_tokens=tokens,dtype=trainer.weight_dtype)
+        if getattr(trainer,"_loaded_checkpoint_path",None) and not allow_adapter_resume:raise ValueError("Cannot add a missing Ming global adapter during resume")
+        adapter=MingPartitionGlobalAdapter(model.in_channels,model.dim,rank=rank,summary_tokens=tokens,dtype=dtype)
     adapter=adapter.to(next(model.parameters()).device).train().requires_grad_(True)
     setattr(model,GLOBAL_NAME,adapter)
     if payload is not None:del model._ming_partition_global_payload

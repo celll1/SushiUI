@@ -123,3 +123,22 @@ def load_quantized_transformer(model, artifact, dtype):
     if any(value.device.type == "meta" for value in model.state_dict().values()):
         raise ValueError("Ming quantized checkpoint left unloaded tensors")
     return model
+
+
+def configure_frozen_quantized_training(model):
+    """Pin frozen bases to differentiable dequantization despite inherited flags."""
+    from core.models.ideogram4.vendor.int8_linear import Int8Linear, disable_int8_mm
+    from core.models.ideogram4.vendor.fp8_linear import Fp8Linear, disable_scaled_mm
+    from core.models.common.convrot_int8_linear import ConvRotInt8Linear
+    disable_int8_mm(model)
+    disable_scaled_mm(model)
+    counts = {"int8":0,"e4m3":0,"convrot_int8":0}
+    for module in model.modules():
+        if isinstance(module,ConvRotInt8Linear):
+            module._force_dequant = True
+            counts["convrot_int8"] += 1
+        elif isinstance(module,Int8Linear):
+            counts["int8"] += 1
+        elif isinstance(module,Fp8Linear):
+            counts["e4m3"] += 1
+    return {"execution":"dequant_autograd", "formats":counts} if sum(counts.values()) else None

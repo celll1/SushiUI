@@ -12,19 +12,29 @@ from api.arch_capabilities import TRAINING_UNSUPPORTED
 from core.models.ming_image_01.training_resume import RUNTIME_KEY
 
 
-@pytest.mark.parametrize("text_mode,groups,profile,projection_only", [
-    ("cpu_prefetch", [], "generation_edit", False),
-    ("cpu_prefetch", [], "layer_decompose", False),
-    ("swap_onthefly", [], "generation_edit", True),
-    ("swap_onthefly", [], "layer_decompose", True),
+@pytest.mark.parametrize("text_mode,groups,profile,projection_only,quantization", [
+    ("cpu_prefetch", [], "generation_edit", False, None),
+    ("cpu_prefetch", [], "layer_decompose", False, None),
+    ("swap_onthefly", [], "generation_edit", True, None),
+    ("swap_onthefly", [], "layer_decompose", True, None),
+    *( ("cpu_prefetch", [], profile, False, format_)
+       for profile in ("generation_edit", "layer_decompose")
+       for format_ in ("int8", "int8_convrot") ),
 ])
-def test_lora_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monkeypatch, text_mode, groups, profile, projection_only):
+def test_lora_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monkeypatch, text_mode, groups, profile, projection_only, quantization):
     from core.training import latent_cache
     from core.training.ops import ming_image_01_ops
     monkeypatch.setattr(latent_cache, "get_cache_base_dir", lambda: str(tmp_path / "cache"))
     root = tmp_path / "package"
-    root.mkdir()
-    write_tiny_package(root, profile=profile)
+    if quantization is None:
+        root.mkdir()
+        write_tiny_package(root, profile=profile)
+    else:
+        from ming_image_01_conversion_test import make_source
+        from core.models.ming_image_01.conversion import convert_package
+        source = tmp_path / "floating"
+        make_source(source, profile)
+        convert_package(source, root, format_=quantization)
     items = []
     for index in range(4):
         path = tmp_path / f"target_{index}.png"
@@ -89,7 +99,7 @@ def test_lora_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, 
     for name in ("transformer", "text_encoder"):
         expected = getattr(baseline, name).state_dict()
         actual = getattr(resumed, name).state_dict()
-        assert all(torch.equal(value, actual[key]) for key, value in expected.items()), f"{name} continuation differs"
+        assert all(torch.equal(value.view(torch.uint8), actual[key].view(torch.uint8)) for key, value in expected.items()), f"{name} continuation differs"
     expected = baseline.optimizer.state_dict()["state"]
     actual = resumed.optimizer.state_dict()["state"]
     assert expected.keys() == actual.keys()

@@ -1288,3 +1288,35 @@ entry's CPU default and zero-weight audit/reload. Compile and guarded real
 imports are checked at this milestone. No official weights, HTTP API, server or
 CUDA allocation is used. Conditioner quantization, quantized-base training and
 the remaining Qwen parity work stay active; owner UI/build acceptance is deferred.
+
+
+### Frozen quantized DiT LoRA training milestone
+
+Ordinary native DiT/caption LoRA training now pins packed INT8, E4M3 fallback
+and ConvRot bases to differentiable dequantization before adapter installation.
+Inherited inference GEMM flags cannot select nondifferentiable kernels in the
+training graph. ConvRot uses the shared eager dequantization path; packed
+weights, scales and rotation markers remain frozen. Checkpoint metadata records
+`ming_quantized_base_training` execution policy and per-format module counts.
+This is descriptive base-forward metadata, not a base-content fingerprint or
+a new resume identity gate. Legacy LoRA compatibility rules remain unchanged.
+
+Four public request-model -> YAML -> runner configuration -> real CPU trainer
+cases cover both profiles and both conversion formats. They verify finite branch
+updates, byte-exact frozen parameters/buffers, saved metadata, weight reload,
+and request-scoped generation adapter cleanup over restored nested U-Net topology.
+Plain INT8 fixtures deliberately include an E4M3 fallback row. Four additional
+shared-loop continuation cases save before the first AdamW update, retaining
+pending gradients with MNT=2 and gradient accumulation=4. The six remaining
+backwards reproduce input/noise/sigma, all model tensors, optimizer moments and
+scheduler/update counters exactly after resume. These tests use actual native
+small models and the production converter; CUDA initialization is forbidden.
+
+Frontend static review confirms ordinary Ming LoRA uses the existing public
+method/conditioner/adapter controls and request fields. No new API defaults or
+training option is introduced. The optimized Qwen ConvRot cache/prefetch controls
+remain Qwen-only until a Ming implementation is verified. Owner build/type checks,
+interactive UI, CUDA mixed precision and official-weight numerical/performance
+acceptance remain pending. Quantized full-parameter materialization, conditioner
+quantization/adapters, advanced adapter families, partition/global, style and
+other remaining Qwen parity obligations stay in scope.

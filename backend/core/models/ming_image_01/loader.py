@@ -121,6 +121,9 @@ def load_components(path, *, dtype, conditioner_attention: str) -> MingComponent
     else:
         transformer = load_quantized_transformer(quantized_transformer, artifact, dtype)
     restore_topology(transformer, topology)
+    from .partition_global import payload_from_directory
+    global_payload = payload_from_directory(artifact.root, latent_channels=transformer.in_channels, hidden_dim=transformer.dim)
+    if global_payload is not None:transformer._ming_partition_global_payload = global_payload
     vae, info = AutoencoderKLQwenImage.from_pretrained(
         str(artifact.components["vae"]), torch_dtype=dtype, local_files_only=True,
         low_cpu_mem_usage=True, output_loading_info=True)

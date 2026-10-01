@@ -60,5 +60,6 @@ def test_rewiring_partition_exception_only_applies_to_ming():
     validate_training_features(config,'ming_image_01')
     with pytest.raises(ValueError,match='incompatible'):
         validate_training_features(config,'qwen_image_21')
-    with pytest.raises(ValueError,match='global_adapter'):
-        validate_training_features({'dit_partition_global_adapter_enabled':True},'ming_image_01')
+    validate_training_features({'dit_partition_global_adapter_enabled':True},'ming_image_01')
+    with pytest.raises(ValueError,match='repa'):
+        validate_training_features({'repa_enable':True},'ming_image_01')

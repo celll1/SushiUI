@@ -47,8 +47,11 @@ def _backward_regions(trainer,batch,*,sigma,noise,plan,backward_scale,drop_mask=
             step_time=time[indices]
         context=torch.autocast(device_type=clean.device.type,dtype=trainer.training_dtype) if trainer.mixed_precision else nullcontext()
         with context:
+            global_adapter=getattr(trainer.transformer,"ming_partition_global_adapter",None)
+            residual=None if global_adapter is None else global_adapter(noisy if indices is None else noisy[indices],region.input)
             output=trainer.transformer(list(x.unbind()),step_time,list(queries.unbind()),
                 cap_feats_2=list(direct.unbind()),ref_x=refs,return_dict=False,
+                target_input_residual=residual,
                 target_spatial_position_ids=adapter.position_ids(plan.full_height,plan.full_width,region.input,device=clean.device))[0]
         return torch.stack(output)
     null_cores=[];effective=None

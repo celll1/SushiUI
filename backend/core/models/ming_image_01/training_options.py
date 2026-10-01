@@ -54,6 +54,12 @@ def preflight_training(config, *, method):
     chunk = config.get("qwen_full_kv_query_chunk_tokens", TRAINING_DEFAULTS["qwen_full_kv_query_chunk_tokens"])
     if type(chunk) is not int or chunk < 0:
         raise ValueError("Ming full-KV query chunk must be a nonnegative integer")
+    global_enabled=config.get("dit_partition_global_adapter_enabled",config.get("qwen_partition_global_adapter_enabled",TRAINING_DEFAULTS["dit_partition_global_adapter_enabled"]))
+    if global_enabled:
+        if method != "full_finetune":raise ValueError("Ming global-adapter LoRA wiring is not yet available; use full_finetune")
+        if not config.get("train_unet",TRAINING_DEFAULTS["train_unet"]):raise ValueError("Ming global adapter requires train_unet")
+        if not config.get("dit_partition_training_enabled",config.get("qwen_partition_training_enabled",False)):
+            raise ValueError("Ming global adapter requires spatial partition training")
     materialize = config.get("full_finetune_dequantize_int8_base", TRAINING_DEFAULTS["full_finetune_dequantize_int8_base"])
     if type(materialize) is not bool or (materialize and method != "full_finetune"):
         raise ValueError("Ming full dequantization requires a boolean opt-in and full_finetune")

@@ -75,8 +75,6 @@ def validate_forward(model, images, patch_size, f_patch_size, spec):
         raise ValueError("Ming rewiring requires the native divisible spatial patch grid")
     if shape[1] < 1 or (not model.multi_frame_output and shape[1] != 1):
         raise ValueError("Ming target frame count conflicts with checkpoint profile")
-    if getattr(model, "_ming_partition_global_payload", None) is not None:
-        raise ValueError("Ming rewiring excludes partition-global adapters")
     preview_plan(spec, shape[2] // patch_size, shape[3] // patch_size)
 
 

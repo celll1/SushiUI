@@ -102,6 +102,9 @@ def validate_configs(configs: dict[str, dict]) -> str:
             or mlp.get("use_vlm_directvlm_condition") is not True
             or mlp.get("use_learnable_token_condition") is not True):
         raise ValueError("Ming dual-conditioning configuration is inconsistent")
+    if (mlp.get("use_identity_mlp") is not True or mlp.get("text_encoder_norm") is not False
+            or mlp.get("connector_norm") is not False):
+        raise ValueError("Ming 0.1 requires the released identity-MLP and conditioning normalization policy")
     mllm = configs["mllm"]
     if mllm.get("architectures") != ["BailingMM2NativeForConditionalGeneration"]:
         raise ValueError("Ming requires its BailingMM2 native conditioner")

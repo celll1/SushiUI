@@ -23,7 +23,8 @@ count. Dtype/storage totals come from tensor headers. Config fingerprints do
 not hash the multi-gigabyte tensor payload and must not be treated as a
 cryptographic weight identity; component-content hashes belong to exports.
 
-Generation/training registration, native loading, U-Net execution and UI
+Native loading, selectable conditioner groups and small-model sampling are
+implemented. Platform generation/training registration, U-Net execution and UI
 wiring are subsequent implementation stages. Their capabilities remain
 unavailable until the corresponding integration gates pass. See
 [contract](../../../../docs/guides/MING_IMAGE_01_DESIGN.md).

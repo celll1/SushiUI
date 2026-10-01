@@ -158,7 +158,7 @@ def test_native_package_loader_round_trip(tmp_path):
     BailingMM2ImageProcessor(patch_size=2, temporal_patch_size=1, merge_size=2).save_pretrained(tmp_path / "mllm")
     projection_dir = tmp_path / "mlp"
     projection_dir.mkdir()
-    config = {"img_gen_scales": [2], "connector_norm": False,
+    config = {"use_identity_mlp": True, "text_encoder_norm": False, "img_gen_scales": [2], "connector_norm": False,
               "use_vlm_directvlm_condition": True, "use_learnable_token_condition": True,
               "selected_hidden_states_layers": [1, 2], "diffusion_inner_dim": 24,
               "diffusion_c_input_dim": 8}

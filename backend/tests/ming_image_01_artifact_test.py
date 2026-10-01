@@ -36,7 +36,7 @@ def package(tmp_path):
                         "axes_dims": [2, 2, 4], "all_patch_size": [2], "all_f_patch_size": [1]},
         "vae": {"_class_name": "AutoencoderKLQwenImage", "input_channels": 4, "z_dim": 16,
                 "scaling_factor": 8.0064, "shift_factor": 0.0},
-        "mlp": {"diffusion_c_input_dim": 16, "diffusion_inner_dim": 24,
+        "mlp": {"use_identity_mlp": True, "text_encoder_norm": False, "connector_norm": False, "diffusion_c_input_dim": 16, "diffusion_inner_dim": 24,
                 "use_vlm_directvlm_condition": True, "use_learnable_token_condition": True,
                 "selected_hidden_states_layers": [5, 12, 20], "img_gen_scales": [16]},
         "mllm": {"architectures": ["BailingMM2NativeForConditionalGeneration"],

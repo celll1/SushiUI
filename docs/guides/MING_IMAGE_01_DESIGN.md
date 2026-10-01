@@ -989,3 +989,17 @@ OpenAPI parsing are checked at this milestone. Frontend request/settings/queue
 paths were reviewed statically; owner build/type checking remains pending.
 No running API, server, official weights or physical GPU was used. Advanced
 Qwen feature parity remains in progress.
+
+
+### Native adapter target foundation
+
+`lora.py` enumerates the main/noise-refiner/context-refiner attention Q/K/V/output
+slots and optional native caption projection. It reuses the existing reversible
+canonical adapter-key codec and architecture-neutral branch builder. Wrapped
+slots remain discoverable for generation unloading and layering. Two CPU cases
+cover both native profiles, exact target ownership/unique keys, factor-group
+round trips, explicit additive deltas and backward after wrapping. Changed files
+compile and real-import with CUDA initialization forbidden. This is a foundation
+only: Ming adapter capability tables and public LoRA methods remain closed until
+trainer, generation session, export and resume paths are connected and verified.
+Conditioner adapter groups and the remaining Qwen parity paths remain open.

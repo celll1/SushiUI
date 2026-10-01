@@ -1212,3 +1212,35 @@ are reviewed statically. Build/type checks and interactive acceptance remain
 owner-run. No live HTTP API, server, official weights or CUDA allocation is used.
 Conditioner quantization, ConvRot, quantized-base training and the rest of the
 Qwen parity contract remain pending; full implementation remains active.
+
+### Native ConvRot DiT checkpoint milestone
+
+Ming DiT package preflight now recognizes the existing shared
+`int8_tensorwise`, `convrot: true`, `convrot_groupsize: 256` marker contract.
+Only small one-dimensional U8 marker payloads are read during preflight;
+weight payloads are still assigned shard-by-shard after geometry/key validation.
+Recognized rows install the shared `ConvRotInt8Linear`, never ordinary INT8.
+The runtime dependency is checked before conditioner weights are loaded.
+Per-row FP32 scales accept `[out]` or `[out, 1]` for marked ConvRot rows;
+only the declared ConvRot column scales are normalized to flat buffers.
+Unknown markers, incompatible widths/weight types and malformed metadata fail
+before conditioner loading. Native package export preserves the markers.
+
+Twelve native CPU cases cover Design/Layer exact packed-state reload, nested
+U-Net RGBA generation, the real Comfy-Kitchen eager dequantization/gradient
+oracle, public export serialization/restoration and generation GEMM reporting,
+six invalid-contract refusals, column-scale normalization, missing-runtime
+refusal and both profiles' ConvRot-plus-LoRA generation. The LoRA fixture
+explicitly declares its matching U-Net topology: undeclared dense adapters are
+correctly refused by the existing checkpoint/adapter topology contract. The
+packed ConvRot base and active topology survive adapter cleanup, and LoRA
+sampling latents are finite. Ten existing plain INT8/E4M3 package cases pass.
+
+These checks use the installed Comfy-Kitchen CPU eager implementation without
+replacing its numerical operators. CUDA initialization is prohibited throughout;
+no official weights, main GPU, HTTP API or server are used. Physical GPU kernels,
+VRAM, throughput and official-model quality remain unmeasured. This milestone
+loads/saves already-converted DiT artifacts; production offline ConvRot
+conversion, conditioner quantization, quantized-base training and the remaining
+Qwen feature parity are still in progress. Frontend continues to use the common
+native-package export controls; owner build/type checks remain deferred.

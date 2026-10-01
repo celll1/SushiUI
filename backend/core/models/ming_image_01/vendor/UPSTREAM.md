@@ -12,3 +12,5 @@ Additional adaptations preserve native default/partial RoPE, expose an explicit 
 - DiT accepts optional full-canvas target spatial coordinates; that path packs target tiles and full reference grids independently and reconstructs target frames only. The ordinary native path retains its original reference-output behavior.
 
 - Main-stream gradient checkpointing accepts an explicit prefix block limit; refiners retain the native global switch.
+
+- An optional global input residual is shape-checked and added only to target patch embeddings before refinement, leaving reference and padding embeddings intact.

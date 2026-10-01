@@ -1,6 +1,6 @@
 """Caller-owned encoder phases for the native shared training batch."""
 
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 
 import torch
 
@@ -47,3 +47,30 @@ def configure_training_residency(trainer, *, latent_mode, text_mode):
     trainer.ming_training_residency = MingTrainingResidency(
         trainer.ming_image_01_components, device=trainer.device,
         latent_mode=latent_mode, text_mode=text_mode)
+
+
+@contextmanager
+def grouped_encoder_phase(policy, phase):
+    """Open one phase lazily, only if a grouped item actually needs encoding."""
+    if policy is None:
+        yield None
+        return
+    started = active = closed = False
+    with ExitStack() as stack:
+        @contextmanager
+        def enter(requested):
+            nonlocal started, active
+            if closed or active or requested != phase:
+                raise RuntimeError("Invalid Ming grouped encoder phase use")
+            if not started:
+                stack.enter_context(policy(phase))
+                started = True
+            active = True
+            try:
+                yield
+            finally:
+                active = False
+        try:
+            yield enter
+        finally:
+            closed = True

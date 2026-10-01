@@ -637,3 +637,20 @@ Per-item cold misses currently use independent encoder phases. Grouped transfer
 optimization, bounded swap buffers and CPU prefetch remain pending before normal
 training activation. These CPU checks do not measure physical GPU transfer cost
 or prove the complete shared training/resume lifecycle. No GPU/live API was used.
+
+### Grouped native VAE transfer boundary
+
+Dataset-owned cold latent entries now share one lazily opened VAE residency phase
+per native batch. The first miss stages the encoder/DiT; remaining misses reuse
+that phase, and its exit restores the DiT once. Complete hits never open the
+phase. Per-item keys and dataset ownership remain independent. Every item cache
+context is constructed before encoding, so invalid later dataset paths refuse
+before earlier items can be encoded. A closed/reentered grouped phase refuses,
+and exception cleanup uses the same owned transfer policy.
+
+62 affected residency/cache CPU tests pass, including symbolic transfer ordering
+for zero/one/multiple misses, cleanup, and a two-dataset tiny-native batch.
+Compile and real imports pass with CUDA initialization forbidden. These tests
+verify transfer calls, not physical GPU throughput. Cross-batch swap-buffer
+scheduling and the CPU-prefetch worker remain pending, as does normal-training
+activation and the complete checkpoint/resume acceptance. No GPU/API was used.

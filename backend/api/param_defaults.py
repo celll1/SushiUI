@@ -149,6 +149,15 @@ DIT_REWIRING_PRESETS: Dict[str, Any] = {
              "start_block": 8, "end_block": 12, "down_factor": [2, 2]},
         ],
     },
+    "ming_image_01": {
+        "block_count": 30,
+        "regions": [
+            {"id": "r0", "stream": "main", "parent": None,
+             "start_block": 4, "end_block": 26, "down_factor": [2, 2]},
+            {"id": "r1", "stream": "main", "parent": "r0",
+             "start_block": 13, "end_block": 17, "down_factor": [2, 2]},
+        ],
+    },
     "zimage": {
         "block_count": 30,
         "regions": [

@@ -50,6 +50,16 @@ def _native_adapter(architecture):
 
 def inspect_model(model_path):
     path = Path(model_path)
+    ming_marker = path / "transformer" / "config.json" if path.is_dir() else None
+    if ming_marker is not None and ming_marker.is_file():
+        with ming_marker.open(encoding="utf-8") as handle:
+            if json.load(handle).get("_class_name") == "DiffusionTransformer":
+                return _inspect_ming(path)
+    manifest_marker = path / "manifest.json" if path.is_dir() else path
+    if manifest_marker.name == "manifest.json" and manifest_marker.is_file():
+        with manifest_marker.open(encoding="utf-8") as handle:
+            if json.load(handle).get("model_type") == "ming_image_01":
+                return _inspect_ming(path)
     from core.models.minimax_music3.residual_unet import find_native_directory
     if path.suffix.lower() == ".gguf" or find_native_directory(path) is not None:
         return _inspect_music3(path)
@@ -331,3 +341,27 @@ def _inspect_yue2(path):
         topology_sha256=None if topology is None else digest(topology),
         default_spec=adapter.default_topology(config), initial_spec=initial,
         latent_scale_factor=1, pixel_alignment=1, temporal_geometry=adapter.temporal_geometry(config))
+
+
+
+def _inspect_ming(path):
+    from core.models.ming_image_01.artifact import inspect_artifact
+    from core.models.ming_image_01 import residual_unet as adapter
+    from api.param_defaults import DIT_REWIRING_REGION_DEFAULTS
+    from .parameters import parameter_counts
+    artifact = inspect_artifact(path)
+    config = adapter.native_config(artifact.configs["transformer"])
+    topology = read_directory_topology(artifact.components["transformer"])
+    if topology is not None:
+        topology = adapter.validate_topology_identity(topology, config)
+    count = config["n_layers"]
+    streams = [{"name": "main", "block_count": count}]
+    edges = DIT_REWIRING_REGION_DEFAULTS["edge_blocks"]
+    initial = build_spec("ming_image_01", streams, [dict(id="r0", stream="main", parent=None,
+        start_block=edges, end_block=count-edges,
+        down_factor=DIT_REWIRING_REGION_DEFAULTS["down_factor"], **OPERATORS)], config)
+    return dict(architecture="ming_image_01", streams=streams, base_config_sha256=digest(config),
+        block_layout_sha256=digest(streams), topology=topology,
+        topology_sha256=None if topology is None else digest(topology),
+        default_spec=adapter.default_topology(config), initial_spec=initial,
+        latent_scale_factor=16, pixel_alignment=16, parameter_counts=parameter_counts("ming_image_01", config))

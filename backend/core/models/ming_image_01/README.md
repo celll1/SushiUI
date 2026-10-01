@@ -24,7 +24,9 @@ not hash the multi-gigabyte tensor payload and must not be treated as a
 cryptographic weight identity; component-content hashes belong to exports.
 
 Native loading, selectable conditioner groups and small-model sampling are
-implemented. Platform generation/training registration, U-Net execution and UI
-wiring are subsequent implementation stages. Their capabilities remain
+implemented. Target-only nested U-Net execution, topology metadata restoration
+and shared checkpoint inspection/DiT parameter census are CPU verified.
+Platform generation/training registration and full component UI wiring are
+subsequent implementation stages. Their capabilities remain
 unavailable until the corresponding integration gates pass. See
 [contract](../../../../docs/guides/MING_IMAGE_01_DESIGN.md).

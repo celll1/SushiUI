@@ -45,6 +45,11 @@ def _restore_native_rope(native) -> None:
 def load_components(path, *, dtype, conditioner_attention: str) -> MingComponents:
     # Complete preflight precedes construction or residency changes.
     artifact = inspect_artifact(path)
+    from core.rewiring.artifacts import read_directory_topology
+    from .residual_unet import restore_topology, validate_topology_identity
+    topology = read_directory_topology(artifact.components["transformer"])
+    if topology is not None:
+        topology = validate_topology_identity(topology, artifact.configs["transformer"])
     if conditioner_attention not in {"eager", "flash_attention_2"}:
         raise ValueError("Ming conditioner supports eager or flash_attention_2, not SDPA")
     from diffusers import FlowMatchEulerDiscreteScheduler
@@ -83,6 +88,7 @@ def load_components(path, *, dtype, conditioner_attention: str) -> MingComponent
         str(artifact.components["transformer"]), torch_dtype=dtype,
         local_files_only=True, low_cpu_mem_usage=True, output_loading_info=True)
     _strict_loading_info(info, "transformer")
+    restore_topology(transformer, topology)
     vae, info = AutoencoderKLQwenImage.from_pretrained(
         str(artifact.components["vae"]), torch_dtype=dtype, local_files_only=True,
         low_cpu_mem_usage=True, output_loading_info=True)

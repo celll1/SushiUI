@@ -1962,3 +1962,36 @@ Changed backend files compile and import with CUDA forbidden. No API/GPU/main
 use occurred. Shared trainer dispatch, MNT/GAS/resume integration, fused-optimizer
 refusal, partition checkpoint policy, cancellation/error paths, native debug,
 public options/UI and global adapter wiring are still pending.
+
+
+### Shared trainer partition dispatch milestone
+
+Ming's shared forward/backward entry now dispatches enabled spatial partitions
+to native sequential backward before the ordinary full-frame objective. The
+existing canonical `dit_partition_*` fields and legacy saved aliases drive the
+plan. Threshold mode counts actual target patch tokens across all Layer frames,
+not raw latent pixels or reference tokens. Fixed mode uses shared deterministic
+split/halo planning keyed by epoch and batch occurrence. Disabled or under-limit
+threshold mode retains full-frame execution. No default value is introduced.
+
+The shared wrapper applies collated dual-zero CFG labels once, supplies the
+existing MNT noise draw, and divides microbatch loss scaling by GAS before
+backward. It flushes the existing metric/concept channels after backward and
+refuses fused per-parameter optimizer updates. Ming's architecture declares
+partition support and exposes its audited native adapter. The residual-rewiring
+training gate now permits spatial partition only for Ming; Qwen's gate and
+partition-global/TREAD/REPA/block-skip exclusions remain. Every region's nested
+U-Net geometry is checked before any region backward starts. Misaligned crop
+plans still fail instead of silently dropping or reshaping a topology.
+
+Eight unique targeted CPU cases pass: four public request-model/YAML/runner
+Design/Layer full/ordinary-LoRA training runs, three threshold-token accounting
+cases and one architecture-scoped rewiring gate test. The public runs perform
+MNT2/GAS2 real training, image guidance and query chunk 17, update weights and
+save checkpoints. A preceding GAS1 pass was not counted again. Backend compile
+and real imports forbid CUDA initialization. These are offline route helper and
+request-model calls, not HTTP; no main API/GPU/official payload was used.
+Partition checkpoint block overrides, exact pending-gradient resume, native
+debug/cancellation/error acceptance, generation parity, UI exposure and global
+adapters remain pending. In particular, the existing partition checkpointing
+parameter has not yet been implemented for Ming and must not be reported ready.

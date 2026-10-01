@@ -2,9 +2,10 @@
 
 import { useStartup } from "@/contexts/StartupContext";
 
-export default function MingLayerControls({ value, onChange }: { value?: number; onChange: (value: number) => void }) {
+export default function MingLayerControls({ value, onChange, mode }: { value?: number; onChange: (value: number) => void; mode?: "inpaint" | "outpaint" }) {
   const { modelInfo, generationDefaults } = useStartup();
   if (modelInfo?.type !== "ming_image_01" || modelInfo.profile !== "layer_decompose") return null;
+  if (mode) return <p className="text-sm text-amber-300">Ming Layer decomposition supports txt2img with a reference image and img2img. Use the Design checkpoint for {mode}.</p>;
   const layers = value ?? generationDefaults?.txt2img.ming_image_01_layers;
   if (typeof layers !== "number") return <p className="text-xs text-gray-400">Loading layer defaults…</p>;
   return <fieldset className="rounded border border-sky-800 p-3 text-sm">

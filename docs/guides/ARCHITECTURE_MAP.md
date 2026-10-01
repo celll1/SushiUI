@@ -1,8 +1,8 @@
 # Architecture Map
 
-The backend drives **17 architectures**: 12 image (SD1.5, SDXL, Z-Image, Flux2,
+The backend drives **18 architectures**: 13 image (SD1.5, SDXL, Z-Image, Flux2,
 Anima, Lens, Krea2, Qwen-Image 2.1, Ideogram4, MiniT2I, SenseNova U1.5,
-SenseNova SDXL Chimera), 2 video that also
+SenseNova SDXL Chimera, Ming-Image 0.1), 2 video that also
 generate audio jointly (LTX-2.3, MiniMax-H3) and 3 audio (ACE-Step 1.5,
 MiniMax Music 3, YuE2). `ModelType` in `backend/core/model_loader.py` is the
 authoritative generation list. `ARCH_REGISTRY` in
@@ -15,12 +15,11 @@ generation-only, while YuE2 exposes ABC-planner LoRA only. See
 `docs/guides/MODEL_FACTS.md` holds the
 per-architecture facts.
 
-Ming-Image 0.1 is additionally registered for native package loading and
-inspection (`ModelType` now has 18 entries). Its platform generation and common
-trainer remain disabled during staged integration; see
-`docs/guides/MING_IMAGE_01_DESIGN.md`. It is not included in the 17 working
-generation architectures or the 16 training handlers above. Layer's native
-frame axis denotes ordered RGBA image layers, not video.
+Ming-Image 0.1 has native Design/Layer generation and package inspection
+(`ModelType` has 18 entries). Native CPU integration is verified; official-weight
+GPU acceptance and the common trainer remain pending. See
+`docs/guides/MING_IMAGE_01_DESIGN.md`. Layer's frame axis denotes ordered RGBA
+image layers, not video; the training registry still has 16 handlers.
 
 ## Directory tree (top 2 levels + key `backend/core` modules)
 

@@ -2369,3 +2369,35 @@ families are not established. Invalid-runtime refusal must still be audited agai
 emergency saving: an un-restored pending runtime must not overwrite its source
 checkpoint. Remaining ConvRot/style/debug/timing parity and final owner acceptance
 remain active work.
+
+
+### Preserve source checkpoints when runtime restoration is refused
+
+A temporary CPU reproduction established that a Ming pending-gradient accumulation
+mismatch reached the generic emergency-save path at the saved step. That could
+replace a valid source checkpoint's state/optimizer or invoke partial-artifact
+cleanup. The reproduction used forbidden-save spies in temporary files; it did
+not operate on owner checkpoints.
+
+The shared trainer now refuses checkpoint/state/optimizer saving while a Ming
+saved runtime remains queued and un-restored, in both ordinary exception and
+KeyboardInterrupt handlers. Existing loop worker/resource shutdown runs first,
+and the original exception is propagated. Successful restoration clears the
+marker as before, so normal saving and later emergency saving retain their
+existing behavior. Non-Ming trainers are unaffected by the guard.
+
+Queueing marks the runtime as pending before metadata/ownership validation,
+covering those failure paths too. Schema version now requires integer 1; boolean
+True is refused. Legacy absence of the runtime field retains its existing path
+and does not gain an exact stochastic-resume guarantee.
+
+Sixteen unique targeted CPU cases pass: twelve real Design/Layer full/global-LoRA
+refusals covering changed accumulation, interruption during restoration and malformed
+schema, plus four guard-scope cases. No saved-model/state/optimizer function is
+called during refusals; hashes of all source checkpoint files remain identical.
+Restoring valid settings or repairing the temporary schema permits a fresh retry
+whose remaining logical traces, final model weights, optimizer moments and scheduler
+match continuous training. Full runs resume from step 2; LoRA runs resume from
+step 6 with established global moments and pending gradients. Changed files compile
+and import with CUDA forbidden. Main API/GPU remains untouched. Remaining ConvRot,
+style, debug/timing and final owner/official-weight acceptance remain active work.

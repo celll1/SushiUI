@@ -36,7 +36,7 @@ from core.models.ming_image_01.training_resume import RUNTIME_KEY
     pytest.param("cpu_prefetch", [], "generation_edit", False, None, None, None, "global_lora", id="global_lora_pending_resume_design"),
     pytest.param("cpu_prefetch", [], "layer_decompose", False, None, None, .5, "global_lora", id="global_lora_pending_resume_layer"),
 ])
-def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monkeypatch, text_mode, groups, profile, caption_only, quantization, conditioner_quant, cfg_rate, guidance_enabled):
+def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monkeypatch, text_mode, groups, profile, caption_only, quantization, conditioner_quant, cfg_rate, guidance_enabled, rejection=None):
     from core.training import latent_cache
     from core.training.ops import ming_image_01_ops
     monkeypatch.setattr(latent_cache, "get_cache_base_dir", lambda: str(tmp_path / "cache"))
@@ -142,9 +142,9 @@ def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monke
                     for parameter in module.parameters():
                         parameter.data = parameter.data.clone()
         return owner
-    def train(owner, resume=None):
+    def train(owner, resume=None, gas=4):
         owner.train([dataset], num_epochs=1, total_steps=8, batch_size=1,
-            multi_noise_timesteps=2, gradient_accumulation_steps=4,
+            multi_noise_timesteps=2, gradient_accumulation_steps=gas,
             save_every_n_steps=2, sample_every_n_steps=0, enable_bucketing=False,
             max_step_saves_to_keep=4, max_optimizer_saves_to_keep=4,
             base_resolutions=[128 if guidance_enabled in {"partition","global","global_lora"} else 64], latent_encoding_mode="swap_onthefly", text_encoding_mode=text_mode,
@@ -177,6 +177,38 @@ def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monke
             shutil.copytree(path, destination / path.name)
         else:
             shutil.copy2(path, destination / path.name)
+    if rejection is not None:
+        import hashlib
+        def checkpoint_hashes():
+            return {str(path.relative_to(destination)):hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in destination.rglob('*') if path.is_file() and str(path.relative_to(destination)).startswith(stem)}
+        valid_optimizer_bytes=None
+        optimizer_path=destination/(stem+"_optimizer.pt")
+        if rejection=='schema':
+            valid_optimizer_bytes=optimizer_path.read_bytes()
+            malformed=torch.load(optimizer_path,map_location='cpu',weights_only=True)
+            malformed[RUNTIME_KEY]['schema_version']=True
+            torch.save(malformed,optimizer_path)
+        before=checkpoint_hashes()
+        refused=trainer(destination,"latest")
+        saves=[]
+        def forbidden_save(*a,**k):
+            saves.append((a,k))
+            raise AssertionError('Un-restored runtime must not be saved')
+        with monkeypatch.context() as patch:
+            for name in ('save_checkpoint','save_training_state','save_optimizer_state','save_ema_state','_save_ema_checkpoint'):
+                patch.setattr(refused,name,forbidden_save)
+            if rejection=='interrupt':
+                from core.models.ming_image_01 import training_resume
+                def interrupt(*a,**k):raise KeyboardInterrupt()
+                patch.setattr(training_resume,'restore_runtime',interrupt)
+            error=KeyboardInterrupt if rejection=='interrupt' else ValueError
+            with pytest.raises(error):train(refused,"latest",gas=8 if rejection=='accumulation' else 4)
+        assert not saves, 'Refused resume attempted an emergency save'
+        assert checkpoint_hashes()==before, 'Refused resume changed the source checkpoint'
+        assert refused._ming_pending_runtime is not None
+        if valid_optimizer_bytes is not None:optimizer_path.write_bytes(valid_optimizer_bytes)
+        traces.clear()
     baseline_order = [name for name,_ in baseline.transformer.named_parameters()]
     traces.clear()
     resumed = trainer(destination, "latest")
@@ -271,3 +303,20 @@ def test_runtime_invalid_contract_refused_before_gradient_mutation(field, value,
         restore_runtime(owner)
     assert parameter.grad is original
     assert not torch.cuda.is_initialized()
+
+
+@pytest.mark.parametrize('profile',['generation_edit','layer_decompose'])
+@pytest.mark.parametrize('method',['full_finetune','lora'])
+@pytest.mark.parametrize('rejection',['accumulation','interrupt','schema'])
+def test_refused_global_resume_preserves_checkpoint_and_valid_retry(tmp_path,monkeypatch,profile,method,rejection):
+    test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path,monkeypatch,
+        'cpu_prefetch',[],profile,False,None,None,.5 if profile=='layer_decompose' else None,
+        'global_lora' if method=='lora' else 'global',rejection=rejection)
+
+
+@pytest.mark.parametrize('ming,pending,expected',[(True,{'saved':True},True),(True,None,False),
+    (False,{'saved':True},False),(False,None,False)])
+def test_resume_save_guard_only_covers_unrestored_ming(ming,pending,expected):
+    from core.training.base_trainer import BaseTrainer
+    owner=SimpleNamespace(is_ming_image_01=ming,_ming_pending_runtime=pending,log_prefix='test')
+    assert BaseTrainer._refuse_save_before_ming_runtime_restore(owner) is expected

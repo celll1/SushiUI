@@ -1430,9 +1430,6 @@ for _a in ("sd15", "sdxl", "sensenova_sdxl_chimera"):
         _a, "lr_layer_decay",
         "layer-wise LR decay needs the blocks in one forward order to measure depth on; a U-Net's down blocks, mid block and up blocks are joined by skip connections, so its blocks have no total order by depth (arch/sd15.py and arch/sdxl.py leave ArchHandler.depth_blocks at its None default)")
 
-_add_training_feature_unsupported("ming_image_01", "block_swap",
-    "Ming native block offload integration is pending")
-
 # --- REPA (representation alignment) ----------------------------------------
 # REPA needs a block whose output is a full image grid, exposed by
 # `ArchHandler.repa_tap` and stashed by that architecture's own block loop (or,

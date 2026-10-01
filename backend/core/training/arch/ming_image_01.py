@@ -23,8 +23,8 @@ class MingImage01ArchHandler(ArchHandler):
         load_components(trainer)
 
     def setup_block_swap(self, trainer):
-        if trainer.blocks_to_swap:
-            raise ValueError("Ming training block offload integration is pending")
+        from core.models.ming_image_01.block_offload import setup_training_block_swap
+        setup_training_block_swap(trainer)
 
     def setup_attention_backend(self, trainer):
         if trainer._resolve_training_backend(trainer.attention_backend) != "native":

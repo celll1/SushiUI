@@ -851,3 +851,37 @@ refusals before pytest collection, regardless of selected test ordering, and
 asserts no context was initialized. Use the repo venv with this entry point for
 Ming CPU checks; explicit test targets avoid repeating the full suite. No HTTP
 API, servers or official model weights were used in this milestone.
+
+
+### Mutable training block swap and phase ownership
+
+Ming's main `transformer.layers` now use the shared mutable
+`LayerOffloadConductor`, after adapter ownership is established. Dense and
+U-Net sequences retain native layer hooks and require gradient checkpointing
+for every main layer. H2D-only mode is refused because trainable weights need
+CPU writeback. The existing training block-count, pinned-memory and ring-size
+controls use this path; normal public training methods remain staged.
+
+A shared Ming component-move helper flushes completed updates and moves only
+unmanaged tensors. It preserves managed parameter identities and CPU master
+storage views across encoder phases, BaseTrainer residency, trainer previews
+and native bundle export. Execution-device snapshots accept this deliberate
+mixed residency without accepting arbitrary mixed-device components.
+
+CPU evidence uses real native layers, checkpoint recomputation, parameter
+update hooks, mutable conductor lifecycle hooks and the real transfer engine.
+Only CUDA streams/transfers are substituted with CPU slots. Four dense/U-Net
+Design/Layer backward cases verify updated masters, and both native trainer
+preview/export cases verify exact weight/topology reload and preserved master
+storage. Six block-offload cases and related preview/engine checks passed;
+the two export cases passed separately. A focused refusal case covers invalid
+checkpointing and H2D-only configuration. Imports and compilation are guarded
+before any trainer/API import. No HTTP calls, servers, official weights or
+physical GPU transfers were used in this milestone.
+
+Frontend static review confirms training controls consume capability refusals
+and retain existing block-count/pinned-memory/ring-size API fields. Build and
+type checking remain owner-run. CUDA DMA, production memory/performance,
+mid-epoch exact resume, adapter families and remaining Qwen feature parity
+still require later milestones. Generation block swap is still unavailable,
+as in the current Qwen 2.1 generation capability contract.

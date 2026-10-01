@@ -4,6 +4,8 @@ from contextlib import contextmanager
 
 import torch
 
+from .block_offload import move_component
+
 
 class MingPhaseResidency:
     def __init__(self, components, *, device, cpu_text_encoding):
@@ -16,7 +18,7 @@ class MingPhaseResidency:
         errors = []
         for module in (self.components.conditioner, self.components.transformer, self.components.vae):
             try:
-                module.to(device="cpu")
+                move_component(module, "cpu")
             except Exception as exc:
                 errors.append(exc)
         if errors:
@@ -35,7 +37,7 @@ class MingPhaseResidency:
                 target = "cpu" if self.cpu_text_encoding else self.device
                 self.components.conditioner.to(device=target)
             else:
-                self.components.transformer.to(device=self.device)
+                move_component(self.components.transformer, self.device)
                 self.components.vae.to(device=self.device)
             yield
         finally:

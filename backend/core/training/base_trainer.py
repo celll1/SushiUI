@@ -10237,7 +10237,8 @@ class BaseTrainer(ABC):
     def move_main_model_to_gpu(self):
         """Move main model (U-Net or Transformer) to GPU for training."""
         if getattr(self, "is_ming_image_01", False):
-            self.ming_image_01_components.transformer.to(device=self.device)
+            from core.models.ming_image_01.block_offload import move_component
+            move_component(self.ming_image_01_components.transformer, self.device)
             return
         if (
             self.is_sensenova
@@ -10257,7 +10258,8 @@ class BaseTrainer(ABC):
     def move_main_model_to_cpu(self):
         """Move main model (U-Net or Transformer) to CPU to free VRAM."""
         if getattr(self, "is_ming_image_01", False):
-            self.ming_image_01_components.transformer.to(device="cpu")
+            from core.models.ming_image_01.block_offload import move_component
+            move_component(self.ming_image_01_components.transformer, "cpu")
             return
         if (
             self.is_sensenova

@@ -40,6 +40,7 @@ machine-local working material.
 | [docs/guides/MINIMAX_MUSIC3_DESIGN.md](MINIMAX_MUSIC3_DESIGN.md) | Current MiniMax Music 3 integration and refusal boundary. |
 | [docs/guides/MING_IMAGE_01_DESIGN.md](MING_IMAGE_01_DESIGN.md) | Proposed Ming Design/Layer integration contract, full Qwen parity, U-Net layout and acceptance boundaries. |
 | [docs/audits/MING_IMAGE_01_SOURCE_AUDIT.md](../audits/MING_IMAGE_01_SOURCE_AUDIT.md) | Pinned Ming source/configuration audit and provenance constraints; no GPU/API acceptance. |
+| [docs/legal/MING_IMAGE_01_PROVENANCE.md](../legal/MING_IMAGE_01_PROVENANCE.md) | File-level Ming vendoring licenses, upstream hashes and local modifications. |
 | [docs/guides/QWEN_IMAGE_21_DESIGN.md](QWEN_IMAGE_21_DESIGN.md) | Qwen-Image 2.1 artifacts, generation/editing, training, quantization, and implementation gates. |
 | [docs/guides/QWEN_IMAGE_21_GUIDANCE_LOSS.md](QWEN_IMAGE_21_GUIDANCE_LOSS.md) | Experimental mixed ordinary/guidance-target Qwen training objective and validation gate. |
 | [docs/guides/QWEN_IMAGE_21_BRANCH_LORA_DESIGN.md](QWEN_IMAGE_21_BRANCH_LORA_DESIGN.md) | Proposed Qwen conditional/empty-branch LoRA separation, loss routing, negative-prompt policy, and checkpoint contract. |

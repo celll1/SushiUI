@@ -2060,3 +2060,39 @@ No live API/GPU/official payload/main use occurred. Owner frontend build/UI chec
 remain for final acceptance. Global adapters, synchronized timing/debug/error
 paths, generation partition parity and the other planned Qwen surfaces remain
 active work.
+
+
+### Native partition global-summary foundation
+
+`MingPartitionGlobalAdapter` builds native 2×2 spatial patch features from every
+target frame, with normalized frame/height/width coordinates. Learned summary
+queries attend the complete target patch canvas; local target queries retrieve
+those summaries and project them to the native DiT width. Frame axis and patch
+channel order remain native. The output projection starts at zero, preserving
+base predictions before training. Complete reference images remain independently
+available through native attention; they are not duplicated in this summary.
+Rank/token limits follow the existing public 512/256 bounds; callers must supply
+centrally resolved values rather than adding constructor defaults.
+
+A strict schema-1 payload records latent channels, native width, rank, summary
+tokens, patch size and coordinate axes. Every expected tensor must be present,
+floating, finite and correctly shaped, with no extra tensors. Validation occurs
+before mutating an existing module. The native DiT accepts an optional shaped
+target input residual and adds it only to target embeddings before refiners;
+reference and alignment-padding embeddings remain untouched. This is an explicit
+private execution input, not a new public request parameter.
+
+Nineteen unique CPU checks pass in stages: seventeen standalone native patch /
+coordinate, zero-start, full-canvas outside-gradient, FP32/BF16 roundtrip and
+malformed tensor/metadata checks, plus two actual Design/Layer DiT residual checks.
+Native zero residual preserves predictions exactly; after initializing the output
+projection, native loss reaches full-canvas target pixels outside the input tile.
+The Layer fixture initializes native learned padding to finite values rather
+than relying on constructor empty memory. Changed files compile and import with
+CUDA forbidden. No API/GPU/main or official payload use occurred.
+
+This is a kernel, payload and native input foundation. Shared training ownership,
+optimizer groups, base/LoRA bundle save-load-resume, generation residual use,
+rewiring compatibility policy and UI exposure are still required. Earlier hidden
+Ming global settings are not yet declared supported. Do not infer operational
+checkpoint/UI parity from isolated strict-payload roundtrips.

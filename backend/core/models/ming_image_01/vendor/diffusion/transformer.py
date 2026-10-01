@@ -606,12 +606,20 @@ class DiffusionTransformer(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrigin
         cap_feats_2=None,
         return_dict: bool = True,
         target_spatial_position_ids=None,
+        target_input_residual=None,
     ):
         assert patch_size in self.all_patch_size
         assert f_patch_size in self.all_f_patch_size
 
         topology = getattr(self, "_residual_unet_spec", None)
         target_shape = tuple(x[0].shape)
+        target_token_counts = [image.shape[1] * (image.shape[2] // patch_size) * (image.shape[3] // patch_size) for image in x]
+        if target_input_residual is not None:
+            if (patch_size != 2 or f_patch_size != 1 or not isinstance(target_input_residual, torch.Tensor)
+                    or target_input_residual.ndim != 3 or target_input_residual.shape[0] != len(x)
+                    or target_input_residual.shape[2] != self.dim or not target_input_residual.is_floating_point()
+                    or any(count != target_input_residual.shape[1] for count in target_token_counts)):
+                raise ValueError("Ming global residual must match only the native target tokens")
         if topology is not None:
             from ...residual_unet import validate_forward
             validate_forward(self, x, patch_size, f_patch_size, topology)
@@ -639,6 +647,10 @@ class DiffusionTransformer(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrigin
 
         x = torch.cat(x, dim=0)
         x = self.all_x_embedder[f"{patch_size}-{f_patch_size}"](x)
+        if target_input_residual is not None:
+            parts = x.split(x_item_seqlens, dim=0)
+            x = torch.cat([torch.cat((part[:count] + residual.to(x), part[count:]), dim=0)
+                for part, count, residual in zip(parts, target_token_counts, target_input_residual)], dim=0)
 
         # Match t_embedder output dtype to x for layerwise casting compatibility
         adaln_input = t.type_as(x)

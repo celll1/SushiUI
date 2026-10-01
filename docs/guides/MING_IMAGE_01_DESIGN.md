@@ -208,6 +208,23 @@ transport adds no learned parameters; depth and frame count still change
 activation/attention cost. Never equate token reduction with proportional
 step/sec or resident parameter-memory reduction.
 
+## Generation settings transport
+
+Native Design defaults (12 steps, CFG 1) and Layer defaults (12 steps, CFG 2)
+are served from `param_defaults.py`. Profile selection preserves explicit
+request values. `ming_image_01_layers` has a central default of 3 and minimum
+1, transported through all four image endpoints, queue/loop inheritance and
+Studio recipes. Design still produces one image; Layer produces the native
+auxiliary canvas plus N ordered RGBA layers. The shared Layer control displays
+that distinction and reads the served default rather than duplicating it.
+
+CPU contract tests check JSON rejection of invalid counts, multipart consumers,
+profile defaults, explicit overrides and OpenAPI synchronization. Frontend
+static review includes model/profile switches, queue allowlists, transfers and
+recipe restoration. This milestone transports settings only: platform
+sampling and grouped gallery persistence remain disabled until their contracts
+are connected and verified.
+
 ## Verification and release gates
 
 Main's running API/GPU are unavailable for this task. Source/config review,

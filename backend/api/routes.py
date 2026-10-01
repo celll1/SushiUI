@@ -563,6 +563,7 @@ class GenerationParams(BaseModel):
     # architecture ignores it.
     sensenova_kv_cache_streaming: bool = GENERATION_DEFAULTS["sensenova_kv_cache_streaming"]
     qwen_image_21_kv_cache: bool = GENERATION_DEFAULTS["qwen_image_21_kv_cache"]
+    ming_image_01_layers: int = Field(GENERATION_DEFAULTS["ming_image_01_layers"], ge=1, strict=True)
     qwen_image_21_partition: Optional[Dict[str, Any]] = GENERATION_DEFAULTS["qwen_image_21_partition"]
     sampler: str = "euler"
     schedule_type: str = "uniform"
@@ -1262,6 +1263,7 @@ async def generate_txt2img(
     sensenova_mot_phase_eviction: bool = Form(GENERATION_DEFAULTS["sensenova_mot_phase_eviction"]),  # SenseNova U1.5 per-phase weight-half CPU eviction; other archs ignore it
     sensenova_kv_cache_streaming: bool = Form(GENERATION_DEFAULTS["sensenova_kv_cache_streaming"]),  # SenseNova U1.5 per-phase KV cache CPU streaming; other archs ignore it
     qwen_image_21_kv_cache: bool = Form(GENERATION_DEFAULTS["qwen_image_21_kv_cache"]),
+    ming_image_01_layers: int = Form(GENERATION_DEFAULTS["ming_image_01_layers"], ge=1),
     qwen_image_21_partition: str = Form(json.dumps(GENERATION_DEFAULTS["qwen_image_21_partition"])),
     sampler: str = Form("euler"),
     schedule_type: str = Form("uniform"),
@@ -1494,6 +1496,7 @@ async def generate_txt2img(
             "sensenova_mot_phase_eviction": sensenova_mot_phase_eviction,
             "sensenova_kv_cache_streaming": sensenova_kv_cache_streaming,
             "qwen_image_21_kv_cache": qwen_image_21_kv_cache,
+            "ming_image_01_layers": ming_image_01_layers,
             "qwen_image_21_partition": _parse_qwen_partition(qwen_image_21_partition),
             "sampler": sampler,
             "schedule_type": schedule_type,
@@ -1582,7 +1585,8 @@ async def generate_txt2img(
         _img_omitted = {key for key, value in (
             ("steps", steps), ("cfg_scale", cfg_scale),
         ) if value is None}
-        _img_defaults = resolve_image_defaults(params, set(params) - _img_omitted, _img_arch)
+        _img_defaults = resolve_image_defaults(params, set(params) - _img_omitted, _img_arch,
+            profile=(pipeline_manager.current_model_info or {}).get("profile"))
         # The sentinel locals are still None for an omitted field; re-read them
         # so later code that uses the local rather than `params` sees the
         # resolved value.
@@ -2256,6 +2260,7 @@ async def generate_img2img(
     sensenova_mot_phase_eviction: bool = Form(GENERATION_DEFAULTS["sensenova_mot_phase_eviction"]),  # SenseNova U1.5 per-phase weight-half CPU eviction; other archs ignore it
     sensenova_kv_cache_streaming: bool = Form(GENERATION_DEFAULTS["sensenova_kv_cache_streaming"]),  # SenseNova U1.5 per-phase KV cache CPU streaming; other archs ignore it
     qwen_image_21_kv_cache: bool = Form(GENERATION_DEFAULTS["qwen_image_21_kv_cache"]),
+    ming_image_01_layers: int = Form(GENERATION_DEFAULTS["ming_image_01_layers"], ge=1),
     qwen_image_21_partition: str = Form(json.dumps(GENERATION_DEFAULTS["qwen_image_21_partition"])),
     denoising_strength: float = Form(0.75),
     img2img_fix_steps: bool = Form(True),
@@ -2507,6 +2512,7 @@ async def generate_img2img(
             "sensenova_mot_phase_eviction": sensenova_mot_phase_eviction,
             "sensenova_kv_cache_streaming": sensenova_kv_cache_streaming,
             "qwen_image_21_kv_cache": qwen_image_21_kv_cache,
+            "ming_image_01_layers": ming_image_01_layers,
             "qwen_image_21_partition": _parse_qwen_partition(qwen_image_21_partition),
             "denoising_strength": denoising_strength,
             "img2img_fix_steps": img2img_fix_steps,
@@ -2593,7 +2599,8 @@ async def generate_img2img(
         _img_omitted = {key for key, value in (
             ("steps", steps), ("cfg_scale", cfg_scale),
         ) if value is None}
-        _img_defaults = resolve_image_defaults(params, set(params) - _img_omitted, _img_arch)
+        _img_defaults = resolve_image_defaults(params, set(params) - _img_omitted, _img_arch,
+            profile=(pipeline_manager.current_model_info or {}).get("profile"))
         # See /generate/txt2img: the sentinel locals are still None for an
         # omitted field, and `steps` is used below (progress callback,
         # actual_steps).
@@ -7693,6 +7700,7 @@ async def generate_inpaint(
     sensenova_mot_phase_eviction: bool = Form(GENERATION_DEFAULTS["sensenova_mot_phase_eviction"]),  # SenseNova U1.5 per-phase weight-half CPU eviction; other archs ignore it
     sensenova_kv_cache_streaming: bool = Form(GENERATION_DEFAULTS["sensenova_kv_cache_streaming"]),  # SenseNova U1.5 per-phase KV cache CPU streaming; other archs ignore it
     qwen_image_21_kv_cache: bool = Form(GENERATION_DEFAULTS["qwen_image_21_kv_cache"]),
+    ming_image_01_layers: int = Form(GENERATION_DEFAULTS["ming_image_01_layers"], ge=1),
     qwen_image_21_partition: str = Form(json.dumps(GENERATION_DEFAULTS["qwen_image_21_partition"])),
     denoising_strength: float = Form(0.75),
     img2img_fix_steps: bool = Form(True),
@@ -7977,6 +7985,7 @@ async def generate_inpaint(
             "sensenova_mot_phase_eviction": sensenova_mot_phase_eviction,
             "sensenova_kv_cache_streaming": sensenova_kv_cache_streaming,
             "qwen_image_21_kv_cache": qwen_image_21_kv_cache,
+            "ming_image_01_layers": ming_image_01_layers,
             "qwen_image_21_partition": _parse_qwen_partition(qwen_image_21_partition),
             "denoising_strength": denoising_strength,
             "img2img_fix_steps": img2img_fix_steps,
@@ -8082,7 +8091,8 @@ async def generate_inpaint(
         _img_omitted = {key for key, value in (
             ("steps", steps), ("cfg_scale", cfg_scale),
         ) if value is None}
-        _img_defaults = resolve_image_defaults(params, set(params) - _img_omitted, _img_arch)
+        _img_defaults = resolve_image_defaults(params, set(params) - _img_omitted, _img_arch,
+            profile=(pipeline_manager.current_model_info or {}).get("profile"))
         # See /generate/txt2img: the sentinel locals are still None for an
         # omitted field, and `steps` is used below (progress callback,
         # actual_steps).
@@ -8291,6 +8301,7 @@ async def generate_outpaint(
     steps: Optional[int] = Form(None),
     cfg_scale: Optional[float] = Form(None),
     qwen_image_21_kv_cache: bool = Form(OUTPAINT_DEFAULTS["qwen_image_21_kv_cache"]),
+    ming_image_01_layers: int = Form(OUTPAINT_DEFAULTS["ming_image_01_layers"], ge=1),
     qwen_image_21_partition: str = Form(json.dumps(OUTPAINT_DEFAULTS["qwen_image_21_partition"])),
     # KNOWN GAP: this signature has no `cfg_norm`/`timestep_shift`/
     # `img_cfg_scale` Form() params, but openapi.yaml's OutpaintRequest
@@ -8639,6 +8650,7 @@ async def generate_outpaint(
             "steps": steps,
             "cfg_scale": cfg_scale,
             "qwen_image_21_kv_cache": qwen_image_21_kv_cache,
+            "ming_image_01_layers": ming_image_01_layers,
             "qwen_image_21_partition": _parse_qwen_partition(qwen_image_21_partition),
             "denoising_strength": denoising_strength,
             "img2img_fix_steps": img2img_fix_steps,
@@ -8790,7 +8802,8 @@ async def generate_outpaint(
         _img_omitted = {key for key, value in (
             ("steps", steps), ("cfg_scale", cfg_scale),
         ) if value is None}
-        _img_defaults = resolve_image_defaults(params, set(params) - _img_omitted, _img_arch, OUTPAINT_DEFAULTS)
+        _img_defaults = resolve_image_defaults(params, set(params) - _img_omitted, _img_arch, OUTPAINT_DEFAULTS,
+            profile=(pipeline_manager.current_model_info or {}).get("profile"))
         # See /generate/txt2img: the sentinel locals are still None for an
         # omitted field, and `steps` is used below (progress callback,
         # actual_steps).

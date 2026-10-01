@@ -1689,6 +1689,14 @@ export default function ImageGrid() {
                       : JSON.stringify(selectedImage.parameters.dit_rewiring_actual, null, 2)}</pre>
                   </details>
                 )}
+                {selectedImage.parameters?.ming_image_01_actual && (
+                  <details className="border-t border-gray-700 pt-3 text-xs">
+                    <summary className="cursor-pointer text-sky-300">Ming native profile / layer role and group</summary>
+                    <pre className="mt-2 whitespace-pre-wrap break-all">{typeof selectedImage.parameters.ming_image_01_actual === "string"
+                      ? selectedImage.parameters.ming_image_01_actual
+                      : JSON.stringify(selectedImage.parameters.ming_image_01_actual, null, 2)}</pre>
+                  </details>
+                )}
                 {selectedImage.parameters?.qwen_image_21_partition_actual && (
                   <div className="border-t border-gray-700 pt-3 text-xs">
                     <span className="text-gray-400 font-medium">Qwen partition layout:</span>

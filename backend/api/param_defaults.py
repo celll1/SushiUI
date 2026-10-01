@@ -434,6 +434,13 @@ SENSENOVA_GENERATION_DEFAULTS: Dict[str, Any] = {
     "style_inject_all_cfg_branches": True,
 }
 
+MING_IMAGE_01_GENERATION_DEFAULTS: Dict[str, Any] = {
+    "steps": 12, "cfg_scale": 1.0, "ming_image_01_layers": 3,
+}
+MING_IMAGE_01_LAYER_DEFAULTS: Dict[str, Any] = {
+    **MING_IMAGE_01_GENERATION_DEFAULTS, "cfg_scale": 2.0,
+}
+
 QWEN_IMAGE_21_GENERATION_DEFAULTS: Dict[str, Any] = {
     "steps": 40,
     "cfg_scale": 1.0,
@@ -493,6 +500,7 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     # SENSENOVA_GENERATION_DEFAULTS above). Every other architecture ignores
     # it (accepted and warned, api/arch_capabilities.py).
     "sensenova_kv_cache_streaming": SENSENOVA_GENERATION_DEFAULTS["sensenova_kv_cache_streaming"],
+    "ming_image_01_layers": MING_IMAGE_01_GENERATION_DEFAULTS["ming_image_01_layers"],
     "qwen_image_21_kv_cache": QWEN_IMAGE_21_GENERATION_DEFAULTS["qwen_image_21_kv_cache"],
     "qwen_image_21_partition": QWEN_IMAGE_21_GENERATION_DEFAULTS["qwen_image_21_partition"],
     "sampler": "euler",
@@ -825,11 +833,14 @@ IMAGE_GEN_ARCH_OVERLAYS: Dict[str, Dict[str, Any]] = {
         "cfg_scale": SENSENOVA_GENERATION_DEFAULTS["cfg_scale"],
     },
     "qwen_image_21": dict(QWEN_IMAGE_21_GENERATION_DEFAULTS),
+    "ming_image_01": dict(MING_IMAGE_01_GENERATION_DEFAULTS),
+    "ming_image_01_layer": dict(MING_IMAGE_01_LAYER_DEFAULTS),
 }
 
 
 def image_defaults_for_arch(arch: Optional[str],
-                            base: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                            base: Optional[Dict[str, Any]] = None, *,
+                            profile: Optional[str] = None) -> Dict[str, Any]:
     """`base` (default `GENERATION_DEFAULTS`) with ``arch``'s overlay applied.
 
     The single resolver behind every image route's omitted-field handling and
@@ -840,7 +851,8 @@ def image_defaults_for_arch(arch: Optional[str],
     safe answer for a model whose type has not been resolved yet.
     """
     resolved = dict(base if base is not None else GENERATION_DEFAULTS)
-    resolved.update(IMAGE_GEN_ARCH_OVERLAYS.get(arch or "", {}))
+    key = "ming_image_01_layer" if arch == "ming_image_01" and profile == "layer_decompose" else arch
+    resolved.update(IMAGE_GEN_ARCH_OVERLAYS.get(key or "", {}))
     return resolved
 
 

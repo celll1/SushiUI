@@ -39,6 +39,8 @@ import ResizableColumns, {
 import H3PromptAssist from "../common/H3PromptAssist";
 import Qwen21PromptUpsample from "../common/Qwen21PromptUpsample";
 import QwenPartitionControls from "../common/QwenPartitionControls";
+import MingLayerControls from "../common/MingLayerControls";
+import { imageDefaultsArchKey } from "@/utils/archConstraints";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import MiniMaxH3KeyframeTimeline from "../common/MiniMaxH3KeyframeTimeline";
@@ -73,6 +75,9 @@ import { readGlobalAttentionType } from "@/utils/attentionSettings";
 import { DEFAULT_ASPECT_RATIO_PRESETS, DEFAULT_FIXED_RESOLUTION_PRESETS, readStoredGenerationDisplaySettings } from "@/utils/generationDisplaySettings";
 
 interface Img2ImgParams {
+  ming_image_01_layers?: number;
+  qwen_image_21_partition?: import("@/utils/api").QwenPartitionConfig | null;
+  qwen_image_21_kv_cache?: boolean;
   prompt: string;
   negative_prompt?: string;
   steps?: number;
@@ -236,6 +241,7 @@ interface Img2ImgParams {
 
 const DEFAULT_PARAMS: Img2ImgParams = {
   prompt: "",
+  ming_image_01_layers: undefined,
   qwen_image_21_partition: undefined,
   negative_prompt: "",
   steps: 20,
@@ -682,6 +688,7 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
   // has not loaded) as supporting the feature, so a control is never hidden
   // merely because the matrix was unavailable.
   const loadedArch = currentModelInfo?.model_info?.type as string | undefined;
+  const imageDefaultsArch = imageDefaultsArchKey(loadedArch, currentModelInfo?.model_info?.profile);
   const loadedArchName = archDisplayName(loadedArch);
   // Audio-arch dispatch, same convention as Txt2ImgPanel's/OutpaintPanel's own
   // `isMusic3`: MiniMax Music 3's aud2aud repaint (mode="repaint" only,
@@ -1557,21 +1564,21 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
   // behavior when leaving an overlay-carrying arch (steps/cfg_scale apply to
   // every architecture, unlike the audio-only fields above).
   useEffect(() => {
-    if (isAudio || isVideo || !loadedArch || !generationDefaults) return;
+    if (isAudio || isVideo || !imageDefaultsArch || !generationDefaults) return;
     setParams((prev) => {
-      if (prev.image_defaults_arch === loadedArch) return prev;
-      const overlay = (generationDefaults.image_arch_overlays?.[loadedArch] || {}) as Record<string, unknown>;
+      if (prev.image_defaults_arch === imageDefaultsArch) return prev;
+      const overlay = (generationDefaults.image_arch_overlays?.[imageDefaultsArch] || {}) as Record<string, unknown>;
       const prevHadOverlay = prev.image_defaults_arch
         && generationDefaults.image_arch_overlays?.[prev.image_defaults_arch];
       const base = generationDefaults.img2img as Record<string, unknown> | undefined;
-      const next: Img2ImgParams = { ...prev, image_defaults_arch: loadedArch };
+      const next: Img2ImgParams = { ...prev, image_defaults_arch: imageDefaultsArch };
       if ("steps" in overlay) next.steps = overlay.steps as number;
       else if (prevHadOverlay && base?.steps !== undefined) next.steps = base.steps as number;
       if ("cfg_scale" in overlay) next.cfg_scale = overlay.cfg_scale as number;
       else if (prevHadOverlay && base?.cfg_scale !== undefined) next.cfg_scale = base.cfg_scale as number;
       return next;
     });
-  }, [isAudio, isVideo, loadedArch, generationDefaults, params.image_defaults_arch]);
+  }, [isAudio, isVideo, imageDefaultsArch, generationDefaults, params.image_defaults_arch]);
 
   // MiniMax Music 3 only ever accepts aud2aud mode="repaint" (see
   // routes.py's generate_aud2aud docstring -- "cover" would need to turn
@@ -3041,6 +3048,7 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
         cfg_norm: mainParams.cfg_norm, // Inherit SenseNova U1.5 CFG-overshoot clamp
         sensenova_mot_phase_eviction: mainParams.sensenova_mot_phase_eviction, // Inherit SenseNova U1.5 per-phase weight-half CPU eviction
         sensenova_kv_cache_streaming: mainParams.sensenova_kv_cache_streaming, // Inherit SenseNova U1.5 per-layer KV cache CPU streaming
+        ming_image_01_layers: mainParams.ming_image_01_layers,
         qwen_image_21_partition: mainParams.qwen_image_21_partition,
         qwen_image_21_kv_cache: mainParams.qwen_image_21_kv_cache,
         original_size_w: mainParams.original_size_w,
@@ -4275,6 +4283,8 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
           onApply={(prompt) => setParams((previous) => ({ ...previous, prompt }))}
         />
       )}
+      <MingLayerControls value={params.ming_image_01_layers}
+        onChange={ming_image_01_layers => setParams(previous => ({ ...previous, ming_image_01_layers }))} />
       {loadedArch === "qwen_image_21" && (
         <QwenPartitionControls value={params.qwen_image_21_partition}
           background={inputImagePreview}

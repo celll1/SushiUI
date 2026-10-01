@@ -78,6 +78,8 @@ import {
   renderStudioProject,
   videoFrameOptions,
 } from "@/utils/api";
+import MingLayerControls from "../common/MingLayerControls";
+import { imageDefaultsArchKey } from "@/utils/archConstraints";
 import type { GenerationParams, H3PromptMode, Img2ImgParams, InpaintParams, InpaintVideoParams, MiniMaxH3References, OutpaintVideoParams, Ref2VidParams } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
 import { formatTimecode } from "@/utils/timecode";
@@ -128,6 +130,7 @@ import {
 import styles from "./studio.module.css";
 
 interface StudioFormState {
+  mingImageLayers?: number;
   prompt: string;
   negativePrompt: string;
   width?: number;
@@ -802,7 +805,7 @@ export default function StudioWorkspace() {
   }, []);
 
   useEffect(() => {
-    const expectedDefaultsIdentity = modelInfo?.type ? `${modelInfo.type}:${modelInfo.variant || ""}` : null;
+    const expectedDefaultsIdentity = modelInfo?.type ? `${modelInfo.type}:${modelInfo.variant || modelInfo.profile || ""}` : null;
     if (!restored || !pendingTransfer || !isBackendReady || !generationDefaults
       || (expectedDefaultsIdentity && defaultsIdentity !== expectedDefaultsIdentity)) return;
     let cancelled = false;
@@ -873,6 +876,7 @@ export default function StudioWorkspace() {
         const frameRate = numeric(parameters.frame_rate) ?? numeric(parameters.fps);
         const steps = numeric(parameters.num_inference_steps) ?? numeric(parameters.inference_steps) ?? numeric(parameters.steps);
         const guidance = numeric(parameters.guidance_scale) ?? numeric(parameters.cfg_scale);
+        const mingImageLayers = numeric(parameters.ming_image_01_layers);
         const seed = numeric(parameters.seed);
         const audioEnable = booleanValue(parameters.audio_enable);
         if (width !== undefined) next.width = width;
@@ -881,6 +885,7 @@ export default function StudioWorkspace() {
         if (frameRate !== undefined) next.frameRate = frameRate;
         if (steps !== undefined) next.steps = steps;
         if (guidance !== undefined) next.guidance = guidance;
+        if (mingImageLayers !== undefined) next.mingImageLayers = mingImageLayers;
         if (seed !== undefined) next.seed = seed;
         if (audioEnable !== undefined) next.audioEnable = audioEnable;
         return next;
@@ -898,7 +903,7 @@ export default function StudioWorkspace() {
       }
     });
     return () => { cancelled = true; };
-  }, [defaultsIdentity, generationDefaults, isBackendReady, modelInfo?.type, modelInfo?.variant, pendingTransfer, restored]);
+  }, [defaultsIdentity, generationDefaults, isBackendReady, modelInfo?.type, modelInfo?.variant, modelInfo?.profile, pendingTransfer, restored]);
 
   useEffect(() => {
     if (!restored) return;
@@ -925,14 +930,15 @@ export default function StudioWorkspace() {
 
   useEffect(() => {
     if (!generationDefaults || !modelInfo?.type) return;
-    const identity = `${modelInfo.type}:${modelInfo.variant || ""}`;
+    const identity = `${modelInfo.type}:${modelInfo.variant || modelInfo.profile || ""}`;
     if (initializedDefaultsForArchRef.current === identity) return;
     initializedDefaultsForArchRef.current = identity;
     setDefaultsIdentity(identity);
     const base = isVideo ? generationDefaults.txt2vid : generationDefaults.txt2img;
     const resolved = {
       ...(base || {}),
-      ...(isVideo ? (generationDefaults.video_arch_overlays?.[modelInfo.type] || {}) : {}),
+      ...(isVideo ? (generationDefaults.video_arch_overlays?.[modelInfo.type] || {})
+        : (generationDefaults.image_arch_overlays?.[imageDefaultsArchKey(modelInfo.type, modelInfo.profile) || ""] || {})),
     };
     setForm((current) => ({
       ...current,
@@ -940,7 +946,8 @@ export default function StudioWorkspace() {
       height: numeric(resolved.height),
       numFrames: numeric(resolved.num_frames),
       frameRate: numeric(resolved.frame_rate),
-      steps: numeric(resolved.num_inference_steps),
+      steps: isVideo ? numeric(resolved.num_inference_steps) : numeric(resolved.steps),
+      mingImageLayers: numeric(resolved.ming_image_01_layers),
       guidance: numeric(resolved.guidance_scale) ?? numeric(resolved.cfg_scale),
       sampler: typeof resolved.sampler === "string" ? resolved.sampler : undefined,
       scheduleType: typeof resolved.schedule_type === "string" ? resolved.schedule_type : undefined,
@@ -948,7 +955,7 @@ export default function StudioWorkspace() {
       seed: numeric(resolved.seed),
       audioEnable: booleanValue(resolved.audio_enable),
     }));
-  }, [generationDefaults, isVideo, modelInfo?.type, modelInfo?.variant]);
+  }, [generationDefaults, isVideo, modelInfo?.type, modelInfo?.variant, modelInfo?.profile]);
 
   const loadGalleryPage = useCallback(async (skip = 0) => {
     const requestId = ++galleryRequestRef.current;
@@ -2568,6 +2575,8 @@ export default function StudioWorkspace() {
       model: resolvedModelName,
       architecture: modality.modelInfo?.type,
       model_variant: modality.modelInfo?.variant,
+      model_profile: modality.modelInfo?.profile,
+      ming_image_01_layers: form.mingImageLayers,
       mode: planMode,
       prompt: generationPrompt,
       source_prompt: form.prompt,
@@ -2614,6 +2623,7 @@ export default function StudioWorkspace() {
       if (!modality.isVideo) {
         const imageParameters: GenerationParams = {
           prompt: generationPrompt,
+          ming_image_01_layers: form.mingImageLayers,
           negative_prompt: supportsNegativePrompt ? form.negativePrompt : "",
           width: form.width,
           height: form.height,
@@ -2794,7 +2804,8 @@ export default function StudioWorkspace() {
     const recipe = job.recipe;
     setStudioVaePath(typeof recipe.vae_path === "string" ? recipe.vae_path : null);
     setStudioTextEncoderPath(typeof recipe.text_encoder_path === "string" ? recipe.text_encoder_path : null);
-    const recipeMatchesModel = recipe.architecture === loadedArch && recipe.model_variant === modelInfo?.variant;
+    const recipeMatchesModel = recipe.architecture === loadedArch && recipe.model_variant === modelInfo?.variant
+      && recipe.model_profile === modelInfo?.profile;
     if (!recipeMatchesModel) {
       setForm((current) => ({ ...current, prompt: String(recipe.prompt || ""), negativePrompt: "" }));
       setNotice("This recipe belongs to another model variant. Its prompt was restored, but current capability defaults were kept.");
@@ -2810,6 +2821,7 @@ export default function StudioWorkspace() {
       frameRate: numeric(recipe.frame_rate),
       steps: numeric(recipe.num_inference_steps),
       guidance: numeric(recipe.guidance_scale),
+      mingImageLayers: numeric(recipe.ming_image_01_layers),
       sampler: typeof recipe.sampler === "string" ? recipe.sampler : undefined,
       scheduleType: typeof recipe.schedule_type === "string" ? recipe.schedule_type : undefined,
       denoisingStrength: numeric(recipe.denoising_strength),
@@ -3749,6 +3761,8 @@ export default function StudioWorkspace() {
                 {!isVideoModel && <label>Denoise<input type="number" min="0" max="1" step="any" value={form.denoisingStrength ?? 0.75} onChange={(event) => setForm((current) => ({ ...current, denoisingStrength: Number(event.target.value) }))} /></label>}
                 {!isVideoModel && <label>Sampler<input value={form.sampler ?? "euler"} onChange={(event) => setForm((current) => ({ ...current, sampler: event.target.value }))} /></label>}
               </div>
+              <MingLayerControls value={form.mingImageLayers}
+                onChange={mingImageLayers => setForm(current => ({ ...current, mingImageLayers }))} />
               <label className={styles.sliderField}><span>Guidance <strong>{supportsGuidance ? form.guidance ?? "—" : `Fixed by ${loadedArch}`}</strong></span><input type="range" min="0" max="20" step="0.1" value={form.guidance ?? 0} onChange={(event) => setForm((current) => ({ ...current, guidance: Number(event.target.value) }))} disabled={!generationDefaults || !supportsGuidance} /></label>
               {isVideoModel && <label className={styles.toggleField}><span><AudioLines size={15} /> Generate audio jointly</span><input type="checkbox" checked={form.audioEnable ?? false} onChange={(event) => setForm((current) => ({ ...current, audioEnable: event.target.checked }))} disabled={!generationDefaults} /></label>}
               {(notice || (!isBackendReady ? "Generation schema is unavailable. Start the backend to enable AI generation." : null)) && <div className={styles.notice}><AlertCircle size={15} /><span>{notice || "Generation schema is unavailable. Start the backend to enable AI generation."}</span><button onClick={() => setNotice(null)}>×</button></div>}

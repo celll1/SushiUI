@@ -32,6 +32,8 @@ import InlineHelp from "../common/InlineHelp";
 import H3PromptAssist from "../common/H3PromptAssist";
 import Qwen21PromptUpsample from "../common/Qwen21PromptUpsample";
 import QwenPartitionControls from "../common/QwenPartitionControls";
+import MingLayerControls from "../common/MingLayerControls";
+import { imageDefaultsArchKey } from "@/utils/archConstraints";
 import ResizableColumns, {
   GENERATION_PREVIEW_QUEUE_SPLIT_KEY,
   GENERATION_WORKSPACE_SPLIT_KEY,
@@ -103,6 +105,9 @@ import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from 
 import { maybeUpsampleQwen21Prompt } from "@/utils/qwen21PromptUpsample";
 
 interface InpaintParams {
+  ming_image_01_layers?: number;
+  qwen_image_21_partition?: import("@/utils/api").QwenPartitionConfig | null;
+  qwen_image_21_kv_cache?: boolean;
   prompt: string;
   negative_prompt?: string;
   steps?: number;
@@ -270,6 +275,7 @@ interface InpaintParams {
 
 const DEFAULT_PARAMS: InpaintParams = {
   prompt: "",
+  ming_image_01_layers: undefined,
   qwen_image_21_partition: undefined,
   negative_prompt: "",
   steps: 20,
@@ -895,6 +901,7 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
 
   // ── Video temporal inpaint: the loaded architecture's own rules ──────────
   const loadedArchType = currentModelInfo?.model_info?.type as string | undefined;
+  const imageDefaultsArch = imageDefaultsArchKey(loadedArchType, currentModelInfo?.model_info?.profile);
   const loadedArchName = archDisplayName(loadedArchType);
   // Applies a LoRA's own declared recommended settings (from its file
   // metadata) to params, like any ordinary user edit -- see Txt2ImgPanel's
@@ -2000,21 +2007,21 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
   // behavior when leaving an overlay-carrying arch (steps/cfg_scale apply to
   // every architecture).
   useEffect(() => {
-    if (isVideo || !loadedArchType || !generationDefaults) return;
+    if (isVideo || !imageDefaultsArch || !generationDefaults) return;
     setParams((prev) => {
-      if (prev.image_defaults_arch === loadedArchType) return prev;
-      const overlay = (generationDefaults.image_arch_overlays?.[loadedArchType] || {}) as Record<string, unknown>;
+      if (prev.image_defaults_arch === imageDefaultsArch) return prev;
+      const overlay = (generationDefaults.image_arch_overlays?.[imageDefaultsArch] || {}) as Record<string, unknown>;
       const prevHadOverlay = prev.image_defaults_arch
         && generationDefaults.image_arch_overlays?.[prev.image_defaults_arch];
       const base = generationDefaults.inpaint as Record<string, unknown> | undefined;
-      const next: InpaintParams = { ...prev, image_defaults_arch: loadedArchType };
+      const next: InpaintParams = { ...prev, image_defaults_arch: imageDefaultsArch };
       if ("steps" in overlay) next.steps = overlay.steps as number;
       else if (prevHadOverlay && base?.steps !== undefined) next.steps = base.steps as number;
       if ("cfg_scale" in overlay) next.cfg_scale = overlay.cfg_scale as number;
       else if (prevHadOverlay && base?.cfg_scale !== undefined) next.cfg_scale = base.cfg_scale as number;
       return next;
     });
-  }, [isVideo, loadedArchType, generationDefaults, params.image_defaults_arch]);
+  }, [isVideo, imageDefaultsArch, generationDefaults, params.image_defaults_arch]);
 
   const resetToDefault = () => {
     setParams(DEFAULT_PARAMS);
@@ -3669,6 +3676,7 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
         cfg_norm: mainParams.cfg_norm, // Inherit SenseNova U1.5 CFG-overshoot clamp
         sensenova_mot_phase_eviction: mainParams.sensenova_mot_phase_eviction, // Inherit SenseNova U1.5 per-phase weight-half CPU eviction
         sensenova_kv_cache_streaming: mainParams.sensenova_kv_cache_streaming, // Inherit SenseNova U1.5 per-layer KV cache CPU streaming
+        ming_image_01_layers: mainParams.ming_image_01_layers,
         qwen_image_21_partition: mainParams.qwen_image_21_partition,
         qwen_image_21_kv_cache: mainParams.qwen_image_21_kv_cache,
         original_size_w: mainParams.original_size_w,
@@ -4947,6 +4955,8 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
           onApply={(prompt) => setParams((previous) => ({ ...previous, prompt }))}
         />
       )}
+      <MingLayerControls value={params.ming_image_01_layers}
+        onChange={ming_image_01_layers => setParams(previous => ({ ...previous, ming_image_01_layers }))} />
       {loadedArchType === "qwen_image_21" && (
         <QwenPartitionControls value={params.qwen_image_21_partition}
           background={inputImagePreview}

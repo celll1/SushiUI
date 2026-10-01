@@ -372,6 +372,10 @@ const ARCH_DISPLAY_NAMES: Record<string, string> = {
   yue2: "YuE2",
 };
 
+export function imageDefaultsArchKey(arch: string | undefined, profile?: string): string | undefined {
+  return arch === "ming_image_01" && profile === "layer_decompose" ? "ming_image_01_layer" : arch;
+}
+
 export function archDisplayName(arch: string | null | undefined): string;
 export function archDisplayName(
   caps: ArchCapabilities | null | undefined,

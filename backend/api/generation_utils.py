@@ -1410,7 +1410,8 @@ def resolve_video_defaults(params: Dict[str, Any], provided_keys, arch: Optional
 
 
 def resolve_image_defaults(params: Dict[str, Any], provided_keys, arch: Optional[str],
-                           base: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                           base: Optional[Dict[str, Any]] = None, *,
+                           profile: Optional[str] = None) -> Dict[str, Any]:
     """Fill every OMITTED image field from the loaded arch's image defaults.
 
     The image counterpart of `resolve_video_defaults` above -- same contract,
@@ -1437,7 +1438,7 @@ def resolve_image_defaults(params: Dict[str, Any], provided_keys, arch: Optional
     """
     from api.param_defaults import image_defaults_for_arch
 
-    resolved = image_defaults_for_arch(arch, base)
+    resolved = image_defaults_for_arch(arch, base, profile=profile)
     provided = set(provided_keys or ())
     for key, value in resolved.items():
         if key in params and key not in provided:

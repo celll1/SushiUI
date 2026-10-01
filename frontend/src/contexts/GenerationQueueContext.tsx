@@ -4,6 +4,7 @@ import { createContext, useContext, useState, useCallback, ReactNode, useEffect,
 import { GenerationParams, Img2ImgParams, Img2TxtParams, InpaintParams, InpaintVideoParams, OutpaintParams, OutpaintVideoParams, OutpaintAudioParams, UpscaleParams, Txt2VidParams, Img2VidParams, Ref2VidParams, MiniMaxH3References, Txt2AudParams, Aud2AudParams } from "@/utils/api";
 // Type-only (videoChain.ts imports QueueItem from here the same way), so this
 // mutual reference is erased at compile time and creates no runtime cycle.
+import type { MingImageResultGroup } from "@/utils/api";
 import type { ChainDriftPause } from "@/utils/videoChain";
 import { CFGMetrics, wsClient } from "@/utils/websocket";
 
@@ -57,6 +58,8 @@ export interface GenerationFailureSnapshot {
 
 /** One finished media result, for the shared top-right strip (FloatingGallery). */
 export interface GenerationResultFeedEntry {
+  label?: string;
+  groupId?: string;
   id: number;
   url: string;
   kind: "image" | "video" | "audio";
@@ -82,6 +85,7 @@ interface GenerationResultBase {
 }
 
 export interface MediaGenerationResultSnapshot extends GenerationResultBase {
+  imageGroups?: MingImageResultGroup[];
   kind: "image" | "video" | "audio";
   url: string;
   playbackUrl?: string;

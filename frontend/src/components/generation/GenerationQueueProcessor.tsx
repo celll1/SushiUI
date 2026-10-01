@@ -45,6 +45,7 @@ import {
   generateOutpaintVideo,
   generateUpscale,
   getResultFilename,
+  getImageResultFiles,
   getResultPlaybackFilename,
   getResultSeed,
   getResultAncestralSeed,
@@ -178,6 +179,15 @@ export default function GenerationQueueProcessor() {
     previewBlobUrlRef.current = URL.createObjectURL(preview.blob);
     return previewBlobUrlRef.current;
   }, []);
+
+  const appendImageResults = useCallback((result: any, fallbackUrl?: string) => {
+    const files = getImageResultFiles(result);
+    if (!files.length && fallbackUrl) appendResult({ url: fallbackUrl, kind: "image" });
+    files.forEach(file => appendResult({ url: `/outputs/${file.filename}`, kind: "image",
+      groupId: file.groupId,
+      label: file.role === "auxiliary_canvas" ? "Auxiliary canvas" : file.role?.replace("layer_", "Layer "),
+    }));
+  }, [appendResult]);
 
   const runUpscale = useCallback(async (item: QueueItem) => {
     try {
@@ -378,6 +388,7 @@ export default function GenerationQueueProcessor() {
       const seed = getResultSeed(result);
       const ancestralSeed = getResultAncestralSeed(result);
       publishCompletedResult({
+        imageGroups: result.groups,
         panel: "outpaint",
         kind: "image",
         url,
@@ -386,7 +397,7 @@ export default function GenerationQueueProcessor() {
         params: { ...itemParams, seed, ancestral_seed: ancestralSeed ?? -1 },
         warnings: resultWarnings(result),
       });
-      appendResult({ url, kind: "image" });
+      appendImageResults(result, url);
 
       busyRef.current = false;
       completeCurrentItem();
@@ -400,7 +411,7 @@ export default function GenerationQueueProcessor() {
         ? error.message
         : `Outpaint generation failed: ${errorDetail(error)}`);
     }
-  }, [publishCompletedResult, appendResult, completeCurrentItem, failCurrentItem, scheduleNext]);
+  }, [publishCompletedResult, appendImageResults, completeCurrentItem, failCurrentItem, scheduleNext]);
 
   const runInpaintVideo = useCallback(async (item: QueueItem) => {
     try {
@@ -600,6 +611,7 @@ export default function GenerationQueueProcessor() {
       const ancestralSeed = getResultAncestralSeed(result);
       if (imageUrl) {
         publishCompletedResult({
+          imageGroups: result.groups,
           panel: "inpaint",
           kind: "image",
           url: imageUrl,
@@ -614,7 +626,7 @@ export default function GenerationQueueProcessor() {
           },
           ephemeral: isLatentOnlyResult(result) || !result.image,
         });
-        appendResult({ url: imageUrl, kind: "image" });
+        appendImageResults(result, imageUrl);
       }
 
       await advanceLoopGroup(item, result, imageUrl, { latentPassthrough: false });
@@ -635,7 +647,7 @@ export default function GenerationQueueProcessor() {
           : "Generation failed: " + (error instanceof Error ? error.message : String(error)));
       }
     }
-  }, [advanceLoopGroup, appendResult, completeCurrentItem, failCurrentItem, publishCompletedResult, publishFailure, scheduleNext, trainingPreviewUrl]);
+  }, [advanceLoopGroup, appendImageResults, completeCurrentItem, failCurrentItem, publishCompletedResult, publishFailure, scheduleNext, trainingPreviewUrl]);
 
   // Shared tail for every video item: publish the clip, then let
   // advanceVideoChain feed this chain's next segment (a no-op for an unchained
@@ -915,6 +927,7 @@ export default function GenerationQueueProcessor() {
       if (imageUrl) {
         lastImageUrlRef.current[panel] = imageUrl;
         publishCompletedResult({
+          imageGroups: result.groups,
           panel,
           kind: "image",
           url: imageUrl,
@@ -928,7 +941,7 @@ export default function GenerationQueueProcessor() {
             height: result.image?.height ?? params.height,
           },
         });
-        appendResult({ url: imageUrl, kind: "image" });
+        appendImageResults(result, imageUrl);
       }
 
       await advanceLoopGroup(item, result, imageUrl, { latentPassthrough: true });
@@ -949,7 +962,7 @@ export default function GenerationQueueProcessor() {
       failCurrentItem(message);
       scheduleNext();
     }
-  }, [advanceLoopGroup, appendResult, completeCurrentItem, failCurrentItem,
+  }, [advanceLoopGroup, appendImageResults, completeCurrentItem, failCurrentItem,
       publishCompletedResult, publishFailure, scheduleNext, trainingPreviewUrl]);
 
   const dispatch = useCallback(async (nextItem: QueueItem) => {

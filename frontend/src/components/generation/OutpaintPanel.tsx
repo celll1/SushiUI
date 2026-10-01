@@ -33,6 +33,7 @@ import H3PromptAssist from "../common/H3PromptAssist";
 import Qwen21PromptUpsample from "../common/Qwen21PromptUpsample";
 import QwenPartitionControls from "../common/QwenPartitionControls";
 import { imageDefaultsArchKey } from "@/utils/archConstraints";
+import MingOutputGroups from "../common/MingOutputGroups";
 import ImageViewer from "../common/ImageViewer";
 import PostEditControls from "../common/PostEditControls";
 import VideoAccelerationControls from "../common/VideoAccelerationControls";
@@ -3116,6 +3117,7 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
           onApply={(prompt) => setParams((previous) => ({ ...previous, prompt }))}
         />
       )}
+      <MingOutputGroups panel="outpaint" />
       {loadedArchType === "qwen_image_21" && (
         <QwenPartitionControls value={params.qwen_image_21_partition}
           width={params.canvas_width} height={params.canvas_height}

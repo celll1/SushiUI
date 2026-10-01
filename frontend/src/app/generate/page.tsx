@@ -83,6 +83,8 @@ function GeneratePageContent() {
         timestamp: entry.timestamp,
         kind: entry.kind,
         playbackUrl: entry.playbackUrl,
+        label: entry.label,
+        groupId: entry.groupId,
       })),
     ]);
   }, [resultFeed]);

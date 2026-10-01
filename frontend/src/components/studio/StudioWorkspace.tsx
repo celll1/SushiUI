@@ -73,6 +73,7 @@ import {
   getImages,
   getStudioRenderJob,
   getResultFilename,
+  getImageResultFiles,
   getResultPlaybackFilename,
   isValidVideoFrameCount,
   renderStudioProject,
@@ -2737,6 +2738,13 @@ export default function StudioWorkspace() {
         seed: form.seed,
         parameters: recipe,
       });
+      const additionalAssets = generatedKind === "image"
+        ? getImageResultFiles(result).slice(1).map((file, index) => studioAssetFromGeneration(
+            { image: file.image || { filename: file.filename } },
+            { ...asset, id: `generation-${jobId}-${index + 1}`, filename: file.filename, kind: "image" },
+          ))
+        : [];
+      const generatedAssets = [asset, ...additionalAssets];
       const targetStart = planMode === "outpaint"
         ? plan.outputRange.start
         : range?.start ?? playhead;
@@ -2781,12 +2789,12 @@ export default function StudioWorkspace() {
       commit((current) => ({
         ...current,
         ...(generatedCanvasFit ? { width: generatedCanvasWidth, height: generatedCanvasHeight, canvasMode: "manual" as const } : {}),
-        assets: current.assets.some((item) => item.id === asset.id) ? current.assets : [...current.assets, asset],
+        assets: [...current.assets, ...generatedAssets.filter(generated => !current.assets.some(item => item.id === generated.id))],
         clips: [...current.clips.map((item) => item.id === selectedClip?.id ? { ...item, takeGroupId } : item), clip],
       }));
       setSelectedAssetId(asset.id);
       selectClip(clip.id);
-      setResultAssetIds((current) => [asset.id, ...current]);
+      setResultAssetIds((current) => [...generatedAssets.map(generated => generated.id), ...current]);
       if (generatedCanvasFit) setNotice(`Canvas set to ${generatedCanvasWidth}×${generatedCanvasHeight} from ${asset.name}.`);
       setJobs((current) => current.map((job) => job.id === jobId
         ? { ...job, status: (selectedClip ? "review" : "applied") as const, assetId: asset.id }
@@ -3774,7 +3782,9 @@ export default function StudioWorkspace() {
                   {resultAssetIds.map((assetId) => {
                     const asset = project.assets.find((item) => item.id === assetId);
                     if (!asset) return null;
-                    return <button key={asset.id} onClick={() => selectAsset(asset)} onDoubleClick={() => void hydrateGalleryAsset(asset).then((hydrated) => addAssetToTimeline(hydrated))}><NextImage src={asset.thumbnailUrl || asset.url} alt="" fill sizes="105px" unoptimized /><span>{asset.duration.toFixed(1)}s</span></button>;
+                    const role = (asset.parameters?.ming_image_01_actual as { role?: string } | undefined)?.role;
+                    const label = role === "auxiliary_canvas" ? "Auxiliary canvas" : role?.replace("layer_", "Layer ");
+                    return <button key={asset.id} title={label || asset.name} onClick={() => selectAsset(asset)} onDoubleClick={() => void hydrateGalleryAsset(asset).then((hydrated) => addAssetToTimeline(hydrated))}><NextImage src={asset.thumbnailUrl || asset.url} alt="" fill sizes="105px" unoptimized /><span>{label || `${asset.duration.toFixed(1)}s`}</span></button>;
                   })}
                 </div>
               </section>

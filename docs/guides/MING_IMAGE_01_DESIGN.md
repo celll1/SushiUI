@@ -221,9 +221,8 @@ that distinction and reads the served default rather than duplicating it.
 CPU contract tests check JSON rejection of invalid counts, multipart consumers,
 profile defaults, explicit overrides and OpenAPI synchronization. Frontend
 static review includes model/profile switches, queue allowlists, transfers and
-recipe restoration. This milestone transports settings only: platform
-sampling and grouped gallery persistence remain disabled until their contracts
-are connected and verified.
+recipe restoration. Settings and rich-result transport are connected;
+platform sampling remains disabled pending generation-mixin/residency gates.
 
 ## Ordered output persistence
 
@@ -240,9 +239,20 @@ collision. All gallery rows commit together; cancellation or any pre-commit
 failure rolls back the rows and removes this request's outputs/thumbnails.
 SQLite/PIL CPU tests check byte-identical RGBA recovery, multiple batches,
 metadata equality, filename uniqueness, collision refusal and failure cleanup.
-This helper awaits route and generation-mixin integration; it does not enable
-live generation by itself. Thumbnails may use a white alpha preview, while
-full PNG files retain native alpha.
+All four image routes recognize rich outputs before generic latent/single-image
+saving. The envelope deep-copies generation-time model information; final saves
+cannot acquire another loaded model's identity after the GPU slot is released.
+Route completion preserves source/mask metadata and all ordered groups in the
+status response. CPU tests exercise finalization and route branch ordering.
+
+Queue results retain group metadata across panel unmounts, append every frame
+to the recent-results feed, and offer a complete per-panel group viewer with
+role labels and original RGBA PNG downloads. Studio imports every image into
+its assets/result shelf, while the primary output owns the initial timeline
+clip. Loop continuation still uses the primary output. Frontend review is
+static; owner build/render validation remains pending. Platform sampling is
+still disabled until generation-mixin and residency gates pass. Thumbnails
+may use a white alpha preview, while full PNG files retain native alpha.
 
 ## Verification and release gates
 

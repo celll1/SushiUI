@@ -2715,6 +2715,31 @@ export const isLatentOnlyResult = (result: any): boolean =>
 export const getResultFilename = (result: any): string | undefined =>
   result?.image?.filename ?? result?.filename;
 
+export interface ImageResultFile {
+  filename: string;
+  image?: GeneratedImage;
+  groupId?: string;
+  role?: string;
+}
+
+export const getImageResultFiles = (result: Partial<GenerationResult>): ImageResultFile[] => {
+  const images = result.images?.length ? result.images : result.image ? [result.image] : [];
+  if (result.groups?.length) {
+    const records = new Map(images.map(image => [image.filename, image]));
+    const seen = new Set<string>();
+    return result.groups.flatMap(group => {
+      if (group.filenames.length !== group.roles.length) throw new Error("Incomplete Ming output group.");
+      return group.filenames.map((filename, index) => {
+        if (!filename || seen.has(filename)) throw new Error("Duplicate or missing Ming output filename.");
+        seen.add(filename);
+        return { filename, image: records.get(filename), groupId: group.group_id, role: group.roles[index] };
+      });
+    });
+  }
+  if (images.length) return images.map(image => ({ filename: image.filename, image }));
+  return result.filename ? [{ filename: result.filename }] : [];
+};
+
 // Playback source for a video result: prefers preview_filename (browser-
 // playable H.264 proxy) over filename, which is an FFV1-in-mkv master when
 // video_lossless=true. Use for <video src>; getResultFilename stays correct

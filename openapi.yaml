@@ -19292,6 +19292,11 @@ components:
               type: string
             seed:
               type: integer
+            groups:
+              type: array
+              description: Complete Ming group roles and filenames retained at successful completion.
+              items:
+                $ref: '#/components/schemas/MingImageResultGroup'
             warnings:
               type: array
               items:

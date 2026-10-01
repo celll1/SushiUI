@@ -1,14 +1,15 @@
 """Persist a request-owned Ming RGBA group without dropping native layers."""
 
+import os
 from pathlib import Path
 from uuid import uuid4
 
 from config.settings import settings
 from core.models.ming_image_01.results import MingGenerationOutput
 from database.models import GeneratedImage
-from utils.image_utils import save_image_with_metadata, create_thumbnail, calculate_image_hash
+from utils.image_utils import save_image_with_metadata, create_thumbnail, calculate_image_hash, extract_lora_names, encode_mask_to_base64
 from .generation_utils import create_db_image_record, prepare_params_for_db
-from .generation_status import get_warnings
+from .generation_status import get_warnings, complete_generation
 
 
 class MingResultSaveCancelled(RuntimeError):
@@ -96,3 +97,29 @@ def persist_ming_results(output: MingGenerationOutput, *, db, params, generation
             for path in reversed(files):
                 path.unlink(missing_ok=True)
         raise
+
+
+def finish_ming_generation(output, *, db, params, generation_type, generation_id,
+                           lora_configs, skip_gallery, source_image=None, mask_image=None):
+    """Finish a rich output before the generic PIL/latent route can discard frames."""
+    output.validate()
+    info = output.model_info
+    if not isinstance(info, dict) or info.get("type") != "ming_image_01":
+        raise ValueError("Ming API output requires a request-owned model snapshot")
+    if params["seed"] != output.groups[0].seed:
+        raise ValueError("Ming route seed disagrees with its native output")
+    from .quantized_gemm import report_quantized_gemm_outcome
+    report_quantized_gemm_outcome(params.get("quantized_gemm_mode"), params.get("fp8_gemm"), "ming_image_01")
+    response = persist_ming_results(output, db=db, params=params, generation_type=generation_type,
+        model_info=info, model_name=os.path.basename(info.get("source") or ""),
+        model_hash=info.get("model_hash") or "", generation_id=generation_id,
+        lora_names=extract_lora_names(lora_configs), skip_gallery=skip_gallery,
+        source_image_hash=calculate_image_hash(source_image) if source_image is not None else None,
+        mask_data_base64=encode_mask_to_base64(mask_image) if mask_image is not None else None)
+    first = response.get("image") or {}
+    last_result = {"filename": first.get("filename") or response.get("filename"),
+                   "seed": response["actual_seed"], "groups": response["groups"]}
+    if first.get("id") is not None:
+        last_result["image_id"] = first["id"]
+    complete_generation(last_result, generation_id=generation_id)
+    return response

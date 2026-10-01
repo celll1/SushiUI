@@ -498,3 +498,21 @@ policy still need connection before the temporary on-the-fly override can be
 removed. This producer/consumer integration does not enable normal training or
 prove exact optimizer resume. Persistent cache contexts are never inferred from
 file paths or nominal model names alone.
+
+### Cache startup ownership
+
+Native CPU loading now validates encoding-mode names before reading weights and
+captures cache producer identity only for requested persistent modes. Frozen
+conditioning and VAE snapshots are independent; trainable conditioning never
+creates a persistent snapshot. No weight hashing occurs for the default swap
+modes. The shared training startup attaches the snapshot under the run's
+`ming_cache/` directory and rejects late cache selection, producer precision,
+parameter-version, tiling/slicing or target-device changes.
+
+37 affected CPU cache/conditioning tests pass, including a native package reload
+through the common trainer loader. Changed backend files compile and real imports
+pass with CUDA initialization forbidden. This connects startup identity to the
+existing lazy producer/consumer path; eager prefill, swap buffers and CPU prefetch
+remain pending. The temporary common on-the-fly dispatch and staged training
+refusal remain until those mode contracts are implemented. No live API, official
+weights or GPU resources were used.

@@ -175,3 +175,59 @@ def validate_cache_context(components, context):
         raise ValueError("Ming VAE weights changed after cache identity capture; recreate the cache context")
     if context["conditioning_enabled"] and parameter_versions(components.conditioner) != context["conditioner_versions"]:
         raise ValueError("Ming conditioner weights changed after cache identity capture; recreate the cache context")
+
+
+
+def configured_modes(config):
+    from api.param_defaults import TRAINING_DEFAULTS
+    modes = {name: config.get(name, TRAINING_DEFAULTS[name])
+             for name in ("latent_encoding_mode", "text_encoding_mode")}
+    for name, value in modes.items():
+        accepted = {"swap_onthefly", "pre_encoded_cache", "onthefly_gpu"}
+        if name == "text_encoding_mode": accepted.add("cpu_prefetch")
+        if not isinstance(value, str) or value not in accepted:
+            raise ValueError(f"Unsupported Ming {name}: {value!r}")
+    return modes
+
+
+def capture_startup_snapshot(trainer):
+    import transformers
+    components = trainer.ming_image_01_components
+    modes = configured_modes(trainer.config)
+    latent = modes["latent_encoding_mode"] == "pre_encoded_cache"
+    condition = modes["text_encoding_mode"] == "pre_encoded_cache" and components.conditioner.cacheable
+    trainer.ming_cache_snapshot = None
+    trainer.ming_requested_encoding_modes = modes
+    if not latent and not condition:
+        return
+    execution = {"implementation": "ming_rgba_dual_v1", "torch": str(torch.__version__),
+        "transformers": transformers.__version__, "conditioner_attention": "eager",
+        "target_device": str(torch.device(getattr(trainer, "device", "cpu")).type),
+        "vae_tiling": bool(getattr(components.vae, "use_tiling", False)),
+        "vae_slicing": bool(getattr(components.vae, "use_slicing", False))}
+    trainer.ming_cache_snapshot = snapshot_cache_context(components, None,
+        execution=execution, latent_enabled=latent, conditioning_enabled=condition)
+
+
+def attach_startup_snapshot(trainer, *, latent_mode, text_mode):
+    configured_modes({"latent_encoding_mode": latent_mode, "text_encoding_mode": text_mode})
+    components = trainer.ming_image_01_components
+    latent = latent_mode == "pre_encoded_cache"
+    condition = text_mode == "pre_encoded_cache" and components.conditioner.cacheable
+    trainer.ming_cache_context = None
+    if not latent and not condition:
+        return
+    snapshot = getattr(trainer, "ming_cache_snapshot", None)
+    if (snapshot is None or (latent and not snapshot["latent_enabled"])
+            or (condition and not snapshot["conditioning_enabled"])):
+        raise ValueError("Ming cache mode must be configured before the native CPU model load")
+    validate_cache_context(components, snapshot)
+    if components.vae.dtype != snapshot["vae_dtype"] or next(components.conditioner.parameters()).dtype != snapshot["conditioner_dtype"]:
+        raise ValueError("Ming producer precision changed since its startup cache snapshot")
+    for name, attribute in (("vae_tiling", "use_tiling"), ("vae_slicing", "use_slicing")):
+        if bool(getattr(components.vae, attribute, False)) != snapshot["execution"][name]:
+            raise ValueError("Ming VAE execution policy changed since its startup cache snapshot")
+    if torch.device(trainer.device).type != snapshot["execution"]["target_device"]:
+        raise ValueError("Ming encoder execution device changed since its startup cache snapshot")
+    trainer.ming_cache_context = {**snapshot, "cache": MingTensorCache(Path(trainer.output_dir) / "ming_cache"),
+                                "latent_enabled": latent, "conditioning_enabled": condition}

@@ -253,3 +253,54 @@ def test_native_vae_transfer_failure_still_attempts_cpu_cleanup(tmp_path, monkey
     with pytest.raises(RuntimeError, match="transfer failed"):
         prepare_record_latents(value, [item], resolution=32, vae_device=torch.device("cpu"))
     assert calls == ["cpu", "cpu"]
+
+
+
+def test_default_startup_skips_content_hash_and_uses_central_modes(tmp_path, monkeypatch):
+    from core.models.ming_image_01 import cache as module
+    from api.param_defaults import TRAINING_DEFAULTS
+    value, _item, _context = cached_record_setup(tmp_path)
+    owner = SimpleNamespace(config={}, device="cpu", ming_image_01_components=value)
+    monkeypatch.setattr(module, "module_fingerprint", lambda *a: (_ for _ in ()).throw(AssertionError("Unrequested startup hash")))
+    module.capture_startup_snapshot(owner)
+    assert owner.ming_cache_snapshot is None
+    assert owner.ming_requested_encoding_modes == {name: TRAINING_DEFAULTS[name]
+        for name in ("latent_encoding_mode", "text_encoding_mode")}
+
+
+def test_startup_snapshot_attaches_requested_modes_without_hiding_trainable_te(tmp_path):
+    from core.models.ming_image_01.cache import capture_startup_snapshot, attach_startup_snapshot
+    value, _item, _context = cached_record_setup(tmp_path, trainable=True)
+    owner = SimpleNamespace(config={"latent_encoding_mode": "pre_encoded_cache", "text_encoding_mode": "pre_encoded_cache"},
+        device="cpu", output_dir=tmp_path / "run", ming_image_01_components=value)
+    capture_startup_snapshot(owner)
+    assert owner.ming_cache_snapshot["latent_enabled"] and not owner.ming_cache_snapshot["conditioning_enabled"]
+    attach_startup_snapshot(owner, latent_mode="pre_encoded_cache", text_mode="pre_encoded_cache")
+    assert owner.ming_cache_context["latent_enabled"] and not owner.ming_cache_context["conditioning_enabled"]
+    assert owner.ming_cache_context["cache"].root == owner.output_dir / "ming_cache"
+    attach_startup_snapshot(owner, latent_mode="onthefly_gpu", text_mode="onthefly_gpu")
+    assert owner.ming_cache_context is None
+
+
+@pytest.mark.parametrize("change", ["late_mode", "precision", "tiling", "device"])
+def test_startup_snapshot_rejects_changed_execution_contract(tmp_path, change):
+    from core.models.ming_image_01.cache import capture_startup_snapshot, attach_startup_snapshot
+    value, _item, _context = cached_record_setup(tmp_path)
+    owner = SimpleNamespace(config={"latent_encoding_mode": "pre_encoded_cache", "text_encoding_mode": "pre_encoded_cache"},
+        device="cpu", output_dir=tmp_path / "run", ming_image_01_components=value)
+    if change == "late_mode": owner.config = {}
+    capture_startup_snapshot(owner)
+    if change == "precision": value.vae.to(dtype=torch.bfloat16)
+    elif change == "tiling": value.vae.use_tiling = not value.vae.use_tiling
+    elif change == "device": owner.device = "cuda"
+    with pytest.raises(ValueError):
+        attach_startup_snapshot(owner, latent_mode="pre_encoded_cache", text_mode="pre_encoded_cache")
+    assert not torch.cuda.is_initialized()
+
+
+def test_bad_mode_refused_before_native_weight_load(monkeypatch):
+    from core.training.ops.ming_image_01_ops import load_components
+    from core.models.ming_image_01 import loader
+    monkeypatch.setattr(loader, "load_components", lambda *a, **k: (_ for _ in ()).throw(AssertionError("Weights loaded before mode validation")))
+    with pytest.raises(ValueError, match="Unsupported Ming"):
+        load_components(SimpleNamespace(config={"text_encoding_mode": True}))

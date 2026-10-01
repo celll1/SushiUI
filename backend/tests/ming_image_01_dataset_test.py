@@ -294,3 +294,45 @@ def test_supervision_changes_invalidate_shared_resume_fingerprint_and_ledgers(tm
     assert resolve_suffix(revised, 0, [batch]) == [batch]
     assert concept.digest != build_concept_batch_plan(batch, 2, config, 0, 42).digest
     assert not BaseTrainer._check_dataset_fingerprint_changed(owner, changed, changed)
+
+
+def test_random_shared_crop_is_replayable_without_consuming_global_rng(tmp_path):
+    import random
+    from types import SimpleNamespace
+    from core.models.ming_image_01.dataset import load_shared_items, batch_crop_seed
+    primary, _ = layer_files(tmp_path)
+    record = inspect_item(primary, root=tmp_path, profile="layer_decompose")
+    owner = SimpleNamespace(bucket_strategy="random_crop", run_seed=8765, _current_epoch=3, _current_batch_position=7)
+    pair = ({"_ming_record": record, "width": 32, "height": 16, "caption": "word5"}, None)
+    before = random.getstate()
+    first = load_shared_items(owner, [pair])[0]
+    assert random.getstate() == before
+    random.random()
+    later_state = random.getstate()
+    replay = load_shared_items(owner, [pair], epoch=3, batch_position=7)[0]
+    assert random.getstate() == later_state
+    assert first.pixel_identity == replay.pixel_identity
+    torch.testing.assert_close(first.pixels, replay.pixels, rtol=0, atol=0)
+    assert np.array_equal(np.asarray(first.references[0]), np.asarray(replay.references[0]))
+    seed = batch_crop_seed(owner, record, item_index=0, width=32, height=16, epoch=3, batch_position=7)
+    for coordinate in ({"item_index": 1}, {"epoch": 4}, {"batch_position": 8}, {"width": 16}):
+        args = dict(item_index=0, width=32, height=16, epoch=3, batch_position=7)
+        args.update(coordinate)
+        assert seed != batch_crop_seed(owner, record, **args)
+    random.setstate(before)
+
+
+def test_shared_crop_spec_is_authoritative_and_missing_seed_refuses(tmp_path):
+    from types import SimpleNamespace
+    from core.models.ming_image_01.dataset import load_shared_items
+    primary, _ = layer_files(tmp_path)
+    record = inspect_item(primary, root=tmp_path, profile="layer_decompose")
+    owner = SimpleNamespace(bucket_strategy="random_crop")
+    item = {"_ming_record": record, "width": 32, "height": 16, "caption": "word5"}
+    with pytest.raises(ValueError, match="resolved run seed"):
+        load_shared_items(owner, [(item, None)])
+    item["_crop_spec"] = SimpleNamespace(crop_box=(16, 8, 32, 16))
+    loaded = load_shared_items(owner, [(item, None)])[0]
+    expected = load_pixels(record, caption="word5", width=32, height=16, crop_box=(16, 8, 32, 16))
+    assert loaded.pixel_identity == expected.pixel_identity
+    torch.testing.assert_close(loaded.pixels, expected.pixels, rtol=0, atol=0)

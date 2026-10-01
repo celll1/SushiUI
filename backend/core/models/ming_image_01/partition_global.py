@@ -168,3 +168,27 @@ def prepare_full_training(trainer,*,adapter_dtype=None,allow_adapter_resume=Fals
     setattr(model,GLOBAL_NAME,adapter)
     if payload is not None:del model._ming_partition_global_payload
     return adapter
+
+
+def lora_generation_branch(model,tensors,metadata):
+    import json
+    prefix=GLOBAL_NAME+"."
+    state={key[len(prefix):]:value for key,value in tensors.items() if key.startswith(prefix)}
+    declared=metadata.get(GLOBAL_NAME)
+    if not state and declared is None:return None
+    if not isinstance(declared,str):raise ValueError("Ming global LoRA metadata is missing")
+    alpha=state.pop("alpha",None)
+    if alpha is not None and (alpha.numel()!=1 or not alpha.is_floating_point() or not torch.isfinite(alpha).all()):
+        raise ValueError("Ming global LoRA alpha must be a finite scalar")
+    dtype=next(p.dtype for p in model.parameters() if p.is_floating_point())
+    adapter=from_payload(json.loads(declared),state,latent_channels=model.in_channels,hidden_dim=model.dim,dtype=dtype)
+    return adapter.eval().requires_grad_(False)
+
+
+def generation_global_residual(model,noisy,box):
+    result=None
+    for entry in getattr(model,"_ming_partition_global_generation",[]):
+        if not entry['active'] or not entry['strength']:continue
+        value=entry['module'].to(device=noisy.device)(noisy,box)*entry['strength']
+        result=value if result is None else result+value
+    return result

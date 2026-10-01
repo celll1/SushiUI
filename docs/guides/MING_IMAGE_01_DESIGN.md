@@ -2174,3 +2174,23 @@ Changed files compile and import with CUDA forbidden. No live API/GPU/main use
 occurred. Global-LoRA generation installation, its exact pending-gradient resume,
 public global UI, partition generation/debug/timing, converter preservation and
 final complete-parity acceptance remain active work.
+
+
+### Global LoRA generation lifetime
+
+Generation validates the global branch header and every tensor before installing
+ordinary adapters. Summary modules stay outside the native model tree and live
+only for the adapter session. Multiple branches add their strength-scaled residuals,
+with the same inclusive step windows as ordinary LoRA. Normal exit, body failure
+and topology-cleanup failure restore the prior global-session attribute identity;
+ordinary adapter weights and base topology retain their existing cleanup contract.
+Full-frame generation continues to ignore summaries, matching Qwen's boundary.
+
+Eleven unique targeted CPU cases pass: five new native Design/Layer stacking,
+step-window and malformed-file cases, two new exception-cleanup cases, and four
+existing native LoRA training/resume/generation cases. Native cropped forwards
+accept the computed summary residual; this is not public partition-generation
+acceptance. Changed files compile and import with CUDA forbidden. The main API,
+GPU and official weights remain untouched. Public generation partition dispatch,
+full-base summary consumption, exact global-LoRA pending-gradient continuation,
+global UI, converter preservation and remaining parity work are still pending.

@@ -1,6 +1,6 @@
 # Ming-Image 0.1 integration contract
 
-Status: implementation in progress. CPU artifact identity/header preflight is implemented; native model loading, generation/training and UI wiring are not yet implemented. Established 2026-10-01 against SushiUI
+Status: implementation in progress. CPU artifact identity/header preflight is implemented; native source import and tiny DiT execution are verified; full component loading, generation/training and UI wiring are not yet implemented. Established 2026-10-01 against SushiUI
 `2b28c3b4`. This contract preserves the requested Qwen-Image 2.1 feature
 scope, including residual U-Net conversion. It is not a claim of measured
 Ming support. [Completed source audit](../audits/MING_IMAGE_01_SOURCE_AUDIT.md)
@@ -9,6 +9,8 @@ records exact upstream source/model revisions and licensing constraints.
 ## Verified implementation boundary
 
 The native-package inspector and manifest writer are implemented in `backend/core/models/ming_image_01/artifact.py`, with a CPU-only CLI at `tools/inspect_ming_image_01.py`. The targeted artifact suite passes 22 tests, including profile identity, processor drift, package escape, shard/index errors and malformed weight spans. Both pinned official configuration snapshots pass config-only inspection. No model weights, CUDA context or running API were used. This evidence proves preflight only; it does not prove native state loading or functional generation/training.
+
+Pinned native source is vendored with [file-level provenance](../legal/MING_IMAGE_01_PROVENANCE.md). Thirteen additional CPU tests verify explicit native imports, both padding profiles, reference/ragged input forward/backward, gradients through both conditioning inputs and meta-only transformer parameter accounting. CUDA initialization is forbidden in these tests. This does not establish full MLLM conditioning, full-checkpoint inference or GPU quality.
 
 ## Identity and ownership
 

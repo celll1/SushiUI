@@ -1646,7 +1646,8 @@ async def generate_txt2img(
         if controlnet_configs:
             base64_images, style_transfer, style_transfers, style_combine_mode = process_controlnet_configs(
                 controlnet_configs,
-                generation_type="txt2img"
+                generation_type="txt2img",
+                preserve_style_alpha=bool(pipeline_manager.is_ming_image_01_model)
             )
             processed_controlnet_images.extend(base64_images)
 
@@ -2449,7 +2450,8 @@ async def generate_img2img(
         controlnet_configs = json.loads(controlnets) if controlnets else []
         controlnet_images, style_transfer, style_transfers, style_combine_mode = process_controlnet_configs(
             controlnet_configs,
-            generation_type="img2img"
+            generation_type="img2img",
+            preserve_style_alpha=bool(pipeline_manager.is_ming_image_01_model)
         )
 
         tipo_config_dict = json.loads(tipo_config) if tipo_config else {}
@@ -7935,7 +7937,8 @@ async def generate_inpaint(
         controlnet_configs = json.loads(controlnets) if controlnets else []
         controlnet_images, style_transfer, style_transfers, style_combine_mode = process_controlnet_configs(
             controlnet_configs,
-            generation_type="inpaint"
+            generation_type="inpaint",
+            preserve_style_alpha=bool(pipeline_manager.is_ming_image_01_model)
         )
 
         tipo_config_dict = json.loads(tipo_config) if tipo_config else {}
@@ -8617,7 +8620,8 @@ async def generate_outpaint(
         controlnet_configs = json.loads(controlnets) if controlnets else []
         controlnet_images, style_transfer, style_transfers, style_combine_mode = process_controlnet_configs(
             controlnet_configs,
-            generation_type="outpaint"
+            generation_type="outpaint",
+            preserve_style_alpha=bool(pipeline_manager.is_ming_image_01_model)
         )
 
         tipo_config_dict = json.loads(tipo_config) if tipo_config else {}

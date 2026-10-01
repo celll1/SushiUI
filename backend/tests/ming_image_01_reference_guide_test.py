@@ -121,7 +121,7 @@ def test_public_transport_manager_operations_protected_pixels_and_cancel(operati
     cpu_only(components)
 
 
-@pytest.mark.parametrize("changes",[{"controlnets":[{"model_path":"__reference_guide__","is_reference_guide":True}]},{"controlnet_images":[guide(strength=2.1)]},{"controlnets":[{"model_path":"actual-controlnet"}]},{"style_transfers":[{"image":Image.new('RGBA',(32,32))}]}])
+@pytest.mark.parametrize("changes",[{"controlnets":[{"model_path":"__reference_guide__","is_reference_guide":True}]},{"controlnet_images":[guide(strength=2.1)]},{"controlnets":[{"model_path":"actual-controlnet"}]},{"style_transfers":[{"image":None}]}])
 def test_manager_early_refusal_before_residency(monkeypatch,changes):
     value,components=manager('generation_edit')
     monkeypatch.setattr(components.conditioner,'to',lambda *a,**k:pytest.fail('Invalid guide changed residency'))

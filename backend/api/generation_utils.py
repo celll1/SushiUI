@@ -15,7 +15,7 @@ import os
 
 def process_controlnet_configs(
     controlnet_configs: List[Dict],
-    generation_type: str = "txt2img"
+    generation_type: str = "txt2img", *, preserve_style_alpha: bool = False
 ) -> "tuple[List[Dict], Optional[Dict], List[Dict], str]":
     """
     ControlNet設定を処理し、base64画像をデコード
@@ -66,7 +66,7 @@ def process_controlnet_configs(
                 continue
             try:
                 image_data = base64.b64decode(cn_config["image_base64"])
-                image = Image.open(BytesIO(image_data)).convert("RGB")
+                image = Image.open(BytesIO(image_data)).convert("RGBA" if preserve_style_alpha else "RGB")
                 print(f"[StyleTransfer {idx}] Reference image decoded successfully: {image.size}")
                 entry = {
                     "image": image,

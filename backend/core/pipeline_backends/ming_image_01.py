@@ -77,12 +77,33 @@ class MingImage01Mixin:
             generator.sampler.profile.validate_task(task, has_reference_image=bool(images), num_layers=layers)
         except ValueError as exc:
             raise ValidationError(str(exc)) from exc
+        def flagged(entry, name):
+            return bool(entry.get(name)) if isinstance(entry, dict) else bool(getattr(entry,name,False))
         def is_guide(entry):
-            return bool(entry.get("is_reference_guide")) if isinstance(entry, dict) else bool(getattr(entry,"is_reference_guide",False))
-        if any(not is_guide(entry) for entry in resolved.get("controlnets") or []):
-            raise ValidationError("Ming supports Reference Guide; ControlNet/style-KV entries are not enabled")
-        if resolved.get("style_transfers"):
-            raise ValidationError("Ming style-KV conditioning is awaiting integration")
+            return flagged(entry,"is_reference_guide")
+        entries = resolved.get("controlnets") or []
+        if any(is_guide(entry) == flagged(entry,"is_style_transfer") for entry in entries):
+            raise ValidationError("Ming conditioning entries must select exactly one of Reference Guide or Style Transfer")
+        styles = resolved.get("style_transfers") or ([resolved["style_transfer"]] if resolved.get("style_transfer") else [])
+        requested_styles = [entry for entry in entries if flagged(entry,"is_style_transfer")]
+        if requested_styles and len(requested_styles) != len(styles):
+            raise ValidationError("Every Ming Style Transfer requires a valid decoded image")
+        from core.models.ming_image_01.style_generation import normalize_styles
+        try:
+            normalized_styles = normalize_styles(styles)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        combine_mode = resolved.get("style_combine_mode")
+        if styles:
+            from api.param_defaults import STYLE_TRANSFER_UI_DEFAULTS
+            if combine_mode is None: combine_mode = STYLE_TRANSFER_UI_DEFAULTS["style_combine_mode"]
+            if combine_mode not in {"stack","common_concept"}:
+                raise ValidationError("Ming style combine mode must be stack or common_concept")
+            if resolved["attention_type"] != "normal":
+                raise ValidationError("Ming Style Transfer currently requires normal native attention")
+            if any((cfg.style_guidance_scale is not None and cfg.style_guidance_scale > 0)
+                   or cfg.rope_offset or cfg.late_release for _,cfg in normalized_styles):
+                raise ValidationError("Ming style does not implement independent Style Guidance, RoPE offset or late release")
         from core.models.ming_image_01.reference_guide import normalize_guides
         guides = resolved.get("controlnet_images") or []
         requested_guides = [entry for entry in resolved.get("controlnets") or [] if is_guide(entry)]
@@ -106,7 +127,7 @@ class MingImage01Mixin:
         self.current_attention_type = resolved["attention_type"]
         if resolved["negative_prompt"]:
             raise ValidationError("Ming native CFG uses zero conditioning; negative prompts are unsupported")
-        if plan is not None and guides:
+        if plan is not None and (guides or styles):
             raise ValidationError("Ming partitioned generation currently excludes Reference Guide and Style Transfer")
         pending = [key for key in ("text_encoder_quantization", "enable_block_swap",
                                   "keep_models_hot", "loop_decode", "vae_tile_threshold", "vae_tile_mode",
@@ -177,7 +198,8 @@ class MingImage01Mixin:
                     resolution=round(math.sqrt(width * height)), steps=steps, cfg=float(cfg), seed=seed,
                     requested_layers=layers, negative_prompt=resolved["negative_prompt"], output_type="pil",
                     cancelled=lambda: self.cancel_requested, step_callback=callback, phase_context=phase,
-                    reference_guides=guides,partition_plan=plan)
+                    reference_guides=guides,partition_plan=plan,
+                    style_transfers=styles,style_combine_mode=combine_mode)
             except MingGenerationCancelled as exc:
                 raise RuntimeError("Generation cancelled by user") from exc
             model_info["dit_rewiring_spec"] = topology

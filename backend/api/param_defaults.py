@@ -230,6 +230,13 @@ PROMPT_ASSIST_DEFAULTS: Dict[str, Any] = {
 # Qwen-Image 2.1 prompt upsampler
 # ---------------------------------------------------------------------------
 
+STYLE_TRANSFER_UI_DEFAULTS: Dict[str, Any] = {
+    "model_path": "__style_transfer__", "strength": 0.75,
+    "start_step": 0, "end_step": 1000, "is_lllite": False,
+    "is_style_transfer": True, "enable_preprocessor": False,
+    "style_adain_strength": 0.6, "style_combine_mode": "stack",
+}
+
 REFERENCE_GUIDE_DEFAULTS: Dict[str, Any] = {
     "strength": 0.4,
     "start_step": 0,

@@ -161,7 +161,7 @@ def process_controlnet_configs(
 # model's current clean-image estimate from the very first step.
 _PRED_X0_PREVIEW_ARCHS = frozenset({
     "anima", "zimage", "flux2", "lens", "ideogram4", "minit2i", "krea2",
-    "qwen_image_21", "sensenova",
+    "qwen_image_21", "ming_image_01", "sensenova",
 })
 
 
@@ -227,8 +227,14 @@ def preview_arch_kwargs(
             pass
 
     from core.utils.taesd import latent_scaling_of
+    native_decoder=None
+    if model_type == "ming_image_01":
+        from functools import partial
+        from core.models.ming_image_01.generation_preview import decode_preview
+        native_decoder=partial(decode_preview,pipeline_manager.ming_image_01_components["ming_native"].vae)
 
     return {
+        "native_preview_decoder":native_decoder,
         "vae_preview_kind": vae_preview_kind,
         # The live VAE, not the architecture: a replaced 4-channel VAE keeps the
         # architecture's tiny decoder but may carry a different scaling factor.
@@ -283,7 +289,8 @@ def create_progress_callback_factory(
     preview_predicted_x0: bool = False,
     preview_enabled: bool = True,
     preview_interval: int = 1,
-    preview_decoder: str = "matrix"
+    preview_decoder: str = "matrix",
+    native_preview_decoder: Optional[Callable] = None
 ) -> Callable:
     """
     WebSocketプログレスコールバックを生成
@@ -352,7 +359,7 @@ def create_progress_callback_factory(
             try:
                 # Debug: Log model type being used for preview
                 if step == -1 or step == 0:
-                    print(f"[ProgressCallback] Using TAESD preview: is_sdxl={is_sdxl}, is_zimage={is_zimage}, is_zimage_sdxl_vae={is_zimage_sdxl_vae}, is_flux2={is_flux2}, is_anima={is_anima}, is_lens={is_lens}, vae_preview_kind={vae_preview_kind}, image_size={image_width}x{image_height}, preview_predicted_x0={preview_predicted_x0}, preview_interval={preview_interval}")
+                    print(f"[ProgressCallback] Preview (native={native_preview_decoder is not None}): is_sdxl={is_sdxl}, is_zimage={is_zimage}, is_zimage_sdxl_vae={is_zimage_sdxl_vae}, is_flux2={is_flux2}, is_anima={is_anima}, is_lens={is_lens}, vae_preview_kind={vae_preview_kind}, image_size={image_width}x{image_height}, preview_predicted_x0={preview_predicted_x0}, preview_interval={preview_interval}")
 
                 # Choose which latent to decode based on preview_predicted_x0 option
                 # If preview_predicted_x0 is True and pred_original_sample is available, use it
@@ -362,25 +369,28 @@ def create_progress_callback_factory(
                 else:
                     latent_to_decode = latents
 
-                preview_pil = taesd_manager.decode_latent(
-                    latent_to_decode,
-                    is_sdxl=is_sdxl,
-                    is_zimage=is_zimage,
-                    is_zimage_sdxl_vae=is_zimage_sdxl_vae,
-                    is_flux2=is_flux2,
-                    is_anima=is_anima,
-                    is_lens=is_lens,
-                    is_ideogram4=is_ideogram4,
-                    is_minit2i=is_minit2i,
-                    minit2i_vae_type=minit2i_vae_type,
-                    is_krea2=is_krea2,
-                    is_qwen_image_21=is_qwen_image_21,
-                    image_width=image_width,
-                    image_height=image_height,
-                    preview_decoder=preview_decoder,
-                    vae_preview_kind=vae_preview_kind,
-                    latent_scaling_factor=latent_scaling_factor,
-                )
+                if native_preview_decoder is not None:
+                    preview_pil=native_preview_decoder(latent_to_decode)
+                else:
+                    preview_pil = taesd_manager.decode_latent(
+                        latent_to_decode,
+                        is_sdxl=is_sdxl,
+                        is_zimage=is_zimage,
+                        is_zimage_sdxl_vae=is_zimage_sdxl_vae,
+                        is_flux2=is_flux2,
+                        is_anima=is_anima,
+                        is_lens=is_lens,
+                        is_ideogram4=is_ideogram4,
+                        is_minit2i=is_minit2i,
+                        minit2i_vae_type=minit2i_vae_type,
+                        is_krea2=is_krea2,
+                        is_qwen_image_21=is_qwen_image_21,
+                        image_width=image_width,
+                        image_height=image_height,
+                        preview_decoder=preview_decoder,
+                        vae_preview_kind=vae_preview_kind,
+                        latent_scaling_factor=latent_scaling_factor,
+                    )
                 if preview_pil:
                     buffered = BytesIO()
                     preview_pil.save(buffered, format="JPEG", quality=75)

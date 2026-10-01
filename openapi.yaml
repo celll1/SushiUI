@@ -15323,12 +15323,12 @@ components:
         preview_predicted_x0:
           type: boolean
           default: false
-          description: "Show the predicted x0 (denoised estimate) instead of the current noisy latent in the live preview."
+          description: "Show the predicted x0 (denoised estimate) instead of the current noisy latent in the live preview. Ming defaults to native scheduler predicted clean, displays the first generated Layer frame, and uses bounded native RGBA VAE decoding with a checkerboard JPEG display; final RGBA outputs are unchanged."
         preview_decoder:
           type: string
           enum: [matrix, taef2]
           default: matrix
-          description: "Live-preview decoder used for FLUX.2-VAE models."
+          description: "Live-preview decoder used for FLUX.2-VAE models. Ming always uses its native RGBA VAE with a 256-pixel longest preview edge."
           example: matrix
         enable_block_swap:
           type: boolean

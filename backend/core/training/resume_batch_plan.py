@@ -29,11 +29,13 @@ def item_key(item: dict, dataset: Any) -> tuple[str, str]:
 
 
 def _batch_key(item: dict) -> str:
-    return digest([item.get("bucket_width", item.get("width")),
-                   item.get("bucket_height", item.get("height")),
-                   item.get("reference_images"), item.get("_ve_reconstruction_mode"),
-                   item.get("condition_image_path"),
-                   item.get("_crop_spec")])
+    identity = [item.get("bucket_width", item.get("width")),
+                item.get("bucket_height", item.get("height")),
+                item.get("reference_images"), item.get("_ve_reconstruction_mode"),
+                item.get("condition_image_path"), item.get("_crop_spec")]
+    if "_ming_supervision_identity" in item:
+        identity.extend([item["_ming_batch_signature"], item["_ming_supervision_identity"]])
+    return digest(identity)
 
 
 def dataset_manifest(datasets: list[Any], mode: str) -> dict[str, dict]:
@@ -53,6 +55,8 @@ def dataset_manifest(datasets: list[Any], mode: str) -> dict[str, dict]:
             row = [path, item.get("width"), item.get("height"),
                    item.get("item_type"), item.get("reference_images"),
                    item.get("_ve_reconstruction_mode")]
+            if "_ming_supervision_identity" in item:
+                row.extend([item["_ming_batch_signature"], item["_ming_supervision_identity"]])
             if mode in ("priority", "concept"):
                 row.extend([item.get("raw_caption"), item.get("tag_data"),
                             item.get("is_tags_format"), item.get("_captions_by_type")])

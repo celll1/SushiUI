@@ -51,6 +51,7 @@ class _Trainer:
     _prepare_epoch_items = BaseTrainer._prepare_epoch_items
     _restore_bucket_dims = BaseTrainer._restore_bucket_dims
     _sync_bucket_captions = BaseTrainer._sync_bucket_captions
+    _sensenova_bucket_metadata = staticmethod(BaseTrainer._sensenova_bucket_metadata)
 
     def __init__(self, pixel_align=32):
         self.arch = type("_Arch", (), {"pixel_align": pixel_align})()

@@ -186,3 +186,62 @@ def pixel_cache_identity(record, *, width, height, crop_box, flip_horizontal):
         "roles": record.roles, "manifest": record.manifest_sha256, "source_size": record.source_size,
         "width": width, "height": height, "crop_box": crop_box, "flip_horizontal": flip_horizontal}
     return hashlib.sha256(json.dumps(payload, sort_keys=True, allow_nan=False).encode()).hexdigest()
+
+
+def supervision_identity(record):
+    payload = {"version": "ming_supervision_v1", "profile": record.profile,
+        "source_size": record.source_size, "manifest": record.manifest_sha256,
+        "targets": [asset.sha256 for asset in record.targets],
+        "references": [asset.sha256 for asset in record.references],
+        "roles": record.roles, "weights": record.weights}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, allow_nan=False).encode()).hexdigest()
+
+
+def annotate_datasets(datasets, *, profile):
+    """Attach native records, excluding Layer assets that are not primary samples."""
+    pending, selected = [], []
+    for dataset in datasets:
+        root = getattr(dataset, "dataset_root", None)
+        if root is None:
+            raise ValueError("Ming datasets require an explicit dataset_root")
+        primaries, loose = [], []
+        for item in dataset.items:
+            if item.get("item_type", "image") != "image":
+                raise ValueError("Ming training targets are images, not video/audio")
+            if profile == "layer_decompose" and not sidecar_path(item["image_path"]).exists():
+                loose.append(item)
+                continue
+            record = inspect_item(item["image_path"], root=root, profile=profile,
+                                  reference_paths=item.get("reference_images") or ())
+            primaries.append((item, record))
+        assets = {asset.path for _, record in primaries for asset in (*record.targets, *record.references)}
+        for item in loose:
+            if _inside(Path(root).resolve(strict=True), item["image_path"]) not in assets:
+                raise ValueError("Ming Layer primary images require an explicit .ming.json sidecar")
+        pending.extend(primaries)
+        selected.append((dataset, [item for item, _ in primaries]))
+    for item, record in pending:
+        item["_ming_record"] = record
+        item["_ming_batch_signature"] = (record.profile, len(record.targets))
+        item["_ming_supervision_identity"] = supervision_identity(record)
+        item["reference_images"] = [str(asset.path) for asset in record.references]
+    for dataset, items in selected:
+        dataset.items = items
+    return len(pending)
+
+
+def homogeneous_batches(batches):
+    """Preserve each planned boundary and split only incompatible native layouts."""
+    result = []
+    for batch in batches:
+        groups = {}
+        for pair in batch:
+            item, _dataset = pair
+            if "_ming_record" not in item or "_ming_batch_signature" not in item:
+                raise ValueError("Ming batch item is missing its native preflight record")
+            key = (*item["_ming_batch_signature"],
+                   item.get("bucket_width") or item.get("width"),
+                   item.get("bucket_height") or item.get("height"))
+            groups.setdefault(key, []).append(pair)
+        result.extend(groups.values())
+    return result

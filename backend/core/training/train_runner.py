@@ -3178,10 +3178,11 @@ def main():
             This wrapper converts the old dataset_items format (list of dicts) to
             the new Dataset object format expected by BaseTrainer.train().
             """
-            def __init__(self, unique_id: str, items: List[Dict], dataset_config: Dict, output_dir: Path, initial_epoch: int = 0):
+            def __init__(self, unique_id: str, items: List[Dict], dataset_config: Dict, output_dir: Path, initial_epoch: int = 0, dataset_root: Path = None):
                 self.unique_id = unique_id
                 self.items = items
                 self.dataset_config = dataset_config
+                self.dataset_root = dataset_root
                 self.output_dir = output_dir  # For dataset cache storage
                 self.cache_dir = Path(f"./latent_cache/{unique_id}")
                 # Track which epoch the initial items were loaded for (to avoid redundant reload)
@@ -3270,11 +3271,13 @@ def main():
             dataset = datasets_db.query(Dataset).filter(Dataset.id == dataset_id).first()
             if dataset and dataset.unique_id in items_by_dataset:
                 items_by_dataset[dataset.unique_id]["config"] = ds_config
+                items_by_dataset[dataset.unique_id]["root"] = Path(dataset.path)
 
         # Create Dataset wrapper objects with initial_epoch for skip-reload optimization
         training_output_dir = Path(run.output_dir)
         training_datasets = [
-            TrainRunnerDataset(unique_id, data["items"], data["config"], output_dir=training_output_dir, initial_epoch=start_epoch)
+            TrainRunnerDataset(unique_id, data["items"], data["config"], output_dir=training_output_dir,
+                               initial_epoch=start_epoch, dataset_root=data["root"])
             for unique_id, data in items_by_dataset.items()
             if data["config"] is not None
         ]

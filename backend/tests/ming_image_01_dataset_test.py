@@ -176,3 +176,121 @@ def test_shared_encode_image_retains_native_alpha(tmp_path):
                                     target_width=32, target_height=32, bucket_strategy="resize")
     assert low.shape == high.shape == (1, 16, 1, 4, 4) and not torch.equal(low, high)
     assert not torch.cuda.is_initialized()
+
+
+
+def shared_dataset(root, count=2):
+    from types import SimpleNamespace
+    primary, spec = layer_files(root, count)
+    paths = [primary, *[root / target["path"] for target in spec["targets"][1:]]]
+    return SimpleNamespace(unique_id=str(root), dataset_root=root,
+        items=[dict(image_path=str(path), caption="word5", width=64, height=32) for path in paths])
+
+
+def test_common_discovery_excludes_layer_assets_and_is_transactional(tmp_path):
+    from core.models.ming_image_01.dataset import annotate_datasets
+    good = shared_dataset(tmp_path / "good", 3)
+    bad = shared_dataset(tmp_path / "bad", 2)
+    Image.new("RGBA", (64, 32)).save(bad.dataset_root / "loose.png")
+    bad.items.append(dict(image_path=str(bad.dataset_root / "loose.png")))
+    with pytest.raises(ValueError, match="primary images require"):
+        annotate_datasets([good, bad], profile="layer_decompose")
+    assert len(good.items) == 3 and all("_ming_record" not in item for item in good.items)
+    assert annotate_datasets([good], profile="layer_decompose") == 1
+    assert len(good.items) == 1 and good.items[0]["_ming_batch_signature"] == ("layer_decompose", 3)
+    assert good.items[0]["reference_images"] == [str(good.dataset_root / "canvas.png")]
+
+
+def test_common_epoch_reload_reestablishes_records_and_bucket_metadata(tmp_path):
+    from types import MethodType, SimpleNamespace
+    from core.training.base_trainer import BaseTrainer
+    from core.training.bucketing import BucketManager
+    from bucket_caption_epoch_sync_test import _Trainer
+    dataset = shared_dataset(tmp_path)
+    original = [dict(item) for item in dataset.items]
+    dataset.reload_for_epoch = lambda epoch_num, run_id: [dict(item, caption=f"word{epoch_num+5}") for item in original]
+    owner = _Trainer(pixel_align=16)
+    owner.is_ming_image_01 = True
+    owner.ming_image_01_components = SimpleNamespace(artifact=SimpleNamespace(profile="layer_decompose"))
+    owner._annotate_ming_items = MethodType(BaseTrainer._annotate_ming_items, owner)
+    owner._annotate_ming_items([dataset])
+    manager = BucketManager(base_resolutions=[32], divisibility=16, strategy="resize")
+    item = dataset.items[0]
+    _, info = manager.assign_image_to_bucket(image_path=item["image_path"], width=64, height=32,
+        dataset_unique_id=dataset.unique_id, caption=item["caption"],
+        item_metadata=BaseTrainer._sensenova_bucket_metadata(item))
+    before = info["_ming_record"]
+    primary = Path(item["image_path"])
+    spec = json.loads(sidecar_path(primary).read_text())
+    spec["references"].append("layer1.png")
+    spec["targets"][1]["weight"] = 2
+    sidecar_path(primary).write_text(json.dumps(spec))
+    pairs = owner._prepare_epoch_items([dataset], 1, 7, manager, [32])
+    assert len(pairs) == 1 and pairs[0][0]["caption"] == info["caption"] == "word6"
+    assert info["_ming_record"] != before and info["_ming_record"].weights == (0, 2)
+    assert len(info["reference_images"]) == 2 and info["has_reference"]
+    assert info["_ming_batch_signature"] == ("layer_decompose", 2)
+
+
+def test_common_batch_split_preserves_planned_boundaries_and_every_occurrence(tmp_path):
+    from core.models.ming_image_01.dataset import annotate_datasets, homogeneous_batches
+    a, b = shared_dataset(tmp_path / "a", 2), shared_dataset(tmp_path / "b", 3)
+    annotate_datasets([a, b], profile="layer_decompose")
+    pa, pb = (a.items[0], a), (b.items[0], b)
+    batches = homogeneous_batches([[pa, pb, pa], [pa]])
+    assert batches == [[pa, pa], [pb], [pa]]
+    assert sum(map(len, batches)) == 4
+    assert homogeneous_batches(batches) == batches
+
+
+def test_concept_plan_homogeneous_frames_and_reproducible_resume_identity(tmp_path):
+    from core.models.ming_image_01.dataset import annotate_datasets, homogeneous_batches
+    from core.training.concept_batch_order import ConceptOrderConfig, build_concept_batch_plan
+    datasets = [shared_dataset(tmp_path / str(i), 2+i%2) for i in range(6)]
+    annotate_datasets(datasets, profile="layer_decompose")
+    pairs = [(dataset.items[0], dataset) for dataset in datasets]
+    for item, _ in pairs:
+        item["tag_data"] = [{"tag": "character_a", "category": "Character"}]
+        item["is_tags_format"] = True
+    config = ConceptOrderConfig.parse({"enabled": True, "min_items_per_concept": 2})
+    first = build_concept_batch_plan(pairs, 4, config, 0, 42)
+    rebuilt = build_concept_batch_plan(list(reversed(pairs)), 4, config, 0, 42)
+    assert first.digest == rebuilt.digest and first.batches == rebuilt.batches
+    assert homogeneous_batches(first.batches) == first.batches
+    assert sum(map(len, first.batches)) == len(pairs)
+    assert all(len({item["_ming_batch_signature"] for item, _ in batch}) == 1 for batch in first.batches)
+    pairs[0][0]["_ming_batch_signature"] = ("layer_decompose", 4)
+    changed = build_concept_batch_plan(pairs, 4, config, 0, 42)
+    assert first.digest != changed.digest
+
+
+
+def test_supervision_changes_invalidate_shared_resume_fingerprint_and_ledgers(tmp_path):
+    from types import SimpleNamespace
+    from core.models.ming_image_01.dataset import annotate_datasets
+    from core.training.base_trainer import BaseTrainer
+    from core.training.resume_batch_plan import make_plan, resolve_suffix
+    from core.training.concept_batch_order import ConceptOrderConfig, build_concept_batch_plan
+    dataset = shared_dataset(tmp_path)
+    annotate_datasets([dataset], profile="layer_decompose")
+    owner = SimpleNamespace(config={}, log_prefix="[Ming dataset]")
+    first = BaseTrainer._compute_dataset_fingerprint(owner, [dataset])
+    batch = [(dataset.items[0], dataset)]
+    ledger = make_plan([batch], [dataset], "normal", "test", 0)
+    config = ConceptOrderConfig.parse({"enabled": True, "min_items_per_concept": 2})
+    concept = build_concept_batch_plan(batch, 2, config, 0, 42)
+    primary = Path(dataset.items[0]["image_path"])
+    spec = json.loads(sidecar_path(primary).read_text())
+    spec["targets"][1]["weight"] = 2
+    sidecar_path(primary).write_text(json.dumps(spec))
+    annotate_datasets([dataset], profile="layer_decompose")
+    changed = BaseTrainer._compute_dataset_fingerprint(owner, [dataset])
+    assert first["image_paths_hash"] == changed["image_paths_hash"]
+    assert BaseTrainer._check_dataset_fingerprint_changed(owner, first, changed)
+    revised = make_plan([batch], [dataset], "normal", "test", 0)
+    assert ledger["batches"] != revised["batches"] and ledger["history_manifest"] != revised["history_manifest"]
+    with pytest.raises(ValueError, match="item conditions changed"):
+        resolve_suffix(ledger, 0, [batch])
+    assert resolve_suffix(revised, 0, [batch]) == [batch]
+    assert concept.digest != build_concept_batch_plan(batch, 2, config, 0, 42).digest
+    assert not BaseTrainer._check_dataset_fingerprint_changed(owner, changed, changed)

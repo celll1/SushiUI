@@ -91,13 +91,15 @@ def run_rewired_ming(model, hidden, modulation, rotary, mask, image_positions,
             or count > hidden.shape[1] or not mask[:, :count].all()):
         raise ValueError("Ming target layout/mask is inconsistent")
     offsets = torch.stack([ids[0, 0] for ids in image_positions])
+    spatial_origins = torch.stack([ids[0, 1:] for ids in image_positions])
 
     def positions(height, width):
         per_frame_h = height // frames
         ids = image_positions[0].new_zeros(batch, height * width, 3)
         ids[..., 0] = offsets[:, None] + torch.arange(frames, device=ids.device).repeat_interleave(per_frame_h * width)
-        ids[..., 1] = torch.arange(per_frame_h, device=ids.device).repeat_interleave(width).repeat(frames)
-        ids[..., 2] = torch.arange(width, device=ids.device).repeat(frames * per_frame_h)
+        origin = spatial_origins // spatial_origins.new_tensor([h // per_frame_h, w // width])
+        ids[..., 1] = origin[:, :1] + torch.arange(per_frame_h, device=ids.device).repeat_interleave(width).repeat(frames)
+        ids[..., 2] = origin[:, 1:] + torch.arange(width, device=ids.device).repeat(frames * per_frame_h)
         return ids
 
     if not torch.equal(torch.stack([ids[:count] for ids in image_positions]), positions(frames*h, w)):

@@ -22,8 +22,9 @@ def _cpu_state(module):
     return {key: value.detach().contiguous() for key, value in state.items()}
 
 
-def save_bundle(components, destination, *, max_shard_bytes=DEFAULT_MAX_SHARD_BYTES, cancelled=None):
+def save_bundle(components, destination, *, max_shard_bytes=DEFAULT_MAX_SHARD_BYTES, cancelled=None, training_metadata=None):
     """Publish only a fully preflighted package; never overwrite an existing path."""
+    training_json = None if training_metadata is None else json.dumps(training_metadata, indent=2, sort_keys=True, allow_nan=False) + "\n"
     destination = Path(destination).absolute()
     if os.path.lexists(destination):
         raise FileExistsError(destination)
@@ -73,6 +74,8 @@ def save_bundle(components, destination, *, max_shard_bytes=DEFAULT_MAX_SHARD_BY
         check_cancel()
         components.vae.save_pretrained(staging / "vae", max_shard_size=max_shard_bytes)
         components.scheduler.save_pretrained(staging / "scheduler")
+        if training_json is not None:
+            (staging / "training.json").write_text(training_json, encoding="utf-8")
         write_manifest(staging, source=components.artifact.source)
         exported = inspect_artifact(staging)
         if exported.profile != components.artifact.profile:

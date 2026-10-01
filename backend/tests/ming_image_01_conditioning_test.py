@@ -254,7 +254,9 @@ def test_native_package_loader_round_trip(tmp_path, monkeypatch):
     assert manager.ming_image_01_components is None and not manager.is_ming_image_01_model
     from core.models.ming_image_01.checkpoint import save_bundle
     destination = tmp_path.parent / (tmp_path.name + "-export")
-    exported_manifest = save_bundle(restored, destination, max_shard_bytes=262144)
+    training_metadata = {"schema_version": 1, "kind": "full_parameter_weights", "step": 8, "epoch": 2}
+    exported_manifest = save_bundle(restored, destination, max_shard_bytes=262144, training_metadata=training_metadata)
+    assert json.loads((destination / "training.json").read_text()) == training_metadata
     assert (destination / "transformer" / "diffusion_pytorch_model.safetensors.index.json").is_file()
     exported = load_components(exported_manifest, dtype=torch.float32, conditioner_attention="eager")
     assert exported.transformer._residual_unet_spec == topology

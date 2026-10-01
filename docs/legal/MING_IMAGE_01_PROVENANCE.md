@@ -22,7 +22,7 @@ Vendored files live under `backend/core/models/ming_image_01/vendor/`. Original 
 | `modeling_bailingmm2.py` | MIT (root license) | `fd28059a066a12a4e12965204f8a26821744dfbdaea77c97570a74ed347ed59a` | package-relative imports; device-aware autocast (CUDA BF16 retained, CPU autocast disabled); AST-equivalent trailing-whitespace cleanup; explicit live-conditioning flag preserves full-TE direct-stream gradients |
 | `modeling_utils.py` | MIT (root license) | `265b74f3e2246a6d01988e4408939a82157360abe73aa474aa3cb6cfb08db9bc` | Unmodified |
 | `processing_bailingmm2.py` | Apache-2.0 | `001b316bc82b5c3e05739223d0e0349c2e79258e6638bf9f664df8ee261d93c1` | package-relative imports; AST-equivalent trailing-whitespace cleanup |
-| `qwen2_5_vit.py` | Apache-2.0 | `587148f9d9e26ed94e2e0aee277f181bc20de8b1a2b2992cf75362c816bf7f24` | Unmodified |
+| `qwen2_5_vit.py` | Apache-2.0 | `587148f9d9e26ed94e2e0aee277f181bc20de8b1a2b2992cf75362c816bf7f24` | declare gradient checkpointing support for the existing native block checkpoint path |
 | `tokenization_bailing.py` | MIT (root license) | `4b13ec7a5796a1d04e721f61791d086d7f7fb9f63912948700e5691625b432fb` | initialize BOS property after base tokenizer construction |
 
 Integration changes after this import must update this ledger and the vendor note. Runtime loading uses package-local classes, not arbitrary `trust_remote_code`. CLI/prompt-service examples and repository assets are not vendored.

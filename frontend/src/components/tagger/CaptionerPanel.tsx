@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import CaptionerTrainingPanel from "./CaptionerTrainingPanel";
+import Link from "next/link";
 import CaptionerBatchPanel from "./CaptionerBatchPanel";
 import {
   CaptionerDefaults, CaptionerOptions, CaptionerPreview, CaptionerStatus, Dataset,
@@ -149,7 +149,6 @@ export default function CaptionerPanel() {
     </section>)}
     {options && <CaptionerBatchPanel bundlePath={path} options={{...options,
       tags: options.tag_source === "predicted" ? [] : tags.split("\n").map(t => t.trim()).filter(Boolean)}} datasets={datasets} captionType={captionType} />}
-    <CaptionerTrainingPanel onSelectBundle={setPath} onSample={preview => setResults(old => [...old,
-      {key: `sample ${preview.run_id} · ${preview.checkpoint} · ${preview.item_id} · ${crypto.randomUUID()}`, preview}])} />
+    <Link className="block text-sm text-violet-300 underline" href="/training?section=captioner">Captionerの学習はTraining画面へ</Link>
   </div>;
 }

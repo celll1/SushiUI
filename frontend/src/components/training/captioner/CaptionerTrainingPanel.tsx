@@ -220,11 +220,11 @@ export default function CaptionerTrainingPanel({onSelectBundle, onSample}: {
         <button className={input} disabled={busy || activeStatus(selected.status) || !selected.checkpoints.length} onClick={() => void action(async () => updateRun(await startCaptionerRun(selected.run_id, true, checkpoint)))}>再開</button>
         <button className={input} disabled={busy || !activeStatus(selected.status) || selected.status === "stopping"} onClick={() => void action(async () => updateRun(await stopCaptionerRun(selected.run_id)))}>停止してcheckpoint保存</button>
         <button className={input} disabled={busy || !selected.checkpoints.length} onClick={() => void action(async () => setExported((await exportCaptionerRun(selected.run_id, checkpoint)).path))}>推論bundleをexport</button>
-        <button className={input} disabled={!previewCheckpoint || busy} onClick={() => {if (previewCheckpoint) onSelectBundle(previewCheckpoint);}}>checkpointをpreview欄へ</button>
+        <button className={input} disabled={!previewCheckpoint || busy} onClick={() => {if (previewCheckpoint) onSelectBundle(previewCheckpoint);}}>checkpointパスを表示</button>
       </div>
-      {exported && <p className="text-xs break-all">Export: {exported} <button className={input} onClick={() => onSelectBundle(exported)}>preview欄へ</button></p>}
+      {exported && <p className="text-xs break-all">Export: {exported} <button className={input} onClick={() => onSelectBundle(exported)}>bundleパスを表示</button></p>}
       {sampleOptions && <div className="rounded border border-gray-800 p-2 space-y-2">
-        <p className="text-xs">選択checkpointからsampleを生成します。左側に同じPyTorch taggerをロードし、deviceを一致させてください。preview用captionerは差し替えません。</p>
+        <p className="text-xs">選択checkpointからsampleを生成します。Tagger画面で同じPyTorch taggerをロードし、deviceを一致させてください。preview用captionerは差し替えません。</p>
         <div className="flex flex-wrap gap-2">
           <select aria-label="Sample dataset" className={input} disabled={busy} value={sampleDataset} onChange={e => setSampleDataset(e.target.value)}>
             <option value="">datasetを選択</option>{datasets.map(ds => <option key={ds.id} value={ds.id}>{ds.name} (#{ds.id})</option>)}
@@ -241,7 +241,7 @@ export default function CaptionerTrainingPanel({onSelectBundle, onSample}: {
           <button className={input} disabled={!sampleRequest.current} onClick={() => {if (sampleRequest.current) void cancelCaptionerRequest(sampleRequest.current).catch(e => setError(message(e)));}}>sampleをキャンセル</button>
         </div>
         {sampleOptions.tag_source !== "predicted" && <textarea aria-label="Sample tags one per line" className={`${input} w-full`} disabled={busy} value={sampleTags} onChange={e => setSampleTags(e.target.value)} placeholder="入力タグ（1行に1タグ）" />}
-        <p className="text-xs text-gray-400">生成結果は上のpreview欄に表示し、run eventsにも保存します。sidecarへの保存は確認後に行ってください。</p>
+        <p className="text-xs text-gray-400">生成結果はこの画面のsample欄に表示し、run eventsにも保存します。sidecarへの保存は確認後に行ってください。</p>
       </div>}
       <details><summary>固定された設定</summary><pre className="overflow-x-auto text-xs">{JSON.stringify({tagger: selected.tagger, dataset_configs: selected.dataset_configs, config: selected.config}, null, 2)}</pre></details>
       <p className="text-xs">最新進捗（2秒ごとに取得）</p>

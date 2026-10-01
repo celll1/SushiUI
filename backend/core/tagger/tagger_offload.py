@@ -247,7 +247,7 @@ class TaggerTrainerHandle:
             self.restore()
         self.restored_event.set()
         self.resumed_event.clear()
-        self.restored_event.clear()
+        # The next pause cycle clears this acknowledgement after observers see it.
         self.pending_decision = None
 
     def can_predict(self) -> bool:

@@ -28,6 +28,7 @@ from api.param_defaults import (
     OUTPAINT_VIDEO_DEFAULTS,
     PARAM_BOUNDS,
     PROMPT_ASSIST_DEFAULTS,
+    REFERENCE_GUIDE_DEFAULTS,
     QWEN_IMAGE_21_PROMPT_UPSAMPLE_DEFAULTS,
     MING_IMAGE_01_PROMPT_UPSAMPLE_DEFAULTS,
     REF2VID_DEFAULTS,
@@ -76,6 +77,7 @@ async def get_generation_defaults():
         "outpaint_aud": OUTPAINT_AUDIO_DEFAULTS,
         "studio_render": STUDIO_RENDER_DEFAULTS,
         "lora_item": LORA_ITEM_DEFAULTS,
+        "reference_guide": REFERENCE_GUIDE_DEFAULTS,
         "param_bounds": PARAM_BOUNDS,
     }
 

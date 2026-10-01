@@ -695,6 +695,7 @@ paths:
                 quantized_linear_archs: [acestep, anima, flux2, ideogram4, krea2, ltx2, ming_image_01, minimax_h3, sensenova, zimage]
   /schema/generation-defaults:
     get:
+      description: Includes reference_guide defaults for initial UI entries (strength 0.4, range 0-800); existing ControlNet request-field defaults remain unchanged.
       summary: Get default parameter values for txt2img/img2img/inpaint generation
       description: |
         Single source of truth for generation defaults
@@ -12382,6 +12383,17 @@ components:
         description:
           type: string
           default: ""
+    MingReferenceGuide:
+      type: object
+      description: Existing controlnets transport entry with is_reference_guide=true. Ming blends independent-noise native RGBA latents after scheduler steps, with inclusive 0-1000 progress windows. Strength must be finite and within 0-2 (values above 1 extrapolate beyond the reference). Multiple guides apply in request order; input-reference tokens and the Layer auxiliary canvas are excluded. Inpaint/outpaint composites still protect original pixels. This is not a ControlNet or a style-KV operator.
+      required: [model_path, is_reference_guide, image_base64]
+      properties:
+        model_path: { type: string, example: __reference_guide__ }
+        is_reference_guide: { type: boolean, enum: [true] }
+        image_base64: { type: string, description: Base64-encoded reference image preserving RGBA }
+        strength: { type: number, minimum: 0, maximum: 2, default: 0.4 }
+        start_step: { type: integer, minimum: 0, maximum: 1000, default: 0 }
+        end_step: { type: integer, minimum: 0, maximum: 1000, default: 800 }
     QwenImage21PromptUpsampleRequest:
       type: object
       required: [prompt, mode]
@@ -14745,6 +14757,8 @@ components:
             (boolean, default false), is_reference_guide (boolean, default false —
             blend latent toward the reference image instead of using a ControlNet
             model), preprocessor (string), enable_preprocessor (boolean, default false).
+            Ming Reference Guide follows the MingReferenceGuide schema; omitted
+            native-guide strength/range use reference_guide schema defaults.
 
             Training-free reference-style transfer entries (is_style_transfer: true)
             additionally accept: style_transfer_type (string, "style" or "character",

@@ -138,8 +138,9 @@ function ControlNetLayerWeights({ controlnetPath, weights, onChange, disabled, l
 }
 
 export default function ControlNetSelector({ value, onChange, disabled, storageKey, inputImagePreview, hideImageInput, imageInputOverride }: ControlNetSelectorPropsWithStorage) {
-  const { isBackendReady, modelLoaded, modelInfo } = useStartup();
+  const { isBackendReady, modelLoaded, modelInfo, generationDefaults } = useStartup();
   const qwenImage21NativeConditioning = modelInfo?.type === "qwen_image_21";
+  const mingNativeConditioning = modelInfo?.type === "ming_image_01";
   const [availableControlNets, setAvailableControlNets] = useState<Array<{ path: string; name: string }>>([]);
   const [editingImageIndex, setEditingImageIndex] = useState<number | null>(null);
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
@@ -376,15 +377,9 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
   };
 
   const addReferenceGuide = () => {
-    const newRefGuide: ControlNetConfig = {
-      model_path: "__reference_guide__",
-      strength: 0.4,
-      start_step: 0,
-      end_step: 800,
-      is_lllite: false,
-      is_reference_guide: true,
-      enable_preprocessor: false,
-    };
+    const defaults = generationDefaults?.reference_guide;
+    if (!defaults) return;
+    const newRefGuide: ControlNetConfig = { ...defaults };
     notifyChange([...value, newRefGuide]);
   };
 
@@ -621,7 +616,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
   return (
     <>
       <Card
-        title={`ControlNet (${value.length})`}
+        title={`${mingNativeConditioning ? "Reference Guide" : "ControlNet"} (${value.length})`}
         collapsible={true}
         defaultCollapsed={false}
         storageKey={storageKey}
@@ -634,7 +629,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
         }
       >
       <div className="space-y-4">
-        {availableControlNets.length === 0 && (
+        {availableControlNets.length === 0 && !mingNativeConditioning && (
           <div className="text-sm text-gray-400 p-2">
             No ControlNet models found in the controlnet directory.
           </div>
@@ -867,7 +862,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
 
                 <Slider
                   label={cn.is_style_transfer ? "Style Strength" : "Strength"}
-                  min={cn.is_reference_guide ? -2 : 0}
+                  min={cn.is_reference_guide && !mingNativeConditioning ? -2 : 0}
                   max={2}
                   step={0.05}
                   value={cn.strength}
@@ -1150,9 +1145,14 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
           </p>
         )}
 
+        {mingNativeConditioning && <p className="text-xs text-amber-300">
+          Ming Reference Guide blends native RGBA target latents. Input references
+          and the Layer auxiliary canvas stay outside the blend. ControlNet and
+          style-KV conditioning are unavailable.
+        </p>}
         {/* Add ControlNet / Reference Guide Buttons */}
         <div className="flex gap-2">
-          {!qwenImage21NativeConditioning && (
+          {!qwenImage21NativeConditioning && !mingNativeConditioning && (
             <Button
               onClick={addControlNet}
               disabled={disabled || availableControlNets.length === 0}
@@ -1164,7 +1164,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
           )}
           <Button
             onClick={addReferenceGuide}
-            disabled={disabled}
+            disabled={disabled || !generationDefaults?.reference_guide}
             variant="secondary"
             className="flex-1"
           >
@@ -1172,7 +1172,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
           </Button>
           <Button
             onClick={addStyleTransfer}
-            disabled={disabled}
+            disabled={disabled || mingNativeConditioning}
             variant="secondary"
             className="flex-1"
           >

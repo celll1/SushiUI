@@ -1364,3 +1364,57 @@ defaults, state/cancel/error handling and the four operation paths are reviewed
 statically; owner build/type checks and real-provider quality remain pending.
 No live API, main server, CUDA context or official weights were used. Remaining
 Qwen parity obligations and final interactive/GPU acceptance remain active.
+
+
+### Native Reference Guide generation milestone
+
+Reference Guide entries now travel through the existing `controlnets` JSON/image
+transport into Ming's generation backend. They are distinct from ControlNet
+modules and the still-pending style-KV operator. Preflight requires a decoded
+image for every requested guide, finite strength in [0,2] and ordered integer
+start/end values in [0,1000]. Strength above one extrapolates by the same
+positive-strength formula used by Qwen. Negative values are explicitly refused
+instead of silently ignored. Missing native-guide strength/range use the central
+`REFERENCE_GUIDE_DEFAULTS`; generic ControlNet request-field defaults and other
+architectures' runtime interpretation are unchanged.
+
+Guide preparation preserves RGBA pixels, resizes to the requested target grid,
+encodes VAE posterior mode and applies Ming's native `(z-shift)*scale` exactly.
+Each guide gets independent FP32 CPU-generated noise derived from run seed plus
+its ordered index, without consuming the main sampler/global RNG. After each
+scheduler update, blend against `(1-next_sigma)*clean + next_sigma*noise` using
+the scheduler's actual next sigma, including its dynamic shift and final zero.
+Progress windows are inclusive and use index/max(steps-1,1); multiple guides
+apply in request order. Guide encoding runs inside the existing denoising VAE/
+DiT residency phase, with cancellation checked between guide operations.
+
+Design guides affect its generated target latent. Layer guides broadcast over
+independent generated layer frames and exclude slot-zero auxiliary canvas from
+the direct blend. The guide does not modify appended reference/caption/padding
+streams. Later joint-attention steps may still change the auxiliary canvas;
+exclusion from a blend is not a promise of whole-run numerical independence.
+Inpaint/outpaint retain their final protected-pixel composite/paste contracts.
+
+The common selector reads initial guide strength/range and flags from the
+new `reference_guide` field of generation-defaults, preserving its previous
+0.4/0-800 UI behavior without frontend literals. Ming shows its Reference Guide
+panel, hides actual ControlNet creation and disables pending style-transfer
+creation. Strength range matches the backend. The shared four panel serializers,
+queue/loop inheritance and temporary-image transport remain connected and were
+reviewed statically; owner build/type checks and interactive acceptance are pending.
+
+CPU verification covers blend endpoints/intermediate sigma/windows/order in
+FP32/FP16/BF16, exact native VAE normalization and alpha sensitivity, independent
+noise, both native profile/frame layouts, all four manager operations with actual
+common base64 decoding, protected pixels, cancellation/recovery and early errors.
+Across the milestone, 55 unique affected CPU cases pass (31 guide and 24
+pipeline cases), with changed/failed/new cases checked separately. The shifted
+scheduler oracle uses three steps to retain a nonzero intermediate sigma; the
+native two-step schedule already reaches zero after its first update.
+Additional real native FP16/BF16 VAE+DiT generation passes. Design INT8 and Layer
+ConvRot tests combine guides with nested U-Net and LoRA, verify the exact final
+clean latent, unchanged packed base buffers and adapter/topology cleanup. A stale
+older pipeline fixture that still refused now-supported INT8 was changed to
+refuse unsupported FP8; runtime INT8 behavior was not narrowed to satisfy it.
+No live HTTP API, GPU context or official weights were used. Official quality/
+performance and the remaining Qwen parity surfaces remain active work.

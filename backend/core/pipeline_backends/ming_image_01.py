@@ -65,6 +65,27 @@ class MingImage01Mixin:
             generator.sampler.profile.validate_task(task, has_reference_image=bool(images), num_layers=layers)
         except ValueError as exc:
             raise ValidationError(str(exc)) from exc
+        def is_guide(entry):
+            return bool(entry.get("is_reference_guide")) if isinstance(entry, dict) else bool(getattr(entry,"is_reference_guide",False))
+        if any(not is_guide(entry) for entry in resolved.get("controlnets") or []):
+            raise ValidationError("Ming supports Reference Guide; ControlNet/style-KV entries are not enabled")
+        if resolved.get("style_transfers"):
+            raise ValidationError("Ming style-KV conditioning is awaiting integration")
+        from core.models.ming_image_01.reference_guide import normalize_guides
+        guides = resolved.get("controlnet_images") or []
+        requested_guides = [entry for entry in resolved.get("controlnets") or [] if is_guide(entry)]
+        if requested_guides and len(requested_guides) != len(guides):
+            raise ValidationError("Every Ming Reference Guide requires a valid decoded image")
+        if requested_guides:
+            from api.param_defaults import REFERENCE_GUIDE_DEFAULTS
+            guides = [{**guide, **{key:REFERENCE_GUIDE_DEFAULTS[key]
+                for key in ("strength","start_step","end_step")
+                if isinstance(requested,dict) and key not in requested}}
+                for requested,guide in zip(requested_guides,guides)]
+        try:
+            normalize_guides(guides)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
         from core.models.ming_image_01.attention import install_attention
         try:
             install_attention(components.transformer, resolved["attention_type"])
@@ -73,8 +94,6 @@ class MingImage01Mixin:
         self.current_attention_type = resolved["attention_type"]
         if resolved["negative_prompt"]:
             raise ValidationError("Ming native CFG uses zero conditioning; negative prompts are unsupported")
-        if resolved.get("controlnets") or resolved.get("controlnet_images") or resolved.get("style_transfers"):
-            raise ValidationError("Ming reference-guide/style/ControlNet extensions are not yet enabled")
         pending = [key for key in ("text_encoder_quantization", "enable_block_swap",
                                   "keep_models_hot", "loop_decode", "vae_tile_threshold", "vae_tile_mode",
                                   "vae_tile_global_norm", "color_flatten_strength")
@@ -133,7 +152,8 @@ class MingImage01Mixin:
                     references=[list(images) for _ in range(batch)], task=task, width=width, height=height,
                     resolution=round(math.sqrt(width * height)), steps=steps, cfg=float(cfg), seed=seed,
                     requested_layers=layers, negative_prompt=resolved["negative_prompt"], output_type="pil",
-                    cancelled=lambda: self.cancel_requested, step_callback=callback, phase_context=phase)
+                    cancelled=lambda: self.cancel_requested, step_callback=callback, phase_context=phase,
+                    reference_guides=guides)
             except MingGenerationCancelled as exc:
                 raise RuntimeError("Generation cancelled by user") from exc
             model_info["dit_rewiring_spec"] = topology

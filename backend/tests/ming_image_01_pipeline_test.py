@@ -180,7 +180,7 @@ def test_generation_snapshot_is_captured_before_callback_model_changes():
 
 
 @pytest.mark.parametrize("override", [{"width": 33}, {"negative_prompt": "negative"},
-    {"cfg_scale": float("nan")}, {"ming_image_01_layers": True}, {"unet_quantization": "int8"}])
+    {"cfg_scale": float("nan")}, {"ming_image_01_layers": True}, {"unet_quantization": "fp8"}])
 def test_invalid_requests_refused_before_model_residency(monkeypatch, override):
     value, components = manager("layer_decompose")
     def forbidden(*a, **k): raise AssertionError("Unexpected residency mutation")

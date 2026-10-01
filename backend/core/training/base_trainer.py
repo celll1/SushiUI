@@ -15702,6 +15702,10 @@ class BaseTrainer(ABC):
             text_encoding_mode = "onthefly_gpu"
             latent_encoding_mode = "onthefly_gpu"
 
+        if getattr(self, "is_ming_image_01", False):
+            latent_encoding_mode = text_encoding_mode = "onthefly_gpu"
+            self.ming_prompt_resolution = max(base_resolutions or _TRAINING_DEFAULTS["base_resolutions"])
+
         self._training_datasets = datasets
         self._annotate_ming_items(datasets)
         self._sample_prompts = sample_prompts or [
@@ -18795,7 +18799,17 @@ class BaseTrainer(ABC):
                     # wrong items' labels.
                     self._last_loss_per_sample = None
 
+                    ming_prepared = None
+                    if getattr(self, "is_ming_image_01", False):
+                        from core.models.ming_image_01.dataset import prepare_shared_latents
+                        ming_prepared = prepare_shared_latents(self, batch)
+                        latents_list = list(ming_prepared.clean.split(1, dim=0))
+                        width = batch[0][0].get("bucket_width") or batch[0][0]["width"]
+                        height = batch[0][0].get("bucket_height") or batch[0][0]["height"]
+
                     for item_index, (item, dataset) in enumerate(batch):
+                        if ming_prepared is not None:
+                            continue
                         if _sensenova_text_batch_active:
                             from core.training.ops.sensenova_ops import prepare_i2t_example
                             try:
@@ -19553,7 +19567,8 @@ class BaseTrainer(ABC):
                     # We pass the nested structure to train_step which handles T coordinates
                     # SenseNova has no entry here: its references are already inside
                     # each item's prompt prefix.
-                    reference_latents_nested = None
+                    reference_latents_nested = (ming_prepared.reference_latents
+                                                if ming_prepared is not None else None)
                     if use_reference_images and self.is_flux2 and reference_latents_list:
                         if all(lat is not None for lat in reference_latents_list):
                             # Pass nested list structure to train_step
@@ -19782,7 +19797,11 @@ class BaseTrainer(ABC):
                         mnt_time_ids = time_ids_batch
 
                         mnt_sensenova_prefix = None
-                        if self.is_sensenova and _sensenova_text_batch_active:
+                        if ming_prepared is not None:
+                            from core.models.ming_image_01.dataset import shared_inputs_for_mnt
+                            mnt_text_embeddings, mnt_attention_mask, reference_latents_nested = shared_inputs_for_mnt(self, ming_prepared)
+                            mnt_pooled_embeddings = None
+                        elif self.is_sensenova and _sensenova_text_batch_active:
                             mnt_text_embeddings = None
                             mnt_attention_mask = None
                             mnt_pooled_embeddings = None
@@ -20076,7 +20095,8 @@ class BaseTrainer(ABC):
                             batch_lens_latent_shape = (height // 16, width // 16)
 
                         self._collect_concept_sample_loss = (
-                            self.is_qwen_image_21 and self._concept_exposure is not None
+                            (self.is_qwen_image_21 or getattr(self, "is_ming_image_01", False))
+                            and self._concept_exposure is not None
                             and any(item.get("_concept_exposure_groups")
                                     or item.get("_concept_exposure_group") is not None
                                     for item, _dataset in _exposure_items)

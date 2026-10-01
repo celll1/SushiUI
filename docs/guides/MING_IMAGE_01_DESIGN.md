@@ -413,3 +413,31 @@ An initial test-only component accessor mismatch was corrected and its two
 cases pass. This is not a GPU OOM-recovery or precision claim. Common dataset
 assembly/cache and optimizer/RNG/scaler resume are still required before normal
 training capabilities become available.
+
+
+### Common assembly and MNT ownership
+
+The shared batch loop now calls native paired record preparation instead of the
+single-image generic encode for Ming. Targets/references are independently
+VAE-encoded once per batch; native processor input and weights remain batch-owned.
+The MNT conditioning branch calls a fresh encoder graph for every iteration when
+any conditioner group is trainable. A completely frozen conditioner is encoded
+once and reused within that batch; changing trainability clears this reuse.
+Native references and weights stay aligned through shared microbatch slicing.
+
+This staged path currently forces on-the-fly pixel/text encoding and derives
+prompt resolution from the resolved base resolutions (central defaults when
+absent). Persistent native caches remain required; this temporary override must
+be removed when their encoding modes are implemented. VAE encoding moves the
+VAE onto the trainer device and returns it to CPU even on failure. Frozen
+conditioners return to CPU after encoding; trainable ones remain resident through
+backward. This is a whole-component baseline, not a verified official-model
+memory budget or the final low-memory/offload policy.
+
+47 related native data/shared-step CPU tests pass, including both profiles'
+record assembly and two consecutive MNT-style backward/AdamW updates without
+reusing a freed encoder graph. The frozen reuse and trainability-change boundary
+also passes. These tests drive native preparation and actual shared backward;
+they do not claim a complete normal training request, optimizer resume or GPU
+acceptance. Normal startup remains staged until persistent caches, checkpoint
+resume, sampling and execution-policy wiring are complete.

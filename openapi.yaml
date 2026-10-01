@@ -973,6 +973,19 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+  /schema/ming-image-01-prompt-upsample-defaults:
+    get:
+      tags: [Schema]
+      summary: Get Ming-Image 0.1 prompt-upsample defaults
+      operationId: getMingImage01PromptUpsampleDefaults
+      responses:
+        '200':
+          description: Engine, inference, and cache defaults
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
   /schema/prompt-assist-music-defaults:
     get:
       tags: [Schema]
@@ -5221,6 +5234,44 @@ paths:
       tags: [prompt-assist]
       summary: Clear the Qwen-Image 2.1 prompt-upsample cache
       operationId: clearQwenImage21PromptUpsampleCache
+      responses:
+        '200':
+          description: Cache cleared
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  deleted: { type: integer }
+
+  /prompt-assist/ming-image-01/transform:
+    post:
+      tags: [prompt-assist]
+      summary: Upsample a Ming-Image 0.1 prompt
+      description: Uses pinned native Design/Layer templates through a loopback LM Studio/Ollama provider. Design output is canvas/layers JSON; Layer output preserves the requested front-to-back layer count. No official enhancer weights or remote service are used.
+      operationId: transformMingImage01Prompt
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MingImage01PromptUpsampleRequest'
+      responses:
+        '200':
+          description: Validated native prompt, fixed canvas ratio and cache status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MingImage01PromptUpsampleResponse'
+        '400':
+          description: Ming profile/task mismatch, invalid structured output, or local provider failure
+
+  /prompt-assist/ming-image-01/cache/clear:
+    post:
+      tags: [prompt-assist]
+      summary: Clear the Ming-Image 0.1 prompt-upsample cache
+      operationId: clearMingImage01PromptUpsampleCache
       responses:
         '200':
           description: Cache cleared
@@ -12354,6 +12405,45 @@ components:
         timeout_seconds: { type: integer, minimum: 10, maximum: 3600, default: 600 }
         force_refresh: { type: boolean, default: false }
     QwenImage21PromptUpsampleResponse:
+      type: object
+      required: [prompt, rewritten_prompt, wh_ratio, ratio_follow, warnings, engine, model, cached]
+      properties:
+        prompt: { type: string }
+        rewritten_prompt: { type: string }
+        wh_ratio: { type: string }
+        ratio_follow: { type: string }
+        warnings:
+          type: array
+          items: { type: string }
+        engine: { type: string }
+        model: { type: string }
+        cached: { type: boolean }
+        cache_key: { type: string }
+    MingImage01PromptUpsampleRequest:
+      type: object
+      required: [prompt, mode, width, height, layers]
+      properties:
+        prompt: { type: string }
+        mode: { type: string, enum: [t2i, i2i, layer] }
+        engine: { type: string, enum: [lm_studio, ollama], default: lm_studio }
+        base_url: { type: string, default: "" }
+        model: { type: string, default: "" }
+        api_key: { type: string, default: "", writeOnly: true }
+        images:
+          type: array
+          items: { type: string, description: Image data URL }
+          default: []
+        temperature: { type: number, minimum: 0, maximum: 2, default: 0.2 }
+        top_p: { type: number, exclusiveMinimum: 0, maximum: 1, default: 0.95 }
+        top_k: { type: integer, minimum: 0, maximum: 1000, default: 20 }
+        max_output_tokens: { type: integer, minimum: 128, maximum: 32768, default: 4096 }
+        context_length: { type: integer, minimum: 1024, maximum: 262144, default: 32768 }
+        timeout_seconds: { type: integer, minimum: 10, maximum: 3600, default: 600 }
+        force_refresh: { type: boolean, default: false }
+        width: { type: integer, minimum: 16, multipleOf: 16 }
+        height: { type: integer, minimum: 16, multipleOf: 16 }
+        layers: { type: integer, minimum: 1 }
+    MingImage01PromptUpsampleResponse:
       type: object
       required: [prompt, rewritten_prompt, wh_ratio, ratio_follow, warnings, engine, model, cached]
       properties:

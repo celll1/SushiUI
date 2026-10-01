@@ -25,6 +25,8 @@ Vendored files live under `backend/core/models/ming_image_01/vendor/`. Original 
 | `qwen2_5_vit.py` | Apache-2.0 | `587148f9d9e26ed94e2e0aee277f181bc20de8b1a2b2992cf75362c816bf7f24` | declare gradient checkpointing support for the existing native block checkpoint path |
 | `tokenization_bailing.py` | MIT (root license) | `4b13ec7a5796a1d04e721f61791d086d7f7fb9f63912948700e5691625b432fb` | initialize BOS property after base tokenizer construction |
 
-Integration changes after this import must update this ledger and the vendor note. Runtime loading uses package-local classes, not arbitrary `trust_remote_code`. CLI/prompt-service examples and repository assets are not vendored.
+Integration changes after this import must update this ledger and the vendor note. Runtime loading uses package-local classes, not arbitrary `trust_remote_code`. CLI/prompt-service implementations are not vendored. The separately listed prompt templates below are the only copied repository assets.
 
 `backend/core/models/ming_image_01/attention.py` adapts the Apache-2.0 native single-stream processor in `vendor/diffusion/transformer.py` to SushiUI’s attention conduit. Its original Ant Group copyright and Apache-2.0 notice are retained; Q/K normalization, complex RoPE and output projection semantics are preserved. The pinned vendor source remains unchanged.
+
+Prompt rewriting templates in `backend/core/extensions/ming_image_01_prompt_templates/` derive from the same pinned MIT source: `design.txt` is an unmodified byte copy of `assets/t2i_rewriter_system_prompt.txt` (SHA-256 `a6107c0f225f755f8ed293e616ef4bbc0e3a61b935893d0e6d3075d4b98200b1`); `layer.txt` extracts the README `GUIDED_PROMPT` literal without changing its contents. No remote prompt service is bundled or automatically contacted.

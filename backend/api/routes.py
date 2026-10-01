@@ -63,7 +63,7 @@ from api.param_defaults import (
     VIDEO_GEN_ARCH_OVERLAYS,
     OUTPAINT_AUDIO_ARCH_OVERLAYS,
     IMAGE_GEN_ARCH_OVERLAYS,
-    PROMPT_ASSIST_DEFAULTS, QWEN_IMAGE_21_PROMPT_UPSAMPLE_DEFAULTS,
+    PROMPT_ASSIST_DEFAULTS, QWEN_IMAGE_21_PROMPT_UPSAMPLE_DEFAULTS, MING_IMAGE_01_PROMPT_UPSAMPLE_DEFAULTS,
     MUSIC_PROMPT_ASSIST_DEFAULTS, MUSIC_LYRICS_ASSIST_DEFAULTS,
     STUDIO_RENDER_DEFAULTS, H3_HYBRID_LOAD_DEFAULTS, CHIMERA_INITIALIZE_DEFAULTS,
     LORA_ITEM_DEFAULTS,
@@ -123,6 +123,7 @@ from core.extensions.minimax_h3_prompt_assistant import (
     MiniMaxH3PromptAssistant,
     validate_prompt as validate_h3_prompt,
 )
+from core.extensions.ming_image_01_prompt_upsampler import MingImage01PromptUpsampler, MingPromptOptions
 from core.extensions.qwen_image_21_prompt_upsampler import (
     QwenImage21PromptUpsampleOptions,
     QwenImage21PromptUpsampler,
@@ -190,6 +191,7 @@ minimax_h3_prompt_assistant = MiniMaxH3PromptAssistant(
 qwen_image_21_prompt_upsampler = QwenImage21PromptUpsampler(
     QWEN_IMAGE_21_PROMPT_UPSAMPLE_DEFAULTS["cache_max_entries"]
 )
+ming_image_01_prompt_upsampler = MingImage01PromptUpsampler(MING_IMAGE_01_PROMPT_UPSAMPLE_DEFAULTS["cache_max_entries"])
 minimax_music3_caption_rewriter = MiniMaxMusic3CaptionRewriter(
     MUSIC_PROMPT_ASSIST_DEFAULTS["cache_max_entries"]
 )
@@ -11651,6 +11653,29 @@ class QwenImage21PromptUpsampleRequest(BaseModel):
     force_refresh: bool = QWEN_IMAGE_21_PROMPT_UPSAMPLE_DEFAULTS["force_refresh"]
 
 
+class MingImage01PromptUpsampleRequest(BaseModel):
+    prompt: str
+    mode: Literal["t2i", "i2i", "layer"]
+    engine: Literal["lm_studio", "ollama"] = MING_IMAGE_01_PROMPT_UPSAMPLE_DEFAULTS["engine"]
+    base_url: str = MING_IMAGE_01_PROMPT_UPSAMPLE_DEFAULTS["base_url"]
+    model: str = MING_IMAGE_01_PROMPT_UPSAMPLE_DEFAULTS["model"]
+    api_key: str = Field(
+        MING_IMAGE_01_PROMPT_UPSAMPLE_DEFAULTS["api_key"],
+        json_schema_extra={"writeOnly": True},
+    )
+    images: List[str] = Field(default_factory=lambda: list(MING_IMAGE_01_PROMPT_UPSAMPLE_DEFAULTS["images"]))
+    temperature: float = Field(MING_IMAGE_01_PROMPT_UPSAMPLE_DEFAULTS["temperature"], ge=0, le=2)
+    top_p: float = Field(MING_IMAGE_01_PROMPT_UPSAMPLE_DEFAULTS["top_p"], gt=0, le=1)
+    top_k: int = Field(MING_IMAGE_01_PROMPT_UPSAMPLE_DEFAULTS["top_k"], ge=0, le=1000)
+    max_output_tokens: int = Field(MING_IMAGE_01_PROMPT_UPSAMPLE_DEFAULTS["max_output_tokens"], ge=128, le=32768)
+    context_length: int = Field(MING_IMAGE_01_PROMPT_UPSAMPLE_DEFAULTS["context_length"], ge=1024, le=262144)
+    timeout_seconds: int = Field(MING_IMAGE_01_PROMPT_UPSAMPLE_DEFAULTS["timeout_seconds"], ge=10, le=3600)
+    force_refresh: bool = MING_IMAGE_01_PROMPT_UPSAMPLE_DEFAULTS["force_refresh"]
+    width: int = Field(ge=16, multiple_of=16)
+    height: int = Field(ge=16, multiple_of=16)
+    layers: int = Field(ge=1)
+
+
 class PromptAssistTemplateRequest(BaseModel):
     prompt: str
     mode: Literal["t2va", "i2va", "fl2va", "l2va", "ref2va"]
@@ -11784,6 +11809,27 @@ async def transform_qwen_image_21_prompt(request: QwenImage21PromptUpsampleReque
 @router.post("/prompt-assist/qwen-image-21/cache/clear", tags=["prompt-assist"])
 async def clear_qwen_image_21_prompt_cache():
     deleted = await asyncio.to_thread(qwen_image_21_prompt_upsampler.cache.clear)
+    return {"status": "success", "deleted": deleted}
+
+
+@router.post("/prompt-assist/ming-image-01/transform", tags=["prompt-assist"])
+async def transform_ming_image_01_prompt(request: MingImage01PromptUpsampleRequest):
+    info = pipeline_manager.current_model_info or {}
+    profile = info.get("profile")
+    if info.get("type") != "ming_image_01":
+        raise HTTPException(status_code=400, detail="Load a Ming-Image 0.1 model first")
+    options = MingPromptOptions(**request.model_dump(exclude={"api_key"}))
+    options.base_url = _prompt_assist_base_url(request.engine, request.base_url)
+    try:
+        return await asyncio.to_thread(ming_image_01_prompt_upsampler.transform, options,
+            profile=profile, api_key=request.api_key)
+    except PromptAssistError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/prompt-assist/ming-image-01/cache/clear", tags=["prompt-assist"])
+async def clear_ming_image_01_prompt_cache():
+    deleted = await asyncio.to_thread(ming_image_01_prompt_upsampler.cache.clear)
     return {"status": "success", "deleted": deleted}
 
 

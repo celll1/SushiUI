@@ -9864,3 +9864,25 @@ export const previewDiTRewiring = async (spec: DiTRewiringSpec, tokenHeight: num
 export const exportDiTRewiring = async (modelPath: string, outputName: string, spec: DiTRewiringSpec):
   Promise<{ model_path: string; spec_sha256: string }> =>
   (await api.post("/models/rewiring/export", { model_path: modelPath, output_name: outputName, spec })).data;
+
+
+export interface MingPromptSettings extends Omit<Qwen21PromptUpsampleSettings, "engine"> {
+  engine: "lm_studio" | "ollama";
+}
+export interface MingPromptRequest extends Omit<MingPromptSettings, "enabled"> {
+  prompt: string;
+  mode: "t2i" | "i2i" | "layer";
+  images: string[];
+  width: number;
+  height: number;
+  layers: number;
+  force_refresh?: boolean;
+}
+export const getMingPromptDefaults = async (): Promise<MingPromptSettings> =>
+  (await api.get("/schema/ming-image-01-prompt-upsample-defaults")).data;
+export const transformMingPrompt = async (request: MingPromptRequest, signal?: AbortSignal): Promise<Qwen21PromptUpsampleResponse> =>
+  (await api.post("/prompt-assist/ming-image-01/transform", request, {
+    signal, timeout: request.timeout_seconds * 1000 + 5000,
+  })).data;
+export const clearMingPromptCache = async (): Promise<number> =>
+  (await api.post("/prompt-assist/ming-image-01/cache/clear")).data.deleted;

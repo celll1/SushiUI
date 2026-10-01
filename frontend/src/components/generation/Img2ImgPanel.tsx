@@ -38,6 +38,8 @@ import ResizableColumns, {
 } from "../common/ResizableColumns";
 import H3PromptAssist from "../common/H3PromptAssist";
 import Qwen21PromptUpsample from "../common/Qwen21PromptUpsample";
+import MingPromptUpsample from "../common/MingPromptUpsample";
+import { maybeUpsampleMingPrompt } from "@/utils/mingPromptUpsample";
 import QwenPartitionControls from "../common/QwenPartitionControls";
 import MingLayerControls from "../common/MingLayerControls";
 import MingOutputGroups from "../common/MingOutputGroups";
@@ -2477,6 +2479,19 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
       }
     }
 
+    if (!videoMode && !audioMode && modality.modelInfo?.type === "ming_image_01") {
+      try {
+        const upsampled = await maybeUpsampleMingPrompt({
+          prompt: processedPrompt, mode: modality.modelInfo?.profile === "layer_decompose" ? "layer" : "i2i", images: [imageBase64, ...refImages],
+          width: params.width, height: params.height, layers: params.ming_image_01_layers,
+        });
+        if (upsampled) processedPrompt = upsampled.prompt;
+      } catch (error: any) {
+        alert(error?.response?.data?.detail || error?.message || "Ming prompt rewriting failed");
+        return;
+      }
+    }
+
     if (videoMode && modality.modelInfo?.type === "minimax_h3") {
       const refMode = modality.modelInfo?.variant === "ref2va" && countMiniMaxH3References(h3References) > 0;
       const promptMode = refMode ? "ref2va" : params.last_frame_image ? "fl2va" : "i2va";
@@ -4284,6 +4299,12 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
           images={[inputImage || inputImagePreview!, ...refImages]}
           onApply={(prompt) => setParams((previous) => ({ ...previous, prompt }))}
         />
+      )}
+      {loadedArch === "ming_image_01" && (inputImage || inputImagePreview) && (
+        <MingPromptUpsample key={currentModelInfo?.model_info?.source}
+          prompt={params.prompt} mode={currentModelInfo?.model_info?.profile === "layer_decompose" ? "layer" : "i2i"} images={[inputImage || inputImagePreview!, ...refImages]}
+          width={params.width} height={params.height} layers={params.ming_image_01_layers}
+          onApply={prompt => setParams(previous => ({ ...previous, prompt }))} />
       )}
       <MingLayerControls value={params.ming_image_01_layers}
         onChange={ming_image_01_layers => setParams(previous => ({ ...previous, ming_image_01_layers }))} />

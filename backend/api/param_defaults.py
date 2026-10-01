@@ -246,6 +246,12 @@ QWEN_IMAGE_21_PROMPT_UPSAMPLE_DEFAULTS: Dict[str, Any] = {
     "cache_max_entries": 256,
 }
 
+MING_IMAGE_01_PROMPT_UPSAMPLE_DEFAULTS: Dict[str, Any] = {
+    **QWEN_IMAGE_21_PROMPT_UPSAMPLE_DEFAULTS,
+    "engine": "lm_studio",
+    "images": [],
+}
+
 # ---------------------------------------------------------------------------
 # MiniMax Music 3 caption rewriter (AI rewrite) — /prompt-assist/music/*
 # ---------------------------------------------------------------------------

@@ -1320,3 +1320,47 @@ interactive UI, CUDA mixed precision and official-weight numerical/performance
 acceptance remain pending. Quantized full-parameter materialization, conditioner
 quantization/adapters, advanced adapter families, partition/global, style and
 other remaining Qwen parity obligations stay in scope.
+
+
+### Native local-provider prompt enhancement milestone
+
+Ming prompt rewriting uses the pinned upstream Design JSON system template and
+README Layer guided template, with MIT provenance recorded separately. Both
+profiles share SushiUI's loopback LM Studio/Ollama model-listing, load/release
+transport and SQLite cache implementation, but use a separate native protocol
+validator and cache. No official prompt-enhancer artifact is invented and no
+remote service is automatically contacted. Design/edit yields canvas/layers JSON;
+Layer yields the requested numbered front-to-back specification. Layer disables
+Ollama's JSON response mode, while existing Qwen requests retain it.
+
+Public defaults, request schema, transform/cache endpoints and frontend client
+are connected. Width/height/layer count are explicit request fields. Design
+validation checks native keys, normalized in-canvas bbox strings, hex colors
+and the exact requested canvas ratio. Layer validation rejects changed counts,
+missing/empty/reordered/duplicate layer numbers. One flattened Layer reference
+is required; Design edit preserves ordered images. The cache includes prompt,
+mode/profile, native-template digest, dimensions, count, image-content digests
+and provider/inference settings. Force refresh bypasses lookup without changing
+the key; API credentials are neither returned nor cached.
+
+All four image generation panels expose preview/apply and an opt-in automatic
+rewrite before generation enqueue. Layer mode is selected only for the Layer
+profile; inpaint/outpaint controls are Design-only. Frontend settings are
+separate from Qwen and derive defaults from the schema endpoints. Preview
+cancellation or prompt/model/profile/dimension/count/reference changes suppress
+stale responses. Stable file identities prevent fresh array literals from
+canceling a valid preview on each render. Clearing the dedicated cache is wired.
+Browser cancellation aborts delivery/application; the backend provider request
+finishes or times out and then releases its model through the shared finally
+path. It does not promise interruption of inference inside the local provider.
+
+Offline tests verify valid native outputs, malformed schema/ratio/bbox/layer
+refusals, profile/reference/loopback guards before provider contact, cache reuse
+and refresh/content/geometry isolation, and actual shared request assembly and
+load/unload with HTTP replaced by in-process response doubles. Existing Qwen
+prompt transport tests pass in the same CUDA-forbidden process: 29 unique
+affected checks pass across the main batch and the two added failure cases. Frontend contracts,
+defaults, state/cancel/error handling and the four operation paths are reviewed
+statically; owner build/type checks and real-provider quality remain pending.
+No live API, main server, CUDA context or official weights were used. Remaining
+Qwen parity obligations and final interactive/GPU acceptance remain active.

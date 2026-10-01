@@ -29,6 +29,7 @@ from api.param_defaults import (
     PARAM_BOUNDS,
     PROMPT_ASSIST_DEFAULTS,
     QWEN_IMAGE_21_PROMPT_UPSAMPLE_DEFAULTS,
+    MING_IMAGE_01_PROMPT_UPSAMPLE_DEFAULTS,
     REF2VID_DEFAULTS,
     STUDIO_RENDER_DEFAULTS,
     STYLE_TRAINING_DEFAULTS,
@@ -200,3 +201,8 @@ async def get_arch_capabilities():
             key: list(value) for key, value in AUD2AUD_MUSIC3_REPAINT_MODES.items()
         },
     }
+
+
+@router.get("/schema/ming-image-01-prompt-upsample-defaults")
+def get_ming_image_01_prompt_upsample_defaults():
+    return MING_IMAGE_01_PROMPT_UPSAMPLE_DEFAULTS

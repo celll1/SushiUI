@@ -516,3 +516,18 @@ existing lazy producer/consumer path; eager prefill, swap buffers and CPU prefet
 remain pending. The temporary common on-the-fly dispatch and staged training
 refusal remain until those mode contracts are implemented. No live API, official
 weights or GPU resources were used.
+
+### Conditioner rotary precision
+
+The language, native vision and HF Qwen2 connector rotary frequencies remain
+FP32 across conditioner `.to()` precision/residency changes. The wrapper retains
+the unrounded frequencies, including dynamic RoPE's original frequencies, rather
+than casting an already rounded BF16/FP16 tensor back to FP32. Low-memory loading
+reconstructs all three kinds on the actual parameter device, including buffers
+left on meta; connector reconstruction is now covered alongside native buffers.
+
+Nine conditioner/package tests pass after the precision boundary change. Three
+focused precision/meta tests pass after adding parameter-device reconstruction,
+including exact trigonometric outputs at long position indices. Compile and real
+imports pass with CUDA initialization forbidden. GPU numerical acceptance,
+advanced attention backends and full common training remain pending.

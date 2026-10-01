@@ -52,6 +52,22 @@ class MingConditioner(nn.Module):
         native.loaded_image_gen_modules = True
         native._ming_live_conditioning = False
 
+    def _apply(self, fn, recurse=True):
+        from transformers.models.qwen2.modeling_qwen2 import Qwen2RotaryEmbedding
+        from .vendor.modeling_bailing_moe_v2 import BailingMoeV2RotaryEmbedding, BailingMoeV2RotaryEmbedding3D
+        from .vendor.qwen2_5_vit import Qwen2_5_VisionRotaryEmbedding
+
+        types = (Qwen2RotaryEmbedding, BailingMoeV2RotaryEmbedding,
+                 BailingMoeV2RotaryEmbedding3D, Qwen2_5_VisionRotaryEmbedding)
+        saved = [(module, name, value) for module in self.modules() if isinstance(module, types)
+                 for name in ("inv_freq", "original_inv_freq")
+                 if isinstance(value := getattr(module, name, None), torch.Tensor) and not value.is_meta]
+        result = super()._apply(fn, recurse=recurse)
+        # Retain the unrounded frequencies across precision and residency changes.
+        for module, name, value in saved:
+            setattr(module, name, value.to(device=module.inv_freq.device, dtype=torch.float32))
+        return result
+
     def component_groups(self) -> dict[str, tuple[nn.Module, ...]]:
         return {"language": (self.native.model,), "vision": (self.native.vision, self.native.linear_proj),
                 "connector": (self.native.connector,), "queries": (self.native.query_tokens_dict,),

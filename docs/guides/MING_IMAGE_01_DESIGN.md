@@ -677,3 +677,30 @@ bounded counts and transfer calls, not physical GPU memory/performance or full
 common-trainer resume. CPU prefetch remains pending, and normal-training
 capability/temporary generic dispatch remain staged until mode integration and
 complete shared-loop acceptance are finished. No GPU/live API was used.
+
+### Native frozen CPU prefetch worker
+
+Native batch buffering now supports `cpu_prefetch` through one exclusive CPU
+conditioner worker and a bounded output queue. The queue uses the existing
+central `text_encoding_prefetch_depth`; shared processor preparation is locked
+against latent preparation, while CPU conditioner forward can overlap other
+work. The worker owns only frozen eval-mode CPU parameters/buffers, and checks
+parameter versions and precision before encoding and consumption. Both streams
+are detached CPU tensors. A changed batch identity restarts lookahead at the
+current suffix; trainable/changed producer ownership refuses queued results.
+Forward guards prevent concurrent main-thread conditioner execution and provide
+cancellation checkpoints at native layer boundaries. Worker failures reach the
+consumer. Stop joins the thread, removes guards and clears queued payloads.
+Common stop/exception handlers close the native buffer before emergency saving,
+in addition to epoch/try-finally cleanup.
+
+14 affected CPU worker/buffer cases pass, including exact FP32/BF16 agreement with
+synchronous native conditioning, full-queue backpressure/stop, exception delivery,
+caption restart and live-conditioning refusal. Four targeted producer-change
+cases pass after adding eval-mode validation. Changed backend files compile and
+real-import with CUDA initialization forbidden. No official weights, live API or
+GPU were used. CPU-only worker execution does not prove physical GPU overlap,
+large-model stop latency or the complete common train loop. The generic temporary
+encoding-mode override and normal-training refusal remain until common initial
+residency/setup paths are routed to these native mode contracts. Sampling/export
+must respect exclusive worker ownership when those pending routes are enabled.

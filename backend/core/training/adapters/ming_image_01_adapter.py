@@ -1,6 +1,7 @@
 """Ming full-parameter ownership, component rates and native bundle export."""
 
 from pathlib import Path
+from contextlib import nullcontext
 
 from core.models.ming_image_01.checkpoint import save_bundle
 from core.models.ming_image_01.training import optimizer_groups
@@ -55,6 +56,11 @@ class MingImage01FullParameterAdapter(BaseFullParameterAdapter):
         return {id(parameter): group["component"] for group in self.arch_param_groups() for parameter in group["params"]}
 
     def write_checkpoint(self, step, epoch, output_path):
+        buffer = getattr(self.trainer, "ming_batch_buffer", None)
+        with buffer.suspend_prefetch() if buffer is not None else nullcontext():
+            return self._write_checkpoint(step, epoch, output_path)
+
+    def _write_checkpoint(self, step, epoch, output_path):
         components = self.trainer.ming_image_01_components
         groups = self.arch_param_groups()
         metadata = {"schema_version": 1, "kind": "full_parameter_weights", "step": step, "epoch": epoch,

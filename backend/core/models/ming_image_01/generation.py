@@ -14,7 +14,7 @@ class MingGenerator:
 
     def run(self, *, prompts, references, task, width, height, resolution,
             steps, cfg, seed, requested_layers, negative_prompt="", output_type="pil",
-            cancelled=None, step_callback=None, phase_context=None):
+            cancelled=None, step_callback=None, phase_context=None, reference_guides=None):
         """Residency contexts belong to the caller; every exit releases their resources."""
         def check_cancel():
             if cancelled is not None and cancelled():
@@ -23,6 +23,8 @@ class MingGenerator:
         check_cancel()
         if negative_prompt:
             raise ValueError("Ming native guidance uses zero conditioning; negative prompts are unsupported")
+        from .reference_guide import normalize_guides, prepare_guides
+        guides = normalize_guides(reference_guides)
         prepared = prepare_inputs(self.components.processor, prompts, references=references,
                                   width=width, height=height, resolution=resolution)
         reference_pixels = prepared.generation_references()
@@ -43,7 +45,9 @@ class MingGenerator:
             if reference_pixels is not None:
                 reference_pixels = reference_pixels.to(device=transformer.device, dtype=self.components.vae.dtype)
             check_cancel()
+            prepared_guides = prepare_guides(self.components.vae, guides, width=width, height=height,
+                batch=len(prompts), seed=seed, check_cancel=check_cancel)
             return self.sampler.run(task=task, conditioning=condition, width=width, height=height,
                 steps=steps, cfg=cfg, seed=seed, requested_layers=requested_layers,
                 reference_pixels=reference_pixels, negative_prompt=negative_prompt, output_type=output_type,
-                cancelled=cancelled, step_callback=step_callback)
+                cancelled=cancelled, step_callback=step_callback, reference_guides=prepared_guides)

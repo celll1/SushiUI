@@ -1872,6 +1872,7 @@ export interface OutpaintAudioParams {
 
 
 export interface GenerationDefaultsResponse {
+  reference_guide?: Pick<ControlNetConfig, "model_path" | "strength" | "start_step" | "end_step" | "is_lllite" | "is_reference_guide" | "enable_preprocessor">;
   img2txt: Partial<Omit<Img2TxtParams, "image">> & Record<string, unknown>;
   txt2img: Partial<GenerationParams> & Record<string, unknown>;
   img2img: Partial<GenerationParams> & Record<string, unknown>;

@@ -230,6 +230,16 @@ PROMPT_ASSIST_DEFAULTS: Dict[str, Any] = {
 # Qwen-Image 2.1 prompt upsampler
 # ---------------------------------------------------------------------------
 
+REFERENCE_GUIDE_DEFAULTS: Dict[str, Any] = {
+    "strength": 0.4,
+    "start_step": 0,
+    "end_step": 800,
+    "model_path": "__reference_guide__",
+    "is_lllite": False,
+    "is_reference_guide": True,
+    "enable_preprocessor": False,
+}
+
 QWEN_IMAGE_21_PROMPT_UPSAMPLE_DEFAULTS: Dict[str, Any] = {
     "enabled": False,
     "engine": "official",

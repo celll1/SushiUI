@@ -61,7 +61,7 @@ class MingSampler:
     def run(self, *, task: str, conditioning: MingConditioning, width: int, height: int,
             steps: int, cfg: float, seed: int, requested_layers: int,
             reference_pixels=None, negative_prompt: str = "", output_type: str = "pil",
-            cancelled: Callable[[], bool] | None = None, step_callback=None) -> list[MingResultGroup]:
+            cancelled: Callable[[], bool] | None = None, step_callback=None, reference_guides=None) -> list[MingResultGroup]:
         if negative_prompt:
             raise ValueError("Ming native guidance uses zero conditioning; negative prompts are unsupported")
         if output_type not in {"pil", "latent"}:
@@ -100,6 +100,11 @@ class MingSampler:
 
         def callback(_pipe, index, timestep, values):
             check_cancel()
+            if reference_guides:
+                from .reference_guide import blend_guides
+                values["latents"] = blend_guides(values["latents"], reference_guides,
+                    index=index, total=sampling.steps, sigma=_pipe.scheduler.sigmas[index+1],
+                    profile=self.profile.inference_profile)
             if step_callback is not None:
                 step_callback(index, sampling.steps, timestep, values["latents"])
             return values

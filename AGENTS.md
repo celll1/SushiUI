@@ -27,13 +27,12 @@ versioned REST API under `/api/v1` (see `openapi.yaml`), so agents can drive
 and verify most changes without touching the UI. This file is the durable,
 checked-in subset of repo conventions for coding agents; read it before making
 changes.
-Ming has a staged native training handler; shared dataset/loop/resume integration remains pending and its training methods are unavailable.
-
-Ming-Image 0.1 has native Design/Layer generation and package inspection
-(`ModelType` has 18 entries). Native CPU integration is verified; official-weight
-GPU acceptance and the common trainer remain pending. See
-`docs/guides/MING_IMAGE_01_DESIGN.md`. Layer's frame axis denotes ordered RGBA
-image layers, not video; the registry has 17 handlers including staged Ming.
+Ming-Image 0.1 has native Design/Layer generation, package inspection and
+public DiT/caption-bridge LoRA and full-parameter training. CPU integration,
+checkpoint restoration and batch-boundary continuation are verified;
+official-weight GPU acceptance and remaining Qwen feature parity are pending.
+See `docs/guides/MING_IMAGE_01_DESIGN.md`. Layer's frame axis denotes ordered
+RGBA image layers, not video; the training registry has 17 handlers.
 
 ## Non-negotiable rules
 

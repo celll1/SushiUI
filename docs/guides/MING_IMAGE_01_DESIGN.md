@@ -1155,3 +1155,27 @@ No live API, server, official weights, GPU allocation or physical GPU kernel was
 used. Native quantized bundle export/loading, conditioner quantization, ConvRot
 and quantized-base training remain pending. GPU memory, throughput, W8A8 numerics
 and official-model image quality are unmeasured. Full Qwen parity is still active.
+
+### Native quantized DiT bundle restoration milestone
+
+The native bundle loader now preflights weight-only INT8 and E4M3 Linear
+headers before conditioner construction, builds the declared native transformer
+on meta, installs format-specific Linear slots and assigns CPU shards one at a
+time. Quantized codes retain their serialized dtype and per-row scales remain
+FP32; floating parameters follow the requested compute dtype. Unknown markers,
+orphan/missing scales and inconsistent key/shape sets are refused. Payload scales
+must be finite and positive. Conditioner quantization remains unsupported.
+
+Existing atomic six-component bundle saving can now round-trip a converted DiT.
+Design and Layer CPU cases preserve every serialized tensor bit, two-stage U-Net
+topology and native RGBA generation after loading sharded exports. Four malformed
+header cases refuse before conditioner loading; two mixed INT8/E4M3 cases retain
+codes/scales under FP32/BF16 compute selection; two invalid payload-scale cases
+refuse zero and NaN values. The existing ordinary package
+loader/export/manager regression also passes. These are tiny native CPU fixtures,
+not official-weight GPU acceptance or performance measurements.
+
+The public background quantized-export job still has no Ming layout and refuses
+Ming; this stage establishes native package serialization/restoration only.
+Public export wiring, conditioner quantization, ConvRot, quantized-base training
+and the remaining Qwen parity work are still pending. No main API/GPU was used.

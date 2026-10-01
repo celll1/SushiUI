@@ -59,6 +59,8 @@ def load_components(path, *, dtype, conditioner_attention: str) -> MingComponent
         topology = validate_topology_identity(topology, artifact.configs["transformer"])
     if conditioner_attention not in {"eager", "flash_attention_2"}:
         raise ValueError("Ming conditioner supports eager or flash_attention_2, not SDPA")
+    from .quantization import prepare_quantized_transformer, load_quantized_transformer
+    quantized_transformer = prepare_quantized_transformer(artifact, dtype)
     from diffusers import FlowMatchEulerDiscreteScheduler
     from safetensors.torch import load_file
     from transformers import Qwen2Config, Qwen2ForCausalLM
@@ -91,10 +93,13 @@ def load_components(path, *, dtype, conditioner_attention: str) -> MingComponent
     tokenizer = BailingTokenizer.from_pretrained(str(artifact.components["mllm"]), local_files_only=True)
     image_processor = BailingMM2ImageProcessor.from_pretrained(str(artifact.components["mllm"]), local_files_only=True)
     processor = BailingMM2Processor(image_processor=image_processor, tokenizer=tokenizer)
-    transformer, info = DiffusionTransformer.from_pretrained(
-        str(artifact.components["transformer"]), torch_dtype=dtype,
-        local_files_only=True, low_cpu_mem_usage=True, output_loading_info=True)
-    _strict_loading_info(info, "transformer")
+    if quantized_transformer is None:
+        transformer, info = DiffusionTransformer.from_pretrained(
+            str(artifact.components["transformer"]), torch_dtype=dtype,
+            local_files_only=True, low_cpu_mem_usage=True, output_loading_info=True)
+        _strict_loading_info(info, "transformer")
+    else:
+        transformer = load_quantized_transformer(quantized_transformer, artifact, dtype)
     restore_topology(transformer, topology)
     vae, info = AutoencoderKLQwenImage.from_pretrained(
         str(artifact.components["vae"]), torch_dtype=dtype, local_files_only=True,

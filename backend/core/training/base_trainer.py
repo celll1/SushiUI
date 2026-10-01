@@ -12209,6 +12209,10 @@ class BaseTrainer(ABC):
             from core.training.arch.base_arch import TrainStepContext
             native_batch = native_step_batch(mnt_latents, mnt_text_embeddings,
                                              mnt_attention_mask, reference_latents_nested)
+            from core.models.ming_image_01.partition_training import region_count
+            if region_count(self, native_batch.clean) > 1:
+                return self._execute_ming_partitioned_forward_backward(
+                    native_batch, timesteps=timesteps, loss_scale=loss_scale, cfg_drop_mask=cfg_drop_mask)
             ctx = TrainStepContext(latents=mnt_latents, ming_batch=native_batch,
                                    timesteps=timesteps, cfg_drop_mask=cfg_drop_mask)
             loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
@@ -12585,6 +12589,37 @@ class BaseTrainer(ABC):
                 print(f"{self.log_prefix} [debug_latents] VAE decode failed: {debug_error}")
 
         return loss_value, pred_loss_value, recon_loss_value
+
+    def _execute_ming_partitioned_forward_backward(self, batch, *, timesteps, loss_scale, cfg_drop_mask):
+        from dataclasses import replace
+        from core.models.ming_image_01.partition_training import backward_regions, training_plan
+        from core.training.mnt import training_noise_like
+        if fused_backward_active(self):
+            raise ValueError("Ming partition training requires conventional accumulated backward")
+        plan = training_plan(self, batch.clean)
+        if cfg_drop_mask is not None:
+            conditioning, _ = self.arch.apply_cfg_null_collated(self, batch.conditioning, None, cfg_drop_mask)
+            batch = replace(batch, conditioning=conditioning)
+        noise = training_noise_like(self, batch.clean.to(device=self.device, dtype=self.training_dtype))
+        self._reset_fused_group_counters()
+        applied_before = self._applied_updates_now()
+        try:
+            result = backward_regions(self, batch, sigma=timesteps, noise=noise, plan=plan,
+                backward_scale=float(loss_scale) / float(getattr(self, "_grad_accum_steps", 1) or 1),
+                drop_mask=cfg_drop_mask)
+            self._flush_fused_group_partials()
+            events = getattr(self, "_repa_profile_events", None)
+            if events is not None:
+                events["forward_backward"][1].record(torch.cuda.current_stream(self.device))
+        except BaseException as exc:
+            self._note_partial_step_taint(applied_before, exc)
+            raise
+        self._flush_deferred_predicted_latent()
+        self._flush_deferred_controlnet_metrics()
+        self._flush_deferred_extra_metrics()
+        self._finish_repa_profile_call(0.0, self._flush_repa_loss_metric_after_backward())
+        self._flush_concept_sample_loss()
+        return result
 
     def _execute_qwen_partitioned_forward_backward(
         self,

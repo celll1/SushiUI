@@ -21,6 +21,13 @@ def backward_regions(trainer,batch,*,sigma,noise,plan,backward_scale,drop_mask=N
         raise ValueError("Ming partition plan disagrees with native target canvas")
     from core.training.partition.core import validate_partition_regions
     validate_partition_regions(plan.full_height,plan.full_width,plan.regions)
+    topology=getattr(trainer.transformer,"_residual_unet_spec",None)
+    if topology is not None:
+        from .residual_unet import validate_forward
+        for region in plan.regions:
+            box=region.input
+            tiles=clean[...,box.top*2:box.bottom*2,box.left*2:box.right*2]
+            validate_forward(trainer.transformer,list(tiles.unbind()),2,1,topology)
     weights=batch.frame_weights.to(device=clean.device,dtype=torch.float32)
     conditioning=MingConditioning(batch.conditioning.queries.to(clean),batch.conditioning.direct.to(clean))
     references=None if batch.reference_latents is None else [None if v is None else v.to(clean) for v in batch.reference_latents]
@@ -86,3 +93,37 @@ def backward_regions(trainer,batch,*,sigma,noise,plan,backward_scale,drop_mask=N
     trainer.log_extra_metric("ming_partition_count",float(len(plan.regions)))
     trainer.log_extra_metric("ming_partition_largest_tokens",float(plan.largest_input_tokens))
     return tuple(float(value) for value in totals)
+
+
+def region_count(trainer,clean):
+    from api.param_defaults import TRAINING_DEFAULTS
+    config=trainer.config
+    def value(name):
+        canonical="dit_partition_"+name
+        return config.get(canonical,config.get("qwen_partition_"+name)) if config.get(canonical,config.get("qwen_partition_"+name)) is not None else TRAINING_DEFAULTS[canonical]
+    if not value("training_enabled"):return 1
+    mode=value("mode")
+    if mode == "fixed":
+        count=value("fixed_count")
+        if count not in (2,4):raise ValueError("Ming partition count must be 2 or 4")
+        return count
+    if mode != "token_threshold":raise ValueError("Ming partition mode must be fixed or token_threshold")
+    limit=value("full_frame_max_tokens")
+    if type(limit) is not int or limit < 1:raise ValueError("Ming partition token threshold must be a positive integer")
+    tokens=clean.shape[2]*(clean.shape[-2]//2)*(clean.shape[-1]//2)
+    return 1 if tokens<=limit else 4 if tokens>=4*limit else 2
+
+
+def training_plan(trainer,clean):
+    from api.param_defaults import TRAINING_DEFAULTS
+    config=trainer.config
+    def value(name):
+        canonical="dit_partition_"+name
+        candidate=config.get(canonical,config.get("qwen_partition_"+name))
+        return TRAINING_DEFAULTS[canonical] if candidate is None else candidate
+    count=region_count(trainer,clean)
+    if count == 1:raise ValueError("Ming full-frame execution has no partition plan")
+    return MingPartitionAdapter().build_fixed_plan(clean.shape[-2]//2,clean.shape[-1]//2,count=count,
+        halo=value("halo_tokens"),seed=value("seed"),epoch=int(getattr(trainer,"_current_epoch",0)),
+        occurrence=int(getattr(trainer,"_current_batch_position",0)),
+        split_ratio_min=value("split_ratio_min"),split_ratio_max=value("split_ratio_max"))

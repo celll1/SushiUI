@@ -6,6 +6,7 @@ from core.models.components.wiring import MING_IMAGE_01_WIRING
 
 
 class MingImage01ArchHandler(ArchHandler):
+    supports_dit_partition_training = True
     cfg_null_stage = "collated"
     name = "ming_image_01"
     wiring = MING_IMAGE_01_WIRING
@@ -38,6 +39,10 @@ class MingImage01ArchHandler(ArchHandler):
     def setup_attention_backend(self, trainer):
         from core.training.ops.ming_image_01_ops import setup_attention_backend
         setup_attention_backend(trainer)
+
+    def dit_partition_adapter(self):
+        from core.models.ming_image_01.partition import MingPartitionAdapter
+        return MingPartitionAdapter()
 
     def depth_blocks(self, trainer):
         return trainer.transformer.layers

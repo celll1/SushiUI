@@ -16,17 +16,19 @@ def validate_training_rewiring(config, architecture, *, checkpoint_inheritance=F
             raise ValueError(f"Residual rewiring is not yet supported for {architecture}")
         if spec is not None and spec["architecture"] != architecture:
             raise ValueError("Training topology architecture mismatch")
-        validate_training_features(config)
+        validate_training_features(config, architecture)
     return mode, spec
 
 
-def validate_training_features(config):
+def validate_training_features(config, architecture=None):
     from api.param_defaults import TRAINING_DEFAULTS
     if float(config.get("block_skip_rate", TRAINING_DEFAULTS["block_skip_rate"])) > 0:
         raise ValueError("Residual rewiring is incompatible with block_skip_rate")
     for key in ("dit_partition_training_enabled", "qwen_partition_training_enabled",
                 "dit_partition_global_adapter_enabled", "qwen_partition_global_adapter_enabled",
                 "tread_enable", "repa_enable", "blockskip_enable"):
+        if architecture == "ming_image_01" and key in {"dit_partition_training_enabled", "qwen_partition_training_enabled"}:
+            continue
         if config.get(key):
             raise ValueError(f"Residual rewiring is incompatible with {key}")
 
@@ -65,7 +67,7 @@ def resolve_training_topology(model, config, architecture, validate_topology_ide
         if (resuming or resume_spec is not NO_RESUME_SPEC) and resolved != inherited:
             raise ValueError("Resume requires the checkpoint topology without edits")
     if resolved is not None:
-        validate_training_features(config)
+        validate_training_features(config, architecture)
     if install:
         restore_topology(model, resolved)
         config["dit_rewiring_mode"] = mode

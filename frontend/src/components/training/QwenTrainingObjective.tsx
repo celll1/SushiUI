@@ -1,12 +1,13 @@
 import { TrainingRunCreateRequest } from "@/utils/api";
 
 type Props = {
+  ming?: boolean;
   params: TrainingRunCreateRequest;
   defaults: Record<string, unknown> | null;
   onChange: (patch: Partial<TrainingRunCreateRequest>) => void;
 };
 
-export default function QwenTrainingObjective({ params, defaults, onChange }: Props) {
+export default function QwenTrainingObjective({ params, defaults, onChange, ming }: Props) {
   const low = params.qwen_guidance_loss_weight ?? Number(defaults?.qwen_guidance_loss_weight ?? 0);
   const schedule = params.qwen_guidance_loss_weight_schedule ??
     (defaults?.qwen_guidance_loss_weight_schedule as "constant" | "high_noise_smoothstep" | undefined) ?? "constant";
@@ -19,7 +20,7 @@ export default function QwenTrainingObjective({ params, defaults, onChange }: Pr
 
   return (
     <div className="break-inside-avoid border border-amber-800/50 rounded p-4 space-y-3">
-      <h3 className="text-sm font-medium text-amber-300">Training Objective · Qwen-Image 2.1</h3>
+      <h3 className="text-sm font-medium text-amber-300">Training Objective · {ming ? "Ming-Image 0.1" : "Qwen-Image 2.1"}</h3>
       <label className="block text-xs text-gray-300">Objective
         <select
           value={objective}
@@ -43,12 +44,18 @@ export default function QwenTrainingObjective({ params, defaults, onChange }: Pr
         </select>
       </label>
       <p className="text-xs text-gray-400">
-        Qwen defaults to 100% guidance-target loss. MSE is available for ordinary training.
-        Guided selections reuse a no-gradient empty-prompt prediction; the branch shares LoRA weights.
+        {ming ? (
+          <>Ming defaults to ordinary MSE. Guided selections reuse a no-gradient
+            dual-zero conditioning prediction with the same native reference latents.
+            Layer loss follows its target frame weights. Guidance loss requires a frozen conditioner.</>
+        ) : (
+          <>Qwen defaults to 100% guidance-target loss. MSE is available for ordinary training.
+            Guided selections reuse a no-gradient empty-prompt prediction; the branch shares LoRA weights.</>
+        )}
       </p>
       {objective !== "mse" && (
         <div className="grid grid-cols-2 gap-2">
-          <label className="text-xs text-gray-400">Target CFG
+          <label className="text-xs text-gray-400">{ming ? "Target extrapolation" : "Target CFG"}
             <input type="number" min={1} max={10} step={0.25}
               value={params.qwen_guidance_loss_scale ?? Number(defaults?.qwen_guidance_loss_scale ?? 3)}
               onChange={(event) => onChange({ qwen_guidance_loss_scale: Number(event.target.value) })}

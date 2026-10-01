@@ -11476,15 +11476,17 @@ class BaseTrainer(ABC):
         # can slice them uniformly.
         qwen_guidance_draw = (
             getattr(self, "_qwen_guidance_draw_for_step", None)
-            if self.is_qwen_image_21 else None
+            if (self.is_qwen_image_21 or self.is_ming_image_01) else None
         )
         if (
             qwen_guidance_draw is None
-            and self.is_qwen_image_21
+            and (self.is_qwen_image_21 or self.is_ming_image_01)
             and self.config.get("qwen_guidance_loss_mix_mode", "blend") == "stochastic"
-            and float(self.config.get(
+            and (float(self.config.get(
                 "qwen_guidance_loss_weight", _TRAINING_DEFAULTS["qwen_guidance_loss_weight"]
-            ) or 0.0) > 0
+            ) or 0.0) > 0 or (self.is_ming_image_01
+                and self.config.get("qwen_guidance_loss_weight_schedule", _TRAINING_DEFAULTS["qwen_guidance_loss_weight_schedule"]) == "high_noise_smoothstep"
+                and float(self.config.get("qwen_guidance_loss_high_noise_weight", _TRAINING_DEFAULTS["qwen_guidance_loss_high_noise_weight"])) > 0))
         ):
             qwen_guidance_draw = torch.rand(batch_size, device=timesteps.device)
         _batch = dict(
@@ -16172,13 +16174,17 @@ class BaseTrainer(ABC):
         _guidance_weight = float(self.config.get(
             "qwen_guidance_loss_weight", _TRAINING_DEFAULTS["qwen_guidance_loss_weight"]
         ) or 0.0)
+        _ming_guidance_ramp = (self.is_ming_image_01
+            and self.config.get("qwen_guidance_loss_weight_schedule", _TRAINING_DEFAULTS["qwen_guidance_loss_weight_schedule"]) == "high_noise_smoothstep"
+            and float(self.config.get("qwen_guidance_loss_high_noise_weight", _TRAINING_DEFAULTS["qwen_guidance_loss_high_noise_weight"])) > 0)
+        _guidance_active = _guidance_weight > 0 or _ming_guidance_ramp
         self._qwen_sigma_null_enabled = bool(self.config.get(
             "qwen_cfg_null_sigma_schedule", _TRAINING_DEFAULTS["qwen_cfg_null_sigma_schedule"]
         ))
         if self._qwen_sigma_null_enabled:
-            if not self.is_qwen_image_21 or _guidance_weight <= 0 or not _cfg_null_rate:
+            if not (self.is_qwen_image_21 or self.is_ming_image_01) or not _guidance_active or not _cfg_null_rate:
                 raise ValueError(
-                    "Qwen sigma-dependent CFG-null drop requires Qwen training, "
+                    "Qwen sigma-dependent CFG-null drop requires Qwen or Ming training, "
                     "positive guidance loss weight, and positive cfg_uncond_drop_rate"
                 )
             if self.config.get(
@@ -16193,9 +16199,9 @@ class BaseTrainer(ABC):
                 raise ValueError("Qwen sigma-dependent CFG-null drop requires cfg_uncond_drop_per_mnt=true with MNT > 1")
         if not 0 <= _guidance_weight <= 1:
             raise ValueError("qwen_guidance_loss_weight must be between 0 and 1")
-        if _guidance_weight:
-            if not self.is_qwen_image_21:
-                raise ValueError("qwen_guidance_loss_weight requires Qwen-Image 2.1 training")
+        if _guidance_active:
+            if not (self.is_qwen_image_21 or self.is_ming_image_01):
+                raise ValueError("qwen_guidance_loss_weight requires Qwen-Image 2.1 or Ming-Image 0.1 training")
             _guidance_mode = str(self.config.get(
                 "qwen_guidance_loss_mix_mode", "blend"
             ))
@@ -16213,10 +16219,11 @@ class BaseTrainer(ABC):
                 raise ValueError("Qwen guidance loss requires scale in [1, 10] and schedule constant/sigma")
             from core.training.ops.qwen_image_21_ops import resolve_guidance_weight_schedule
             _weight_schedule = resolve_guidance_weight_schedule(self.config, _guidance_weight)
-            blank_emb, blank_mask = self.encode_caption("")
-            self._qwen_guidance_blank_encoding = (
-                blank_emb.detach().cpu(), blank_mask.detach().cpu()
-            )
+            if self.is_qwen_image_21:
+                blank_emb, blank_mask = self.encode_caption("")
+                self._qwen_guidance_blank_encoding = (
+                    blank_emb.detach().cpu(), blank_mask.detach().cpu()
+                )
             print(f"{self.log_prefix} Qwen guidance loss: mode={_guidance_mode}, weight={_guidance_weight}, "
                   f"scale={_guidance_scale}, schedule={_guidance_schedule}, "
                   f"weight_schedule={_weight_schedule}")
@@ -19992,7 +19999,7 @@ class BaseTrainer(ABC):
                                     mnt_attention_mask = attention_mask.detach() if attention_mask is not None else None
                                 mnt_pooled_embeddings = pooled_embeddings.detach() if pooled_embeddings is not None else None
 
-                        if self._qwen_sigma_null_enabled:
+                        if self._qwen_sigma_null_enabled and self.is_qwen_image_21:
                             from core.training.ops.qwen_image_21_ops import apply_sigma_null_condition
                             mnt_text_embeddings, mnt_attention_mask = apply_sigma_null_condition(
                                 mnt_text_embeddings, mnt_attention_mask,

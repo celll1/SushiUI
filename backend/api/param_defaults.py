@@ -3520,6 +3520,7 @@ TRAINING_SAMPLE_DEFAULTS_BY_ARCH: Dict[str, Dict[str, Any]] = {
 TRAINING_GUIDANCE_LOSS_DEFAULTS_BY_ARCH: Dict[str, float] = {
     "_default": TRAINING_DEFAULTS["qwen_guidance_loss_weight"],
     "qwen_image_21": 1.0,
+    "ming_image_01": TRAINING_DEFAULTS["qwen_guidance_loss_weight"],
 }
 
 

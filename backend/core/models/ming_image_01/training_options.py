@@ -65,6 +65,16 @@ def preflight_training(config, *, method):
             or not math.isfinite(rate) or rate < 0):
         raise ValueError("Ming caption adapter rate must be finite and nonnegative")
     groups, _ = resolve_ownership(config)
+    guidance=config.get("qwen_guidance_loss_weight",TRAINING_DEFAULTS["qwen_guidance_loss_weight"])
+    if not isinstance(guidance,(float,int)) or isinstance(guidance,bool) or not math.isfinite(guidance) or not 0<=guidance<=1:
+        raise ValueError("Ming guidance weight must be finite and within [0, 1]")
+    high=config.get("qwen_guidance_loss_high_noise_weight",TRAINING_DEFAULTS["qwen_guidance_loss_high_noise_weight"])
+    if not isinstance(high,(float,int)) or isinstance(high,bool) or not math.isfinite(high) or not 0<=high<=1:
+        raise ValueError("Ming high-noise guidance weight must be finite and within [0, 1]")
+    ramp=config.get("qwen_guidance_loss_weight_schedule",TRAINING_DEFAULTS["qwen_guidance_loss_weight_schedule"])
+    if groups and (guidance or (ramp=="high_noise_smoothstep" and high>0)):
+        raise ValueError("Ming guidance loss requires a frozen text encoder/conditioner")
+
     if method == "lora" and groups:
         raise ValueError("Ming conditioner LoRA is not yet connected; freeze native conditioner groups")
     config["train_text_encoder"] = bool(groups)

@@ -943,8 +943,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       training_export_format: (isQwenImage21Model || isMingImageModel) && trainingMethod === "full_finetune"
         ? params.training_export_format : undefined,
       train_text_encoder: textEncoderTrainingUnsupported ? false : params.train_text_encoder,
-      qwen_guidance_loss_weight: isQwenImage21Model ? params.qwen_guidance_loss_weight : 0,
-      qwen_cfg_null_sigma_schedule: isQwenImage21Model &&
+      qwen_guidance_loss_weight: (isQwenImage21Model || isMingImageModel) ? params.qwen_guidance_loss_weight : 0,
+      qwen_cfg_null_sigma_schedule: (isQwenImage21Model || isMingImageModel) &&
         (params.cfg_uncond_drop_rate ?? cfgUncondDropDefaultRate ?? 0) > 0
         ? params.qwen_cfg_null_sigma_schedule : false,
       dataset_configs: datasetConfigs.filter(c => c.dataset_id !== 0),
@@ -5538,7 +5538,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     setParams(prev => ({
                       ...prev,
                       cfg_uncond_drop_rate: rate,
-                      qwen_cfg_null_sigma_schedule: isQwenImage21Model &&
+                      qwen_cfg_null_sigma_schedule: (isQwenImage21Model || isMingImageModel) &&
                         (prev.cfg_uncond_drop_rate ?? cfgUncondDropDefaultRate ?? 0) <= 0 &&
                         (rate ?? cfgUncondDropDefaultRate ?? 0) > 0 &&
                         prev.qwen_guidance_loss_mix_mode === "stochastic" &&
@@ -6160,8 +6160,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           </div>
         )}
 
-        {isQwenImage21Model && (
+        {(isQwenImage21Model || isMingImageModel) && (
           <QwenTrainingObjective
+            ming={isMingImageModel}
             params={params}
             defaults={trainingDefaults}
             onChange={(patch) => setParams(prev => ({ ...prev, ...patch }))}

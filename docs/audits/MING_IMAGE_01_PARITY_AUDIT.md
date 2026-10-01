@@ -1,7 +1,7 @@
 # Ming-Image 0.1 feature parity audit
 
 Date: 2026-10-02. Scope: source, contracts and recorded CPU milestone evidence in
-`codex/ming-image-design` through `456edc8c`; no official weights, running API,
+`codex/ming-image-design` through `456edc8c`, plus the CPU Adafactor follow-up below; no official weights, running API,
 frontend build/type-check or actual CUDA execution. This is a completed source
 and wiring audit, not official-model acceptance. The historical stage evidence
 lives in [the maintained design](../guides/MING_IMAGE_01_DESIGN.md).
@@ -37,7 +37,7 @@ small CPU models prove production quality or memory use.
 | Memory / precision controls | `block_offload.py`, `training_residency.py`, `checkpointing.py`, shared trainer | Native main/refiner checkpointing, bounded main-block limits, query chunks, training block swap/activation handling and optimizer/accumulation policy; CPU/double lifecycle evidence; official GPU behavior unmeasured |
 | Offline DiT/conditioner quantization | `conversion.py`, `conditioner_quantization.py`, conversion CLI | Selected native components, INT8/E4M3/ConvRot, protected tied heads/norms/queries, strict shard preflight, preserved U-Net/global payload and atomic publish/cancel; 28 affected converter CPU cases |
 | Full checkpoint and inference export | `checkpoint.py`, full adapter, shared export jobs/UI | Exact floating training bundle versus inference-only packed export; manual/automatic/background stopped-run export, native six-component output, cancellation/collision/source preservation; no checkpoint merge into main |
-| Training resume | `training_resume.py`, full/LoRA adapters, shared trainer | Batch-boundary CPU/device RNG and run seed, GAS/pending gradients/scaler ownership, optimizer/scheduler, global branches and U-Net restored; established-moment global LoRA continuation exact in CPU tests; rejected resumes preserve source checkpoint |
+| Training resume | `training_resume.py`, full/LoRA adapters, shared trainer | Batch-boundary CPU/device RNG and run seed, GAS/pending gradients/scaler ownership, optimizer/scheduler, global branches and U-Net restored; established-state AdamW/Adafactor full/global LoRA continuation exact in CPU tests; rejected resumes preserve source checkpoint |
 | Partition inference / training / global summaries | `partition*.py`, `MingPartitionControls.tsx`, shared training controls | Complete coverage/cores/halos/full coordinates, all target frames/full references/captions, fixed/threshold/automatic/manual plans, global train/save/load/LoRA consumption and structural inspection; approximate spatial partitioning is distinct from exact full-KV query chunks |
 | Partition diagnostics | `partition_timing.py`, metric registry, shared UI | Host wall time; opt-in synchronized CUDA spans include null/conditional/backward; all-frame target counts and process-wide peak without reset; 12 CPU/mock cases, no CUDA measurement claim |
 | Training debug / samples / progress | `training_debug.py`, `training_sampling.py`, shared BaseTrainer/monitor | Native sign/frame-aware core filmstrip, existing-null diagnostics, deferred lossless RGBA VAE previews, ordered roles/weights, native sample persistence and progress; 18 debug CPU cases with exact gradient/RNG invariance |
@@ -84,10 +84,28 @@ production readiness. Required owner validation when resources are available:
 3. Actual BF16/FP16/CUDA attention, training block swap/activation lifetimes,
    optimized ConvRot forward/backward/prefetch/resume and diagnostic timing;
    real peak VRAM, quality and throughput are still unmeasured.
-4. Exact recovery inside an unfinished MNT/region, different optimizer families
+4. Exact recovery inside an unfinished MNT/region, optimizer families beyond the validated AdamW/Adafactor cases
    and GPU optimizer/scaler traces remain unproven. The established CPU exact
    resume boundary is completed logical batch steps with saved pending gradients.
 
 Uncalibrated U-Net image quality recovery is not claimed by structural CPU tests.
 The branch has not been merged or pushed; source audit and CPU evidence must not
 be represented as official-model GPU or owner UI acceptance.
+
+## CPU-only follow-up: Adafactor continuation
+
+Design and Layer now have additional full/LoRA native shared-loop checks using
+transformers Adafactor from the actual optimizer factory, including saved single-stage
+U-Net, spatial partitions, global branches, query chunks, guidance and MNT2/GAS4.
+The checkpoint is taken at logical step 6 after an optimizer update, with two
+pending accumulated backwards. Tests require the serialized optimizer class,
+nonempty established state and row/column factored statistics before accepting
+continuation evidence. Data/noise/sigma/conditioning/region predictions, all
+model weights, tensor and scalar optimizer states, update count and scheduler
+are compared exactly against uninterrupted CPU execution. This does not cover
+unfinished regions/MNT, CUDA optimizers or scaler trajectories.
+
+Milestone verification: all four new Adafactor cases and four affected existing
+AdamW full/global-LoRA cases pass (eight cases). The changed test module compiles
+and imports with CUDA initialization forbidden. Owner build/UI and official GPU
+acceptance remain pending.

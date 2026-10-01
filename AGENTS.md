@@ -30,8 +30,9 @@ changes.
 Ming-Image 0.1 has native Design/Layer generation, package inspection and
 public DiT/caption-bridge LoRA and full-parameter training. CPU integration,
 checkpoint restoration and batch-boundary continuation are verified;
-official-weight GPU acceptance and remaining Qwen feature parity are pending.
-See `docs/guides/MING_IMAGE_01_DESIGN.md`. Layer's frame axis denotes ordered
+source/wiring parity is audited; owner UI/build and official-weight GPU acceptance
+remain pending. See `docs/audits/MING_IMAGE_01_PARITY_AUDIT.md` and
+`docs/guides/MING_IMAGE_01_DESIGN.md`. Layer's frame axis denotes ordered
 RGBA image layers, not video; the training registry has 17 handlers.
 
 ## Non-negotiable rules

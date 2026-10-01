@@ -776,3 +776,43 @@ compile and the real trainer imports with CUDA initialization forbidden. No GPU,
 API or official weights were used. This closes the tiny FP32 Layer whole-loop
 supervision gap, while exact mid-epoch RNG/augmentation resume, production runner,
 sampling/worker coordination and remaining full Qwen feature parity remain open.
+
+
+### Native shared-trainer previews and publication
+
+Ming's architecture sample handler now uses the same native generator as ordinary
+inference. Design supports text generation and single-image edit previews; Layer
+requires an explicit reference and preserves every ordered RGBA output. A private
+request-owned result group accompanies the legacy primary PIL image through the
+shared trainer, keeping TensorBoard and convergence call sites compatible.
+The common PNG saver stages all frames, publishes them with rollback, records
+profile/frame roles/counts and saved U-Net metadata, and lists every frame in an
+on-demand response. The auxiliary canvas is labeled rather than represented as
+an assumed composite. Optional unsupported sampler controls remain excluded by
+the existing sample capability allowlist.
+
+Preview generation clones the scheduler, restores each submodule's previous
+train/eval flag and component device on success/error/cancellation, and uses
+caller-owned sequential residency. Native CPU-prefetch workers stop and join
+before preview or full checkpoint export; queued conditioning is recomputed
+from the next batch cursor after ownership returns. Worker errors propagate,
+not silently disappear during suspension. Checkpoint save uses the same gate.
+
+CPU evidence covers native Design text/edit and Layer reference previews, exact
+mode/weight/scheduler preservation, progress, cancellation cleanup, worker pause
+and next-cursor replay, publication rollback preserving an older frame set, and
+real shared-loop step-zero/periodic PNG saving while CPU prefetch is selected.
+A real Layer MNT/accumulation run writes all six RGBA images across step zero
+and the periodic preview, with role metadata and round-trippable U-Net specs.
+The affected suite first passed 23 cases plus one filename-fixture failure;
+six focused cases pass after correction/error-propagation work. Two affected
+common-loop cases pass after export ownership integration, and the Layer
+reference/metadata fixture subsequently passes. Changed backend modules compile
+and real-import with CUDA initialization forbidden. No official weights, GPU or
+live API were used.
+
+Normal training remains staged until runner/resume gates and remaining full
+Qwen parity are completed. Per-preview Layer count currently uses the central
+generation default or the trainer config value; its dedicated training UI/API
+option and profile-specific sample-default wiring remain pending. Production
+memory/offload behavior and exact mid-epoch RNG/scaler replay also remain open.

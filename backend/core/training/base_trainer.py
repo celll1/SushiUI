@@ -13909,8 +13909,15 @@ class BaseTrainer(ABC):
         if reference_image_path:
             metadata.add_text("reference_image_path", reference_image_path)
         metadata.add_text("sample_settings_revision", str(getattr(self, "_live_sample_revision", 0)))
-        from api.training_media import publish_sample_png
-        publish_sample_png(sample, sample_path, metadata)
+        if getattr(sample, "_ming_result_group", None) is not None:
+            from core.models.ming_image_01.training_sampling import publish_training_sample
+            from core.models.ming_image_01.residual_unet import model_topology_metadata
+            for key, value in model_topology_metadata(self.transformer).items():
+                metadata.add_text(key, value)
+            publish_training_sample(sample, sample_path, metadata)
+        else:
+            from api.training_media import publish_sample_png
+            publish_sample_png(sample, sample_path, metadata)
 
     def _run_step0_sample_if_due(
         self,
@@ -21091,8 +21098,13 @@ class BaseTrainer(ABC):
                                 if on_demand_request is None and sample_step == 0 and sample_idx == 0:
                                     self._mark_step0_sample_done()
                                 print(f"{self.log_prefix} Saved sample to {sample_path}")
-                                on_demand_files.append(sample_name)
-                                on_demand_seeds.append(actual_seed)
+                                saved_paths = getattr(sample, "_ming_saved_paths", None)
+                                if saved_paths is None:
+                                    on_demand_files.append(sample_name)
+                                    on_demand_seeds.append(actual_seed)
+                                else:
+                                    on_demand_files.extend(path.name for path in saved_paths)
+                                    on_demand_seeds.extend([actual_seed] * len(saved_paths))
                                 if getattr(self, "convergence_diagnostics_enable", False) and sample_idx == 0:
                                     self._run_convergence_diagnostics(
                                         sample_step,

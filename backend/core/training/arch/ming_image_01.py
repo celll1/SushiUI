@@ -10,6 +10,7 @@ class MingImage01ArchHandler(ArchHandler):
     pixel_align = 16
     timestep_convention = "t0"
     velocity_sign = "x0_minus_eps"
+    wires_sample_step_progress = True
     consumes_reconstruction_loss_weight = True
 
     def __init__(self, trainer=None):
@@ -51,4 +52,5 @@ class MingImage01ArchHandler(ArchHandler):
         return ming_image_01_ops.train_step(trainer, ctx.ming_batch, timesteps=ctx.timesteps, cfg_drop_mask=ctx.cfg_drop_mask)
 
     def sample(self, trainer, sample_ctx):
-        raise ValueError("Ming shared trainer sample persistence integration is pending")
+        from core.models.ming_image_01.training_sampling import sample_image
+        return sample_image(trainer, sample_ctx)

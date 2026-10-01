@@ -50,10 +50,20 @@ def test_real_full_trainer_step(tmp_path, monkeypatch, latent_mode, text_mode, g
     before = owner.transformer.layers[0].attention.to_q.weight.detach().clone()
     projection_before = {name: p.detach().clone() for name, p in owner.text_encoder.named_parameters()
                          if p.requires_grad}
+    sample_options = ({"sample_every_n_steps": 1, "sample_steps": 1,
+                       "sample_width": 64, "sample_height": 64,
+                       "sample_prompts": [{"positive": "word5", "negative": ""}]}
+                      if text_mode == "cpu_prefetch" else {"sample_every_n_steps": 0})
     owner.train([dataset], num_epochs=1, total_steps=1, batch_size=1,
-        save_every_n_steps=1, sample_every_n_steps=0,
+        save_every_n_steps=1, **sample_options,
         enable_bucketing=False, base_resolutions=[64],
         latent_encoding_mode=latent_mode, text_encoding_mode=text_mode)
+    if text_mode == "cpu_prefetch":
+        samples = list(owner.output_dir.rglob("step_*_sample_*.png"))
+        assert samples, "Scheduled native previews were not persisted"
+        for path in samples:
+            with Image.open(path) as image:
+                assert image.mode == "RGBA" and image.info["ming_frame_role"] == "image"
     assert not torch.equal(before, owner.transformer.layers[0].attention.to_q.weight)
     if groups:
         current = dict(owner.text_encoder.named_parameters())
@@ -106,7 +116,7 @@ def test_real_layer_training_routes_ordered_supervision(tmp_path, monkeypatch, g
     owner = FullParameterTrainer(model_path=str(root), output_dir=str(tmp_path / "run"),
         device="cpu", weight_dtype="fp32", training_dtype="fp32", vae_dtype="fp32",
         mixed_precision=False, attention_backend="native",
-        train_config={"ming_conditioner_groups": groups, "seed": 17})
+        train_config={"ming_conditioner_groups": groups, "seed": 17, "ming_image_01_layers": 2})
     data = tmp_path / "data"
     data.mkdir()
     paths = ["canvas.png", "layer1.png", "layer2.png"]
@@ -129,8 +139,22 @@ def test_real_layer_training_routes_ordered_supervision(tmp_path, monkeypatch, g
     trained_before = {name: p.detach().clone() for name, p in owner.text_encoder.named_parameters() if p.requires_grad}
     owner.train([dataset], total_steps=2, batch_size=1, save_every_n_steps=2,
         multi_noise_timesteps=2, gradient_accumulation_steps=2,
-        sample_every_n_steps=0, enable_bucketing=False, base_resolutions=[64],
+        sample_every_n_steps=0 if groups else 2, sample_steps=1,
+        sample_width=64, sample_height=64, sample_guidance_scale=1.,
+        sample_prompts=[{"positive": "word5", "negative": "", "reference_image_path": str(data / "canvas.png")}],
+        enable_bucketing=False, base_resolutions=[64],
         latent_encoding_mode="swap_onthefly", text_encoding_mode="swap_onthefly")
+    if not groups:
+        previews = list((owner.output_dir / "samples").glob("*.png"))
+        assert len(previews) == 6
+        roles = []
+        for path in previews:
+            with Image.open(path) as image:
+                assert image.mode == "RGBA"
+                from core.rewiring.spec import read_checkpoint_metadata
+                assert read_checkpoint_metadata(image.info) == topology
+                roles.append(image.info["ming_frame_role"])
+        assert sorted(roles) == sorted(["auxiliary_canvas", "layer_1", "layer_2"] * 2)
     assert len(calls) == 2
     assert all(int(state["step"]) == 1 for state in owner.optimizer.state.values())
     for shape, weights, refs in calls:

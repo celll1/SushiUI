@@ -1,6 +1,7 @@
 """Bounded native CPU buffers over the resolved epoch batch suffix."""
 
 import threading
+from contextlib import contextmanager
 
 from .cache import identity_key
 from .dataset import (load_shared_items, prepare_shared_items_latents, prepare_record_conditioning,
@@ -26,6 +27,7 @@ class MingBatchBuffer:
         self.latent_interval, self.text_interval = latent_interval, text_interval
         self.latents, self.conditions = {}, {}
         self.closed = False
+        self.next_cursor = 0
         self.preparation_lock = threading.RLock()
         self.prefetcher = None
         if self.policy.modes["text_encoding_mode"] == "cpu_prefetch":
@@ -104,7 +106,22 @@ class MingBatchBuffer:
             prepared.frozen_conditioning = condition
         elif not frozen:
             self.conditions.clear()
+        self.next_cursor = index + 1
         return prepared
+
+    @contextmanager
+    def suspend_prefetch(self):
+        worker = self.prefetcher
+        if worker is not None:
+            worker.stop()
+            self.prefetcher = None
+            if worker.error is not None:
+                raise worker.error
+        try:
+            yield
+        finally:
+            if worker is not None and not self.closed and self.next_cursor < len(self.batches):
+                self._start_prefetch(self.next_cursor)
 
     def close(self):
         if self.prefetcher is not None:

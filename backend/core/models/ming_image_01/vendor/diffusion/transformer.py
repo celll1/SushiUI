@@ -482,7 +482,7 @@ class DiffusionTransformer(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrigin
             all_cap_feats = [None for _ in range(len(all_image))]
         else:
             assert not any([i is None for i in all_cap_feats])
-        
+
         if all_cap_feats_2 is None:
             all_cap_feats_2 = [None for _ in range(len(all_image))]
         else:
@@ -493,10 +493,10 @@ class DiffusionTransformer(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrigin
             cap_ori_len = 0
             if cap_feat is not None:
                 cap_ori_len += len(cap_feat)
-            
+
             if cap_feat_2 is not None:
                 cap_ori_len += len(cap_feat_2)
-            
+
             cap_padding_len = (-cap_ori_len) % SEQ_MULTI_OF
             # padded position ids
             cap_padded_pos_ids = self.create_coordinate_grid(
@@ -605,7 +605,7 @@ class DiffusionTransformer(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrigin
         device = x[0].device
         t = t * self.t_scale
         t = self.t_embedder(t)
-        
+
         (
             x,
             cap_feats,
@@ -671,7 +671,7 @@ class DiffusionTransformer(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrigin
             assert len(cap_feats_2) > 0
             cap_item_seqlens = [len(_) for _ in cap_feats_2]
             cap_feats = torch.cat(cap_feats_2, dim=0)
-        
+
         cap_max_item_seqlen = max(cap_item_seqlens)
         if self.alignment_padding_mode == LEARNED_PADDING:
             cap_feats[torch.cat(cap_inner_pad_mask)] = self.cap_pad_token

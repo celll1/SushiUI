@@ -462,7 +462,7 @@ class ImageGenerationPipeline(DiffusionPipeline):
             batch_size = len(prompt_embeds_2)
             assert negative_prompt_embeds_2 is not None
             assert len(negative_prompt_embeds_2) == len(prompt_embeds_2)
-            
+
 
 
         # 4. Prepare latent variables
@@ -498,9 +498,9 @@ class ImageGenerationPipeline(DiffusionPipeline):
                     z = self.vae.encode(x).latent_dist.sample()
                 z = (z - self.vae.config.shift_factor) * self.vae.config.scaling_factor
                 ref_latents.append(z)
-            
+
             ref_hidden_states = torch.cat(ref_latents, dim=1)
-            
+
             if ref_hidden_states.dim() == 5:
                 ref_hidden_states = ref_hidden_states.squeeze(2)
 
@@ -599,7 +599,7 @@ class ImageGenerationPipeline(DiffusionPipeline):
                 if latent_model_input.ndim == 4:
                     latent_model_input = latent_model_input.unsqueeze(2)
                 latent_model_input_list = list(latent_model_input.unbind(dim=0))
-                
+
                 if ref_hidden_states_input is not None:
                     C = self.vae.config.latent_channels if 'latent_channels' in self.vae.config else self.vae.config.z_dim
 
@@ -704,7 +704,7 @@ class ImageGenerationPipeline(DiffusionPipeline):
             image = self.vae.decode(latents, return_dict=False)[0]
             if image.dim() == 5:
                 image = image.squeeze(2)
-                
+
             image = self.image_processor.postprocess(image, output_type=output_type)
 
         # Offload all models

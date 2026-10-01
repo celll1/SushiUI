@@ -37,7 +37,7 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
     def __init__(
         self,
         config: BailingMM2Config,
-        empty_load=False, 
+        empty_load=False,
     ):
         super().__init__(config)
         self.config: BailingMM2Config = config
@@ -152,7 +152,7 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
                 if image_gen_condition_embeds is not None:
                     condition_embeds = image_gen_condition_embeds
                     negative_condition_embeds = condition_embeds * 0.0 if image_gen_negative_condition_embeds is None else image_gen_negative_condition_embeds
-                
+
                 if image_gen_condition_embeds_2 is not None:
                     condition_embeds_2 = image_gen_condition_embeds_2
                     negative_condition_embeds_2 = condition_embeds_2 * 0.0 if image_gen_negative_condition_embeds_2 is None else image_gen_negative_condition_embeds_2
@@ -163,15 +163,15 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
                     assert self.vision is not None
                     if pixel_values is not None:
                         image_embeds = self.extract_image_feature(pixel_values, grid_thw=image_grid_thw)
-                
+
                 assert self.loaded_image_gen_modules is True, "please add `load_image_gen=True` in from_pretrained() method"
                 assert position_ids is None
 
-                
+
                 condition_embeds, condition_embeds_2 = self.get_condition_embeds_for_image_gen(
-                    input_ids=input_ids, 
+                    input_ids=input_ids,
                     attention_mask=attention_mask,
-                    image_embeds=image_embeds, 
+                    image_embeds=image_embeds,
                     position_ids=position_ids,
                     use_cache=use_cache,
                     image_grid_thw=image_grid_thw,
@@ -179,26 +179,26 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
                 )
                 if condition_embeds is not None:
                     negative_condition_embeds = condition_embeds * 0.0
-                
+
                 if condition_embeds_2 is not None:
                     negative_condition_embeds_2 = condition_embeds_2 * 0.0
 
                 # negative prompt feature is deprecated
                 # negative_condition_embeds = self.get_learnable_token_embeds_for_image_gen(
-                #     input_ids=image_gen_negative_input_ids, 
+                #     input_ids=image_gen_negative_input_ids,
                 #     attention_mask=image_gen_negative_attention_mask,
-                #     image_embeds=image_embeds, 
+                #     image_embeds=image_embeds,
                 #     position_ids=position_ids,
                 #     use_cache=use_cache,
                 #     image_grid_thw=image_grid_thw,
                 #     llm_hidden_states=image_gen_negative_llm_hidden_states,
                 # ) if ((image_gen_negative_input_ids is not None) or (image_gen_negative_llm_hidden_states is not None)) else condition_embeds * 0.0
 
-            
+
 
                 if image_gen_only_extract_hidden_states:
                     return condition_embeds, negative_condition_embeds, condition_embeds_2, negative_condition_embeds_2
-            
+
             assert (condition_embeds is not None) or (condition_embeds_2 is not None)
             if (condition_embeds is not None) and (condition_embeds_2 is not None):
                 assert condition_embeds.shape[0] == condition_embeds_2.shape[0]
@@ -255,7 +255,7 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
             if image_gen_seed is None or image_gen_seed < 0:
                 from datetime import datetime
                 image_gen_seed = datetime.now().microsecond % 1000
-                
+
             sample_kwargs = {
                 "steps": image_gen_steps,
                 "seed": image_gen_seed,
@@ -294,7 +294,7 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
                 and len(image) == 1
             ):
                 image = image[0]
-            
+
             return image
 
         if pixel_values is not None:
@@ -358,12 +358,12 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
             self.diffusion_inner_dim = metax_config.get("diffusion_inner_dim")
 
         if load_image_gen_others:
-            self.connector = None    
+            self.connector = None
             self.query_tokens_dict = nn.ParameterDict()
             # cumulative token index across the scales
             self.scale_indices = []
             current_idx = 0
-            for scale in self.img_gen_scales:                    
+            for scale in self.img_gen_scales:
                 num_tokens = scale * scale
                 scale_name = f"{scale}x{scale}"
                 #weights = temp_state_dict[f"query_tokens_dict.{scale_name}"]
@@ -378,22 +378,22 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
             if self.use_learnable_token_condition:
                 modified_state_dict_query_tokens = {
                     f"{scale}x{scale}": temp_state_dict[f"query_tokens_dict.{scale}x{scale}"]
-                    for scale in self.img_gen_scales   
+                    for scale in self.img_gen_scales
                 }
-            
+
                 self.query_tokens_dict.load_state_dict(modified_state_dict_query_tokens, strict=True)
-                
+
                 # self.norm_query_embeds = True
                 # load connector
                 self.connector = AutoModelForCausalLM.from_pretrained(inference_model_path, subfolder='connector', torch_dtype=torch_dtype)
                 for layer in self.connector.model.layers:
                     layer.self_attn.is_causal = False
                 self.connector.to(device)
-                
-                
+
+
                 self.proj_in = nn.Linear(self.config.llm_config.hidden_size, self.connector.config.hidden_size)
                 self.proj_out = nn.Linear(self.connector.config.hidden_size, diffusion_c_input_dim)
-                
+
                 modified_state_dict_in = {
                     'weight': temp_state_dict['proj_in.weight'],
                     'bias': temp_state_dict['proj_in.bias']
@@ -414,7 +414,7 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
                     directvlm_dim = directvlm_dim * len(self.selected_hidden_states_layers)
 
                 self.proj_directvlm = nn.Sequential(RMSNorm(directvlm_dim, eps=1e-5), nn.Linear(directvlm_dim, self.diffusion_inner_dim, bias=True))
-                
+
                 modified_state_dict_directvlm = {
                     '0.weight': temp_state_dict["proj_directvlm.0.weight"],
                     '1.weight': temp_state_dict["proj_directvlm.1.weight"],
@@ -458,7 +458,7 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
         if "load_image_gen_diffusion" in kwargs:
             load_image_gen_diffusion = kwargs["load_image_gen_diffusion"]
             del kwargs["load_image_gen_diffusion"]
-        
+
         load_image_gen_others = True
         if "load_image_gen_others" in kwargs:
             load_image_gen_others = kwargs["load_image_gen_others"]
@@ -501,14 +501,14 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
             )
         if load_image_gen:
             model.load_image_gen_modules(
-                pretrained_model_name_or_path, 
+                pretrained_model_name_or_path,
                 torch_dtype=kwargs["torch_dtype"] if "torch_dtype" in kwargs else torch.float32,
                 load_image_gen_diffusion=load_image_gen_diffusion,
                 load_image_gen_others=load_image_gen_others,
                 device=image_gen_device,
             )
         return model
-    
+
     def append_input_ids_with_multiscale_learnable_tokens(
         self,
         text_ids,
@@ -529,7 +529,7 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
             default_gen_masks.append(0)
             default_gen_masks.extend([1 for _ in range(scale * scale)])
             default_gen_masks.append(0)
-        
+
         text_ids_list = text_ids.cpu().tolist()
         attention_mask_list = attention_mask.cpu().tolist()
 
@@ -546,7 +546,7 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
             for idx, value in enumerate(attention_mask_one_batch):
                 if value == 0:
                     break
-                
+
                 padding_start += 1
 
             new_text_ids_list.append(text_ids_one_batch[:padding_start] + deepcopy(default_scaled_tokens) + text_ids_one_batch[padding_start:])
@@ -578,7 +578,7 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
         patch_token_id,
     ):
         query_tokens_embeds = torch.cat(
-            [self.query_tokens_dict[f"{scale}x{scale}"] for scale in self.img_gen_scales], 
+            [self.query_tokens_dict[f"{scale}x{scale}"] for scale in self.img_gen_scales],
             dim=0,
         )
         if image_embeds is not None:
@@ -605,7 +605,7 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
             if is_gen:
                 for scale in self.img_gen_scales:
                     new_image_grid_thw.append([1, 2, scale * scale * 2])
-                
+
                 new_image_embeds.append(query_tokens_embeds)
             else:
                 thw = image_grid_thw[cnt_input_image].tolist()
@@ -639,20 +639,20 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
             patch_w = thw[2] // 2
             n_patch_token = patch_h * patch_w
             total_patch_token += n_patch_token
-        
+
         # if torch.distributed.get_rank() == 0:
         #     embed()
         # torch.distributed.barrier()
-        
+
         assert total_patch_token == new_image_embeds.shape[0], f"{total_patch_token}, vs. {new_image_embeds.shape}"
-        
+
         return new_image_grid_thw, new_image_embeds
 
     def get_condition_embeds_for_image_gen(
         self,
-        input_ids, 
+        input_ids,
         attention_mask,
-        image_embeds, 
+        image_embeds,
         position_ids,
         use_cache,
         image_grid_thw,
@@ -666,7 +666,7 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
             self.config.llm_config.image_patch_token + 2,
             self.config.llm_config.image_patch_token,
         )
-        
+
         if llm_hidden_states is None:
             image_grid_thw, image_embeds = self.appand_learnable_tokens(
                 input_ids,
@@ -675,7 +675,7 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
                 image_grid_thw,
                 self.config.llm_config.image_patch_token,
             )
-            
+
             with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16, enabled=self.device.type == "cuda"):
                 if image_embeds is None or input_ids.size(1) == 1:
                     words_embeddings = self.model.get_input_embeddings()(input_ids.clip(0, self.model.get_input_embeddings().weight.shape[0] - 1))
@@ -684,10 +684,10 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
                 else:
                     words_embeddings, image_mask, audio_mask = self.model.model.prompt_wrap_navit(
                         input_ids=input_ids.clip(0, self.model.get_input_embeddings().weight.shape[0] - 1),
-                        config=self.model.model.config, 
-                        query_embeds_image=image_embeds, 
+                        config=self.model.model.config,
+                        query_embeds_image=image_embeds,
                     )
-                
+
                 assert input_ids.size(1) == words_embeddings.size(1), "{} vs {}".format(
                     input_ids.size,
                     words_embeddings.size,
@@ -729,8 +729,9 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
                 ], dim=-1)
             else:
                 directvlm_hidden_states = outputs.hidden_states[-1].to(labels.device)[:, :directvlm_max_valid_ind, :] * use_input_mask.unsqueeze(-1)
-            
-            directvlm_hidden_states = directvlm_hidden_states.detach()
+
+            if not getattr(self, "_ming_live_conditioning", False):
+                directvlm_hidden_states = directvlm_hidden_states.detach()
             directvlm_hidden_states = self.proj_directvlm(directvlm_hidden_states)
 
         scale_embeds = None
@@ -742,21 +743,21 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
                 scale_start_idxes = [0] + self.scale_indices[:-1]
                 scale_end_idxes = self.scale_indices
                 assert scale_end_idxes[-1] == hidden_states_gen.shape[1]
-                
+
                 scale, scale_start_idx, scale_end_idx = [
                     i for i in zip(self.img_gen_scales, scale_start_idxes, scale_end_idxes)
                 ][-1]
-                
+
                 scale_hidden = hidden_states_gen[:, scale_start_idx : scale_end_idx, :]
                 scale_embeds = self.proj_in(scale_hidden)
                 seq_shape = scale_embeds.shape
                 with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16, enabled=self.device.type == "cuda"):
                     scale_embeds = self.connector(
-                        inputs_embeds=scale_embeds, 
-                        attention_mask=torch.ones(seq_shape[0],1,seq_shape[1],seq_shape[1]).to(scale_embeds.device), 
+                        inputs_embeds=scale_embeds,
+                        attention_mask=torch.ones(seq_shape[0],1,seq_shape[1],seq_shape[1]).to(scale_embeds.device),
                         output_hidden_states=True
                     ).hidden_states[-1]
-                    
+
                 scale_embeds = self.proj_out(scale_embeds)
                 # normalize
                 if self.connector_norm:

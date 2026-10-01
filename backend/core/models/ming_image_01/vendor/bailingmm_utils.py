@@ -166,7 +166,7 @@ def fetch_image_wo_resize(ele: dict[str, str | Image.Image], size_factor: int = 
         image_obj = Image.open(image)
     if image_obj is None:
         raise ValueError(f"Unrecognized image input, support local path, http url, base64 and PIL.Image, got {image}")
-    
+
     #image = image_obj.convert("RGB")
 
     return image_obj
@@ -433,7 +433,7 @@ def find_first_index_of_consecutive_ones(lst):
     result = []
     i = 0
     n = len(lst)
-    
+
     while i < n:
         if lst[i] == 1:
             # find the start of a consecutive run of 1s
@@ -443,7 +443,7 @@ def find_first_index_of_consecutive_ones(lst):
                 i += 1
         else:
             i += 1
-    
+
     return result
 
 def merge_consecutive_ones(lst, n):
@@ -461,7 +461,7 @@ def merge_consecutive_ones(lst, n):
     """
     assert isinstance(lst, list), "input must be a list"
     assert isinstance(n, int) and n > 0, "n must be a positive integer"
-    
+
     # iterate over the list, extract runs of 1s, and verify each run length is divisible by n
     i = 0
     while i < len(lst):
@@ -492,7 +492,7 @@ def merge_consecutive_ones(lst, n):
                 i += 1
             # merge every n 1s into a single 1
             result.extend([1] * (count // n))
-    
+
     return result
 
 def get_default_image_gen_hw(image_gen_highres, image_gen_aspect_ratio):

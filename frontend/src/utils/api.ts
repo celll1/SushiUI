@@ -1400,6 +1400,34 @@ export interface UpscalerModelInfo {
 // on demand when a gallery cell is opened -- ImageGrid.tsx's `openImageDetail`
 // helper. Do not read detail-only fields off list/array items (`images`,
 // `filteredImages`); only off `selectedImage` after it resolves.
+export interface MingImageResultGroup {
+  group_id: string;
+  batch_index: number;
+  profile: "generation_edit" | "layer_decompose";
+  requested_layers: number;
+  roles: string[];
+  filenames: string[];
+  image_ids: number[];
+  seed: number;
+}
+
+export interface GenerationWarning {
+  code: string | null;
+  message: string;
+}
+
+export interface GenerationResult {
+  success: boolean;
+  actual_seed: number;
+  warnings: GenerationWarning[];
+  image?: GeneratedImage;
+  images?: GeneratedImage[];
+  groups?: MingImageResultGroup[];
+  latent_id?: string | null;
+  filename?: string;
+  image_path?: string;
+}
+
 export interface GeneratedImage {
   id: number;
   filename: string;

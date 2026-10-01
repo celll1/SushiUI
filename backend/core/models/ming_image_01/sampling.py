@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Callable
 
 import torch
 
+from .results import MingResultGroup
 from .conditioning import MingConditioning
 from .vendor.inference_profile import InferenceProfile
 from .vendor.diffusion.pipeline import ImageGenerationPipeline
@@ -14,19 +14,6 @@ from .vendor.diffusion.pipeline import ImageGenerationPipeline
 
 class MingGenerationCancelled(RuntimeError):
     pass
-
-
-@dataclass
-class MingResultGroup:
-    values: list
-    roles: list[str]
-    profile: str
-    requested_layers: int
-    target_frames: int
-    seed: int
-    width: int
-    height: int
-    output_type: str
 
 
 class MingTransformerBridge(torch.nn.Module):

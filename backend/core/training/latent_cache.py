@@ -148,7 +148,7 @@ def _latents_usage(latents_dir: Path) -> Tuple[int, int]:
     try:
         with os.scandir(latents_dir) as it:
             for entry in it:
-                if not entry.name.endswith(".pt"):
+                if not entry.name.endswith((".pt", ".safetensors")):
                     continue
                 count += 1
                 try:

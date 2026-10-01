@@ -586,3 +586,27 @@ GPU memory/performance and the full common train loop remain unverified. Grouped
 swap-buffer scheduling, CPU prefetch and force-recache propagation still need
 connection before removing the temporary generic dispatch and normal-training
 refusal. Resolution/caption changes continue selecting content-bound cache keys.
+
+### Dataset-owned native cache lifecycle foundation
+
+Current Qwen/common cache lifecycle belongs to the dataset and VAE, not the run.
+The old `force_recache` run option is removed; rebuilding deletes a dataset cache
+namespace through the existing endpoint. Ming must follow that contract.
+
+A native dataset-context factory now creates run-neutral architecture/VAE cache
+paths from the dataset's stable unique ID and actual VAE weight/config/precision/
+execution identity. Latent safetensors and their metadata live under `vae-*/`,
+while conditioning safetensors live in the VAE-independent `text_embeddings/`
+folder. The factory performs no file writes and refuses escaping IDs/paths.
+Native latent writes add the catalog stamp. The common namespace lister counts
+both `.pt` and `.safetensors` entries; OpenAPI reflects the extended format.
+Existing frontend numeric listing/delete types remain compatible by static review.
+
+87 affected native-cache/dataset-API CPU tests pass, including run-neutral reuse,
+listing bytes and a VAE-namespace removal preserving conditioning. Compile, real
+imports and OpenAPI parse pass with CUDA initialization forbidden. Normal Ming
+batch producers still use the staged run-folder context: connecting per-item
+latent ownership while retaining correct mixed-dataset conditioning remains
+pending. The new context factory alone does not complete that migration. GPU/API
+were not used. The earlier force-recache TODO is superseded by dataset lifecycle
+integration, not by restoring the removed run option.

@@ -359,3 +359,41 @@ def test_epoch_prefill_stop_does_not_publish_future_batch(tmp_path):
         prefill_shared_batches(owner, [[pair], [second]], epoch=0)
     assert len(list((tmp_path / "cache" / "conditioning").glob("*.safetensors"))) == 1
     assert not list((tmp_path / "cache").rglob("*.tmp"))
+
+
+def test_native_dataset_cache_is_run_neutral_listed_and_vae_delete_preserves_text(tmp_path):
+    import shutil
+    from core.models.ming_image_01.cache import dataset_cache_context
+    from core.training.latent_cache import list_vae_namespaces
+    value, item, context = cached_record_setup(tmp_path)
+    first = dataset_cache_context(context, base_cache_dir=tmp_path / "datasets", dataset_unique_id="dataset-one")
+    second = dataset_cache_context({**context, "cache": MingTensorCache(tmp_path / "another-run")},
+                                   base_cache_dir=tmp_path / "datasets", dataset_unique_id="dataset-one")
+    assert first["cache"].root == second["cache"].root
+    assert not first["cache"].root.exists()
+    cache = first["cache"]
+    key = identity_key({"test": "shared-dataset"})
+    latent = {"clean": torch.randn(1, 16, 1, 4, 4)}
+    condition = {"queries": torch.randn(1, 4, 8), "direct": torch.randn(1, 7, 24)}
+    cache.write("latents", key, latent)
+    cache.write("conditioning", key, condition, conditioner=value.conditioner)
+    listing = list_vae_namespaces(str(tmp_path / "datasets"), "dataset-one")
+    assert len(listing) == 1 and listing[0]["entries"] == 1
+    assert listing[0]["bytes"] == cache._path("latents", key).stat().st_size
+    assert listing[0]["vae_latent_hash"] and listing[0]["vae_family"] == "ming_rgba"
+    assert listing[0]["deletable"] and listing[0]["layout"] == "vae"
+    loaded = second["cache"].read("latents", key, expected=expected(latent))
+    torch.testing.assert_close(loaded["clean"], latent["clean"], rtol=0, atol=0)
+    shutil.rmtree(listing[0]["path"])
+    assert cache.read("latents", key, expected=expected(latent)) is None
+    assert cache.read("conditioning", key, expected=expected(condition), conditioner=value.conditioner) is not None
+    assert not torch.cuda.is_initialized()
+
+
+@pytest.mark.parametrize("dataset_id", ["", ".", "..", "../escape", "escape\\child", "C:escape", "bad\x00id"])
+def test_native_dataset_cache_rejects_escaping_ids(tmp_path, dataset_id):
+    from core.models.ming_image_01.cache import dataset_cache_context
+    _, _, context = cached_record_setup(tmp_path)
+    with pytest.raises(ValueError, match="identity"):
+        dataset_cache_context(context, base_cache_dir=tmp_path / "datasets", dataset_unique_id=dataset_id)
+    assert not (tmp_path / "datasets").exists()

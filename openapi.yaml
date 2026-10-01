@@ -9708,7 +9708,8 @@ paths:
         including namespaces no configured run can reach any more (the VAE was
         replaced). Reclaiming one is an explicit `DELETE`.
 
-        `entries` counts `.pt` files, which is not the item count: one image can
+        `entries` counts `.pt` and native Ming `.safetensors` files, which is
+        not the item count: one image can
         hold several entries (one per bucket resolution), and video/audio
         entries are keyed by clip window. Compare it with `item_count` for a
         rough coverage figure only.

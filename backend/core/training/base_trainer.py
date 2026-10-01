@@ -5820,6 +5820,9 @@ class BaseTrainer(ABC):
                 FUSED_GROUP_STATES_KEY: states,
                 "_sushi_opt_class": states[0].get("_sushi_opt_class"),
             }
+        if getattr(self, "is_ming_image_01", False):
+            from core.models.ming_image_01.training_resume import capture_runtime, RUNTIME_KEY
+            payload[RUNTIME_KEY] = capture_runtime(self)
         # Written to a sidecar and renamed into place: torch.save truncates its
         # target before it writes, so an in-place failure destroys the previous
         # bytes AND leaves a stump -- and a half-written .pt is fatal on resume
@@ -5920,6 +5923,10 @@ class BaseTrainer(ABC):
                 prefix=self.log_prefix,
             )
             return False
+
+        if getattr(self, "is_ming_image_01", False):
+            from core.models.ming_image_01.training_resume import queue_runtime
+            queue_runtime(self, payload)
 
         saved_states, fused_save = self._split_saved_optimizer_states(payload)
 
@@ -18410,6 +18417,10 @@ class BaseTrainer(ABC):
                         batch_offset=int(getattr(self, "_epoch_batch_offset", 0) or 0),
                         latent_interval=latent_encoding_swap_interval, text_interval=text_encoding_swap_interval,
                         prefetch_depth=text_encoding_prefetch_depth)
+                    from core.models.ming_image_01.training_resume import restore_runtime
+                    if getattr(self, "_ming_pending_runtime", None) is not None and not optimizer_restored:
+                        raise ValueError("Ming runtime cannot resume without restored optimizer state")
+                    restore_runtime(self)
 
                 for batch_idx, batch in enumerate(tqdm(batches, desc=f"Epoch {epoch+1}/{num_epochs} ({epoch_steps} steps)")):
                     _exposure_items = batch

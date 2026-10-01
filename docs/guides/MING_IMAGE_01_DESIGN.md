@@ -885,3 +885,45 @@ type checking remain owner-run. CUDA DMA, production memory/performance,
 mid-epoch exact resume, adapter families and remaining Qwen feature parity
 still require later milestones. Generation block swap is still unavailable,
 as in the current Qwen 2.1 generation capability contract.
+
+
+### Stochastic and pending-gradient training continuation
+
+Ming optimizer sidecars now carry a versioned `_sushi_ming_runtime` payload:
+CPU and active execution-device CUDA RNG states, Python/NumPy RNG states,
+effective run seed, named pending gradients, accumulation interval and
+GradScaler state. The payload is removed before generic optimizer state
+conversion/device placement, so unrelated runtime tensors are not copied to
+CUDA with the optimizer moments. Old Ming sidecars without this key retain the
+existing common resume behavior and cannot promise identical stochastic
+continuation.
+
+Restoration occurs after epoch suffix reconstruction, native cache preparation
+and worker setup, immediately before the first resumed batch. It preserves the
+common saved pre-shuffle Python state while reconstructing data order, then
+restores the live post-batch random streams. Pending gradients must retain
+parameter ownership, shape, dtype, accumulation interval and scaler mode.
+Execution device type changes are refused for this exact continuation path.
+An optimizer with no moments before its first update is restored only after
+its class and full parameter-name layout match. Resume must not apply runtime
+state if optimizer restoration failed. Automatically drawn run seeds reuse the
+saved effective seed.
+
+Three actual tiny native FullParameterTrainer comparisons cover Design with a
+frozen CPU-prefetch conditioner, Design with trainable projections, and Layer
+with references plus weighted auxiliary/RGBA frames. Each runs eight backwards
+with MNT=2 and accumulation=4, saves after the first batch (two pending
+backwards, before the first AdamW update), and resumes the six remaining
+backwards. Clean data, native noise/timesteps, final DiT/conditioner weights,
+AdamW moments/steps and scheduler position match uninterrupted CPU training
+exactly. The existing U-Net topology is present throughout.
+
+Six additional CPU cases verify real CPU GradScaler state and three random
+streams, saved gradients, and refusal of incompatible ownership/shape/device/
+accumulation/scaler contracts. Nine cases passed in targeted runs; backend
+compilation and real imports remain mandatory. No live API, server, official
+weights or physical CUDA execution was used. Exact continuation at a completed
+batch seam is proved on CPU; interruption inside an MNT window, CUDA kernel
+reproducibility, production mixed precision and optimizer-family changes are
+not covered by this evidence. Public training methods remain staged until
+runner and remaining capability wiring are reviewed.

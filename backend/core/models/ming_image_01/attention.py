@@ -77,6 +77,8 @@ class MingAttentionProcessor:
                     complex_value = torch.view_as_complex(value.float().reshape(*value.shape[:-1], -1, 2))
                     return torch.view_as_real(complex_value * freqs_cis.unsqueeze(2)).flatten(3).type_as(value)
             query, key = rotary(query), rotary(key)
+        from .style_transfer import style_attention
+        query, key, value, attention_mask = style_attention(attn, query, key, value, attention_mask)
         output = joint_attention(query, key, value, attention_mask, backend=self._attention_backend,
             query_chunk_tokens=self._query_chunk_tokens)
         output = attn.to_out[0](output.flatten(2, 3).to(query.dtype))

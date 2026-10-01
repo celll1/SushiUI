@@ -78,6 +78,12 @@ changes.
   agents.** Do not run `npm run build` or `npm run type-check`; rely on
   careful reading of `frontend/src/utils/api.ts` and the generation panels
   instead.
+- **API-centered verification does not replace frontend/UI static review.**
+  For UI-facing changes, agents must review frontend types and API contracts,
+  defaults, state transitions, cancellation, error handling, and operation
+  paths. Report static-review findings separately from owner-run build and
+  type-check results. Missing build confirmation alone must not stop ongoing
+  implementation or API verification unless it is a concrete critical blocker.
 - **Commit style:** a concise, imperative summary line, optional body
   explaining the "why", and a `Co-Authored-By:` trailer identifying the
   agent. Follow the existing history (`git log --oneline`) for tone.

@@ -13,6 +13,9 @@ import json
 import os
 import shutil
 import tempfile
+import threading
+from contextlib import contextmanager
+from functools import wraps
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
@@ -30,12 +33,22 @@ from core.tagger.tag_selection import (
 
 
 _manager: Optional["SigLIP2InferenceManager"] = None
+_manager_lock = threading.Lock()
+
+
+def _serialized(method):
+    @wraps(method)
+    def call(self, *args, **kwargs):
+        with self._model_lock:
+            return method(self, *args, **kwargs)
+    return call
 
 
 def get_siglip2_inference_manager() -> "SigLIP2InferenceManager":
     global _manager
-    if _manager is None:
-        _manager = SigLIP2InferenceManager()
+    with _manager_lock:
+        if _manager is None:
+            _manager = SigLIP2InferenceManager()
     return _manager
 
 
@@ -265,6 +278,8 @@ class SigLIP2InferenceManager:
     """Manages a single loaded SigLIP2 tagger model for inference."""
 
     def __init__(self) -> None:
+        self._model_lock = threading.RLock()
+        self._caption_weight_identity = None
         self.model: Optional[nn.Module] = None
         self.onnx_session = None  # onnxruntime.InferenceSession when model_type == "onnx"
         self.processor = None
@@ -293,6 +308,14 @@ class SigLIP2InferenceManager:
         self._cls_emb_hook_handle = None
 
 
+    @contextmanager
+    def borrow_caption_tagger(self):
+        with self._model_lock:
+            if self.model is None or self.model_type == "onnx":
+                raise ValueError("Captioner requires a loaded PyTorch SigLIP2 tagger")
+            yield self
+
+    @_serialized
     def load_model(
         self,
         checkpoint_path: str,
@@ -562,6 +585,7 @@ class SigLIP2InferenceManager:
         }
 
 
+    @_serialized
     def predict(
         self,
         image_bytes: bytes,
@@ -883,11 +907,13 @@ class SigLIP2InferenceManager:
         correction[targets] += float(sign) * float(lam) * values
 
 
+    @_serialized
     def merge_lora_and_save(self, output_path: str) -> str:
         """Merge LoRA weights into the vision encoder and save as a full model.
 
         Only valid when model_type == 'lora'.
         """
+        self._caption_weight_identity = None
         if self.model is None and self.onnx_session is None:
             raise RuntimeError("No model loaded.")
         if self.model_type == "onnx":
@@ -945,6 +971,7 @@ class SigLIP2InferenceManager:
         return saved
 
 
+    @_serialized
     def export_onnx(
         self,
         output_path: str,
@@ -974,6 +1001,7 @@ class SigLIP2InferenceManager:
 
         Returns (onnx_path, vocab_path).
         """
+        self._caption_weight_identity = None
         if self.model is None and self.onnx_session is None:
             raise RuntimeError("No model loaded.")
         if self.model_type == "onnx":
@@ -1251,6 +1279,7 @@ class SigLIP2InferenceManager:
         return output_path, vocab_out
 
 
+    @_serialized
     def unload(self) -> None:
         """Unload the current model and free VRAM."""
         if self.model is not None:
@@ -1278,6 +1307,7 @@ class SigLIP2InferenceManager:
             self._cls_emb_hook_handle.remove()
             self._cls_emb_hook_handle = None
         self._last_cls_emb = None
+        self._caption_weight_identity = None
         print("[SigLIP2Manager] Model unloaded.")
 
 
@@ -1327,6 +1357,7 @@ class SigLIP2InferenceManager:
             "p95":     float(data["p95"]) if "p95" in data else 0.0,
         }
 
+    @_serialized
     def build_training_assist(
         self,
         *,
@@ -1375,6 +1406,7 @@ class SigLIP2InferenceManager:
             "ood_ref":          self.ood_ref if want_ood else None,
         }
 
+    @_serialized
     def build_ood_reference(
         self,
         image_paths: List[str],
@@ -1487,6 +1519,7 @@ class SigLIP2InferenceManager:
         p = base + "_tag_metrics.npz"
         return p if os.path.isfile(p) else None
 
+    @_serialized
     def recompute_calibration_table(
         self,
         method: str = "jeffreys",

@@ -316,6 +316,19 @@ def scan_json_fields(json_data: Dict[str, Any], taglist: set, prefix: str = "") 
     for key, value in json_data.items():
         field_path = f"{prefix}.{key}" if prefix else key
 
+        if not prefix and key == "_sushi_compact_caption":
+            continue
+        if not prefix and key == "compact_caption":
+            metadata = json_data.get("_sushi_compact_caption")
+            if (isinstance(metadata, dict) and metadata.get("version") == 1
+                    and isinstance(metadata.get("caption_type"), str)
+                    and metadata["caption_type"].strip() and metadata["caption_type"] != "tags"
+                    and isinstance(value, str)):
+                results.append({"caption_type": metadata["caption_type"], "content": value,
+                                "field_category": "training", "is_tags_format": False,
+                                "tag_match_rate": 0.0, "source_field": "compact_caption"})
+                continue
+
         if isinstance(value, dict):
             # Pass found_tags_field state to nested recursion
             nested_results, found_tags_in_nested = _scan_json_fields_internal(

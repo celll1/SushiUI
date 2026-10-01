@@ -1,4 +1,224 @@
 import axios from "axios";
+
+export interface CaptionerOptions {
+  tag_source: "predicted" | "provided" | "merged";
+  tags: string[];
+  max_new_tokens: number;
+  device: "cpu" | "cuda:0";
+}
+export interface CaptionerDefaults extends CaptionerOptions {
+  save_caption_type: string;
+  max_image_bytes: number;
+}
+export interface CaptionerStatus {
+  loaded: boolean;
+  path?: string;
+  language?: string;
+  max_new_tokens?: number;
+  max_num_patches?: number;
+  tagger_weights_hash?: string;
+}
+export interface CaptionerPreview {
+  caption: string;
+  image_hash: string;
+  model_identity: string;
+  dataset_id?: number;
+  item_id?: number;
+  dataset_revision?: number;
+  run_id?: string;
+  checkpoint?: string;
+  termination: "eos" | "length_limit";
+  token_count: number;
+  warnings: string[];
+  used_tags: Array<{name: string; source: "predicted" | "provided"; score: number | null; score_calibrated: boolean}>;
+  timings_ms: Record<string, number>;
+}
+export const getCaptionerDefaults = async (): Promise<CaptionerDefaults> =>
+  (await api.get("/schema/captioner-defaults")).data;
+export const getCaptionerStatus = async (): Promise<CaptionerStatus> =>
+  (await api.get("/captioner/status")).data;
+export const loadCaptioner = async (path: string): Promise<CaptionerStatus> =>
+  (await api.post("/captioner/load", {path})).data;
+export const unloadCaptioner = async (): Promise<CaptionerStatus> =>
+  (await api.post("/captioner/unload")).data;
+export const predictCaptioner = async (image: File, requestId: string, options: CaptionerOptions): Promise<CaptionerPreview> => {
+  const form = new FormData();
+  form.append("image", image);
+  form.append("request_id", requestId);
+  form.append("tag_source", options.tag_source);
+  form.append("tags", JSON.stringify(options.tags));
+  form.append("max_new_tokens", String(options.max_new_tokens));
+  form.append("device", options.device);
+  return (await api.post("/captioner/predict", form, {headers: {"Content-Type": "multipart/form-data"}})).data;
+};
+export const predictCaptionerItem = async (datasetId: number, itemId: number, requestId: string, options: CaptionerOptions): Promise<CaptionerPreview> =>
+  (await api.post("/captioner/predict-item", {...options, dataset_id: datasetId, item_id: itemId, request_id: requestId})).data;
+export const cancelCaptionerRequest = async (requestId: string): Promise<void> => {
+  await api.post(`/captioner/requests/${requestId}/cancel`);
+};
+export const saveCaptionerPreview = async (preview: CaptionerPreview, captionType: string): Promise<{dataset_revision: number; caption_id: number}> => {
+  if (preview.dataset_id === undefined || preview.item_id === undefined || preview.dataset_revision === undefined) {
+    throw new Error("Dataset preview is required for caption persistence");
+  }
+  return (await api.post("/captioner/save", {dataset_id: preview.dataset_id, item_id: preview.item_id,
+    dataset_revision: preview.dataset_revision, image_hash: preview.image_hash, caption: preview.caption,
+    caption_type: captionType})).data;
+};
+
+export interface CaptionerTrainingConfig {
+  device: "cpu" | "cuda:0";
+  max_num_patches: number;
+  allowed_categories: string[];
+  max_concepts: number;
+  hidden_dim: number;
+  heads: number;
+  layers: number;
+  ffn_dim: number;
+  visual_queries: number;
+  max_length: number;
+  dropout: number;
+  vocab_size: number;
+  tokenizer_min_frequency: number;
+  learning_rate: number;
+  weight_decay: number;
+  warmup_ratio: number;
+  epochs: number;
+  batch_size: number;
+  label_smoothing: number;
+  max_grad_norm: number;
+  seed: number;
+  val_ratio: number;
+  test_ratio: number;
+  near_duplicate_distance: number;
+  concept_dropout: number;
+  all_concept_dropout: number;
+  source_weights: {predicted: number; provided: number; merged: number};
+  cache_max_gb: number;
+  save_every_steps: number;
+  use_tag_aliases: boolean;
+  language: string;
+}
+export interface CaptionerRunDefaults {
+  run_name: string;
+  output_dir: string | null;
+  vision_encoder_path: string;
+  lora_rank: number;
+  lora_alpha: number;
+  resume: boolean;
+  checkpoint: string;
+  after_id: number;
+  event_limit: number;
+}
+export interface CaptionerTaggerConfig {
+  checkpoint_path: string;
+  vocab_path: string;
+  vision_encoder_path: string;
+  lora_rank: number;
+  lora_alpha: number;
+}
+export interface CaptionerDatasetConfig {
+  dataset_id: number;
+  input_tag_caption_types: string[];
+  target_caption_types: string[];
+  filters: {item_ids?: number[]; min_width?: number; min_height?: number};
+}
+export interface CaptionerRunCreateRequest {
+  run_name: string;
+  output_dir: string | null;
+  tagger: CaptionerTaggerConfig;
+  dataset_configs: CaptionerDatasetConfig[];
+  config: CaptionerTrainingConfig;
+}
+export interface CaptionerTrainingRun extends Omit<CaptionerRunCreateRequest, "output_dir"> {
+  run_id: string;
+  output_dir: string;
+  status: "pending" | "starting" | "running" | "stopping" | "stopped" | "completed" | "failed" | "interrupted";
+  progress: Record<string, unknown>;
+  checkpoints: string[];
+  resume_seq: number;
+  error: string | null;
+  alias_count: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+export interface CaptionerTrainingEvent {
+  id: number;
+  run_id: string;
+  resume_seq: number;
+  payload: Record<string, unknown>;
+  timestamp: string;
+}
+export const getCaptionerTrainingDefaults = async (): Promise<CaptionerTrainingConfig> =>
+  (await api.get("/schema/captioner-training-defaults")).data;
+export const getCaptionerRunDefaults = async (): Promise<CaptionerRunDefaults> =>
+  (await api.get("/schema/captioner-run-defaults")).data;
+export const listCaptionerRuns = async (): Promise<{runs: CaptionerTrainingRun[]}> =>
+  (await api.get("/captioner-training/runs")).data;
+export const getCaptionerRun = async (runId: string): Promise<CaptionerTrainingRun> =>
+  (await api.get(`/captioner-training/runs/${runId}`)).data;
+export const createCaptionerRun = async (request: CaptionerRunCreateRequest): Promise<CaptionerTrainingRun> =>
+  (await api.post("/captioner-training/runs", request)).data;
+export const startCaptionerRun = async (runId: string, resume: boolean, checkpoint: string): Promise<CaptionerTrainingRun> =>
+  (await api.post(`/captioner-training/runs/${runId}/start`, {resume, checkpoint})).data;
+export const stopCaptionerRun = async (runId: string): Promise<CaptionerTrainingRun> =>
+  (await api.post(`/captioner-training/runs/${runId}/stop`)).data;
+export const getCaptionerRunEvents = async (runId: string, afterId: number, limit: number): Promise<{events: CaptionerTrainingEvent[]}> =>
+  (await api.get(`/captioner-training/runs/${runId}/events`, {params: {after_id: afterId, limit}})).data;
+export const exportCaptionerRun = async (runId: string, checkpoint: string): Promise<{path: string}> =>
+  (await api.post(`/captioner-training/runs/${runId}/export`, {checkpoint})).data;
+export const sampleCaptionerRun = async (runId: string, checkpoint: string, datasetId: number,
+  itemId: number, requestId: string, options: CaptionerOptions): Promise<CaptionerPreview> =>
+  (await api.post(`/captioner-training/runs/${runId}/sample`, {checkpoint, dataset_id: datasetId,
+    item_id: itemId, request_id: requestId, ...options})).data;
+
+export interface CaptionerBatchDefaults {retry_failed: boolean; offset: number; limit: number; max_items: number}
+export interface CaptionerBatch {
+  job_id: string;
+  dataset_id: number;
+  bundle_path: string;
+  manifest_hash: string;
+  options: CaptionerOptions;
+  status: "pending" | "running" | "stopping" | "stopped" | "completed" | "failed" | "interrupted";
+  counts: Record<string, number>;
+  total: number;
+  error: string | null;
+  error_code: string | null;
+  created_at: string;
+  updated_at: string;
+}
+export interface CaptionerBatchItem {
+  item_id: number;
+  position: number;
+  status: "pending" | "running" | "completed" | "failed";
+  attempts: number;
+  preview: CaptionerPreview | null;
+  error: string | null;
+  error_code: string | null;
+  saved: {caption_id: number; caption: string; caption_type: string; dataset_revision: number} | null;
+  pending_save: boolean;
+  reviewed_caption: string | null;
+  reviewed_caption_type: string | null;
+}
+export const getCaptionerBatchDefaults = async (): Promise<CaptionerBatchDefaults> =>
+  (await api.get("/schema/captioner-batch-defaults")).data;
+export const listCaptionerBatches = async (): Promise<{batches: CaptionerBatch[]}> =>
+  (await api.get("/captioner/batches")).data;
+export const getCaptionerBatch = async (jobId: string): Promise<CaptionerBatch> =>
+  (await api.get(`/captioner/batches/${jobId}`)).data;
+export const createCaptionerBatch = async (request: CaptionerOptions & {bundle_path: string; dataset_id: number; item_ids: number[]}): Promise<CaptionerBatch> =>
+  (await api.post("/captioner/batches", request)).data;
+export const startCaptionerBatch = async (jobId: string, retryFailed: boolean): Promise<CaptionerBatch> =>
+  (await api.post(`/captioner/batches/${jobId}/start`, {retry_failed: retryFailed})).data;
+export const stopCaptionerBatch = async (jobId: string): Promise<CaptionerBatch> =>
+  (await api.post(`/captioner/batches/${jobId}/stop`)).data;
+export const getCaptionerBatchResults = async (jobId: string, offset: number, limit: number): Promise<{items: CaptionerBatchItem[]; offset: number; total: number}> =>
+  (await api.get(`/captioner/batches/${jobId}/results`, {params: {offset, limit}})).data;
+export const saveCaptionerBatchItem = async (jobId: string, itemId: number, preview: CaptionerPreview,
+  caption: string, captionType: string): Promise<{caption_id: number; dataset_revision: number}> => {
+  if (preview.dataset_revision === undefined) throw new Error("Batch preview revision is missing");
+  return (await api.post(`/captioner/batches/${jobId}/items/${itemId}/save`, {caption, caption_type: captionType,
+    dataset_revision: preview.dataset_revision, image_hash: preview.image_hash})).data;
+};
 import { wsClient } from "./websocket";
 import { resolveGlobalAttentionImpl, resolveGlobalAttentionMethod, resolveGlobalAttentionType } from "./attentionSettings";
 import { trainingFeatureUnsupportedReason } from "./trainingCapabilities";

@@ -23,6 +23,8 @@ servers:
     description: Local development server (API v1)
 
 tags:
+  - name: captioner
+    description: Compact SigLIP2 captioner inference, training, and natural caption persistence
   - name: generation
     description: Image generation endpoints
   - name: images
@@ -63,6 +65,365 @@ tags:
     description: Developer-mode diagnostics (VRAM inspection)
 
 paths:
+  /schema/captioner-batch-defaults:
+    get:
+      tags: [captioner]
+      summary: Read captioner batch defaults and limits
+      responses:
+        '200': {description: Centralized CAPTIONER_BATCH_DEFAULTS}
+  /captioner/batches:
+    get:
+      tags: [captioner]
+      summary: List persisted caption preview batches
+      responses:
+        '200': {description: Batch states and item counts; abandoned active jobs reported interrupted}
+    post:
+      tags: [captioner]
+      summary: Create a pending caption preview batch
+      description: Fixes the bundle manifest and inference options. Captions are never automatically written to dataset sidecars.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerBatchCreateRequest'}
+            example: {bundle_path: training/captioner/run/checkpoint_00000100, dataset_id: 1, item_ids: [12, 13], max_new_tokens: 32, device: cpu}
+      responses:
+        '200': {description: Persisted pending batch}
+        '400': {description: Invalid bundle, input options or duplicate item ids}
+        '404': {description: Dataset or item not found}
+  /captioner/batches/{job_id}:
+    get:
+      tags: [captioner]
+      summary: Read a persisted caption preview batch
+      parameters:
+        - {name: job_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: State, immutable options and item counts}
+        '404': {description: Batch not found}
+  /captioner/batches/{job_id}/start:
+    post:
+      tags: [captioner]
+      summary: Start or resume pending caption batch items
+      description: One batch worker per process. Completed items are retained. retry_failed explicitly requeues failed items. Reloads the pinned bundle on resume and refuses a changed manifest. Runs independently of the browser connection.
+      parameters:
+        - {name: job_id, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerBatchStartRequest'}
+            example: {retry_failed: false}
+      responses:
+        '200': {description: Started batch; poll state and results}
+        '404': {description: Batch not found}
+        '409': {description: Worker already active or no pending items}
+  /captioner/batches/{job_id}/stop:
+    post:
+      tags: [captioner]
+      summary: Cancel the active item and retain completed batch results
+      parameters:
+        - {name: job_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Stop requested; uncompleted items remain resumable}
+        '404': {description: Batch not found}
+  /captioner/batches/{job_id}/results:
+    get:
+      tags: [captioner]
+      summary: Read ordered per-item caption previews or failures
+      parameters:
+        - {name: job_id, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: offset, in: query, schema: {type: integer, minimum: 0, default: 0}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 1000, default: 200}}
+      responses:
+        '200': {description: Items with status, attempts, preview including dataset revision and image hash, or error and code}
+        '404': {description: Batch not found}
+  /captioner/batches/{job_id}/items/{item_id}/save:
+    post:
+      tags: [captioner]
+      summary: Save a reviewed batch caption and persist its receipt
+      description: Refuses active batches and stale previews. Uses the existing caption sidecar transaction. Advances matching sibling preview revisions only for this batch's own successful save. A durable intent permits retrying an identical save after receipt persistence fails; ambiguous external changes are refused.
+      parameters:
+        - {name: job_id, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: item_id, in: path, required: true, schema: {type: integer, minimum: 1}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerBatchSaveRequest'}
+            example: {caption: 'A girl with blue hair.', caption_type: compact_caption, dataset_revision: 0, image_hash: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'}
+      responses:
+        '200':
+          description: Saved caption receipt; an identical retry returns its existing receipt
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaptionerSaveResponse'}
+        '400': {description: Invalid caption destination or unsafe sidecar}
+        '404': {description: Batch or completed item not found}
+        '409': {description: Batch active, preview stale or prior save cannot be safely reconciled}
+  /schema/captioner-run-defaults:
+    get:
+      tags: [captioner]
+      summary: Read centralized captioner run and tagger loading defaults
+      responses:
+        '200':
+          description: Defaults from CAPTIONER_RUN_DEFAULTS
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+  /captioner-training/runs:
+    get:
+      tags: [captioner]
+      summary: List persisted captioner training runs
+      responses:
+        '200': {description: Runs with inactive transient states reported as interrupted}
+    post:
+      tags: [captioner]
+      summary: Create a pending captioner run without loading models
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerRunCreateRequest'}
+            example:
+              tagger: {checkpoint_path: models/tagger/model.safetensors, vocab_path: models/tagger/vocabulary.json}
+              dataset_configs: [{dataset_id: 1, input_tag_caption_types: [tags], target_caption_types: [natural_language], filters: {}}]
+              config: {device: cpu, epochs: 10, batch_size: 8}
+      responses:
+        '200': {description: Persisted pending run with assigned output directory}
+        '400': {description: Invalid configuration, dataset selection or missing tagger files}
+        '409': {description: Output directory already exists or is owned by another run}
+  /captioner-training/runs/{run_id}:
+    get:
+      tags: [captioner]
+      summary: Read persisted captioner run and checkpoint paths
+      parameters:
+        - {name: run_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Run state and immutable configuration}
+        '404': {description: Run not found}
+  /captioner-training/runs/{run_id}/start:
+    post:
+      tags: [captioner]
+      summary: Start or resume one captioner training thread
+      description: Loads a private frozen tagger on CPU before GPU admission. Only one captioner worker is active per process. Resume configuration is immutable.
+      parameters:
+        - {name: run_id, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerRunStartRequest'}
+            example: {resume: true, checkpoint: ''}
+      responses:
+        '200': {description: Started run; poll its state and events}
+        '400': {description: Invalid resume checkpoint or no resumable checkpoint}
+        '404': {description: Run not found}
+        '409': {description: Captioner worker already active or run must resume instead of starting fresh}
+  /captioner-training/runs/{run_id}/stop:
+    post:
+      tags: [captioner]
+      summary: Request a checkpointed stop at the next batch boundary
+      parameters:
+        - {name: run_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Stopping or already terminal run}
+        '404': {description: Run not found}
+  /captioner-training/runs/{run_id}/events:
+    get:
+      tags: [captioner]
+      summary: Read durable training metrics, preparation coverage and checkpoint events
+      parameters:
+        - {name: run_id, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: after_id, in: query, schema: {type: integer, minimum: 0, default: 0}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 5000, default: 500}}
+      responses:
+        '200': {description: Ascending event id rows with resume sequence and event payload}
+        '404': {description: Run not found}
+  /captioner-training/runs/{run_id}/sample:
+    post:
+      tags: [captioner]
+      summary: Preview a run-owned checkpoint on a registered dataset image
+      description: Borrows the currently loaded matching PyTorch tagger without replacing the preview captioner. Uses captioner GPU admission and request cancellation. Records the sample as a run event; never saves a caption sidecar automatically.
+      parameters:
+        - {name: run_id, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerSampleRequest'}
+            example: {dataset_id: 1, item_id: 12, request_id: '550e8400-e29b-41d4-a716-446655440000', checkpoint: '', tag_source: predicted, max_new_tokens: 32, device: cpu}
+      responses:
+        '200':
+          description: Caption preview with dataset revision, run id and checkpoint name
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaptionerPredictionResponse'}
+        '400': {description: Invalid checkpoint, input or mismatching tagger}
+        '404': {description: Run or dataset image not found}
+        '409': {description: Request cancelled, duplicate request id or GPU busy}
+        '413': {description: Image exceeds configured byte limit}
+  /captioner-training/runs/{run_id}/export:
+    post:
+      tags: [captioner]
+      summary: Export a verified optimizer-free inference bundle
+      parameters:
+        - {name: run_id, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerExportRequest'}
+            example: {checkpoint: ''}
+      responses:
+        '200': {description: New immutable export directory}
+        '400': {description: Checkpoint missing, corrupt or outside run output directory}
+        '404': {description: Run not found}
+  /captioner/load:
+    post:
+      tags: [captioner]
+      summary: Load a verified captioner bundle against the current PyTorch tagger
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerLoadRequest'}
+            example: {path: training/captioner/run/checkpoint_00000100}
+      responses:
+        '200':
+          description: Loaded captioner status
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaptionerStatusResponse'}
+        '400': {description: Invalid or incompatible bundle, missing tagger, or ONNX unsupported}
+        '404': {description: Bundle not found}
+  /captioner/status:
+    get:
+      tags: [captioner]
+      summary: Read captioner identity and generation limits
+      responses:
+        '200':
+          description: Loaded flag, language, identity hashes, source modes and output limits
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaptionerStatusResponse'}
+  /captioner/unload:
+    post:
+      tags: [captioner]
+      summary: Release captioner without unloading its borrowed tagger
+      responses:
+        '200':
+          description: Unloaded captioner status
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaptionerStatusResponse'}
+  /captioner/predict:
+    post:
+      tags: [captioner]
+      summary: Generate a caption from an uploaded image and optional concepts
+      description: Uses the loaded tagger once. Device must match the tagger. GPU admission refuses to proceed without trainer pause acknowledgement. Cancel by request_id; no caption is automatically saved.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [image, request_id]
+              properties:
+                image: {type: string, format: binary}
+                request_id: {type: string, format: uuid}
+                tag_source: {type: string, enum: [predicted, provided, merged], default: predicted}
+                tags: {type: string, default: '[]', description: JSON array of tag names}
+                max_new_tokens: {type: integer, minimum: 1, default: 96}
+                device: {type: string, enum: [cpu, 'cuda:0'], default: cpu}
+      responses:
+        '200':
+          description: Caption, raw concept scores, warnings, termination, token count, image/model identity, and phase timings
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaptionerPredictionResponse'}
+        '400': {description: Invalid image, settings, unsupported backend or mismatched tagger}
+        '409': {description: Request id busy, trainer pause failed, or request cancelled}
+        '413': {description: Image exceeds configured byte limit}
+  /captioner/predict-item:
+    post:
+      tags: [captioner]
+      summary: Preview caption for a registered dataset image
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerItemPredictRequest'}
+            example: {dataset_id: 1, item_id: 10, request_id: 'e667ba4b-57bf-4590-8156-3e56ddac33c0'}
+      responses:
+        '200':
+          description: Prediction with scoped item id and dataset revision for explicit save
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaptionerPredictionResponse'}
+        '400': {description: Invalid settings, image path or tagger identity}
+        '404': {description: Dataset image item not found}
+        '409': {description: Busy, cancelled, changed image or trainer pause failed}
+        '413': {description: Image exceeds configured byte limit}
+  /captioner/requests/{request_id}/cancel:
+    post:
+      tags: [captioner]
+      summary: Request cancellation at the next caption decoder step
+      parameters:
+        - {name: request_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Cancellation requested; worker retains GPU slot until it exits}
+        '404': {description: Request is no longer active}
+  /captioner/save:
+    post:
+      tags: [captioner]
+      summary: Save a reviewed natural caption without replacing tag sidecars
+      description: Checks dataset revision and image SHA256 under a SQLite write transaction. Writes the compact_caption JSON field and updates the dataset index atomically with rollback on failure.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaptionerSaveRequest'
+            example:
+              dataset_id: 1
+              item_id: 10
+              dataset_revision: 2
+              image_hash: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+              caption: A girl with blue hair.
+              caption_type: natural_language
+      responses:
+        '200':
+          description: Saved natural caption and new dataset revision
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaptionerSaveResponse'
+        '400':
+          description: Invalid caption type, tag-formatted destination, unsafe sidecar, or corrupt JSON
+        '404':
+          description: Dataset or scoped image item not found
+        '409':
+          description: Dataset revision or image content changed after preview
+  /schema/captioner-defaults:
+    get:
+      tags: [captioner]
+      summary: Get compact captioner inference defaults
+      responses:
+        '200':
+          description: Values from CAPTIONER_DEFAULTS
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+  /schema/captioner-training-defaults:
+    get:
+      tags: [captioner]
+      summary: Get compact captioner training defaults
+      responses:
+        '200':
+          description: Values from CAPTIONER_TRAINING_DEFAULTS
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
   /health:
     get:
       summary: Backend liveness check
@@ -11458,6 +11819,187 @@ components:
         spec: {$ref: '#/components/schemas/DiTRewiringSpec'}
         token_height: {type: integer, minimum: 1, maximum: 65536, example: 64}
         token_width: {type: integer, minimum: 1, maximum: 65536, example: 64}
+    CaptionerBatchCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [bundle_path, dataset_id, item_ids]
+      properties:
+        bundle_path: {type: string, minLength: 1}
+        dataset_id: {type: integer, minimum: 1}
+        item_ids: {type: array, minItems: 1, maxItems: 10000, items: {type: integer, minimum: 1}, uniqueItems: true}
+        tag_source: {type: string, enum: [predicted, provided, merged], default: predicted}
+        tags: {type: array, items: {type: string}, default: []}
+        max_new_tokens: {type: integer, minimum: 1, default: 96}
+        device: {type: string, enum: [cpu, 'cuda:0'], default: cpu}
+    CaptionerBatchSaveRequest:
+      type: object
+      additionalProperties: false
+      required: [caption, dataset_revision, image_hash]
+      properties:
+        caption: {type: string, minLength: 1, maxLength: 16384}
+        caption_type: {type: string, minLength: 1, maxLength: 128, default: compact_caption}
+        dataset_revision: {type: integer, minimum: 0}
+        image_hash: {type: string, pattern: '^[0-9a-f]{64}$'}
+    CaptionerBatchStartRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        retry_failed: {type: boolean, default: false}
+    CaptionerTaggerConfig:
+      type: object
+      additionalProperties: false
+      required: [checkpoint_path, vocab_path]
+      properties:
+        checkpoint_path: {type: string, minLength: 1}
+        vocab_path: {type: string, minLength: 1}
+        vision_encoder_path: {type: string, default: ''}
+        lora_rank: {type: integer, minimum: 1, default: 32}
+        lora_alpha: {type: number, exclusiveMinimum: true, minimum: 0, default: 16.0}
+    CaptionerDatasetConfig:
+      type: object
+      additionalProperties: false
+      required: [dataset_id, input_tag_caption_types, target_caption_types, filters]
+      properties:
+        dataset_id: {type: integer, minimum: 1}
+        input_tag_caption_types: {type: array, items: {type: string}}
+        target_caption_types: {type: array, minItems: 1, items: {type: string}}
+        filters: {type: object, additionalProperties: true, description: 'item_ids, min_width and min_height only'}
+    CaptionerRunCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [tagger, dataset_configs, config]
+      properties:
+        run_name: {type: string, minLength: 1, default: captioner}
+        output_dir: {type: string, nullable: true, default: null, description: New exclusive directory; otherwise assigned below training/captioner}
+        tagger: {$ref: '#/components/schemas/CaptionerTaggerConfig'}
+        dataset_configs: {type: array, minItems: 1, items: {$ref: '#/components/schemas/CaptionerDatasetConfig'}}
+        config: {$ref: '#/components/schemas/CaptionerTrainingConfig'}
+    CaptionerRunStartRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        resume: {type: boolean, default: false}
+        checkpoint: {type: string, default: '', description: Owned checkpoint directory name; empty selects latest}
+    CaptionerExportRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        checkpoint: {type: string, default: '', description: Owned checkpoint directory name; empty selects latest}
+    CaptionerSampleRequest:
+      type: object
+      additionalProperties: false
+      required: [dataset_id, item_id, request_id]
+      properties:
+        dataset_id: {type: integer, minimum: 1}
+        item_id: {type: integer, minimum: 1}
+        request_id: {type: string, format: uuid}
+        checkpoint: {type: string, default: '', description: Run-owned directory name; empty selects latest}
+        tag_source: {type: string, enum: [predicted, provided, merged], default: predicted}
+        tags: {type: array, items: {type: string}, default: []}
+        max_new_tokens: {type: integer, minimum: 1, default: 96}
+        device: {type: string, enum: [cpu, 'cuda:0'], default: cpu}
+    CaptionerTrainingConfig:
+      type: object
+      additionalProperties: false
+      properties:
+        device: {type: string, default: cpu}
+        max_num_patches: {type: integer, default: 256}
+        allowed_categories: {type: array, items: {type: string}, default: [General]}
+        max_concepts: {type: integer, default: 64}
+        hidden_dim: {type: integer, default: 384}
+        heads: {type: integer, default: 6}
+        layers: {type: integer, default: 4}
+        ffn_dim: {type: integer, default: 1536}
+        visual_queries: {type: integer, default: 32}
+        max_length: {type: integer, default: 96}
+        dropout: {type: number, default: 0.1}
+        vocab_size: {type: integer, default: 8192}
+        tokenizer_min_frequency: {type: integer, default: 2}
+        learning_rate: {type: number, default: 0.0003}
+        weight_decay: {type: number, default: 0.01}
+        warmup_ratio: {type: number, default: 0.05}
+        epochs: {type: integer, default: 10}
+        batch_size: {type: integer, default: 8}
+        label_smoothing: {type: number, default: 0.05}
+        max_grad_norm: {type: number, default: 1.0}
+        seed: {type: integer, default: 42}
+        val_ratio: {type: number, default: 0.05}
+        test_ratio: {type: number, default: 0.05}
+        near_duplicate_distance: {type: integer, default: 4}
+        concept_dropout: {type: number, default: 0.15}
+        all_concept_dropout: {type: number, default: 0.1}
+        source_weights: {type: object, additionalProperties: {type: number}, default: {predicted: 0.7, provided: 0.2, merged: 0.1}}
+        cache_max_gb: {type: number, default: 20.0}
+        save_every_steps: {type: integer, default: 100}
+        use_tag_aliases: {type: boolean, default: true}
+        language: {type: string, default: en}
+    CaptionerStatusResponse:
+      type: object
+      required: [loaded]
+      additionalProperties: true
+      properties:
+        loaded: {type: boolean}
+    CaptionerPredictionResponse:
+      type: object
+      additionalProperties: true
+      required: [caption, used_tags, warnings, termination, token_count, image_hash, model_identity, timings_ms]
+      description: Dataset previews additionally carry dataset_id, item_id and dataset_revision.
+      properties:
+        caption: {type: string}
+        used_tags:
+          type: array
+          items: {$ref: '#/components/schemas/CaptionerUsedTag'}
+        warnings: {type: array, items: {type: string}}
+        termination: {type: string, enum: [eos, length_limit]}
+        token_count: {type: integer}
+        image_hash: {type: string}
+        model_identity: {type: string}
+        timings_ms: {type: object, additionalProperties: {type: number}}
+    CaptionerUsedTag:
+      type: object
+      required: [name, source, score, score_calibrated]
+      properties:
+        name: {type: string}
+        source: {type: string, enum: [predicted, provided]}
+        score: {type: number, nullable: true, description: Raw sigmoid for predictions; null for supplied tags}
+        score_calibrated: {type: boolean}
+    CaptionerLoadRequest:
+      type: object
+      additionalProperties: false
+      required: [path]
+      properties:
+        path: {type: string, minLength: 1, description: Local immutable bundle directory, example: training/captioner/run/checkpoint_00000100}
+    CaptionerItemPredictRequest:
+      type: object
+      additionalProperties: false
+      required: [dataset_id, item_id, request_id]
+      properties:
+        dataset_id: {type: integer, minimum: 1}
+        item_id: {type: integer, minimum: 1}
+        request_id: {type: string, format: uuid}
+        tag_source: {type: string, enum: [predicted, provided, merged], default: predicted}
+        tags: {type: array, items: {type: string}, default: []}
+        max_new_tokens: {type: integer, minimum: 1, default: 96}
+        device: {type: string, enum: [cpu, 'cuda:0'], default: cpu}
+    CaptionerSaveRequest:
+      type: object
+      additionalProperties: false
+      required: [dataset_id, item_id, dataset_revision, image_hash, caption]
+      properties:
+        dataset_id: {type: integer, minimum: 1, example: 1}
+        item_id: {type: integer, minimum: 1, example: 10}
+        dataset_revision: {type: integer, minimum: 0, example: 2}
+        image_hash: {type: string, pattern: '^[0-9a-f]{64}$', description: SHA256 of the preview image file, example: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
+        caption: {type: string, minLength: 1, maxLength: 16384, example: A girl with blue hair.}
+        caption_type: {type: string, minLength: 1, maxLength: 128, default: compact_caption, description: Separate natural-language index column. tags and columns owned by other sources are refused. The selected type is preserved on JSON rescan., example: compact_caption}
+    CaptionerSaveResponse:
+      type: object
+      required: [caption_id, dataset_revision, sidecar_path, source_field]
+      properties:
+        caption_id: {type: integer}
+        dataset_revision: {type: integer}
+        sidecar_path: {type: string}
+        source_field: {type: string, enum: [compact_caption]}
     ConceptExposureResponse:
       type: object
       required: [enabled, rows]

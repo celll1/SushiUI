@@ -213,4 +213,28 @@ def test_native_package_loader_round_trip(tmp_path):
     manifest = write_manifest(tmp_path)
     assert inspect_model(manifest)["topology"] == topology
     assert all(torch.equal(value, restored.transformer.state_dict()[key]) for key, value in transformer.state_dict().items())
+    from core.models.ming_image_01.checkpoint import save_bundle
+    destination = tmp_path.parent / (tmp_path.name + "-export")
+    exported_manifest = save_bundle(restored, destination, max_shard_bytes=262144)
+    assert (destination / "transformer" / "diffusion_pytorch_model.safetensors.index.json").is_file()
+    exported = load_components(exported_manifest, dtype=torch.float32, conditioner_attention="eager")
+    assert exported.transformer._residual_unet_spec == topology
+    for old, new in ((restored.transformer, exported.transformer),
+                     (restored.conditioner, exported.conditioner), (restored.vae, exported.vae)):
+        assert set(old.state_dict()) == set(new.state_dict())
+        assert all(torch.equal(value, new.state_dict()[key]) for key, value in old.state_dict().items())
+    output = exported.conditioner(**inputs())
+    torch.testing.assert_close(output.queries, actual.queries, rtol=1e-5, atol=1e-6)
+    torch.testing.assert_close(output.direct, actual.direct, rtol=1e-5, atol=1e-6)
+    with pytest.raises(FileExistsError):
+        save_bundle(restored, destination)
+    failed = tmp_path.parent / (tmp_path.name + "-cancelled")
+    calls = []
+    def cancel_after_component():
+        calls.append(True)
+        return len(calls) > 1
+    with pytest.raises(InterruptedError):
+        save_bundle(restored, failed, cancelled=cancel_after_component)
+    assert not failed.exists()
+    assert not list(failed.parent.glob(f".{failed.name}.ming-*"))
     assert not torch.cuda.is_initialized()

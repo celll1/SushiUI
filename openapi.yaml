@@ -25841,6 +25841,8 @@ components:
             conditioner groups, inherited/configured U-Net topology, native
             RGBA targets and checkpoint resume. Ming LoRA freezes the conditioner;
             train_adapter=true optionally targets its DiT caption projection.
+            Packed INT8/E4M3/ConvRot DiT bases support ordinary LoRA through
+            differentiable dequantization; packed base buffers remain frozen.
             ReLoRA/ControlNet and conditioner LoRA remain unavailable.
 
             `vae_decoder` is a non-diffusion modality: no denoiser, no scheduler,

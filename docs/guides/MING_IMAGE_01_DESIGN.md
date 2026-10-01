@@ -1003,3 +1003,28 @@ compile and real-import with CUDA initialization forbidden. This is a foundation
 only: Ming adapter capability tables and public LoRA methods remain closed until
 trainer, generation session, export and resume paths are connected and verified.
 Conditioner adapter groups and the remaining Qwen parity paths remain open.
+
+
+### Request-scoped native DiT LoRA generation
+
+Ming's generation capability now accepts ordinary LoRA through the shared
+AdapterSession. Requests support multiple additive branches, strengths,
+apply_to_unet and the common 0–1000 step range. Checkpoints must explicitly
+identify model_type=ming_image_01 and the loaded ming_image_01_profile. Native
+16-channel latent compatibility and residual topology compatibility are checked
+before installation. All selected topology declarations must agree; an existing
+U-Net base cannot be silently replaced by a dense or different adapter topology.
+Temporary adapter topology and wrapped modules are restored on success,
+cancellation and exceptions. Reference/edit/Layer paths use the same session.
+
+Thirty-one unique affected CPU cases pass across staged checks: both profiles'
+layering/strength/step contracts, profile refusal, real common-manager generation
+and reuse, temporary U-Net topology restoration/conflict refusal, incompatible
+latent rejection and separate generation/training capability axes, plus the
+existing native pipeline suite. The final seven-case adapter batch passes after
+the latent gate addition. Backend compilation, guarded real imports and OpenAPI
+parsing pass. Common frontend LoRASelector capability lookup, request fields and
+step controls were statically reviewed; owner build/type checking remains pending.
+No official weights, GPU, running API or server were used. Conditioner adapters
+and public LoRA training/save/resume remain to be connected; this generation
+capability does not enable training methods.

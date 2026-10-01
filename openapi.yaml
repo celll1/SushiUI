@@ -14551,10 +14551,15 @@ components:
             default 1.0), `apply_to_unet` / `apply_to_text_encoder` (boolean,
             default true), `unet_layer_weights` (object), `step_range`
             (integer pair over 0-1000, default `[0, 1000]`).
+            Ming native DiT LoRA supports strength, multiple adapters, apply_to_unet
+            and step_range. It requires model_type=ming_image_01 and a matching
+            ming_image_01_profile in checkpoint metadata. Saved residual topology
+            must agree across adapters and with a rewired base checkpoint. Conditioner
+            adapters and Ming LoRA training are not enabled at this milestone.
 
             Each of the four is honoured by a different subset of
-            architectures. `step_range` is honoured only on the SD1.5/SDXL
-            diffusers path. `unet_layer_weights` is honoured on SD1.5/SDXL and
+            architectures. `step_range` is honoured on the SD1.5/SDXL
+            diffusers path and shared adapter-session backends, including Ming. `unet_layer_weights` is honoured on SD1.5/SDXL and
             on FLUX.2's transformer (not its text encoder).
             `apply_to_unet`/`apply_to_text_encoder` are honoured by FLUX.2
             (both) and `apply_to_unet` by LTX-2.3; they are NOT honoured on the

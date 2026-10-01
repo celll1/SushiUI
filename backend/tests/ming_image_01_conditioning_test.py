@@ -303,7 +303,7 @@ def test_native_package_loader_round_trip(tmp_path, monkeypatch):
     assert cache_owner.ming_cache_snapshot["vae_weights"]
     assert cache_owner.ming_cache_snapshot["conditioner_weights"]
     attach_startup_snapshot(cache_owner, latent_mode="pre_encoded_cache", text_mode="pre_encoded_cache")
-    assert cache_owner.ming_cache_context["cache"].root == cache_owner.output_dir / "ming_cache"
+    assert cache_owner.ming_cache_context["dataset_owned"] and cache_owner.ming_cache_context["cache"] is None
     assert cache_owner.ming_cache_context["conditioning_enabled"]
 
     assert not torch.cuda.is_initialized()

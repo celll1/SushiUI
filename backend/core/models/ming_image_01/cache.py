@@ -229,8 +229,9 @@ def attach_startup_snapshot(trainer, *, latent_mode, text_mode):
             raise ValueError("Ming VAE execution policy changed since its startup cache snapshot")
     if torch.device(trainer.device).type != snapshot["execution"]["target_device"]:
         raise ValueError("Ming encoder execution device changed since its startup cache snapshot")
-    trainer.ming_cache_context = {**snapshot, "cache": MingTensorCache(Path(trainer.output_dir) / "ming_cache"),
-                                "latent_enabled": latent, "conditioning_enabled": condition}
+    from core.training.latent_cache import get_cache_base_dir
+    trainer.ming_cache_context = {**snapshot, "cache": None, "dataset_owned": True,
+        "dataset_cache_base": get_cache_base_dir(), "latent_enabled": latent, "conditioning_enabled": condition}
 
 
 class MingDatasetTensorCache(MingTensorCache):

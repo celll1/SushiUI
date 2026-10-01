@@ -610,3 +610,30 @@ latent ownership while retaining correct mixed-dataset conditioning remains
 pending. The new context factory alone does not complete that migration. GPU/API
 were not used. The earlier force-recache TODO is superseded by dataset lifecycle
 integration, not by restoring the removed run option.
+
+### Shared batch dataset-cache ownership
+
+Native cache startup now attaches the shared dataset-cache base, without creating
+an output-directory cache. Persistent shared latent preparation selects each
+item's stable dataset ID and writes one independent target/reference entry under
+that dataset's VAE namespace. Rebatching and reordering can reuse those entries.
+The conditioner still processes the original full batch, preserving native token
+padding and both streams. Mixed-dataset conditioning is stored under the stable
+lowest dataset ID in the batch, in its VAE-independent text-embedding directory;
+its content key still binds every ordered pixel identity and caption.
+Epoch prefill and normal native preparation share this ownership path.
+
+The affected run passed 63 CPU cases and exposed a test fixture assumption:
+Layer's three targets plus one reference require four independent VAE calls,
+not two. After correcting that expectation, the failed case passes alone.
+It verifies mixed-dataset prefill, cached/uncached latent and conditioning
+agreement, per-item reuse across rebatching, and deletion rebuilding only the
+selected dataset while retaining the batch conditioner entry. Compile and
+CUDA-guarded real imports pass. Startup/package tests now assert dataset ownership
+rather than the obsolete run-folder path. Explicit isolated test contexts remain
+available for native cache primitives.
+
+Per-item cold misses currently use independent encoder phases. Grouped transfer
+optimization, bounded swap buffers and CPU prefetch remain pending before normal
+training activation. These CPU checks do not measure physical GPU transfer cost
+or prove the complete shared training/resume lifecycle. No GPU/live API was used.

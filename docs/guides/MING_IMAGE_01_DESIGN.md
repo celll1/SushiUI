@@ -2096,3 +2096,43 @@ optimizer groups, base/LoRA bundle save-load-resume, generation residual use,
 rewiring compatibility policy and UI exposure are still required. Earlier hidden
 Ming global settings are not yet declared supported. Do not infer operational
 checkpoint/UI parity from isolated strict-payload roundtrips.
+
+
+### Full-parameter global adapter ownership and native bundle milestone
+
+Full Ming training now installs the global adapter after base ownership is set
+and before optimizer groups are built. Its trainable parameters enter the DiT
+learning-rate group exactly once. Partition forwards compute summaries from the
+same full noisy targets as their native tile inputs, including selected null
+passes; target residuals remain explicit inputs. Ming U-Net/global compatibility
+is allowed because both native target input and target-only transport preserve
+reference/caption context. Other architecture gates and REPA/TREAD/block-skip
+exclusions remain. A loaded global adapter requires matching dimensions, enabled
+partition training and train_unet. Adding a missing adapter during resume is refused.
+
+Atomic bundle export excludes the registered branch from native transformer
+shards and writes `partition_global/config.json` plus `adapter.safetensors` as a
+separate strict payload. Loading validates rooted paths, bounded file sizes,
+metadata and tensor geometry/finiteness, and retains detached CPU tensors outside
+the module tree. Ordinary full-frame generation ignores this branch. Full training
+consumes those tensors into the trainable module; disabled or changed ownership
+is refused. Re-export preserves the sidecar and its original FP32/BF16 storage
+precision. The ordinary native config/weight keys and six-component loader stay
+compatible. Native payload loading currently follows base component loading;
+pre-payload global-header rejection is not yet established by this milestone.
+
+Fifteen unique targeted CPU cases pass: two real public Design/Layer full-training
+runs with MNT2/GAS2, guided partition loss, query chunk and partial checkpointing,
+eight affected existing public partition/threshold/rewiring cases, two sidecar
+storage-precision cases and three saved-payload option refusals. Global output
+weights update, belong to the actual optimizer, save and reload exactly, and survive
+an additional native bundle copy. Changed backend files compile and import with
+CUDA forbidden; main API/GPU/official payload remain untouched.
+
+LoRA global ownership/checkpoint codec and additive base semantics remain pending.
+Public preflight and direct LoRA setup explicitly refuse currently unimplemented
+global mode; a full global base cannot silently become a LoRA run that discards
+its summary branch. This temporary refusal does not meet full Qwen parity and must
+be replaced by its planned LoRA contract. Exact global pending-gradient resume,
+CLI converter preservation, generation partitions, parameter/structure display,
+public global UI and acceptance/error checks also remain active work.

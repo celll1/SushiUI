@@ -77,8 +77,12 @@ def save_bundle(components, destination, *, max_shard_bytes=DEFAULT_MAX_SHARD_BY
         transformer_dir = staging / "transformer"
         transformer_dir.mkdir()
         components.transformer.save_config(transformer_dir)
-        save_single_file_state(_cpu_state(components.transformer), model_topology_metadata(components.transformer),
+        from .partition_global import GLOBAL_NAME, write_payload
+        transformer_state = {key:value for key,value in _cpu_state(components.transformer).items() if not key.startswith(GLOBAL_NAME+".")}
+        save_single_file_state(transformer_state, model_topology_metadata(components.transformer),
             str(transformer_dir / "diffusion_pytorch_model.safetensors"), max_shard_bytes=max_shard_bytes)
+        del transformer_state
+        write_payload(components.transformer, staging)
         check_cancel()
         progress(4, "transformer")
         components.vae.save_pretrained(staging / "vae", max_shard_size=max_shard_bytes)

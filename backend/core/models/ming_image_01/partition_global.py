@@ -83,3 +83,75 @@ def from_payload(metadata,tensors,*,latent_channels,hidden_dim,dtype=torch.float
         raise ValueError("Ming global adapter metadata conflicts with the native architecture")
     adapter.load_tensors(tensors)
     return adapter
+
+
+GLOBAL_NAME="ming_partition_global_adapter"
+
+
+def payload_from_directory(root,*,latent_channels,hidden_dim):
+    from pathlib import Path
+    import json
+    from safetensors.torch import load_file
+    directory=Path(root)/"partition_global"
+    if not directory.exists():return None
+    if not directory.resolve().is_relative_to(Path(root).resolve()):
+        raise ValueError("Ming global payload escapes the artifact root")
+    config_path,state_path=directory/"config.json",directory/"adapter.safetensors"
+    for path in (config_path,state_path):
+        if not path.is_file() or not path.resolve().is_relative_to(directory.resolve()):
+            raise ValueError("Ming global payload is incomplete or escapes its directory")
+    maximum=(3*(4*latent_channels+3)*512+256*512+hidden_dim*512)*8+65536
+    if config_path.stat().st_size>16384 or state_path.stat().st_size>maximum:
+        raise ValueError("Ming global payload exceeds the bounded native adapter size")
+    metadata=json.loads(config_path.read_text(encoding="utf-8"))
+    state=load_file(str(state_path),device="cpu")
+    adapter=from_payload(metadata,state,latent_channels=latent_channels,hidden_dim=hidden_dim)
+    return {"metadata":adapter.metadata(),"state":{key:value.detach().cpu().clone() for key,value in state.items()}}
+
+
+def write_payload(model,directory):
+    from pathlib import Path
+    import json
+    from safetensors.torch import save_file
+    adapter=getattr(model,GLOBAL_NAME,None)
+    payload=({"metadata":adapter.metadata(),"state":adapter.export_tensors()} if adapter is not None
+        else getattr(model,"_ming_partition_global_payload",None))
+    if payload is None:return
+    directory=Path(directory)/"partition_global";directory.mkdir()
+    (directory/"config.json").write_text(json.dumps(payload["metadata"],sort_keys=True,indent=2)+"\n",encoding="utf-8")
+    save_file(payload["state"],str(directory/"adapter.safetensors"))
+
+
+def prepare_full_training(trainer):
+    from api.param_defaults import TRAINING_DEFAULTS
+    config=trainer.config;model=trainer.transformer
+    def value(name):
+        key="dit_partition_global_"+name
+        v=config.get(key,config.get("qwen_partition_global_"+name))
+        return TRAINING_DEFAULTS[key] if v is None else v
+    payload=getattr(model,"_ming_partition_global_payload",None)
+    existing=getattr(model,GLOBAL_NAME,None)
+    enabled=value("adapter_enabled")
+    if type(enabled) is not bool:raise ValueError("Ming global adapter enabled must be boolean")
+    if not enabled:
+        if payload is not None or existing is not None:raise ValueError("Ming checkpoint contains a global adapter but training disabled it")
+        return None
+    if not trainer.train_unet:raise ValueError("Ming global adapter requires train_unet")
+    if not config.get("dit_partition_training_enabled",config.get("qwen_partition_training_enabled",False)):
+        raise ValueError("Ming global adapter requires spatial partition training")
+    rank,tokens=value("rank"),value("tokens")
+    if existing is not None:
+        if (existing.rank,existing.summary_tokens)!=(rank,tokens):raise ValueError("Ming global adapter dimensions changed")
+        return existing.requires_grad_(True)
+    if payload is not None:
+        if (payload["metadata"]["rank"],payload["metadata"]["summary_tokens"])!=(rank,tokens):
+            raise ValueError("Ming global adapter dimensions changed from the checkpoint")
+        adapter=from_payload(payload["metadata"],payload["state"],latent_channels=model.in_channels,
+            hidden_dim=model.dim,dtype=trainer.weight_dtype)
+    else:
+        if getattr(trainer,"_loaded_checkpoint_path",None):raise ValueError("Cannot add a missing Ming global adapter during resume")
+        adapter=MingPartitionGlobalAdapter(model.in_channels,model.dim,rank=rank,summary_tokens=tokens,dtype=trainer.weight_dtype)
+    adapter=adapter.to(next(model.parameters()).device).train().requires_grad_(True)
+    setattr(model,GLOBAL_NAME,adapter)
+    if payload is not None:del model._ming_partition_global_payload
+    return adapter

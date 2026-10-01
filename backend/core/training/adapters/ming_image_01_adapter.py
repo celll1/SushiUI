@@ -50,6 +50,8 @@ class MingImage01FullParameterAdapter(BaseFullParameterAdapter):
         caption_trainable = trainer.train_unet if choice is None else choice
         transformer.requires_grad_(trainer.train_unet).train(trainer.train_unet or caption_trainable)
         transformer.cap_embedder.requires_grad_(caption_trainable).train(caption_trainable)
+        from core.models.ming_image_01.partition_global import prepare_full_training
+        prepare_full_training(trainer)
         conditioner.set_trainable(self.conditioner_groups)
         conditioner.eval()
         for name in self.conditioner_groups:
@@ -138,6 +140,10 @@ class MingImage01LoRAAdapter(BaseLoRAAdapter):
             raise ValueError("Ming conditioner LoRA is not yet connected; freeze native conditioner groups")
         from core.models.ming_image_01.quantization import configure_frozen_quantized_training
         owner.ming_quantized_base_training = configure_frozen_quantized_training(components.transformer)
+        if owner.config.get("dit_partition_global_adapter_enabled",owner.config.get("qwen_partition_global_adapter_enabled",False)):
+            raise ValueError("Ming global-adapter LoRA wiring is not yet available; use full_finetune")
+        if getattr(components.transformer,"_ming_partition_global_payload",None) is not None:
+            raise ValueError("Ming LoRA on a saved full global-adapter base requires an additive contract; use full_finetune")
         components.transformer.requires_grad_(False).train()
         components.conditioner.set_trainable(set())
         components.conditioner.eval()

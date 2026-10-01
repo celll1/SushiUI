@@ -79,6 +79,7 @@ class TrainStepContext:
     text_embeddings: Optional[torch.Tensor] = None          # SD/SDXL/controlnet/flux2 (prompt_embeds)
     encoder_features: Optional[torch.Tensor] = None         # lens/ideogram4/krea2 (5023/6035/6048)
     text_embeds: Optional[torch.Tensor] = None              # minit2i (6060)
+    ming_batch: Optional[Any] = None
     sensenova_prefix: Optional[Any] = None                  # immutable prompt DynamicCache (B1)
     sensenova_text_batch: Optional[List[Dict[str, Any]]] = None
 

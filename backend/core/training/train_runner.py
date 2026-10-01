@@ -1648,6 +1648,8 @@ def _prepare_training_process_config(
     network_type = network_config.get('type', 'lora')
     from core.rewiring.training import validate_training_rewiring
     from core.model_loader import ModelLoader
+    if ModelLoader.detect_model_type(base_model_path) == "ming_image_01":
+        raise ValueError("Ming shared dataset, optimization-loop and resume integration are pending")
     mode, topology = validate_training_rewiring(
         train_config, ModelLoader.detect_model_type(base_model_path))
     train_config["dit_rewiring_mode"] = mode

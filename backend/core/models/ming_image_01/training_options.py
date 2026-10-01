@@ -33,7 +33,7 @@ def resolve_ownership(config):
     overrides = validate_rates(config.get("ming_conditioner_lrs", TRAINING_DEFAULTS["ming_conditioner_lrs"]))
     fallback = config.get("text_encoder_lr")
     if fallback is None:
-        fallback = config.get("learning_rate", TRAINING_DEFAULTS["learning_rate"])
+        fallback = config.get("learning_rate", config.get("lr", TRAINING_DEFAULTS["learning_rate"]))
     rates = {name: (overrides or {}).get(name, fallback) for name in COMPONENTS if name in groups}
     validate_rates(rates)
     return groups, rates

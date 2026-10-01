@@ -30,6 +30,7 @@ def test_defaults_inheritance_explicit_freeze_and_zero_rate_preservation():
     assert request().ming_conditioner_groups is TRAINING_DEFAULTS["ming_conditioner_groups"]
     assert request().ming_conditioner_lrs is TRAINING_DEFAULTS["ming_conditioner_lrs"]
     assert resolve_ownership({"train_text_encoder": False}) == (set(), {})
+    assert resolve_ownership({"train_text_encoder": True, "lr": .003})[1] == {name: .003 for name in COMPONENTS}
     groups, rates = resolve_ownership({"train_text_encoder": True, "learning_rate": .001})
     assert groups == set(COMPONENTS) and set(rates.values()) == {.001}
     assert resolve_ownership({"train_text_encoder": True, "ming_conditioner_groups": []}) == (set(), {})

@@ -278,4 +278,21 @@ def test_native_package_loader_round_trip(tmp_path, monkeypatch):
         save_bundle(restored, failed, cancelled=cancel_after_component)
     assert not failed.exists()
     assert not list(failed.parent.glob(f".{failed.name}.ming-*"))
+    from types import SimpleNamespace
+    from core.training.base_trainer import BaseTrainer
+    from core.training.arch import get_arch_handler
+    train_owner = SimpleNamespace(model_path=str(exported_manifest), weight_dtype=torch.float32,
+        vae_dtype=torch.float32, config={"ming_conditioner_groups": ["projections"]},
+        resume_from_checkpoint=None)
+    BaseTrainer._load_model_components(train_owner)
+    assert train_owner.is_ming_image_01 and not train_owner.is_sdxl
+    assert train_owner.transformer._residual_unet_spec == topology
+    assert train_owner.train_text_encoder and train_owner.ming_conditioner_trainable_groups == {"projections"}
+    assert train_owner.text_encoder is train_owner.ming_image_01_components.conditioner
+    assert get_arch_handler(train_owner).name == "ming_image_01"
+    train_owner.resume_from_checkpoint = str(exported_manifest)
+    BaseTrainer._load_checkpoint_as_base(train_owner, str(exported_manifest))
+    assert train_owner.model_path == str(exported_manifest)
+    assert train_owner.transformer._residual_unet_spec == topology
+
     assert not torch.cuda.is_initialized()

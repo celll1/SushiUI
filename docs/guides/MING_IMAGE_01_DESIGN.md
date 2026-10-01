@@ -146,7 +146,7 @@ gradient accounting and full six-component bundle export. Save records profile,
 step/epoch and named learning-rate groups in an atomically published
 `training.json`; it restores component devices after success or failure.
 This file describes weight provenance, not optimizer/RNG/scaler resume state.
-End-to-end trainer registration and exact-resume orchestration remain pending.
+Native trainer registration is staged; shared dataset/loop and exact-resume orchestration remain pending.
 
 `ming_conditioner_groups` and `ming_conditioner_lrs` now round-trip through
 central training defaults, OpenAPI/Pydantic, YAML and edit/preset transport.
@@ -156,7 +156,7 @@ Unknown/duplicate groups, coerced booleans/strings, negative and nonfinite rates
 are refused. Create/update boundaries reject these options for other models or
 methods. The full adapter resolves this contract; the training panel exposes
 component checkboxes and per-group rates for Ming full fine-tuning. Frontend
-verification is static and the registered end-to-end Ming trainer remains pending.
+verification is static and end-to-end Ming training remains pending.
 
 
 
@@ -320,6 +320,15 @@ request-owned generation-time model snapshots and cancellation/callback reuse.
 All four image routes retain typed API validation errors as 400 responses; unexpected failures remain 500. Native reference selectors are visible for Ming in txt2img/edit panels.
 Official weights and live API/GPU were not used. Shared trainer, advanced
 parity and owner frontend/GPU acceptance remain pending.
+
+The common trainer's model-load and checkpoint-as-base dispatch now select the
+native Ming loader, preserve restored topology and resolve conditioner ownership
+before encoding/cache decisions. Its registered handler uses the native 16-channel,
+5D layout, independent RGBA VAE frames and the clean-minus-noise sign, and refuses
+an unaligned generic context. Registry membership is staged: training methods are
+unavailable in capability metadata and normal run preflight refuses before dataset
+or weight loading until the common dataset/loop/resume paths are connected.
+Loading weights as a base is verified; exact optimizer resume is not implied. The affected native loader/handler suite passes 11 CPU tests. Shared capability/options checks pass; five YuE2/Chimera velocity declaration failures also reproduce with the pre-Ming test and registry from `84f9c93e`, and those model sources are unchanged. These failures are tracked separately from Ming numerical evidence.
 
 ## Verification and release gates
 

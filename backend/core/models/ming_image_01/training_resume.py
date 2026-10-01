@@ -40,7 +40,8 @@ def queue_runtime(trainer, payload):
     runtime = payload.pop(RUNTIME_KEY, None)
     if runtime is None:
         return
-    if runtime.get("schema_version") != 1:
+    trainer._ming_pending_runtime = runtime
+    if not isinstance(runtime,dict) or type(runtime.get("schema_version")) is not int or runtime.get("schema_version") != 1:
         raise ValueError("Unsupported Ming training runtime schema")
     if "state" in payload and not payload["state"]:
         optimizer = trainer.optimizer
@@ -51,7 +52,6 @@ def queue_runtime(trainer, payload):
             raise ValueError("Ming pending-gradient optimizer ownership differs from this training run")
         # An empty pre-update state is valid; the generic named loader reports no moments restored.
         payload.pop("_sushi_param_names")
-    trainer._ming_pending_runtime = runtime
     if trainer.run_seed_drawn:
         trainer.run_seed = int(runtime["run_seed"])
 

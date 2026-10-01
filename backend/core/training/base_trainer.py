@@ -12776,6 +12776,14 @@ class BaseTrainer(ABC):
         finally:
             self.run_name = original_run_name
 
+    def _refuse_save_before_ming_runtime_restore(self) -> bool:
+        """Keep the source checkpoint intact until its pending runtime is restored."""
+        if (not getattr(self, "is_ming_image_01", False)
+                or getattr(self, "_ming_pending_runtime", None) is None):
+            return False
+        print(f"{self.log_prefix} [FAILED] Ming runtime is not restored; no checkpoint/state/optimizer save attempted")
+        return True
+
     def _refuse_save_after_partial_step(self, when: str, global_step: int, epoch: int) -> bool:
         """True (having said why) if the ORDINARY save path must not run.
 
@@ -21307,6 +21315,9 @@ class BaseTrainer(ABC):
                     self._danbooru_collector.stop()
             except Exception:
                 pass
+            if self._refuse_save_before_ming_runtime_restore():
+                self.writer.close()
+                raise
             print(f"\n{self.log_prefix} Training interrupted by user")
             if '_epoch_skips_before' in locals():
                 self._report_epoch_skips(epoch, _epoch_skips_before,
@@ -21412,6 +21423,10 @@ class BaseTrainer(ABC):
 
             if self._refuse_save_after_partial_step(
                     f"{type(e).__name__} was raised", global_step, epoch):
+                self.writer.close()
+                raise
+
+            if self._refuse_save_before_ming_runtime_restore():
                 self.writer.close()
                 raise
 

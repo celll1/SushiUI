@@ -172,3 +172,52 @@ def test_native_owned_batch_groups_vae_misses_and_skips_complete_hits(tmp_path):
     assert events == []
     torch.testing.assert_close(cold.clean, cached.clean, rtol=0, atol=0)
     assert policy.active is None and not torch.cuda.is_initialized()
+
+
+@pytest.mark.parametrize("text_mode", ["swap_onthefly", "pre_encoded_cache", "onthefly_gpu", "cpu_prefetch"])
+def test_mode_configuration_keeps_encoders_cpu_until_owned_phase(text_mode):
+    from core.models.ming_image_01.training_residency import configure_training_residency
+    components, events, _ = setup()
+    owner = SimpleNamespace(ming_image_01_components=components, device="cuda")
+    configure_training_residency(owner, latent_mode="pre_encoded_cache", text_mode=text_mode)
+    assert events == [("vae", "cpu"), ("te", "cpu")]
+    assert owner.ming_training_residency.modes == {"latent_encoding_mode": "pre_encoded_cache", "text_encoding_mode": text_mode}
+    assert not torch.cuda.is_initialized()
+
+
+def test_cpu_prefetch_live_ownership_refuses_before_initial_moves():
+    from core.models.ming_image_01.training_residency import configure_training_residency
+    components, events, _ = setup(trainable=True)
+    owner = SimpleNamespace(ming_image_01_components=components, device="cuda")
+    with pytest.raises(ValueError, match="frozen"):
+        configure_training_residency(owner, latent_mode="swap_onthefly", text_mode="cpu_prefetch")
+    assert events == []
+
+
+def test_common_main_model_accessor_and_transfers_route_native_ming():
+    from core.training.base_trainer import BaseTrainer
+    components, events, _ = setup()
+    owner = SimpleNamespace(is_ming_image_01=True, ming_image_01_components=components, device="cuda")
+    assert BaseTrainer._main_model_module(owner) is components.transformer
+    BaseTrainer.move_main_model_to_gpu(owner)
+    BaseTrainer.move_main_model_to_cpu(owner)
+    assert events == [("dit", "cuda"), ("dit", "cpu")]
+    assert not torch.cuda.is_initialized()
+
+
+def test_common_gpu_text_move_preserves_cpu_prefetch_ownership():
+    from core.training.base_trainer import BaseTrainer
+    components, events, _ = setup()
+    owner = SimpleNamespace(is_ming_image_01=True, ming_image_01_components=components,
+                            _text_encoding_mode="cpu_prefetch", device="cuda")
+    BaseTrainer.move_text_encoder_to_gpu(owner)
+    assert events == [] and not torch.cuda.is_initialized()
+
+
+def test_invalid_mode_refuses_before_initial_encoder_moves():
+    from core.models.ming_image_01.training_residency import configure_training_residency
+    components, events, _ = setup()
+    owner = SimpleNamespace(ming_image_01_components=components, device="cuda")
+    with pytest.raises(ValueError, match="Unsupported Ming"):
+        configure_training_residency(owner, latent_mode="invalid", text_mode="onthefly_gpu")
+    assert events == []

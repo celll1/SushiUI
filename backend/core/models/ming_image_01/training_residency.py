@@ -44,9 +44,14 @@ class MingTrainingResidency:
 
 
 def configure_training_residency(trainer, *, latent_mode, text_mode):
-    trainer.ming_training_residency = MingTrainingResidency(
-        trainer.ming_image_01_components, device=trainer.device,
-        latent_mode=latent_mode, text_mode=text_mode)
+    components = trainer.ming_image_01_components
+    policy = MingTrainingResidency(components, device=trainer.device,
+                                   latent_mode=latent_mode, text_mode=text_mode)
+    if text_mode == "cpu_prefetch" and not components.conditioner.cacheable:
+        raise ValueError("Ming CPU prefetch requires frozen conditioner ownership")
+    components.vae.to(device="cpu")
+    components.conditioner.to(device="cpu")
+    trainer.ming_training_residency = policy
 
 
 @contextmanager

@@ -26697,7 +26697,7 @@ components:
           enum: [fixed, token_threshold]
           default: token_threshold
           description: >-
-            Fixed partitions every Qwen image. Token threshold uses the full
+            Fixed partitions every Qwen or Ming image. Ming counts native target patch tokens across all Layer frames. Token threshold uses the full
             image through the limit, two regions above it, and four regions
             at four times the limit or above.
         dit_partition_fixed_count:

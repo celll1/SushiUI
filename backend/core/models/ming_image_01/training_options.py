@@ -44,6 +44,8 @@ def preflight_training(config, *, method):
     from api.arch_capabilities import TRAINING_UNSUPPORTED
     from api.param_defaults import TRAINING_DEFAULTS
     from .cache import configured_modes
+    from .convrot_training import settings
+    settings(config, method=method)
     reason = TRAINING_UNSUPPORTED.get("ming_image_01", {}).get(method)
     if reason is not None or method not in {"full_finetune", "lora"}:
         raise ValueError(reason or f"Ming does not support training method {method}")

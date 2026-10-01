@@ -888,7 +888,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const effectiveTrainTextEncoder = isMingImageModel && trainingMethod === "full_finetune"
     ? (params.ming_conditioner_groups == null ? trainTextEncoder : params.ming_conditioner_groups.length > 0)
     : trainTextEncoder;
-  const isQwenConvRotModel = isQwenImage21Model && /int8[_-]convrot/i.test(baseModelPath);
+  const showConvRotTrainingControls = trainingMethod === "lora" && (isMingImageModel || (isQwenImage21Model && /int8[_-]convrot/i.test(baseModelPath)));
+  const convrotTrainingForward = params.qwen_convrot_training_forward ??
+    (trainingDefaults?.qwen_convrot_training_forward as string | undefined);
 
   function isSDOrSDXLModel(modelPath: string): boolean {
     const arch = getModelArchitecture(modelPath);
@@ -938,6 +940,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         (isQwenImage21Model || isAnimaModel(baseModelPath) || isMingImageModel) ? params.train_adapter : null,
       adapter_lr: (trainingMethod === "lora" || trainingMethod === "full_finetune") &&
         (isQwenImage21Model || isAnimaModel(baseModelPath) || isMingImageModel) ? params.adapter_lr : null,
+      qwen_convrot_training_forward: isMingImageModel && trainingMethod === "full_finetune"
+        ? undefined : params.qwen_convrot_training_forward,
       full_finetune_dequantize_int8_base: (isQwenImage21Model || isMingImageModel) && trainingMethod === "full_finetune"
         ? params.full_finetune_dequantize_int8_base : undefined,
       training_export_format: (isQwenImage21Model || isMingImageModel) && trainingMethod === "full_finetune"
@@ -6403,28 +6407,39 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       <button type="button" onClick={() => updateParam("dit_partition_global_adapter_enabled", false)} className="ml-2 underline">Disable global summaries</button>
                     </p>
                   )}
-                {isQwenConvRotModel && <div>
+                {showConvRotTrainingControls && <div>
                   <label className="block text-xs text-gray-400 mb-1">ConvRot Training Backward Cache</label>
                   <select
-                    value={params.qwen_convrot_training_forward ?? "auto"}
+                    value={convrotTrainingForward ?? ""}
                     onChange={(e) => updateParam("qwen_convrot_training_forward", e.target.value as NonNullable<TrainingRunCreateRequest["qwen_convrot_training_forward"]>)}
                     className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
                   >
-                    <option value="auto">Auto (bounded 2-block prefetch)</option>
+                    <option value="auto">Auto (bounded prefetch for compatible ConvRot bases)</option>
                     <option value="cached_bf16">Full BF16 backward cache</option>
                     <option value="prefetch_bf16">Bounded block cache + async prefetch</option>
                     <option value="transient_bf16">Transient per-layer rebuild (diagnostic)</option>
                     <option value="dequant">Dense dequant forward</option>
                   </select>
+                  {isMingImageModel && <p className="mt-1 text-xs text-gray-400">
+                    Optimized modes require a ConvRot base, CUDA and BF16 training. Cached modes exclude block swap.
+                    Auto keeps dense or incompatible bases on dequant. Ming speed and memory use await hardware validation.
+                  </p>}
                 </div>}
-                {isQwenConvRotModel && ((params.qwen_convrot_training_forward ?? "auto") === "auto" || params.qwen_convrot_training_forward === "prefetch_bf16") ? (
+                {showConvRotTrainingControls && (convrotTrainingForward === "auto" || convrotTrainingForward === "prefetch_bf16") ? (
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label className="block text-xs text-gray-400 mb-1">Cache Blocks</label>
                       <input
                         type="number" min={1} max={8}
-                        value={params.qwen_convrot_backward_cache_blocks ?? 2}
-                        onChange={(e) => updateParam("qwen_convrot_backward_cache_blocks", Math.max(1, Math.min(8, parseInt(e.target.value) || 2)))}
+                        value={params.qwen_convrot_backward_cache_blocks ?? (trainingDefaults?.qwen_convrot_backward_cache_blocks as number | undefined) ?? ""}
+                        onChange={(e) => {
+                          if (!e.target.value) return;
+                          const blocks = Math.max(1, Math.min(8, Math.trunc(Number(e.target.value))));
+                          if (!Number.isFinite(blocks)) return;
+                          updateParam("qwen_convrot_backward_cache_blocks", blocks);
+                          if (params.qwen_convrot_backward_prefetch_depth != null && params.qwen_convrot_backward_prefetch_depth >= blocks)
+                            updateParam("qwen_convrot_backward_prefetch_depth", blocks - 1);
+                        }}
                         className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
                       />
                     </div>
@@ -6432,8 +6447,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       <label className="block text-xs text-gray-400 mb-1">Prefetch Depth</label>
                       <input
                         type="number" min={0} max={7}
-                        value={params.qwen_convrot_backward_prefetch_depth ?? 1}
-                        onChange={(e) => updateParam("qwen_convrot_backward_prefetch_depth", Math.max(0, Math.min(7, parseInt(e.target.value) || 0)))}
+                        value={params.qwen_convrot_backward_prefetch_depth ?? (trainingDefaults?.qwen_convrot_backward_prefetch_depth as number | undefined) ?? ""}
+                        onChange={(e) => {
+                          if (!e.target.value) return;
+                          const depth = Math.trunc(Number(e.target.value));
+                          const blocks = params.qwen_convrot_backward_cache_blocks;
+                          if (Number.isFinite(depth) && blocks != null)
+                            updateParam("qwen_convrot_backward_prefetch_depth", Math.max(0, Math.min(7, blocks - 1, depth)));
+                        }}
                         className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
                       />
                     </div>

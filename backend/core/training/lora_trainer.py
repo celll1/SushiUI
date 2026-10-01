@@ -318,6 +318,8 @@ class LoRATrainer(BaseTrainer):
                     )
 
         if getattr(self, "is_ming_image_01", False):
+            from core.models.ming_image_01.convrot_training import validate_resume_metadata
+            validate_resume_metadata(self, metadata)
             expected = {"model_type": "ming_image_01",
                 "ming_image_01_profile": self.ming_image_01_components.artifact.profile,
                 "lora_rank": str(self.lora_rank), "lora_alpha": str(self.lora_alpha)}

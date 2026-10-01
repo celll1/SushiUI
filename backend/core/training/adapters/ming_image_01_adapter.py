@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from contextlib import nullcontext
+from core.models.ming_image_01.block_offload import execution_device, move_component
 
 from core.models.ming_image_01.checkpoint import save_bundle
 from core.models.ming_image_01.training import optimizer_groups
@@ -71,20 +72,17 @@ class MingImage01FullParameterAdapter(BaseFullParameterAdapter):
         modules = (components.transformer, components.conditioner, components.vae)
         devices = []
         for module in modules:
-            locations = {value.device for value in (*module.parameters(), *module.buffers())}
-            if len(locations) != 1:
-                raise ValueError("Ming bundle save requires one execution device per component")
-            devices.append(next(iter(locations)))
+            devices.append(execution_device(module))
         try:
             for module in modules:
-                module.to("cpu")
+                move_component(module, "cpu")
             written = save_bundle(components, Path(output_path), training_metadata=metadata,
                 cancelled=getattr(self.trainer, "ming_checkpoint_cancelled", None))
         finally:
             failures = []
             for module, device in zip(modules, devices):
                 try:
-                    module.to(device)
+                    move_component(module, device)
                 except Exception as exc:
                     failures.append(exc)
             if failures:

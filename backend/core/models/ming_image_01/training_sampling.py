@@ -1,5 +1,6 @@
 """Native trainer previews with exclusive encoder ownership and state restoration."""
 from contextlib import nullcontext
+from .block_offload import execution_device, move_component
 from dataclasses import replace
 from PIL import Image
 import torch
@@ -28,10 +29,7 @@ def generate_sample(trainer, ctx, *, step_progress_callback=None):
     modules = (components.conditioner, components.transformer, components.vae)
     devices, modes = [], []
     for module in modules:
-        locations = {value.device for value in (*module.parameters(), *module.buffers())}
-        if len(locations) != 1:
-            raise ValueError("Ming preview requires one execution device per component")
-        devices.append(next(iter(locations)))
+        devices.append(execution_device(module))
         modes.extend((child, child.training) for child in module.modules())
     buffer = getattr(trainer, "ming_batch_buffer", None)
     exclusive = buffer.suspend_prefetch() if buffer is not None else nullcontext()
@@ -62,7 +60,7 @@ def generate_sample(trainer, ctx, *, step_progress_callback=None):
             failures = []
             for module, device in zip(modules, devices):
                 try:
-                    module.to(device=device)
+                    move_component(module, device)
                 except Exception as exc:
                     failures.append(exc)
             for module, mode in modes:

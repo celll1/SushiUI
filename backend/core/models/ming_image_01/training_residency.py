@@ -4,6 +4,8 @@ from contextlib import contextmanager, ExitStack
 
 import torch
 
+from .block_offload import move_component
+
 from .cache import configured_modes
 
 
@@ -28,7 +30,7 @@ class MingTrainingResidency:
         self.active = phase
         try:
             if swap:
-                self.components.transformer.to(device="cpu")
+                move_component(self.components.transformer, "cpu")
             encoder.to(device=self.device)
             yield
         finally:
@@ -38,7 +40,7 @@ class MingTrainingResidency:
             finally:
                 try:
                     if swap:
-                        self.components.transformer.to(device=self.device)
+                        move_component(self.components.transformer, self.device)
                 finally:
                     self.active = None
 

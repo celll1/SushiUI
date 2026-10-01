@@ -18377,7 +18377,8 @@ class BaseTrainer(ABC):
                     close_training_buffer(self)
                     self.ming_batch_buffer = MingBatchBuffer(self, batches, epoch=epoch,
                         batch_offset=int(getattr(self, "_epoch_batch_offset", 0) or 0),
-                        latent_interval=latent_encoding_swap_interval, text_interval=text_encoding_swap_interval)
+                        latent_interval=latent_encoding_swap_interval, text_interval=text_encoding_swap_interval,
+                        prefetch_depth=text_encoding_prefetch_depth)
 
                 for batch_idx, batch in enumerate(tqdm(batches, desc=f"Epoch {epoch+1}/{num_epochs} ({epoch_steps} steps)")):
                     _exposure_items = batch
@@ -21196,6 +21197,9 @@ class BaseTrainer(ABC):
             )
 
         except KeyboardInterrupt:
+            if getattr(self, "is_ming_image_01", False):
+                from core.models.ming_image_01.training_buffer import close_training_buffer
+                close_training_buffer(self)
             # Stop cpu_prefetch worker if it was running (no-op otherwise)
             try:
                 if 'te_prefetcher' in locals() and te_prefetcher is not None:
@@ -21286,6 +21290,9 @@ class BaseTrainer(ABC):
             raise
 
         except Exception as e:
+            if getattr(self, "is_ming_image_01", False):
+                from core.models.ming_image_01.training_buffer import close_training_buffer
+                close_training_buffer(self)
             try:
                 if 'te_prefetcher' in locals() and te_prefetcher is not None:
                     te_prefetcher.stop()

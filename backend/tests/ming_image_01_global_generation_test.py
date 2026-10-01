@@ -91,3 +91,12 @@ def test_global_lifetime_restored_on_all_exit_paths(tmp_path,monkeypatch,failure
             if failure=='body':raise RuntimeError('deliberate body')
     assert components.transformer._ming_partition_global_generation is previous
     assert components.transformer.layers[0].attention.to_q is original
+
+
+def test_global_generation_respects_disabled_dit_scope(tmp_path):
+    components,_,_,_,path=package(tmp_path,'zero_masked')
+    original=components.transformer.layers[0].attention.to_q
+    with generation_adapters(components,[{'path':str(path),'apply_to_unet':False,'apply_to_text_encoder':False}],resolve_path=str):
+        assert generation_global_residual(components.transformer,torch.randn(1,16,1,16,16),PartitionBox(0,0,8,8)) is None
+        assert components.transformer.layers[0].attention.to_q is original
+    assert not hasattr(components.transformer,'_ming_partition_global_generation')

@@ -25,7 +25,7 @@ def generation_adapters(components, configs, *, resolve_path, warn=None):
         except (ValueError,TypeError,KeyError) as exc:
             raise AdapterIncompatible(str(exc),code="ming_global_adapter_invalid") from exc
         if branch is not None:
-            global_entries.append({"module":branch,"strength":file.strength,"step_range":file.step_range,"active":True})
+            global_entries.append({"module":branch,"strength":file.strength if file.apply_to_unet else 0.,"step_range":file.step_range,"active":True})
         ordinary={key:value for key,value in file.tensors.items() if not key.startswith(GLOBAL_NAME+".")}
         return normalise_lora_state_dict(ordinary)
 

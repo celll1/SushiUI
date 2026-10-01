@@ -2232,3 +2232,35 @@ three global fields. No endpoint/default/type contract changed. Static review
 covers the control gates, server-default values, restoration and error path.
 Owner-run frontend build/type checking and interactive acceptance are pending;
 these do not block remaining backend and Qwen-parity implementation.
+
+
+### Native generation partition executor
+
+A generation-scoped Ming executor now accepts a complete patch-grid plan, validates
+integer coordinates, containment, nonoverlapping coverage and every tile's nested
+U-Net geometry before execution. Each native forward crops only target spatial
+coordinates, retains all target frames and full ragged references/caption streams,
+and supplies global position IDs. Halo predictions are trimmed to nonoverlapping
+cores before assembling the full prediction. The existing native pipeline then
+performs CFG and one scheduler step for the assembled canvas. Auxiliary context is
+recomputed per region because Ming captions attend to targets; no Qwen KV cache
+is assumed compatible.
+
+A saved full-base summary branch is reconstructed outside the model tree for this
+request and adds to active, strength-scaled global LoRA branches. Disabling DiT
+application also disables the global LoRA residual. The sampler installs the
+executor only for partition requests, releases its full-base module and bridge
+reference on every exit, and retains the existing normal-generation cleanup path.
+The generator can forward a plan; public REST/default/OpenAPI/panel dispatch and
+actual-layout metadata are not wired by this milestone and remain required work.
+
+Thirty-one unique affected CPU cases pass across selective milestone batches:
+eight independent native tile-assembly oracles spanning Design/Layer, dense/nested
+U-Net and halo/no-halo with full-base plus LoRA summaries and ragged references;
+two real native sampler CFG/grouping/cancellation/reuse cases; four invalid-plan
+refusals; one disabled-adapter-scope case; and sixteen existing sampler cases.
+Native weights remain unchanged and global modules are released on close. Changed
+files compile and import with CUDA forbidden. This is tiny CPU functional evidence,
+not official-weight/GPU quality, memory, speed or public API acceptance. Remaining
+public partition/UI/debug/timing/ConvRot/style parity and final acceptance remain
+active. Main API/GPU remains untouched.

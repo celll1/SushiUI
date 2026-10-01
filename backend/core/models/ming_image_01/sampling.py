@@ -22,6 +22,7 @@ class MingTransformerBridge(torch.nn.Module):
         self.transformer = transformer
         self.config = transformer.config
         self.in_channels = transformer.in_channels
+        self.partition_executor = None
 
     @property
     def dtype(self):
@@ -33,6 +34,9 @@ class MingTransformerBridge(torch.nn.Module):
 
     def forward(self, hidden_states, timestep, encoder_hidden_states, *,
                 ref_hidden_states=None, encoder_hidden_states_2=None, return_dict=False):
+        if self.partition_executor is not None:
+            return self.partition_executor.predict(hidden_states,timestep,encoder_hidden_states,
+                ref_hidden_states=ref_hidden_states,encoder_hidden_states_2=encoder_hidden_states_2,return_dict=return_dict)
         return self.transformer(x=hidden_states, t=timestep, cap_feats=encoder_hidden_states,
             ref_x=ref_hidden_states, cap_feats_2=encoder_hidden_states_2, return_dict=return_dict)
 
@@ -61,7 +65,7 @@ class MingSampler:
     def run(self, *, task: str, conditioning: MingConditioning, width: int, height: int,
             steps: int, cfg: float, seed: int, requested_layers: int,
             reference_pixels=None, negative_prompt: str = "", output_type: str = "pil",
-            cancelled: Callable[[], bool] | None = None, step_callback=None, reference_guides=None) -> list[MingResultGroup]:
+            cancelled: Callable[[], bool] | None = None, step_callback=None, reference_guides=None, partition_plan=None) -> list[MingResultGroup]:
         if negative_prompt:
             raise ValueError("Ming native guidance uses zero conditioning; negative prompts are unsupported")
         if output_type not in {"pil", "latent"}:
@@ -113,7 +117,12 @@ class MingSampler:
         negative = conditioning.zero()
         self.pipe._interrupt = False
         handle = self.components.transformer.register_forward_pre_hook(check_cancel)
+        executor = None
         try:
+            if partition_plan is not None:
+                from .partition_generation import MingPartitionExecutor
+                executor = MingPartitionExecutor(self.components.transformer,partition_plan,cancelled=cancelled or (lambda:False))
+                self.pipe.transformer.partition_executor = executor
             result = self.pipe(
                 height=height, width=width, num_inference_steps=sampling.steps,
                 guidance_scale=sampling.cfg, generator=torch.Generator(device="cpu").manual_seed(seed),
@@ -138,6 +147,9 @@ class MingSampler:
                     requested_layers, frames, seed, width, height, output_type))
             return groups
         finally:
+            if executor is not None:
+                self.pipe.transformer.partition_executor = None
+                executor.close()
             handle.remove()
             self.pipe._interrupt = False
             self.pipe.maybe_free_model_hooks()

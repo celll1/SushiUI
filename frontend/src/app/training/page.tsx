@@ -16,6 +16,7 @@ const TaggerTrainingConfig = dynamic(() => import("@/components/training/tagger/
 const TaggerTrainingMonitor = dynamic(() => import("@/components/training/tagger/TaggerTrainingMonitor"));
 const VaeTrainingConfig = dynamic(() => import("@/components/training/vae/VaeTrainingConfig"));
 const StyleTrainingPanel = dynamic(() => import("@/components/training/style/StyleTrainingPanel"));
+const CaptionerTrainingWorkspace = dynamic(() => import("@/components/training/captioner/CaptionerTrainingWorkspace"));
 
 export default function TrainingPage() {
   return (
@@ -26,7 +27,11 @@ export default function TrainingPage() {
 }
 
 function TrainingPageContent() {
-  const [trainingMode, setTrainingMode] = useState<"model" | "tagger" | "vae" | "style">("model");
+  const [trainingMode, setTrainingMode] = useState<"model" | "tagger" | "vae" | "style" | "captioner">("model");
+
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("section") === "captioner") setTrainingMode("captioner");
+  }, []);
 
   // Model training state
   const [runs, setRuns] = useState<TrainingRun[]>([]);
@@ -288,7 +293,7 @@ function TrainingPageContent() {
   const selectedTaggerRun = taggerRuns.find(r => r.run_id === selectedTaggerRunId);
   const selectedVaeRun = vaeRuns.find(r => r.id === selectedVaeRunId);
 
-  const handleTabChange = (mode: "model" | "tagger" | "vae" | "style") => {
+  const handleTabChange = (mode: "model" | "tagger" | "vae" | "style" | "captioner") => {
     setTrainingMode(mode);
     setShowMobileDetail(false);
     setShowConfig(false);
@@ -316,7 +321,7 @@ function TrainingPageContent() {
             )}
 
             {/* Tab buttons */}
-            <div className="flex flex-shrink-0 overflow-hidden rounded-md border border-gray-700 bg-gray-900 p-0.5">
+            <div className="flex min-w-0 overflow-x-auto rounded-md border border-gray-700 bg-gray-900 p-0.5">
               <button
                 onClick={() => handleTabChange("model")}
                 className={`px-3 py-1.5 text-xs sm:text-sm transition-colors ${
@@ -354,6 +359,14 @@ function TrainingPageContent() {
                 }`}
               >
                 {isMobile ? "Style" : "Style Training"}
+              </button>
+              <button
+                onClick={() => handleTabChange("captioner")}
+                className={`shrink-0 px-3 py-1.5 text-xs sm:text-sm transition-colors border-l border-gray-600 ${
+                  trainingMode === "captioner" ? "bg-violet-600 text-white" : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
+                }`}
+              >
+                {isMobile ? "Captioner" : "Captioner Training"}
               </button>
             </div>
 
@@ -447,6 +460,8 @@ function TrainingPageContent() {
                 )}
               </div>
             </>
+          ) : trainingMode === "captioner" ? (
+            <CaptionerTrainingWorkspace />
           ) : trainingMode === "style" ? (
             <StyleTrainingPanel />
           ) : trainingMode === "vae" ? (

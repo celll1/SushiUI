@@ -51,3 +51,36 @@ def patchify_partition_image(model, image, reference, caption_length, patch_size
         tokens = torch.cat((tokens,patches(reference)),dim=0)
         target_ids = torch.cat((target_ids,reference_ids),dim=0)
     return tokens,(frames,height,width),target_ids
+
+
+def core_result(prediction, target, region, model_time, weights):
+    """Only a region's nonoverlapping core contributes supervised flow loss."""
+    from .training import MingTrainingResult
+    from .guidance import frame_error
+    box = region.core_in_input
+    prediction = prediction[...,box.top*2:box.bottom*2,box.left*2:box.right*2]
+    target = target[...,box.top*2:box.bottom*2,box.left*2:box.right*2]
+    expected = (region.core.height*2,region.core.width*2)
+    if prediction.shape != target.shape or prediction.shape[-2:] != expected:
+        raise ValueError("Ming partition prediction disagrees with its supervised core")
+    per_item = frame_error(prediction,target,weights)
+    return MingTrainingResult(per_item.mean(),per_item,prediction,target,model_time)
+
+
+def image_guidance_scale(trainer,sigma,condition,weights,core_pairs,plan):
+    """One clean-space RMS cap spans every disjoint core and supervised frame."""
+    from .guidance import frame_error
+    from core.training.ops.qwen_image_21_ops import _extrapolation_cap,_capped_guidance_scale
+    cap = _extrapolation_cap(trainer)
+    if cap <= 0:
+        return None
+    distance = torch.zeros_like(sigma,dtype=torch.float32)
+    pairs = list(core_pairs)
+    if len(pairs) != len(plan.regions):
+        raise ValueError("Ming guidance cap requires every partition core")
+    for (target,uncond),region in zip(pairs,plan.regions):
+        if target.shape != uncond.shape or target.shape[-2:] != (region.core.height*2,region.core.width*2):
+            raise ValueError("Ming guidance cap core geometry disagrees with the partition plan")
+        residual = sigma.reshape(-1,1,1,1,1)*(target.float()-uncond.float())
+        distance += region.core.tokens/plan.full_tokens * frame_error(residual,torch.zeros_like(residual),weights)
+    return _capped_guidance_scale(sigma,condition,distance.detach(),cap)

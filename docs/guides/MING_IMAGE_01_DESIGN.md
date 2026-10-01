@@ -1909,3 +1909,28 @@ No live API, official model weights, GPU resources or main files are touched.
 This is the coordinate/forward foundation: shared training-loop dispatch,
 sequential region backward, image-level guidance caps, native debug output,
 public partition options/UI and global adapters still require implementation.
+
+
+### Partition supervision and image-level guidance cap primitives
+
+Native partition supervision now extracts only each region's loss core from its
+halo-bearing prediction. It applies the existing independent-frame supervision
+weights, so the Layer auxiliary frame contributes neither loss nor cap distance
+when its weight is zero. Core fractions are spatial patch area divided by full
+canvas patch area; their sum is one. A detached clean-space RMS distance is
+accumulated over every disjoint core before resolving one guidance scale for
+all regions. Guidance accepts that explicit scale instead of recomputing a
+region-local cap. This is necessary for an image-level extrapolation limit.
+
+Fifteen unique targeted CPU checks pass: ten new loss/cap/halo checks and five
+existing guidance oracles/selection checks. Independent full-image calculations
+match area-weighted sequential core losses and prediction gradients for 2/4
+regions, zero/nonzero halo, constant/sigma guidance and weighted Layer frames.
+Large auxiliary-frame null predictions do not affect the cap. Halo-only
+predictions receive no loss gradient. Incomplete cap core collections are
+rejected. These are algebra and autograd checks on prediction tensors, not proof
+of native sequential model backward or end-to-end partition training. Changed
+backend files compile and import with CUDA forbidden; main API/GPU remain
+unused. Shared trainer dispatch, model backward graph lifetime, reconstruction
+loss, checkpoint policy, debug/metrics, public UI and global adapters remain
+in the partition milestone ahead.

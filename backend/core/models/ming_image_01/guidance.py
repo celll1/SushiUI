@@ -33,7 +33,7 @@ def frame_error(prediction,target,weights):
     return (per_frame*weights).sum(1)/weights.sum(1)
 
 
-def guidance_loss(trainer,result,uncond,sigma,weights,condition,selection,selected):
+def guidance_loss(trainer,result,uncond,sigma,weights,condition,selection,selected,*,effective_scale_override=None):
     if condition is None:return result.loss,result.per_item_loss
     scale,schedule=condition[4:6]
     effective=(torch.full_like(sigma,scale,dtype=torch.float32) if schedule=='constant'
@@ -41,7 +41,12 @@ def guidance_loss(trainer,result,uncond,sigma,weights,condition,selection,select
     requested=effective
     distance=None
     cap=_extrapolation_cap(trainer)
-    if cap>0 and uncond is not None:
+    if effective_scale_override is not None:
+        if (effective_scale_override.shape != sigma.shape or not torch.isfinite(effective_scale_override).all()
+                or (effective_scale_override < 1).any()):
+            raise ValueError("Ming partition guidance scale requires finite [B] values >= 1")
+        effective = effective_scale_override.detach().to(device=sigma.device,dtype=torch.float32)
+    elif cap>0 and uncond is not None:
         distance=frame_error(sigma.reshape(-1,1,1,1,1)*(result.target.float()-uncond.float()),
                              torch.zeros_like(result.target),weights)
         effective=_capped_guidance_scale(sigma,condition,distance,cap)

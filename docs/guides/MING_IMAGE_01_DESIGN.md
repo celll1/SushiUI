@@ -704,3 +704,26 @@ large-model stop latency or the complete common train loop. The generic temporar
 encoding-mode override and normal-training refusal remain until common initial
 residency/setup paths are routed to these native mode contracts. Sampling/export
 must respect exclusive worker ownership when those pending routes are enabled.
+
+### Common encoding-mode routing
+
+The temporary Ming `onthefly_gpu` override is removed. Final selected modes are
+resolved after the existing live-TE compatibility adjustment, then attached to
+native cache/residency ownership. Native encoders initially remain CPU-resident;
+invalid modes and trainable CPU-prefetch ownership refuse before transfer.
+Ming skips the generic disk-cache setup, per-caption cache pass, path-keyed swap
+buffers and generic CPU worker. Its resolved epoch plan owns persistent prefill,
+native swap windows and CPU prefetch. CropSpec-aware native keys preserve cache
+and swap modes through crop augmentation rather than forcing uncached encoding.
+The generic on-the-fly epoch staging no longer eagerly moves the entire native
+conditioner to GPU. Common main-module lookup and CPU/GPU transfer now recognize
+the Ming DiT; common GPU text staging preserves CPU-prefetch ownership.
+
+42 affected residency/buffer/prefetch CPU tests pass. Six focused initial-placement
+cases additionally pass after ordering mode validation before transfers. Changed
+backend files compile and real-import with CUDA initialization forbidden. Symbolic
+transfer tests verify dispatch and CPU-only checks verify native encoder behavior;
+the complete `train()`/normal runner and optimizer/RNG/scaler resume acceptance
+are still pending, so normal training capability remains unavailable. No GPU/live
+API was used. Full Qwen parity, sampling/export and advanced surfaces remain
+active scope; removal of the temporary mode override alone is not completion.

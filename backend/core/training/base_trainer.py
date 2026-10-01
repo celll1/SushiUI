@@ -10157,6 +10157,9 @@ class BaseTrainer(ABC):
 
     def move_text_encoder_to_gpu(self):
         """Move Text Encoder(s) to GPU for encoding."""
+        if (getattr(self, "is_ming_image_01", False)
+                and getattr(self, "_text_encoding_mode", None) == "cpu_prefetch"):
+            return
         if self.is_minimax_h3:
             # MiniMax-H3's Qwen3-VL conditioner is NEVER moved, in either
             # direction. `.to()` detaches all 902 of its tensors from the file
@@ -10226,6 +10229,9 @@ class BaseTrainer(ABC):
 
     def move_main_model_to_gpu(self):
         """Move main model (U-Net or Transformer) to GPU for training."""
+        if getattr(self, "is_ming_image_01", False):
+            self.ming_image_01_components.transformer.to(device=self.device)
+            return
         if (
             self.is_sensenova
             and (
@@ -10243,6 +10249,9 @@ class BaseTrainer(ABC):
 
     def move_main_model_to_cpu(self):
         """Move main model (U-Net or Transformer) to CPU to free VRAM."""
+        if getattr(self, "is_ming_image_01", False):
+            self.ming_image_01_components.transformer.to(device="cpu")
+            return
         if (
             self.is_sensenova
             and (
@@ -10299,11 +10308,9 @@ class BaseTrainer(ABC):
             pass
 
     def _main_model_module(self):
-        """Return the trainable main-model module (Transformer for DiT archs, else U-Net).
-
-        Mirrors the arch dispatch in move_main_model_to_cpu/gpu so the three stay
-        consistent. Returns None if the module is not present.
-        """
+        """Return the main module for device and optimizer-state ownership."""
+        if getattr(self, "is_ming_image_01", False):
+            return self.ming_image_01_components.transformer
         if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_qwen_image_21 or self.is_ltx2 or self.is_acestep or self.is_minimax_h3 or self.is_sensenova:
             return getattr(self, "transformer_original", None)
         return getattr(self, "unet", None)
@@ -15703,11 +15710,6 @@ class BaseTrainer(ABC):
             latent_encoding_mode = "onthefly_gpu"
 
         if getattr(self, "is_ming_image_01", False):
-            from core.models.ming_image_01.cache import attach_startup_snapshot
-            attach_startup_snapshot(self, latent_mode=latent_encoding_mode, text_mode=text_encoding_mode)
-            from core.models.ming_image_01.training_residency import configure_training_residency
-            configure_training_residency(self, latent_mode=latent_encoding_mode, text_mode=text_encoding_mode)
-            latent_encoding_mode = text_encoding_mode = "onthefly_gpu"
             self.ming_prompt_resolution = max(base_resolutions or _TRAINING_DEFAULTS["base_resolutions"])
 
         self._training_datasets = datasets
@@ -16000,6 +16002,11 @@ class BaseTrainer(ABC):
         # Record the mode so encode_prompt can skip the "TE on CPU" warning for
         # cpu_prefetch, where running the TE on CPU is intentional.
         self._text_encoding_mode = text_encoding_mode
+        if getattr(self, "is_ming_image_01", False):
+            from core.models.ming_image_01.cache import attach_startup_snapshot
+            from core.models.ming_image_01.training_residency import configure_training_residency
+            attach_startup_snapshot(self, latent_mode=latent_encoding_mode, text_mode=text_encoding_mode)
+            configure_training_residency(self, latent_mode=latent_encoding_mode, text_mode=text_encoding_mode)
 
         # Setup debug directory
         debug_dir = None
@@ -16537,7 +16544,8 @@ class BaseTrainer(ABC):
         # Crop augmentation requires per-epoch re-encoding with a per-(item,epoch) crop,
         # which the disk/swap latent caches (keyed by image_path + bucket size) cannot
         # represent. Force on-the-fly GPU encoding.
-        if self.crop_planner is not None and latent_encoding_mode != "onthefly_gpu":
+        if (self.crop_planner is not None and latent_encoding_mode != "onthefly_gpu"
+                and not getattr(self, "is_ming_image_01", False)):
             print(f"{self.log_prefix} Crop augmentation: forcing latent_encoding_mode="
                   f"'onthefly_gpu' (was '{latent_encoding_mode}') - disk/swap latent caches "
                   f"cannot represent per-epoch crops")
@@ -16584,7 +16592,9 @@ class BaseTrainer(ABC):
         # Setup latent caches (mode-dependent)
         latent_caches = None
         print(f"{self.log_prefix} Latent encoding mode: {latent_encoding_mode}")
-        if latent_encoding_mode == "swap_onthefly":
+        if getattr(self, "is_ming_image_01", False):
+            print(f"{self.log_prefix} Native Ming latent setup is owned by the resolved epoch batch plan")
+        elif latent_encoding_mode == "swap_onthefly":
             print(f"{self.log_prefix} Latent swap interval: {latent_encoding_swap_interval} steps")
             print(f"{self.log_prefix} VAE will swap with main model during training")
             # No cache setup needed for swap mode
@@ -16620,7 +16630,9 @@ class BaseTrainer(ABC):
         # Setup text encoder caches (all architectures)
         text_encoder_caches = None
         print(f"{self.log_prefix} Text encoding mode: {text_encoding_mode}")
-        if text_encoding_mode == "swap_onthefly":
+        if getattr(self, "is_ming_image_01", False):
+            print(f"{self.log_prefix} Native Ming conditioning uses its batch/worker owner")
+        elif text_encoding_mode == "swap_onthefly":
             print(f"{self.log_prefix} Swap interval: {text_encoding_swap_interval} steps")
             if self.is_zimage:
                 print(f"{self.log_prefix} Text encoder will swap with transformer during training")
@@ -17422,7 +17434,7 @@ class BaseTrainer(ABC):
 
                 # Validate and generate text encoder cache for new captions (all architectures)
                 # Only for pre_encoded_cache mode
-                if text_encoding_mode == "pre_encoded_cache":
+                if text_encoding_mode == "pre_encoded_cache" and not getattr(self, "is_ming_image_01", False):
                     self._validate_and_generate_text_encoder_caches(datasets, text_encoder_caches, progress_callback, epoch_num=epoch)
 
                 # Resolution curriculum: apply this epoch's phase resolution.
@@ -17965,7 +17977,8 @@ class BaseTrainer(ABC):
 
                 # Initialize swap mode buffer if needed (all architectures)
                 # Use dict keyed by image_path for robust lookup (immune to index misalignment)
-                use_swap_buffer = text_encoding_mode in ("swap_onthefly", "cpu_prefetch")
+                use_swap_buffer = (not getattr(self, "is_ming_image_01", False)
+                                   and text_encoding_mode in ("swap_onthefly", "cpu_prefetch"))
                 swap_buffer = {} if use_swap_buffer else None
                 next_swap_at_step = 0 if swap_buffer is not None else -1
 
@@ -17974,7 +17987,7 @@ class BaseTrainer(ABC):
                 # by a queue.get() against that worker. The pre-fill below
                 # only runs for swap_onthefly.
                 te_prefetcher = None
-                if text_encoding_mode == "cpu_prefetch":
+                if text_encoding_mode == "cpu_prefetch" and not getattr(self, "is_ming_image_01", False):
                     from core.training.cpu_te_prefetch import CpuTextEncoderPrefetcher
                     # Make sure the TE lives on CPU before the worker reads it.
                     if self.text_encoder is not None:
@@ -18090,7 +18103,8 @@ class BaseTrainer(ABC):
 
                 # Initialize latent swap mode buffer if needed
                 # Use dict keyed by image_path for robust lookup (immune to index misalignment)
-                latent_swap_buffer = {} if latent_encoding_mode == "swap_onthefly" else None
+                latent_swap_buffer = ({} if latent_encoding_mode == "swap_onthefly"
+                                      and not getattr(self, "is_ming_image_01", False) else None)
                 next_latent_swap_at_step = 0 if latent_swap_buffer is not None else -1
 
                 # Pre-fill latent swap buffer for first interval
@@ -18232,7 +18246,7 @@ class BaseTrainer(ABC):
                     print(f"{self.log_prefix} Latent buffer pre-filled with {len(latent_swap_buffer)} latents")
 
                 # onthefly_gpu mode: Ensure text encoders and main model are on GPU for entire epoch
-                if text_encoding_mode == "onthefly_gpu":
+                if text_encoding_mode == "onthefly_gpu" and not getattr(self, "is_ming_image_01", False):
                     print(f"{self.log_prefix} Moving text encoders to GPU for onthefly_gpu mode...")
                     self.move_text_encoder_to_gpu()
                     # Ensure U-Net is on GPU (critical for mid-epoch resume)

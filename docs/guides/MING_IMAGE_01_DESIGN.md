@@ -1179,3 +1179,36 @@ The public background quantized-export job still has no Ming layout and refuses
 Ming; this stage establishes native package serialization/restoration only.
 Public export wiring, conditioner quantization, ConvRot, quantized-base training
 and the remaining Qwen parity work are still pending. No main API/GPU was used.
+
+### Public native quantized export milestone
+
+The existing GET/POST `/models/export-quantized` job now resolves native Ming
+packages. Status/job documents distinguish `output_kind: native_package` from
+single-file layouts. The suggested/editable destination is a new package
+directory outside the loaded source; completion returns `manifest.json`.
+Ming serializes all six native components instead of linking companions;
+`link_siblings` is ignored and overwrite is refused. Package publication remains
+atomic. Native progress reports six components and `quantization.json` preserves
+the Linear inventory plus the available runtime audit (or its absence).
+
+The worker uses the common exclusive model-lifecycle gate and model-load lock.
+After waiting it revalidates architecture, source, transformer identity and all
+native component identities, preventing queued exports from saving a replacement
+model or conditioner. CPU offload is enclosed in residency restoration for both
+success and serialization failure. This is not a GPU residency measurement.
+
+Eight offline native job cases cover both profiles' real background completion
+and exact reload, destination/overwrite refusal, architecture/transformer/
+conditioner replacement, failure restoration and unavailable-audit recording.
+The initial run with the shared exporter passes 33 cases plus 12 subtests;
+follow-up checks pass six cases covering new refusals, audit absence, ordinary
+bundle regression and the OpenAPI export architecture description. The modified
+real-thread cases are checked after identity-gate completion. Compile/guarded
+imports and OpenAPI parsing are checked at this milestone.
+
+Frontend status/request types, loaded-model availability probe, package-path
+controls, progress units, stale-model error handling and final manifest display
+are reviewed statically. Build/type checks and interactive acceptance remain
+owner-run. No live HTTP API, server, official weights or CUDA allocation is used.
+Conditioner quantization, ConvRot, quantized-base training and the rest of the
+Qwen parity contract remain pending; full implementation remains active.

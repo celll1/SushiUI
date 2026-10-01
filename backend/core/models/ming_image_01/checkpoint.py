@@ -22,9 +22,13 @@ def _cpu_state(module):
     return {key: value.detach().contiguous() for key, value in state.items()}
 
 
-def save_bundle(components, destination, *, max_shard_bytes=DEFAULT_MAX_SHARD_BYTES, cancelled=None, training_metadata=None):
+def save_bundle(components, destination, *, max_shard_bytes=DEFAULT_MAX_SHARD_BYTES, cancelled=None, training_metadata=None, quantization_metadata=None, progress_callback=None):
     """Publish only a fully preflighted package; never overwrite an existing path."""
     training_json = None if training_metadata is None else json.dumps(training_metadata, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    quantization_json = None if quantization_metadata is None else json.dumps(quantization_metadata, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    def progress(done, component):
+        if progress_callback is not None:
+            progress_callback(done, 6, component)
     destination = Path(destination).absolute()
     if os.path.lexists(destination):
         raise FileExistsError(destination)
@@ -45,6 +49,7 @@ def save_bundle(components, destination, *, max_shard_bytes=DEFAULT_MAX_SHARD_BY
             raise InterruptedError("Ming checkpoint export cancelled")
 
     check_cancel()
+    progress(0, "preflight")
     with tempfile.TemporaryDirectory(prefix=f".{destination.name}.ming-", dir=destination.parent) as temporary:
         staging = Path(temporary) / "package"
         staging.mkdir()
@@ -53,10 +58,12 @@ def save_bundle(components, destination, *, max_shard_bytes=DEFAULT_MAX_SHARD_BY
         mllm_state = {key: value for key, value in _cpu_state(native).items() if not key.startswith(excluded)}
         native.save_pretrained(staging / "mllm", state_dict=mllm_state, max_shard_size=max_shard_bytes)
         del mllm_state
+        progress(1, "mllm")
         check_cancel()
         native.connector.save_pretrained(staging / "connector", max_shard_size=max_shard_bytes)
         components.processor.tokenizer.save_pretrained(staging / "mllm")
         components.processor.image_processor.save_pretrained(staging / "mllm")
+        progress(2, "connector")
         projections = staging / "mlp"
         projections.mkdir()
         (projections / "config.json").write_text(
@@ -65,6 +72,7 @@ def save_bundle(components, destination, *, max_shard_bytes=DEFAULT_MAX_SHARD_BY
         from safetensors.torch import save_file
         save_file({key: value.detach().contiguous() for key, value in
                    components.conditioner.projection_state_dict().items()}, str(projections / "model.safetensors"))
+        progress(3, "mlp")
         check_cancel()
         transformer_dir = staging / "transformer"
         transformer_dir.mkdir()
@@ -72,8 +80,13 @@ def save_bundle(components, destination, *, max_shard_bytes=DEFAULT_MAX_SHARD_BY
         save_single_file_state(_cpu_state(components.transformer), model_topology_metadata(components.transformer),
             str(transformer_dir / "diffusion_pytorch_model.safetensors"), max_shard_bytes=max_shard_bytes)
         check_cancel()
+        progress(4, "transformer")
         components.vae.save_pretrained(staging / "vae", max_shard_size=max_shard_bytes)
+        progress(5, "vae")
         components.scheduler.save_pretrained(staging / "scheduler")
+        progress(6, "scheduler")
+        if quantization_json is not None:
+            (staging / "quantization.json").write_text(quantization_json, encoding="utf-8")
         if training_json is not None:
             (staging / "training.json").write_text(training_json, encoding="utf-8")
         write_manifest(staging, source=components.artifact.source)

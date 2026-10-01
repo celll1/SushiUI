@@ -54,7 +54,7 @@ _EXPORT_GATE_WAIT_SECONDS = 3600.0
 def _loaded_transformer(pipeline_manager) -> Tuple[Optional[str], Optional[list], Optional[str]]:
     """``(arch, [(component name, module), ...], reason_it_is_unavailable)``.
 
-    Only the architectures with an ``EXPORT_LAYOUTS`` entry are resolvable; any
+    Native Ming packages and ``EXPORT_LAYOUTS`` entries are resolvable; any
     other loaded model returns a reason rather than modules.
 
     The component NAMES come from the layout, not from a hardcoded
@@ -67,6 +67,12 @@ def _loaded_transformer(pipeline_manager) -> Tuple[Optional[str], Optional[list]
     arch = str(info.get("type") or "") or None
     if not arch:
         return None, None, "no model is loaded"
+    if arch == "ming_image_01":
+        components = getattr(pipeline_manager, "ming_image_01_components", None) or {}
+        native = components.get("ming_native")
+        if native is None or components.get("transformer") is not native.transformer:
+            return arch, None, "the loaded Ming model exposes no native package"
+        return arch, [("transformer", native.transformer)], None
     if arch not in EXPORT_LAYOUTS:
         return arch, None, (
             f"single-file export is implemented for "
@@ -156,6 +162,8 @@ def suggested_output_path(arch: str, source: Optional[str], inventory: Dict) -> 
         stem = base or stem
     suffix = "int8" if inventory.get("int8") else "fp8"
     stem = f"{stem}_{suffix}"
+    if arch == "ming_image_01":
+        return os.path.normpath(os.path.join(_default_export_root(), stem))
     subdir = str(EXPORT_LAYOUTS[arch].get("output_subdir", "") or "")
     directory = os.path.join(_default_export_root(), stem, subdir) if subdir \
         else os.path.join(_default_export_root(), stem)
@@ -202,6 +210,7 @@ def export_status(pipeline_manager) -> Dict:
             # polled status, so report it and let the next poll settle it,
             # rather than 500-ing the whole endpoint.
             return {
+                "output_kind": "native_package" if arch == "ming_image_01" else "single_file",
                 "exportable": False,
                 "reason": f"the transformer is being modified right now ({exc})",
                 "arch": arch,
@@ -222,6 +231,7 @@ def export_status(pipeline_manager) -> Dict:
                 "INT8 quantization requested to convert it in place)")
     audit = getattr(pipeline_manager, "_runtime_int8_audit", None)
     return {
+        "output_kind": "native_package" if arch == "ming_image_01" else "single_file",
         "exportable": exportable,
         "reason": reason,
         "arch": arch,
@@ -263,8 +273,15 @@ def start_export(
         raise ExportUnavailableError(
             "the loaded transformer owns no weight-only quantized Linear layers")
 
+    if not str(output_path or "").strip():
+        raise ExportUnavailableError("the destination must be nonempty")
     output_path = os.path.abspath(os.path.expanduser(str(output_path or "").strip()))
-    if not output_path.endswith(".safetensors"):
+    if arch == "ming_image_01":
+        if output_path.endswith(".safetensors"):
+            raise ExportUnavailableError("Ming destination must be a new package directory")
+        if overwrite or os.path.lexists(output_path):
+            raise ExportUnavailableError("Ming native packages require a new destination; overwrite is unsupported")
+    elif not output_path.endswith(".safetensors"):
         raise ExportUnavailableError("the destination must end in '.safetensors'")
 
     source = _model_source(pipeline_manager)
@@ -281,6 +298,7 @@ def start_export(
                 f"an export to {_job.get('output_path')} is already running")
         job_id = uuid.uuid4().hex[:12]
         _job = {
+            "output_kind": "native_package" if arch == "ming_image_01" else "single_file",
             "job_id": job_id,
             "state": "running",
             "arch": arch,
@@ -296,11 +314,13 @@ def start_export(
         }
         snapshot = dict(_job)
 
+    native = (getattr(pipeline_manager, "ming_image_01_components", None) or {}).get("ming_native") if arch == "ming_image_01" else None
+    expected_native = (native, native.transformer, native.conditioner, native.vae) if native is not None else None
     thread = threading.Thread(
         target=_run_export,
         args=(pipeline_manager, job_id, arch, modules, output_path),
         kwargs={"link_siblings": link_siblings, "overwrite": overwrite,
-                "source": source, "source_root": source_root},
+                "source": source, "source_root": source_root, "expected_native": expected_native},
         name=f"quant-export-{job_id}",
         daemon=True,
     )
@@ -316,7 +336,7 @@ def _update(job_id: str, **fields) -> None:
 
 
 def _run_export(pipeline_manager, job_id, arch, modules, output_path, *,
-                link_siblings, overwrite, source, source_root):
+                link_siblings, overwrite, source, source_root, expected_native=None):
     def progress(done: int, total: int, key: str) -> None:
         _update(job_id, processed=done, total=total, message=f"writing {key}")
 
@@ -378,18 +398,33 @@ def _run_export(pipeline_manager, job_id, arch, modules, output_path, *,
                 load_lock.acquire()
             try:
                 _update(job_id, message="writing")
-                result = export_quantized_transformer(
-                    modules,
-                    arch,
-                    output_path,
-                    config=config,
-                    audit=audit,
-                    audit_note=audit_note,
-                    source=source,
-                    link_siblings_from=source_root if link_siblings else None,
-                    progress_cb=progress,
-                    overwrite=overwrite,
-                )
+                current_arch, current_modules, reason = _loaded_transformer(pipeline_manager)
+                if current_arch != arch or _model_source(pipeline_manager) != source or current_modules is None or any(
+                    name != current_name or module is not current_module
+                    for (name, module), (current_name, current_module) in zip(modules, current_modules)
+                ) or len(current_modules) != len(modules):
+                    raise ExportUnavailableError(reason or "the loaded model changed while export was waiting")
+                audit = getattr(pipeline_manager, "_runtime_int8_audit", None)
+                audit_note = None if audit else "no runtime conversion audit is available for the loaded checkpoint"
+                if arch == "ming_image_01":
+                    native = pipeline_manager.ming_image_01_components["ming_native"]
+                    current_native = (native, native.transformer, native.conditioner, native.vae)
+                    if expected_native is not None and any(a is not b for a, b in zip(expected_native, current_native)):
+                        raise ExportUnavailableError("the loaded Ming components changed while export was waiting")
+                    result = _export_ming_package(pipeline_manager, output_path, audit, audit_note, progress)
+                else:
+                    result = export_quantized_transformer(
+                        modules,
+                        arch,
+                        output_path,
+                        config=config,
+                        audit=audit,
+                        audit_note=audit_note,
+                        source=source,
+                        link_siblings_from=source_root if link_siblings else None,
+                        progress_cb=progress,
+                        overwrite=overwrite,
+                    )
             finally:
                 if load_lock is not None:
                     load_lock.release()
@@ -402,3 +437,32 @@ def _run_export(pipeline_manager, job_id, arch, modules, output_path, *,
         traceback.print_exc()
         _update(job_id, state="failed", error=f"{type(exc).__name__}: {exc}",
                 message="failed", finished_at=time.time())
+
+
+def _export_ming_package(manager, output_path, audit, audit_note, progress):
+    from pathlib import Path
+    from core.models.ming_image_01.block_offload import move_component, execution_device
+    from core.models.ming_image_01.checkpoint import save_bundle
+    components = manager.ming_image_01_components["ming_native"]
+    modules = (components.transformer, components.conditioner, components.vae)
+    devices = [execution_device(module) for module in modules]
+    inventory = combined_linear_inventory([("transformer", components.transformer)])
+    metadata = {"schema_version": 1, "kind": "weight_only_dit", "inventory": inventory,
+                "runtime_audit": audit, "audit_note": audit_note}
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        for module in modules:
+            move_component(module, "cpu")
+        written = save_bundle(components, destination, quantization_metadata=metadata, progress_callback=progress)
+    finally:
+        failures = []
+        for module, device in zip(modules, devices):
+            try:
+                move_component(module, device)
+            except Exception as exc:
+                failures.append(exc)
+        if failures:
+            raise RuntimeError("Ming export component residency restoration failed") from failures[0]
+    return {"output_path": str(written), "output_kind": "native_package", "inventory": inventory,
+            "quantization_metadata_path": str(destination / "quantization.json"), "linked_siblings": []}

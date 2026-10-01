@@ -4487,7 +4487,9 @@ paths:
       summary: Quantized-model export status
       description: |
         Report whether the loaded transformer can be written out as a
-        weight-only quantized single file, plus the state of any export job.
+        weight-only quantized checkpoint, plus the state of any export job.
+        Ming returns `output_kind: native_package`: a complete six-component
+        package directory, restored through its `manifest.json`.
 
         `exportable` is true exactly when the loaded transformer owns
         `Int8Linear` / `Fp8Linear` modules. Both provenances count and are
@@ -4512,7 +4514,7 @@ paths:
                 $ref: '#/components/schemas/QuantizedExportStatus'
     post:
       tags: [models]
-      summary: Export the loaded quantized model to a single file
+      summary: Export the loaded quantized model
       description: |
         Start a background job that writes the loaded, weight-only quantized
         transformer to `output_path` in the layout the production loader reads
@@ -4531,6 +4533,13 @@ paths:
         tool emits. When the model was loaded already quantized no audit exists;
         the file's metadata records `quant_audit=unavailable` rather than a
         fabricated table.
+
+        Ming exports all six native components into a new package directory.
+        `output_path` is the package directory; `written_path` is its manifest.
+        Native component shards use the bundle writer's 10 GiB threshold.
+        Companion linking is ignored because the components are serialized.
+        Overwrite is refused for native packages. The quantization inventory and
+        available runtime audit are saved atomically in `quantization.json`.
 
         Returns immediately with the job document; poll `GET` for progress.
       operationId: startQuantizedExport
@@ -13037,7 +13046,8 @@ components:
         output_path:
           type: string
           description: |
-            Destination `<stem>.safetensors`. Must end in `.safetensors` and must
+            For Ming, destination is a new native package directory. Otherwise,
+            destination `<stem>.safetensors` must end in `.safetensors` and must
             not lie inside the loaded model's own directory tree. Shards and a
             `<stem>.safetensors.index.json` are written beside it above 4 GB.
           example: "<OUTPUT_ROOT>/anima-base-v1.0_int8/split_files/diffusion_models/anima-base-v1.0_int8.safetensors"
@@ -13052,11 +13062,12 @@ components:
             `model_index.json` and the transformer's own `config.json`, both of
             which `LTX2Pipeline.from_pretrained` reads before it resolves any
             component directory, and both of which are about a kilobyte.
+            Ignored for Ming native packages, which serialize all components.
           example: true
         overwrite:
           type: boolean
           default: false
-          description: Replace an existing file or shard index at the destination.
+          description: Replace an existing file or shard index; refused for Ming native packages.
           example: false
     QuantizedExportJob:
       type: object
@@ -13066,6 +13077,10 @@ components:
         job has been started.
       required: [state]
       properties:
+        output_kind:
+          type: string
+          enum: [single_file, native_package]
+          description: Native package directory for Ming; single-file layout for other architectures.
         job_id:
           type: string
           example: "61944768f00c"
@@ -13080,7 +13095,7 @@ components:
             Architecture being exported: one of `acestep`, `anima`, `flux2`,
             `ideogram4`, `krea2`, `ltx2`, `minimax_h3`, `sensenova`, `zimage` (the keys of the backend's
             `EXPORT_LAYOUTS` table, pinned by
-            `quantized_capability_parity_test`).
+            `quantized_capability_parity_test`), or `ming_image_01` native packages.
           example: anima
         output_path:
           type: string
@@ -13092,15 +13107,15 @@ components:
           description: |
             What was actually written: the `.safetensors` itself, or the
             `<stem>.safetensors.index.json` for a sharded export. Null until the
-            job completes.
+            job completes. Ming returns the native package manifest.
           example: "<OUTPUT_ROOT>/anima_int8/split_files/diffusion_models/anima_int8.safetensors"
         processed:
           type: integer
-          description: Tensors written so far.
+          description: Tensors written so far, or native components when output_kind is native_package.
           example: 640
         total:
           type: integer
-          description: Tensors in the transformer's state dict.
+          description: Transformer tensors, or six native components for a Ming package.
           example: 920
         message:
           type: string
@@ -13150,6 +13165,10 @@ components:
       type: object
       required: [exportable, inventory, job]
       properties:
+        output_kind:
+          type: string
+          enum: [single_file, native_package]
+          description: Native package directory for Ming; single-file layout for other architectures.
         exportable:
           type: boolean
           description: True when the loaded transformer owns quantized Linear modules.

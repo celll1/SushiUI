@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import torch
 
-from .conditioning import MingConditioning
+from .conditioning import MingConditioning, apply_cfg_null_conditioning
 from .flow import flow_training_pair
 
 
@@ -71,10 +71,7 @@ def flow_loss(transformer, *, clean: torch.Tensor, noise: torch.Tensor,
             or conditioning.direct.shape[2] != transformer.config.dim):
         raise ValueError("Ming conditioning geometry disagrees with the native checkpoint")
     if cfg_drop_mask is not None:
-        if cfg_drop_mask.dtype != torch.bool or cfg_drop_mask.shape != (batch,):
-            raise ValueError("Ming CFG dropout mask must be boolean [B]")
-        keep = (~cfg_drop_mask).to(device=clean.device).reshape(batch, 1, 1)
-        conditioning = MingConditioning(conditioning.queries * keep, conditioning.direct * keep)
+        conditioning = apply_cfg_null_conditioning(conditioning, cfg_drop_mask)
     if reference_latents is not None:
         if len(reference_latents) != batch:
             raise ValueError("Ming references require one native tensor per training item")

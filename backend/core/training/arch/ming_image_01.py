@@ -6,6 +6,7 @@ from core.models.components.wiring import MING_IMAGE_01_WIRING
 
 
 class MingImage01ArchHandler(ArchHandler):
+    cfg_null_stage = "collated"
     name = "ming_image_01"
     wiring = MING_IMAGE_01_WIRING
     adapter_capability = declare_adapter_capability("ming_image_01",
@@ -53,11 +54,18 @@ class MingImage01ArchHandler(ArchHandler):
         from core.training.ops.ming_image_01_ops import vae_decode
         return vae_decode(trainer, latents, **kwargs)
 
+    def apply_cfg_null_collated(self, trainer, conditioning, auxiliary, drop_mask):
+        from core.models.ming_image_01.conditioning import apply_cfg_null_conditioning
+        return apply_cfg_null_conditioning(conditioning, drop_mask), auxiliary
+
     def train_step(self, trainer, ctx):
         from core.training.ops import ming_image_01_ops
         if ctx.ming_batch is None:
             raise ValueError("Ming training requires an aligned native RGBA/dual-conditioning batch")
-        return ming_image_01_ops.train_step(trainer, ctx.ming_batch, timesteps=ctx.timesteps, cfg_drop_mask=ctx.cfg_drop_mask)
+        from dataclasses import replace
+        conditioning, _ = self.apply_cfg_null_step(trainer, ctx, ctx.ming_batch.conditioning, None)
+        batch = replace(ctx.ming_batch, conditioning=conditioning)
+        return ming_image_01_ops.train_step(trainer, batch, timesteps=ctx.timesteps)
 
     def sample(self, trainer, sample_ctx):
         from core.training.ops import ming_image_01_ops

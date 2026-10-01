@@ -1505,6 +1505,7 @@ _CFG_NULL_STAGES: Dict[str, str] = {
     # mask_token, so the aligned null is a rewrite of the collated text MASK
     # alone (core/models/minit2i/minit2i_pipeline_ops.py::_predict_x0_cfg).
     "minit2i": "collated",
+    "ming_image_01": "collated",
     # Lens's inference uncond branch, when every negative is blank, is
     # `neg_features = [f.new_zeros(f.shape) for f in pos_features]` with
     # `neg_mask = torch.zeros_like(pos_mask, dtype=torch.bool)` at the POSITIVE's

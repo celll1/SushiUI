@@ -11,20 +11,21 @@ from core.training.full_parameter_trainer import FullParameterTrainer
 from core.models.ming_image_01.training_resume import RUNTIME_KEY
 
 
-@pytest.mark.parametrize("text_mode,groups,profile,caption_only,quantization,conditioner_quant", [
-    ("cpu_prefetch", [], "generation_edit", False, None, None),
-    ("onthefly_gpu", ["projections"], "generation_edit", False, None, None),
-    ("cpu_prefetch", [], "layer_decompose", False, None, None),
-    pytest.param("cpu_prefetch", [], "generation_edit", True, None, None, id="caption_design"),
-    pytest.param("cpu_prefetch", [], "layer_decompose", True, None, None, id="caption_layer"),
-    pytest.param("cpu_prefetch", [], "generation_edit", False, "int8", None, id="materialized_int8_design"),
-    pytest.param("cpu_prefetch", [], "layer_decompose", False, "int8_convrot", None, id="materialized_int8_convrot_layer"),
-    pytest.param("swap_onthefly", ["projections"], "generation_edit", False, None, "projection_int8", id="conditioner_projection_int8_design"),
-    pytest.param("swap_onthefly", ["projections"], "layer_decompose", False, None, "projection_convrot", id="conditioner_projection_convrot_layer"),
-    pytest.param("swap_onthefly", ["language","connector"], "generation_edit", False, None, "int8", id="conditioner_int8_design"),
-    pytest.param("swap_onthefly", ["language","connector"], "layer_decompose", False, None, "int8_convrot", id="conditioner_convrot_layer"),
+@pytest.mark.parametrize("text_mode,groups,profile,caption_only,quantization,conditioner_quant,cfg_rate", [
+    ("cpu_prefetch", [], "generation_edit", False, None, None, None),
+    ("onthefly_gpu", ["projections"], "generation_edit", False, None, None, None),
+    ("cpu_prefetch", [], "layer_decompose", False, None, None, None),
+    pytest.param("cpu_prefetch", [], "generation_edit", True, None, None, None, id="caption_design"),
+    pytest.param("cpu_prefetch", [], "layer_decompose", True, None, None, None, id="caption_layer"),
+    pytest.param("cpu_prefetch", [], "generation_edit", False, "int8", None, None, id="materialized_int8_design"),
+    pytest.param("cpu_prefetch", [], "layer_decompose", False, "int8_convrot", None, None, id="materialized_int8_convrot_layer"),
+    pytest.param("swap_onthefly", ["projections"], "generation_edit", False, None, "projection_int8", None, id="conditioner_projection_int8_design"),
+    pytest.param("swap_onthefly", ["projections"], "layer_decompose", False, None, "projection_convrot", None, id="conditioner_projection_convrot_layer"),
+    pytest.param("swap_onthefly", ["language","connector"], "generation_edit", False, None, "int8", None, id="conditioner_int8_design"),
+    pytest.param("swap_onthefly", ["language","connector"], "layer_decompose", False, None, "int8_convrot", None, id="conditioner_convrot_layer"),
+    pytest.param("cpu_prefetch", [], "layer_decompose", False, None, None, .5, id="cfg_null_mnt_layer"),
 ])
-def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monkeypatch, text_mode, groups, profile, caption_only, quantization, conditioner_quant):
+def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monkeypatch, text_mode, groups, profile, caption_only, quantization, conditioner_quant, cfg_rate):
     from core.training import latent_cache
     from core.training.ops import ming_image_01_ops
     monkeypatch.setattr(latent_cache, "get_cache_base_dir", lambda: str(tmp_path / "cache"))
@@ -71,6 +72,8 @@ def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monke
         "latent_encoding_mode": "swap_onthefly", "text_encoding_mode": text_mode,
         "train_unet": not caption_only, "train_adapter": True if caption_only else None,
         "adapter_lr": .0002 if caption_only else None}
+    if cfg_rate is not None:
+        config.update(cfg_uncond_drop_rate=cfg_rate,cfg_uncond_drop_per_mnt=True)
     if quantization or conditioner_quant:
         config["full_finetune_dequantize_int8_base"] = True
     def trainer(folder, resume=None):

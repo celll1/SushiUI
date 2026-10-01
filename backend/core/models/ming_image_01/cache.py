@@ -1,0 +1,135 @@
+"""Content-bound native Ming tensor caches with atomic CPU persistence."""
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import tempfile
+
+from safetensors import safe_open, SafetensorError
+from safetensors.torch import save_file
+import torch
+
+
+VERSION = 1
+KINDS = {"latents", "conditioning"}
+
+
+def identity_key(descriptor):
+    if not isinstance(descriptor, dict) or not descriptor:
+        raise ValueError("Ming cache requires an explicit identity descriptor")
+    return hashlib.sha256(json.dumps(descriptor, sort_keys=True, ensure_ascii=False,
+                                    allow_nan=False).encode()).hexdigest()
+
+
+def _tensor_hash(value):
+    if value.device.type != "cpu" or value.layout != torch.strided or value.is_quantized:
+        raise ValueError("Ming cache hashes require plain CPU tensors")
+    raw = value.detach().contiguous().reshape(-1).view(torch.uint8).numpy()
+    return hashlib.sha256(memoryview(raw)).hexdigest()
+
+
+def module_fingerprint(module):
+    """Call before residency changes; content identity must include actual weights."""
+    digest = hashlib.sha256()
+    for name, value in sorted(module.state_dict().items()):
+        digest.update(json.dumps([name, list(value.shape), str(value.dtype), _tensor_hash(value)]).encode())
+    return digest.hexdigest()
+
+
+def latent_identity(*, pixels, vae_weights, vae_config, dtype, execution):
+    return identity_key(dict(version=VERSION, kind="latents", pixels=pixels,
+        vae_weights=vae_weights, vae_config=vae_config, dtype=str(dtype),
+        layout="independent_rgba_frames_v1", posterior="mode", execution=execution))
+
+
+def conditioning_identity(*, pixels, captions, artifact_config, conditioner_weights, resolution, dtype, topology, execution):
+    return identity_key(dict(version=VERSION, kind="conditioning", pixels=pixels,
+        captions=captions, artifact_config=artifact_config, conditioner_weights=conditioner_weights,
+        resolution=resolution, dtype=str(dtype), topology=topology,
+        layout="native_queries_direct_v1", execution=execution))
+
+
+def _validate(kind, tensors):
+    if kind not in KINDS or not tensors:
+        raise ValueError("Unknown or empty Ming tensor cache")
+    if any(not isinstance(value, torch.Tensor) or not value.is_floating_point()
+           or value.device.type != "cpu" or min(value.shape, default=0) < 1
+           or not torch.isfinite(value).all() for value in tensors.values()):
+        raise ValueError("Ming cache tensors must be nonempty finite CPU floats")
+    if kind == "conditioning":
+        if (set(tensors) != {"queries", "direct"} or any(value.ndim != 3 for value in tensors.values())
+                or tensors["queries"].shape[0] != tensors["direct"].shape[0]
+                or tensors["queries"].dtype != tensors["direct"].dtype):
+            raise ValueError("Ming conditioning cache requires aligned dual streams")
+    else:
+        clean = tensors.get("clean")
+        if clean is None or clean.ndim != 5 or clean.shape[1] != 16:
+            raise ValueError("Ming latent cache requires [B, 16, F, H, W]")
+        for name, value in tensors.items():
+            if name == "clean": continue
+            if not name.startswith("reference_") or not name[10:].isdigit():
+                raise ValueError("Unknown Ming latent cache tensor role")
+            index = int(name[10:])
+            if (name != f"reference_{index}" or index >= clean.shape[0] or value.ndim != 4
+                    or value.shape[0] != 16 or value.shape[-2:] != clean.shape[-2:]):
+                raise ValueError("Ming cache references disagree with their native batch/grid")
+
+
+class MingTensorCache:
+    def __init__(self, root):
+        self.root = Path(root)
+
+    def _path(self, kind, key):
+        if kind not in KINDS or not isinstance(key, str) or len(key) != 64 or any(c not in "0123456789abcdef" for c in key):
+            raise ValueError("Invalid Ming cache kind/key")
+        return self.root / kind / (key + ".safetensors")
+
+    @staticmethod
+    def _frozen(kind, conditioner):
+        if kind == "conditioning" and (conditioner is None or not conditioner.cacheable):
+            raise ValueError("Ming conditioning persistence requires a completely frozen conditioner")
+
+    def write(self, kind, key, tensors, *, conditioner=None, cancelled=None):
+        self._frozen(kind, conditioner)
+        _validate(kind, tensors)
+        tensors = {name: value.detach().contiguous().clone() for name, value in tensors.items()}
+        path = self._path(kind, key)
+        metadata = {"version": str(VERSION), "kind": kind, "identity": key,
+            "tensors": json.dumps({name: [list(value.shape), str(value.dtype), _tensor_hash(value)]
+                                   for name, value in tensors.items()}, sort_keys=True)}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".ming-cache-", suffix=".tmp", delete=False) as handle:
+                temporary = Path(handle.name)
+            save_file(tensors, str(temporary), metadata=metadata)
+            if cancelled is not None and cancelled():
+                raise RuntimeError("Ming cache write cancelled")
+            os.replace(temporary, path)
+        finally:
+            if temporary is not None and temporary.exists(): temporary.unlink()
+
+    def read(self, kind, key, *, expected, conditioner=None):
+        self._frozen(kind, conditioner)
+        path = self._path(kind, key)
+        if not path.is_file(): return None
+        try:
+            with safe_open(str(path), framework="pt", device="cpu") as handle:
+                metadata = handle.metadata()
+                if (metadata is None or metadata.get("version") != str(VERSION)
+                        or metadata.get("kind") != kind or metadata.get("identity") != key
+                        or set(handle.keys()) != set(expected)):
+                    return None
+                spec = json.loads(metadata["tensors"])
+                tensors = {name: handle.get_tensor(name) for name in handle.keys()}
+            _validate(kind, tensors)
+            if set(spec) != set(tensors): return None
+            for name, value in tensors.items():
+                shape, dtype = expected[name]
+                actual = [list(value.shape), str(value.dtype), _tensor_hash(value)]
+                if tuple(value.shape) != tuple(shape) or value.dtype != dtype or spec[name] != actual:
+                    return None
+            return tensors
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError, SafetensorError):
+            return None

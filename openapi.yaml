@@ -695,11 +695,13 @@ paths:
                 quantized_linear_archs: [acestep, anima, flux2, ideogram4, krea2, ltx2, ming_image_01, minimax_h3, sensenova, zimage]
   /schema/generation-defaults:
     get:
-      description: Includes reference_guide defaults for initial UI entries (strength 0.4, range 0-800); existing ControlNet request-field defaults remain unchanged.
       summary: Get default parameter values for txt2img/img2img/inpaint generation
       description: |
         Single source of truth for generation defaults
         (`backend/api/param_defaults.py` `GENERATION_DEFAULTS`, split per mode).
+        `reference_guide` and `style_transfer` contain initial UI entry defaults.
+        Style Transfer uses strength 0.75, AdaIN 0.6, range 0-1000 and automatic
+        native block ranges; existing ControlNet request-field defaults are unchanged.
         The frontend fetches this at startup and applies it when no localStorage
         override is present.
 
@@ -14803,6 +14805,13 @@ components:
             model), preprocessor (string), enable_preprocessor (boolean, default false).
             Ming Reference Guide follows the MingReferenceGuide schema; omitted
             native-guide strength/range use reference_guide schema defaults.
+
+            Ming Style Transfer uses this existing transport, preserves RGBA reference
+            alpha, and supports native main-stream K/V, Q/K AdaIN, block ranges,
+            inclusive 0-1000 step windows, frequency curves, Value modes, stack and
+            common_concept mixing. Layer auxiliary frame zero is excluded from direct
+            statistics. Normal attention is required; partition execution, independent
+            Style Guidance, nonzero RoPE offset and late release are refused.
 
             Training-free reference-style transfer entries (is_style_transfer: true)
             additionally accept: style_transfer_type (string, "style" or "character",

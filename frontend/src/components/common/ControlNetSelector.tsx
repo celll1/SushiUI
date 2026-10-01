@@ -384,27 +384,11 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
   };
 
   const addStyleTransfer = () => {
-    // Determine the current combine mode from existing style-transfer entries
-    // (defaults to "stack" if this is the first entry, or none was set yet).
+    const defaults = generationDefaults?.style_transfer;
+    if (!defaults) return;
     const existingStyleEntry = value.find((cn) => cn.is_style_transfer);
-    const combineMode = existingStyleEntry?.style_combine_mode ?? "stack";
-
-    const newStyleTransfer: ControlNetConfig = {
-      model_path: "__style_transfer__",
-      strength: 0.75,
-      start_step: 0,
-      end_step: 1000,
-      is_lllite: false,
-      is_style_transfer: true,
-      enable_preprocessor: false,
-      style_adain_strength: 0.6,
-      // style_blocks intentionally left unset: the backend resolves an
-      // arch-aware proportional mid-late block range by default (see
-      // StyleTransferConfig.resolve_default_block_range). A fixed "7-27"
-      // range is only correct for a 28-block model and is wrong (too early)
-      // for archs with a different total block count (e.g. SDXL's 70).
-      style_combine_mode: combineMode,
-    };
+    const combineMode = existingStyleEntry?.style_combine_mode ?? defaults.style_combine_mode;
+    const newStyleTransfer: ControlNetConfig = { ...defaults, style_combine_mode: combineMode };
 
     // Keep style_combine_mode consistent across all style-transfer entries.
     // The backend only reads it from the first style entry, but writing it
@@ -611,12 +595,12 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
   };
 
   const styleTransferEntries = value.filter((cn) => cn.is_style_transfer);
-  const styleCombineMode = styleTransferEntries[0]?.style_combine_mode ?? "stack";
+  const styleCombineMode = styleTransferEntries[0]?.style_combine_mode ?? generationDefaults?.style_transfer?.style_combine_mode ?? "";
 
   return (
     <>
       <Card
-        title={`${mingNativeConditioning ? "Reference Guide" : "ControlNet"} (${value.length})`}
+        title={`${mingNativeConditioning ? "Reference Guide / Style Transfer" : "ControlNet"} (${value.length})`}
         collapsible={true}
         defaultCollapsed={false}
         storageKey={storageKey}
@@ -908,7 +892,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                       min={0}
                       max={1}
                       step={0.05}
-                      value={cn.style_adain_strength ?? 0.85}
+                      value={cn.style_adain_strength ?? generationDefaults?.style_transfer?.style_adain_strength ?? 0}
                       onChange={(e) => updateControlNet(index, { style_adain_strength: parseFloat(e.target.value) })}
                       disabled={disabled}
                     />
@@ -918,14 +902,20 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                       </label>
                       <input
                         type="text"
-                        value={cn.style_blocks ?? "7-27"}
+                        value={cn.style_blocks ?? ""}
                         onChange={(e) => updateControlNet(index, { style_blocks: e.target.value })}
                         disabled={disabled}
-                        placeholder="e.g. 7-27"
+                        placeholder="Automatic mid-late blocks (or e.g. 7-27)"
                         className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-gray-100 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                       />
                     </div>
                     <div>
+                      {mingNativeConditioning && (cn.style_guidance_scale ?? 0) > 0 && (
+                        <button type="button" disabled={disabled} className="text-sm text-amber-300"
+                          onClick={() => updateControlNet(index, { style_guidance_scale: 0 })}>
+                          Clear unsupported Style Guidance from this entry
+                        </button>
+                      )}
                       <Slider
                         label="Style Guidance"
                         min={0}
@@ -933,10 +923,10 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                         step={0.5}
                         value={cn.style_guidance_scale ?? 0}
                         onChange={(e) => updateControlNet(index, { style_guidance_scale: parseFloat(e.target.value) })}
-                        disabled={disabled}
+                        disabled={disabled || mingNativeConditioning}
                       />
                       <p className="text-xs text-gray-400 mt-1">
-                        Adds an extra guidance pass that strengthens style independently of the CFG scale (0 = off, classic behavior).
+                        {mingNativeConditioning ? "Ming uses conditional-branch style injection; independent Style Guidance is unavailable." : "Adds an extra guidance pass that strengthens style independently of the CFG scale (0 = off, classic behavior)."}
                         Useful when CFG is low or the style looks weak. Higher values increase style strength; very high values may erode content.
                       </p>
                     </div>
@@ -1146,9 +1136,9 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
         )}
 
         {mingNativeConditioning && <p className="text-xs text-amber-300">
-          Ming Reference Guide blends native RGBA target latents. Input references
-          and the Layer auxiliary canvas stay outside the blend. ControlNet and
-          style-KV conditioning are unavailable.
+          Ming Reference Guide blends native RGBA target latents. Style Transfer
+          captures target K/V with normal attention; Layer frame zero is excluded
+          from direct style statistics. Partition mode cannot use either option.
         </p>}
         {/* Add ControlNet / Reference Guide Buttons */}
         <div className="flex gap-2">
@@ -1172,7 +1162,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
           </Button>
           <Button
             onClick={addStyleTransfer}
-            disabled={disabled || mingNativeConditioning}
+            disabled={disabled || !generationDefaults?.style_transfer}
             variant="secondary"
             className="flex-1"
           >

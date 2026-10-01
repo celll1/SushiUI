@@ -1785,7 +1785,7 @@ def _list_checkpoint_entries(
     """Return the checkpoint *entry* files under ``output_dir``.
 
     An entry is a single-file ``*.safetensors`` save, a sharded index, or a
-    production-loadable Chimera artifact directory containing ``chimera.json``.
+    production-loadable Chimera or Ming artifact directory.
     Shard MEMBER files
     (``-NNNNN-of-NNNNN.safetensors``) are excluded — they belong to their index.
     ``exclude_substr`` drops entries whose name contains it (e.g.
@@ -1803,8 +1803,15 @@ def _list_checkpoint_entries(
 
     entries: List[Path] = []
     for p in output_dir.glob("*_step_*"):
-        if not p.is_dir() or not (p / "chimera.json").is_file():
+        if not p.is_dir():
             continue
+        if not (p / "chimera.json").is_file():
+            try:
+                manifest = json.loads((p / "manifest.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(manifest, dict) or manifest.get("model_type") != "ming_image_01":
+                continue
         if _is_excluded(p.name):
             continue
         entries.append(p)
@@ -15711,6 +15718,7 @@ class BaseTrainer(ABC):
 
         if getattr(self, "is_ming_image_01", False):
             self.ming_prompt_resolution = max(base_resolutions or _TRAINING_DEFAULTS["base_resolutions"])
+            self.bucket_strategy = bucket_strategy
 
         self._training_datasets = datasets
         self._annotate_ming_items(datasets)

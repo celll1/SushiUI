@@ -727,3 +727,33 @@ the complete `train()`/normal runner and optimizer/RNG/scaler resume acceptance
 are still pending, so normal training capability remains unavailable. No GPU/live
 API was used. Full Qwen parity, sampling/export and advanced surfaces remain
 active scope; removal of the temporary mode override alone is not completion.
+
+
+### Real full-parameter CPU lifecycle milestone
+
+The actual FullParameterTrainer constructor and common train() now run with a
+six-component tiny native CPU artifact carrying a saved U-Net topology. The
+selected bucket strategy is retained for native paired transforms; previously
+this attribute was absent at the real entry point. Checkpoint discovery now
+includes Ming manifest directories, enabling latest resume and shared retention.
+Unrelated or malformed manifests are excluded without inspecting weight contents.
+
+Five real training configurations verify forward/backward/AdamW updates and
+periodic bundle/state/optimizer saving: on-the-fly, swap, persistent cache,
+CPU conditioning prefetch, and trainable projections (whose updates are checked).
+A latest-resume CPU case reloads exact trained DiT weights and U-Net topology,
+restores optimizer history and reaches the second update (all AdamW steps = 2).
+The reusable native-package fixture also retains its existing loader/export
+round-trip test. Tests use temporary datasets/cache/run outputs, no official
+weights, GPU or live API. The staged public capability refusal is overridden
+only inside the test, and remains unchanged in production.
+
+This proves a small FP32 Design full-parameter lifecycle, not all acceptance
+conditions: production runner/API wiring, Layer profile whole-loop supervision,
+mid-epoch/MNT/gradient-accumulation RNG and scaler parity, sampling/worker/export
+coordination, other training methods and all remaining Qwen feature parity are
+still active work. Normal training capability remains staged pending those gates.
+
+Milestone verification: 11 affected CPU lifecycle/discovery/interrupted-save and
+native-package round-trip cases pass. Changed Python files compile and the real
+FullParameterTrainer imports with CUDA initialization forbidden.

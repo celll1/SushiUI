@@ -387,6 +387,8 @@ now defines ordered RGBA targets, explicit auxiliary-canvas supervision weights,
 root-contained references, matching crops/flips and frame-count batch identity.
 23 dedicated CPU tests pass, including actual tiny native VAE/conditioner/DiT
 backward and optimizer updates through the registered handler. Shared image
-encoding retains Ming alpha. This is the native data bridge; normal discovery,
-cache and optimization-loop/resume orchestration remain pending and capabilities
+encoding retains Ming alpha. Shared discovery and epoch refresh now attach these records; compatible
+frame/grid boundaries are enforced before batch ledgers. Content/roles/weights
+also enter shared fingerprints, concept digests and resume ledgers. Cache,
+optimization-loop and exact optimizer-resume orchestration remain pending; capabilities
 stay unavailable until connected. No main API, official weights or GPU was used.

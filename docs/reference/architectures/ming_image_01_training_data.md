@@ -1,8 +1,9 @@
 # Ming-Image 0.1 training data contract
 
 The native dataset reader is CPU-verified. Normal training remains unavailable
-until shared dataset discovery, caches, the optimization loop and exact resume
-are connected. This format supplies supervision; it does not invent ground-truth
+until shared caches, the optimization loop and exact optimizer resume are
+connected. Shared dataset discovery and epoch refresh now attach these records.
+This format supplies supervision; it does not invent ground-truth
 layers from a flat image or promise quality recovery.
 
 ## Profiles and ordered targets
@@ -65,3 +66,27 @@ through the real tiny native VAE, MLLM conditioner, registered training handler,
 backward and AdamW updates. The shared `BaseTrainer.encode_image` also preserves
 Ming alpha. CUDA initialization is prohibited in these tests. This evidence
 does not claim that a normal training request or optimizer resume works yet.
+
+### Shared discovery and resume identity
+
+The train-runner dataset wrapper preserves the catalog's explicit dataset root.
+At setup and after epoch reload, the shared trainer attaches native records.
+Layer target/reference assets without their own primary sidecar are excluded
+from sample discovery; an unrelated loose image is refused. A primary with its
+own sidecar remains a separate sample even if another sample references it.
+Validation completes across all datasets before item lists are changed.
+
+Bucket metadata carries the fresh record, frame signature and supervision
+identity with each epoch's caption. Planned boundaries and repeated priority
+occurrences are preserved when incompatible frame/grid groups are split.
+Concept ordering groups native frame signatures before creating its plan,
+allowing ragged reference counts. Shared dataset fingerprints, concept digests
+and checkpoint batch ledgers additionally identify ordered source content,
+roles and loss weights. The existing ledger resolver refuses changed Ming
+supervision. This is data-cursor evidence, not proof of optimizer/RNG/scaler
+resume or a functioning normal training request.
+
+The discovery/epoch/batch additions pass 37 related CPU checks; after supervision
+identity was wired, 15 affected concept/resume checks passed. Full backward
+coverage from the native data reader remains applicable. Other architectures'
+manifest/digest formats are unchanged when no Ming metadata is present.

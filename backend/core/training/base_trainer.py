@@ -4214,11 +4214,22 @@ class BaseTrainer(ABC):
 
     @staticmethod
     def _sensenova_bucket_metadata(item):
-        return {
+        metadata = {
             key: item[key]
-            for key in ("_sensenova_task_views", "_captions_by_type")
+            for key in ("_sensenova_task_views", "_captions_by_type",
+                        "_ming_record", "_ming_batch_signature", "_ming_supervision_identity")
             if key in item
         }
+        if "_ming_record" in item:
+            metadata["reference_images"] = item.get("reference_images") or []
+            metadata["has_reference"] = bool(metadata["reference_images"])
+        return metadata
+
+    def _annotate_ming_items(self, datasets):
+        if not getattr(self, "is_ming_image_01", False):
+            return 0
+        from core.models.ming_image_01.dataset import annotate_datasets
+        return annotate_datasets(datasets, profile=self.ming_image_01_components.artifact.profile)
 
     def _prepare_epoch_items(self, datasets, epoch, run_id, bucket_manager, base_resolutions):
         """Materialize one epoch's ``[(item, dataset)]`` and re-establish the invariants
@@ -4240,6 +4251,9 @@ class BaseTrainer(ABC):
             else:
                 print(f"{self.log_prefix} Using pre-loaded dataset {dataset.unique_id} for "
                       f"epoch {epoch + 1} ({len(dataset.items)} items)")
+
+        if getattr(self, "is_ming_image_01", False):
+            self._annotate_ming_items(datasets)
 
         # Video items carry their VideoBucketManager annotation (bucket dims,
         # clip_length, stride, target_fps) on the item dict, and a reload keeps only
@@ -5232,6 +5246,7 @@ class BaseTrainer(ABC):
         dataset_ids = []
         all_image_paths = []
         task_eligibility = []
+        ming_supervision = []
         explicit_tasks = bool((getattr(self, "config", None) or {}).get(
             "_sensenova_explicit_tasks"
         ))
@@ -5243,6 +5258,9 @@ class BaseTrainer(ABC):
             for item in dataset.items:
                 # Only include image_path - captions are intentionally excluded
                 all_image_paths.append(item.get("image_path", ""))
+                if "_ming_supervision_identity" in item:
+                    ming_supervision.append((str(dataset.unique_id), item.get("image_path", ""),
+                                             item["_ming_supervision_identity"]))
                 if explicit_tasks:
                     eligible = eligible_task_views(item)
                     indexes = [
@@ -5266,6 +5284,10 @@ class BaseTrainer(ABC):
             "total_item_count": len(all_image_paths),
             "image_paths_hash": paths_hash,
         }
+        if ming_supervision:
+            result["ming_supervision_hash"] = hashlib.sha256(
+                json.dumps(sorted(ming_supervision), ensure_ascii=False).encode("utf-8")
+            ).hexdigest()
         if explicit_tasks:
             result["sensenova_task_eligibility_hash"] = hashlib.sha256(
                 "\n".join(task_eligibility).encode("utf-8")
@@ -5396,6 +5418,11 @@ class BaseTrainer(ABC):
 
         if saved_fingerprint.get("dataset_ids") != current_fingerprint.get("dataset_ids"):
             print(f"{self.log_prefix} Dataset IDs changed: {saved_fingerprint.get('dataset_ids')} -> {current_fingerprint.get('dataset_ids')}")
+            return True
+
+        current_ming_hash = current_fingerprint.get("ming_supervision_hash")
+        if current_ming_hash is not None and saved_fingerprint.get("ming_supervision_hash") != current_ming_hash:
+            print(f"{self.log_prefix} Ming supervision changed (hash mismatch)")
             return True
 
         current_task_hash = current_fingerprint.get("sensenova_task_eligibility_hash")
@@ -15668,6 +15695,7 @@ class BaseTrainer(ABC):
             latent_encoding_mode = "onthefly_gpu"
 
         self._training_datasets = datasets
+        self._annotate_ming_items(datasets)
         self._sample_prompts = sample_prompts or [
             dict(prompt) for prompt in _TRAINING_DEFAULTS["sample_prompts"]
         ]
@@ -17708,6 +17736,10 @@ class BaseTrainer(ABC):
                         random.shuffle(_shuffled_image_items)
                         batches = [_shuffled_image_items[i:i+batch_size] for i in range(0, len(_shuffled_image_items), batch_size)]
                         batches = batches + ltx2_video_batches + acestep_audio_batches
+
+                if getattr(self, "is_ming_image_01", False):
+                    from core.models.ming_image_01.dataset import homogeneous_batches
+                    batches = homogeneous_batches(batches)
 
                 batches = self._drop_unfittable_batches(batches)
                 if self._concept_exposure is not None:

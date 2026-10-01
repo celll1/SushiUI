@@ -32,10 +32,12 @@ def _item_id(pair: tuple[dict, Any]) -> tuple[str, str]:
     return str(getattr(dataset, "unique_id", item.get("dataset_unique_id", ""))), str(item["image_path"])
 
 
-def _bucket_key(item: dict) -> tuple[int, int, bool]:
-    return (int(item.get("bucket_width") or item.get("width") or 0),
-            int(item.get("bucket_height") or item.get("height") or 0),
-            bool(item.get("reference_images") or item.get("_ve_reconstruction_mode")))
+def _bucket_key(item: dict) -> tuple:
+    spatial = (int(item.get("bucket_width") or item.get("width") or 0),
+               int(item.get("bucket_height") or item.get("height") or 0))
+    if "_ming_batch_signature" in item:
+        return (*spatial, *item["_ming_batch_signature"])
+    return (*spatial, bool(item.get("reference_images") or item.get("_ve_reconstruction_mode")))
 
 
 def _caption_matches(caption: str, aliases: list[str]) -> bool:
@@ -235,9 +237,11 @@ def _batch_digest(batches: list[list[tuple[dict, Any]]],
         for pair in batch:
             item = pair[0]
             crop = item.get("_crop_spec")
-            members.append((_item_id(pair), _bucket_key(item),
-                            item.get("reference_images"),
-                            asdict(crop) if is_dataclass(crop) else str(crop)))
+            member = (_item_id(pair), _bucket_key(item), item.get("reference_images"),
+                      asdict(crop) if is_dataclass(crop) else str(crop))
+            if "_ming_supervision_identity" in item:
+                member += (item["_ming_supervision_identity"],)
+            members.append(member)
         digest.update(json.dumps((name, repeated, members), ensure_ascii=False,
                                  sort_keys=True, default=str).encode("utf-8"))
         digest.update(b"\n")

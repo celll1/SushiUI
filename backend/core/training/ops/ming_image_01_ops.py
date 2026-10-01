@@ -41,3 +41,50 @@ def train_step(trainer, batch, *, timesteps=None, cfg_drop_mask=None):
     if getattr(trainer, "_collect_concept_sample_loss", False):
         trainer._pending_concept_sample_loss = ((1 - weight) * result.per_item_loss + weight * per_item_recon).detach()
     return loss, result.loss.detach(), reconstruction.detach()
+
+
+def load_components(trainer):
+    from core.models.ming_image_01.loader import load_components as native_load
+    from core.models.ming_image_01.training_options import resolve_ownership
+    from core.models.ming_image_01.residual_unet import configure_training_topology
+    components = native_load(trainer.model_path, dtype=trainer.weight_dtype, conditioner_attention="eager")
+    configure_training_topology(components.transformer, trainer.config,
+                                resuming=bool(getattr(trainer, "resume_from_checkpoint", None)))
+    groups, rates = resolve_ownership(trainer.config)
+    trainer.ming_image_01_components = components
+    trainer.ming_conditioner_trainable_groups, trainer.ming_conditioner_lrs = groups, rates
+    trainer.train_text_encoder = bool(groups)
+    components.conditioner.set_trainable(groups)
+    trainer.transformer = trainer.transformer_original = components.transformer
+    trainer.vae = components.vae.to(dtype=trainer.vae_dtype)
+    trainer.text_encoder, trainer.processor = components.conditioner, components.processor
+    trainer.scheduler = trainer.noise_scheduler = components.scheduler
+    trainer.unet = trainer.text_encoder_2 = trainer.tokenizer_2 = trainer.t5_tokenizer = None
+    trainer.tokenizer = components.processor.tokenizer
+
+
+def encode_prompt(trainer, prompt, *, requires_grad=False):
+    from core.models.ming_image_01.prompting import prepare_inputs, encode_inputs
+    width, height, resolution = trainer.ming_prompt_geometry
+    prepared = prepare_inputs(trainer.processor, [prompt], references=[[]],
+                              width=width, height=height, resolution=resolution)
+    return encode_inputs(trainer.text_encoder, prepared, requires_grad=requires_grad)
+
+
+def vae_encode(trainer, pixels, **kwargs):
+    from core.models.ming_image_01.training_data import encode_frames
+    if pixels.ndim == 4:
+        pixels = pixels.unsqueeze(2)
+    return encode_frames(trainer.vae, pixels)
+
+
+def vae_decode(trainer, latents, **kwargs):
+    if latents.ndim != 5:
+        raise ValueError("Ming sample latents require independent [B, C, F, H, W] frames")
+    result = []
+    for frame in latents.unbind(2):
+        value = frame.to(device=trainer.vae.device, dtype=trainer.vae.dtype).unsqueeze(2)
+        shift = torch.as_tensor(trainer.vae.config.shift_factor, device=value.device, dtype=value.dtype)
+        scale = torch.as_tensor(trainer.vae.config.scaling_factor, device=value.device, dtype=value.dtype)
+        result.append(trainer.vae.decode(value / scale + shift, return_dict=False)[0].squeeze(2))
+    return torch.stack(result, dim=2)

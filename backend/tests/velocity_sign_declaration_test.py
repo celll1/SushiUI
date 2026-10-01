@@ -43,10 +43,10 @@ from core.training.ops.x0_recovery import VELOCITY_SIGNS, predict_x0  # noqa: E4
 OPS_DIR = BACKEND / "core" / "training" / "ops"
 BASE_TRAINER = BACKEND / "core" / "training" / "base_trainer.py"
 
-CLEAN_NAMES = {"latents", "x0", "x0_a", "images", "x0_tokens"}
+CLEAN_NAMES = {"clean", "latents", "x0", "x0_a", "images", "x0_tokens"}
 NOISE_NAMES = {"noise", "eps", "eps_v", "eps_a"}
 TARGET_NAMES = {"target", "v_target", "target_v", "target_a"}
-X0_NAME = re.compile(r"(^|_)pred_x0|predicted_latent")
+X0_NAME = re.compile(r"(^|_)pred_x0|predicted_latent|^recovered$")
 
 
 def _names(node: ast.AST) -> Set[str]:
@@ -97,6 +97,13 @@ def _get_target_unified_sign() -> Optional[str]:
 def target_sign(ops_path: Path) -> Optional[str]:
     """The sign of the velocity TARGET this ops module regresses onto."""
     tree = ast.parse(ops_path.read_text(encoding="utf-8"))
+    if any(isinstance(node, ast.ImportFrom) and node.module == "core.models.ming_image_01.training"
+           and any(item.name == "flow_loss" for item in node.names) for node in ast.walk(tree)):
+        flow_path = BACKEND / "core/models/ming_image_01/flow.py"
+        flow_tree = ast.parse(flow_path.read_text(encoding="utf-8"))
+        pair = next(node for node in flow_tree.body if isinstance(node, ast.FunctionDef) and node.name == "flow_training_pair")
+        returned = next(node for node in ast.walk(pair) if isinstance(node, ast.Return))
+        return _unique(_differences(returned.value.elts[1]), str(flow_path))
     signs, indirect = [], False
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assign):
@@ -180,7 +187,7 @@ class DeclarationTest(unittest.TestCase):
         self.assertEqual(
             seen,
             {"anima", "flux2", "ideogram4", "krea2", "lens", "ltx2",
-             "minimax_h3", "acestep"},
+             "minimax_h3", "acestep", "ming_image_01"},
             "the set of archs recovering x_0 inline changed; a new inline copy is a "
             "new place the sign can be dropped silently",
         )

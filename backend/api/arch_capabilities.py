@@ -245,6 +245,10 @@ def _add_training_unsupported(arch: str, method: str, reason: str) -> None:
 # separate config surface and is not filtered from these tables).
 TRAINING_METHODS = ("lora", "relora", "full_finetune", "controlnet")
 
+for _method in TRAINING_METHODS:
+    _add_training_unsupported("ming_image_01", _method,
+        "Ming native load/objective handlers are registered; shared dataset, optimization-loop and resume integration are pending")
+
 # Every architecture with a training arch handler. Mirrors
 # `core.training.arch.ARCH_REGISTRY`, which cannot be imported here (it pulls
 # the whole trainer stack into the API process); `training_capability_test.py`
@@ -253,7 +257,7 @@ TRAINING_METHODS = ("lora", "relora", "full_finetune", "controlnet")
 TRAINING_DECLARED_ARCHS = frozenset({
     "sd15", "sdxl", "zimage", "anima", "lens", "ideogram4", "minit2i",
     "krea2", "qwen_image_21", "flux2", "ltx2", "minimax_h3", "acestep", "sensenova",
-    "sensenova_sdxl_chimera", "yue2",
+    "sensenova_sdxl_chimera", "yue2", "ming_image_01",
 })
 
 # ---------------------------------------------------------------------------
@@ -1425,6 +1429,9 @@ for _a in ("sd15", "sdxl", "sensenova_sdxl_chimera"):
     _add_training_feature_unsupported(
         _a, "lr_layer_decay",
         "layer-wise LR decay needs the blocks in one forward order to measure depth on; a U-Net's down blocks, mid block and up blocks are joined by skip connections, so its blocks have no total order by depth (arch/sd15.py and arch/sdxl.py leave ArchHandler.depth_blocks at its None default)")
+
+_add_training_feature_unsupported("ming_image_01", "block_swap",
+    "Ming native block offload integration is pending")
 
 # --- REPA (representation alignment) ----------------------------------------
 # REPA needs a block whose output is a full image grid, exposed by

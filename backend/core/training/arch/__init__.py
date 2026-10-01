@@ -29,6 +29,7 @@ from core.training.arch.ideogram4 import Ideogram4ArchHandler
 from core.training.arch.minit2i import MiniT2IArchHandler
 from core.training.arch.krea2 import Krea2ArchHandler
 from core.training.arch.qwen_image_21 import QwenImage21ArchHandler
+from core.training.arch.ming_image_01 import MingImage01ArchHandler
 from core.training.arch.flux2 import Flux2ArchHandler
 from core.training.arch.ltx2 import Ltx2ArchHandler
 from core.training.arch.minimax_h3 import MiniMaxH3ArchHandler
@@ -47,6 +48,7 @@ ARCH_REGISTRY: Dict[str, Type[ArchHandler]] = {
     "minit2i": MiniT2IArchHandler,
     "krea2": Krea2ArchHandler,
     "qwen_image_21": QwenImage21ArchHandler,
+    "ming_image_01": MingImage01ArchHandler,
     "flux2": Flux2ArchHandler,
     "ltx2": Ltx2ArchHandler,
     "minimax_h3": MiniMaxH3ArchHandler,
@@ -60,7 +62,7 @@ ARCH_REGISTRY: Dict[str, Type[ArchHandler]] = {
 _EXPECTED_ARCH_KEYS = {
     "sd15", "sdxl", "zimage", "anima", "lens",
     "ideogram4", "minit2i", "krea2", "qwen_image_21", "flux2", "ltx2", "acestep",
-    "minimax_h3", "sensenova", "sensenova_sdxl_chimera", "yue2",
+    "minimax_h3", "sensenova", "sensenova_sdxl_chimera", "yue2", "ming_image_01",
 }
 assert set(ARCH_REGISTRY) == _EXPECTED_ARCH_KEYS, (
     f"ARCH_REGISTRY keys {set(ARCH_REGISTRY)} != expected {_EXPECTED_ARCH_KEYS} "
@@ -74,6 +76,8 @@ def resolve_arch_name(trainer: Any) -> str:
 
     Falls through to ``"sd15"`` (today's ``else`` behavior — SD1.5/SDXL share the
     flag set; ``is_sdxl`` distinguishes SDXL, everything else is SD1.5)."""
+    if getattr(trainer, "is_ming_image_01", False):
+        return "ming_image_01"
     if getattr(trainer, "is_acestep", False):
         return "acestep"
     if getattr(trainer, "is_ltx2", False):

@@ -8,12 +8,13 @@ MiniMax Music 3, YuE2). `ModelType` in `backend/core/model_loader.py` is the
 authoritative generation list. `ARCH_REGISTRY` in
 `backend/core/training/arch/__init__.py` is the authoritative
 *training-capable* list (a module-level assertion pins it against the
-trainer's cache-namespace keys) — it has 16 entries; MiniMax Music 3 is
+trainer's cache-namespace keys) — it has 17 entries; MiniMax Music 3 is
 generation-only, while YuE2 exposes ABC-planner LoRA only. See
 `docs/guides/MINIMAX_MUSIC3_DESIGN.md` and the
 `yue2` row in `docs/guides/MODEL_FACTS.md` for those boundaries.
 `docs/guides/MODEL_FACTS.md` holds the
 per-architecture facts.
+Ming has a staged native training handler; shared dataset/loop/resume integration remains pending and its training methods are unavailable.
 
 Ming-Image 0.1 has native Design/Layer generation and package inspection
 (`ModelType` has 18 entries). Native CPU integration is verified; official-weight

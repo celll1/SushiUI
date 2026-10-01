@@ -8,7 +8,7 @@ MiniMax-H3, both of which also generate audio jointly) and 3 audio (ACE-Step
 training, and a Next.js frontend (`frontend/`). The authoritative *generation*
 list is `ModelType` in `backend/core/model_loader.py`; the authoritative
 *training-capable* list is `ARCH_REGISTRY` in
-`backend/core/training/arch/__init__.py` (16 entries — MiniMax Music 3 is
+`backend/core/training/arch/__init__.py` (17 entries — MiniMax Music 3 is
 generation-only; YuE2 trains Phase-A ABC-planner LoRA only). SenseNova U1.5 trains LoRA and either
 MoT half by full parameter, refuses `relora` and `controlnet`, and carries a
 per-run contract enforced before the model loads — the contract itself lives in
@@ -27,6 +27,7 @@ versioned REST API under `/api/v1` (see `openapi.yaml`), so agents can drive
 and verify most changes without touching the UI. This file is the durable,
 checked-in subset of repo conventions for coding agents; read it before making
 changes.
+Ming has a staged native training handler; shared dataset/loop/resume integration remains pending and its training methods are unavailable.
 
 Ming-Image 0.1 has native Design/Layer generation and package inspection
 (`ModelType` has 18 entries). Native CPU integration is verified; official-weight

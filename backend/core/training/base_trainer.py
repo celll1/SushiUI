@@ -3352,6 +3352,7 @@ class BaseTrainer(ABC):
         self.is_minit2i = (model_type == "minit2i")
         self.is_krea2 = (model_type == "krea2")
         self.is_qwen_image_21 = (model_type == "qwen_image_21")
+        self.is_ming_image_01 = (model_type == "ming_image_01")
         self.is_ltx2 = (model_type == "ltx2")
         self.is_minimax_h3 = (model_type == "minimax_h3")
         self.is_acestep = (model_type == "acestep")
@@ -3373,7 +3374,10 @@ class BaseTrainer(ABC):
             minit2i_ops, krea2_ops, qwen_image_21_ops, flux2_ops, ltx2_ops, acestep_ops,
             minimax_h3_ops, sensenova_ops, sensenova_sdxl_chimera_ops, yue2_ops,
         )
-        if self.is_yue2:
+        if self.is_ming_image_01:
+            from core.training.ops import ming_image_01_ops
+            ming_image_01_ops.load_components(self)
+        elif self.is_yue2:
             yue2_ops.load_components(self)
         elif self.is_sensenova:
             sensenova_ops.load_components(self)
@@ -4437,6 +4441,7 @@ class BaseTrainer(ABC):
         self.is_minit2i = (model_type == "minit2i")
         self.is_krea2 = (model_type == "krea2")
         self.is_qwen_image_21 = (model_type == "qwen_image_21")
+        self.is_ming_image_01 = (model_type == "ming_image_01")
         self.is_ltx2 = (model_type == "ltx2")
         self.is_minimax_h3 = (model_type == "minimax_h3")
         self.is_acestep = (model_type == "acestep")
@@ -4444,6 +4449,12 @@ class BaseTrainer(ABC):
         self.is_sensenova_sdxl_chimera = (model_type == "sensenova_sdxl_chimera")
         self.is_yue2 = (model_type == "yue2")
         self.is_sdxl = False
+
+        if self.is_ming_image_01:
+            self.model_path = checkpoint_path
+            from core.training.ops import ming_image_01_ops
+            ming_image_01_ops.load_components(self)
+            return
 
         if self.is_ltx2:
             self.model_path = checkpoint_path

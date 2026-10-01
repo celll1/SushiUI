@@ -966,3 +966,26 @@ authoritative capability reason. Changed Python files compile and real-import
 under the CUDA guard, and the updated OpenAPI parses successfully. No running API, server, official weights or physical GPU
 was used. Full runner subprocess/DB execution and production CUDA validation
 remain unverified; advanced Qwen feature parity is still active work.
+
+
+### Native DiT attention conduit
+
+Generation `attention_type` and the trainer's resolved backend now install the
+common conduit in the native noise/context refiners and main DiT blocks. Native
+Q/K normalization, FP32 complex RoPE and output projections remain intact.
+Ragged key-only padding packs valid K/V rows while retaining every query row;
+query-dependent masks and all-masked samples retain the dense masked path.
+Shared dtype/head-dimension/kernel/trainability guards select an available
+backend. SLA and legacy diffusers dispatch remain refused. The conditioner
+continues to use its native eager implementation. No parameter keys change.
+
+Thirty-nine affected CPU cases pass: both native padding profiles, dense and
+nested U-Net output/input/parameter-gradient comparisons, packed backend
+contracts, inference-only backend training fallback, generation selection,
+trainer resolution, existing pipeline operations and mutable block offload.
+Packed Flash/Sage contract tests substitute CPU kernels; they do not execute
+those GPU implementations. Python compilation, CUDA-guarded real imports and
+OpenAPI parsing are checked at this milestone. Frontend request/settings/queue
+paths were reviewed statically; owner build/type checking remains pending.
+No running API, server, official weights or physical GPU was used. Advanced
+Qwen feature parity remains in progress.

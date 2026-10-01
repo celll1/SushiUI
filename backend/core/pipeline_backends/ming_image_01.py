@@ -65,6 +65,12 @@ class MingImage01Mixin:
             generator.sampler.profile.validate_task(task, has_reference_image=bool(images), num_layers=layers)
         except ValueError as exc:
             raise ValidationError(str(exc)) from exc
+        from core.models.ming_image_01.attention import install_attention
+        try:
+            install_attention(components.transformer, resolved["attention_type"])
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        self.current_attention_type = resolved["attention_type"]
         if resolved["negative_prompt"]:
             raise ValidationError("Ming native CFG uses zero conditioning; negative prompts are unsupported")
         if resolved.get("loras"):

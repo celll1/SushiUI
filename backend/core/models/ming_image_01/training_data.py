@@ -22,6 +22,41 @@ class MingTrainingBatch:
             None if self.reference_latents is None else self.reference_latents[start:end])
 
 
+def shared_step_inputs(batch):
+    """One differentiable transport tensor keeps both streams in shared graph replay."""
+    queries, direct = batch.conditioning.queries, batch.conditioning.direct
+    if queries.ndim != 3 or direct.ndim != 3 or queries.shape[0] != direct.shape[0]:
+        raise ValueError("Ming conditioning requires aligned [B, sequence, width] streams")
+    if queries.device != direct.device or queries.dtype != direct.dtype or min(*queries.shape, *direct.shape) < 1:
+        raise ValueError("Ming conditioning streams require matching device/dtype and nonempty axes")
+    width = max(queries.shape[2], direct.shape[2])
+    packed = torch.cat((torch.nn.functional.pad(queries, (0, width-queries.shape[2])),
+                        torch.nn.functional.pad(direct, (0, width-direct.shape[2]))), dim=1)
+    aux = {"ming_layout": (queries.shape[1], queries.shape[2], direct.shape[2]),
+           "ming_frame_weights": batch.frame_weights}
+    return packed, aux, batch.reference_latents
+
+
+def native_step_batch(clean, packed, aux, references):
+    if not isinstance(aux, dict) or set(aux) != {"ming_layout", "ming_frame_weights"}:
+        raise ValueError("Ming shared step requires explicit native layout and frame weights")
+    layout = aux["ming_layout"]
+    if not isinstance(layout, (tuple, list)) or len(layout) != 3 or any(type(v) is not int or v < 1 for v in layout):
+        raise ValueError("Invalid Ming conditioning transport layout")
+    length, query_width, direct_width = layout
+    if (not isinstance(packed, torch.Tensor) or packed.ndim != 3 or packed.shape[0] != clean.shape[0]
+            or packed.shape[1] <= length or packed.shape[2] != max(query_width, direct_width)):
+        raise ValueError("Ming shared step tensor disagrees with its native layout")
+    weights = aux["ming_frame_weights"]
+    if clean.ndim != 5 or not isinstance(weights, torch.Tensor) or weights.shape != (clean.shape[0], clean.shape[2]):
+        raise ValueError("Ming shared step requires native frames and aligned supervision weights")
+    if references is not None and len(references) != clean.shape[0]:
+        raise ValueError("Ming shared reference list disagrees with its batch")
+    return MingTrainingBatch(clean,
+        MingConditioning(packed[:, :length, :query_width], packed[:, length:, :direct_width]),
+        weights, references)
+
+
 @torch.no_grad()
 def encode_frames(vae, pixels):
     """The Layer F axis is independent images, never VAE temporal compression."""

@@ -90,3 +90,20 @@ The discovery/epoch/batch additions pass 37 related CPU checks; after supervisio
 identity was wired, 15 affected concept/resume checks passed. Full backward
 coverage from the native data reader remains applicable. Other architectures'
 manifest/digest formats are unchanged when no Ming metadata is present.
+
+
+### Shared execution transport
+
+After native preparation, `shared_step_inputs` packages the two conditioning
+streams into one tensor plus explicit `(query_length, query_width, direct_width)`
+layout and per-frame weights. The shared loop's auxiliary dict is a typed
+transport envelope. Reference latents stay in the shared per-item reference list,
+so microchunk slicing retains ragged lists including absent references. Native
+dispatch validates the envelope and restores `MingTrainingBatch` before the loss.
+
+The transport tensor keeps both encoder output graphs reachable through the
+common two-stage microbatch replay. Native streams and their gradients are
+preserved while unused feature columns are padded with zero. CPU tests compare
+all model/conditioner gradients with an unsplit batch under the same noise,
+sigmas and CFG-drop mask. This execution bridge is connected to shared backward;
+normal item assembly/cache and complete resume remain pending.

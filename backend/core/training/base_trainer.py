@@ -12179,7 +12179,15 @@ class BaseTrainer(ABC):
                     cfg_drop_mask=cfg_drop_mask,
                 )
         # Forward pass (architecture-specific)
-        if self.is_sensenova:
+        if getattr(self, "is_ming_image_01", False):
+            from core.models.ming_image_01.training_data import native_step_batch
+            from core.training.arch.base_arch import TrainStepContext
+            native_batch = native_step_batch(mnt_latents, mnt_text_embeddings,
+                                             mnt_attention_mask, reference_latents_nested)
+            ctx = TrainStepContext(latents=mnt_latents, ming_batch=native_batch,
+                                   timesteps=timesteps, cfg_drop_mask=cfg_drop_mask)
+            loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
+        elif self.is_sensenova:
             from core.training.arch.base_arch import TrainStepContext
             ctx = TrainStepContext(
                 latents=mnt_latents,

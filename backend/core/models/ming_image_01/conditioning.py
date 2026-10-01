@@ -21,10 +21,23 @@ class MingConditioning:
         return MingConditioning(self.queries.detach(), self.direct.detach())
 
 
+def create_projection_modules(config: dict, language_width: int, connector_width: int):
+    modules = nn.Module()
+    modules.query_tokens_dict = nn.ParameterDict({
+        f"{scale}x{scale}": nn.Parameter(torch.empty(scale * scale, language_width))
+        for scale in config["img_gen_scales"]})
+    modules.proj_in = nn.Linear(language_width, connector_width)
+    modules.proj_out = nn.Linear(connector_width, config["diffusion_c_input_dim"])
+    width = language_width * len(config["selected_hidden_states_layers"])
+    modules.proj_directvlm = nn.Sequential(
+        RMSNorm(width, eps=1e-5), nn.Linear(width, config["diffusion_inner_dim"], bias=True))
+    return modules
+
+
 class MingConditioner(nn.Module):
     """Own the native MLLM, connector and projections as selectable groups."""
 
-    def __init__(self, native, connector, config: dict):
+    def __init__(self, native, connector, config: dict, *, projections=None):
         super().__init__()
         self.native = native
         native.img_gen_scales = config["img_gen_scales"]
@@ -33,22 +46,19 @@ class MingConditioner(nn.Module):
         native.use_learnable_token_condition = config["use_learnable_token_condition"]
         native.selected_hidden_states_layers = config["selected_hidden_states_layers"]
         native.diffusion_inner_dim = config["diffusion_inner_dim"]
-        native.query_tokens_dict = nn.ParameterDict()
         native.scale_indices = []
         length = 0
         for scale in native.img_gen_scales:
-            native.query_tokens_dict[f"{scale}x{scale}"] = nn.Parameter(
-                torch.empty(scale * scale, native.config.llm_config.hidden_size))
             length += scale * scale
             native.scale_indices.append(length)
+        if projections is None:
+            projections = create_projection_modules(config, native.config.llm_config.hidden_size, connector.config.hidden_size)
+        native.query_tokens_dict = projections.query_tokens_dict
         native.connector = connector
         for layer in connector.model.layers:
             layer.self_attn.is_causal = False
-        native.proj_in = nn.Linear(native.config.llm_config.hidden_size, connector.config.hidden_size)
-        native.proj_out = nn.Linear(connector.config.hidden_size, config["diffusion_c_input_dim"])
-        width = native.config.llm_config.hidden_size * len(native.selected_hidden_states_layers)
-        native.proj_directvlm = nn.Sequential(
-            RMSNorm(width, eps=1e-5), nn.Linear(width, native.diffusion_inner_dim, bias=True))
+        for name in ("proj_in", "proj_out", "proj_directvlm"):
+            setattr(native, name, getattr(projections, name))
         native.loaded_image_gen_modules = True
         native._ming_live_conditioning = False
 

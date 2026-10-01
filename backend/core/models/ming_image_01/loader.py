@@ -94,13 +94,17 @@ def load_components(path, *, dtype, conditioner_attention: str) -> MingComponent
             attn_implementation="eager", torch_dtype=dtype, local_files_only=True,
             low_cpu_mem_usage=True, output_loading_info=True)
         _strict_loading_info(info, "connector")
-    conditioner = MingConditioner(native, connector, artifact.configs["mlp"])
-    conditioner.load_projection_state(load_file(str(artifact.components["mlp"] / "model.safetensors"), device="cpu"))
+    projections = (load_quantized_component(packed_conditioners["mlp"],artifact,"mlp",dtype)
+                   if "mlp" in packed_conditioners else None)
+    conditioner = MingConditioner(native, connector, artifact.configs["mlp"], projections=projections)
+    if projections is None:
+        conditioner.load_projection_state(load_file(str(artifact.components["mlp"] / "model.safetensors"), device="cpu"))
     if packed_conditioners:
-        # Cast only newly attached floating projections; preserve packed codes and FP32 scales.
-        for name in ("queries","projections"):
-            for module in conditioner.component_groups()[name]:
-                module.to(dtype=dtype)
+        # Packed projection components are already assigned at their compute precision.
+        if projections is None:
+            for name in ("queries","projections"):
+                for module in conditioner.component_groups()[name]:
+                    module.to(dtype=dtype)
         conditioner.eval()
     else:
         conditioner.to(dtype=dtype).eval()

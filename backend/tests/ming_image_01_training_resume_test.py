@@ -19,6 +19,8 @@ from core.models.ming_image_01.training_resume import RUNTIME_KEY
     pytest.param("cpu_prefetch", [], "layer_decompose", True, None, None, id="caption_layer"),
     pytest.param("cpu_prefetch", [], "generation_edit", False, "int8", None, id="materialized_int8_design"),
     pytest.param("cpu_prefetch", [], "layer_decompose", False, "int8_convrot", None, id="materialized_int8_convrot_layer"),
+    pytest.param("swap_onthefly", ["projections"], "generation_edit", False, None, "projection_int8", id="conditioner_projection_int8_design"),
+    pytest.param("swap_onthefly", ["projections"], "layer_decompose", False, None, "projection_convrot", id="conditioner_projection_convrot_layer"),
     pytest.param("swap_onthefly", ["language","connector"], "generation_edit", False, None, "int8", id="conditioner_int8_design"),
     pytest.param("swap_onthefly", ["language","connector"], "layer_decompose", False, None, "int8_convrot", id="conditioner_convrot_layer"),
 ])
@@ -27,7 +29,12 @@ def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monke
     from core.training.ops import ming_image_01_ops
     monkeypatch.setattr(latent_cache, "get_cache_base_dir", lambda: str(tmp_path / "cache"))
     root = tmp_path / "package"
-    if conditioner_quant:
+    if conditioner_quant and conditioner_quant.startswith("projection_"):
+        from ming_image_01_projection_quantized_test import source,pack_projections
+        convrot = conditioner_quant == "projection_convrot"
+        root = source(tmp_path,profile,wide=convrot)
+        pack_projections(root,convrot)
+    elif conditioner_quant:
         from ming_image_01_conditioner_full_quantized_test import package
         root = package(tmp_path,profile,conditioner_quant)
     elif quantization:

@@ -18373,6 +18373,11 @@ class BaseTrainer(ABC):
                     prefill_shared_batches(self, batches, epoch=epoch,
                         batch_offset=int(getattr(self, "_epoch_batch_offset", 0) or 0),
                         progress_callback=progress_callback)
+                    from core.models.ming_image_01.training_buffer import MingBatchBuffer, close_training_buffer
+                    close_training_buffer(self)
+                    self.ming_batch_buffer = MingBatchBuffer(self, batches, epoch=epoch,
+                        batch_offset=int(getattr(self, "_epoch_batch_offset", 0) or 0),
+                        latent_interval=latent_encoding_swap_interval, text_interval=text_encoding_swap_interval)
 
                 for batch_idx, batch in enumerate(tqdm(batches, desc=f"Epoch {epoch+1}/{num_epochs} ({epoch_steps} steps)")):
                     _exposure_items = batch
@@ -18812,7 +18817,9 @@ class BaseTrainer(ABC):
                     ming_prepared = None
                     if getattr(self, "is_ming_image_01", False):
                         from core.models.ming_image_01.dataset import prepare_shared_latents
-                        ming_prepared = prepare_shared_latents(self, batch)
+                        native_buffer = getattr(self, "ming_batch_buffer", None)
+                        ming_prepared = (native_buffer.prepare(batch_idx, batch) if native_buffer is not None
+                                         else prepare_shared_latents(self, batch))
                         latents_list = list(ming_prepared.clean.split(1, dim=0))
                         width = batch[0][0].get("bucket_width") or batch[0][0]["width"]
                         height = batch[0][0].get("bucket_height") or batch[0][0]["height"]
@@ -21149,6 +21156,10 @@ class BaseTrainer(ABC):
                     # Note: With Sequential MNT, optimizer.step() and loss deletion
                     # are handled inside the MNT loop. No else clause needed here.
 
+                if getattr(self, "is_ming_image_01", False):
+                    from core.models.ming_image_01.training_buffer import close_training_buffer
+                    close_training_buffer(self)
+
                 # End of per-batch loop. Stop the cpu_prefetch worker (if any)
                 # so the daemon thread doesn't hold onto the TE / batch list
                 # past the epoch boundary. The next epoch creates a fresh
@@ -21448,6 +21459,11 @@ class BaseTrainer(ABC):
 
             self.writer.close()
             raise  # Re-raise the original exception
+
+        finally:
+            if getattr(self, "is_ming_image_01", False):
+                from core.models.ming_image_01.training_buffer import close_training_buffer
+                close_training_buffer(self)
 
         self._training_complete_epilogue()
 

@@ -654,3 +654,26 @@ Compile and real imports pass with CUDA initialization forbidden. These tests
 verify transfer calls, not physical GPU throughput. Cross-batch swap-buffer
 scheduling and the CPU-prefetch worker remain pending, as does normal-training
 activation and the complete checkpoint/resume acceptance. No GPU/API was used.
+
+### Bounded cross-batch swap windows
+
+The resolved epoch suffix now owns a native `MingBatchBuffer`. Latent and frozen
+conditioning windows use their independently selected swap intervals. A refill
+holds one encoder residency phase across the window, then retains only CPU
+latents/references/prepared inputs or detached CPU conditioning. Consumed entries
+are removed; the window size bounds the retained batch count. Trainable
+conditioning is never prefetched into these frozen buffers and still constructs
+a new live graph for each MNT. Changed batch captions/grids/CropSpec/ownership
+invalidate entries. Source/sidecar content is rechecked before consuming a
+prefilled entry, so a window cannot hide post-preflight file edits.
+
+Common epoch setup and batch assembly use the buffer; epoch exit and the train
+try/finally clear it, including stop/exception paths. Five new CPU buffer tests
+pass after fixing the initial identity-descriptor format error; 74 affected
+existing dataset/cache cases had already passed. An additional targeted test
+passes for buffered native DiT backward plus AdamW update. Changed backend files
+compile and real-import with CUDA initialization forbidden. These tests verify
+bounded counts and transfer calls, not physical GPU memory/performance or full
+common-trainer resume. CPU prefetch remains pending, and normal-training
+capability/temporary generic dispatch remain staged until mode integration and
+complete shared-loop acceptance are finished. No GPU/live API was used.

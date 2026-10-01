@@ -134,6 +134,20 @@ def inspect_item(primary, *, root, profile, reference_paths=()):
         tuple(assets[len(target_paths):]), tuple(roles), tuple(weights), manifest_sha)
 
 
+def verify_record_content(record):
+    if record.manifest_path is not None:
+        manifest = _inside(record.root, record.manifest_path)
+        if hashlib.sha256(manifest.read_bytes()).hexdigest() != record.manifest_sha256:
+            raise ValueError("Ming dataset sidecar changed after preflight; rebuild its record/cache")
+    payloads = []
+    for asset in (*record.targets, *record.references):
+        data = _inside(record.root, asset.path).read_bytes()
+        if hashlib.sha256(data).hexdigest() != asset.sha256:
+            raise ValueError("Ming dataset asset changed after preflight; rebuild its record/cache")
+        payloads.append(data)
+    return payloads
+
+
 def load_pixels(record, *, caption, width, height, crop_box=None, flip_horizontal=False):
     if not isinstance(caption, str):
         raise ValueError("Ming dataset caption must be text")
@@ -149,15 +163,8 @@ def load_pixels(record, *, caption, width, height, crop_box=None, flip_horizonta
     x, y, w, h = crop_box
     if min(x, y) < 0 or min(w, h) <= 0 or x + w > record.source_size[0] or y + h > record.source_size[1]:
         raise ValueError("Ming paired crop escapes the source canvas")
-    if record.manifest_path is not None:
-        manifest = _inside(record.root, record.manifest_path)
-        if hashlib.sha256(manifest.read_bytes()).hexdigest() != record.manifest_sha256:
-            raise ValueError("Ming dataset sidecar changed after preflight; rebuild its record/cache")
     images = []
-    for asset in (*record.targets, *record.references):
-        data = _inside(record.root, asset.path).read_bytes()
-        if hashlib.sha256(data).hexdigest() != asset.sha256:
-            raise ValueError("Ming dataset asset changed after preflight; rebuild its record/cache")
+    for data in verify_record_content(record):
         image = _decode(data).convert("RGBA").crop((x, y, x + w, y + h))
         image = image.resize((width, height), Image.Resampling.BILINEAR)
         if flip_horizontal:
@@ -352,12 +359,12 @@ def shared_conditioning_context(trainer, pairs):
         base_cache_dir=context["dataset_cache_base"], dataset_unique_id=min(ids))
 
 
-def prepare_shared_items_latents(trainer, pairs, items):
+def prepare_shared_items_latents(trainer, pairs, items, *, residency=None):
     from .cache import dataset_cache_context
     from .training_data import MingLatentBatch
     context = getattr(trainer, "ming_cache_context", None)
     components = trainer.ming_image_01_components
-    policy = getattr(trainer, "ming_training_residency", None)
+    policy = getattr(trainer, "ming_training_residency", None) if residency is None else residency
     options = dict(resolution=trainer.ming_prompt_resolution, vae_device=trainer.device, residency=policy)
     if context is None or not context.get("dataset_owned"):
         return prepare_record_latents(components, items, cache_context=context, **options)

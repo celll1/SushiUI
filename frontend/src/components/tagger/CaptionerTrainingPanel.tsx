@@ -45,6 +45,8 @@ export default function CaptionerTrainingPanel({onSelectBundle, onSample}: {
   const [sampleItem, setSampleItem] = useState("");
   const [sampleTags, setSampleTags] = useState("");
   const sampleRequest = useRef<string | null>(null);
+  const busyRef = useRef(false);
+  const epoch = useRef(0);
   const selected = runs.find(run => run.run_id === selectedId);
   const previewCheckpoint = selected && (checkpoint
     ? selected.checkpoints.find(path => path.split(/[\\/]/).pop() === checkpoint)
@@ -87,16 +89,20 @@ export default function CaptionerTrainingPanel({onSelectBundle, onSample}: {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let cursor = defaults.after_id;
     const poll = async () => {
+      const version = epoch.current;
       try {
+        if (busyRef.current) return;
         const [run, data] = await Promise.all([getCaptionerRun(selectedId),
           getCaptionerRunEvents(selectedId, cursor, defaults.event_limit)]);
-        if (!mounted) return;
+        if (!mounted || busyRef.current || epoch.current !== version) return;
         setRuns(old => old.map(row => row.run_id === run.run_id ? run : row));
         if (data.events.length) {
           cursor = data.events[data.events.length - 1].id;
           setEvents(old => [...old, ...data.events].slice(-200));
         }
-      } catch (e) {if (mounted) setError(message(e));}
+      } catch (e) {
+        if (mounted && !busyRef.current && epoch.current === version) setError(message(e));
+      }
       finally {if (mounted) timer = setTimeout(() => void poll(), 2000);}
     };
     void poll();
@@ -106,9 +112,11 @@ export default function CaptionerTrainingPanel({onSelectBundle, onSample}: {
   const updateRun = (run: CaptionerTrainingRun) => setRuns(old =>
     old.some(row => row.run_id === run.run_id) ? old.map(row => row.run_id === run.run_id ? run : row) : [run, ...old]);
   const action = async (work: () => Promise<void>) => {
+    if (busyRef.current) return;
+    busyRef.current = true; epoch.current += 1;
     setBusy(true); setError("");
     try {await work();} catch (e) {setError(message(e));}
-    finally {setBusy(false);}
+    finally {epoch.current += 1; busyRef.current = false; setBusy(false);}
   };
   const create = async () => {
     if (!tagger) return;

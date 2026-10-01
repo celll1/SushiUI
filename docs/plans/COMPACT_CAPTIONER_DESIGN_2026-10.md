@@ -436,7 +436,8 @@ dataset保存とreceipt保存は別DBであるため、先に保存intentを永�
 receipt保存失敗後の同一requestは、revision、画像hash、caption列とJSON sidecarの一致を確認して
 二重書込を避ける。外部変更が混ざった不確かな状態では再試行を拒否し、datasetの確認を要求する。
 GPU trainerの初期allocationは既存coordinatorでgenerationと排他する。
-worktree間のGPU調整と実training runのpause/offload検証はまだ必要である。
+小型の実trainerでGPU pause、DRAM退避、復帰後の学習継続とcheckpoint保存を確認した。
+worktree間ではcoordinatorを共有しないため、別processのGPU利用との調整は別途必要である。
 実datasetから学習した自然文モデルはまだ存在せず、品質によるbest選択も未実装である。
 
 基盤と追加コアのCPUテスト23件が通過した。中断後の再開は連続学習と重みが完全一致し、
@@ -448,9 +449,13 @@ frontendはコードをレビューしたが、build/type-checkと画面での�
 初期基盤ではfp32/bf16/fp16でloss/backward/生成を確認した。
 変更backendのpy_compileと実importも通過した。これは小型人工例での動作検証である。
 通常のCPU検証ではCUDA context未初期化をassertする。利用者のGPU空き報告後に、
-opt-inの`captioner_gpu_test.py`でtiny SigLIP2とdecoderのGPUテスト3件が通過した。
+opt-inの`captioner_gpu_test.py`でtiny SigLIP2とdecoder、実trainerのGPUテスト4件が通過した。
 fp32/bf16/fp16のloss/backward、生成のfull/cache一致、cancel、fp32 optimizerのDRAM退避・復帰を確認した。
 このGPU smokeは128 MiB未満のtensor割当上限をassertし、実checkpointやdatasetを使わない。
+実trainerのテストは人工encoderと一時datasetを使い、generation slotのpause ack、CPU退避、
+GPU復帰、8 stepの学習完了、保存済みoptimizer stateとweightを確認する。
+復帰ackは次のpause開始まで保持し、coordinatorの待機側が通知を見逃さないようにした。
+trainer単独importで生じた循環依存も解消し、CUDAを初期化しない実importを確認した。
 実dataの学習、速度benchmark、server restartは行っていない。
 worktree間でin-process lockは共有できないため、将来のGPU実測開始前には他作業のGPU利用と調整する。
 この基盤検証は実caption品質や1秒目標達成の証拠にはならない。
@@ -469,3 +474,9 @@ batchの順次caption保存、兄弟previewへのrevision伝搬、保存receipt�
 receipt保存失敗後の復旧と二重書込の防止を確認した。bundleはmeta上で構築して保存重みを割り当て、
 推論ロードが学習側のCPU RNGを消費しないことも確認した。captioner関連のCPUテスト56件が通過した。
 永続batch UIのbuild/type-checkと画面動作は未検証である。
+
+最新のCPU回帰はcaptioner関連56件とpause protocol 4件の合計60件が通過した。
+学習UIの定期取得は開始・停止等の操作前に送った応答を捨て、古い状態で操作結果を上書きしない。
+今回の1〜4の実装対象であるdataset/tokenizer/split、cache/trainer/resume、bundle互換性、
+API/GPU調停/UI/明示保存は接続済みである。ただしUIのbuild/type-checkと画面操作はowner検証待ちであり、
+1〜4全体の完了確認はまだ済んでいない。実data品質とso400mの全文warm p95は別の未実施評価である。

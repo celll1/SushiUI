@@ -10380,7 +10380,8 @@ class BaseTrainer(ABC):
         from core.training.image_preprocessing import prepare_training_image
 
         image = prepare_training_image(
-            image, preserve_alpha=getattr(self, "is_qwen_image_21", False)
+            image, preserve_alpha=(getattr(self, "is_qwen_image_21", False)
+                                   or getattr(self, "is_ming_image_01", False))
         )
 
         # Determine target dimensions

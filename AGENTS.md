@@ -33,7 +33,7 @@ Ming-Image 0.1 has native Design/Layer generation and package inspection
 (`ModelType` has 18 entries). Native CPU integration is verified; official-weight
 GPU acceptance and the common trainer remain pending. See
 `docs/guides/MING_IMAGE_01_DESIGN.md`. Layer's frame axis denotes ordered RGBA
-image layers, not video; the training registry still has 16 handlers.
+image layers, not video; the registry has 17 handlers including staged Ming.
 
 ## Non-negotiable rules
 

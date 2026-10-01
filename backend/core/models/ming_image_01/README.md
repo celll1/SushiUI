@@ -26,6 +26,8 @@ cryptographic weight identity; component-content hashes belong to exports.
 Native loading, selectable conditioner groups and small-model sampling are
 implemented. Target-only nested U-Net execution, topology metadata restoration
 and shared checkpoint inspection/DiT parameter census are CPU verified.
+Native CPU-offloaded bundle export preserves all components and topology, with
+sharded round-trip and cancellation checks. Optimizer resume is not yet wired.
 Platform generation/training registration and full component UI wiring are
 subsequent implementation stages. Their capabilities remain
 unavailable until the corresponding integration gates pass. See

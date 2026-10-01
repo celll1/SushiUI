@@ -27,6 +27,8 @@ from core.models.ming_image_01.training_resume import RUNTIME_KEY
     pytest.param("cpu_prefetch", [], "generation_edit", False, None, None, None, True, id="guidance_mnt_design"),
     pytest.param("cpu_prefetch", [], "generation_edit", False, None, None, None, "zero_low", id="guidance_zero_low_mnt_design"),
     pytest.param("cpu_prefetch", [], "layer_decompose", False, None, None, .5, True, id="guidance_sigma_null_mnt_layer"),
+    pytest.param("cpu_prefetch", [], "generation_edit", False, None, None, None, "query_chunk", id="query_chunk_guidance_mnt_design"),
+    pytest.param("cpu_prefetch", [], "layer_decompose", False, None, None, .5, "query_chunk", id="query_chunk_guidance_sigma_null_mnt_layer"),
 ])
 def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monkeypatch, text_mode, groups, profile, caption_only, quantization, conditioner_quant, cfg_rate, guidance_enabled):
     from core.training import latent_cache
@@ -84,6 +86,8 @@ def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monke
             qwen_guidance_loss_schedule="sigma",qwen_guidance_loss_extrapolation_max_rms=.5,
             qwen_guidance_loss_weight_schedule="high_noise_smoothstep",qwen_guidance_loss_high_noise_weight=.8,
             qwen_cfg_null_sigma_schedule=cfg_rate is not None)
+    if guidance_enabled == "query_chunk":
+        config["qwen_full_kv_query_chunk_tokens"] = 17
     if cfg_rate is not None:
         config.update(cfg_uncond_drop_rate=cfg_rate,cfg_uncond_drop_per_mnt=True)
     if quantization or conditioner_quant:
@@ -93,6 +97,9 @@ def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monke
             device="cpu", weight_dtype="fp32", training_dtype="fp32", vae_dtype="fp32",
             mixed_precision=False, attention_backend="native", train_config=config.copy(),
             resume_from_checkpoint=resume)
+        from api.param_defaults import TRAINING_DEFAULTS
+        expected_chunk = config.get("qwen_full_kv_query_chunk_tokens",TRAINING_DEFAULTS["qwen_full_kv_query_chunk_tokens"])
+        assert owner.transformer._ming_full_kv_query_chunk_tokens == expected_chunk
         if quantization or conditioner_quant:
             # Safetensors mmap alignment changes CPU GEMM rounding; canonicalize this exact-resume fixture.
             with torch.no_grad():

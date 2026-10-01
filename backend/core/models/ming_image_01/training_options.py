@@ -51,6 +51,9 @@ def preflight_training(config, *, method):
         from api.param_defaults import resolve_full_finetune_train_text_encoder
         config["train_text_encoder"] = (resolve_full_finetune_train_text_encoder(None, "ming_image_01")
             if method == "full_finetune" else TRAINING_DEFAULTS["train_text_encoder"])
+    chunk = config.get("qwen_full_kv_query_chunk_tokens", TRAINING_DEFAULTS["qwen_full_kv_query_chunk_tokens"])
+    if type(chunk) is not int or chunk < 0:
+        raise ValueError("Ming full-KV query chunk must be a nonnegative integer")
     materialize = config.get("full_finetune_dequantize_int8_base", TRAINING_DEFAULTS["full_finetune_dequantize_int8_base"])
     if type(materialize) is not bool or (materialize and method != "full_finetune"):
         raise ValueError("Ming full dequantization requires a boolean opt-in and full_finetune")

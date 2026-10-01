@@ -64,6 +64,7 @@ ENABLED_ADAPTER_PAIRS: Mapping[str, FrozenSet[AdapterPair]] = MappingProxyType({
     "minit2i": _ADDITIVE_LYCORIS_WITH_DORA,
     "krea2": _ADDITIVE_LYCORIS,
     "qwen_image_21": _ORDINARY_ONLY,
+    "ming_image_01": _ORDINARY_ONLY,
     "flux2": _ADDITIVE_LYCORIS,
     "ltx2": _ADDITIVE_LYCORIS,
     "minimax_h3": _ADDITIVE_LYCORIS,

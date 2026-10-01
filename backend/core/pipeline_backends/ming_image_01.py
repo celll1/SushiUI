@@ -73,8 +73,6 @@ class MingImage01Mixin:
         self.current_attention_type = resolved["attention_type"]
         if resolved["negative_prompt"]:
             raise ValidationError("Ming native CFG uses zero conditioning; negative prompts are unsupported")
-        if resolved.get("loras"):
-            raise ValidationError("Ming adapter generation wiring is not yet enabled")
         if resolved.get("controlnets") or resolved.get("controlnet_images") or resolved.get("style_transfers"):
             raise ValidationError("Ming reference-guide/style/ControlNet extensions are not yet enabled")
         pending = [key for key in ("unet_quantization", "text_encoder_quantization", "enable_block_swap",
@@ -83,45 +81,54 @@ class MingImage01Mixin:
                    if resolved[key] != defaults[key]]
         if pending:
             raise ValidationError("Ming options awaiting runtime wiring: " + ", ".join(pending))
-        topology = getattr(components.transformer, "_residual_unet_spec", None)
-        if topology is not None:
-            from core.rewiring.spec import digest, preview_plan
+        from core.models.ming_image_01.generation_adapters import generation_adapters
+        from core.extensions.lora_manager import lora_manager
+        from api.generation_status import add_warning
+        with generation_adapters(components, resolved.get("loras"),
+                resolve_path=lora_manager._resolve_lora_path,
+                warn=lambda message, code: add_warning(message, code)) as adapters:
+            topology = getattr(components.transformer, "_residual_unet_spec", None)
+            if topology is not None:
+                from core.rewiring.spec import digest, preview_plan
+                try:
+                    preview_plan(topology, height // 16, width // 16)
+                except ValueError as exc:
+                    raise ValidationError(str(exc)) from exc
+                params["dit_rewiring_actual"] = {"spec": topology, "spec_sha256": digest(topology),
+                                                "native_layout": "target_reference_padding_caption_v1", "kv_cache": False}
+            else:
+                params.pop("dit_rewiring_actual", None)
+            if resolved["vae_tiling"]:
+                components.vae.enable_tiling()
+            else:
+                components.vae.disable_tiling()
+            residency = MingPhaseResidency(components, device=self.device, cpu_text_encoding=resolved["cpu_text_encoding"])
+
+            @contextmanager
+            def phase(name):
+                with generation_timer.phase("text_encode" if name == "conditioner" else "denoise"), residency(name):
+                    yield
+
+            adapters.set_step(0, steps)
+
+            def callback(index, total, timestep, latents):
+                adapters.set_step(index + 1, total)
+                if progress_callback is not None:
+                    progress_callback(index, total, None, phase_label="Ming denoising")
+                if step_callback is not None:
+                    step_callback(index, timestep, latents)
+
             try:
-                preview_plan(topology, height // 16, width // 16)
-            except ValueError as exc:
-                raise ValidationError(str(exc)) from exc
-            params["dit_rewiring_actual"] = {"spec": topology, "spec_sha256": digest(topology),
-                                            "native_layout": "target_reference_padding_caption_v1", "kv_cache": False}
-        else:
-            params.pop("dit_rewiring_actual", None)
-        if resolved["vae_tiling"]:
-            components.vae.enable_tiling()
-        else:
-            components.vae.disable_tiling()
-        residency = MingPhaseResidency(components, device=self.device, cpu_text_encoding=resolved["cpu_text_encoding"])
-
-        @contextmanager
-        def phase(name):
-            with generation_timer.phase("text_encode" if name == "conditioner" else "denoise"), residency(name):
-                yield
-
-        def callback(index, total, timestep, latents):
-            if progress_callback is not None:
-                progress_callback(index, total, None, phase_label="Ming denoising")
-            if step_callback is not None:
-                step_callback(index, timestep, latents)
-
-        try:
-            groups = generator.run(prompts=[resolved["prompt"]] * batch,
-                references=[list(images) for _ in range(batch)], task=task, width=width, height=height,
-                resolution=round(math.sqrt(width * height)), steps=steps, cfg=float(cfg), seed=seed,
-                requested_layers=layers, negative_prompt=resolved["negative_prompt"], output_type="pil",
-                cancelled=lambda: self.cancel_requested, step_callback=callback, phase_context=phase)
-        except MingGenerationCancelled as exc:
-            raise RuntimeError("Generation cancelled by user") from exc
-        model_info["dit_rewiring_spec"] = topology
-        result = MingGenerationOutput(tuple(groups), model_info).validate()
-        return result, seed, seed
+                groups = generator.run(prompts=[resolved["prompt"]] * batch,
+                    references=[list(images) for _ in range(batch)], task=task, width=width, height=height,
+                    resolution=round(math.sqrt(width * height)), steps=steps, cfg=float(cfg), seed=seed,
+                    requested_layers=layers, negative_prompt=resolved["negative_prompt"], output_type="pil",
+                    cancelled=lambda: self.cancel_requested, step_callback=callback, phase_context=phase)
+            except MingGenerationCancelled as exc:
+                raise RuntimeError("Generation cancelled by user") from exc
+            model_info["dit_rewiring_spec"] = topology
+            result = MingGenerationOutput(tuple(groups), model_info).validate()
+            return result, seed, seed
 
     def _generate_txt2img_ming_image_01(self, params, progress_callback=None, step_callback=None):
         return self._ming_image_run(params, images=params.get("ref_images") or [],

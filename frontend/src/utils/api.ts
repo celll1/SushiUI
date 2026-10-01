@@ -8889,6 +8889,12 @@ export interface DebugLatentsResponse {
 }
 
 export interface DebugLatentVisualization {
+  native_frame_count?: number;
+  frame_roles?: string[];
+  frame_weights?: number[];
+  native_model_time?: number;
+  timestep_convention?: string;
+  velocity_sign?: string;
   step: number;
   timestep: number;
   loss: number;

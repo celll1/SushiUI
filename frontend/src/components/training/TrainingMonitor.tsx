@@ -1790,6 +1790,17 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                               {debugVisualization.display_resolution.width}×{debugVisualization.display_resolution.height}
                             </div>
                           )}
+                          {debugVisualization.frame_roles && (
+                            <div><span className="text-gray-400">Frames, left to right:</span>{" "}
+                              {debugVisualization.frame_roles.join(" → ")}
+                              {debugVisualization.frame_weights && ` (weights: ${debugVisualization.frame_weights.join(", ")})`}
+                            </div>
+                          )}
+                          {debugVisualization.velocity_sign && (
+                            <div><span className="text-gray-400">Flow:</span>{" "}
+                              {debugVisualization.velocity_sign}; sigma {debugVisualization.timestep.toFixed(4)}, native time {debugVisualization.native_model_time?.toFixed(4)}
+                            </div>
+                          )}
                           {debugVisualization.partition_count !== undefined && (
                             <div><span className="text-gray-400">Partitions:</span>{" "}
                               {debugVisualization.partition_count === 1

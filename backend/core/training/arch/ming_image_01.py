@@ -70,7 +70,9 @@ class MingImage01ArchHandler(ArchHandler):
         from dataclasses import replace
         conditioning, _ = self.apply_cfg_null_step(trainer, ctx, ctx.ming_batch.conditioning, None)
         batch = replace(ctx.ming_batch, conditioning=conditioning)
-        return ming_image_01_ops.train_step(trainer, batch, timesteps=ctx.timesteps, guidance_drop_mask=ctx.cfg_drop_mask)
+        return ming_image_01_ops.train_step(trainer, batch, timesteps=ctx.timesteps, guidance_drop_mask=ctx.cfg_drop_mask,
+            debug_save_path=ctx.debug_save_path, debug_captions=ctx.debug_captions,
+            debug_reference_image_paths=ctx.debug_reference_image_paths)
 
     def sample(self, trainer, sample_ctx):
         from core.training.ops import ming_image_01_ops

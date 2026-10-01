@@ -12212,9 +12212,12 @@ class BaseTrainer(ABC):
             from core.models.ming_image_01.partition_training import region_count
             if region_count(self, native_batch.clean) > 1:
                 return self._execute_ming_partitioned_forward_backward(
-                    native_batch, timesteps=timesteps, loss_scale=loss_scale, cfg_drop_mask=cfg_drop_mask)
+                    native_batch, timesteps=timesteps, loss_scale=loss_scale, cfg_drop_mask=cfg_drop_mask,
+                    debug_save_path=debug_save_path, debug_captions=batch_captions,
+                    debug_reference_image_paths=batch_reference_paths)
             ctx = TrainStepContext(latents=mnt_latents, ming_batch=native_batch,
-                                   timesteps=timesteps, cfg_drop_mask=cfg_drop_mask)
+                timesteps=timesteps, cfg_drop_mask=cfg_drop_mask, debug_save_path=debug_save_path,
+                debug_captions=batch_captions, debug_reference_image_paths=batch_reference_paths)
             loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
         elif self.is_sensenova:
             from core.training.arch.base_arch import TrainStepContext
@@ -12580,6 +12583,12 @@ class BaseTrainer(ABC):
                 flush_pending_debug_previews(self)
             except Exception as debug_error:
                 print(f"{self.log_prefix} [debug_latents] VAE decode failed: {debug_error}")
+        elif getattr(self,"is_ming_image_01",False):
+            try:
+                from core.models.ming_image_01.training_debug import flush_pending_debug_previews
+                flush_pending_debug_previews(self)
+            except Exception as debug_error:
+                print(f"{self.log_prefix} [debug_latents] VAE decode failed: {debug_error}")
         elif self.is_qwen_image_21:
             try:
                 from core.training.ops.qwen_image_21_ops import flush_pending_debug_previews
@@ -12590,7 +12599,8 @@ class BaseTrainer(ABC):
 
         return loss_value, pred_loss_value, recon_loss_value
 
-    def _execute_ming_partitioned_forward_backward(self, batch, *, timesteps, loss_scale, cfg_drop_mask):
+    def _execute_ming_partitioned_forward_backward(self, batch, *, timesteps, loss_scale, cfg_drop_mask,
+            debug_save_path=None, debug_captions=None, debug_reference_image_paths=None):
         from dataclasses import replace
         from core.models.ming_image_01.partition_training import backward_regions, training_plan
         from core.training.mnt import training_noise_like
@@ -12606,7 +12616,8 @@ class BaseTrainer(ABC):
         try:
             result = backward_regions(self, batch, sigma=timesteps, noise=noise, plan=plan,
                 backward_scale=float(loss_scale) / float(getattr(self, "_grad_accum_steps", 1) or 1),
-                drop_mask=cfg_drop_mask)
+                drop_mask=cfg_drop_mask, debug_save_path=debug_save_path,
+                debug_captions=debug_captions, debug_reference_image_paths=debug_reference_image_paths)
             self._flush_fused_group_partials()
             events = getattr(self, "_repa_profile_events", None)
             if events is not None:
@@ -12619,6 +12630,11 @@ class BaseTrainer(ABC):
         self._flush_deferred_extra_metrics()
         self._finish_repa_profile_call(0.0, self._flush_repa_loss_metric_after_backward())
         self._flush_concept_sample_loss()
+        try:
+            from core.models.ming_image_01.training_debug import flush_pending_debug_previews
+            flush_pending_debug_previews(self)
+        except Exception as debug_error:
+            print(f"{self.log_prefix} [debug_latents] VAE decode failed: {debug_error}")
         return result
 
     def _execute_qwen_partitioned_forward_backward(

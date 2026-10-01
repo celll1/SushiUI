@@ -9,7 +9,8 @@ from core.models.ming_image_01.training import flow_loss
 from core.training.mnt import training_noise_like
 
 
-def train_step(trainer, batch, *, timesteps=None, cfg_drop_mask=None, guidance_drop_mask=None):
+def train_step(trainer, batch, *, timesteps=None, cfg_drop_mask=None, guidance_drop_mask=None,
+               debug_save_path=None, debug_captions=None, debug_reference_image_paths=None):
     device, dtype = trainer.device, trainer.training_dtype
     clean = batch.clean.to(device=device, dtype=dtype)
     conditioning = MingConditioning(batch.conditioning.queries.to(device=device, dtype=dtype),
@@ -56,6 +57,11 @@ def train_step(trainer, batch, *, timesteps=None, cfg_drop_mask=None, guidance_d
     if getattr(trainer, "_collect_concept_sample_loss", False):
         trainer._pending_concept_sample_loss = ((1 - weight) * per_item_loss + weight * per_item_recon).detach()
     trainer._last_loss_per_sample = per_item_loss.detach()
+    from core.models.ming_image_01.training_debug import save_debug
+    debug_null = uncond if uncond is not None and bool(selected[0]) else None
+    save_debug(trainer,debug_save_path,clean=clean,noisy=noisy,target=result.target,prediction=result.prediction,
+        sigma=sigma,frame_weights=batch.frame_weights,loss=loss.detach(),recon_loss=reconstruction.detach(),
+        unconditional=debug_null,captions=debug_captions,reference_paths=debug_reference_image_paths)
     return loss, prediction_loss.detach(), reconstruction.detach()
 
 

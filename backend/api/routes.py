@@ -16116,9 +16116,9 @@ def _check_ming_conditioner_params(request: "TrainingRunCreateRequest") -> None:
     from core.training.training_config import _detect_arch
     arch = _detect_arch(request.base_model_path)
     explicit = request.ming_conditioner_groups is not None or request.ming_conditioner_lrs is not None
-    if arch != "ming_image_01" or request.training_method != "full_finetune":
+    if arch != "ming_image_01" or request.training_method not in {"full_finetune", "lora"}:
         if explicit:
-            raise HTTPException(status_code=400, detail="Ming conditioner groups/rates require Ming full fine-tuning")
+            raise HTTPException(status_code=400, detail="Ming conditioner groups/rates require a native Ming training method")
         return
     from core.models.ming_image_01.training_options import preflight_training
     try:
@@ -16133,7 +16133,9 @@ def _check_adapter_params(request: "TrainingRunCreateRequest") -> None:
     from core.training.training_config import _detect_arch
 
     arch = _detect_arch(request.base_model_path)
-    if arch not in {"qwen_image_21", "anima"}:
+    if arch == "ming_image_01" and request.training_method != "lora":
+        raise HTTPException(status_code=400, detail="Ming caption adapter controls currently require LoRA")
+    if arch not in {"qwen_image_21", "anima", "ming_image_01"}:
         raise HTTPException(
             status_code=400,
             detail=f"train_adapter/adapter_lr are not supported for {arch}",

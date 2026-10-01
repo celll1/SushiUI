@@ -1139,11 +1139,11 @@ def _normalize_scope_flag(
 
 
 def _assert_training_scope_is_nonempty(
-    network_type: str, train_config: Dict[str, Any]
+    network_type: str, train_config: Dict[str, Any], *, architecture: str | None = None
 ) -> None:
     """Refuse a run that would train nothing, from the config and before the load.
 
-    Architecture-independent. SenseNova names this case itself
+    Ming caption-only LoRA has an explicit adapter scope. SenseNova names this case itself
     (``resolve_full_finetune_branch``), but sd15/sdxl/krea2 collect no parameters
     and hand the optimizer an empty list minutes later, with the checkpoint
     already resident.
@@ -1155,6 +1155,8 @@ def _assert_training_scope_is_nonempty(
     if network_type not in ("lora", "relora", "full_finetune"):
         return
     if train_config.get("sensenova_train_scopes"):
+        return
+    if architecture == "ming_image_01" and network_type == "lora" and train_config.get("train_adapter") is True:
         return
     on = [name for name in _TRAINING_SCOPE_FLAGS
           if _normalize_scope_flag(train_config, name, name == "train_unet")]
@@ -1671,7 +1673,8 @@ def _prepare_training_process_config(
         base_model_path, network_type, train_config, process_config
     )
     if not (is_chimera and train_config["chimera_training_stage"] == "bridge_align"):
-        _assert_training_scope_is_nonempty(network_type, train_config)
+        _assert_training_scope_is_nonempty(network_type, train_config,
+            architecture=ModelLoader.detect_model_type(base_model_path))
     _assert_adapter_algebra_contract(network_type, network_config,
                                      base_model_path, train_config)
     _apply_reference_training_contract(base_model_path, train_config)

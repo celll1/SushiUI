@@ -14555,7 +14555,7 @@ components:
             and step_range. It requires model_type=ming_image_01 and a matching
             ming_image_01_profile in checkpoint metadata. Saved residual topology
             must agree across adapters and with a rewired base checkpoint. Conditioner
-            adapters and Ming LoRA training are not enabled at this milestone.
+            adapters are not enabled; Ming DiT/caption LoRA training is available.
 
             Each of the four is honoured by a different subset of
             architectures. `step_range` is honoured on the SD1.5/SDXL
@@ -25810,10 +25810,11 @@ components:
             | `controlnet` | `controlnet` | a ControlNet / ControlNet-LLLite |
             | `vae_decoder` | `vae_decoder` | the VAE decoder only, encoder frozen |
 
-            Ming Design and Layer support native full fine-tuning, including
+            Ming Design and Layer support native DiT/caption LoRA and full fine-tuning, including
             conditioner groups, inherited/configured U-Net topology, native
-            RGBA targets and checkpoint resume. LoRA/ReLoRA/ControlNet remain
-            unavailable until their Ming adapter paths are connected.
+            RGBA targets and checkpoint resume. Ming LoRA freezes the conditioner;
+            train_adapter=true optionally targets its DiT caption projection.
+            ReLoRA/ControlNet and conditioner LoRA remain unavailable.
 
             `vae_decoder` is a non-diffusion modality: no denoiser, no scheduler,
             no text encoder and no latent cache. Its options come from the
@@ -27238,7 +27239,9 @@ components:
           description: |
             Train the architecture's conditioning bridge/adapter. Null preserves
             its existing method-specific policy. Qwen-Image 2.1 LoRA targets
-            txt_in only when true; this is not text-encoder training or a VAE swap.
+            txt_in only when true; Ming LoRA similarly targets cap_embedder.1 only
+            when true. Ming full fine-tuning does not yet expose this override.
+            This is not text-encoder training or a VAE swap.
           example: true
         adapter_lr:
           type: 'number'

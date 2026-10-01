@@ -245,7 +245,7 @@ def _add_training_unsupported(arch: str, method: str, reason: str) -> None:
 # separate config surface and is not filtered from these tables).
 TRAINING_METHODS = ("lora", "relora", "full_finetune", "controlnet")
 
-for _method in ("lora", "relora", "controlnet"):
+for _method in ("relora", "controlnet"):
     _add_training_unsupported("ming_image_01", _method,
         "Ming adapter training integration is pending")
 

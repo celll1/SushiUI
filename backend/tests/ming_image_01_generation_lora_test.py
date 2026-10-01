@@ -116,4 +116,4 @@ def test_generation_and_training_capability_axes_remain_separate():
     from api.arch_capabilities import adapter_families_payload
     entry = adapter_families_payload()["ming_image_01"]
     assert entry["supported"] == ["lora"]
-    assert entry["trainable"] == []
+    assert entry["trainable"] == ["lora"]

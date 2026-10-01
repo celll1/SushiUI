@@ -1,6 +1,6 @@
 # Ming-Image 0.1 integration contract
 
-Status: implementation in progress. Native Design/Layer generation and full fine-tuning are connected to public API configuration, shared runner and UI capability wiring. CPU tiny-package generation, training, U-Net restoration, batch-boundary resume and previews are verified; advanced Qwen feature parity and official-weight GPU acceptance remain open. Established 2026-10-01 against SushiUI
+Status: implementation in progress. Native Design/Layer generation, DiT/caption LoRA and full fine-tuning are connected to public API configuration, shared runner and UI capability wiring. CPU tiny-package generation, training, U-Net restoration, batch-boundary resume and previews are verified; advanced Qwen feature parity and official-weight GPU acceptance remain open. Established 2026-10-01 against SushiUI
 `2b28c3b4`. This contract preserves the requested Qwen-Image 2.1 feature
 scope, including residual U-Net conversion. It is not a claim of measured
 Ming support. [Completed source audit](../audits/MING_IMAGE_01_SOURCE_AUDIT.md)
@@ -8,7 +8,7 @@ records exact upstream source/model revisions and licensing constraints.
 
 ## Implementation evidence by milestone
 
-The entries below record successive implementation stages; later stages supersede earlier staged-boundary notes. The current public training method is native `full_finetune`. Adapter methods and advanced parity are still being implemented.
+The entries below record successive implementation stages; later stages supersede earlier staged-boundary notes. The current public training methods are native `full_finetune` and DiT/caption `lora`. Conditioner adapters, ReLoRA and advanced parity are still being implemented.
 
 The native-package inspector and manifest writer are implemented in `backend/core/models/ming_image_01/artifact.py`, with a CPU-only CLI at `tools/inspect_ming_image_01.py`. The targeted artifact suite passes 22 tests, including profile identity, processor drift, package escape, shard/index errors and malformed weight spans. Both pinned official configuration snapshots pass config-only inspection. No model weights, CUDA context or running API were used. This evidence proves preflight only; it does not prove native state loading or functional generation/training.
 
@@ -1058,3 +1058,35 @@ training capability remains closed. API/runner/UI method and projection-scope
 wiring, optimizer/RNG/scaler continuation through an actual resumed LoRA loop,
 and conditioner adapter ownership remain next work. No live API, server,
 official weights or GPU execution was used. Full Qwen parity is still pending.
+
+
+### Public DiT/caption LoRA and exact CPU continuation
+
+Ordinary Ming LoRA is now enabled on both authoritative adapter capability axes
+and the public training method surface. API preflight and the shared runner use
+the same native flow/scope contract. Ming LoRA currently requires frozen native
+conditioner groups; full fine-tuning retains its existing group behavior. Empty
+DiT scope is accepted only when train_adapter=true explicitly selects caption
+projection LoRA. Both API and runner refuse incompatible/empty scopes before
+weights load. ReLoRA/ControlNet and conditioner adapters remain closed.
+
+The common UI conditioning-adapter control now identifies Ming caption projection
+and sends method-gated train_adapter/adapter_lr. Projection-only submission passes
+the nonempty-scope check; restored text-encoder training settings produce a clear
+Ming LoRA refusal. Existing full-training group controls and non-Ming behavior
+remain separate. Types, defaults, restoration/submit paths and callback dependencies
+were statically reviewed; owner build/type checking remains deferred.
+
+Twenty-nine affected CPU cases pass after public wiring. Four follow actual public
+request models through YAML/runner into real native LoRATrainer Design/Layer
+attention/caption updates, safetensors save, weight restore and generation output
+equivalence. Four more execute eight MNT backwards with GAS=4, save after two
+backwards before the first AdamW update, then resume the remaining six. Data,
+noise, timesteps, final native/LoRA/conditioner state, AdamW moments and scheduler
+match uninterrupted execution exactly, including CPU prefetch and Layer weighted
+reference targets. No internal method-capability override is used. Seven existing
+shared scope checks also pass, covering empty and ordinary nonempty runs.
+Changed Python files compile and CUDA-guarded API/runner/trainer imports and
+OpenAPI parsing pass. No live API, server, official weights or physical GPU
+execution was used. Exact CUDA/mixed-precision continuation and full runner
+subprocess/DB execution are unverified. Remaining Qwen parity stays in progress.

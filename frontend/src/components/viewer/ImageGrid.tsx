@@ -586,6 +586,10 @@ export default function ImageGrid() {
     if (p.use_tipo !== undefined) target.use_tipo = p.use_tipo;
     if (p.sensenova_mot_phase_eviction !== undefined) target.sensenova_mot_phase_eviction = p.sensenova_mot_phase_eviction;
     if (p.sensenova_kv_cache_streaming !== undefined) target.sensenova_kv_cache_streaming = p.sensenova_kv_cache_streaming;
+    if (p.ming_image_01_partition !== undefined) {
+      try { target.ming_image_01_partition = typeof p.ming_image_01_partition === "string"
+        ? JSON.parse(p.ming_image_01_partition) : p.ming_image_01_partition; } catch { /* Ignore malformed external metadata. */ }
+    }
     if (p.qwen_image_21_partition !== undefined) {
       try { target.qwen_image_21_partition = typeof p.qwen_image_21_partition === "string"
         ? JSON.parse(p.qwen_image_21_partition) : p.qwen_image_21_partition; } catch { /* Ignore malformed external metadata. */ }
@@ -1703,6 +1707,14 @@ export default function ImageGrid() {
                     <pre className="mt-2 whitespace-pre-wrap break-all">{typeof selectedImage.parameters.qwen_image_21_partition_actual === "string"
                       ? selectedImage.parameters.qwen_image_21_partition_actual
                       : JSON.stringify(selectedImage.parameters.qwen_image_21_partition_actual, null, 2)}</pre>
+                  </div>
+                )}
+                {selectedImage.parameters?.ming_image_01_partition_actual && (
+                  <div className="border-t border-gray-700 pt-3 text-xs">
+                    <span className="text-gray-400 font-medium">Ming partition layout:</span>
+                    <pre className="mt-2 whitespace-pre-wrap break-all">{typeof selectedImage.parameters.ming_image_01_partition_actual === "string"
+                      ? selectedImage.parameters.ming_image_01_partition_actual
+                      : JSON.stringify(selectedImage.parameters.ming_image_01_partition_actual, null, 2)}</pre>
                   </div>
                 )}
                 {(selectedImage.parameters?.generation_time !== undefined ||

@@ -452,6 +452,10 @@ SENSENOVA_GENERATION_DEFAULTS: Dict[str, Any] = {
 
 MING_IMAGE_01_GENERATION_DEFAULTS: Dict[str, Any] = {
     "steps": 12, "cfg_scale": 1.0, "ming_image_01_layers": 3,
+    "ming_image_01_partition": {
+        "version": 1, "mode": "off", "max_target_tokens": 4096,
+        "layout": None, "halo_tokens": 16,
+    },
 }
 MING_IMAGE_01_LAYER_DEFAULTS: Dict[str, Any] = {
     **MING_IMAGE_01_GENERATION_DEFAULTS, "cfg_scale": 2.0,
@@ -517,6 +521,7 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     # it (accepted and warned, api/arch_capabilities.py).
     "sensenova_kv_cache_streaming": SENSENOVA_GENERATION_DEFAULTS["sensenova_kv_cache_streaming"],
     "ming_image_01_layers": MING_IMAGE_01_GENERATION_DEFAULTS["ming_image_01_layers"],
+    "ming_image_01_partition": MING_IMAGE_01_GENERATION_DEFAULTS["ming_image_01_partition"],
     "qwen_image_21_kv_cache": QWEN_IMAGE_21_GENERATION_DEFAULTS["qwen_image_21_kv_cache"],
     "qwen_image_21_partition": QWEN_IMAGE_21_GENERATION_DEFAULTS["qwen_image_21_partition"],
     "sampler": "euler",

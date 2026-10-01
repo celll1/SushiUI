@@ -4302,6 +4302,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # VAE tiling flag for this request (read by all decode paths, incl. the
         # per-architecture handlers dispatched just below).
         self._validate_qwen_partition_arch(params)
+        self._validate_ming_partition_arch(params)
         self._vae_tiling = bool(params.get("vae_tiling", False))
         self._vae_tile_threshold = int(params.get("vae_tile_threshold", 0) or 0)
         self._vae_tile_mode = str(params.get("vae_tile_mode", "blend") or "blend")
@@ -5017,6 +5018,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             see generate_txt2img's docstring for the same contract.
         """
         self._validate_qwen_partition_arch(params)
+        self._validate_ming_partition_arch(params)
         self._vae_tiling = bool(params.get("vae_tiling", False))
         self._vae_tile_threshold = int(params.get("vae_tile_threshold", 0) or 0)
         self._vae_tile_mode = str(params.get("vae_tile_mode", "blend") or "blend")
@@ -5786,6 +5788,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             pixel-space mask compositing needs a decoded image.
         """
         self._validate_qwen_partition_arch(params)
+        self._validate_ming_partition_arch(params)
         self._vae_tiling = bool(params.get("vae_tiling", False))
         self._vae_tile_threshold = int(params.get("vae_tile_threshold", 0) or 0)
         self._vae_tile_mode = str(params.get("vae_tile_mode", "blend") or "blend")
@@ -6571,6 +6574,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             tuple: (image, actual_seed, actual_ancestral_seed) -- same shape
             as generate_inpaint's return contract.
         """
+        self._validate_ming_partition_arch(params)
         if self.is_ming_image_01_model:
             return self._generate_outpaint_ming_image_01(params, input_image, progress_callback, step_callback)
 
@@ -6954,6 +6958,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             params["dit_rewiring_actual"] = work["dit_rewiring_actual"]
         else:
             params.pop("dit_rewiring_actual", None)
+        if "ming_image_01_partition_actual" in work:
+            params["ming_image_01_partition_actual"] = work["ming_image_01_partition_actual"]
+        else:
+            params.pop("ming_image_01_partition_actual", None)
         if "qwen_image_21_partition_actual" in work:
             params["qwen_image_21_partition_actual"] = work["qwen_image_21_partition_actual"]
         else:

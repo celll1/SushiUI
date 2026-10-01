@@ -734,6 +734,7 @@ export interface GenerationParams {
   sensenova_kv_cache_streaming?: boolean;
   qwen_image_21_kv_cache?: boolean;
   ming_image_01_layers?: number;
+  ming_image_01_partition?: QwenPartitionConfig | null;
   qwen_image_21_partition?: QwenPartitionConfig | null;
   sampler?: string;
   schedule_type?: string;
@@ -2876,6 +2877,9 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   if (paramsWithImages.ming_image_01_layers !== undefined) {
     formData.append("ming_image_01_layers", String(paramsWithImages.ming_image_01_layers));
   }
+  if (paramsWithImages.ming_image_01_partition) {
+    formData.append("ming_image_01_partition", JSON.stringify(paramsWithImages.ming_image_01_partition));
+  }
   if (paramsWithImages.qwen_image_21_partition) {
     formData.append("qwen_image_21_partition", JSON.stringify(paramsWithImages.qwen_image_21_partition));
   }
@@ -3252,6 +3256,9 @@ export const generateImg2Img = async (
   formData.append("qwen_image_21_kv_cache", String(paramsWithImages.qwen_image_21_kv_cache ?? true));
   if (paramsWithImages.ming_image_01_layers !== undefined) {
     formData.append("ming_image_01_layers", String(paramsWithImages.ming_image_01_layers));
+  }
+  if (paramsWithImages.ming_image_01_partition) {
+    formData.append("ming_image_01_partition", JSON.stringify(paramsWithImages.ming_image_01_partition));
   }
   if (paramsWithImages.qwen_image_21_partition) {
     formData.append("qwen_image_21_partition", JSON.stringify(paramsWithImages.qwen_image_21_partition));
@@ -4188,6 +4195,9 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   if (paramsWithImages.ming_image_01_layers !== undefined) {
     formData.append("ming_image_01_layers", String(paramsWithImages.ming_image_01_layers));
   }
+  if (paramsWithImages.ming_image_01_partition) {
+    formData.append("ming_image_01_partition", JSON.stringify(paramsWithImages.ming_image_01_partition));
+  }
   if (paramsWithImages.qwen_image_21_partition) {
     formData.append("qwen_image_21_partition", JSON.stringify(paramsWithImages.qwen_image_21_partition));
   }
@@ -4394,6 +4404,9 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
   formData.append("qwen_image_21_kv_cache", String(paramsWithImages.qwen_image_21_kv_cache ?? true));
   if (paramsWithImages.ming_image_01_layers !== undefined) {
     formData.append("ming_image_01_layers", String(paramsWithImages.ming_image_01_layers));
+  }
+  if (paramsWithImages.ming_image_01_partition) {
+    formData.append("ming_image_01_partition", JSON.stringify(paramsWithImages.ming_image_01_partition));
   }
   if (paramsWithImages.qwen_image_21_partition) {
     formData.append("qwen_image_21_partition", JSON.stringify(paramsWithImages.qwen_image_21_partition));

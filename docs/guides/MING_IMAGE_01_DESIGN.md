@@ -2264,3 +2264,45 @@ files compile and import with CUDA forbidden. This is tiny CPU functional eviden
 not official-weight/GPU quality, memory, speed or public API acceptance. Remaining
 public partition/UI/debug/timing/ConvRot/style parity and final acceptance remain
 active. Main API/GPU remains untouched.
+
+
+### Public partition generation and graphical configuration
+
+`ming_image_01_partition` is now a distinct SSOT-backed generation parameter
+(default off, version 1, target ceiling 4096, halo 16, no manual tree). OpenAPI
+and request models define Design/Layer support; all four image multipart routes
+parse the object and reject enabled Ming mode on another architecture. Direct
+manager dispatch enforces the same architecture boundary. Existing Qwen geometry
+accepts an optional default table for reuse without changing Qwen's default path.
+Ming Auto divides the per-region ceiling across all target frames, including the
+Layer auxiliary canvas; references and caption tokens remain complete overhead.
+Complete native patch plans drive the existing executor, with each tile's U-Net
+geometry checked before conditioner work. Multiple regions exclude Reference Guide
+and Style Transfer, matching the shipped Qwen partition boundary.
+
+The generated `ming_image_01_partition_actual` metadata records patch geometry,
+core/halo rectangles, frame count, largest input target tokens, global-summary
+availability and explicit no-KV-cache execution. Full-frame requests clear stale
+actual-layout data and warn when saved summaries are unused. PNG chunks save both
+requested and actual layouts; native outpaint copies actual layout back from its
+working request, preserving the original placed RGBA rectangle.
+
+All four frontend multipart builders send the new field. The four panels share
+the existing draggable split/halo graph through a Ming wrapper: its defaults come
+from the server, Auto preview counts Layer frames, and labels state native patch
+units. A known non-Ming model clears the Ming setting instead of submitting hidden
+architecture-specific state. Gallery copy restores the requested object and shows
+the actual layout. Existing preset/layout history and pointer cancel paths were
+reviewed statically; no new frontend/API default is duplicated outside SSOT.
+
+Twenty-nine unique targeted CPU cases pass: four Design/Layer Auto/Manual native
+manager runs with nested U-Net, saved global summaries, two scheduler steps and
+PNG requested/actual round trips; request/Form/OpenAPI/default consistency;
+three malformed requests; wrong-architecture and Layer token ceilings; native
+inpaint/outpaint pixel preservation and actual metadata; guide exclusion before
+conditioner work; direct manager architecture refusal; and sixteen affected Qwen
+geometry/schema cases. Tests call request models/helpers and native CPU manager
+methods, never HTTP or ASGI. Changed backend files compile and import with CUDA
+forbidden. Frontend static review passed; owner build/type and interactive checks
+remain pending. Official GPU quality/performance and remaining ConvRot/style/debug/
+timing/inspection/resume parity are not established here and remain active work.

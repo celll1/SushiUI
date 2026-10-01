@@ -34,6 +34,7 @@ import Qwen21PromptUpsample from "../common/Qwen21PromptUpsample";
 import MingPromptUpsample from "../common/MingPromptUpsample";
 import { maybeUpsampleMingPrompt } from "@/utils/mingPromptUpsample";
 import QwenPartitionControls from "../common/QwenPartitionControls";
+import MingPartitionControls from "../common/MingPartitionControls";
 import { imageDefaultsArchKey } from "@/utils/archConstraints";
 import MingOutputGroups from "../common/MingOutputGroups";
 import ImageViewer from "../common/ImageViewer";
@@ -180,6 +181,7 @@ interface OutpaintPanelParams extends ApiOutpaintParams {
 const DEFAULT_PARAMS: OutpaintPanelParams = {
   prompt: "",
   ming_image_01_layers: undefined,
+  ming_image_01_partition: undefined,
   qwen_image_21_partition: undefined,
   negative_prompt: "",
   steps: 20,
@@ -3144,6 +3146,9 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
           width={params.canvas_width} height={params.canvas_height}
           onChange={(qwen_image_21_partition) => setParams(previous => ({ ...previous, qwen_image_21_partition }))} />
       )}
+      <MingPartitionControls value={params.ming_image_01_partition} layers={params.ming_image_01_layers}
+        width={params.canvas_width} height={params.canvas_height}
+        onChange={ming_image_01_partition => setParams(previous => ({ ...previous, ming_image_01_partition }))} />
       <TextareaWithTagSuggestions
         label="Negative Prompt"
         placeholder={supportsNegativePrompt ? "Enter negative prompt..." : "Negative prompting is unavailable for this model"}

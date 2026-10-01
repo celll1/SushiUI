@@ -1062,7 +1062,7 @@ paths:
                     description: Architecture -> default guided-loss weight for an omitted request field.
                     additionalProperties:
                       type: number
-                    example: {_default: 0.0, qwen_image_21: 1.0}
+                    example: {_default: 0.0, qwen_image_21: 1.0, ming_image_01: 0.0}
   /schema/tagger-training-defaults:
     get:
       summary: Get default parameter values for tagger training
@@ -26872,9 +26872,9 @@ components:
           default: 0.0
           example: 0.25
           description: >-
-            Qwen-Image 2.1 only. Probability of selecting guidance-target MSE
+            Qwen-Image 2.1 and Ming-Image 0.1. Probability of selecting guidance-target MSE
             in stochastic mode, or guided-loss fraction in blend mode, for
-            conditional items. Zero disables the extra empty-prompt forward.
+            conditional items. Zero disables the extra null forward. Ming zeros both native conditioning streams and preserves reference latents; Layer loss follows frame supervision weights.
             CFG-null items always retain ordinary MSE. Omission resolves to
             1.0 for a new Qwen run and 0.0 for other architectures; explicit
             0.0 remains ordinary MSE. Existing YAML values are preserved.
@@ -26891,11 +26891,11 @@ components:
           default: false
           example: true
           description: >-
-            Qwen-only. First select guided loss with probability p(sigma), then
+            Qwen and Ming. First select guided loss with probability p(sigma), then
             apply cfg_uncond_drop_rate=q_max only among ordinary-MSE choices.
-            The marginal empty-caption probability is
+            The marginal native-null probability is
             (1-p(sigma))*q_max. Requires stochastic loss selection, a positive
-            Qwen guidance weight, and a positive CFG-null drop rate. For MNT>1,
+            guidance weight, and a positive CFG-null drop rate. For MNT>1,
             cfg_uncond_drop_per_mnt must be true.
         qwen_guidance_loss_scale:
           type: number

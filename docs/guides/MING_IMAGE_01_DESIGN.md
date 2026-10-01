@@ -1756,3 +1756,76 @@ scope, as do partition inference/training, optimized ConvRot backward/cache,
 conditioner conversion authoring, style operators, guidance objectives and final
 acceptance. Ordinary adapter capability parity does not complete those features
 or the full goal.
+
+
+### Native guidance-target objective and sigma-null coupling milestone
+
+The existing `qwen_guidance_loss_*` and `qwen_cfg_null_sigma_schedule` API/YAML
+keys now serve Ming as well as Qwen. Their historical names remain stable for
+saved runs and the shared frontend objective controls. Ming's central
+per-architecture default explicitly uses the SSOT ordinary-MSE weight (0.0);
+Qwen retains 1.0. Explicit and restored run settings are preserved. The native
+Ming objective panel identifies the architecture, dual-zero/reference behavior,
+frozen-conditioner requirement and target extrapolation rather than calling its
+factor the sampling CFG scale. All new backend defaults still come from
+`api/param_defaults.py`; OpenAPI documents both architectures and the schema
+example includes Ming's default.
+
+Guided selections first evaluate a no-gradient native dual-zero forward at the
+same noise, sigma, target frames and reference latents, retaining its prediction
+output dtype. The ordinary conditional forward follows with gradients. The
+shared Qwen schedule, stochastic selection, high-noise smoothstep and RMS-cap
+math are reused; native loss reduction weights each supervised frame and
+excludes zero-weight Layer auxiliary frames. The target is
+`u + g * (clean-minus-noise target - u)`, where `u` is the native null prediction.
+Reversing both target and null prediction from Qwen's velocity sign preserves
+this algebra. The clean-space RMS cap likewise uses the native sigma and
+supervision weights. This extrapolation factor is independent of Ming's served
+sampling CFG convention. Reconstruction loss continues to reconstruct the
+conditional prediction with `noisy + sigma * prediction`.
+
+Null-labelled items retain ordinary MSE. A shared logical-batch/MNT draw chooses
+guided loss before the nested ordinary-MSE null test, and shared slicing carries
+that draw into microbatches. Ming applies its own collated zero-stream rewrite;
+Qwen alone still substitutes a cached empty-prompt encoding. The optional
+sigma-null path respects the existing per-MNT contract. A Ming high-noise ramp
+with low weight 0 and positive high weight remains active, including logical
+batch draws and resume; it must not be mistaken for a disabled constant-weight
+objective. Qwen's existing resolution behavior is preserved. Public Ming
+preflight refuses a trainable conditioner with an active guidance objective
+before loading weight payloads; direct trainer runs retain the shared backward
+path guard. Selected guidance without a null prediction is an error.
+
+Native guided/ordinary split, selection fraction, effective scale mean/min,
+capped fraction and clean-space null distance travel through the shared extra
+metric channel. Per-item guided loss supplies concept weighting and CFG-null
+split monitoring. No database field or new request parameter is introduced.
+The extra no-gradient forward increases compute for selected guided items;
+physical GPU memory/performance and official-model quality are not measured.
+Partitioned guidance and native pixel-debug surfaces remain separate parity
+work, not inferred from these full-frame tests.
+
+Sixty-seven unique affected CPU cases pass across the staged checks: twenty new
+Ming guidance cases, three new pending-gradient resume cases, seven existing
+Ming CFG-null cases, thirty-five existing Qwen guidance/sigma-null/cap cases and
+two shared guidance-default/YAML regressions. Independent dense oracles cover
+constant/sigma scaling, weighted Layer supervision, RMS clipping, gradients and
+stochastic null exclusion. Public request-model/YAML/runner paths execute real
+Design/Layer full/ordinary-LoRA loops in stochastic and blend modes, update
+weights and verify no-gradient-first ordering with identical noise/sigma.
+Controlled draws exercise guided, null-MSE and conditional-MSE paths in both
+profiles. BF16 native training retains finite prediction precision and updates
+weights; trainable-conditioner startup and public preflight refusals are covered.
+
+Three MNT2/GAS4 pending-gradient resumes match uninterrupted conditioning,
+predictions, weights, optimizer moments and scheduler state: ordinary stochastic
+guidance on Design, coupled sigma-null guidance on Layer, and zero-low-weight
+high-noise guidance on Design. Each baseline confirms at least one null forward
+was selected. Compile/real CUDA-guarded imports and SSOT/OpenAPI validation
+supplement the tests. Frontend static review covers model-change defaults,
+objective presets, outgoing weights/sigma-null fields, historical-key types,
+conditioner explanation and error/validation paths. Owner build/type/UI and
+GPU acceptance remain pending; no live API, CUDA allocation, official payload
+or main modification occurred. Partition/global adapters, style operations,
+optimized ConvRot backward/cache, conditioner converter authoring and final
+complete-parity audit/owner acceptance remain active.

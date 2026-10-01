@@ -11,21 +11,24 @@ from core.training.full_parameter_trainer import FullParameterTrainer
 from core.models.ming_image_01.training_resume import RUNTIME_KEY
 
 
-@pytest.mark.parametrize("text_mode,groups,profile,caption_only,quantization,conditioner_quant,cfg_rate", [
-    ("cpu_prefetch", [], "generation_edit", False, None, None, None),
-    ("onthefly_gpu", ["projections"], "generation_edit", False, None, None, None),
-    ("cpu_prefetch", [], "layer_decompose", False, None, None, None),
-    pytest.param("cpu_prefetch", [], "generation_edit", True, None, None, None, id="caption_design"),
-    pytest.param("cpu_prefetch", [], "layer_decompose", True, None, None, None, id="caption_layer"),
-    pytest.param("cpu_prefetch", [], "generation_edit", False, "int8", None, None, id="materialized_int8_design"),
-    pytest.param("cpu_prefetch", [], "layer_decompose", False, "int8_convrot", None, None, id="materialized_int8_convrot_layer"),
-    pytest.param("swap_onthefly", ["projections"], "generation_edit", False, None, "projection_int8", None, id="conditioner_projection_int8_design"),
-    pytest.param("swap_onthefly", ["projections"], "layer_decompose", False, None, "projection_convrot", None, id="conditioner_projection_convrot_layer"),
-    pytest.param("swap_onthefly", ["language","connector"], "generation_edit", False, None, "int8", None, id="conditioner_int8_design"),
-    pytest.param("swap_onthefly", ["language","connector"], "layer_decompose", False, None, "int8_convrot", None, id="conditioner_convrot_layer"),
-    pytest.param("cpu_prefetch", [], "layer_decompose", False, None, None, .5, id="cfg_null_mnt_layer"),
+@pytest.mark.parametrize("text_mode,groups,profile,caption_only,quantization,conditioner_quant,cfg_rate,guidance_enabled", [
+    ("cpu_prefetch", [], "generation_edit", False, None, None, None, False),
+    ("onthefly_gpu", ["projections"], "generation_edit", False, None, None, None, False),
+    ("cpu_prefetch", [], "layer_decompose", False, None, None, None, False),
+    pytest.param("cpu_prefetch", [], "generation_edit", True, None, None, None, False, id="caption_design"),
+    pytest.param("cpu_prefetch", [], "layer_decompose", True, None, None, None, False, id="caption_layer"),
+    pytest.param("cpu_prefetch", [], "generation_edit", False, "int8", None, None, False, id="materialized_int8_design"),
+    pytest.param("cpu_prefetch", [], "layer_decompose", False, "int8_convrot", None, None, False, id="materialized_int8_convrot_layer"),
+    pytest.param("swap_onthefly", ["projections"], "generation_edit", False, None, "projection_int8", None, False, id="conditioner_projection_int8_design"),
+    pytest.param("swap_onthefly", ["projections"], "layer_decompose", False, None, "projection_convrot", None, False, id="conditioner_projection_convrot_layer"),
+    pytest.param("swap_onthefly", ["language","connector"], "generation_edit", False, None, "int8", None, False, id="conditioner_int8_design"),
+    pytest.param("swap_onthefly", ["language","connector"], "layer_decompose", False, None, "int8_convrot", None, False, id="conditioner_convrot_layer"),
+    pytest.param("cpu_prefetch", [], "layer_decompose", False, None, None, .5, False, id="cfg_null_mnt_layer"),
+    pytest.param("cpu_prefetch", [], "generation_edit", False, None, None, None, True, id="guidance_mnt_design"),
+    pytest.param("cpu_prefetch", [], "generation_edit", False, None, None, None, "zero_low", id="guidance_zero_low_mnt_design"),
+    pytest.param("cpu_prefetch", [], "layer_decompose", False, None, None, .5, True, id="guidance_sigma_null_mnt_layer"),
 ])
-def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monkeypatch, text_mode, groups, profile, caption_only, quantization, conditioner_quant, cfg_rate):
+def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monkeypatch, text_mode, groups, profile, caption_only, quantization, conditioner_quant, cfg_rate, guidance_enabled):
     from core.training import latent_cache
     from core.training.ops import ming_image_01_ops
     monkeypatch.setattr(latent_cache, "get_cache_base_dir", lambda: str(tmp_path / "cache"))
@@ -61,8 +64,12 @@ def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monke
     dataset = SimpleNamespace(unique_id="resume-ming", dataset_root=tmp_path, items=items,
         reload_for_epoch=lambda **kwargs: None)
     traces = []
+    null_forwards = []
     original_loss = ming_image_01_ops.flow_loss
     def recorded_loss(transformer, **kwargs):
+        if not torch.is_grad_enabled():
+            null_forwards.append(kwargs["sigma"].detach().clone())
+            return original_loss(transformer, **kwargs)
         traces.append(tuple(kwargs[key].detach().clone() for key in ("clean", "noise", "sigma")) + (kwargs["conditioning"].queries.detach().clone(),kwargs["conditioning"].direct.detach().clone()))
         result = original_loss(transformer, **kwargs)
         traces[-1] += (result.prediction.detach().clone(),)
@@ -72,6 +79,11 @@ def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monke
         "latent_encoding_mode": "swap_onthefly", "text_encoding_mode": text_mode,
         "train_unet": not caption_only, "train_adapter": True if caption_only else None,
         "adapter_lr": .0002 if caption_only else None}
+    if guidance_enabled:
+        config.update(qwen_guidance_loss_weight=0. if guidance_enabled=="zero_low" else .5,qwen_guidance_loss_mix_mode="stochastic",
+            qwen_guidance_loss_schedule="sigma",qwen_guidance_loss_extrapolation_max_rms=.5,
+            qwen_guidance_loss_weight_schedule="high_noise_smoothstep",qwen_guidance_loss_high_noise_weight=.8,
+            qwen_cfg_null_sigma_schedule=cfg_rate is not None)
     if cfg_rate is not None:
         config.update(cfg_uncond_drop_rate=cfg_rate,cfg_uncond_drop_per_mnt=True)
     if quantization or conditioner_quant:
@@ -97,6 +109,8 @@ def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monke
             resume_from_checkpoint=resume)
     baseline = trainer(tmp_path / "baseline" / "run")
     train(baseline)
+    if guidance_enabled:
+        assert null_forwards, "Guidance configuration never selected a null forward"
     baseline_traces = traces.copy()
     assert len(baseline_traces) == 8
     checkpoint = baseline.output_dir / "run_step_000002"

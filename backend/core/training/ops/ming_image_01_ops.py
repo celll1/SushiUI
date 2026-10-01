@@ -9,7 +9,7 @@ from core.models.ming_image_01.training import flow_loss
 from core.training.mnt import training_noise_like
 
 
-def train_step(trainer, batch, *, timesteps=None, cfg_drop_mask=None):
+def train_step(trainer, batch, *, timesteps=None, cfg_drop_mask=None, guidance_drop_mask=None):
     device, dtype = trainer.device, trainer.training_dtype
     clean = batch.clean.to(device=device, dtype=dtype)
     conditioning = MingConditioning(batch.conditioning.queries.to(device=device, dtype=dtype),
@@ -24,11 +24,26 @@ def train_step(trainer, batch, *, timesteps=None, cfg_drop_mask=None):
     weight = float(trainer.reconstruction_loss_weight)
     if not 0 <= weight <= 1:
         raise ValueError("Ming reconstruction loss weight must be within [0, 1]")
+    from core.models.ming_image_01.guidance import prepare_guidance,guidance_loss
+    guidance,selection,selected = prepare_guidance(trainer,sigma,
+        guidance_drop_mask if guidance_drop_mask is not None else cfg_drop_mask)
+    uncond = None
     context = torch.autocast(device_type=torch.device(device).type, dtype=dtype) if trainer.mixed_precision else nullcontext()
     with context:
+        if guidance is not None and bool(selected.any()):
+            indices = selected.nonzero(as_tuple=True)[0]
+            with torch.no_grad():
+                zero = MingConditioning(conditioning.queries[indices],conditioning.direct[indices]).zero()
+                sampled = flow_loss(trainer.transformer,clean=clean[indices],noise=noise[indices],sigma=sigma[indices],
+                    conditioning=zero,frame_weights=batch.frame_weights[indices.to(batch.frame_weights.device)],
+                    reference_latents=None if references is None else [references[i] for i in indices.tolist()])
+                uncond = sampled.prediction.new_zeros(clean.shape)
+                uncond[indices] = sampled.prediction
         result = flow_loss(trainer.transformer, clean=clean, noise=noise, sigma=sigma,
             conditioning=conditioning, frame_weights=batch.frame_weights, reference_latents=references,
             cfg_drop_mask=cfg_drop_mask)
+    prediction_loss,per_item_loss = guidance_loss(trainer,result,uncond,sigma,batch.frame_weights,
+        guidance,selection,selected)
     # Native velocity is clean-noise, opposite to Qwen's training prediction.
     noisy = (1 - sigma.reshape(-1, 1, 1, 1, 1)) * clean + sigma.reshape(-1, 1, 1, 1, 1) * noise
     with torch.set_grad_enabled(weight > 0):
@@ -37,11 +52,11 @@ def train_step(trainer, batch, *, timesteps=None, cfg_drop_mask=None):
         weights = batch.frame_weights.to(device=device, dtype=torch.float32)
         per_item_recon = (per_frame * weights).sum(1) / weights.sum(1)
         reconstruction = per_item_recon.mean()
-    loss = (1 - weight) * result.loss + weight * reconstruction
+    loss = (1 - weight) * prediction_loss + weight * reconstruction
     if getattr(trainer, "_collect_concept_sample_loss", False):
-        trainer._pending_concept_sample_loss = ((1 - weight) * result.per_item_loss + weight * per_item_recon).detach()
-    trainer._last_loss_per_sample = result.per_item_loss.detach()
-    return loss, result.loss.detach(), reconstruction.detach()
+        trainer._pending_concept_sample_loss = ((1 - weight) * per_item_loss + weight * per_item_recon).detach()
+    trainer._last_loss_per_sample = per_item_loss.detach()
+    return loss, prediction_loss.detach(), reconstruction.detach()
 
 
 def load_components(trainer):

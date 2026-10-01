@@ -232,12 +232,15 @@ def materialize_training_linears(model, dtype):
             "weight_dtype":str(dtype).removeprefix("torch."),"lossy_source":True}
 
 
-def saved_full_initialization(artifact):
+def saved_full_initialization(artifact, *, component="dit"):
     from .artifact import _json, _inside
     path = _inside(artifact.root,"training.json")
     if not path.is_file():
         return None
-    value = _json(path).get("ming_full_initialization")
+    keys = {"dit":"ming_full_initialization", "conditioner":"ming_conditioner_full_initialization"}
+    if component not in keys:
+        raise ValueError("Unknown Ming full-initialization component")
+    value = _json(path).get(keys[component])
     if value is None:
         return None
     if (not isinstance(value,dict) or set(value)!={"schema_version","execution","formats","weight_dtype","lossy_source"}

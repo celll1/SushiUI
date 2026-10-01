@@ -29,17 +29,23 @@ class MingImage01FullParameterAdapter(BaseFullParameterAdapter):
         if type(materialize) is not bool:
             raise ValueError("Ming full dequantization requires a boolean opt-in")
         if materialize:
-            device = execution_device(transformer)
-            move_component(transformer,"cpu")
-            try:
-                report = materialize_training_linears(transformer,trainer.weight_dtype)
-                if report is not None:
-                    trainer.ming_full_initialization = report
-            finally:
-                move_component(transformer,device)
+            targets = [("ming_full_initialization",transformer)]
+            if self.conditioner_groups:
+                targets.append(("ming_conditioner_full_initialization",conditioner))
+            for attribute,module in targets:
+                device = execution_device(module)
+                move_component(module,"cpu")
+                try:
+                    report = materialize_training_linears(module,trainer.weight_dtype)
+                    if report is not None:
+                        setattr(trainer,attribute,report)
+                finally:
+                    move_component(module,device)
         reject_quantized_base(transformer, model_label="Ming DiT")
         if self.conditioner_groups:
-            reject_quantized_base(conditioner, model_label="Ming conditioner")
+            from core.models.ming_image_01.quantization import configure_frozen_quantized_training
+            trainer.ming_conditioner_quantized_base_training = configure_frozen_quantized_training(conditioner)
+            self._check_conditioner_bases(conditioner)
         choice = trainer.config.get("train_adapter")
         caption_trainable = trainer.train_unet if choice is None else choice
         transformer.requires_grad_(trainer.train_unet).train(trainer.train_unet or caption_trainable)
@@ -59,10 +65,16 @@ class MingImage01FullParameterAdapter(BaseFullParameterAdapter):
         # Validate optimizer ownership before any training batch is assembled.
         self.arch_param_groups()
 
+    def _check_conditioner_bases(self, conditioner):
+        for name in self.conditioner_groups:
+            for module in conditioner.component_groups()[name]:
+                reject_quantized_base(module, model_label=f"Ming conditioner {name}")
+
     def arch_param_groups(self):
         trainer = self.trainer
         components = trainer.ming_image_01_components
         reject_quantized_base(components.transformer, model_label="Ming DiT")
+        self._check_conditioner_bases(components.conditioner)
         groups = optimizer_groups(components.transformer, components.conditioner,
             dit_lr=resolve_component_lr(trainer, "unet_lr", label="Ming DiT"),
             conditioner_lrs=self.conditioner_lrs, caption_lr=trainer.config.get("adapter_lr"))
@@ -92,6 +104,9 @@ class MingImage01FullParameterAdapter(BaseFullParameterAdapter):
                                          for group in groups]}
         if getattr(self.trainer,"ming_full_initialization",None) is not None:
             metadata["ming_full_initialization"] = self.trainer.ming_full_initialization
+        for key in ("ming_conditioner_full_initialization","ming_conditioner_quantized_base_training"):
+            if getattr(self.trainer,key,None) is not None:
+                metadata[key] = getattr(self.trainer,key)
         modules = (components.transformer, components.conditioner, components.vae)
         devices = []
         for module in modules:

@@ -27393,7 +27393,8 @@ components:
           default: false
           description: |
             Explicitly materialize Qwen-Image 2.1 INT8 ConvRot components or
-            Ming-Image 0.1 INT8/ConvRot/E4M3 fallback DiT weights into
+            Ming-Image 0.1 INT8/ConvRot/E4M3 fallback DiT weights and the
+            conditioner when native conditioner groups are trainable into
             floating weights on the full-fine-tune backward path once before
             optimizer creation. Quantization loss remains in the starting
             weights. Unsupported for other architectures and training methods.

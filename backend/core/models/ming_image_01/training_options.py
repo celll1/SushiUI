@@ -54,6 +54,9 @@ def preflight_training(config, *, method):
     materialize = config.get("full_finetune_dequantize_int8_base", TRAINING_DEFAULTS["full_finetune_dequantize_int8_base"])
     if type(materialize) is not bool or (materialize and method != "full_finetune"):
         raise ValueError("Ming full dequantization requires a boolean opt-in and full_finetune")
+    export = config.get("training_export_format", TRAINING_DEFAULTS["training_export_format"])
+    if not isinstance(export, str) or export not in {"none", "int8_convrot"} or (export != "none" and method != "full_finetune"):
+        raise ValueError("Ming inference training export requires full_finetune and a supported format")
     choice = config.get("train_adapter")
     if choice is not None and type(choice) is not bool:
         raise ValueError("Ming train_adapter must be null or a boolean")

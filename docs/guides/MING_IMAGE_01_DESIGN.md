@@ -1472,3 +1472,56 @@ serialization and shared persisted request types. Owner build/type checks and
 interactive acceptance remain pending without blocking continued work.
 Conditioner quantization/adapters, optimized ConvRot training, partition/global/
 style and remaining objective parity are still active work.
+
+
+### Run-scoped ConvRot training inference export milestone
+
+`training_export_format=int8_convrot` now supports Ming full fine-tuning as well
+as Qwen; this supersedes the previous milestone's Qwen-only gate. The existing
+normal-completion hook in `train_runner` calls the shared run export job, so
+periodic checkpoints remain floating and stopped/failed runs do not automatically
+export. The existing stopped/completed manual export endpoint and monitor allow
+Ming and retain the live-process refusal. Shared defaults and YAML serialization
+are reused; direct Ming config refuses unsupported formats and non-full exports.
+The monitor obtains the run's architecture independently of sample images, so
+a run with sample generation disabled still exposes its manual export action.
+Qwen's legacy filename fallback is retained. UI status polling, replacement
+confirmation, error handling and stopped/completed visibility remain connected.
+
+Latest-checkpoint selection recognizes native `run_name_step_N` directories with
+state and optimizer sidecars, then validates the complete native package and
+schema-one full-training metadata/profile. Packed or incomplete candidates are
+excluded. Sidecar presence is the selection criterion, not deserialization of
+optimizer contents; normal training checkpoint writes own that payload contract.
+An export invokes the CPU offline converter on this saved package, quantizes
+eligible native DiT linears with the real shared ConvRot implementation and copies
+all five companion components verbatim. It never constructs a live conditioner
+or VAE for conversion. The output is `exports/int8_convrot`, a loadable native
+six-component package preserving U-Net metadata and training origin metadata.
+Its packed weights require the existing explicit materialization opt-in for a
+new full fine-tune; the floating checkpoint remains the resume source.
+
+Replacement converts/preflights a new package before moving the previous export
+to a sibling backup, then publishes by rename and rolls back on publication
+failure. Linked destinations escaping the run and pre-existing unfinished
+backups are refused. Conversion/publication failures report failed status and
+retain the previous export and original floating checkpoint. Cleanup failure
+can leave a backup for explicit recovery; no claim of crash-proof transactional
+filesystem behavior is made. Shared in-process per-run job exclusion/status and
+idempotent reuse of an already completed same-source export are preserved.
+
+Twenty unique affected CPU cases pass across this milestone: fourteen Ming
+export tests, two existing Qwen export regressions and four shared API-gate
+checks. Production request models/YAML/subprocess preflight and direct route
+helper invocation with an in-memory database stub exercise Design and Layer
+manual background jobs. Both load their actual exported packed package and
+produce finite native U-Net RGBA inference; companions and source bytes remain
+unchanged. Replacement failure injection covers conversion and final rename,
+with rollback/temp cleanup assertions. Additional cases cover invalid/packed
+checkpoint selection, config refusals and method/live-process gating. These are
+offline tests, not HTTP requests or an actual worker completion/DB integration
+run. Automatic wiring was reviewed statically at the existing completion hook.
+Backend compile/real imports, spec parsing and frontend static review supplement
+the CPU cases; owner build/type/UI checks and official GPU acceptance are pending.
+Conditioner quantization/adapters, optimized ConvRot training, partition/global/
+style and remaining objective parity remain active.

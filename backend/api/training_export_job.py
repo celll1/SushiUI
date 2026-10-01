@@ -25,7 +25,20 @@ def latest_complete_checkpoint(output_dir: str | Path, run_name: str) -> Path:
         raise FileNotFoundError(f"Training output directory not found: {root}")
     candidates = []
     pattern = re.compile(rf"^{re.escape(run_name)}_step_(\d+)\.safetensors(?:\.index\.json)?$")
+    native_pattern = re.compile(rf"^{re.escape(run_name)}_step_(\d+)$")
     for candidate in root.iterdir():
+        native_match = native_pattern.fullmatch(candidate.name)
+        if native_match and candidate.is_dir():
+            stem = candidate.name
+            if not (root / f"{stem}_state.json").is_file() or not (root / f"{stem}_optimizer.pt").is_file():
+                continue
+            try:
+                from core.training.ming_full_export import validate_checkpoint
+                validate_checkpoint(candidate, root)
+            except (OSError, ValueError, KeyError):
+                continue
+            candidates.append((int(native_match.group(1)), candidate))
+            continue
         match = pattern.fullmatch(candidate.name)
         if match is None or not candidate.is_file():
             continue
@@ -94,11 +107,12 @@ def _execute_export(run_name: str, output_dir: str | Path, *, overwrite: bool) -
             "state": "running", "source": source.name,
             "started_at": datetime.now(timezone.utc).isoformat(),
         })
-        from core.training.qwen_full_export import export_qwen_full_checkpoint
-
-        result = export_qwen_full_checkpoint(
-            source, output_dir, overwrite=overwrite, device="cpu"
-        )
+        if source.is_dir():
+            from core.training.ming_full_export import export_ming_full_checkpoint
+            result = export_ming_full_checkpoint(source, output_dir, overwrite=overwrite)
+        else:
+            from core.training.qwen_full_export import export_qwen_full_checkpoint
+            result = export_qwen_full_checkpoint(source, output_dir, overwrite=overwrite, device="cpu")
         status = {
             "state": "completed", "source": source.name,
             "path": str(result),

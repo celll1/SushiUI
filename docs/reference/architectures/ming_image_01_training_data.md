@@ -1,0 +1,67 @@
+# Ming-Image 0.1 training data contract
+
+The native dataset reader is CPU-verified. Normal training remains unavailable
+until shared dataset discovery, caches, the optimization loop and exact resume
+are connected. This format supplies supervision; it does not invent ground-truth
+layers from a flat image or promise quality recovery.
+
+## Profiles and ordered targets
+
+Design (`generation_edit`) accepts an ordinary captioned RGB/RGBA target. RGB
+is promoted to opaque RGBA. Optional edit references must share the source
+canvas geometry. A sidecar can specify them explicitly.
+
+Layer (`layer_decompose`) requires `canvas.png.ming.json` beside its primary
+image. All paths resolve relative to that sidecar and must stay within the
+explicit dataset root, including through symlinks. Assets have the same
+EXIF-corrected source geometry. Layer targets must have explicit RGBA channels.
+
+```json
+{
+  "schema_version": 1,
+  "profile": "layer_decompose",
+  "targets": [
+    {"path": "canvas.png", "role": "auxiliary_canvas", "weight": 0},
+    {"path": "foreground.png", "role": "layer_1", "weight": 1},
+    {"path": "background.png", "role": "layer_2", "weight": 1}
+  ],
+  "references": ["canvas.png"]
+}
+```
+
+The auxiliary canvas occupies target slot zero because the native model emits
+that slot. Its label and loss weight are dataset-owned; it is not assumed to be
+a composited image. Every target requires an explicit finite, nonnegative
+float32-representable weight, and the item must retain a positive finite total
+in float32. Reference images condition the model and never enter the target
+loss. The roles must be exactly `auxiliary_canvas`, `layer_1`, ... in order;
+Design's sole target role is `image`. Duplicate JSON keys and unknown fields
+are refused.
+
+## Paired transforms and batch identity
+
+`load_pixels` applies one original-canvas `(x, y, width, height)` crop, bilinear
+resize and optional horizontal flip to every target and reference. The output
+pixel grid is divisible by 16. All four channels are normalized to [-1, 1].
+The pixel layout is `[4, F, H, W]`; each target is VAE-encoded independently so
+Layer's ordered image axis cannot be temporally compressed.
+
+Batches are keyed by profile, output width/height and target-frame count.
+Reference counts may differ per item; their native ragged representation is
+preserved. The same count requirement applies to target-frame loss weights.
+
+Preflight hashes the sidecar and every referenced asset. Loading rechecks root
+containment and rejects content drift, requiring records/caches to be rebuilt.
+The pixel cache identity includes ordered content hashes, sidecar identity,
+roles, source geometry, crop, flip and output grid. It is not a complete text or
+latent cache identity: conditioning caches additionally need caption, model,
+processor, topology and trainability identities before reuse.
+
+## Evidence and remaining integration
+
+23 dedicated CPU tests cover matching transforms and alpha, invalid supervision,
+path escape, content drift, distinct frame-count buckets and both profiles
+through the real tiny native VAE, MLLM conditioner, registered training handler,
+backward and AdamW updates. The shared `BaseTrainer.encode_image` also preserves
+Ming alpha. CUDA initialization is prohibited in these tests. This evidence
+does not claim that a normal training request or optimizer resume works yet.

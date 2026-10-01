@@ -1,0 +1,178 @@
+"""Paired RGBA supervision records and real native CPU training integration."""
+
+import json
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+import torch
+from PIL import Image, ImageOps
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+def forbidden_cuda(*a, **k):
+    raise AssertionError("Ming dataset test attempted CUDA initialization")
+torch.cuda.get_device_capability = lambda *a, **k: (8, 9)
+torch.cuda.is_available = lambda: False
+torch.cuda._lazy_init = forbidden_cuda
+torch._C._cuda_init = forbidden_cuda
+torch.set_num_threads(1)
+
+from core.models.ming_image_01.dataset import inspect_item, load_pixels, pixel_cache_identity, prepare_record_batch, sidecar_path
+from core.training.arch import get_arch_handler
+from core.training.arch.base_arch import TrainStepContext
+from ming_image_01_training_batch_test import components, trainer
+
+
+def layer_files(root, count=2):
+    root.mkdir(parents=True, exist_ok=True)
+    y, x = np.mgrid[:32, :64]
+    rgba = np.stack([x * 3, y * 7, (x+y) * 2, x * 4], axis=-1).astype(np.uint8)
+    primary = root / "canvas.png"
+    Image.fromarray(rgba).save(primary)
+    paths = ["canvas.png"]
+    for index in range(1, count):
+        name = f"layer{index}.png"
+        Image.fromarray(rgba).save(root / name)
+        paths.append(name)
+    spec = {"schema_version": 1, "profile": "layer_decompose",
+        "targets": [{"path": path, "role": "auxiliary_canvas" if index == 0 else f"layer_{index}",
+                     "weight": 0 if index == 0 else 1} for index, path in enumerate(paths)],
+        "references": ["canvas.png"]}
+    sidecar_path(primary).write_text(json.dumps(spec))
+    return primary, spec
+
+
+def test_paired_crop_flip_preserves_alpha_order_and_zero_auxiliary_weight(tmp_path):
+    primary, _ = layer_files(tmp_path)
+    record = inspect_item(primary, root=tmp_path, profile="layer_decompose")
+    item = load_pixels(record, caption="word5", width=32, height=16,
+                       crop_box=(16, 8, 32, 16), flip_horizontal=True)
+    expected = ImageOps.mirror(Image.open(primary).crop((16, 8, 48, 24)))
+    pixels = (item.pixels[:, 0] + 1) * 127.5
+    torch.testing.assert_close(pixels, torch.from_numpy(np.asarray(expected).copy()).permute(2, 0, 1).float())
+    assert np.array_equal(np.asarray(item.references[0]), np.asarray(expected))
+    torch.testing.assert_close(item.pixels[:, 0], item.pixels[:, 1], rtol=0, atol=0)
+    assert item.weights.tolist() == [0, 1]
+    assert record.roles == ("auxiliary_canvas", "layer_1")
+    assert record.bucket_key(32, 16) == ("layer_decompose", 32, 16, 2)
+
+
+def test_design_rgb_is_promoted_to_opaque_rgba(tmp_path):
+    primary = tmp_path / "plain.png"
+    Image.new("RGB", (32, 32), (30, 40, 50)).save(primary)
+    record = inspect_item(primary, root=tmp_path, profile="generation_edit")
+    item = load_pixels(record, caption="word5", width=32, height=32)
+    assert item.pixels.shape == (4, 1, 32, 32)
+    assert torch.all(item.pixels[3] == 1) and not item.references
+
+
+@pytest.mark.parametrize("problem", ["missing_sidecar", "roles", "alpha", "geometry", "escape", "missing_asset",
+                                      "negative", "bool", "nan", "overflow", "sum_overflow", "underflow", "zero"])
+def test_bad_layer_record_rejected_before_components_load(tmp_path, problem):
+    root = tmp_path / "data"
+    primary, spec = layer_files(root)
+    if problem == "missing_sidecar": sidecar_path(primary).unlink()
+    elif problem == "roles": spec["targets"][1]["role"] = "auxiliary_canvas"
+    elif problem == "alpha": Image.new("RGB", (64, 32)).save(root / "layer1.png")
+    elif problem == "geometry": Image.new("RGBA", (32, 32)).save(root / "layer1.png")
+    elif problem == "escape":
+        Image.new("RGBA", (64, 32)).save(tmp_path / "outside.png")
+        spec["references"] = ["../outside.png"]
+    elif problem == "missing_asset": spec["references"] = ["missing.png"]
+    else:
+        spec["targets"][1]["weight"] = {"negative": -1, "bool": True, "nan": float("nan"),
+            "overflow": 1e40, "sum_overflow": 3e38, "underflow": 1e-50, "zero": 0}[problem]
+        if problem == "sum_overflow": spec["targets"][0]["weight"] = 3e38
+    if problem != "missing_sidecar": sidecar_path(primary).write_text(json.dumps(spec))
+    with pytest.raises((ValueError, FileNotFoundError)):
+        inspect_item(primary, root=root, profile="layer_decompose")
+
+
+@pytest.mark.parametrize("asset", ["image", "manifest"])
+def test_changed_asset_invalidates_preflight(tmp_path, asset):
+    primary, spec = layer_files(tmp_path)
+    record = inspect_item(primary, root=tmp_path, profile="layer_decompose")
+    if asset == "image": Image.new("RGBA", (64, 32), (1, 2, 3, 4)).save(primary)
+    else:
+        spec["targets"][1]["weight"] = 2
+        sidecar_path(primary).write_text(json.dumps(spec))
+    with pytest.raises(ValueError, match="changed after preflight"):
+        load_pixels(record, caption="word5", width=32, height=32)
+
+
+def test_duplicate_manifest_keys_refused(tmp_path):
+    primary, _ = layer_files(tmp_path)
+    sidecar_path(primary).write_text('{"schema_version":1,"schema_version":2}')
+    with pytest.raises(ValueError, match="duplicate keys"):
+        inspect_item(primary, root=tmp_path, profile="layer_decompose")
+
+
+def test_pixel_cache_changes_for_pairing_and_supervision(tmp_path):
+    primary, spec = layer_files(tmp_path)
+    record = inspect_item(primary, root=tmp_path, profile="layer_decompose")
+    args = dict(width=32, height=32, crop_box=(0, 0, 32, 32), flip_horizontal=False)
+    key = pixel_cache_identity(record, **args)
+    assert key != pixel_cache_identity(record, **{**args, "flip_horizontal": True})
+    assert key != pixel_cache_identity(record, **{**args, "crop_box": (16, 0, 32, 32)})
+    spec["targets"][1]["weight"] = 2
+    sidecar_path(primary).write_text(json.dumps(spec))
+    changed = inspect_item(primary, root=tmp_path, profile="layer_decompose")
+    assert key != pixel_cache_identity(changed, **args)
+
+
+@pytest.mark.parametrize("profile", ["generation_edit", "layer_decompose"])
+def test_records_through_native_vae_conditioner_registered_handler_and_optimizer(tmp_path, profile):
+    value = components(profile)
+    items = []
+    for index in range(2):
+        root = tmp_path / str(index)
+        primary, spec = layer_files(root)
+        if profile == "generation_edit": sidecar_path(primary).unlink()
+        elif index == 1:
+            spec["references"].append("layer1.png")
+            sidecar_path(primary).write_text(json.dumps(spec))
+        record = inspect_item(primary, root=root, profile=profile)
+        items.append(load_pixels(record, caption=f"word{index+5}", width=32, height=32))
+    batch = prepare_record_batch(value, items, resolution=32)
+    assert batch.clean.shape == (2, 16, 1 if profile == "generation_edit" else 2, 4, 4)
+    if profile == "layer_decompose": assert [r.shape[1] for r in batch.reference_latents] == [1, 2]
+    owner = trainer(value)
+    owner.is_ming_image_01 = True
+    optim = torch.optim.AdamW(value.transformer.parameters(), lr=.001)
+    parameter = value.transformer.layers[0].attention.to_q.weight
+    before = parameter.detach().clone()
+    loss, *_ = get_arch_handler(owner).train_step(owner,
+        TrainStepContext(latents=batch.clean, ming_batch=batch, timesteps=torch.tensor([.2, .8])))
+    loss.backward()
+    assert torch.isfinite(loss) and parameter.grad.abs().sum() > 0
+    optim.step()
+    assert not torch.equal(before, parameter) and not torch.cuda.is_initialized()
+
+
+def test_frame_counts_are_distinct_buckets_and_cannot_batch(tmp_path):
+    items = []
+    for count in (2, 3):
+        root = tmp_path / str(count)
+        primary, _ = layer_files(root, count)
+        record = inspect_item(primary, root=root, profile="layer_decompose")
+        items.append(load_pixels(record, caption="word5", width=32, height=32))
+    assert items[0].record.bucket_key(32, 32) != items[1].record.bucket_key(32, 32)
+    with pytest.raises(ValueError, match="target-frame counts"):
+        prepare_record_batch(components("layer_decompose"), items, resolution=32)
+
+
+def test_shared_encode_image_retains_native_alpha(tmp_path):
+    from core.training.base_trainer import BaseTrainer
+    value = components("generation_edit")
+    owner = trainer(value)
+    owner.is_ming_image_01 = True
+    owner.is_minit2i = owner.is_sensenova = False
+    owner.vae, owner.vae_dtype = value.vae, torch.float32
+    owner.arch = get_arch_handler(owner)
+    low = BaseTrainer.encode_image(owner, Image.new("RGBA", (32, 32), (30, 40, 50, 0)),
+                                   target_width=32, target_height=32, bucket_strategy="resize")
+    high = BaseTrainer.encode_image(owner, Image.new("RGBA", (32, 32), (30, 40, 50, 255)),
+                                    target_width=32, target_height=32, bucket_strategy="resize")
+    assert low.shape == high.shape == (1, 16, 1, 4, 4) and not torch.equal(low, high)
+    assert not torch.cuda.is_initialized()

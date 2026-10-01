@@ -379,3 +379,14 @@ actually ships.
   dataset contract. Native inference can be developed before that data exists.
 - GPU/API verification waits for a separate resource handoff; its absence does
   not block offline implementation, commits or frontend static review.
+
+### Explicit native dataset records
+
+The [training data contract](../reference/architectures/ming_image_01_training_data.md)
+now defines ordered RGBA targets, explicit auxiliary-canvas supervision weights,
+root-contained references, matching crops/flips and frame-count batch identity.
+23 dedicated CPU tests pass, including actual tiny native VAE/conditioner/DiT
+backward and optimizer updates through the registered handler. Shared image
+encoding retains Ming alpha. This is the native data bridge; normal discovery,
+cache and optimization-loop/resume orchestration remain pending and capabilities
+stay unavailable until connected. No main API, official weights or GPU was used.

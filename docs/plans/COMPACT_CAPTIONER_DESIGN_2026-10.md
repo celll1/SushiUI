@@ -412,16 +412,17 @@ Tagger画面のCaptioner tabはbundleロード、source/device/token設定、pre
 進捗、checkpoint、exportとresume sequenceはtraining DBに保存し、events endpointから取得する。
 再起動後にworkerが存在しないstarting/running/stoppingはinterruptedとして記録する。
 再開checkpointはrun直下に限定し、latest markerからも選べる。exportはoptimizerを除いた別bundleを作る。
-Captioner tabの学習UIはdatasetごとに入力tags列と正解の自然文列を選び、runを作成する。
+`/training`のCaptioner Trainingセクションはdatasetごとに入力tags列と正解の自然文列を選び、runを作成する。
 設定のdefaultはAPIから取得し、詳細設定とdataset filtersも編集できる。
 runの開始・停止・再開、2秒ごとの状態とevents取得、checkpoint選択、推論exportを接続した。
 画面を閉じても学習は継続し、再度runを選ぶと保存された状態を取得する。
-checkpointとexportをpreviewのbundle pathへ渡し、利用者がロードしてsampleを確認できる。
+checkpointとexportのパスを表示し、Tagger画面の推論bundleロードへ案内する。
 専用のsample API `/captioner-training/runs/{run_id}/sample`を接続した。
 runに属するcheckpointから一時的なdecoderをロードし、既存の一致するPyTorch taggerを借用して
 登録dataset画像のcaptionを返す。通常のpreview用captionerは差し替えない。
 sampleにもGPU admissionとrequest cancelを適用し、workerの終了・一時decoderの解放までslotを保持する。
-成功sampleはrun eventsへ保存し、UIのpreview欄へ表示する。sidecarは自動保存しない。
+成功sampleはrun eventsへ保存し、Training画面の専用sample欄へ表示する。
+本文を確認・編集してから明示保存でき、sidecarは自動保存しない。
 `/captioner/batches`はbundleと推論設定、item順序を固定したpending jobを作成する。
 start/stop/resultsでbackground workerを制御し、成功previewと失敗理由、attempt数をtraining DBへ保存する。
 ブラウザ接続とは独立して継続し、server再起動後にworkerがないrunはinterruptedへ変更する。
@@ -445,7 +446,7 @@ export、依存不一致拒否、caption推論、borrow中のunload待機も確�
 保存API、OpenAPI整合性、既存caption更新とsidecar/scannerの回帰を合わせた44件も通過した。
 推論API、実encoder呼出し一回、preview後の保存、二重cancelとpause待機中のcancel、
 GPU admissionのCPU検証を加えた50件が通過した。
-frontendはコードをレビューしたが、build/type-checkと画面での動作確認はrepo ownerの検証が必要である。
+frontendはAPI型、defaults、状態遷移、cancel、エラー表示と保存導線を静的レビューした。
 初期基盤ではfp32/bf16/fp16でloss/backward/生成を確認した。
 変更backendのpy_compileと実importも通過した。これは小型人工例での動作検証である。
 通常のCPU検証ではCUDA context未初期化をassertする。利用者のGPU空き報告後に、
@@ -462,10 +463,10 @@ worktree間でin-process lockは共有できないため、将来のGPU実測開
 この基盤検証は実caption品質や1秒目標達成の証拠にはならない。
 学習runの永続化、中断表示、排他、停止、checkpoint指定の拒否、resumeと失敗cleanupをCPUで確認した。
 学習run・OpenAPI整合性・captioner API・コアを合わせた41件が通過した。
-学習run APIのGPU実dataset経路は未検証である。
+学習run APIのGPU経路は、後述の専用人工datasetによる実HTTP検証を通過した。
 小型の実trainerを使うCPU REST検証で、run作成・開始、checkpoint保存、進捗取得、
 optimizerなしexportとbundle再ロードを確認した。captioner関連のCPUテスト43件が通過した。
-学習UIはコードを読み合わせたが、build/type-checkと画面の動作確認は未検証である。
+学習UIは静的レビュー済みであり、buildは利用者から問題なしと報告された。agentはbuild/type-checkを実行していない。
 専用sampleのencoder呼出し一回、通常previewの状態維持、結果eventの保存、cancel後の一時decoder解放、
 破損bundleの拒否をCPUで確認した。captioner関連のCPUテスト46件が通過した。
 永続batchのitem別結果、decoderロード一回、停止・再開、明示retry、再起動後の状態復旧、
@@ -476,7 +477,8 @@ receipt保存失敗後の復旧と二重書込の防止を確認した。bundle�
 推論ロードが学習側のCPU RNGを消費しないことも確認した。captioner関連のCPUテスト56件が通過した。
 統合後のdev serverでCaptioner tab、永続batchと学習formを表示し、API defaultsと登録datasetの
 tags列・自然文列の取得を確認した。これは学習開始、本文生成、確認保存の画面操作を通した検証ではない。
-本番build/type-checkはowner検証待ちである。
+学習UIはその後Trainingへ移動した。移動後のブラウザ検証はログイン画面へのredirectまでであり、
+画面操作を通した学習・保存は未検証である。機能検証は実HTTP API、UI検証は静的レビューで行った。
 
 main統合前の最新CPU回帰はcaptioner、pause protocol、既存taggerのNaFlex/custom pooler/head拡張、
 dataset sidecar/caption更新/scannerを合わせた81件が通過した。変更Python全ファイルのpy_compileと
@@ -484,5 +486,15 @@ trainer単独import、routes実importも成功し、検証processのCUDA未初�
 学習UIの定期取得は開始・停止等の操作前に送った応答を捨て、古い状態で操作結果を上書きしない。
 今回の1〜4の実装対象であるdataset/tokenizer/split、cache/trainer/resume、bundle互換性、
 API/GPU調停/UI/明示保存は接続済みで、利用者の承認によりmainへ統合した。
-ただしUIのbuild/type-checkと学習から生成・保存までの画面操作は未確認であり、
-1〜4全体の完了確認はまだ済んでいない。実data品質とso400mの全文warm p95は別の未実施評価である。
+2026-10-01にmainでCPU回帰81件を再確認した。収集時のCUDA初期化を避けるため、AGENTS.mdのstubを適用した。
+`examples/api/captioner_lifecycle_smoke.py --no-dry-run --device cuda:0`は稼働中APIへHTTP要求を送り、
+実SigLIP2の一層encoderと8枚の人工画像で学習、途中checkpointからの厳密resume、optimizerなしexport、
+3種のtag sourceによる推論、checkpoint sampleの状態分離、明示保存と古いrevisionの拒否、
+永続batch、保存receiptの冪等性、元caption/tagsの保持、再scan後の自然文indexを確認した。
+再開後の最終safetensorsは連続学習とbyte単位で一致した。検証fixtureとrunは確認用に保持し、
+検証モデルは終了時にunloadした。既存datasetや生成モデルを変更していない。
+
+依頼された1〜4は、dataset/tokenizer/重複を考慮したsplit、raw cache/trainer/checkpoint/resume、
+tagger/語彙/processor互換性、API/GPU調停/UI/明示保存を指す。この実装範囲はCPU回帰、
+実HTTPのGPU lifecycle、frontend静的レビューで完了確認した。
+実data品質とso400mの全文warm p95は次段階の未実施評価であり、1秒目標達成を主張しない。

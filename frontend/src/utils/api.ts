@@ -5337,11 +5337,12 @@ export interface QuantizedExportInventory {
  * just `{ state: "idle" }`; every other field appears once a job has started.
  */
 export interface QuantizedExportJob {
+  output_kind?: "single_file" | "native_package";
   job_id?: string;
   state: "idle" | "running" | "completed" | "failed";
   arch?: string | null;
   output_path?: string;
-  /** The `.safetensors`, or the `.safetensors.index.json` of a sharded export. */
+  /** Weight file, shard index, or native package manifest. */
   written_path?: string | null;
   processed?: number;
   total?: number;
@@ -5353,6 +5354,7 @@ export interface QuantizedExportJob {
 }
 
 export interface QuantizedExportStatus {
+  output_kind: "single_file" | "native_package";
   /** True when the loaded transformer owns quantized Linear modules. */
   exportable: boolean;
   /** Why it is not exportable; null when it is. */

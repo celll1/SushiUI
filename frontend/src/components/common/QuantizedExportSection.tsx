@@ -21,7 +21,7 @@ interface QuantizedExportSectionProps {
 }
 
 /**
- * Write the loaded, weight-only quantized transformer to a single file.
+ * Export the loaded quantized checkpoint in its native loadable format.
  *
  * Renders NOTHING unless the backend reports the loaded transformer owns
  * quantized Linear modules (`GET /models/export-quantized` -> `exportable`).
@@ -83,6 +83,7 @@ export default function QuantizedExportSection({
     setPath("");
     setStatus(null);
     setError(null);
+    setStarting(false);
     setAvailabilityResolved(false);
     refresh();
   }, [modelIdentity, refresh]);
@@ -96,20 +97,24 @@ export default function QuantizedExportSection({
     return () => clearInterval(id);
   }, [running, refresh]);
 
+  const nativePackage = status?.output_kind === "native_package";
   const handleExport = async () => {
+    const requestedModel = modelIdentityRef.current;
     setError(null);
     setStarting(true);
     try {
       await startQuantizedExport({
         output_path: path,
-        link_siblings: linkSiblings,
-        overwrite,
+        link_siblings: nativePackage ? false : linkSiblings,
+        overwrite: nativePackage ? false : overwrite,
       });
       await refresh();
     } catch (e: any) {
-      setError(e?.response?.data?.detail ?? e?.message ?? "Export failed to start");
+      if (requestedModel === modelIdentityRef.current) {
+        setError(e?.response?.data?.detail ?? e?.message ?? "Export failed to start");
+      }
     } finally {
-      setStarting(false);
+      if (requestedModel === modelIdentityRef.current) setStarting(false);
     }
   };
 
@@ -135,55 +140,59 @@ export default function QuantizedExportSection({
         {quantized} quantized Linear layer(s) ({inv.int8} INT8, {inv.e4m3} FP8 E4M3, {inv.plain} unquantized)
       </p>
       <p className="text-xs text-gray-400">
-        Writes the loaded transformer&apos;s quantized weights to a single
-        file that this backend can load directly. Transformer only — no text
-        encoder and no VAE are embedded.
+        {nativePackage
+          ? "Writes a complete Ming package directory containing the quantized DiT, conditioner, RGBA VAE, processor and scheduler. Load the resulting manifest.json to restore this model. A new destination is required."
+          : "Writes the loaded transformer's quantized weights to a file that this backend can load directly. Transformer only; text encoder and VAE are resolved separately."}
         {status.has_runtime_audit
-          ? " The per-layer audit for this session's in-place conversion is written next to it."
-          : " No per-layer audit exists for this model (its quantized layers came from the checkpoint), and the file's metadata records that."}
+          ? (nativePackage ? " The runtime audit is saved in quantization.json." : " The runtime audit is written next to the file.")
+          : " No runtime conversion audit is available; the export records this."}
       </p>
 
       <Input
-        label="Destination"
+        label={nativePackage ? "Package directory" : "Destination"}
         value={path}
         onChange={(e) => {
           setPathTouched(true);
           setPath(e.target.value);
         }}
-        placeholder="D:/.../model_int8.safetensors"
+        placeholder={nativePackage ? "D:/.../ming_int8" : "D:/.../model_int8.safetensors"}
         disabled={running}
       />
 
-      <label className="flex items-center gap-2 cursor-pointer">
-        <input
-          type="checkbox"
-          checked={linkSiblings}
-          onChange={(e) => setLinkSiblings(e.target.checked)}
-          disabled={running}
-          className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-2 focus:ring-blue-500"
-        />
-        <span className="text-sm text-gray-300">
-          Link the loaded model&apos;s component directories next to the file
-        </span>
-      </label>
-      <p className="text-xs text-gray-500">
-        Creates directory junctions so the loader resolves the same text
-        encoder and VAE the current model uses.
-      </p>
+      {!nativePackage && (
+        <>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={linkSiblings}
+              onChange={(e) => setLinkSiblings(e.target.checked)}
+              disabled={running}
+              className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-2 focus:ring-blue-500"
+            />
+            <span className="text-sm text-gray-300">
+              Link the loaded model&apos;s component directories next to the file
+            </span>
+          </label>
+          <p className="text-xs text-gray-500">
+            Creates directory junctions so the loader resolves the same text
+            encoder and VAE the current model uses.
+          </p>
 
-      <label className="flex items-center gap-2 cursor-pointer">
-        <input
-          type="checkbox"
-          checked={overwrite}
-          onChange={(e) => setOverwrite(e.target.checked)}
-          disabled={running}
-          className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-2 focus:ring-blue-500"
-        />
-        <span className="text-sm text-gray-300">
-          Overwrite an existing file at the destination
-        </span>
-      </label>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={overwrite}
+              onChange={(e) => setOverwrite(e.target.checked)}
+              disabled={running}
+              className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-2 focus:ring-blue-500"
+            />
+            <span className="text-sm text-gray-300">
+              Overwrite an existing file at the destination
+            </span>
+          </label>
 
+        </>
+      )}
       <Button
         onClick={handleExport}
         disabled={running || starting || !path.trim() || !status.exportable}
@@ -205,7 +214,7 @@ export default function QuantizedExportSection({
                 />
               </div>
               <p className="text-xs text-gray-400">
-                {job?.processed ?? 0} / {job?.total ?? 0} tensors — {job?.message}
+                {job?.processed ?? 0} / {job?.total ?? 0} {job?.output_kind === "native_package" ? "components" : "tensors"} — {job?.message}
               </p>
             </>
           )}

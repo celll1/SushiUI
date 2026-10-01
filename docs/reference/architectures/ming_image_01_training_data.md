@@ -120,3 +120,22 @@ frozen reuse. This avoids repeated VAE work and avoids retaining a consumed
 trainable encoder graph across optimizer updates. Common assembly and MNT call
 these seams directly. Persistent cache, full normal-run verification and exact
 optimizer resume still remain separate pending work.
+
+
+### Persistent record reuse
+
+`prepare_record_latents` can consume a `snapshot_cache_context` captured while
+frozen producer weights are on CPU. Paired pixel hashes identify targets and
+references together. Expected latent roles/shapes derive from current records;
+expected conditioning shapes derive from the native token-layout helper and
+projection dimensions. A mismatch or corrupt entry is regenerated. Caption
+changes select a new conditioning entry without invalidating the image latents.
+Cached references retain absent per-item slots and ordered native frames.
+
+Only a cache miss stages its encoder on the requested execution device. VAE
+cleanup returns to CPU even if transfer/encoding fails. Frozen conditioner
+cleanup returns to CPU; trainable conditioning remains resident for backward.
+A cache context rejects producer parameter-version or precision changes. Its
+execution descriptor must describe the actual attention, tiling and runtime
+policy. Common mode selection/eager prefill remains pending; default training
+still follows the staged on-the-fly path until that connection is complete.

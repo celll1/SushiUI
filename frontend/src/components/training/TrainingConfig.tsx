@@ -4555,7 +4555,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   onChange={(e) => updateParam("full_finetune_dequantize_int8_base", e.target.checked)}
                   className="mt-0.5 h-4 w-4"
                 />
-                <span>Allow one-time quantized-base dequantization for full fine-tuning. Ming supports INT8, E4M3 fallback and ConvRot; Qwen supports ConvRot. The starting weights remain lossy; training uses floating weights.</span>
+                <span>Allow one-time quantized-base dequantization for full fine-tuning. Ming supports INT8, E4M3 fallback and ConvRot in the DiT and trainable conditioner path; Qwen supports ConvRot. The starting weights remain lossy; training uses floating weights.</span>
               </label>
             )}
 

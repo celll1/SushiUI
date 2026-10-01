@@ -1589,3 +1589,62 @@ continues to use the existing artifact picker/structure display and dynamic
 capability explanation; owner build/type/UI verification remains pending.
 Conditioner full materialization/packed projections, optimized ConvRot training,
 adapters, partition/global/style and remaining objective parity remain active.
+
+
+### Full conditioner materialization and packed upstream training milestone
+
+The existing explicit `full_finetune_dequantize_int8_base` opt-in now materializes
+native conditioner INT8, E4M3 fallback and ConvRot Linears before optimizer
+creation when at least one native conditioner group is selected. As for DiT,
+conversion streams CPU weights into floating Parameters, then restores component
+residency. This converts all packed conditioner Linears, including frozen groups;
+trainable ownership and group learning rates are applied afterward. It can
+increase memory even when only one group trains. Quantization loss remains in
+the initial weights; this is not recovery of the original floating checkpoint.
+The DiT path and its existing packed-base guard are retained.
+
+`training.json` records separate strict schema-one `ming_full_initialization`
+and `ming_conditioner_full_initialization` lossy-origin reports. Native loading,
+full checkpoint writing, fresh training from the floating package and optimizer
+resume retain both origin records and U-Net topology. A floating restart requires
+no dequantization opt-in. These reports describe preparation, not checkpoint
+identity or an additional runtime quantization setting.
+
+Without materialization, selected floating groups such as queries/projections
+can train through frozen packed MLLM/connector weights. The guard checks the
+selected group's modules rather than refusing any packed upstream module;
+selected packed language/vision/connector modules still fail before optimizer
+creation unless explicitly materialized. Frozen packed upstream Linears use
+existing differentiable dequantization rather than inherited W8A8 flags, with a
+`ming_conditioner_quantized_base_training` execution report saved in the full
+checkpoint. Execution is configured from the current loaded modules on each
+training startup, independently of the saved lossy-origin report.
+
+Across this milestone, 33 unique affected CPU cases pass: twelve new conditioner
+full-training/materialization cases, nine existing full-adapter ownership/export
+cases, five resume cases and seven existing strict DiT-origin parser regressions.
+New public request-model/YAML/runner paths train Design/Layer packed language
+and connector weights for two steps, preserve the frozen DiT, and save/reload
+floating six-component packages. Additional cases verify a formerly packed
+vision weight updates with Layer reference supervision; selected floating
+queries/projections update while packed upstream codes/scales stay unchanged;
+packed selected groups fail without opt-in; and combined DiT/conditioner
+materialization retains both reports and topology. The combined-origin case
+checks preparation/save/reload, not simultaneous DiT/conditioner training.
+
+The two new packed-conditioner resume cases checkpoint pending gradients during
+MNT2/GAS4, then match uninterrupted predictions, weights, optimizer moments and
+scheduler state through the remaining six backward batches and two updates.
+Exact CPU comparisons use the previously documented fixture storage-alignment
+normalization for both DiT and conditioner Parameters; this does not promise
+bitwise equality across arbitrary allocation layouts or hardware. Three existing
+floating-conditioner/materialized-DiT resume cases also pass. Backend compile,
+real CUDA-guarded imports and OpenAPI default/description validation supplement
+the tests. Frontend static review confirms the shared option/type, SSOT false
+default and full-training submission gate. Owner build/type/UI checks remain
+pending. No live HTTP, official weights, CUDA allocation or main changes occur.
+
+Packed `mlp` projections, optimized ConvRot training, adapter families,
+partition/global/style, remaining objective parity and final owner acceptance
+remain active stages. This milestone supersedes the previous conditioner
+full-materialization pending boundary; it does not close the full parity goal.

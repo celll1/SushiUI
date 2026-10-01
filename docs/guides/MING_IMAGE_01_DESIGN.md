@@ -1829,3 +1829,47 @@ GPU acceptance remain pending; no live API, CUDA allocation, official payload
 or main modification occurred. Partition/global adapters, style operations,
 optimized ConvRot backward/cache, conditioner converter authoring and final
 complete-parity audit/owner acceptance remain active.
+
+
+### Exact full-KV query chunk training milestone
+
+The existing `qwen_full_kv_query_chunk_tokens` field now reaches Ming through
+request validation, YAML generation, runner preflight, native component loading
+and the shared training UI. Its default remains the centralized value 0.
+Component loading installs the attention conduit for fresh and checkpoint-based
+training; the architecture hook delegates to that same setup routine. This fixes
+a missing runtime installation that direct attention-hook tests did not cover.
+All main, noise-refiner and context-refiner blocks receive the selected chunk.
+
+Only query rows are divided. Every target Layer frame, reference, caption and
+native padding key remains in the joint K/V context; Q/K normalization and RoPE
+are applied before splitting. Key-only ragged masks pack K/V once and reuse that
+pack across chunks, retaining padded query rows. Query-dependent masks use global
+query-row slices, and all-masked rows retain native dense semantics. This does
+not add parameters or change topology/checkpoint tensors. The training run YAML
+preserves the execution setting; it is not an architectural checkpoint property
+or a new generation parameter. Smaller chunks can reduce explicit attention
+matrix memory, but add launches and retain full Q/K/V/outputs. FlashAttention
+already tiles internally, so no hardware speed or VRAM improvement is claimed.
+
+Thirty unique affected CPU cases pass across staged checks: thirteen new dense
+oracle/packed-conduit/native-model forward and gradient cases, four real public
+request-model/YAML/runner full/ordinary-LoRA loops across Design and Layer,
+three malformed preflight cases, seven existing attention cases, two new
+query-chunk guidance pending-gradient resumes, and one existing zero-chunk
+CFG-null pending-gradient resume. Native-model oracles cover nested U-Net,
+ragged captions/references, multiple Layer frames, learned/zero padding and all
+parameter/input gradients. The packed Flash path uses a CPU kernel shim rather
+than a physical Flash kernel. MNT2/GAS4 checkpoints retain pending gradients;
+continued native predictions, weights, optimizer moments and scheduler match
+uninterrupted CPU runs with chunk 17, guidance and Layer sigma-null selection.
+
+Changed backend files compile and import with CUDA initialization forbidden.
+OpenAPI parses and agrees with the centralized default. Frontend static review
+covers visibility, zero-preserving defaults, input sanitization, existing API
+number types and YAML/request serialization. Owner build/type/UI verification
+is pending and does not block implementation. No live API, official weight
+payload, GPU allocation or main edit occurred. Approximate spatial partition,
+global adapters, styles, optimized ConvRot training/cache, conditioner converter
+authoring, native pixel-debug/partition guidance and final parity acceptance
+remain active work; exact query chunks do not establish those capabilities.

@@ -83,7 +83,17 @@ def load_components(trainer):
     trainer.scheduler = trainer.noise_scheduler = components.scheduler
     trainer.unet = trainer.text_encoder_2 = trainer.tokenizer_2 = trainer.t5_tokenizer = None
     trainer.tokenizer = components.processor.tokenizer
+    setup_attention_backend(trainer)
     capture_startup_snapshot(trainer)
+
+
+def setup_attention_backend(trainer):
+    from core.models.ming_image_01.attention import install_attention
+    from api.param_defaults import TRAINING_DEFAULTS
+    chunk = getattr(trainer, "config", {}).get("qwen_full_kv_query_chunk_tokens",
+        TRAINING_DEFAULTS["qwen_full_kv_query_chunk_tokens"])
+    install_attention(trainer.transformer, trainer._resolve_training_backend(trainer.attention_backend),
+        query_chunk_tokens=chunk)
 
 
 def encode_prompt(trainer, prompt, *, requires_grad=False):

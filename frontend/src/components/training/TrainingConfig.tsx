@@ -6353,6 +6353,25 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               )}
             </div>
 
+            {(isQwenImage21Model || isMingImageModel) && (
+              <div className="pt-2 border-t border-gray-700">
+                <label className="block text-xs text-gray-400 mb-1">Full-KV Query Chunk Tokens</label>
+                <input type="number" min={0} step={128}
+                  value={params.qwen_full_kv_query_chunk_tokens ?? DEFAULT_PARAMS.qwen_full_kv_query_chunk_tokens}
+                  onChange={(event) => {
+                    const value = Number.parseInt(event.target.value);
+                    updateParam("qwen_full_kv_query_chunk_tokens", Number.isFinite(value)
+                      ? Math.max(0, value) : DEFAULT_PARAMS.qwen_full_kv_query_chunk_tokens);
+                  }}
+                  className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200" />
+                <p className="text-xs text-gray-500 mt-1">
+                  Chunk query rows while retaining full-canvas keys and values. 0 disables it.
+                  {isMingImageModel && " Ming retains every target layer, reference and caption in the joint context."}
+                  FlashAttention may already provide the same memory behavior internally.
+                </p>
+              </div>
+            )}
+
             {isQwenImage21Model && (
               <div className="pt-2 border-t border-gray-700 space-y-2">
                 <div className="flex items-center space-x-2">
@@ -6423,20 +6442,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   />
                   <p className="text-xs text-gray-500 mt-1">
                     Empty uses the Qwen resolution policy (16/24/32). Lower values trade VRAM for less recomputation only when measured safe.
-                  </p>
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">Full-K/V Query Chunk (tokens)</label>
-                  <input
-                    type="number"
-                    min={0}
-                    step={128}
-                    value={params.qwen_full_kv_query_chunk_tokens ?? 0}
-                    onChange={(e) => updateParam("qwen_full_kv_query_chunk_tokens", Math.max(0, parseInt(e.target.value) || 0))}
-                    className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
-                  />
-                  <p className="text-xs text-gray-500 mt-1">
-                    Exact full-canvas attention with chunked query rows. 0 disables it; FlashAttention may already provide the same memory behavior internally.
                   </p>
                 </div>
                 {params.dit_partition_training_enabled && (

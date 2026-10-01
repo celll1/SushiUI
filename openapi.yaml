@@ -26820,7 +26820,8 @@ components:
           minimum: 0
           default: 0
           description: >-
-            Split target attention queries into chunks while retaining full-canvas keys and values.
+            Qwen-Image 2.1 and Ming-Image 0.1 training. Split attention queries into chunks while retaining full-canvas keys and values.
+            Ming chunks every joint-stream query row, retaining captions, references, padding masks, RoPE and all Layer frames in K/V.
             Zero disables the exact experimental path; FlashAttention may gain no memory because it already tiles internally.
         qwen_partition_global_adapter_enabled:
           type: boolean

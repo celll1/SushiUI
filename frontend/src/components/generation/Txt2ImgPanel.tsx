@@ -36,6 +36,7 @@ import H3PromptAssist from "../common/H3PromptAssist";
 import Qwen21PromptUpsample from "../common/Qwen21PromptUpsample";
 import QwenPartitionControls from "../common/QwenPartitionControls";
 import MingLayerControls from "../common/MingLayerControls";
+import MingOutputGroups from "../common/MingOutputGroups";
 import { imageDefaultsArchKey } from "@/utils/archConstraints";
 import MusicCaptionAssist from "../common/MusicCaptionAssist";
 import MusicLyricsAssist from "../common/MusicLyricsAssist";
@@ -3492,6 +3493,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       )}
       <MingLayerControls value={params.ming_image_01_layers}
         onChange={ming_image_01_layers => setParams(previous => ({ ...previous, ming_image_01_layers }))} />
+      <MingOutputGroups panel="txt2img" />
       {loadedArch === "qwen_image_21" && (
         <QwenPartitionControls value={params.qwen_image_21_partition}
           width={params.width} height={params.height}

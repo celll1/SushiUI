@@ -1,5 +1,6 @@
 """Request-owned Ming images and native ordered layer roles."""
 
+from copy import deepcopy
 from dataclasses import dataclass
 
 from PIL import Image
@@ -21,6 +22,11 @@ class MingResultGroup:
 @dataclass(frozen=True)
 class MingGenerationOutput:
     groups: tuple[MingResultGroup, ...]
+    model_info: dict | None = None
+
+    def __post_init__(self):
+        if self.model_info is not None:
+            object.__setattr__(self, "model_info", deepcopy(self.model_info))
 
     def validate(self):
         if not self.groups:

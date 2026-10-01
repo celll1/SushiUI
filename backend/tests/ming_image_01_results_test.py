@@ -143,3 +143,56 @@ def test_persistence_refuses_loaded_profile_mismatch_before_writes(store):
         persistence.persist_ming_results(output(), db=store, params={}, generation_type="img2img",
             model_info={"type": "ming_image_01", "profile": "generation_edit"}, model_name="Ming", model_hash="hash")
     assert_empty(store)
+
+
+def test_route_finish_uses_owned_snapshot_and_preserves_source_mask_and_status(store, monkeypatch):
+    from utils.image_utils import calculate_image_hash, encode_mask_to_base64
+    source = Image.new("RGBA", (16, 16), (20, 30, 40, 128))
+    mask = Image.new("L", source.size, 80)
+    info = {"type": "ming_image_01", "profile": "layer_decompose", "source": "original-Ming",
+            "model_hash": "original-hash", "dit_rewiring": {"enabled": True}}
+    value = MingGenerationOutput(output().groups, info)
+    info["source"] = "another-model"
+    info["dit_rewiring"]["enabled"] = False
+    assert value.model_info["dit_rewiring"]["enabled"] is True
+    statuses = []
+    monkeypatch.setattr(persistence, "complete_generation", lambda result, **kw: statuses.append((result, kw)))
+    response = persistence.finish_ming_generation(value, db=store,
+        params={"seed": 33, "steps": 2, "cfg_scale": 2., "generation_time": 0.1},
+        generation_type="inpaint", generation_id=None, lora_configs=[], skip_gallery=False,
+        source_image=source, mask_image=mask)
+    assert len(response["images"]) == 3 and response["warnings"] == []
+    assert statuses[0][0]["groups"] == response["groups"]
+    assert statuses[0][0]["filename"] == response["image"]["filename"]
+    for row in store.query(GeneratedImage).all():
+        assert row.model_name == "original-Ming" and row.model_hash == "original-hash"
+        assert row.source_image_hash == calculate_image_hash(source)
+        assert row.mask_data == encode_mask_to_base64(mask)
+        assert row.parameters["generation_time"] == 0.1
+    assert not torch.cuda.is_initialized()
+
+
+@pytest.mark.parametrize("problem", ["missing_snapshot", "wrong_seed"])
+def test_route_finish_rejects_missing_identity_before_writes(store, problem):
+    value = output()
+    if problem == "wrong_seed":
+        value = MingGenerationOutput(value.groups, {"type": "ming_image_01", "profile": "layer_decompose"})
+    with pytest.raises(ValueError):
+        persistence.finish_ming_generation(value, db=store, params={"seed": -1},
+            generation_type="txt2img", generation_id=None, lora_configs=[], skip_gallery=False)
+    assert_empty(store)
+
+
+def test_four_routes_handle_rich_output_before_generic_latent_or_single_image_save():
+    import ast
+    module = ast.parse((Path(__file__).resolve().parents[1] / "api/routes.py").read_text(encoding="utf-8"))
+    functions = {node.name: node for node in module.body if isinstance(node, ast.AsyncFunctionDef)}
+    for name in ("generate_txt2img", "generate_img2img", "generate_inpaint", "generate_outpaint"):
+        function = functions[name]
+        finish = [node for node in ast.walk(function) if isinstance(node, ast.Call)
+                  and isinstance(node.func, ast.Name) and node.func.id == "finish_ming_generation"]
+        assert len(finish) == 1
+        generic = [node for node in ast.walk(function) if isinstance(node, ast.Call)
+                   and isinstance(node.func, ast.Name) and node.func.id in {"store_latent", "save_image_with_metadata"}]
+        assert generic and all(finish[0].lineno < call.lineno for call in generic)
+        assert any(key.arg == "skip_gallery" for key in finish[0].keywords)

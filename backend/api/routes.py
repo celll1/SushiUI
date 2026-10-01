@@ -24,6 +24,7 @@ import torch
 from database import get_gallery_db, get_datasets_db, get_training_db, get_db  # Legacy
 from database.models import GeneratedImage, StudioRenderJob, UserSettings, Dataset, DatasetItem, DatasetCaption, TagDictionary, TrainingRun, TrainingCheckpoint, TrainingSample, TrainingPreset, TaggerTrainingRun, TaggerTrainingMetrics
 from core.pipeline import pipeline_manager
+from core.models.ming_image_01.results import MingGenerationOutput
 from core.utils.taesd import taesd_manager
 from core.extensions.lora_manager import lora_manager, LoRAAmbiguousIdentifierError
 from core.extensions.controlnet_manager import controlnet_manager
@@ -1688,6 +1689,15 @@ async def generate_txt2img(
         params["seed"] = actual_seed
         params["ancestral_seed"] = actual_ancestral_seed
 
+        if isinstance(image, MingGenerationOutput):
+            from api.ming_image_results import finish_ming_generation
+            record_attention_backend(params, _gen_id)
+            if fp8_gemm:
+                params["fp8_gemm"] = fp8_gemm
+            return finish_ming_generation(image, db=db, params=params,
+                generation_type="txt2img", generation_id=_gen_id,
+                lora_configs=lora_configs, skip_gallery=skip_gallery)
+
         # loop_decode="none": no VAE/PiD decode happened -- `image` is the raw
         # pre-unscale final latent tensor instead of a PIL.Image. Cache it and
         # return a latent_id for the next loop step's input_latent_id, skipping
@@ -2676,6 +2686,16 @@ async def generate_img2img(
 
         params["seed"] = actual_seed
         params["ancestral_seed"] = actual_ancestral_seed
+
+        if isinstance(result_image, MingGenerationOutput):
+            from api.ming_image_results import finish_ming_generation
+            record_attention_backend(params, _gen_id)
+            if fp8_gemm:
+                params["fp8_gemm"] = fp8_gemm
+            return finish_ming_generation(result_image, db=db, params=params,
+                generation_type="img2img", generation_id=_gen_id,
+                lora_configs=lora_configs, skip_gallery=skip_gallery,
+                source_image=init_image if not input_latent_id else None)
 
         # loop_decode="none": no VAE/PiD decode happened -- `result_image` is
         # the raw pre-unscale final latent tensor instead of a PIL.Image. Cache
@@ -8177,6 +8197,16 @@ async def generate_inpaint(
         params["seed"] = actual_seed
         params["ancestral_seed"] = actual_ancestral_seed
 
+        if isinstance(result_image, MingGenerationOutput):
+            from api.ming_image_results import finish_ming_generation
+            record_attention_backend(params, _gen_id)
+            if fp8_gemm:
+                params["fp8_gemm"] = fp8_gemm
+            return finish_ming_generation(result_image, db=db, params=params,
+                generation_type="inpaint", generation_id=_gen_id,
+                lora_configs=lora_configs, skip_gallery=skip_gallery,
+                source_image=init_image, mask_image=mask_image)
+
         # Add Vision Encoder info to params for PNG metadata and DB storage.
         # Only record VE info when THIS generation actually used reference images
         # (the VE stays loaded "sticky" across generations).
@@ -8889,6 +8919,16 @@ async def generate_outpaint(
 
         params["seed"] = actual_seed
         params["ancestral_seed"] = actual_ancestral_seed
+
+        if isinstance(result_image, MingGenerationOutput):
+            from api.ming_image_results import finish_ming_generation
+            record_attention_backend(params, _gen_id)
+            if fp8_gemm:
+                params["fp8_gemm"] = fp8_gemm
+            return finish_ming_generation(result_image, db=db, params=params,
+                generation_type="outpaint", generation_id=_gen_id,
+                lora_configs=lora_configs, skip_gallery=skip_gallery,
+                source_image=init_image)
 
         # Add Vision Encoder info to params for PNG metadata and DB storage.
         # Only record VE info when THIS generation actually used reference images

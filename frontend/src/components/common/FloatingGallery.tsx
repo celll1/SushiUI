@@ -7,6 +7,8 @@ import { isVideoUrl, isAudioUrl, posterUrlForVideo } from "@/utils/previewStorag
 
 /** One entry in the shared top-right recent-results strip. */
 export interface GalleryEntry {
+  label?: string;
+  groupId?: string;
   url: string;
   timestamp: number;
   // When the producing panel knows the kind up front it is passed through
@@ -104,6 +106,7 @@ export default function FloatingGallery({ images, maxImages }: FloatingGalleryPr
             const playbackUrl = playbackUrlOf(image);
             return (
               <div
+                title={image.label ? `${image.label} · ${image.groupId?.slice(0, 8) || ""}` : undefined}
                 key={`${image.timestamp}-${index}`}
                 className="flex-shrink-0 hover:opacity-80 transition-opacity cursor-pointer"
                 onDoubleClick={() => setViewerImageIndex(index)}
@@ -134,6 +137,7 @@ export default function FloatingGallery({ images, maxImages }: FloatingGalleryPr
                     className="h-24 w-auto object-contain rounded border border-gray-700"
                   />
                 )}
+                {image.label && <p className="mt-1 max-w-32 truncate text-center text-xs text-sky-200">{image.label}</p>}
               </div>
             );
           })}

@@ -1009,7 +1009,7 @@ export default function SettingsPage() {
                     <option value="tq">TQ (Triton-Quantized)</option>
                   </select>
                   <p className="text-xs text-gray-500 mt-1">
-                    Choose attention acceleration method. <strong>Normal</strong>: PyTorch 2.0+ automatically uses Flash Attention when available. <strong>SageAttention</strong>: INT8 quantized attention for 2-5x speedup (requires <code>pip install sageattention</code>). <strong>FlashAttention</strong>: Explicit Flash Attention 2 (requires <code>pip install flash-attn</code>). <strong>TQ</strong>: Triton-Quantized attention; applies to Z-Image, Lens, MiniT2I, Anima, and SDXL inference. Other architectures fall back to native. Changes take effect immediately on next generation.
+                    Choose attention acceleration method. <strong>Normal</strong>: PyTorch 2.0+ automatically uses Flash Attention when available. <strong>SageAttention</strong>: INT8 quantized attention for 2-5x speedup (requires <code>pip install sageattention</code>). <strong>FlashAttention</strong>: Explicit Flash Attention 2 (requires <code>pip install flash-attn</code>). <strong>TQ</strong>: Triton-Quantized attention; applies to conduit-routed attention, including Ming DiT. Unsupported kernel, dtype or head dimensions fall back to native. Changes take effect immediately on next generation.
                   </p>
                 </div>
 
@@ -1031,7 +1031,7 @@ export default function SettingsPage() {
                     <option value="diffusers">Diffusers (legacy registry; byte-identical fallback)</option>
                   </select>
                   <p className="text-xs text-gray-500 mt-1">
-                    Selects which implementation runs the FLUX.2 attention kernel. <strong>Conduit</strong> routes through SushiUI&apos;s unified dispatch so the Attention Type above (including TQ) applies to FLUX.2. <strong>Diffusers</strong> keeps diffusers&apos; own registry (reproduces the previous behavior). Native output is identical either way; other architectures ignore this.
+                    Selects which implementation runs the FLUX.2 attention kernel. <strong>Conduit</strong> routes through SushiUI&apos;s unified dispatch so the Attention Type above (including TQ) applies to FLUX.2. <strong>Diffusers</strong> keeps diffusers&apos; own registry (reproduces the previous behavior). Native output is identical either way on FLUX.2. Ming supports Conduit only and refuses the legacy Diffusers option.
                   </p>
                 </div>
 

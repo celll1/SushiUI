@@ -14839,6 +14839,10 @@ components:
             other head dims (e.g. Ideogram4 head_dim=256) fall back to native. Unsupported
             combinations (e.g. head_dim outside the backend's supported set, mask present)
             fall back to native automatically.
+            Ming-Image 0.1 routes native DiT/refiner attention through this conduit,
+            packing valid keys/values while preserving all query rows. Its conditioner
+            retains native eager attention; SLA and the legacy diffusers implementation
+            are refused. GPU kernel availability, dtype and training guards still apply.
 
             The enum is the FULL accepted vocabulary and is derived server-side from the
             attention registry (`core.attention.known_backends`): `native`/`sdpa`/`none`

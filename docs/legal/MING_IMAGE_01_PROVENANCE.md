@@ -26,3 +26,5 @@ Vendored files live under `backend/core/models/ming_image_01/vendor/`. Original 
 | `tokenization_bailing.py` | MIT (root license) | `4b13ec7a5796a1d04e721f61791d086d7f7fb9f63912948700e5691625b432fb` | initialize BOS property after base tokenizer construction |
 
 Integration changes after this import must update this ledger and the vendor note. Runtime loading uses package-local classes, not arbitrary `trust_remote_code`. CLI/prompt-service examples and repository assets are not vendored.
+
+`backend/core/models/ming_image_01/attention.py` adapts the Apache-2.0 native single-stream processor in `vendor/diffusion/transformer.py` to SushiUI’s attention conduit. Its original Ant Group copyright and Apache-2.0 notice are retained; Q/K normalization, complex RoPE and output projection semantics are preserved. The pinned vendor source remains unchanged.

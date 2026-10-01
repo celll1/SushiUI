@@ -27,8 +27,8 @@ class MingImage01ArchHandler(ArchHandler):
         setup_training_block_swap(trainer)
 
     def setup_attention_backend(self, trainer):
-        if trainer._resolve_training_backend(trainer.attention_backend) != "native":
-            raise ValueError("Ming training attention backend integration is pending beyond native")
+        from core.models.ming_image_01.attention import install_attention
+        install_attention(trainer.transformer, trainer._resolve_training_backend(trainer.attention_backend))
 
     def depth_blocks(self, trainer):
         return trainer.transformer.layers

@@ -17,17 +17,21 @@ class MingTrainingResult:
     model_time: torch.Tensor
 
 
-def optimizer_groups(transformer, conditioner, *, dit_lr: float, conditioner_lrs: dict):
+def optimizer_groups(transformer, conditioner, *, dit_lr: float, conditioner_lrs: dict, caption_lr=None):
     """Collect each trainable parameter once with explicit component rates."""
-    modules = {"dit": (transformer,), **conditioner.component_groups()}
-    rates = {"dit": dit_lr, **conditioner_lrs}
-    if set(conditioner_lrs) - (modules.keys() - {"dit"}):
+    caption = {"caption": (transformer.cap_embedder,)} if caption_lr is not None else {}
+    caption_ids = {id(parameter) for parts in caption.values() for part in parts for parameter in part.parameters()}
+    modules = {"dit": (transformer,), **caption, **conditioner.component_groups()}
+    rates = {"dit": dit_lr, "caption": caption_lr, **conditioner_lrs}
+    if set(conditioner_lrs) - conditioner.component_groups().keys():
         raise ValueError("Unknown Ming conditioner learning-rate group")
     result, seen = [], set()
     for name, parts in modules.items():
         parameters = []
         for part in parts:
             for parameter in part.parameters():
+                if name == "dit" and id(parameter) in caption_ids:
+                    continue
                 if parameter.requires_grad and id(parameter) not in seen:
                     parameters.append(parameter)
                     seen.add(id(parameter))

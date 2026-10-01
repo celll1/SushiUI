@@ -1143,7 +1143,7 @@ def _assert_training_scope_is_nonempty(
 ) -> None:
     """Refuse a run that would train nothing, from the config and before the load.
 
-    Ming caption-only LoRA has an explicit adapter scope. SenseNova names this case itself
+    Ming caption-only training has an explicit adapter scope. SenseNova names this case itself
     (``resolve_full_finetune_branch``), but sd15/sdxl/krea2 collect no parameters
     and hand the optimizer an empty list minutes later, with the checkpoint
     already resident.
@@ -1156,7 +1156,7 @@ def _assert_training_scope_is_nonempty(
         return
     if train_config.get("sensenova_train_scopes"):
         return
-    if architecture == "ming_image_01" and network_type == "lora" and train_config.get("train_adapter") is True:
+    if architecture == "ming_image_01" and network_type in {"lora", "full_finetune"} and train_config.get("train_adapter") is True:
         return
     on = [name for name in _TRAINING_SCOPE_FLAGS
           if _normalize_scope_flag(train_config, name, name == "train_unet")]

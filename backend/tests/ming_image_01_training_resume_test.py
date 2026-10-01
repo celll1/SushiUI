@@ -12,10 +12,12 @@ from api.arch_capabilities import TRAINING_UNSUPPORTED
 from core.models.ming_image_01.training_resume import RUNTIME_KEY
 
 
-@pytest.mark.parametrize("text_mode,groups,profile", [("cpu_prefetch", [], "generation_edit"),
-    ("onthefly_gpu", ["projections"], "generation_edit"),
-    ("cpu_prefetch", [], "layer_decompose")])
-def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monkeypatch, text_mode, groups, profile):
+@pytest.mark.parametrize("text_mode,groups,profile,caption_only", [("cpu_prefetch", [], "generation_edit", False),
+    ("onthefly_gpu", ["projections"], "generation_edit", False),
+    ("cpu_prefetch", [], "layer_decompose", False),
+    pytest.param("cpu_prefetch", [], "generation_edit", True, id="caption_design"),
+    pytest.param("cpu_prefetch", [], "layer_decompose", True, id="caption_layer")])
+def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monkeypatch, text_mode, groups, profile, caption_only):
     from core.training import latent_cache
     from core.training.ops import ming_image_01_ops
     monkeypatch.setattr(latent_cache, "get_cache_base_dir", lambda: str(tmp_path / "cache"))
@@ -46,9 +48,11 @@ def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monke
         return original_loss(transformer, **kwargs)
     monkeypatch.setattr(ming_image_01_ops, "flow_loss", recorded_loss)
     config = {"ming_conditioner_groups": groups, "seed": 17,
-        "latent_encoding_mode": "swap_onthefly", "text_encoding_mode": text_mode}
+        "latent_encoding_mode": "swap_onthefly", "text_encoding_mode": text_mode,
+        "train_unet": not caption_only, "train_adapter": True if caption_only else None,
+        "adapter_lr": .0002 if caption_only else None}
     def trainer(folder, resume=None):
-        return FullParameterTrainer(model_path=str(root), output_dir=str(folder),
+        return FullParameterTrainer(model_path=str(root), output_dir=str(folder), train_unet=not caption_only,
             device="cpu", weight_dtype="fp32", training_dtype="fp32", vae_dtype="fp32",
             mixed_precision=False, attention_backend="native", train_config=config.copy(),
             resume_from_checkpoint=resume)

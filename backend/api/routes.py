@@ -16133,8 +16133,6 @@ def _check_adapter_params(request: "TrainingRunCreateRequest") -> None:
     from core.training.training_config import _detect_arch
 
     arch = _detect_arch(request.base_model_path)
-    if arch == "ming_image_01" and request.training_method != "lora":
-        raise HTTPException(status_code=400, detail="Ming caption adapter controls currently require LoRA")
     if arch not in {"qwen_image_21", "anima", "ming_image_01"}:
         raise HTTPException(
             status_code=400,
@@ -16146,6 +16144,10 @@ def _check_adapter_params(request: "TrainingRunCreateRequest") -> None:
             detail="train_adapter/adapter_lr require LoRA or full fine-tuning",
         )
     if not request.train_unet and request.train_adapter is not True:
+        if arch == "ming_image_01" and request.training_method == "full_finetune":
+            from core.models.ming_image_01.training_options import resolve_ownership
+            if resolve_ownership(request.model_dump())[0]:
+                return
         if (arch == "qwen_image_21" and request.training_method == "full_finetune"
                 and request.train_text_encoder):
             return

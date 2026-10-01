@@ -935,9 +935,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       ming_conditioner_groups: isMingImageModel && trainingMethod === "full_finetune" ? params.ming_conditioner_groups : null,
       ming_conditioner_lrs: isMingImageModel && trainingMethod === "full_finetune" ? params.ming_conditioner_lrs : null,
       train_adapter: (trainingMethod === "lora" || trainingMethod === "full_finetune") &&
-        (isQwenImage21Model || isAnimaModel(baseModelPath) || (isMingImageModel && trainingMethod === "lora")) ? params.train_adapter : null,
+        (isQwenImage21Model || isAnimaModel(baseModelPath) || isMingImageModel) ? params.train_adapter : null,
       adapter_lr: (trainingMethod === "lora" || trainingMethod === "full_finetune") &&
-        (isQwenImage21Model || isAnimaModel(baseModelPath) || (isMingImageModel && trainingMethod === "lora")) ? params.adapter_lr : null,
+        (isQwenImage21Model || isAnimaModel(baseModelPath) || isMingImageModel) ? params.adapter_lr : null,
       full_finetune_dequantize_int8_base: isQwenImage21Model && trainingMethod === "full_finetune"
         ? params.full_finetune_dequantize_int8_base : false,
       training_export_format: isQwenImage21Model && trainingMethod === "full_finetune"
@@ -2185,7 +2185,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
     // Validate that at least one component is being trained (not applicable for ControlNet)
     if (trainingMethod !== "controlnet" && !trainUnet && !effectiveTrainTextEncoder
-        && !(isMingImageModel && trainingMethod === "lora" && params.train_adapter === true)) {
+        && !(isMingImageModel && (trainingMethod === "lora" || trainingMethod === "full_finetune") && params.train_adapter === true)) {
       setError("At least one component (DiT/U-Net or conditioner) must be trained");
       return;
     }
@@ -4517,7 +4517,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             )}
 
             {(trainingMethod === "lora" || trainingMethod === "full_finetune") &&
-             (isQwenImage21Model || isAnimaModel(baseModelPath) || (isMingImageModel && trainingMethod === "lora")) && (
+             (isQwenImage21Model || isAnimaModel(baseModelPath) || isMingImageModel) && (
               <div className="mb-3 space-y-2 rounded border border-gray-700 p-3">
                 <label className="block text-xs text-gray-300">
                   Conditioning adapter ({isQwenImage21Model ? "Qwen txt_in" : isMingImageModel ? "Ming caption projection" : "Anima LLM Adapter"})
@@ -4542,7 +4542,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 />
                 <p className="text-xs text-gray-500">
                   This is the bridge inside the denoiser, not the text encoder or LoRA algorithm.
-                  Qwen and Ming LoRA default to frozen; enable this for projection-only training. Qwen full fine-tune and Anima retain their established adapter policy.
+                  Qwen and Ming LoRA default to frozen; enable this for projection-only training. Ming full fine-tune inherits DiT trainability unless overridden. Qwen full fine-tune and Anima retain their established adapter policy.
                 </p>
               </div>
             )}

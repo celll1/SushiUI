@@ -26,7 +26,10 @@ class MingImage01FullParameterAdapter(BaseFullParameterAdapter):
         reject_quantized_base(transformer, model_label="Ming DiT")
         if self.conditioner_groups:
             reject_quantized_base(conditioner, model_label="Ming conditioner")
-        transformer.requires_grad_(trainer.train_unet).train(trainer.train_unet)
+        choice = trainer.config.get("train_adapter")
+        caption_trainable = trainer.train_unet if choice is None else choice
+        transformer.requires_grad_(trainer.train_unet).train(trainer.train_unet or caption_trainable)
+        transformer.cap_embedder.requires_grad_(caption_trainable).train(caption_trainable)
         conditioner.set_trainable(self.conditioner_groups)
         conditioner.eval()
         for name in self.conditioner_groups:
@@ -34,7 +37,7 @@ class MingImage01FullParameterAdapter(BaseFullParameterAdapter):
                 module.train()
         components.vae.requires_grad_(False).eval()
         if trainer.gradient_checkpointing:
-            if trainer.train_unet:
+            if any(parameter.requires_grad for parameter in transformer.parameters()):
                 transformer.enable_gradient_checkpointing()
             for module in (conditioner.native.model, conditioner.native.vision, conditioner.native.connector):
                 if any(parameter.requires_grad for parameter in module.parameters()):
@@ -47,7 +50,7 @@ class MingImage01FullParameterAdapter(BaseFullParameterAdapter):
         components = trainer.ming_image_01_components
         groups = optimizer_groups(components.transformer, components.conditioner,
             dit_lr=resolve_component_lr(trainer, "unet_lr", label="Ming DiT"),
-            conditioner_lrs=self.conditioner_lrs)
+            conditioner_lrs=self.conditioner_lrs, caption_lr=trainer.config.get("adapter_lr"))
         for group in groups:
             name = group["name"]
             group["component"] = ("unet" if name == "dit" else "vision_encoder" if name == "vision"
@@ -68,6 +71,8 @@ class MingImage01FullParameterAdapter(BaseFullParameterAdapter):
         metadata = {"schema_version": 1, "kind": "full_parameter_weights", "step": step, "epoch": epoch,
                     "profile": components.artifact.profile,
                     "conditioner_groups": sorted(self.conditioner_groups),
+                    "train_adapter": self.trainer.config.get("train_adapter"),
+                    "adapter_lr": self.trainer.config.get("adapter_lr"),
                     "optimizer_groups": [{"name": group["name"], "lr": group["lr"], "component": group["component"]}
                                          for group in groups]}
         modules = (components.transformer, components.conditioner, components.vae)

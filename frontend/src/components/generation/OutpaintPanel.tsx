@@ -31,6 +31,8 @@ import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import MiniMaxH3ReferenceSelector from "../common/MiniMaxH3ReferenceSelector";
 import H3PromptAssist from "../common/H3PromptAssist";
 import Qwen21PromptUpsample from "../common/Qwen21PromptUpsample";
+import MingPromptUpsample from "../common/MingPromptUpsample";
+import { maybeUpsampleMingPrompt } from "@/utils/mingPromptUpsample";
 import QwenPartitionControls from "../common/QwenPartitionControls";
 import { imageDefaultsArchKey } from "@/utils/archConstraints";
 import MingOutputGroups from "../common/MingOutputGroups";
@@ -1992,6 +1994,19 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
       }
     }
 
+    if (!videoMode && !audioMode && modality.modelInfo?.type === "ming_image_01") {
+      try {
+        const upsampled = await maybeUpsampleMingPrompt({
+          prompt: processedPrompt, mode: "i2i", images: [inputImagePreview!],
+          width: params.canvas_width, height: params.canvas_height, layers: params.ming_image_01_layers,
+        });
+        if (upsampled) processedPrompt = upsampled.prompt;
+      } catch (error: any) {
+        alert(error?.response?.data?.detail || error?.message || "Ming prompt rewriting failed");
+        return;
+      }
+    }
+
     if (videoMode && modality.modelInfo?.type === "minimax_h3") {
       try {
         const assisted = await maybeTransformH3PromptForGeneration({
@@ -3116,6 +3131,12 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
           images={[inputImagePreview]}
           onApply={(prompt) => setParams((previous) => ({ ...previous, prompt }))}
         />
+      )}
+      {loadedArchType === "ming_image_01" && currentModelInfo?.model_info?.profile === "generation_edit" && inputImagePreview && (
+        <MingPromptUpsample key={currentModelInfo?.model_info?.source}
+          prompt={params.prompt} mode={"i2i"} images={[inputImagePreview!]}
+          width={params.canvas_width} height={params.canvas_height} layers={params.ming_image_01_layers}
+          onApply={prompt => setParams(previous => ({ ...previous, prompt }))} />
       )}
       <MingOutputGroups panel="outpaint" />
       {loadedArchType === "qwen_image_21" && (

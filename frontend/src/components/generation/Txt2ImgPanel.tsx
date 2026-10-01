@@ -34,6 +34,8 @@ import GenerationLeadGrid from "../common/GenerationLeadGrid";
 import InlineHelp from "../common/InlineHelp";
 import H3PromptAssist from "../common/H3PromptAssist";
 import Qwen21PromptUpsample from "../common/Qwen21PromptUpsample";
+import MingPromptUpsample from "../common/MingPromptUpsample";
+import { maybeUpsampleMingPrompt } from "@/utils/mingPromptUpsample";
 import QwenPartitionControls from "../common/QwenPartitionControls";
 import MingLayerControls from "../common/MingLayerControls";
 import MingOutputGroups from "../common/MingOutputGroups";
@@ -1863,6 +1865,19 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       }
     }
 
+    if (!videoMode && !audioMode && modality.modelInfo?.type === "ming_image_01") {
+      try {
+        const upsampled = await maybeUpsampleMingPrompt({
+          prompt: processedPrompt, mode: modality.modelInfo?.profile === "layer_decompose" ? "layer" : refImages.length ? "i2i" : "t2i", images: refImages,
+          width: params.width, height: params.height, layers: params.ming_image_01_layers,
+        });
+        if (upsampled) processedPrompt = upsampled.prompt;
+      } catch (error: any) {
+        alert(error?.response?.data?.detail || error?.message || "Ming prompt rewriting failed");
+        return;
+      }
+    }
+
     if (videoMode && modality.modelInfo?.type === "minimax_h3") {
       const promptMode = modality.modelInfo?.variant === "ref2va" && countMiniMaxH3References(h3References) > 0
         ? "ref2va"
@@ -3491,6 +3506,12 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
           images={refImages}
           onApply={(prompt) => setParams((previous) => ({ ...previous, prompt }))}
         />
+      )}
+      {loadedArch === "ming_image_01" && (
+        <MingPromptUpsample key={currentModelInfo?.model_info?.source}
+          prompt={params.prompt} mode={currentModelInfo?.model_info?.profile === "layer_decompose" ? "layer" : refImages.length ? "i2i" : "t2i"} images={refImages}
+          width={params.width} height={params.height} layers={params.ming_image_01_layers}
+          onApply={prompt => setParams(previous => ({ ...previous, prompt }))} />
       )}
       <MingLayerControls value={params.ming_image_01_layers}
         onChange={ming_image_01_layers => setParams(previous => ({ ...previous, ming_image_01_layers }))} />

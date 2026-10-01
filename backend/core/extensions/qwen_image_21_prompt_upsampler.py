@@ -379,7 +379,8 @@ class QwenImage21PromptUpsampler:
                     "messages": [
                         {"role": "system", "content": system_prompt}, user_message,
                     ],
-                    "format": "json", "stream": False, "keep_alive": "1m",
+                    **({"format": "json"} if getattr(options, "json_output", True) else {}),
+                    "stream": False, "keep_alive": "1m",
                     "options": {
                         "temperature": options.temperature, "top_p": options.top_p,
                         "top_k": options.top_k, "num_ctx": options.context_length,

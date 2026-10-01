@@ -82,7 +82,6 @@ def test_real_full_trainer_step(tmp_path, monkeypatch, latent_mode, text_mode, g
     assert not torch.cuda.is_initialized()
 
 
-
 def test_checkpoint_discovery_ignores_unrelated_manifest(tmp_path):
     import json
     from core.training.base_trainer import _list_checkpoint_entries
@@ -92,3 +91,57 @@ def test_checkpoint_discovery_ignores_unrelated_manifest(tmp_path):
         folder.mkdir()
         (folder / "manifest.json").write_text("{" if payload is None else json.dumps(payload))
     assert _list_checkpoint_entries(tmp_path) == []
+
+
+@pytest.mark.parametrize("groups", [[], ["vision", "projections"]])
+def test_real_layer_training_routes_ordered_supervision(tmp_path, monkeypatch, groups):
+    import json
+    from types import SimpleNamespace
+    from PIL import Image
+    from core.training.ops import ming_image_01_ops
+    root = tmp_path / "package"
+    root.mkdir()
+    _, _, topology = write_tiny_package(root, profile="layer_decompose")
+    monkeypatch.setitem(TRAINING_UNSUPPORTED, "ming_image_01", {})
+    owner = FullParameterTrainer(model_path=str(root), output_dir=str(tmp_path / "run"),
+        device="cpu", weight_dtype="fp32", training_dtype="fp32", vae_dtype="fp32",
+        mixed_precision=False, attention_backend="native",
+        train_config={"ming_conditioner_groups": groups, "seed": 17})
+    data = tmp_path / "data"
+    data.mkdir()
+    paths = ["canvas.png", "layer1.png", "layer2.png"]
+    for index, name in enumerate(paths):
+        Image.new("RGBA", (64, 64), (40 + 50 * index, 80, 100, index * 80)).save(data / name)
+    (data / "canvas.png.ming.json").write_text(json.dumps({"schema_version": 1,
+        "profile": "layer_decompose", "targets": [
+            {"path": name, "role": "auxiliary_canvas" if i == 0 else f"layer_{i}", "weight": [0, 1, .5][i]}
+            for i, name in enumerate(paths)], "references": ["canvas.png"]}))
+    dataset = SimpleNamespace(unique_id="tiny-layer", dataset_root=data,
+        items=[{"image_path": str(data / "canvas.png"), "caption": "word5", "width": 64, "height": 64}],
+        reload_for_epoch=lambda **kwargs: None)
+    calls = []
+    actual = ming_image_01_ops.train_step
+    def record_batch(trainer, batch, **kwargs):
+        calls.append((tuple(batch.clean.shape), batch.frame_weights.detach().clone(),
+                      [tuple(ref.shape) for ref in batch.reference_latents]))
+        return actual(trainer, batch, **kwargs)
+    monkeypatch.setattr(ming_image_01_ops, "train_step", record_batch)
+    trained_before = {name: p.detach().clone() for name, p in owner.text_encoder.named_parameters() if p.requires_grad}
+    owner.train([dataset], total_steps=2, batch_size=1, save_every_n_steps=2,
+        multi_noise_timesteps=2, gradient_accumulation_steps=2,
+        sample_every_n_steps=0, enable_bucketing=False, base_resolutions=[64],
+        latent_encoding_mode="swap_onthefly", text_encoding_mode="swap_onthefly")
+    assert len(calls) == 2
+    assert all(int(state["step"]) == 1 for state in owner.optimizer.state.values())
+    for shape, weights, refs in calls:
+        assert shape == (1, 16, 3, 8, 8)
+        torch.testing.assert_close(weights, torch.tensor([[0., 1., .5]]))
+        assert refs == [(16, 1, 8, 8)]
+    if groups:
+        current = dict(owner.text_encoder.named_parameters())
+        assert any("vision" in name and not torch.equal(value, current[name]) for name, value in trained_before.items())
+    from core.models.ming_image_01.loader import load_components
+    restored = load_components(owner.output_dir / "run_step_000002", dtype=torch.float32, conditioner_attention="eager")
+    assert restored.artifact.profile == "layer_decompose"
+    assert restored.transformer._residual_unet_spec == topology
+    assert not torch.cuda.is_initialized()

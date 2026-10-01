@@ -757,3 +757,22 @@ still active work. Normal training capability remains staged pending those gates
 Milestone verification: 11 affected CPU lifecycle/discovery/interrupted-save and
 native-package round-trip cases pass. Changed Python files compile and the real
 FullParameterTrainer imports with CUDA initialization forbidden.
+
+
+### Real Layer common-loop supervision milestone
+
+The reusable tiny artifact can now represent the Layer profile and includes
+actual native image special tokens plus bounded CPU vision processing. Two
+real FullParameterTrainer Layer runs exercise an ordered three-frame RGBA
+sidecar with auxiliary-canvas weight zero, layer weights 1 and 0.5, and a canvas
+reference. Each native common-loop loss receives [1,16,3,8,8] clean latents and
+an independent [16,1,8,8] reference. MNT=2 and accumulation=2 perform two
+backward passes and exactly one AdamW update; live vision/projection training
+updates vision weights and regenerates conditioning without replay errors.
+Periodic saved bundles reload the Layer profile and identical U-Net topology.
+
+Nine affected real-trainer and package round-trip CPU cases pass; changed tests
+compile and the real trainer imports with CUDA initialization forbidden. No GPU,
+API or official weights were used. This closes the tiny FP32 Layer whole-loop
+supervision gap, while exact mid-epoch RNG/augmentation resume, production runner,
+sampling/worker coordination and remaining full Qwen feature parity remain open.

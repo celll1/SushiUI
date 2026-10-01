@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import CaptionerTrainingPanel from "./CaptionerTrainingPanel";
+import CaptionerBatchPanel from "./CaptionerBatchPanel";
 import {
   CaptionerDefaults, CaptionerOptions, CaptionerPreview, CaptionerStatus, Dataset,
   getCaptionerDefaults, getCaptionerStatus, loadCaptioner, unloadCaptioner,
@@ -37,6 +38,7 @@ export default function CaptionerPanel() {
     Promise.all([getCaptionerDefaults(), getCaptionerStatus(), listDatasets()]).then(([d, s, data]) => {
       if (!mounted) return;
       setDefaults(d); setStatus(s);
+      setPath(s.path ?? "");
       setOptions({tag_source: d.tag_source, tags: d.tags, device: d.device,
         max_new_tokens: Math.min(d.max_new_tokens, s.max_new_tokens ?? d.max_new_tokens)});
       setTags(d.tags.join("\n")); setCaptionType(d.save_caption_type); setDatasets(data.datasets);
@@ -145,6 +147,8 @@ export default function CaptionerPanel() {
         <button className={input} disabled={busy || row.saved || !row.preview.caption.trim() || row.preview.dataset_id === undefined || !captionType.trim()} onClick={() => void save(index)}>確認済みcaptionを保存</button>
       </>}
     </section>)}
+    {options && <CaptionerBatchPanel bundlePath={path} options={{...options,
+      tags: options.tag_source === "predicted" ? [] : tags.split("\n").map(t => t.trim()).filter(Boolean)}} datasets={datasets} captionType={captionType} />}
     <CaptionerTrainingPanel onSelectBundle={setPath} onSample={preview => setResults(old => [...old,
       {key: `sample ${preview.run_id} · ${preview.checkpoint} · ${preview.item_id} · ${crypto.randomUUID()}`, preview}])} />
   </div>;

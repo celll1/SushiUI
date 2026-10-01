@@ -368,6 +368,16 @@ def test_sample_corrupt_bundle_reports_artifact_error(sample_run_environment):
     assert not any("sample" in row["payload"] for row in service.events(run["run_id"], 0, 500)["events"])
 
 
+def test_bundle_load_does_not_consume_training_rng(inference_bundle):
+    import torch
+    from core.captioner.artifact import load_bundle
+    _, bundle, _ = inference_bundle
+    before = torch.get_rng_state().clone()
+    model, _, _, _, _ = load_bundle(bundle)
+    assert torch.equal(before, torch.get_rng_state())
+    assert all(parameter.device.type == "cpu" for parameter in model.parameters())
+
+
 def test_explicit_cancel_waits_for_worker_and_releases_lifecycle(environment, inference_bundle, monkeypatch):
     client, _, _, _ = environment
     inference, bundle, content = inference_bundle

@@ -1175,13 +1175,18 @@ class CaptionerBatchItem(TrainingBase):
     status = Column(String, nullable=False)
     attempts = Column(Integer, nullable=False)
     preview = Column(JSON, nullable=True)
+    saved = Column(JSON, nullable=True)
+    save_intent = Column(JSON, nullable=True)
     error = Column(Text, nullable=True)
     error_code = Column(String, nullable=True)
 
     def to_dict(self):
         return {"item_id": self.item_id, "position": self.position, "status": self.status,
                 "attempts": self.attempts, "preview": self.preview, "error": self.error,
-                "error_code": self.error_code}
+                "error_code": self.error_code, "saved": self.saved,
+                "pending_save": self.save_intent is not None,
+                "reviewed_caption": (self.save_intent or self.saved or {}).get("caption"),
+                "reviewed_caption_type": (self.save_intent or self.saved or {}).get("caption_type")}
 
 
 class CaptionerTrainingRun(TrainingBase):

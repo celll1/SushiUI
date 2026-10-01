@@ -99,8 +99,10 @@ def load_bundle(path, *, expected_identity=None, require_resume=False):
             or config.num_categories != len(CONCEPT_CATEGORIES)
             or (config.pad_id, config.bos_id, config.eos_id) != (tokenizer.pad_id, tokenizer.bos_id, tokenizer.eos_id)):
         raise ValueError("Caption configuration and tokenizer/vocabulary disagree")
-    model = CompactCaptioner(config)
-    model.load_state_dict(load_file(str(path / "model.safetensors")), strict=True)
+    # Inference loads must not consume a concurrent trainer's RNG stream.
+    with torch.device("meta"):
+        model = CompactCaptioner(config)
+    model.load_state_dict(load_file(str(path / "model.safetensors")), strict=True, assign=True)
     state = torch.load(path / "resume.pt", map_location="cpu", weights_only=True) if require_resume else None
     return model.eval(), tokenizer, selector, manifest, state
 

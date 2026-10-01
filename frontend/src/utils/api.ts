@@ -12,6 +12,7 @@ export interface CaptionerDefaults extends CaptionerOptions {
 }
 export interface CaptionerStatus {
   loaded: boolean;
+  path?: string;
   language?: string;
   max_new_tokens?: number;
   max_num_patches?: number;
@@ -169,6 +170,55 @@ export const sampleCaptionerRun = async (runId: string, checkpoint: string, data
   itemId: number, requestId: string, options: CaptionerOptions): Promise<CaptionerPreview> =>
   (await api.post(`/captioner-training/runs/${runId}/sample`, {checkpoint, dataset_id: datasetId,
     item_id: itemId, request_id: requestId, ...options})).data;
+
+export interface CaptionerBatchDefaults {retry_failed: boolean; offset: number; limit: number; max_items: number}
+export interface CaptionerBatch {
+  job_id: string;
+  dataset_id: number;
+  bundle_path: string;
+  manifest_hash: string;
+  options: CaptionerOptions;
+  status: "pending" | "running" | "stopping" | "stopped" | "completed" | "failed" | "interrupted";
+  counts: Record<string, number>;
+  total: number;
+  error: string | null;
+  error_code: string | null;
+  created_at: string;
+  updated_at: string;
+}
+export interface CaptionerBatchItem {
+  item_id: number;
+  position: number;
+  status: "pending" | "running" | "completed" | "failed";
+  attempts: number;
+  preview: CaptionerPreview | null;
+  error: string | null;
+  error_code: string | null;
+  saved: {caption_id: number; caption: string; caption_type: string; dataset_revision: number} | null;
+  pending_save: boolean;
+  reviewed_caption: string | null;
+  reviewed_caption_type: string | null;
+}
+export const getCaptionerBatchDefaults = async (): Promise<CaptionerBatchDefaults> =>
+  (await api.get("/schema/captioner-batch-defaults")).data;
+export const listCaptionerBatches = async (): Promise<{batches: CaptionerBatch[]}> =>
+  (await api.get("/captioner/batches")).data;
+export const getCaptionerBatch = async (jobId: string): Promise<CaptionerBatch> =>
+  (await api.get(`/captioner/batches/${jobId}`)).data;
+export const createCaptionerBatch = async (request: CaptionerOptions & {bundle_path: string; dataset_id: number; item_ids: number[]}): Promise<CaptionerBatch> =>
+  (await api.post("/captioner/batches", request)).data;
+export const startCaptionerBatch = async (jobId: string, retryFailed: boolean): Promise<CaptionerBatch> =>
+  (await api.post(`/captioner/batches/${jobId}/start`, {retry_failed: retryFailed})).data;
+export const stopCaptionerBatch = async (jobId: string): Promise<CaptionerBatch> =>
+  (await api.post(`/captioner/batches/${jobId}/stop`)).data;
+export const getCaptionerBatchResults = async (jobId: string, offset: number, limit: number): Promise<{items: CaptionerBatchItem[]; offset: number; total: number}> =>
+  (await api.get(`/captioner/batches/${jobId}/results`, {params: {offset, limit}})).data;
+export const saveCaptionerBatchItem = async (jobId: string, itemId: number, preview: CaptionerPreview,
+  caption: string, captionType: string): Promise<{caption_id: number; dataset_revision: number}> => {
+  if (preview.dataset_revision === undefined) throw new Error("Batch preview revision is missing");
+  return (await api.post(`/captioner/batches/${jobId}/items/${itemId}/save`, {caption, caption_type: captionType,
+    dataset_revision: preview.dataset_revision, image_hash: preview.image_hash})).data;
+};
 import { wsClient } from "./websocket";
 import { resolveGlobalAttentionImpl, resolveGlobalAttentionMethod, resolveGlobalAttentionType } from "./attentionSettings";
 import { trainingFeatureUnsupportedReason } from "./trainingCapabilities";

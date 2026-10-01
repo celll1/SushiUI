@@ -11,15 +11,16 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 from sqlalchemy import func
 
-from api.captioner_routes import _predict_caption, read_caption_image
+from api.captioner_routes import (_predict_caption, read_caption_image, save_caption,
+                                 CaptionerSaveRequest, CaptionerSaveResponse)
 from api.error_handlers import APIError, NotFoundError, ValidationError
 from api.param_defaults import CAPTIONER_BATCH_DEFAULTS as BD, CAPTIONER_DEFAULTS as CD
 from core.captioner.artifact import load_bundle
 from core.captioner.inference import CaptionInferenceManager
-from core.captioner.storage import file_hash
+from core.captioner.storage import file_hash, read_json
 from core.tagger.siglip2_inference_manager import get_siglip2_inference_manager
 from database import DatasetsSessionLocal, TrainingSessionLocal
-from database.models import CaptionerBatch as Batch, CaptionerBatchItem as Item, Dataset, DatasetItem
+from database.models import CaptionerBatch as Batch, CaptionerBatchItem as Item, Dataset, DatasetItem, DatasetCaption
 
 router = APIRouter()
 
@@ -38,6 +39,14 @@ class CaptionerBatchCreateRequest(BaseModel):
 class CaptionerBatchStartRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     retry_failed: StrictBool = BD["retry_failed"]
+
+
+class CaptionerBatchSaveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    caption: str = Field(min_length=1, max_length=16384)
+    caption_type: str = Field(CD["save_caption_type"], min_length=1, max_length=128)
+    dataset_revision: StrictInt = Field(ge=0)
+    image_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class BackgroundRequest:
@@ -98,6 +107,86 @@ class CaptionBatchService:
             job = self._get(db, job_id)
             rows = db.query(Item).filter(Item.job_id == job.job_id).order_by(Item.position).offset(offset).limit(limit).all()
             return {"items": [row.to_dict() for row in rows], "offset": offset, "total": self._describe(db, job)["total"]}
+
+    def _receipt(self, db, job, row, intent, result):
+        for sibling in db.query(Item).filter(Item.job_id == job.job_id, Item.status == "completed").all():
+            if sibling.preview and sibling.preview["dataset_revision"] == intent["dataset_revision"]:
+                sibling.preview = {**sibling.preview, "dataset_revision": result["dataset_revision"]}
+        row.saved = {**result, "caption": intent["caption"], "caption_type": intent["caption_type"]}
+        row.save_intent = None
+        db.commit()
+
+    def _reconcile(self, job, row, intent):
+        with self.datasets() as db:
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            dataset = db.get(Dataset, job.dataset_id)
+            if dataset is None or dataset.revision != intent["dataset_revision"] + 1:
+                raise APIError("Previous caption save has an uncertain outcome; review the dataset before retrying", 409,
+                               code="captioner_batch_save_uncertain")
+            item = db.get(DatasetItem, row.item_id)
+            root = Path(dataset.path).resolve()
+            if item is None or item.dataset_id != dataset.id or not item.image_path:
+                raise NotFoundError("Dataset image item not found")
+            path = Path(item.image_path)
+            path = (path if path.is_absolute() else root / path).resolve()
+            sidecar = path.with_suffix(".json").resolve()
+            if not path.is_relative_to(root) or not sidecar.is_relative_to(root):
+                raise ValidationError("Image or sidecar escapes registered root")
+            caption = db.query(DatasetCaption).filter(DatasetCaption.item_id == row.item_id,
+                DatasetCaption.caption_type == intent["caption_type"], DatasetCaption.source_field == "compact_caption",
+                DatasetCaption.is_tags_format == False).one_or_none()
+            data = read_json(sidecar) if sidecar.is_file() else {}
+            if (not isinstance(data, dict) or file_hash(path) != intent["image_hash"]
+                    or caption is None or caption.content != intent["caption"]
+                    or data.get("compact_caption") != intent["caption"]
+                    or data.get("_sushi_compact_caption") != {"version": 1, "caption_type": intent["caption_type"]}):
+                raise APIError("Previous caption save cannot be safely reconciled", 409,
+                               code="captioner_batch_save_uncertain")
+            return {"caption_id": caption.id, "dataset_revision": dataset.revision,
+                    "sidecar_path": str(sidecar), "source_field": "compact_caption"}
+
+    def save(self, job_id, item_id, request):
+        with self.lock, self.db() as db:
+            job = self._get(db, job_id)
+            if job.job_id in self.workers:
+                raise APIError("Stop the caption batch before saving previews", 409)
+            row = db.get(Item, (job.job_id, item_id))
+            if row is None or row.status != "completed" or not row.preview:
+                raise NotFoundError("Completed batch preview not found")
+            if not request.caption.strip() or not request.caption_type.strip() or request.caption_type == "tags":
+                raise ValidationError("Select a nonempty natural caption and non-tag destination")
+            intent = {**request.model_dump(), "caption": request.caption.strip()}
+            if row.preview["image_hash"] != intent["image_hash"]:
+                raise APIError("Batch image identity changed", 409, code="captioner_stale_image")
+            if row.saved:
+                if any(row.saved[key] != intent[key] for key in ("caption", "caption_type")):
+                    raise APIError("This batch item was already saved; edit its dataset caption separately", 409)
+                return row.saved
+            if row.save_intent and row.save_intent != intent:
+                raise APIError("Retry the previous caption save unchanged before making another edit", 409,
+                               code="captioner_batch_save_uncertain")
+            if any(row.preview[key] != intent[key] for key in ("dataset_revision", "image_hash")):
+                raise APIError("Batch preview changed; reload its results", 409, code="captioner_stale_revision")
+            existed = row.save_intent is not None
+            row.save_intent = intent
+            db.commit()
+            if existed:
+                with self.datasets() as datasets_db:
+                    dataset = datasets_db.get(Dataset, job.dataset_id)
+                    revision = dataset.revision if dataset is not None else None
+                if revision != intent["dataset_revision"]:
+                    result = self._reconcile(job, row, intent)
+                    self._receipt(db, job, row, intent, result)
+                    return result
+            try:
+                with self.datasets() as datasets_db:
+                    result = save_caption(CaptionerSaveRequest(dataset_id=job.dataset_id, item_id=item_id, **intent), datasets_db)
+            except APIError:
+                row.save_intent = None
+                db.commit()
+                raise
+            self._receipt(db, job, row, intent, result)
+            return result
 
     def create(self, request):
         if len(set(request.item_ids)) != len(request.item_ids) or any(key < 1 for key in request.item_ids):
@@ -272,3 +361,12 @@ def stop_batch(job_id: UUID):
 def batch_results(job_id: UUID, offset: int = Query(BD["offset"], ge=0),
                   limit: int = Query(BD["limit"], ge=1, le=1000)):
     return service.results(job_id, offset, limit)
+
+
+@router.post("/captioner/batches/{job_id}/items/{item_id}/save", response_model=CaptionerSaveResponse)
+def save_batch_item(job_id: UUID, item_id: int, request: CaptionerBatchSaveRequest):
+    try:
+        return service.save(job_id, item_id, request)
+    except (ValueError, OSError) as exc:
+        raise APIError("Caption save outcome cannot be safely reconciled", 409,
+                       detail=str(exc), code="captioner_batch_save_uncertain") from exc

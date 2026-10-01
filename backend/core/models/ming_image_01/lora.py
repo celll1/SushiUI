@@ -1,8 +1,17 @@
 """Native DiT adapter slots and reversible canonical checkpoint keys."""
 from core.models.krea2.krea2_lora import (
-    build_lora_branch, declared_branch_count, detect_lora_format,
+    declared_branch_count, detect_lora_format,
     flatten_to_key, normalise_lora_state_dict,
 )
+
+
+def build_lora_branch(base, group, module_path):
+    import torch
+    from core.adapters import build_adapter_branch, lora_branch_dtype
+    dtype = getattr(base, "compute_dtype", None)
+    if dtype not in {torch.float32, torch.float16, torch.bfloat16}:
+        dtype = lora_branch_dtype(base)
+    return build_adapter_branch(base, group, lora_dtype=dtype, lora_name=module_path)
 
 
 def iter_lora_slots(transformer, *, attention=True, projection=True):

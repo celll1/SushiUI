@@ -691,8 +691,8 @@ paths:
                 feature_labels:
                   quantized_gemm: "quantized_gemm_mode (quantized GEMM path)"
                   unet_quantization: "unet_quantization"
-                runtime_int8_archs: [anima, krea2, flux2, ideogram4, ltx2, acestep, zimage]
-                quantized_linear_archs: [acestep, anima, flux2, ideogram4, krea2, ltx2, minimax_h3, sensenova, zimage]
+                runtime_int8_archs: [anima, krea2, flux2, ideogram4, ltx2, acestep, zimage, ming_image_01]
+                quantized_linear_archs: [acestep, anima, flux2, ideogram4, krea2, ltx2, ming_image_01, minimax_h3, sensenova, zimage]
   /schema/generation-defaults:
     get:
       summary: Get default parameter values for txt2img/img2img/inpaint generation
@@ -14698,6 +14698,10 @@ components:
           enum: [none, fp8_e4m3fn, fp8_e5m2, int8]
           description: |
             U-Net/transformer quantization mode. `none`/null = full precision.
+            Ming applies INT8 to native DiT attention/FFN, preserving input/output,
+            timestep, caption and modulation bridges. Conditioner runtime quantization
+            and quantized native bundle export/reload remain separate pending paths.
+            GPU speed and official-weight quality have not been measured for Ming.
 
             `fp8_e4m3fn` / `fp8_e5m2` — per-call full-weight dequantization
             (SD1.5/SDXL, Z-Image, FLUX.2, Anima, Lens; on Z-Image these two
@@ -14708,7 +14712,7 @@ components:
             than full precision, not faster.
 
             `int8` — **`anima`, `krea2`, `flux2`, `ideogram4`, `ltx2`, `acestep`
-            and `zimage` only**
+            `zimage` and `ming_image_01` only**
             (the authoritative list is `runtime_int8_archs` from
             `GET /schema/arch-capabilities`). Converts the loaded
             transformer IN PLACE to the mixed weight-only int8/e4m3 layout the
@@ -14765,7 +14769,7 @@ components:
 
             Consumed only by the architectures whose loaders swap in the
             quantized Linear classes — `acestep`, `anima`, `flux2`, `ideogram4`,
-            `krea2`, `ltx2`, `minimax_h3`, `sensenova`, `zimage`
+            `krea2`, `ltx2`, `ming_image_01`, `minimax_h3`, `sensenova`, `zimage`
             (the `quantized_linear_archs` list of
             `GET /schema/arch-capabilities`, which is derived from the backend's
             own tuple and is the authority if this sentence ever drifts).

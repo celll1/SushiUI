@@ -75,12 +75,22 @@ class MingImage01Mixin:
             raise ValidationError("Ming native CFG uses zero conditioning; negative prompts are unsupported")
         if resolved.get("controlnets") or resolved.get("controlnet_images") or resolved.get("style_transfers"):
             raise ValidationError("Ming reference-guide/style/ControlNet extensions are not yet enabled")
-        pending = [key for key in ("unet_quantization", "text_encoder_quantization", "enable_block_swap",
+        pending = [key for key in ("text_encoder_quantization", "enable_block_swap",
                                   "keep_models_hot", "loop_decode", "vae_tile_threshold", "vae_tile_mode",
                                   "vae_tile_global_norm", "color_flatten_strength")
                    if resolved[key] != defaults[key]]
         if pending:
             raise ValidationError("Ming options awaiting runtime wiring: " + ", ".join(pending))
+        if resolved["unet_quantization"] not in (defaults["unet_quantization"], "none", "int8"):
+            raise ValidationError("Ming runtime DiT quantization currently supports INT8 only")
+        from core.vram_optimization import apply_runtime_int8_quantization
+        from core.models.ming_image_01.inspection import loaded_model_info
+        _, converted = apply_runtime_int8_quantization(self, components.transformer, "ming_image_01",
+            resolved["unet_quantization"], label="Ming DiT", progress_callback=progress_callback,
+            compute_dtype=components.transformer.dtype)
+        if converted:
+            self.current_model_info.update(loaded_model_info(components))
+            model_info.update(self.current_model_info)
         from core.models.ming_image_01.generation_adapters import generation_adapters
         from core.extensions.lora_manager import lora_manager
         from api.generation_status import add_warning

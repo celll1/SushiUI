@@ -141,6 +141,12 @@ DEFAULT_CREST_THRESHOLD = 12.0
 #   excludes              extra module-path regexes (none today).
 #   note                  why the entry reads the way it does.
 ARCH_QUANT_POLICY: Dict[str, Dict[str, object]] = {
+    "ming_image_01": {
+        "skip_below_work_gate": False,
+        "excludes": (r"^(all_x_embedder|all_final_layer|t_embedder|cap_embedder)\.",
+                     r"\.adaLN_modulation\."),
+        "note": "Ming attention/FFN weight-only conversion; preserve input/output, time, caption and modulation bridges. GPU speed and official-weight quality are unmeasured.",
+    },
     "krea2": {
         "skip_below_work_gate": False,
         "excludes": (),
@@ -422,7 +428,7 @@ ARCH_QUANT_POLICY: Dict[str, Dict[str, object]] = {
 # no unquantized bf16 transformer this loader reads for the in-place converter
 # to act on.
 RUNTIME_INT8_ARCHS = ("anima", "krea2", "flux2", "ideogram4", "ltx2", "acestep",
-                      "zimage")
+                      "zimage", "ming_image_01")
 
 # Architectures whose LOADERS swap in the weight-only quantized Linear classes
 # (``Fp8Linear`` / ``Int8Linear``), i.e. the archs where a quantized-GEMM path

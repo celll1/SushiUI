@@ -455,6 +455,12 @@ export interface MiniMaxH3HybridProvenance {
   overlay_key_count?: number;
 }
 
+export interface MingGlobalSummaryInfo {
+  parameters: number; storage_bytes: number; loaded_in_model: boolean;
+  metadata: { schema_version: 1; algorithm: "ming_partition_global"; latent_channels: number;
+    hidden_dim: number; rank: number; summary_tokens: number; target_patch_size: 2; coordinate_axes: string[] };
+}
+
 export interface ModelInfo {
   source_type: string;
   source: string;
@@ -462,6 +468,7 @@ export interface ModelInfo {
   is_v_prediction: boolean;
   generation_available?: boolean;
   profile?: "generation_edit" | "layer_decompose";
+  ming_partition_global?: MingGlobalSummaryInfo | null;
   component_parameter_counts?: Record<string, {
     parameters: number; trainable_parameters: number; logical_parameter_bytes: number;
     bytes_by_dtype: Record<string, number>; logical_bytes_by_device: Record<string, number>;
@@ -9857,6 +9864,7 @@ export interface DiTRewiringParameterCounts {
   blocks: { stream: string; index: number; count: number }[];
 }
 export interface DiTRewiringModelInfo {
+  ming_partition_global?: MingGlobalSummaryInfo | null;
   parameter_counts?: DiTRewiringParameterCounts | null;
   architecture: string; streams: DiTRewiringSpec["streams"];
   base_config_sha256: string; block_layout_sha256: string;

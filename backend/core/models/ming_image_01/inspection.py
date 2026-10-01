@@ -18,6 +18,19 @@ def loaded_model_info(components):
     """Count loaded parameter objects; serialized storage remains a separate census."""
     groups = {"dit": (components.transformer,), **components.conditioner.component_groups(),
               "vae": (components.vae,)}
+    from .partition_global import GLOBAL_NAME
+    branch=getattr(components.transformer,GLOBAL_NAME,None)
+    payload=getattr(components.transformer,'_ming_partition_global_payload',None)
+    global_info=None
+    if branch is not None:
+        groups={'partition_global':(branch,),**groups}
+        state=branch.state_dict()
+        global_info={'metadata':branch.metadata(),'parameters':sum(v.numel() for v in state.values()),
+            'storage_bytes':sum(v.numel()*v.element_size() for v in state.values()),'loaded_in_model':True}
+    elif payload is not None:
+        state=payload['state']
+        global_info={'metadata':payload['metadata'],'parameters':sum(v.numel() for v in state.values()),
+            'storage_bytes':sum(v.numel()*v.element_size() for v in state.values()),'loaded_in_model':False}
     seen, census = set(), {}
     for name, modules in groups.items():
         parameters = _parameters(modules, seen)
@@ -40,6 +53,7 @@ def loaded_model_info(components):
     return {"type": "ming_image_01", "profile": components.artifact.profile,
             "is_v_prediction": False,
             "component_parameter_counts": census,
+            "ming_partition_global":global_info,
             "total_loaded_parameters": sum(row["parameters"] for row in census.values()),
             "trainable_parameters": sum(row["trainable_parameters"] for row in census.values()),
             "parameter_accounting": "unique_loaded_parameter_objects_excludes_buffers_and_quantization_payloads",

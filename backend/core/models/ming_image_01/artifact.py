@@ -226,6 +226,7 @@ class MingArtifact:
     config_fingerprint: str
     tensor_headers: dict[str, dict[str, TensorHeader]]
     source: dict[str, str]
+    global_summary: dict[str, Any] | None = None
 
     def summary(self) -> dict[str, Any]:
         census = {}
@@ -239,12 +240,15 @@ class MingArtifact:
                 "storage_bytes": sum(t.byte_count for t in tensors.values()),
                 "bytes_by_dtype": dtypes,
             }
+        if self.global_summary is not None:
+            census['partition_global']={key:self.global_summary[key] for key in
+                ('tensor_count','tensor_elements','storage_bytes','bytes_by_dtype')}
         return {"model_type": MODEL_TYPE, "format_version": FORMAT_VERSION,
                 "profile": self.profile, "config_fingerprint": self.config_fingerprint,
                 "main_blocks": self.configs["transformer"]["n_layers"],
                 "refiner_blocks_per_stream": self.configs["transformer"]["n_refiner_layers"],
                 "weights_verified": bool(self.tensor_headers), "components": census,
-                "source": self.source}
+                "source": self.source,"partition_global":self.global_summary}
 
 
 def inspect_artifact(path: str | Path, *, require_weights: bool = True) -> MingArtifact:
@@ -284,7 +288,9 @@ def inspect_artifact(path: str | Path, *, require_weights: bool = True) -> MingA
     source = raw.get("source", {}) if raw else {}
     if not isinstance(source, dict) or any(not isinstance(v, str) for v in source.values()):
         raise ValueError("Ming source provenance must be string-valued")
-    return MingArtifact(root, profile, components, configs, fingerprint, headers, source)
+    from .partition_global import inspect_global_payload
+    global_summary=inspect_global_payload(root,latent_channels=configs['transformer']['in_channels'],hidden_dim=configs['transformer']['dim'])
+    return MingArtifact(root, profile, components, configs, fingerprint, headers, source,global_summary)
 
 
 def write_manifest(path: str | Path, *, source: dict[str, str] | None = None) -> Path:

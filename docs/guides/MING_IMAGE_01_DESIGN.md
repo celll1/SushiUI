@@ -2306,3 +2306,39 @@ methods, never HTTP or ASGI. Changed backend files compile and import with CUDA
 forbidden. Frontend static review passed; owner build/type and interactive checks
 remain pending. Official GPU quality/performance and remaining ConvRot/style/debug/
 timing/inspection/resume parity are not established here and remain active work.
+
+
+### Global branch inspection and parameter graphics
+
+Native artifact inspection now validates a saved `partition_global` sidecar using
+only bounded JSON and safetensors headers: native metadata keys/types/dimensions,
+exact five-tensor geometry and supported floating storage dtypes. No global module
+or tensor payload is constructed for inspection. The artifact summary includes
+its separate tensor/element/byte/dtype census. Loader preflight consequently rejects
+structurally invalid sidecars before native model preparation or weight loading.
+Value finiteness remains a payload-load check; headers cannot establish it.
+
+Loaded-model and pre-training topology inspection expose `ming_partition_global`
+with native metadata, branch parameter count, floating tensor bytes and explicit
+loaded-in-model ownership. Detached saved tensors remain outside the loaded
+parameter total. Once full training registers the module, its parameters are
+counted in an independent component row first, so the native DiT row excludes them
+and total ownership remains unique. Native U-Net still adds no parameters.
+
+OpenAPI and frontend types describe this optional structure. The model component
+distribution and training topology editor show all-target-frame → rank/token
+summaries → target-tile feature injection, branch parameters and the distinction
+between detached saved storage and loaded parameters. Frontend paths/types and
+nullable/ownership display were reviewed statically; owner build/type/interactive
+acceptance remains pending.
+
+Thirty-six unique affected CPU cases pass: twelve new header/loaded/registered
+ownership cases (both profiles, FP32/BF16 and six invalid-sidecar variants), nineteen
+existing global kernel/payload/native-forward cases, one native package/trainer/cache
+round trip and four global-preserving INT8/ConvRot copies. Invalid-sidecar tests also
+forbid native quantized model preparation, not just tensor loading. The old package
+test's lightweight trainer fixtures were brought up to date with the existing
+Attention backend contract using the actual trainer resolver. Changed backend files
+compile and import with CUDA forbidden, and OpenAPI parses. No main API/GPU use.
+Exact global-LoRA pending-gradient resume, remaining ConvRot/style/debug/timing parity
+and final official-weight/owner acceptance remain required work.

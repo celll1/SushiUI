@@ -428,7 +428,13 @@ start/stop/resultsでbackground workerを制御し、成功previewと失敗理�
 再開はpending itemだけを処理し、失敗itemの再試行は明示指定する。完了済みitemは再計算しない。
 bundle manifestの変更を再開時に拒否する。encoderは既存taggerを借用し、decoderはbatch内で再利用する。
 各画像のGPU slotとcancelは通常previewと同じ処理を使う。sidecarは自動保存しない。
-永続batchのUI接続は未実装である。
+永続batch UIは作成、保存済みjobの再選択、開始・再開・停止、失敗itemのretry、結果のpage表示を持つ。
+本文の編集途中は画面内だけに保持し、確認後の保存本文とreceiptはDBに保存する。
+`/captioner/batches/{job_id}/items/{item_id}/save`は既存のcaption transactionを使い、
+同じbatch内でその保存が進めたrevisionだけを未保存previewへ伝搬する。外部変更は拒否する。
+dataset保存とreceipt保存は別DBであるため、先に保存intentを永続化する。
+receipt保存失敗後の同一requestは、revision、画像hash、caption列とJSON sidecarの一致を確認して
+二重書込を避ける。外部変更が混ざった不確かな状態では再試行を拒否し、datasetの確認を要求する。
 GPU trainerの初期allocationは既存coordinatorでgenerationと排他する。
 worktree間のGPU調整と実training runのpause/offload検証はまだ必要である。
 実datasetから学習した自然文モデルはまだ存在せず、品質によるbest選択も未実装である。
@@ -459,3 +465,7 @@ optimizerなしexportとbundle再ロードを確認した。captioner関連のCP
 永続batchのitem別結果、decoderロード一回、停止・再開、明示retry、再起動後の状態復旧、
 変更bundleの拒否、二重task cancel時のworker待機と解放を確認した。
 batch APIを含むcaptioner関連のCPUテスト51件が通過した。
+batchの順次caption保存、兄弟previewへのrevision伝搬、保存receipt保持、外部変更拒否、
+receipt保存失敗後の復旧と二重書込の防止を確認した。bundleはmeta上で構築して保存重みを割り当て、
+推論ロードが学習側のCPU RNGを消費しないことも確認した。captioner関連のCPUテスト56件が通過した。
+永続batch UIのbuild/type-checkと画面動作は未検証である。

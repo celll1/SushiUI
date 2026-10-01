@@ -154,7 +154,7 @@ def test_batch_schema_defaults_and_invalid_inputs(batch_environment):
     assert client.post("/api/v1/captioner/batches", json={**request, "item_ids": [1, 1]}).status_code == 400
     assert client.post("/api/v1/captioner/batches", json={**request, "max_new_tokens": 1000}).status_code == 400
     spec = yaml.safe_load((Path(__file__).resolve().parents[2] / "openapi.yaml").read_text(encoding="utf-8"))
-    for model in (routes.CaptionerBatchCreateRequest, routes.CaptionerBatchStartRequest):
+    for model in (routes.CaptionerBatchCreateRequest, routes.CaptionerBatchStartRequest, routes.CaptionerBatchSaveRequest):
         runtime, declared = model.model_json_schema(), spec["components"]["schemas"][model.__name__]
         assert set(runtime["properties"]) == set(declared["properties"])
         assert set(runtime.get("required", [])) == set(declared.get("required", []))
@@ -201,3 +201,89 @@ def test_batch_task_cancellation_drains_worker(batch_environment):
     assert not service.workers and model_state_coordinator.snapshot()["active_generations"] == 0
     assert service.get(key)["status"] == "interrupted"
     assert service.get(key)["counts"] == {"pending": 3}
+
+
+def completed_batch(environment):
+    client, service, request, _, _, _ = environment
+    key = service.create(routes.CaptionerBatchCreateRequest(**request))["job_id"]
+    asyncio.run(run_job(client, service, key))
+    rows = service.results(key, 0, 200)["items"]
+    return client, service, request, key, rows
+
+
+def save_payload(row, caption="Reviewed natural caption."):
+    return {"caption": caption, "dataset_revision": row["preview"]["dataset_revision"],
+            "image_hash": row["preview"]["image_hash"]}
+
+
+def test_batch_saves_advance_siblings_and_keep_receipts(batch_environment):
+    import json
+    client, service, _, key, rows = completed_batch(batch_environment)
+    image = batch_environment[-1]
+    tags = image.with_suffix(".txt").read_text(encoding="utf-8")
+    first = client.post(f"/api/v1/captioner/batches/{key}/items/{rows[0]['item_id']}/save", json=save_payload(rows[0]))
+    assert first.status_code == 200, first.text
+    updated = service.results(key, 0, 200)["items"]
+    assert updated[0]["saved"]["caption"] == "Reviewed natural caption."
+    assert updated[1]["preview"]["dataset_revision"] == first.json()["dataset_revision"]
+    second = client.post(f"/api/v1/captioner/batches/{key}/items/{rows[1]['item_id']}/save", json=save_payload(updated[1], "Second reviewed caption."))
+    assert second.status_code == 200, second.text
+    assert image.with_suffix(".txt").read_text(encoding="utf-8") == tags
+    assert json.loads(image.with_suffix(".json").read_text(encoding="utf-8"))["compact_caption"] == "Reviewed natural caption."
+    retry = client.post(f"/api/v1/captioner/batches/{key}/items/{rows[0]['item_id']}/save", json=save_payload(rows[0]))
+    assert retry.status_code == 200 and retry.json() == first.json()
+    changed = client.post(f"/api/v1/captioner/batches/{key}/items/{rows[0]['item_id']}/save", json=save_payload(rows[0], "Different caption."))
+    assert changed.status_code == 409
+    wrong_image = client.post(f"/api/v1/captioner/batches/{key}/items/{rows[0]['item_id']}/save",
+                             json={**save_payload(rows[0]), "image_hash": "0" * 64})
+    assert wrong_image.status_code == 409 and wrong_image.json()["code"] == "captioner_stale_image"
+    restarted = routes.CaptionBatchService(service.db, service.datasets)
+    assert restarted.results(key, 0, 200)["items"][0]["saved"]
+
+
+def test_batch_save_refuses_external_edits(batch_environment):
+    from database.models import Dataset
+    client, service, request, key, rows = completed_batch(batch_environment)
+    with service.datasets() as db:
+        dataset = db.get(Dataset, request["dataset_id"])
+        dataset.revision += 1
+        db.commit()
+    response = client.post(f"/api/v1/captioner/batches/{key}/items/{rows[0]['item_id']}/save", json=save_payload(rows[0]))
+    assert response.status_code == 409 and response.json()["code"] == "captioner_stale_revision"
+    assert not service.results(key, 0, 200)["items"][0]["pending_save"]
+    assert not batch_environment[-1].with_suffix(".json").exists()
+
+
+def test_batch_save_recovers_failed_receipt_without_second_write(batch_environment, monkeypatch):
+    from database.models import Dataset
+    client, service, request, key, rows = completed_batch(batch_environment)
+    original = service._receipt
+    def fail(*args):
+        raise RuntimeError("Receipt database unavailable")
+    monkeypatch.setattr(service, "_receipt", fail)
+    url = f"/api/v1/captioner/batches/{key}/items/{rows[0]['item_id']}/save"
+    response = client.post(url, json=save_payload(rows[0]))
+    assert response.status_code == 500
+    assert service.results(key, 0, 200)["items"][0]["pending_save"]
+    with service.datasets() as db:
+        saved_revision = db.get(Dataset, request["dataset_id"]).revision
+    monkeypatch.setattr(service, "_receipt", original)
+    recovered = client.post(url, json=save_payload(rows[0]))
+    assert recovered.status_code == 200, recovered.text
+    with service.datasets() as db:
+        assert db.get(Dataset, request["dataset_id"]).revision == saved_revision
+    assert not service.results(key, 0, 200)["items"][0]["pending_save"]
+
+
+def test_batch_uncertain_save_refuses_changed_sidecar(batch_environment, monkeypatch):
+    client, service, _, key, rows = completed_batch(batch_environment)
+    original = service._receipt
+    monkeypatch.setattr(service, "_receipt", lambda *a: (_ for _ in ()).throw(RuntimeError("Receipt failed")))
+    url = f"/api/v1/captioner/batches/{key}/items/{rows[0]['item_id']}/save"
+    assert client.post(url, json=save_payload(rows[0])).status_code == 500
+    sidecar = batch_environment[-1].with_suffix(".json")
+    sidecar.write_text('{"compact_caption":"external edit"}', encoding="utf-8")
+    monkeypatch.setattr(service, "_receipt", original)
+    response = client.post(url, json=save_payload(rows[0]))
+    assert response.status_code == 409 and response.json()["code"] == "captioner_batch_save_uncertain"
+    assert "external edit" in sidecar.read_text(encoding="utf-8")

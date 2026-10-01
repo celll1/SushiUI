@@ -137,6 +137,29 @@ paths:
       responses:
         '200': {description: Items with status, attempts, preview including dataset revision and image hash, or error and code}
         '404': {description: Batch not found}
+  /captioner/batches/{job_id}/items/{item_id}/save:
+    post:
+      tags: [captioner]
+      summary: Save a reviewed batch caption and persist its receipt
+      description: Refuses active batches and stale previews. Uses the existing caption sidecar transaction. Advances matching sibling preview revisions only for this batch's own successful save. A durable intent permits retrying an identical save after receipt persistence fails; ambiguous external changes are refused.
+      parameters:
+        - {name: job_id, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: item_id, in: path, required: true, schema: {type: integer, minimum: 1}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerBatchSaveRequest'}
+            example: {caption: 'A girl with blue hair.', caption_type: compact_caption, dataset_revision: 0, image_hash: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'}
+      responses:
+        '200':
+          description: Saved caption receipt; an identical retry returns its existing receipt
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaptionerSaveResponse'}
+        '400': {description: Invalid caption destination or unsafe sidecar}
+        '404': {description: Batch or completed item not found}
+        '409': {description: Batch active, preview stale or prior save cannot be safely reconciled}
   /schema/captioner-run-defaults:
     get:
       tags: [captioner]
@@ -11571,6 +11594,15 @@ components:
         tags: {type: array, items: {type: string}, default: []}
         max_new_tokens: {type: integer, minimum: 1, default: 96}
         device: {type: string, enum: [cpu, 'cuda:0'], default: cpu}
+    CaptionerBatchSaveRequest:
+      type: object
+      additionalProperties: false
+      required: [caption, dataset_revision, image_hash]
+      properties:
+        caption: {type: string, minLength: 1, maxLength: 16384}
+        caption_type: {type: string, minLength: 1, maxLength: 128, default: compact_caption}
+        dataset_revision: {type: integer, minimum: 0}
+        image_hash: {type: string, pattern: '^[0-9a-f]{64}$'}
     CaptionerBatchStartRequest:
       type: object
       additionalProperties: false

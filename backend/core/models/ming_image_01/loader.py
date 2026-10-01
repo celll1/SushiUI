@@ -87,6 +87,7 @@ def load_components(path, *, dtype, conditioner_attention: str) -> MingComponent
         str(artifact.components["vae"]), torch_dtype=dtype, local_files_only=True,
         low_cpu_mem_usage=True, output_loading_info=True)
     _strict_loading_info(info, "vae")
+    vae.input_channels = artifact.configs["vae"]["input_channels"]
     scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
         str(artifact.components["scheduler"]), local_files_only=True)
     transformer.requires_grad_(False).eval()

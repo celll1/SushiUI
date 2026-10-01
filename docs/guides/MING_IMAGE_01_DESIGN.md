@@ -14,6 +14,8 @@ Pinned native source is vendored with [file-level provenance](../legal/MING_IMAG
 
 The native component loader and selectable language/vision/connector/query/projection groups are implemented. Seven conditioner tests cover full-language gradients through both conditioning streams, projection-only training, frozen cache eligibility, projection state mismatch and a complete tiny native-package save/load. Weights and rotary buffers match exactly; condition outputs match within FP32 tolerance (`rtol=1e-5`, `atol=1e-6`). The loader rebuilds custom nonpersistent rotary buffers after low-memory loading. Official-weight loading and GPU quality are not established by this evidence.
 
+Native sampling now has a task/profile adapter, transformer argument bridge, zero CFG branches, ordered Layer result groups and cancellation cleanup. Sixteen targeted CPU sampling tests pass: flow sign/time and Euler endpoint, CFG formula, deterministic RGBA Design output, native reference editing, Layer N+1 output, explicit frame-major regrouping, cancellation/reuse and preflight refusals. A consolidated affected suite also passed 40 tests before the final sampler validation additions. This is small-model functional evidence; the platform API/UI and official-model quality gates remain open.
+
 ## Identity and ownership
 
 Use one architecture key, `ming_image_01`, and two explicit artifact profiles:

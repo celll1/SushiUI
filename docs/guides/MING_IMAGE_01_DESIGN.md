@@ -2342,3 +2342,30 @@ Attention backend contract using the actual trainer resolver. Changed backend fi
 compile and import with CUDA forbidden, and OpenAPI parses. No main API/GPU use.
 Exact global-LoRA pending-gradient resume, remaining ConvRot/style/debug/timing parity
 and final official-weight/owner acceptance remain required work.
+
+
+### Exact global-LoRA continuation after an optimizer update
+
+The shared native continuation oracle now also exercises ordinary LoRA plus the
+independent global branch on Design and Layer. Eight logical backwards use guided
+partition MNT2/GAS4, nested U-Net, query chunking and partial checkpointing. Resume
+starts at step 6: one optimizer update has already occurred, and two pending
+backwards remain. The checkpoint must contain nonempty optimizer state, nonzero
+global-branch moments and nonzero pending global gradients, avoiding a pre-update
+checkpoint that would not prove moments restoration.
+
+Both new LoRA cases match the remaining two complete logical traces (noise/sigma,
+dual conditioning, partition coordinates and native conditional predictions), all
+final transformer/conditioner states including every ordinary/global branch,
+optimizer moments/update count and scheduler. Layer also exercises sigma-null and
+per-MNT labels. The two existing full-global step-2 continuation cases still pass
+after sharing the fixture; four unique targeted CPU cases pass. The fixture compiles
+and real full/LoRA trainers import with CUDA forbidden. No runtime code change was
+needed for valid continuation, and no main API/GPU was used.
+
+This proves same-config continuation at completed batch seams on tiny CPU models.
+Mid-region/mid-MNT interruption, CUDA numerical behavior and different optimizer
+families are not established. Invalid-runtime refusal must still be audited against
+emergency saving: an un-restored pending runtime must not overwrite its source
+checkpoint. Remaining ConvRot/style/debug/timing parity and final owner acceptance
+remain active work.

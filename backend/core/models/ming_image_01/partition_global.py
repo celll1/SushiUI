@@ -83,12 +83,51 @@ class MingPartitionGlobalAdapter(nn.Module):
         self.load_state_dict(tensors,strict=True)
 
 
+
+def metadata_shapes(metadata,*,latent_channels,hidden_dim):
+    if not isinstance(metadata,dict) or type(metadata.get('schema_version')) is not int or metadata.get('schema_version')!=1:
+        raise ValueError('Unsupported Ming global adapter metadata version')
+    keys=('latent_channels','hidden_dim','rank','summary_tokens','target_patch_size')
+    if any(type(metadata.get(key)) is not int or metadata[key]<1 for key in keys):
+        raise ValueError('Ming global adapter metadata dimensions must be positive integers')
+    rank,tokens=metadata['rank'],metadata['summary_tokens']
+    expected={'schema_version':1,'algorithm':'ming_partition_global','latent_channels':latent_channels,
+        'hidden_dim':hidden_dim,'rank':rank,'summary_tokens':tokens,'target_patch_size':2,
+        'coordinate_axes':['frame','height','width']}
+    if metadata!=expected or rank>512 or tokens>256:
+        raise ValueError('Ming global adapter metadata conflicts with the native architecture')
+    return {**{name+'.weight':(rank,4*latent_channels+3) for name in ('key','value','query')},
+        'out.weight':(hidden_dim,rank),'summary_queries':(tokens,rank)}
+
+
+def inspect_global_payload(root,*,latent_channels,hidden_dim):
+    from pathlib import Path
+    from .artifact import _json,read_tensor_headers
+    directory=Path(root)/'partition_global'
+    if not directory.exists():return None
+    if not directory.resolve().is_relative_to(Path(root).resolve()):
+        raise ValueError('Ming global payload escapes the artifact root')
+    config_path,state_path=directory/'config.json',directory/'adapter.safetensors'
+    for path in (config_path,state_path):
+        if not path.is_file() or not path.resolve().is_relative_to(directory.resolve()):
+            raise ValueError('Ming global payload is incomplete or escapes its directory')
+    maximum=(3*(4*latent_channels+3)*512+256*512+hidden_dim*512)*8+65536
+    if config_path.stat().st_size>16384 or state_path.stat().st_size>maximum:
+        raise ValueError('Ming global payload exceeds the bounded native adapter size')
+    metadata=_json(config_path)
+    shapes=metadata_shapes(metadata,latent_channels=latent_channels,hidden_dim=hidden_dim)
+    headers=read_tensor_headers(state_path)
+    if set(headers)!=set(shapes) or any(headers[k].shape!=shapes[k] or headers[k].dtype not in {'F16','BF16','F32','F64'} for k in shapes):
+        raise ValueError('Ming global adapter header geometry or floating dtype is invalid')
+    dtypes={}
+    for tensor in headers.values():dtypes[tensor.dtype]=dtypes.get(tensor.dtype,0)+tensor.byte_count
+    return {'metadata':metadata,'parameters':sum(t.elements for t in headers.values()),
+        'tensor_count':len(headers),'tensor_elements':sum(t.elements for t in headers.values()),
+        'storage_bytes':sum(dtypes.values()),'bytes_by_dtype':dtypes}
+
+
 def from_payload(metadata,tensors,*,latent_channels,hidden_dim,dtype=torch.float32):
-    if (not isinstance(metadata,dict) or type(metadata.get("schema_version")) is not int
-            or metadata.get("schema_version")!=1):
-        raise ValueError("Unsupported Ming global adapter metadata version")
-    if any(type(metadata.get(key)) is not int for key in ("latent_channels","hidden_dim","rank","summary_tokens","target_patch_size")):
-        raise ValueError("Ming global adapter metadata dimensions must be integers")
+    metadata_shapes(metadata,latent_channels=latent_channels,hidden_dim=hidden_dim)
     adapter=MingPartitionGlobalAdapter(latent_channels,hidden_dim,rank=metadata.get("rank"),
         summary_tokens=metadata.get("summary_tokens"),dtype=dtype)
     if metadata != adapter.metadata():
@@ -102,20 +141,11 @@ GLOBAL_NAME="ming_partition_global_adapter"
 
 def payload_from_directory(root,*,latent_channels,hidden_dim):
     from pathlib import Path
-    import json
     from safetensors.torch import load_file
-    directory=Path(root)/"partition_global"
-    if not directory.exists():return None
-    if not directory.resolve().is_relative_to(Path(root).resolve()):
-        raise ValueError("Ming global payload escapes the artifact root")
-    config_path,state_path=directory/"config.json",directory/"adapter.safetensors"
-    for path in (config_path,state_path):
-        if not path.is_file() or not path.resolve().is_relative_to(directory.resolve()):
-            raise ValueError("Ming global payload is incomplete or escapes its directory")
-    maximum=(3*(4*latent_channels+3)*512+256*512+hidden_dim*512)*8+65536
-    if config_path.stat().st_size>16384 or state_path.stat().st_size>maximum:
-        raise ValueError("Ming global payload exceeds the bounded native adapter size")
-    metadata=json.loads(config_path.read_text(encoding="utf-8"))
+    info=inspect_global_payload(root,latent_channels=latent_channels,hidden_dim=hidden_dim)
+    if info is None:return None
+    state_path=Path(root)/"partition_global"/"adapter.safetensors"
+    metadata=info['metadata']
     state=load_file(str(state_path),device="cpu")
     adapter=from_payload(metadata,state,latent_channels=latent_channels,hidden_dim=hidden_dim)
     return {"metadata":adapter.metadata(),"state":{key:value.detach().cpu().clone() for key,value in state.items()}}

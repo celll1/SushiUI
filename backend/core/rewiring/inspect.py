@@ -364,4 +364,6 @@ def _inspect_ming(path):
         block_layout_sha256=digest(streams), topology=topology,
         topology_sha256=None if topology is None else digest(topology),
         default_spec=adapter.default_topology(config), initial_spec=initial,
-        latent_scale_factor=16, pixel_alignment=16, parameter_counts=parameter_counts("ming_image_01", config))
+        latent_scale_factor=16, pixel_alignment=16, parameter_counts=parameter_counts("ming_image_01", config),
+        ming_partition_global=None if artifact.global_summary is None else
+            {**{key:artifact.global_summary[key] for key in ('metadata','parameters','storage_bytes')},'loaded_in_model':False})

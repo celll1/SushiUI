@@ -302,11 +302,13 @@ def test_native_package_loader_round_trip(tmp_path, monkeypatch):
     assert not failed.exists()
     assert not list(failed.parent.glob(f".{failed.name}.ming-*"))
     from types import SimpleNamespace
+    from functools import partial
     from core.training.base_trainer import BaseTrainer
     from core.training.arch import get_arch_handler
     train_owner = SimpleNamespace(model_path=str(exported_manifest), weight_dtype=torch.float32,
         vae_dtype=torch.float32, config={"ming_conditioner_groups": ["projections"]},
-        resume_from_checkpoint=None)
+        resume_from_checkpoint=None,attention_backend="native")
+    train_owner._resolve_training_backend=partial(BaseTrainer._resolve_training_backend,train_owner)
     BaseTrainer._load_model_components(train_owner)
     assert train_owner.is_ming_image_01 and not train_owner.is_sdxl
     assert train_owner.transformer._residual_unet_spec == topology
@@ -321,7 +323,8 @@ def test_native_package_loader_round_trip(tmp_path, monkeypatch):
     cache_owner = SimpleNamespace(model_path=str(exported_manifest), weight_dtype=torch.float32,
         vae_dtype=torch.float32, device="cpu", output_dir=tmp_path / "cache-run",
         config={"ming_conditioner_groups": [], "latent_encoding_mode": "pre_encoded_cache",
-                "text_encoding_mode": "pre_encoded_cache"}, resume_from_checkpoint=None)
+                "text_encoding_mode": "pre_encoded_cache"}, resume_from_checkpoint=None,attention_backend="native")
+    cache_owner._resolve_training_backend=partial(BaseTrainer._resolve_training_backend,cache_owner)
     BaseTrainer._load_model_components(cache_owner)
     assert cache_owner.ming_cache_snapshot["vae_weights"]
     assert cache_owner.ming_cache_snapshot["conditioner_weights"]

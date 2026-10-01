@@ -3939,6 +3939,8 @@ paths:
                   initial_spec:
                     allOf: [{$ref: '#/components/schemas/DiTRewiringSpec'}]
                     description: Explicit single-region starting topology for custom layouts; selecting configure without a spec still uses default_spec.
+                  ming_partition_global:
+                    $ref: '#/components/schemas/MingGlobalSummaryInfo'
                   parameter_counts:
                     allOf: [{$ref: '#/components/schemas/DiTRewiringParameterCounts'}]
                     nullable: true
@@ -14474,6 +14476,26 @@ components:
           nullable: true
           default: null
         halo_tokens: {type: integer, minimum: 0, multipleOf: 2, default: 16}
+    MingGlobalSummaryInfo:
+      type: object
+      nullable: true
+      description: Independent Ming full-canvas summary branch. Loaded parameter objects and saved floating tensor storage are counted separately; full-frame generation does not apply this branch.
+      properties:
+        parameters: {type: integer, minimum: 0}
+        storage_bytes: {type: integer, minimum: 0}
+        loaded_in_model: {type: boolean}
+        metadata:
+          type: object
+          additionalProperties: false
+          properties:
+            schema_version: {type: integer, enum: [1]}
+            algorithm: {type: string, enum: [ming_partition_global]}
+            latent_channels: {type: integer, minimum: 1}
+            hidden_dim: {type: integer, minimum: 1}
+            rank: {type: integer, minimum: 1, maximum: 512}
+            summary_tokens: {type: integer, minimum: 1, maximum: 256}
+            target_patch_size: {type: integer, enum: [2]}
+            coordinate_axes: {type: array, items: {type: string}}
     MingImage01Partition:
       description: Ming native target patch partitions. The token ceiling counts all target frames; references and captions remain complete. Geometry is snapped to 32 output pixels. No KV cache.
       type: object
@@ -20096,6 +20118,8 @@ components:
           type: string
           enum: [generation_edit, layer_decompose]
           description: Ming native Design or Layer checkpoint profile.
+        ming_partition_global:
+          $ref: '#/components/schemas/MingGlobalSummaryInfo'
         component_parameter_counts:
           type: object
           additionalProperties:

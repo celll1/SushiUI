@@ -1,9 +1,10 @@
 "use client";
 
+import MingGlobalSummary from "./MingGlobalSummary";
 import type { ModelInfo } from "@/utils/api";
 
 const labels: Record<string, string> = {
-  dit: "DiT", language: "MLLM language", vision: "Vision + projector",
+  partition_global: "Global summary branch", dit: "DiT", language: "MLLM language", vision: "Vision + projector",
   connector: "Bidirectional connector", projections: "Conditioning projections",
   queries: "Learned queries", vae: "RGBA VAE",
 };
@@ -28,6 +29,7 @@ export default function ModelParameterStructure({ info }: { info: ModelInfo }) {
       </div>)}
     </div>
     <p className="text-gray-400">Serialized tensors: {bytes(stored)}. Logical parameter bytes exclude buffers and quantization payloads; these values are separate from measured VRAM. Fixed U-Net transport adds 0 parameters.</p>
+    <MingGlobalSummary info={info.ming_partition_global} />
     {info.generation_available === false && <p className="mt-2 text-amber-300">Native model loaded. Platform generation is not yet enabled.</p>}
   </details>;
 }

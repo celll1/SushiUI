@@ -203,6 +203,35 @@ class ConvRotPrefetchBackwardLinearFn(torch.autograd.Function):
         return grad_input.to(ctx.x_dtype), None, None, None, None, None, None
 
 
+def convrot_block_paths(module: nn.Module, block_groups=None) -> dict[str, int]:
+    """Map ordered block groups to forward ordinals without touching devices."""
+    explicit = block_groups is not None
+    groups = ("transformer_blocks",) if block_groups is None else block_groups
+    if (not isinstance(groups, (tuple, list)) or not groups
+            or any(not isinstance(name, str) or not name for name in groups)
+            or len(groups) != len(set(groups))):
+        raise ValueError("ConvRot block groups must be unique nonempty module paths")
+    result, offset, seen = {}, 0, set()
+    for name in groups:
+        try:
+            blocks = module.get_submodule(name)
+        except AttributeError:
+            if not explicit:
+                continue
+            raise ValueError(f"ConvRot block group is missing: {name}") from None
+        if not isinstance(blocks, (nn.ModuleList, nn.Sequential)):
+            raise ValueError(f"ConvRot block group is not an ordered module list: {name}")
+        for index, (key, block) in enumerate(blocks._modules.items()):
+            for suffix, child in block.named_modules():
+                if id(child) in seen:
+                    raise ValueError("ConvRot block groups contain shared or overlapping modules")
+                seen.add(id(child))
+                path = f"{name}.{key}" + (f".{suffix}" if suffix else "")
+                result[path] = offset + index
+        offset += len(blocks)
+    return result
+
+
 class ConvRotBlockPrefetchCache:
     """Bounded GPU cache for ConvRot BF16 grad-input weights.
 
@@ -214,7 +243,7 @@ class ConvRotBlockPrefetchCache:
     """
 
     def __init__(self, module: nn.Module, *, dtype: torch.dtype, cache_blocks: int,
-                 prefetch_depth: int):
+                 prefetch_depth: int, block_groups=None):
         if cache_blocks < 1:
             raise ValueError("ConvRot backward cache_blocks must be at least 1")
         if prefetch_depth < 0 or prefetch_depth >= cache_blocks:
@@ -238,6 +267,8 @@ class ConvRotBlockPrefetchCache:
         self.prefetch_misses = 0
         self._last_acquired_block = None
 
+        block_paths = convrot_block_paths(module, block_groups)
+        self.path_to_block = {}
         device = None
         for path, child in module.named_modules():
             from core.models.common.convrot_int8_linear import ConvRotInt8Linear
@@ -250,16 +281,11 @@ class ConvRotBlockPrefetchCache:
                     f"{child.weight.device}; move the transformer to CUDA first."
                 )
             device = child.weight.device
-            parts = path.split(".")
-            block = None
-            if len(parts) >= 2 and parts[0] == "transformer_blocks":
-                try:
-                    block = int(parts[1])
-                except ValueError:
-                    block = None
+            block = block_paths.get(path)
             if block is None:
                 self.outside[path] = child
             else:
+                self.path_to_block[path] = block
                 self.blocks.setdefault(block, []).append((path, child))
                 self.block_bytes[block] = self.block_bytes.get(block, 0) + (
                     child.out_features * child.in_features
@@ -322,8 +348,7 @@ class ConvRotBlockPrefetchCache:
             weight.record_stream(current_stream)
             return weight
 
-        parts = path.split(".")
-        block = int(parts[1])
+        block = self.path_to_block[path]
         first_in_block = block != self._last_acquired_block
         if first_in_block:
             was_scheduled = block in self.events
@@ -603,6 +628,7 @@ def enable_frozen_training_prefetch_backward(
     cache_blocks: int = 2,
     prefetch_depth: int = 1,
     label: str = "",
+    block_groups=None,
 ) -> tuple[int, int, ConvRotBlockPrefetchCache]:
     """Use INT8 forward with a bounded, asynchronously prefetched BF16 cache."""
     from core.models.common.convrot_int8_linear import ConvRotInt8Linear
@@ -627,6 +653,7 @@ def enable_frozen_training_prefetch_backward(
         dtype=dtype,
         cache_blocks=cache_blocks,
         prefetch_depth=prefetch_depth,
+        block_groups=block_groups,
     )
     for path, child in eligible:
         child._frozen_training_fused = True

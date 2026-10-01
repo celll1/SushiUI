@@ -2401,3 +2401,9 @@ match continuous training. Full runs resume from step 2; LoRA runs resume from
 step 6 with established global moments and pending gradients. Changed files compile
 and import with CUDA forbidden. Main API/GPU remains untouched. Remaining ConvRot,
 style, debug/timing and final owner/official-weight acceptance remain active work.
+
+### ConvRot prefetch block topology prerequisite
+
+The shared ConvRot prefetch cache now accepts explicitly ordered module-list groups. Ming's `noise_refiner`, `context_refiner`, and `layers` map to distinct forward ordinals; acquisition uses the recorded path map instead of parsing Qwen layer names. Unlisted projections remain outside the bounded ring. Qwen callers retain the default `transformer_blocks` mapping. Missing, duplicate, shared, or overlapping explicit groups fail before device operations.
+
+Fourteen CPU cases cover both native Ming profiles, Qwen default ordinals, named Sequential paths, invalid layouts, forwarding the optional argument, and two reverse traversals across all three groups with bounded residency. Scheduling uses a CPU double; these checks make no CUDA kernel, speed, memory, or overlap claim. Ming's optimized ConvRot policy/metadata/resume/UI wiring still remains to be implemented; this prerequisite alone does not enable it.

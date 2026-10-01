@@ -148,34 +148,51 @@ class MingLatentBatch:
     residency: object = None
 
     def for_step(self, *, encoder_device=None):
-        trainable = not self.conditioner.cacheable
-        if trainable:
-            self.frozen_conditioning = None
-            self.conditioning_key = None
-        condition = self.frozen_conditioning
-        if condition is None and self.tensor_cache is not None and self.conditioning_key is not None:
-            from .cache import expected_conditioning
-            cached = self.tensor_cache.read("conditioning", self.conditioning_key,
-                expected=expected_conditioning(self.conditioner, self.prepared), conditioner=self.conditioner)
-            if cached is not None:
-                condition = MingConditioning(cached["queries"], cached["direct"])
-        if condition is None:
-            with self.residency("conditioner") if self.residency is not None else nullcontext():
-                try:
-                    if self.residency is None and encoder_device is not None:
-                        self.conditioner.to(device=encoder_device)
-                    condition = encode_inputs(self.conditioner, self.prepared, requires_grad=trainable)
-                finally:
-                    if self.residency is None and encoder_device is not None and not trainable:
-                        self.conditioner.to(device="cpu")
-            if not trainable and self.tensor_cache is not None and self.conditioning_key is not None:
-                self.tensor_cache.write("conditioning", self.conditioning_key,
-                    {"queries": condition.queries.detach().cpu(), "direct": condition.direct.detach().cpu()},
-                    conditioner=self.conditioner)
-        if not trainable and self.frozen_conditioning is None:
-            self.frozen_conditioning = condition.detached()
+        condition = resolve_conditioning(self, encoder_device=encoder_device)
         return MingTrainingBatch(self.clean, condition, self.frame_weights, self.reference_latents)
 
+
+@dataclass
+class MingConditioningBatch:
+    prepared: object
+    conditioner: object
+    frozen_conditioning: MingConditioning | None = None
+    tensor_cache: object = None
+    conditioning_key: str | None = None
+    residency: object = None
+
+    def for_step(self, *, encoder_device=None):
+        return resolve_conditioning(self, encoder_device=encoder_device)
+
+
+def resolve_conditioning(source, *, encoder_device=None):
+    trainable = not source.conditioner.cacheable
+    if trainable:
+        source.frozen_conditioning = None
+        source.conditioning_key = None
+    condition = source.frozen_conditioning
+    if condition is None and source.tensor_cache is not None and source.conditioning_key is not None:
+        from .cache import expected_conditioning
+        cached = source.tensor_cache.read("conditioning", source.conditioning_key,
+            expected=expected_conditioning(source.conditioner, source.prepared), conditioner=source.conditioner)
+        if cached is not None:
+            condition = MingConditioning(cached["queries"], cached["direct"])
+    if condition is None:
+        with source.residency("conditioner") if source.residency is not None else nullcontext():
+            try:
+                if source.residency is None and encoder_device is not None:
+                    source.conditioner.to(device=encoder_device)
+                condition = encode_inputs(source.conditioner, source.prepared, requires_grad=trainable)
+            finally:
+                if source.residency is None and encoder_device is not None and not trainable:
+                    source.conditioner.to(device="cpu")
+        if not trainable and source.tensor_cache is not None and source.conditioning_key is not None:
+            source.tensor_cache.write("conditioning", source.conditioning_key,
+                {"queries": condition.queries.detach().cpu(), "direct": condition.direct.detach().cpu()},
+                conditioner=source.conditioner)
+    if not trainable and source.frozen_conditioning is None:
+        source.frozen_conditioning = condition.detached()
+    return condition
 
 def prepare_training_batch(components, **kwargs):
     return prepare_latent_batch(components, **kwargs).for_step()

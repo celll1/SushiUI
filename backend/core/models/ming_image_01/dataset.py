@@ -170,14 +170,13 @@ def load_pixels(record, *, caption, width, height, crop_box=None, flip_horizonta
                         pixel_cache_identity(record, width=width, height=height, crop_box=crop_box, flip_horizontal=flip_horizontal))
 
 
-def prepare_record_latents(components, items, *, resolution, cache_context=None, vae_device=None, residency=None):
-    from .training_data import prepare_latent_batch
+def record_cache_options(components, items, *, resolution, cache_context=None):
     if not items or any(item.record.profile != components.artifact.profile for item in items):
         raise ValueError("Ming records and loaded profile disagree")
     sizes = {tuple(item.pixels.shape) for item in items}
     if len(sizes) != 1:
         raise ValueError("Ming batches require matching grids and target-frame counts")
-    options = {"vae_device": vae_device, "residency": residency}
+    options = {}
     if cache_context is not None:
         from .cache import latent_identity, conditioning_identity, validate_cache_context
         context = cache_context
@@ -199,9 +198,27 @@ def prepare_record_latents(components, items, *, resolution, cache_context=None,
                 captions=[item.caption for item in items], artifact_config=context["artifact_config"],
                 conditioner_weights=context["conditioner_weights"], resolution=resolution, dtype=dtype,
                 topology=getattr(components.transformer, "_residual_unet_spec", None), execution=context["execution"])
+    return options
+
+
+def prepare_record_conditioning(components, items, *, resolution, cache_context=None, residency=None):
+    from .prompting import prepare_inputs
+    from .training_data import MingConditioningBatch
+    options = record_cache_options(components, items, resolution=resolution, cache_context=cache_context)
+    height, width = items[0].pixels.shape[-2:]
+    prepared = prepare_inputs(components.processor, [item.caption for item in items],
+        references=[item.references for item in items], width=width, height=height, resolution=resolution)
+    return MingConditioningBatch(prepared, components.conditioner,
+        tensor_cache=options.get("tensor_cache"), conditioning_key=options.get("conditioning_key"), residency=residency)
+
+
+def prepare_record_latents(components, items, *, resolution, cache_context=None, vae_device=None, residency=None):
+    from .training_data import prepare_latent_batch
+    options = record_cache_options(components, items, resolution=resolution, cache_context=cache_context)
     return prepare_latent_batch(components, prompts=[item.caption for item in items],
         references=[item.references for item in items], target_pixels=torch.stack([item.pixels for item in items]),
-        frame_weights=torch.stack([item.weights for item in items]), resolution=resolution, **options)
+        frame_weights=torch.stack([item.weights for item in items]), resolution=resolution,
+        vae_device=vae_device, residency=residency, **options)
 
 
 def prepare_record_batch(components, items, *, resolution):
@@ -333,3 +350,26 @@ def prepare_shared_latents(trainer, pairs):
 def shared_inputs_for_mnt(trainer, prepared):
     from .training_data import shared_step_inputs
     return shared_step_inputs(prepared.for_step(encoder_device=trainer.device))
+
+
+def prefill_shared_batches(trainer, batches, *, epoch, batch_offset=0, progress_callback=None):
+    context = getattr(trainer, "ming_cache_context", None)
+    if context is None or not (context["latent_enabled"] or context["conditioning_enabled"]):
+        return
+    for index, pairs in enumerate(batches):
+        trainer._check_stop_requested()
+        items = load_shared_items(trainer, pairs, epoch=epoch, batch_position=batch_offset+index)
+        options = dict(resolution=trainer.ming_prompt_resolution, cache_context=context,
+                       residency=getattr(trainer, "ming_training_residency", None))
+        if context["latent_enabled"]:
+            prepared = prepare_record_latents(trainer.ming_image_01_components, items,
+                                             vae_device=trainer.device, **options)
+            if context["conditioning_enabled"]:
+                prepared.for_step(encoder_device=trainer.device)
+        else:
+            prepared = prepare_record_conditioning(trainer.ming_image_01_components, items, **options)
+            prepared.for_step(encoder_device=trainer.device)
+        del prepared, items
+        if progress_callback is not None:
+            progress_callback(phase="latent_cache" if context["latent_enabled"] else "text_encoder_cache",
+                              step=index+1, total=len(batches))

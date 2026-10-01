@@ -15,6 +15,13 @@ generation-only, while YuE2 exposes ABC-planner LoRA only. See
 `docs/guides/MODEL_FACTS.md` holds the
 per-architecture facts.
 
+Ming-Image 0.1 is additionally registered for native package loading and
+inspection (`ModelType` now has 18 entries). Its platform generation and common
+trainer remain disabled during staged integration; see
+`docs/guides/MING_IMAGE_01_DESIGN.md`. It is not included in the 17 working
+generation architectures or the 16 training handlers above. Layer's native
+frame axis denotes ordered RGBA image layers, not video.
+
 ## Directory tree (top 2 levels + key `backend/core` modules)
 
 ```

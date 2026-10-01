@@ -261,6 +261,12 @@ KREA2_WIRING = ComponentWiringSpec(
     latent_io=KREA2_LATENT_IO,
 )
 
+MING_IMAGE_01_WIRING = ComponentWiringSpec(
+    te_out_dim=2560, te_pooled_dim=None, te_seq_packing="llm", added_cond=None,
+    latent_channels=16, latent_ndim=5, latent_packing="none",
+    vae_scale_factor=8, vae_norm="shift_scale",
+)
+
 QWEN_IMAGE_21_WIRING = ComponentWiringSpec(
     te_out_dim=4096, te_pooled_dim=None, te_seq_packing="llm", added_cond=None,
     latent_channels=64, latent_ndim=4, latent_packing="none",

@@ -14,6 +14,13 @@ in `docs/guides/MODEL_FACTS.md`. Do not assume the two lists
 are always the same size — they diverge with each generation-only or partially-trainable
 architecture added.
 
+Ming-Image 0.1 is additionally registered for native package loading and
+inspection (`ModelType` now has 18 entries). Its platform generation and common
+trainer remain disabled during staged integration; see
+`docs/guides/MING_IMAGE_01_DESIGN.md`. It is not included in the 17 working
+generation architectures or the 16 training handlers above. Layer's native
+frame axis denotes ordered RGBA image layers, not video.
+
 This is the procedure for adding the next one. Sections 1-8 are the common
 surface; **section 9 is the additional surface a video (or audio) architecture
 needs on top of it**. Each step points at the existing file(s) to mirror; read

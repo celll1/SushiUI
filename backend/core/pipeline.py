@@ -27,7 +27,7 @@ from core.prompts.processors import PromptEditingProcessor
 from core.inference.schedulers import get_scheduler
 from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
 from core.inference.generation_timing import generation_timer
-from core.pipeline_backends import ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, QwenImage21Mixin, LTX2Mixin, AceStepMixin, MiniMaxH3Mixin, MiniMaxMusic3Mixin, SenseNovaMixin, SenseNovaSDXLChimeraMixin, YuE2Mixin
+from core.pipeline_backends import ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, QwenImage21Mixin, MingImage01Mixin, LTX2Mixin, AceStepMixin, MiniMaxH3Mixin, MiniMaxMusic3Mixin, SenseNovaMixin, SenseNovaSDXLChimeraMixin, YuE2Mixin
 
 LAST_MODEL_CONFIG_FILE = Path("last_model.json")
 
@@ -42,6 +42,7 @@ ARCH_COMPONENT_SETS = (
     ("ideogram4_components", "Ideogram 4", "is_ideogram4_model"),
     ("minit2i_components", "MiniT2I", "is_minit2i_model"),
     ("krea2_components", "Krea 2", "is_krea2_model"),
+    ("ming_image_01_components", "Ming-Image 0.1", "is_ming_image_01_model"),
     ("qwen_image_21_components", "Qwen-Image 2.1", "is_qwen_image_21_model"),
     ("ltx2_components", "LTX-2.3", "is_ltx2_model"),
     ("acestep_components", "ACE-Step 1.5", "is_acestep_model"),
@@ -136,7 +137,7 @@ def offload_component_to_cpu(name: str, component, released: List[tuple]) -> int
     return nbytes
 
 
-class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, QwenImage21Mixin, LTX2Mixin, AceStepMixin, MiniMaxH3Mixin, MiniMaxMusic3Mixin, SenseNovaMixin, SenseNovaSDXLChimeraMixin, YuE2Mixin):
+class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, QwenImage21Mixin, MingImage01Mixin, LTX2Mixin, AceStepMixin, MiniMaxH3Mixin, MiniMaxMusic3Mixin, SenseNovaMixin, SenseNovaSDXLChimeraMixin, YuE2Mixin):
     def __init__(self):
         self.txt2img_pipeline: Optional[StableDiffusionPipeline] = None
         self.img2img_pipeline: Optional[StableDiffusionImg2ImgPipeline] = None
@@ -198,6 +199,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         self.krea2_components: Optional[Dict[str, Any]] = None
         self.is_krea2_model: bool = False
 
+        self.ming_image_01_components: Optional[Dict[str, Any]] = None
+        self.is_ming_image_01_model: bool = False
         self.qwen_image_21_components: Optional[Dict[str, Any]] = None
         self.is_qwen_image_21_model: bool = False
 
@@ -304,6 +307,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             return "minit2i"
         if self.is_krea2_model:
             return "krea2"
+        if self.is_ming_image_01_model:
+            return "ming_image_01"
         if self.is_qwen_image_21_model:
             return "qwen_image_21"
         if self.is_ltx2_model:
@@ -953,6 +958,11 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     self._fold_component_latent_identity(model_result, "krea2"))
                 self._save_last_model(source_type, source, pipeline_type)
                 print("[Pipeline] Krea 2 model loaded successfully")
+                return
+
+            if isinstance(model_result, dict) and model_result.get("type") == "ming_image_01":
+                self._install_ming_image_01(model_result, model_id=model_id, source_type=source_type, source=source)
+                self._save_last_model(source_type, source, pipeline_type)
                 return
 
             if isinstance(model_result, dict) and model_result.get("type") == "qwen_image_21":
@@ -4328,6 +4338,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             return self._generate_txt2img_minit2i(params, progress_callback, step_callback)
         if self.is_krea2_model:
             return self._generate_txt2img_krea2(params, progress_callback, step_callback)
+        if self.is_ming_image_01_model:
+            return self._ming_generation_pending()
         if self.is_qwen_image_21_model:
             return self._generate_txt2img_qwen_image_21(params, progress_callback, step_callback)
 
@@ -5056,6 +5068,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             return self._generate_img2img_minit2i(params, init_image, progress_callback, step_callback)
         if self.is_krea2_model:
             return self._generate_img2img_krea2(params, init_image, progress_callback, step_callback)
+        if self.is_ming_image_01_model:
+            return self._ming_generation_pending()
         if self.is_qwen_image_21_model:
             return self._generate_img2img_qwen_image_21(
                 params, init_image, progress_callback, step_callback
@@ -5825,6 +5839,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             return self._generate_inpaint_minit2i(params, init_image, mask_image, progress_callback, step_callback)
         if self.is_krea2_model:
             return self._generate_inpaint_krea2(params, init_image, mask_image, progress_callback, step_callback)
+        if self.is_ming_image_01_model:
+            return self._ming_generation_pending()
         if self.is_qwen_image_21_model:
             return self._generate_inpaint_qwen_image_21(
                 params, init_image, mask_image, progress_callback, step_callback

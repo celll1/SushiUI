@@ -35,6 +35,7 @@ export default function MingConditionerTraining({ groups, rates, trainTextEncode
           onRates(next);
         }} />
     </label>)}
+    <p className="text-gray-400">Native RGBA targets and references come from the dataset item’s Ming sidecar. Layer data includes the auxiliary canvas and ordered target layers.</p>
     <p className="text-gray-400">Explicit groups override the global text encoder switch. Empty LR inherits TE then base LR; zero holds weights still. Selected groups retain their live conditioning graph.</p>
   </fieldset>;
 }

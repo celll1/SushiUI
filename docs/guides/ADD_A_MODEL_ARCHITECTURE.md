@@ -13,13 +13,13 @@ boundary is in `docs/guides/MINIMAX_MUSIC3_DESIGN.md`; the latter is recorded
 in `docs/guides/MODEL_FACTS.md`. Do not assume the two lists
 are always the same size — they diverge with each generation-only or partially-trainable
 architecture added.
-Ming has a staged native training handler; shared dataset/loop/resume integration remains pending and its training methods are unavailable.
+Ming supports native full fine-tuning through the shared dataset/loop/resume paths; adapter training remains pending.
 
 Ming-Image 0.1 has native Design/Layer generation and package inspection
 (`ModelType` has 18 entries). Native CPU integration is verified; official-weight
-GPU acceptance and the common trainer remain pending. See
+GPU acceptance and advanced Qwen feature parity remain pending. See
 `docs/guides/MING_IMAGE_01_DESIGN.md`. Layer's frame axis denotes ordered RGBA
-image layers, not video; the training registry still has 16 handlers.
+image layers, not video; the training registry has 17 handlers.
 
 This is the procedure for adding the next one. Sections 1-8 are the common
 surface; **section 9 is the additional surface a video (or audio) architecture

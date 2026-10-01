@@ -1,12 +1,14 @@
 # Ming-Image 0.1 integration contract
 
-Status: implementation in progress. CPU artifact identity/header preflight is implemented; native source import and tiny DiT execution are verified; native component loading and conditioner training ownership are verified with a small CPU package; official-checkpoint inference, trainer/API and UI wiring remain in progress. Established 2026-10-01 against SushiUI
+Status: implementation in progress. Native Design/Layer generation and full fine-tuning are connected to public API configuration, shared runner and UI capability wiring. CPU tiny-package generation, training, U-Net restoration, batch-boundary resume and previews are verified; advanced Qwen feature parity and official-weight GPU acceptance remain open. Established 2026-10-01 against SushiUI
 `2b28c3b4`. This contract preserves the requested Qwen-Image 2.1 feature
 scope, including residual U-Net conversion. It is not a claim of measured
 Ming support. [Completed source audit](../audits/MING_IMAGE_01_SOURCE_AUDIT.md)
 records exact upstream source/model revisions and licensing constraints.
 
-## Verified implementation boundary
+## Implementation evidence by milestone
+
+The entries below record successive implementation stages; later stages supersede earlier staged-boundary notes. The current public training method is native `full_finetune`. Adapter methods and advanced parity are still being implemented.
 
 The native-package inspector and manifest writer are implemented in `backend/core/models/ming_image_01/artifact.py`, with a CPU-only CLI at `tools/inspect_ming_image_01.py`. The targeted artifact suite passes 22 tests, including profile identity, processor drift, package escape, shard/index errors and malformed weight spans. Both pinned official configuration snapshots pass config-only inspection. No model weights, CUDA context or running API were used. This evidence proves preflight only; it does not prove native state loading or functional generation/training.
 
@@ -927,3 +929,40 @@ batch seam is proved on CPU; interruption inside an MNT window, CUDA kernel
 reproducibility, production mixed precision and optimizer-family changes are
 not covered by this evidence. Public training methods remain staged until
 runner and remaining capability wiring are reviewed.
+
+
+### Public native full-training entry point
+
+Ming full fine-tuning is now available in the training capability response;
+LoRA/ReLoRA/ControlNet remain refused until their own paths are implemented.
+The runner no longer refuses Ming unconditionally. Before dataset scanning it
+resolves explicit conditioner groups, normalizes the effective TE scope, rejects
+empty training ownership, frozen-worker/live-conditioner conflicts, external
+vision encoders and non-native prediction laws. The API write boundary applies
+the same native options contract. Native sidecar references are accepted by
+the common reference preflight and capability table.
+
+Generated Ming full-training YAML keeps the central `noise_process=auto`
+default, resolving to native flow/velocity rather than inheriting the old
+full-training `add_noise` fallback. Renamed native Ming packages are recognized
+by the runner's BF16-native config detection. Existing native dataset annotation
+excludes Layer assets already owned by primary sidecars and repeats annotation
+after epoch reload; no separate frame is accidentally trained as a primary.
+
+The frontend uses effective Ming group ownership for the nonempty-scope check
+and shared TE rate controls. Explicit groups work when the inheritance checkbox
+is off, and an explicit empty list really freezes the conditioner. CPU prefetch
+is disabled for live Ming groups and submit validation explains incompatible
+restored settings without silently replacing them. Native dataset/reference
+instructions accompany the group controls. API types/defaults/state/request
+paths were statically reviewed; owner build/type checking remains deferred.
+
+Two CPU cases follow actual request types through generated YAML and runner
+preflight into real FullParameterTrainer initialization and a saved native
+training step, without overriding the public training capability table. They
+cover Design DiT-only and Layer projection-only with native references. Forty-four unique targeted cases passed across staged checks, including
+options/sample-default/capability contracts and method refusals using the
+authoritative capability reason. Changed Python files compile and real-import
+under the CUDA guard, and the updated OpenAPI parses successfully. No running API, server, official weights or physical GPU
+was used. Full runner subprocess/DB execution and production CUDA validation
+remain unverified; advanced Qwen feature parity is still active work.

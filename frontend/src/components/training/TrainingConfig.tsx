@@ -885,6 +885,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const isMiniMaxH3Model = getModelArchitecture(baseModelPath) === "minimax_h3";
   const isQwenImage21Model = getModelArchitecture(baseModelPath) === "qwen_image_21";
   const isMingImageModel = getModelArchitecture(baseModelPath) === "ming_image_01";
+  const effectiveTrainTextEncoder = isMingImageModel && trainingMethod === "full_finetune"
+    ? (params.ming_conditioner_groups == null ? trainTextEncoder : params.ming_conditioner_groups.length > 0)
+    : trainTextEncoder;
   const isQwenConvRotModel = isQwenImage21Model && /int8[_-]convrot/i.test(baseModelPath);
 
   function isSDOrSDXLModel(modelPath: string): boolean {
@@ -2181,8 +2184,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     }
 
     // Validate that at least one component is being trained (not applicable for ControlNet)
-    if (trainingMethod !== "controlnet" && !trainUnet && !trainTextEncoder) {
-      setError("At least one component (U-Net or Text Encoder) must be trained");
+    if (trainingMethod !== "controlnet" && !trainUnet && !effectiveTrainTextEncoder) {
+      setError("At least one component (DiT/U-Net or conditioner) must be trained");
+      return;
+    }
+
+    if (isMingImageModel && effectiveTrainTextEncoder && textEncodingMode === "cpu_prefetch") {
+      setError("Ming CPU prefetch requires frozen conditioner groups. Select on-the-fly encoding for conditioner training.");
       return;
     }
 
@@ -4480,7 +4488,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
             {isMingImageModel && trainingMethod === "full_finetune" && (
               <MingConditionerTraining groups={params.ming_conditioner_groups} rates={params.ming_conditioner_lrs}
-                trainTextEncoder={Boolean(params.train_text_encoder)}
+                trainTextEncoder={trainTextEncoder}
                 onGroups={value => updateParam("ming_conditioner_groups", value)}
                 onRates={value => updateParam("ming_conditioner_lrs", value)} />
             )}
@@ -4561,7 +4569,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             )}
 
             {/* Text Encoder Learning Rates */}
-            {trainTextEncoder && (
+            {effectiveTrainTextEncoder && (
               <div className="space-y-2">
                 <div>
                   <label className="block text-xs text-gray-400 mb-1">
@@ -4647,7 +4655,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     />
                   </div>
                 )}
-                {trainTextEncoder && (
+                {effectiveTrainTextEncoder && (
                   <div className="flex items-center space-x-2">
                     <input
                       type="checkbox"
@@ -7228,7 +7236,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   <option value="swap_onthefly">Swap On-the-Fly (default)</option>
                   <option value="pre_encoded_cache">Pre-Encoded Cache (Disk)</option>
                   <option value="onthefly_gpu">On-the-Fly GPU Encoding</option>
-                  <option value="cpu_prefetch">CPU Prefetch (background thread; TE pinned to CPU)</option>
+                  <option value="cpu_prefetch" disabled={isMingImageModel && effectiveTrainTextEncoder}>{isMingImageModel ? "CPU Prefetch (background thread; frozen conditioner only)" : "CPU Prefetch (background thread; TE pinned to CPU)"}</option>
                 </select>
                 <RequiredValueNote entry={requiredValue("text_encoding_mode")} />
               </div>

@@ -37,3 +37,33 @@ def resolve_ownership(config):
     rates = {name: (overrides or {}).get(name, fallback) for name in COMPONENTS if name in groups}
     validate_rates(rates)
     return groups, rates
+
+
+
+def preflight_training(config, *, method):
+    from api.arch_capabilities import TRAINING_UNSUPPORTED
+    from api.param_defaults import TRAINING_DEFAULTS
+    from .cache import configured_modes
+    reason = TRAINING_UNSUPPORTED.get("ming_image_01", {}).get(method)
+    if reason is not None or method != "full_finetune":
+        raise ValueError(reason or f"Ming does not support training method {method}")
+    if "train_text_encoder" in config and config["train_text_encoder"] is None:
+        from api.param_defaults import resolve_full_finetune_train_text_encoder
+        config["train_text_encoder"] = resolve_full_finetune_train_text_encoder(None, "ming_image_01")
+    groups, _ = resolve_ownership(config)
+    config["train_text_encoder"] = bool(groups)
+    if not config.get("train_unet", TRAINING_DEFAULTS["train_unet"]) and not groups:
+        raise ValueError("Ming training requires DiT parameters or a native conditioner group")
+    if config.get("train_image_encoder") or config.get("train_vision_encoder") or config.get("vision_encoder_path"):
+        raise ValueError("Ming native vision training uses ming_conditioner_groups, not an external image encoder")
+    modes = configured_modes(config)
+    if groups and modes["text_encoding_mode"] == "cpu_prefetch":
+        raise ValueError("Ming CPU prefetch requires frozen conditioner groups")
+    if config.get("noise_process", TRAINING_DEFAULTS["noise_process"]) not in {"auto", "flow"}:
+        raise ValueError("Ming training requires the native flow noise process")
+    if config.get("prediction_target", TRAINING_DEFAULTS["prediction_target"]) not in {"auto", "velocity"}:
+        raise ValueError("Ming training requires native clean-minus-noise velocity prediction")
+    layers = config.get("ming_image_01_sample_layers", TRAINING_DEFAULTS["ming_image_01_sample_layers"])
+    if not isinstance(layers, int) or isinstance(layers, bool) or layers < 1:
+        raise ValueError("Ming training preview layer count must be an integer >= 1")
+    return groups

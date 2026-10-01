@@ -1248,7 +1248,7 @@ class TrainingConfigGenerator:
             "train_text_encoder": resolve_full_finetune_train_text_encoder(
                 None, arch
             ),
-            "noise_process": "add_noise",
+            "noise_process": TRAINING_DEFAULTS["noise_process"] if arch == "ming_image_01" else "add_noise",
             "strict_validation": True,
         }
         for k, v in full_ft_defaults.items():

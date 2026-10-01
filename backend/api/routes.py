@@ -16113,11 +16113,18 @@ def _check_vae_swap_params(request: "TrainingRunCreateRequest") -> None:
 
 
 def _check_ming_conditioner_params(request: "TrainingRunCreateRequest") -> None:
-    if request.ming_conditioner_groups is None and request.ming_conditioner_lrs is None:
-        return
     from core.training.training_config import _detect_arch
-    if _detect_arch(request.base_model_path) != "ming_image_01" or request.training_method != "full_finetune":
-        raise HTTPException(status_code=400, detail="Ming conditioner groups/rates require Ming full fine-tuning")
+    arch = _detect_arch(request.base_model_path)
+    explicit = request.ming_conditioner_groups is not None or request.ming_conditioner_lrs is not None
+    if arch != "ming_image_01" or request.training_method != "full_finetune":
+        if explicit:
+            raise HTTPException(status_code=400, detail="Ming conditioner groups/rates require Ming full fine-tuning")
+        return
+    from core.models.ming_image_01.training_options import preflight_training
+    try:
+        preflight_training(request.model_dump(), method=request.training_method)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _check_adapter_params(request: "TrainingRunCreateRequest") -> None:

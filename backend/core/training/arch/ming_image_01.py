@@ -1,4 +1,4 @@
-"""Ming native training handler; shared dataset/loop integration is staged."""
+"""Native Ming generation-independent full-training handler."""
 
 from core.training.arch.base_arch import ArchHandler
 from core.models.components.wiring import MING_IMAGE_01_WIRING

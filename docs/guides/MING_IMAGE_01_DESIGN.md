@@ -225,6 +225,25 @@ recipe restoration. This milestone transports settings only: platform
 sampling and grouped gallery persistence remain disabled until their contracts
 are connected and verified.
 
+## Ordered output persistence
+
+`MingGenerationOutput` owns decoded images for one request; model-global last
+results are not used. Profile validation requires exact native roles/counts,
+RGBA mode and requested dimensions before any write. The grouped persistence
+helper stores every frame in batch-major order, keeping a UUID group identity,
+frame role/index and profile in PNG and gallery parameters. Its response keeps
+the first record in `image` for existing callers and all rows/roles in
+`images`/`groups`. Skip-gallery still saves all group filenames without rows.
+
+Explicit group filenames use exclusive creation, preserving older files on
+collision. All gallery rows commit together; cancellation or any pre-commit
+failure rolls back the rows and removes this request's outputs/thumbnails.
+SQLite/PIL CPU tests check byte-identical RGBA recovery, multiple batches,
+metadata equality, filename uniqueness, collision refusal and failure cleanup.
+This helper awaits route and generation-mixin integration; it does not enable
+live generation by itself. Thumbnails may use a white alpha preview, while
+full PNG files retain native alpha.
+
 ## Verification and release gates
 
 Main's running API/GPU are unavailable for this task. Source/config review,

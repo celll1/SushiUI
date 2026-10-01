@@ -19140,6 +19140,39 @@ components:
           description: "How the image is pre-upscaled to the target size before tiling, when upscaler_backend=diffusion: a PIL resample (using pil_resample) or the spandrel model in upscaler_model."
           example: pil
 
+    MingImageResultGroup:
+      type: object
+      description: Ordered native Ming output group. The Layer canvas is auxiliary, not a guaranteed composite.
+      required: [group_id, batch_index, profile, requested_layers, roles, filenames, image_ids, seed]
+      properties:
+        group_id:
+          type: string
+        batch_index:
+          type: integer
+          minimum: 0
+        profile:
+          type: string
+          enum: [generation_edit, layer_decompose]
+        requested_layers:
+          type: integer
+          minimum: 1
+        roles:
+          type: array
+          items:
+            type: string
+          example: [auxiliary_canvas, layer_1, layer_2, layer_3]
+        filenames:
+          type: array
+          items:
+            type: string
+        image_ids:
+          type: array
+          description: Empty when skip_gallery is true; otherwise ordered like filenames and roles.
+          items:
+            type: integer
+        seed:
+          type: integer
+
     GenerationResponse:
       type: object
       description: |
@@ -19148,7 +19181,9 @@ components:
         `image`, `latent_id`, or the `filename` + `image_path` pair carries the
         result, depending on the request:
 
-        - normal decode: `image` holds the full gallery record.
+        - normal decode: `image` holds the full gallery record. Native Ming
+          groups additionally retain every ordered RGBA image in `images` and
+          `groups`; `image` is the first record for existing clients.
         - `loop_decode="none"` (txt2img/img2img): `latent_id` only -- nothing
           was decoded, saved, or written to the gallery.
         - `skip_gallery=true` (txt2img/img2img/inpaint/outpaint): `filename`
@@ -19169,6 +19204,16 @@ components:
             $ref: '#/components/schemas/GenerationWarning'
         image:
           $ref: '#/components/schemas/GeneratedImage'
+        images:
+          type: array
+          description: All Ming gallery rows in batch-major group/frame order, including the auxiliary canvas.
+          items:
+            $ref: '#/components/schemas/GeneratedImage'
+        groups:
+          type: array
+          description: Ming native roles, order and saved filenames; retained even with skip_gallery.
+          items:
+            $ref: '#/components/schemas/MingImageResultGroup'
         latent_id:
           type: string
           nullable: true

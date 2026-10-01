@@ -45,7 +45,9 @@ def save_image_with_metadata(
     params: Dict[str, Any],
     generation_type: str = "txt2img",
     model_info: Optional[Dict[str, Any]] = None,
-    generation_id: Optional[int] = None
+    generation_id: Optional[int] = None,
+    *,
+    output_filename: Optional[str] = None,
 ) -> str:
     """Save image with EXIF metadata
 
@@ -69,7 +71,10 @@ def save_image_with_metadata(
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     seed = params.get("seed", 0)
-    filename = f"{generation_type}_{timestamp}_{seed}.png"
+    filename = output_filename or f"{generation_type}_{timestamp}_{seed}.png"
+    if output_filename is not None and (os.path.basename(filename) != filename
+            or "/" in filename or "\\" in filename or not filename.endswith(".png")):
+        raise ValueError("Image output filename must be a PNG basename")
     filepath = os.path.join(settings.outputs_dir, filename)
     print(f"Saving image to: {filepath}")
 
@@ -451,7 +456,17 @@ def save_image_with_metadata(
         print(f"[Metadata] Failed to write full sushi_parameters JSON blob: {e}")
 
     try:
-        image.save(filepath, pnginfo=metadata)
+        if output_filename is None:
+            image.save(filepath, pnginfo=metadata)
+        else:
+            # Grouped results must never overwrite a previous output.
+            with open(filepath, "xb") as target:
+                try:
+                    image.save(target, format="PNG", pnginfo=metadata)
+                except BaseException:
+                    target.close()
+                    os.unlink(filepath)
+                    raise
         print(f"Image saved successfully: {filename}")
 
         # Verify file exists

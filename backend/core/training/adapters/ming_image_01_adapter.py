@@ -140,8 +140,6 @@ class MingImage01LoRAAdapter(BaseLoRAAdapter):
             raise ValueError("Ming conditioner LoRA is not yet connected; freeze native conditioner groups")
         from core.models.ming_image_01.quantization import configure_frozen_quantized_training
         owner.ming_quantized_base_training = configure_frozen_quantized_training(components.transformer)
-        if owner.config.get("dit_partition_global_adapter_enabled",owner.config.get("qwen_partition_global_adapter_enabled",False)):
-            raise ValueError("Ming global-adapter LoRA wiring is not yet available; use full_finetune")
         if getattr(components.transformer,"_ming_partition_global_payload",None) is not None:
             raise ValueError("Ming LoRA on a saved full global-adapter base requires an additive contract; use full_finetune")
         components.transformer.requires_grad_(False).train()
@@ -164,6 +162,10 @@ class MingImage01LoRAAdapter(BaseLoRAAdapter):
             count += 1
         if not count:
             raise ValueError("Ming LoRA requires native DiT attention or caption projection targets")
+        from core.models.ming_image_01.partition_global import prepare_full_training,GLOBAL_NAME
+        global_adapter=prepare_full_training(owner,adapter_dtype=self.lora_dtype,allow_adapter_resume=True)
+        if global_adapter is not None:
+            self.register_lora_layer(lora_layers,GLOBAL_NAME,global_adapter,LORA_COMPONENT_UNET)
         if owner.gradient_checkpointing:
             components.transformer.enable_gradient_checkpointing()
         return count
@@ -185,8 +187,11 @@ class MingImage01LoRAAdapter(BaseLoRAAdapter):
         from core.models.ming_image_01.residual_unet import model_topology_metadata
         quantized = getattr(self.trainer,"ming_quantized_base_training",None)
         quantized_metadata = {} if quantized is None else {"ming_quantized_base_training":json.dumps(quantized,sort_keys=True,allow_nan=False)}
+        from core.models.ming_image_01.partition_global import GLOBAL_NAME
+        global_adapter=getattr(self.trainer.transformer,GLOBAL_NAME,None)
+        global_metadata={} if global_adapter is None else {GLOBAL_NAME:json.dumps(global_adapter.metadata(),sort_keys=True,allow_nan=False)}
         return {"model_type": "ming_image_01", "modelspec.architecture": "ming_image_01",
                 "ming_image_01_profile": self.trainer.ming_image_01_components.artifact.profile,
                 "lora_rank": str(self.lora_rank), "lora_alpha": str(self.lora_alpha),
                 "step": str(step), "epoch": str(epoch), "format": "pt",
-                **model_topology_metadata(self.trainer.transformer), **quantized_metadata}
+                **model_topology_metadata(self.trainer.transformer), **quantized_metadata, **global_metadata}

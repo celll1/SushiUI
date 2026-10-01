@@ -2136,3 +2136,41 @@ its summary branch. This temporary refusal does not meet full Qwen parity and mu
 be replaced by its planned LoRA contract. Exact global pending-gradient resume,
 CLI converter preservation, generation partitions, parameter/structure display,
 public global UI and acceptance/error checks also remain active work.
+
+
+### Global full resume and ordinary-LoRA checkpoint contract
+
+Two new full-training CPU continuation cases include the trainable global
+summary branch on Design and Layer. With guided partition MNT2/GAS4, nested
+U-Net, query chunk and partial checkpointing, step-2 pending-gradient resume
+matches the remaining six native logical traces, all final model tensors
+including global weights, optimizer moments/update count and scheduler. Layer
+also exercises sigma-null/per-MNT labels. This establishes same-config full
+continuation at completed batch seams, not mid-region or CUDA continuation.
+
+Fresh ordinary-LoRA training now installs the independent global branch after
+attention/projection LoRA injection. The branch exposes the shared trainable,
+live-tensor, export/load and rollback interfaces and joins the DiT adapter group.
+Checkpoint tensor keys use the stable `ming_partition_global_adapter` stem;
+safetensors metadata records its complete native schema as JSON. Resume requires
+matching branch ownership and exact metadata keys/types/values before mutation,
+then validates all native branch tensors along with the ordinary LoRA target
+scope. The previous temporary global-LoRA preflight refusal is removed.
+
+LoRA on an existing full-global base remains refused, matching the shipped Qwen
+boundary rather than assuming an unimplemented additive full-base contract.
+Adding a fresh global branch during adapter checkpoint resume is allowed because
+its saved target scope and metadata are verified by the LoRA loader before use.
+Full-training resume still refuses adding a branch absent from its saved bundle.
+
+Eight unique affected CPU cases pass: two new full-global pending-gradient
+continuations, two new public Design/Layer global-LoRA MNT2/GAS2 training and
+checkpoint restores, and four existing native ordinary-LoRA training/resume/
+generation cases. New global-LoRA cases update global output weights, verify
+actual optimizer ownership and restore every ordinary/global branch tensor.
+Malformed metadata version, rank, unexpected keys and nonfinite global weights
+are refused without changing the current model, exercising generic rollback.
+Changed files compile and import with CUDA forbidden. No live API/GPU/main use
+occurred. Global-LoRA generation installation, its exact pending-gradient resume,
+public global UI, partition generation/debug/timing, converter preservation and
+final complete-parity acceptance remain active work.

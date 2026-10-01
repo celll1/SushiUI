@@ -27247,6 +27247,25 @@ components:
             It is separate from the floating resumable checkpoint; no periodic
             export is performed. INT8 ConvRot is currently implemented for
             Qwen-Image 2.1 only.
+        ming_conditioner_groups:
+          type: array
+          nullable: true
+          default: null
+          uniqueItems: true
+          items:
+            type: string
+            enum: [language, vision, connector, queries, projections]
+          description: Ming full-training groups. Null inherits train_text_encoder (all or none); an explicit list overrides it, including an empty freeze-all list.
+          example: [language, projections]
+        ming_conditioner_lrs:
+          type: object
+          nullable: true
+          default: null
+          additionalProperties:
+            type: number
+            minimum: 0
+          description: Ming per-group learning-rate overrides for language, vision, connector, queries and projections. Missing rates inherit text_encoder_lr then learning_rate. Zero holds the component still; unknown keys and nonfinite values are refused.
+          example: {language: 0.00001, projections: 0.0001}
         text_encoder_lr:
           type: 'number'
           nullable: true

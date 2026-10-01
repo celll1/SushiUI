@@ -2718,6 +2718,8 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "train_unet": True,
     "train_text_encoder": False,            # Fix: frontend had True
     "unet_lr": None,        # None = falls back to learning_rate (see BaseTrainer.__init__)
+    "ming_conditioner_groups": None,
+    "ming_conditioner_lrs": None,
     "train_adapter": None,  # None preserves each architecture's existing adapter policy
     "adapter_lr": None,     # None preserves the architecture's existing adapter LR
     "full_finetune_dequantize_int8_base": False,

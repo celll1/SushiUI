@@ -148,6 +148,17 @@ step/epoch and named learning-rate groups in an atomically published
 This file describes weight provenance, not optimizer/RNG/scaler resume state.
 End-to-end trainer registration and exact-resume orchestration remain pending.
 
+`ming_conditioner_groups` and `ming_conditioner_lrs` now round-trip through
+central training defaults, OpenAPI/Pydantic, YAML and edit/preset transport.
+Null groups inherit the global TE switch; explicit empty groups freeze every
+conditioner group. Missing rates inherit TE/base LR and explicit zero is kept.
+Unknown/duplicate groups, coerced booleans/strings, negative and nonfinite rates
+are refused. Create/update boundaries reject these options for other models or
+methods. The full adapter resolves this contract; the training panel exposes
+component checkboxes and per-group rates for Ming full fine-tuning. Frontend
+verification is static and the registered end-to-end Ming trainer remains pending.
+
+
 
 The default full-parameter scope can freeze the conditioner, but full TE
 training is required parity, not a future optional omission. Provide explicit

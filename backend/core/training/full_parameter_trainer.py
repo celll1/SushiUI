@@ -191,6 +191,8 @@ class FullParameterTrainer(BaseTrainer):
     def _create_adapter(self):
         """Create model-specific Full Parameter adapter based on detected model type."""
         if getattr(self, "is_ming_image_01", False):
+            from core.models.ming_image_01.training_options import resolve_ownership
+            self.ming_conditioner_trainable_groups, self.ming_conditioner_lrs = resolve_ownership(self.config)
             self.adapter = MingImage01FullParameterAdapter(self,
                 conditioner_groups=self.ming_conditioner_trainable_groups,
                 conditioner_lrs=self.ming_conditioner_lrs)

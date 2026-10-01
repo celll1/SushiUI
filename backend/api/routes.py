@@ -15312,6 +15312,21 @@ class TrainingRunCreateRequest(BaseModel):
     text_encoder_2_lr: Optional[float] = Field(default=None, ge=0)  # SDXL TE2 LR (defaults to text_encoder_lr if None)
     image_encoder_lr: Optional[float] = Field(default=None, ge=0)  # Reserved for future image encoder LR
 
+    ming_conditioner_groups: Optional[List[Literal["language", "vision", "connector", "queries", "projections"]]] = TRAINING_DEFAULTS["ming_conditioner_groups"]
+    ming_conditioner_lrs: Optional[Dict[str, float]] = TRAINING_DEFAULTS["ming_conditioner_lrs"]
+
+    @field_validator("ming_conditioner_groups", mode="before")
+    @classmethod
+    def validate_ming_conditioner_groups(cls, value):
+        from core.models.ming_image_01.training_options import validate_groups
+        return validate_groups(value)
+
+    @field_validator("ming_conditioner_lrs", mode="before")
+    @classmethod
+    def validate_ming_conditioner_lrs(cls, value):
+        from core.models.ming_image_01.training_options import validate_rates
+        return validate_rates(value)
+
     # Anima-specific LoRA training knobs (ignored for other architectures).
     # Single Source of Truth: backend/api/param_defaults.py TRAINING_DEFAULTS.
     anima_lora_scope: str = TRAINING_DEFAULTS["anima_lora_scope"]
@@ -16088,6 +16103,14 @@ def _check_vae_swap_params(request: "TrainingRunCreateRequest") -> None:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+def _check_ming_conditioner_params(request: "TrainingRunCreateRequest") -> None:
+    if request.ming_conditioner_groups is None and request.ming_conditioner_lrs is None:
+        return
+    from core.training.training_config import _detect_arch
+    if _detect_arch(request.base_model_path) != "ming_image_01" or request.training_method != "full_finetune":
+        raise HTTPException(status_code=400, detail="Ming conditioner groups/rates require Ming full fine-tuning")
+
+
 def _check_adapter_params(request: "TrainingRunCreateRequest") -> None:
     if request.train_adapter is None and request.adapter_lr is None:
         return
@@ -16192,6 +16215,7 @@ async def create_training_run(
             for c in dataset_configs
         ])
         _check_vae_swap_params(request)
+        _check_ming_conditioner_params(request)
         _check_adapter_params(request)
         _check_qwen_full_finetune_params(request)
         _check_timestep_sampling(request)
@@ -16908,6 +16932,7 @@ async def update_training_run(
             for c in (request.dataset_configs or [])
         ])
         _check_vae_swap_params(request)
+        _check_ming_conditioner_params(request)
         _check_adapter_params(request)
         _check_qwen_full_finetune_params(request)
         _check_timestep_sampling(request)

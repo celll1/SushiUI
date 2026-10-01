@@ -2649,6 +2649,7 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "resume_dataset_change_policy": "existing",
     "sample_width": 1024,
     "sample_height": 1024,
+    "ming_image_01_sample_layers": MING_IMAGE_01_GENERATION_DEFAULTS["ming_image_01_layers"],
     "sample_steps": 28,
     "sample_cfg_scale": 7.0,
     "sample_sampler": "euler",
@@ -3482,6 +3483,14 @@ TRAINING_SAMPLE_DEFAULTS_BY_ARCH: Dict[str, Dict[str, Any]] = {
     "_default": {
         "sample_steps": TRAINING_DEFAULTS["sample_steps"],
         "sample_cfg_scale": TRAINING_DEFAULTS["sample_cfg_scale"],
+    },
+    "ming_image_01": {
+        "sample_steps": MING_IMAGE_01_GENERATION_DEFAULTS["steps"],
+        "sample_cfg_scale": MING_IMAGE_01_GENERATION_DEFAULTS["cfg_scale"],
+    },
+    "ming_image_01_layer": {
+        "sample_steps": MING_IMAGE_01_LAYER_DEFAULTS["steps"],
+        "sample_cfg_scale": MING_IMAGE_01_LAYER_DEFAULTS["cfg_scale"],
     },
     "sensenova": {
         "sample_steps": SENSENOVA_GENERATION_DEFAULTS["steps"],

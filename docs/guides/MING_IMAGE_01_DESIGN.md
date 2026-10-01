@@ -816,3 +816,38 @@ Qwen parity are completed. Per-preview Layer count currently uses the central
 generation default or the trainer config value; its dedicated training UI/API
 option and profile-specific sample-default wiring remain pending. Production
 memory/offload behavior and exact mid-epoch RNG/scaler replay also remain open.
+
+
+### Profile-aware preview defaults and public layer-count option
+
+`ming_image_01_sample_layers` is a strict positive-integer per-run training
+parameter. Its default comes from param_defaults, and the field is wired through
+OpenAPI, the request model, generated train YAML, parameter restore vocabulary,
+TypeScript request types, preset/pass-through keys and the Layer sample control.
+The native preview consumer reads this public key. Design still emits one image;
+Layer adds its separately labeled auxiliary canvas to the requested RGBA layers.
+This per-run control is not part of live sample-settings patches yet.
+
+Model listing reads Ming's native config without loading weights and exposes the
+Design/Layer profile. The training frontend uses that profile for control
+visibility and late-arriving default selection. Central preview overlays now
+resolve Design to 12 steps/CFG 1 and Layer to 12 steps/CFG 2. Both generated YAML
+and hand-written runner configs resolve the profile; explicit sample fields,
+including CFG zero, remain unchanged. Malformed native packages are excluded
+from the model list. Unknown/missing profile paths use the architecture overlay
+until the native loader enforces the artifact contract.
+
+Nine new offline parameter/profile/model-list cases and the existing related
+contracts pass (82 cases in the combined check). The remaining common progress
+contract is fixed through the architecture-neutral ops dispatch; it and six
+native sample/worker/publication cases pass in a guarded seven-case check.
+Changed Python files compile and real-import; frontend review is static only.
+Owner build/type-check and production GPU validation remain deferred.
+
+One follow-up verification initially imported the generic sample test before
+its Ming CUDA guard, initializing a CUDA context before the CPU tests ran. That
+process has exited. `backend/tests/ming_image_01_cpu_verify.py` now installs CUDA
+refusals before pytest collection, regardless of selected test ordering, and
+asserts no context was initialized. Use the repo venv with this entry point for
+Ming CPU checks; explicit test targets avoid repeating the full suite. No HTTP
+API, servers or official model weights were used in this milestone.

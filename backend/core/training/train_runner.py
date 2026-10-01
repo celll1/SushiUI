@@ -2885,8 +2885,10 @@ def _resolve_training_sample_config(
 ) -> Dict[str, Any]:
     """Resolve the generated YAML sample section against the API defaults."""
     section = process_config.get("sample", {})
+    from core.training.training_config import _sample_defaults_arch
+    default_arch = _sample_defaults_arch(process_config.get("model", {}).get("name_or_path", ""), arch)
     arch_defaults = TRAINING_SAMPLE_DEFAULTS_BY_ARCH.get(
-        arch, TRAINING_SAMPLE_DEFAULTS_BY_ARCH["_default"]
+        default_arch, TRAINING_SAMPLE_DEFAULTS_BY_ARCH["_default"]
     )
     prompts = section.get("prompts", section.get("sample_prompts"))
     if not prompts:

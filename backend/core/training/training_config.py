@@ -96,6 +96,17 @@ def _detect_arch(base_model_path: str) -> str:
         return "unknown"
 
 
+def _sample_defaults_arch(base_model_path: str, arch: str) -> str:
+    if arch != "ming_image_01":
+        return arch
+    from core.models.ming_image_01.artifact import inspect_artifact
+    try:
+        profile = inspect_artifact(base_model_path, require_weights=False).profile
+    except (OSError, ValueError):
+        return arch
+    return "ming_image_01_layer" if profile == "layer_decompose" else arch
+
+
 # The gated sample-section keys, in the order the section carried them before
 # this became a gate, split around the ungated ones so a regenerated config for
 # a supporting architecture is unchanged down to key order. Which of them an
@@ -340,6 +351,10 @@ def _build_train_section(
         from core.models.ming_image_01.training_options import validate_groups, validate_rates
         train["ming_conditioner_groups"] = validate_groups(p.get("ming_conditioner_groups", _TD["ming_conditioner_groups"]))
         train["ming_conditioner_lrs"] = validate_rates(p.get("ming_conditioner_lrs", _TD["ming_conditioner_lrs"]))
+        layers = p.get("ming_image_01_sample_layers", _TD["ming_image_01_sample_layers"])
+        if type(layers) is not int or layers < 1:
+            raise ValueError("Ming training preview layer count must be an integer >= 1")
+        train["ming_image_01_sample_layers"] = layers
     train["train_adapter"] = p.get("train_adapter", _TD["train_adapter"])
     train["adapter_lr"] = p.get("adapter_lr", _TD["adapter_lr"])
     if p.get("full_finetune_dequantize_int8_base", _TD["full_finetune_dequantize_int8_base"]):
@@ -1075,7 +1090,7 @@ class TrainingConfigGenerator:
         p = _prepare_params(p, legacy_kwargs)
         arch = _detect_arch(base_model_path)
         p = resolve_training_sample_defaults(
-            p, p.get("_explicit_fields"), arch
+            p, p.get("_explicit_fields"), _sample_defaults_arch(base_model_path, arch)
         )
         p = resolve_training_guidance_loss_defaults(
             p, p.get("_explicit_fields"), arch
@@ -1216,7 +1231,7 @@ class TrainingConfigGenerator:
         p = _prepare_params(p, legacy_kwargs)
         arch = _detect_arch(base_model_path)
         p = resolve_training_sample_defaults(
-            p, p.get("_explicit_fields"), arch
+            p, p.get("_explicit_fields"), _sample_defaults_arch(base_model_path, arch)
         )
         p = resolve_training_guidance_loss_defaults(
             p, p.get("_explicit_fields"), arch
@@ -1317,7 +1332,7 @@ class TrainingConfigGenerator:
         p = _prepare_params(p, legacy_kwargs)
         arch = _detect_arch(base_model_path)
         p = resolve_training_sample_defaults(
-            p, p.get("_explicit_fields"), arch
+            p, p.get("_explicit_fields"), _sample_defaults_arch(base_model_path, arch)
         )
         p = resolve_training_guidance_loss_defaults(
             p, p.get("_explicit_fields"), arch

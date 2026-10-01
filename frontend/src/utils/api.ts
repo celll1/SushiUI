@@ -7354,6 +7354,7 @@ export interface TrainingRunCreateRequest {
   resume_dataset_change_policy?: "existing" | "strict" | "rebase_remaining";
   sample_width?: number;
   sample_height?: number;
+  ming_image_01_sample_layers?: number;
   sample_steps?: number;
   sample_cfg_scale?: number;
   sample_sampler?: string;

@@ -225,6 +225,7 @@ export const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   resume_from_checkpoint: "latest",
   sample_width: 1024,
   sample_height: 1024,
+  ming_image_01_sample_layers: undefined,
   sample_steps: 28,
   sample_cfg_scale: 7.0,
   sample_sampler: "euler",

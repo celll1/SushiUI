@@ -116,7 +116,7 @@ def test_real_layer_training_routes_ordered_supervision(tmp_path, monkeypatch, g
     owner = FullParameterTrainer(model_path=str(root), output_dir=str(tmp_path / "run"),
         device="cpu", weight_dtype="fp32", training_dtype="fp32", vae_dtype="fp32",
         mixed_precision=False, attention_backend="native",
-        train_config={"ming_conditioner_groups": groups, "seed": 17, "ming_image_01_layers": 2})
+        train_config={"ming_conditioner_groups": groups, "seed": 17, "ming_image_01_sample_layers": 2})
     data = tmp_path / "data"
     data.mkdir()
     paths = ["canvas.png", "layer1.png", "layer2.png"]

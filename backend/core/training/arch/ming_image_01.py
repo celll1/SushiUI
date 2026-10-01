@@ -52,5 +52,6 @@ class MingImage01ArchHandler(ArchHandler):
         return ming_image_01_ops.train_step(trainer, ctx.ming_batch, timesteps=ctx.timesteps, cfg_drop_mask=ctx.cfg_drop_mask)
 
     def sample(self, trainer, sample_ctx):
-        from core.models.ming_image_01.training_sampling import sample_image
-        return sample_image(trainer, sample_ctx)
+        from core.training.ops import ming_image_01_ops
+        return ming_image_01_ops.generate_sample(trainer, sample_ctx,
+            step_progress_callback=sample_ctx.step_progress_callback)

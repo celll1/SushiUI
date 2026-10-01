@@ -6787,8 +6787,10 @@ paths:
           description: >-
             Scalar manifest with display_resolution (unscaled target image or
             latent preview width, height, and space), optional partition_count,
-            partition_grid_size and partition_regions (actual Qwen latent core bounds), and optional
-            legacy base64 images. Qwen guidance-loss debug files optionally include
+            partition_grid_size and partition_regions (actual Qwen or Ming filmstrip core bounds), and optional
+            legacy base64 images. Ming includes native_frame_count, ordered frame_roles, frame_weights,
+            native_model_time, timestep_convention (sigma) and velocity_sign (clean_minus_noise);
+            decoded frame strips preserve RGBA. Qwen/Ming guidance-loss debug files optionally include
             uncond_prediction_status (computed or not_selected),
             uncond_predicted_latent_image and its image_urls entry. Uncond uses an
             already-computed null-prompt prediction; no preview-only model forward.
@@ -27334,7 +27336,7 @@ components:
           enum: [latent, pixel]
           default: latent
           description: >-
-            Qwen-Image 2.1 debug comparison mode. Pixel additionally decodes
+            Qwen-Image 2.1 and Ming-Image 0.1 debug comparison mode. Pixel additionally decodes
             target, noisy and predicted-clean latents to WebP after backward;
             latent keeps the existing false-color tensor display only.
         convergence_diagnostics_enable:

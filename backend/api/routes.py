@@ -18472,7 +18472,8 @@ async def visualize_debug_latent(
         result["channel_stats"] = data["channel_stats"]
     for _k in ("window_latent_frames", "clip_latent_frames", "audio_sigma",
                "audio_present", "latent_frames", "partition_count", "partition_grid_size",
-               "partition_regions", "uncond_prediction_status"):
+               "partition_regions", "uncond_prediction_status", "native_frame_count", "frame_roles",
+               "frame_weights", "native_model_time", "timestep_convention", "velocity_sign"):
         if _k in data:
             result[_k] = data[_k]
 
@@ -18521,7 +18522,7 @@ async def visualize_debug_latent(
         _noisy_webp = latent_file.parent / f"decode_t{_ts_part}_noisy.webp"
         _uncond_webp = latent_file.parent / f"decode_t{_ts_part}_uncond_pred_x0.webp"
         def _webp_preview(p):
-            im = Image.open(p).convert("RGB")
+            im = Image.open(p).convert("RGBA" if data.get("model_type") == "ming_image_01" else "RGB")
             im.thumbnail((768, 768))  # downscale: debug preview doesn't need full res
             return image_to_base64(im)
         if _target_webp.exists():

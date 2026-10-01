@@ -9,7 +9,8 @@ from .conditioning import MingConditioning
 from .guidance import prepare_guidance,guidance_loss,frame_error
 
 
-def _backward_regions(trainer,batch,*,sigma,noise,plan,backward_scale,drop_mask=None):
+def _backward_regions(trainer,batch,*,sigma,noise,plan,backward_scale,drop_mask=None,
+        debug_save_path=None,debug_captions=None,debug_reference_image_paths=None):
     if not math.isfinite(backward_scale) or backward_scale < 0:
         raise ValueError("Ming partition backward scale must be finite and nonnegative")
     clean=batch.clean.to(device=trainer.device,dtype=trainer.training_dtype)
@@ -66,6 +67,8 @@ def _backward_regions(trainer,batch,*,sigma,noise,plan,backward_scale,drop_mask=
                 null_cores.append(core)
             effective=image_guidance_scale(trainer,sigma,condition,weights,
                 [(crop(target,r.core),u) for r,u in zip(plan.regions,null_cores)],plan)
+    debug_prediction=torch.empty_like(clean[:1],device="cpu",dtype=torch.float32) if debug_save_path is not None else None
+    debug_null=torch.empty_like(debug_prediction) if debug_prediction is not None and null_cores and bool(selected[0]) else None
     totals=clean.new_zeros(3,dtype=torch.float32)
     pred_items=torch.zeros(clean.shape[0],device=clean.device,dtype=torch.float32)
     loss_items=torch.zeros_like(pred_items);metrics={}
@@ -75,6 +78,11 @@ def _backward_regions(trainer,batch,*,sigma,noise,plan,backward_scale,drop_mask=
         fraction=region.core.tokens/plan.full_tokens
         prediction=forward(region)
         result=core_result(prediction,crop(target,region.input),region,time,weights)
+        if debug_prediction is not None:
+            core=region.core
+            debug_prediction[...,2*core.top:2*core.bottom,2*core.left:2*core.right]=result.prediction[:1].detach().float().cpu()
+            if debug_null is not None:
+                debug_null[...,2*core.top:2*core.bottom,2*core.left:2*core.right]=null_cores[index][:1].detach().float().cpu()
         proxy=SimpleNamespace(config=trainer.config,log_extra_metric=lambda k,v:metrics.__setitem__(k,metrics.get(k,0.)+fraction*v))
         pred_loss,per_item=guidance_loss(proxy,result,null_cores[index] if null_cores else None,
             sigma,weights,condition,selection,selected,effective_scale_override=effective)
@@ -95,6 +103,10 @@ def _backward_regions(trainer,batch,*,sigma,noise,plan,backward_scale,drop_mask=
     for name,value in metrics.items():trainer.log_extra_metric(name,value)
     trainer.log_extra_metric("ming_partition_count",float(len(plan.regions)))
     trainer.log_extra_metric("ming_partition_largest_tokens",float(plan.largest_input_tokens))
+    from .training_debug import save_debug
+    save_debug(trainer,debug_save_path,clean=clean,noisy=noisy,target=target,prediction=debug_prediction,
+        sigma=sigma,frame_weights=weights,loss=totals[0],recon_loss=totals[2],unconditional=debug_null,
+        captions=debug_captions,reference_paths=debug_reference_image_paths,plan=plan)
     return tuple(float(value) for value in totals)
 
 

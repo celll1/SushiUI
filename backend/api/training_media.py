@@ -254,7 +254,7 @@ def cached_image_preview(source: Path, cache_dir: Path, size: int) -> tuple[Path
     target = cache_dir / f"{source.stem}.{version}.{size}.webp"
     if not target.exists():
         with Image.open(source) as opened:
-            image = opened.convert("RGB")
+            image = opened.convert("RGBA" if opened.mode == "RGBA" else "RGB")
             image.thumbnail((size, size), Image.Resampling.LANCZOS)
             _atomic_webp(image, target)
     return target, etag

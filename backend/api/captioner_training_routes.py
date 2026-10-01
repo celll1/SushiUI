@@ -17,7 +17,6 @@ from api.captioner_routes import (CaptionerItemPredictRequest, CaptionerPredicti
 from config.settings import settings
 from core.captioner.artifact import export_bundle
 from core.captioner.storage import read_json, write_json
-from core.captioner.trainer import CaptionTrainer, validate_config
 from core.captioner.inference import CaptionInferenceManager
 from core.tagger.siglip2_inference_manager import get_siglip2_inference_manager
 from core.model_state_coordinator import model_state_coordinator
@@ -97,9 +96,14 @@ def _load_private_tagger(config):
     return manager
 
 
+def _make_trainer(**kwargs):
+    from core.captioner.trainer import CaptionTrainer
+    return CaptionTrainer(**kwargs)
+
+
 class CaptionRunService:
     def __init__(self, session_factory, dataset_session_factory, root, *,
-                 loader=_load_private_tagger, trainer=CaptionTrainer):
+                 loader=_load_private_tagger, trainer=_make_trainer):
         self.db = session_factory
         self.datasets = dataset_session_factory
         self.root = Path(root)
@@ -134,6 +138,7 @@ class CaptionRunService:
             return self._get(db, run_id).to_dict()
 
     def create(self, request):
+        from core.captioner.trainer import validate_config
         cfg = validate_config(request.config.model_dump())
         datasets = [item.model_dump() for item in request.dataset_configs]
         if len({item["dataset_id"] for item in datasets}) != len(datasets):

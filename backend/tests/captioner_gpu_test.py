@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import sys
 import threading
+import asyncio
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -85,3 +86,82 @@ def test_tiny_siglip2_decoder_cuda_and_dram_restore(dtype, tmp_path):
     assert torch.cuda.max_memory_allocated(device) < 128 * 1024**2
     model.cpu()
     tagger.cpu()
+
+
+def test_caption_trainer_cuda_pause_offload_and_continue(tmp_path, monkeypatch):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA unavailable")
+    from captioner_training_test import database, manager
+    from core.captioner.trainer import CaptionTrainer
+    from core.captioner.storage import read_json
+    from core.captioner.artifact import load_bundle
+    import core.gpu_coordinator as module
+    from core.gpu_coordinator import GPUCoordinator
+
+    coordinator = GPUCoordinator(resume_grace_sec=0.01)
+    monkeypatch.setattr(module, "gpu_coordinator", coordinator)
+    monkeypatch.setattr(coordinator, "_decide_for_handle", lambda *args: OffloadDecision("dram"))
+    handles = []
+    register = coordinator.register_trainer
+    def capture(handle):
+        handles.append(handle)
+        register(handle)
+    monkeypatch.setattr(coordinator, "register_trainer", capture)
+    factory, datasets = database(tmp_path)
+    tagger = manager()
+    first_step, proceed = threading.Event(), threading.Event()
+    stop = threading.Event()
+    results, errors, events = [], [], []
+    def progress(event):
+        events.append(event)
+        if event.get("phase") == "training" and event["step"] == 1:
+            first_step.set()
+            assert proceed.wait(10)
+    root = tmp_path / "cuda-run"
+    config = {"device": "cuda:0", "epochs": 2, "batch_size": 2, "hidden_dim": 12,
+              "heads": 3, "layers": 1, "ffn_dim": 24, "visual_queries": 2,
+              "max_length": 40, "vocab_size": 280, "val_ratio": 0.0, "test_ratio": 0.0,
+              "near_duplicate_distance": 0, "max_num_patches": 4, "max_concepts": 2}
+    def train():
+        try:
+            results.append(CaptionTrainer(run_id="cuda-pause", output_dir=root, config=config,
+                dataset_configs=datasets, tagger_manager=tagger, session_factory=factory,
+                progress=progress, stop_event=stop, alias_table={}).run())
+        except BaseException as exc:
+            errors.append(exc)
+    threads = torch.get_num_threads()
+    torch.set_num_threads(1)
+    torch.cuda.reset_peak_memory_stats(0)
+    worker = threading.Thread(target=train)
+    worker.start()
+    try:
+        assert first_step.wait(10), errors
+        handle = handles[0]
+        async def exercise():
+            async def generation():
+                async with coordinator.generation_slot(0.01, timeout=5, require_pause_ack=True):
+                    assert handle.resumed_event.is_set()
+                    assert all(p.device.type == "cpu" for p in handle._model.parameters())
+                    assert handle._cached_opt_state is not None
+                    assert len([e for e in events if e.get("phase") == "training"]) == 1
+            task = asyncio.create_task(generation())
+            assert await asyncio.to_thread(handle.pause_event.wait, 3)
+            proceed.set()
+            await asyncio.wait_for(task, 8)
+        asyncio.run(exercise())
+        worker.join(15)
+        assert not worker.is_alive() and not errors, errors
+        assert results[0]["step"] == 8 and not results[0]["stopped"]
+        assert handle.restored_event.is_set()
+        assert not coordinator._handles and coordinator._active_generations == 0
+        assert all(p.device.type == "cpu" for p in tagger.model.parameters())
+        checkpoint = root / read_json(root / "latest.json")["checkpoint"]
+        model, _, _, _, state = load_bundle(checkpoint, require_resume=True)
+        assert state["step"] == 8 and all(torch.isfinite(p).all() for p in model.parameters())
+        assert torch.cuda.max_memory_allocated(0) < 128 * 1024**2
+    finally:
+        stop.set(); proceed.set()
+        if handles:
+            handles[0].pause_event.clear()
+        worker.join(15)
+        torch.set_num_threads(threads)

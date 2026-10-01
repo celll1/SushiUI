@@ -456,7 +456,8 @@ fp32/bf16/fp16のloss/backward、生成のfull/cache一致、cancel、fp32 optim
 GPU復帰、8 stepの学習完了、保存済みoptimizer stateとweightを確認する。
 復帰ackは次のpause開始まで保持し、coordinatorの待機側が通知を見逃さないようにした。
 trainer単独importで生じた循環依存も解消し、CUDAを初期化しない実importを確認した。
-実dataの学習、速度benchmark、server restartは行っていない。
+実dataの学習と速度benchmarkは行っていない。main統合後にAPI経由でbackendを再起動し、
+health、captioner status、run/batch一覧と24個のcaptioner関連API pathの公開を確認した。
 worktree間でin-process lockは共有できないため、将来のGPU実測開始前には他作業のGPU利用と調整する。
 この基盤検証は実caption品質や1秒目標達成の証拠にはならない。
 学習runの永続化、中断表示、排他、停止、checkpoint指定の拒否、resumeと失敗cleanupをCPUで確認した。
@@ -473,10 +474,15 @@ batch APIを含むcaptioner関連のCPUテスト51件が通過した。
 batchの順次caption保存、兄弟previewへのrevision伝搬、保存receipt保持、外部変更拒否、
 receipt保存失敗後の復旧と二重書込の防止を確認した。bundleはmeta上で構築して保存重みを割り当て、
 推論ロードが学習側のCPU RNGを消費しないことも確認した。captioner関連のCPUテスト56件が通過した。
-永続batch UIのbuild/type-checkと画面動作は未検証である。
+統合後のdev serverでCaptioner tab、永続batchと学習formを表示し、API defaultsと登録datasetの
+tags列・自然文列の取得を確認した。これは学習開始、本文生成、確認保存の画面操作を通した検証ではない。
+本番build/type-checkはowner検証待ちである。
 
-最新のCPU回帰はcaptioner関連56件とpause protocol 4件の合計60件が通過した。
+main統合前の最新CPU回帰はcaptioner、pause protocol、既存taggerのNaFlex/custom pooler/head拡張、
+dataset sidecar/caption更新/scannerを合わせた81件が通過した。変更Python全ファイルのpy_compileと
+trainer単独import、routes実importも成功し、検証processのCUDA未初期化を確認した。
 学習UIの定期取得は開始・停止等の操作前に送った応答を捨て、古い状態で操作結果を上書きしない。
 今回の1〜4の実装対象であるdataset/tokenizer/split、cache/trainer/resume、bundle互換性、
-API/GPU調停/UI/明示保存は接続済みである。ただしUIのbuild/type-checkと画面操作はowner検証待ちであり、
+API/GPU調停/UI/明示保存は接続済みで、利用者の承認によりmainへ統合した。
+ただしUIのbuild/type-checkと学習から生成・保存までの画面操作は未確認であり、
 1〜4全体の完了確認はまだ済んでいない。実data品質とso400mの全文warm p95は別の未実施評価である。

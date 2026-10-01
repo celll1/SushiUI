@@ -119,6 +119,9 @@ def run_rewired_ming(model, hidden, modulation, rotary, mask, image_positions,
         if offloader is not None:
             offloader.wait_for_block(index)
         block = model.layers[index]
+        style_info = getattr(block.attention, "_ming_style_info", None)
+        if style_info is not None:
+            style_info["count"] = value.shape[1] - prefix
         limit = getattr(model, "_training_gradient_checkpointing_blocks", len(model.layers))
         if torch.is_grad_enabled() and model.gradient_checkpointing and index < limit:
             output = model._gradient_checkpointing_func(block, native, current_mask, frequencies, modulation)

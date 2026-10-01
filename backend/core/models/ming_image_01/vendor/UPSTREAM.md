@@ -14,3 +14,5 @@ Additional adaptations preserve native default/partial RoPE, expose an explicit 
 - Main-stream gradient checkpointing accepts an explicit prefix block limit; refiners retain the native global switch.
 
 - An optional global input residual is shape-checked and added only to target patch embeddings before refinement, leaving reference and padding embeddings intact.
+
+Local style attention integration lives outside this vendor directory: `../attention.py` retains its Apache-2.0 native processor notice and delegates scoped target-only K/V capture/injection to `../style_transfer.py`; `../residual_unet.py` reports current target token counts at coarse main layers. Shared style algebra and its retained community MIT notice are recorded in the provenance ledger. This does not enable public style generation by itself.

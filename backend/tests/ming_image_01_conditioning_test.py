@@ -307,3 +307,48 @@ def test_native_package_loader_round_trip(tmp_path, monkeypatch):
     assert cache_owner.ming_cache_context["conditioning_enabled"]
 
     assert not torch.cuda.is_initialized()
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+def test_precision_changes_preserve_all_rotary_frequencies(dtype):
+    model = make_conditioner().eval()
+    rotaries = [model.native.model.model.rotary_emb, model.native.vision.rotary_pos_emb,
+                model.native.connector.model.rotary_emb]
+    original = [(module, module.inv_freq.clone(),
+                 getattr(module, "original_inv_freq", None)) for module in rotaries]
+    connector = model.native.connector.model.rotary_emb
+    positions = torch.tensor([[0, 12345, 54321]])
+    before = connector(torch.zeros(1, 3, 12), positions)
+    model.to(dtype=dtype)
+    assert next(model.parameters()).dtype == dtype
+    for module, frequencies, original_frequencies in original:
+        assert module.inv_freq.dtype == torch.float32
+        assert torch.equal(module.inv_freq, frequencies)
+        if original_frequencies is not None:
+            assert module.original_inv_freq.dtype == torch.float32
+            assert torch.equal(module.original_inv_freq, original_frequencies)
+    after = connector(torch.zeros(1, 3, 12), positions)
+    assert all(torch.equal(a, b) for a, b in zip(before, after))
+    model.to(dtype=torch.float32, device="cpu")
+    assert all(torch.equal(module.inv_freq, frequencies) for module, frequencies, _ in original)
+    assert not torch.cuda.is_initialized()
+
+
+def test_loader_reconstructs_all_meta_rotary_buffers_on_parameter_device():
+    from core.models.ming_image_01.loader import _restore_native_rope
+    model = make_conditioner().eval()
+    rotaries = [model.native.model.model.rotary_emb, model.native.vision.rotary_pos_emb,
+                model.native.connector.model.rotary_emb]
+    expected = [module.inv_freq.clone() for module in rotaries]
+    for module in rotaries:
+        module.inv_freq = torch.empty_like(module.inv_freq, device="meta")
+        if hasattr(module, "original_inv_freq"):
+            module.original_inv_freq = torch.empty_like(module.original_inv_freq, device="meta")
+    _restore_native_rope(model)
+    for module, frequencies in zip(rotaries, expected):
+        assert module.inv_freq.device.type == "cpu" and module.inv_freq.dtype == torch.float32
+        assert torch.equal(module.inv_freq, frequencies)
+        if hasattr(module, "original_inv_freq"):
+            assert torch.equal(module.original_inv_freq, frequencies)
+    model(**inputs())
+    assert not torch.cuda.is_initialized()

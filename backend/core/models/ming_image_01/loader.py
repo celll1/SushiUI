@@ -28,18 +28,25 @@ def _restore_native_rope(native) -> None:
     import torch
     from .vendor.modeling_bailing_moe_v2 import BailingMoeV2RotaryEmbedding, BailingMoeV2RotaryEmbedding3D
     from .vendor.qwen2_5_vit import Qwen2_5_VisionRotaryEmbedding
+    from transformers.models.qwen2.modeling_qwen2 import Qwen2RotaryEmbedding
 
-    # Low-memory HF loading can leave custom nonpersistent buffers uninitialized.
+    # Low-memory HF loading can leave nonpersistent buffers on meta or uninitialized.
+    device = next(native.parameters()).device
     for module in native.modules():
         if isinstance(module, (BailingMoeV2RotaryEmbedding, BailingMoeV2RotaryEmbedding3D)):
-            inv_freq, scaling = module.rope_init_fn(module.config, native.device)
+            inv_freq, scaling = module.rope_init_fn(module.config, device)
             module.register_buffer("inv_freq", inv_freq.float(), persistent=False)
             module.original_inv_freq = module.inv_freq
             module.attention_scaling = scaling
         elif isinstance(module, Qwen2_5_VisionRotaryEmbedding):
             inv_freq = 1.0 / (module.theta ** (
-                torch.arange(0, module.dim, 2, device=native.device, dtype=torch.float32) / module.dim))
+                torch.arange(0, module.dim, 2, device=device, dtype=torch.float32) / module.dim))
             module.register_buffer("inv_freq", inv_freq, persistent=False)
+        elif isinstance(module, Qwen2RotaryEmbedding):
+            fresh = Qwen2RotaryEmbedding(config=module.config, device=device)
+            module.register_buffer("inv_freq", fresh.inv_freq.float(), persistent=False)
+            module.register_buffer("original_inv_freq", fresh.original_inv_freq.float(), persistent=False)
+            module.attention_scaling = fresh.attention_scaling
 
 
 def load_components(path, *, dtype, conditioner_attention: str) -> MingComponents:
@@ -79,7 +86,7 @@ def load_components(path, *, dtype, conditioner_attention: str) -> MingComponent
     conditioner = MingConditioner(native, connector, artifact.configs["mlp"])
     conditioner.load_projection_state(load_file(str(artifact.components["mlp"] / "model.safetensors"), device="cpu"))
     conditioner.to(dtype=dtype).eval()
-    _restore_native_rope(native)
+    _restore_native_rope(conditioner)
     conditioner.set_trainable(set())
     tokenizer = BailingTokenizer.from_pretrained(str(artifact.components["mllm"]), local_files_only=True)
     image_processor = BailingMM2ImageProcessor.from_pretrained(str(artifact.components["mllm"]), local_files_only=True)

@@ -50,6 +50,8 @@ def load_components(trainer):
     from core.models.ming_image_01.cache import configured_modes, capture_startup_snapshot
     configured_modes(trainer.config)
     components = native_load(trainer.model_path, dtype=trainer.weight_dtype, conditioner_attention="eager")
+    from core.models.ming_image_01.quantization import saved_full_initialization
+    trainer.ming_full_initialization = saved_full_initialization(components.artifact)
     configure_training_topology(components.transformer, trainer.config,
                                 resuming=bool(getattr(trainer, "resume_from_checkpoint", None)),
                                 pending_adapter_resume=bool(getattr(trainer, "_manages_own_resume", False)))

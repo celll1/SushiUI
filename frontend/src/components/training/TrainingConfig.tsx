@@ -938,8 +938,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         (isQwenImage21Model || isAnimaModel(baseModelPath) || isMingImageModel) ? params.train_adapter : null,
       adapter_lr: (trainingMethod === "lora" || trainingMethod === "full_finetune") &&
         (isQwenImage21Model || isAnimaModel(baseModelPath) || isMingImageModel) ? params.adapter_lr : null,
-      full_finetune_dequantize_int8_base: isQwenImage21Model && trainingMethod === "full_finetune"
-        ? params.full_finetune_dequantize_int8_base : false,
+      full_finetune_dequantize_int8_base: (isQwenImage21Model || isMingImageModel) && trainingMethod === "full_finetune"
+        ? params.full_finetune_dequantize_int8_base : undefined,
       training_export_format: isQwenImage21Model && trainingMethod === "full_finetune"
         ? params.training_export_format : "none",
       train_text_encoder: textEncoderTrainingUnsupported ? false : params.train_text_encoder,
@@ -4547,15 +4547,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </div>
             )}
 
-            {isQwenImage21Model && trainingMethod === "full_finetune" && (
+            {(isQwenImage21Model || isMingImageModel) && trainingMethod === "full_finetune" && (
               <label className="mb-3 flex items-start gap-2 text-xs text-gray-300">
                 <input
                   type="checkbox"
-                  checked={params.full_finetune_dequantize_int8_base ?? false}
+                  checked={Boolean(params.full_finetune_dequantize_int8_base ?? DEFAULT_PARAMS.full_finetune_dequantize_int8_base)}
                   onChange={(e) => updateParam("full_finetune_dequantize_int8_base", e.target.checked)}
                   className="mt-0.5 h-4 w-4"
                 />
-                <span>Allow one-time INT8 ConvRot dequantization for full fine-tuning. The starting weights remain lossy; training uses floating weights.</span>
+                <span>Allow one-time quantized-base dequantization for full fine-tuning. Ming supports INT8, E4M3 fallback and ConvRot; Qwen supports ConvRot. The starting weights remain lossy; training uses floating weights.</span>
               </label>
             )}
 

@@ -1418,3 +1418,57 @@ older pipeline fixture that still refused now-supported INT8 was changed to
 refuse unsupported FP8; runtime INT8 behavior was not narrowed to satisfy it.
 No live HTTP API, GPU context or official weights were used. Official quality/
 performance and the remaining Qwen parity surfaces remain active work.
+
+
+### Quantized-base full fine-tuning materialization milestone
+
+Ming's existing `full_finetune_dequantize_int8_base` option now admits native
+DiT INT8, E4M3 fallback and declared ConvRot checkpoints. API preflight, generated
+YAML, subprocess config and the full trainer share the existing central false
+default. Direct YAML requires a boolean. The training UI exposes the option for
+Ming full fine-tuning; other methods omit it, and non-full opt-ins are refused.
+Qwen's existing opt-in boundary is retained. The separate automatic
+`training_export_format=int8_convrot` option is still Qwen-only; Ming's native
+quantized export remains the separate export/converter operation.
+
+Before optimizer ownership is established, packed DiT linears are offloaded to
+CPU and replaced one at a time with FP16/BF16/FP32 `nn.Linear` parameters.
+INT8/E4M3 multiplication follows the shared dequantized forward semantics;
+ConvRot uses the actual Comfy eager inverse rotation. Row scales, CPU residency
+and geometry are validated first, and nonfinite resulting weights/biases are
+refused. There is no recovery of pre-quantization precision. The conversion is
+streamed, not transactional: a numerical failure after preflight can leave the
+trainer-owned component partially materialized. Construction fails before
+optimizer creation and training starts only after the packed-base backstop
+passes. Conditioner quantization loading/materialization is separate pending
+work and must not be inferred from this DiT option.
+
+Full checkpoints contain floating DiT weights, the existing restored U-Net
+metadata and `training.json.ming_full_initialization`: schema/version, floating
+execution, counts by source format, materialization dtype and `lossy_source`.
+A fresh full run from that floating checkpoint needs no opt-in and preserves
+this origin record; resumed checkpoints preserve it too. Strict provenance
+parsing refuses malformed records. This record describes origin, not a base
+content identity or a promise of restored original floating precision.
+
+Across this stage, 43 unique affected CPU cases pass: six format/dtype actual
+forward-and-gradient oracles; four Design/Layer public request-to-train-to-save/
+reload cases; refusal and provenance contracts; shared Qwen/other-architecture
+API boundaries; existing adapter/runtime/caption resume regressions; and two
+packed-origin full resume cases. The latter checkpoint two pending backwards
+before the first AdamW update (MNT=2, accumulation=4) and compare six continued
+backwards, conditioning, predictions, weights, moments and scheduler. The wide
+CPU fixture clones DiT parameter storage on both sides to canonicalize mmap
+alignment. Investigation found identical inputs/weights with 64-byte aligned
+versus offset-eight-byte CPU storage produced approximately 1e-7 GEMM rounding
+differences before the first resumed update. The exact fixture comparison is
+not a claim of bitwise equivalence across arbitrary storage/hardware layouts.
+Initial saved/restored weights and U-Net structures compare exactly without
+that storage condition. Physical GPU transfer, official weights, quality and
+performance remain unverified; no GPU context or live API was used.
+
+Frontend static review covered central defaults, visibility, optional request
+serialization and shared persisted request types. Owner build/type checks and
+interactive acceptance remain pending without blocking continued work.
+Conditioner quantization/adapters, optimized ConvRot training, partition/global/
+style and remaining objective parity are still active work.

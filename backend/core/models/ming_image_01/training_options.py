@@ -51,6 +51,9 @@ def preflight_training(config, *, method):
         from api.param_defaults import resolve_full_finetune_train_text_encoder
         config["train_text_encoder"] = (resolve_full_finetune_train_text_encoder(None, "ming_image_01")
             if method == "full_finetune" else TRAINING_DEFAULTS["train_text_encoder"])
+    materialize = config.get("full_finetune_dequantize_int8_base", TRAINING_DEFAULTS["full_finetune_dequantize_int8_base"])
+    if type(materialize) is not bool or (materialize and method != "full_finetune"):
+        raise ValueError("Ming full dequantization requires a boolean opt-in and full_finetune")
     choice = config.get("train_adapter")
     if choice is not None and type(choice) is not bool:
         raise ValueError("Ming train_adapter must be null or a boolean")

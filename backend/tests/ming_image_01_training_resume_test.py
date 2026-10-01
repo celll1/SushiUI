@@ -8,23 +8,27 @@ import torch
 from PIL import Image
 from ming_image_01_conditioning_test import write_tiny_package
 from core.training.full_parameter_trainer import FullParameterTrainer
-from api.arch_capabilities import TRAINING_UNSUPPORTED
 from core.models.ming_image_01.training_resume import RUNTIME_KEY
 
 
-@pytest.mark.parametrize("text_mode,groups,profile,caption_only", [("cpu_prefetch", [], "generation_edit", False),
-    ("onthefly_gpu", ["projections"], "generation_edit", False),
-    ("cpu_prefetch", [], "layer_decompose", False),
-    pytest.param("cpu_prefetch", [], "generation_edit", True, id="caption_design"),
-    pytest.param("cpu_prefetch", [], "layer_decompose", True, id="caption_layer")])
-def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monkeypatch, text_mode, groups, profile, caption_only):
+@pytest.mark.parametrize("text_mode,groups,profile,caption_only,quantization", [("cpu_prefetch", [], "generation_edit", False, None),
+    ("onthefly_gpu", ["projections"], "generation_edit", False, None),
+    ("cpu_prefetch", [], "layer_decompose", False, None),
+    pytest.param("cpu_prefetch", [], "generation_edit", True, None, id="caption_design"),
+    pytest.param("cpu_prefetch", [], "layer_decompose", True, None, id="caption_layer"),
+    pytest.param("cpu_prefetch", [], "generation_edit", False, "int8", id="materialized_int8_design"),
+    pytest.param("cpu_prefetch", [], "layer_decompose", False, "int8_convrot", id="materialized_int8_convrot_layer")])
+def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monkeypatch, text_mode, groups, profile, caption_only, quantization):
     from core.training import latent_cache
     from core.training.ops import ming_image_01_ops
     monkeypatch.setattr(latent_cache, "get_cache_base_dir", lambda: str(tmp_path / "cache"))
-    monkeypatch.setitem(TRAINING_UNSUPPORTED, "ming_image_01", {})
     root = tmp_path / "package"
-    root.mkdir()
-    write_tiny_package(root, profile=profile)
+    if quantization:
+        from ming_image_01_full_quantized_test import package
+        root = package(tmp_path, profile, quantization)
+    else:
+        root.mkdir()
+        write_tiny_package(root, profile=profile)
     items = []
     for index in range(4):
         path = tmp_path / f"target_{index}.png"
@@ -44,18 +48,28 @@ def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monke
     traces = []
     original_loss = ming_image_01_ops.flow_loss
     def recorded_loss(transformer, **kwargs):
-        traces.append(tuple(kwargs[key].detach().clone() for key in ("clean", "noise", "sigma")))
-        return original_loss(transformer, **kwargs)
+        traces.append(tuple(kwargs[key].detach().clone() for key in ("clean", "noise", "sigma")) + (kwargs["conditioning"].queries.detach().clone(),kwargs["conditioning"].direct.detach().clone()))
+        result = original_loss(transformer, **kwargs)
+        traces[-1] += (result.prediction.detach().clone(),)
+        return result
     monkeypatch.setattr(ming_image_01_ops, "flow_loss", recorded_loss)
     config = {"ming_conditioner_groups": groups, "seed": 17,
         "latent_encoding_mode": "swap_onthefly", "text_encoding_mode": text_mode,
         "train_unet": not caption_only, "train_adapter": True if caption_only else None,
         "adapter_lr": .0002 if caption_only else None}
+    if quantization:
+        config["full_finetune_dequantize_int8_base"] = True
     def trainer(folder, resume=None):
-        return FullParameterTrainer(model_path=str(root), output_dir=str(folder), train_unet=not caption_only,
+        owner = FullParameterTrainer(model_path=str(root), output_dir=str(folder), train_unet=not caption_only,
             device="cpu", weight_dtype="fp32", training_dtype="fp32", vae_dtype="fp32",
             mixed_precision=False, attention_backend="native", train_config=config.copy(),
             resume_from_checkpoint=resume)
+        if quantization:
+            # Safetensors mmap alignment changes CPU GEMM rounding; canonicalize this exact-resume fixture.
+            with torch.no_grad():
+                for parameter in owner.transformer.parameters():
+                    parameter.data = parameter.data.clone()
+        return owner
     def train(owner, resume=None):
         owner.train([dataset], num_epochs=1, total_steps=8, batch_size=1,
             multi_noise_timesteps=2, gradient_accumulation_steps=4,
@@ -79,16 +93,23 @@ def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monke
             shutil.copytree(path, destination / path.name)
         else:
             shutil.copy2(path, destination / path.name)
+    baseline_order = [name for name,_ in baseline.transformer.named_parameters()]
     traces.clear()
     resumed = trainer(destination, "latest")
+    if quantization:
+        from core.models.ming_image_01.loader import load_components
+        saved = load_components(checkpoint, dtype=torch.float32, conditioner_attention="eager")
+        assert all(torch.equal(t,resumed.transformer.state_dict()[key]) for key,t in saved.transformer.state_dict().items()), "Starting restored weights differ"
+    assert [name for name,_ in resumed.transformer.named_parameters()] == baseline_order, "Parameter order changed"
     train(resumed, "latest")
     assert len(traces) == 6
-    for expected, actual in zip(baseline_traces[2:], traces):
-        assert all(torch.equal(a, b) for a, b in zip(expected, actual)), "Resumed data/noise/timesteps differ"
+    for trace_index, (expected, actual) in enumerate(zip(baseline_traces[2:], traces)):
+        assert all(torch.equal(a, b) for a, b in zip(expected, actual)), f"Resumed trace {trace_index} differs: {[(index,float((a-b).abs().max())) for index,(a,b) in enumerate(zip(expected,actual)) if not torch.equal(a,b)]}"
     for name in ("transformer", "text_encoder"):
         expected = getattr(baseline, name).state_dict()
         actual = getattr(resumed, name).state_dict()
-        assert all(torch.equal(value, actual[key]) for key, value in expected.items()), f"{name} continuation differs"
+        differences = [(key, float((value.float()-actual[key].float()).abs().max())) for key,value in expected.items() if not torch.equal(value,actual[key])]
+        assert not differences, f"{name} continuation differs: {differences[:8]}"
     expected = baseline.optimizer.state_dict()["state"]
     actual = resumed.optimizer.state_dict()["state"]
     assert expected.keys() == actual.keys()
@@ -96,6 +117,11 @@ def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monke
         assert all(torch.equal(value, actual[index][key]) for key, value in values.items())
     assert baseline._optimizer_update_step == resumed._optimizer_update_step == 2
     assert baseline.lr_scheduler.last_epoch == resumed.lr_scheduler.last_epoch
+    if quantization:
+        assert resumed.ming_full_initialization == baseline.ming_full_initialization
+        metadata = json.loads((resumed.output_dir / "run_step_000008" / "training.json").read_text())
+        assert metadata["ming_full_initialization"] == baseline.ming_full_initialization
+        assert not any(key.endswith((".weight_scale", ".comfy_quant")) for key in resumed.transformer.state_dict())
     assert resumed._ming_pending_runtime is None
     assert not torch.cuda.is_initialized()
 

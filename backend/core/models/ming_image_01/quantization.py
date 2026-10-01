@@ -142,3 +142,72 @@ def configure_frozen_quantized_training(model):
         elif isinstance(module,Fp8Linear):
             counts["e4m3"] += 1
     return {"execution":"dequant_autograd", "formats":counts} if sum(counts.values()) else None
+
+
+
+def materialize_training_linears(model, dtype):
+    """Stream frozen packed CPU rows into trainable floating Linear weights."""
+    import torch
+    from core.models.ideogram4.vendor.int8_linear import Int8Linear
+    from core.models.ideogram4.vendor.fp8_linear import Fp8Linear
+    from core.models.common.convrot_int8_linear import ConvRotInt8Linear
+    if dtype not in {torch.float16,torch.bfloat16,torch.float32}:
+        raise ValueError("Ming full dequantization requires FP16, BF16 or FP32 weights")
+    targets = []
+    counts = {"int8":0,"e4m3":0,"convrot_int8":0}
+    for path, child in model.named_modules():
+        if isinstance(child,ConvRotInt8Linear): kind="convrot_int8"
+        elif isinstance(child,Int8Linear): kind="int8"
+        elif isinstance(child,Fp8Linear): kind="e4m3"
+        else: continue
+        if child.weight.device.type != "cpu" or child.weight_scale.device.type != "cpu" or (child.bias is not None and child.bias.device.type != "cpu"):
+            raise ValueError("Ming full dequantization requires CPU-resident packed weights/scales/bias")
+        if child.weight.shape!=(child.out_features,child.in_features) or child.weight_scale.shape!=(child.out_features,) or not torch.isfinite(child.weight_scale).all() or (child.weight_scale<=0).any():
+            raise ValueError("Invalid Ming full dequantization row/scale geometry")
+        targets.append((path,kind))
+    if not targets:
+        return None
+    if any(kind=="convrot_int8" for _,kind in targets):
+        from comfy_kitchen.backends.eager.quantization import dequantize_int8_convrot_weight
+    for path, kind in targets:
+        child = model.get_submodule(path)
+        if kind=="convrot_int8":
+            weight = dequantize_int8_convrot_weight(child.weight,child.weight_scale.reshape(-1,1),child.convrot_groupsize).to(dtype=dtype).contiguous()
+        elif kind=="int8":
+            weight = child.weight * child.weight_scale.to(dtype=dtype).unsqueeze(1)
+        else:
+            weight = child.weight.to(dtype=dtype) * child.weight_scale.to(dtype=dtype).unsqueeze(1)
+        if not torch.isfinite(weight).all():
+            raise ValueError(f"Ming materialized floating weight is nonfinite: {path}")
+        bias = None if child.bias is None else child.bias.detach().to(dtype=dtype).clone()
+        if bias is not None and not torch.isfinite(bias).all():
+            raise ValueError(f"Ming materialized floating bias is nonfinite: {path}")
+        replacement = torch.nn.Linear(child.in_features,child.out_features,bias=bias is not None,device="meta",dtype=dtype)
+        replacement.weight = torch.nn.Parameter(weight.detach().contiguous())
+        if bias is not None:
+            replacement.bias = torch.nn.Parameter(bias)
+        replacement.train(child.training)
+        parent_name,_,name = path.rpartition(".")
+        parent = model.get_submodule(parent_name) if parent_name else model
+        setattr(parent,name,replacement)
+        counts[kind] += 1
+    return {"schema_version":1,"execution":"materialized_floating","formats":counts,
+            "weight_dtype":str(dtype).removeprefix("torch."),"lossy_source":True}
+
+
+def saved_full_initialization(artifact):
+    from .artifact import _json, _inside
+    path = _inside(artifact.root,"training.json")
+    if not path.is_file():
+        return None
+    value = _json(path).get("ming_full_initialization")
+    if value is None:
+        return None
+    if (not isinstance(value,dict) or set(value)!={"schema_version","execution","formats","weight_dtype","lossy_source"}
+            or type(value["schema_version"]) is not int or value["schema_version"]!=1 or value["execution"]!="materialized_floating"
+            or value["weight_dtype"] not in {"float16","bfloat16","float32"} or value["lossy_source"] is not True
+            or not isinstance(value["formats"],dict) or set(value["formats"])!={"int8","e4m3","convrot_int8"}
+            or any(type(count) is not int or count<0 for count in value["formats"].values())
+            or not sum(value["formats"].values())):
+        raise ValueError("Invalid Ming full-training initialization metadata")
+    return value

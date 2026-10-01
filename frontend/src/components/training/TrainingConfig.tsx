@@ -940,8 +940,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         (isQwenImage21Model || isAnimaModel(baseModelPath) || isMingImageModel) ? params.adapter_lr : null,
       full_finetune_dequantize_int8_base: (isQwenImage21Model || isMingImageModel) && trainingMethod === "full_finetune"
         ? params.full_finetune_dequantize_int8_base : undefined,
-      training_export_format: isQwenImage21Model && trainingMethod === "full_finetune"
-        ? params.training_export_format : "none",
+      training_export_format: (isQwenImage21Model || isMingImageModel) && trainingMethod === "full_finetune"
+        ? params.training_export_format : undefined,
       train_text_encoder: textEncoderTrainingUnsupported ? false : params.train_text_encoder,
       qwen_guidance_loss_weight: isQwenImage21Model ? params.qwen_guidance_loss_weight : 0,
       qwen_cfg_null_sigma_schedule: isQwenImage21Model &&
@@ -4559,11 +4559,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </label>
             )}
 
-            {isQwenImage21Model && trainingMethod === "full_finetune" && (
+            {(isQwenImage21Model || isMingImageModel) && trainingMethod === "full_finetune" && (
               <div className="mb-3">
                 <label className="block text-xs text-gray-400 mb-1">Inference export after normal completion</label>
                 <select
-                  value={params.training_export_format ?? "none"}
+                  value={params.training_export_format ?? DEFAULT_PARAMS.training_export_format}
                   onChange={(e) => updateParam("training_export_format", e.target.value as "none" | "int8_convrot")}
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
                 >

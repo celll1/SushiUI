@@ -150,7 +150,7 @@ def test_full_materialization_refuses_non_cpu_payload_before_replacing_slots():
     ('qwen_image_21','full_finetune','none',True),
     ('qwen_image_21','lora','none',False),
     ('sdxl','full_finetune','none',False),
-    ('ming_image_01','full_finetune','int8_convrot',False),
+    ('ming_image_01','full_finetune','int8_convrot',True),
 ])
 def test_shared_optin_gate_preserves_other_architecture_boundaries(monkeypatch,arch,method,export,allowed):
     from api.routes import TrainingRunCreateRequest,_check_qwen_full_finetune_params

@@ -16219,11 +16219,11 @@ def _check_qwen_full_finetune_params(request: "TrainingRunCreateRequest") -> Non
             detail="full_finetune_dequantize_int8_base requires Qwen-Image 2.1 or Ming full fine-tuning",
         )
     if request.training_export_format == "int8_convrot" and (
-        arch != "qwen_image_21" or request.training_method != "full_finetune"
+        arch not in {"qwen_image_21", "ming_image_01"} or request.training_method != "full_finetune"
     ):
         raise HTTPException(
             status_code=400,
-            detail="INT8 ConvRot training export requires Qwen-Image 2.1 full fine-tuning",
+            detail="INT8 ConvRot training export requires Qwen-Image 2.1 or Ming full fine-tuning",
         )
     if arch == "qwen_image_21" and request.train_text_encoder \
             and request.training_method != "full_finetune":
@@ -17888,7 +17888,7 @@ async def start_training_export(
     if run.training_method != "full_finetune":
         raise HTTPException(status_code=400, detail="Training export requires full fine-tuning")
     from core.training.training_config import _detect_arch
-    if _detect_arch(run.base_model_path) != "qwen_image_21":
+    if _detect_arch(run.base_model_path) not in {"qwen_image_21", "ming_image_01"}:
         raise HTTPException(status_code=400, detail="INT8 ConvRot training export is not available for this architecture")
     if run.status not in {"stopped", "completed"} or training_process_manager.is_live(run_id):
         raise HTTPException(status_code=409, detail="Wait until the training process has exited")

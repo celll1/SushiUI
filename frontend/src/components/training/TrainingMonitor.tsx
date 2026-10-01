@@ -238,8 +238,19 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
     return () => { cancelled = true; };
   }, [currentRun.id]);
 
+  useEffect(() => {
+    let cancelled = false;
+    setSampleQueue(null);
+    setExportStatus(null);
+    getTrainingSampleQueue(currentRun.id)
+      .then((queue) => { if (!cancelled) setSampleQueue(queue); })
+      .catch((error) => { if (!cancelled) console.error("Failed to resolve run architecture", error); });
+    return () => { cancelled = true; };
+  }, [currentRun.id]);
+
   const canExport = currentRun.training_method === "full_finetune" &&
-    /qwen[-_]?image[-_]?2[._]?1|qwen21/i.test(currentRun.base_model_path) &&
+    (["qwen_image_21", "ming_image_01"].includes(sampleQueue?.architecture ?? "") ||
+      /qwen[-_]?image[-_]?2[._]?1|qwen21/i.test(currentRun.base_model_path)) &&
     (currentRun.status === "stopped" || currentRun.status === "completed");
 
   useEffect(() => {
@@ -446,7 +457,8 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
       console.error("Failed to load sample images:", err);
     }
     try {
-      setSampleQueue(await getTrainingSampleQueue(currentRun.id));
+      const queue = await getTrainingSampleQueue(currentRun.id);
+      if (!signal?.aborted) setSampleQueue(queue);
     } catch (err) {
       if (signal?.aborted) return;
       console.error("Failed to load sample queue:", err);

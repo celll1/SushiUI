@@ -1,4 +1,4 @@
-"""Convert a native Ming package to DiT INT8 or ConvRot without loading its MLLM."""
+"""Convert selected native Ming components to INT8 or ConvRot without loading model weights."""
 import argparse
 import json
 from pathlib import Path
@@ -15,10 +15,13 @@ def main():
     parser.add_argument("--format",choices=("int8","int8_convrot"),default="int8_convrot")
     parser.add_argument("--device",default="cpu",help="CPU by default; CUDA must be explicitly selected")
     parser.add_argument("--max-shard-mib",type=int,help="Output shard threshold; shared default is 4096 MiB")
+    parser.add_argument("--components",nargs="+",choices=("transformer","mllm","connector","mlp"),
+                        help="Components to convert; omitted converts DiT only")
     args=parser.parse_args()
     try:
         result=convert_package(args.source,args.destination,format_=args.format,device=args.device,
-                               max_shard_bytes=None if args.max_shard_mib is None else args.max_shard_mib*1024**2)
+                               max_shard_bytes=None if args.max_shard_mib is None else args.max_shard_mib*1024**2,
+                               components=args.components)
     except (OSError,ValueError,RuntimeError) as exc:
         parser.exit(2,f"Ming conversion failed: {exc}\n")
     print(json.dumps(result,indent=2,sort_keys=True))

@@ -4535,6 +4535,10 @@ paths:
         fabricated table.
 
         Ming exports all six native components into a new package directory.
+        Native Ming DiT packages support plain INT8/E4M3 and the validated
+        int8_tensorwise ConvRot marker (256-wide groups). ConvRot markers are
+        retained by export and restored using the existing Comfy-Kitchen
+        runtime; conditioner quantization is not yet supported.
         `output_path` is the package directory; `written_path` is its manifest.
         Native component shards use the bundle writer's 10 GiB threshold.
         Companion linking is ignored because the components are serialized.

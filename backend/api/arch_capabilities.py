@@ -245,9 +245,9 @@ def _add_training_unsupported(arch: str, method: str, reason: str) -> None:
 # separate config surface and is not filtered from these tables).
 TRAINING_METHODS = ("lora", "relora", "full_finetune", "controlnet")
 
-for _method in TRAINING_METHODS:
+for _method in ("lora", "relora", "controlnet"):
     _add_training_unsupported("ming_image_01", _method,
-        "Ming native load/objective handlers are registered; shared dataset, optimization-loop and resume integration are pending")
+        "Ming adapter training integration is pending")
 
 # Every architecture with a training arch handler. Mirrors
 # `core.training.arch.ARCH_REGISTRY`, which cannot be imported here (it pulls
@@ -1205,10 +1205,10 @@ _add_training_feature_unsupported(
 # Three unrelated mechanisms, one run-global arm. FLUX.2 concatenates reference
 # latents; SenseNova splices understanding-tower tokens into its prompt prefix;
 # SD1.5/SDXL append SigLIP2 VE tokens when a vision_encoder_path is selected.
-for _a in sorted(TRAINING_DECLARED_ARCHS - {"flux2", "sensenova", "sd15", "sdxl"}):
+for _a in sorted(TRAINING_DECLARED_ARCHS - {"flux2", "sensenova", "ming_image_01", "sd15", "sdxl"}):
     _add_training_feature_unsupported(
         _a, "reference_images",
-        "reference-image conditioning during training is implemented for FLUX.2, SenseNova, and SD1.5/SDXL with a selected SigLIP2 vision encoder")
+        "reference-image conditioning during training is implemented for FLUX.2, SenseNova, Ming native sidecars, and SD1.5/SDXL with a selected SigLIP2 vision encoder")
 
 _add_training_feature_unsupported(
     "sensenova_sdxl_chimera", "text_encoder_training",

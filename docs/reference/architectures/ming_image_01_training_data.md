@@ -1,5 +1,7 @@
 # Ming-Image 0.1 training data contract
 
+Current status: native full fine-tuning uses the common dataset, encoding-mode, optimizer, preview and batch-boundary resume paths. Older staged milestone notes below are historical; see `docs/guides/MING_IMAGE_01_DESIGN.md` for the latest public boundary.
+
 The native dataset reader is CPU-verified. Normal training remains unavailable
 until shared caches, the optimization loop and exact optimizer resume are
 connected. Shared dataset discovery and epoch refresh now attach these records.

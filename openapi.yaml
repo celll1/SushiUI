@@ -25797,9 +25797,14 @@ components:
             |---|---|---|
             | `lora` | `lora` | LoRA adapters on the denoiser (+ optionally TEs) |
             | `relora` | `relora` | LoRA with periodic merge-and-restart |
-            | `full_finetune` | `full_finetune` | all denoiser parameters |
+            | `full_finetune` | `full_finetune` | selected denoiser/conditioner parameters |
             | `controlnet` | `controlnet` | a ControlNet / ControlNet-LLLite |
             | `vae_decoder` | `vae_decoder` | the VAE decoder only, encoder frozen |
+
+            Ming Design and Layer support native full fine-tuning, including
+            conditioner groups, inherited/configured U-Net topology, native
+            RGBA targets and checkpoint resume. LoRA/ReLoRA/ControlNet remain
+            unavailable until their Ming adapter paths are connected.
 
             `vae_decoder` is a non-diffusion modality: no denoiser, no scheduler,
             no text encoder and no latent cache. Its options come from the

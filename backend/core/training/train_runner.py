@@ -146,12 +146,12 @@ def _is_bf16_native_base_model(base_model_path: str) -> bool:
     lowered = (base_model_path or "").lower()
     if any(s in lowered for s in ("lens", "ltx", "ace-step", "acestep", "yue2",
                                   "minimax", "minimax_h3", "minimax-h3",
-                                  "sensenova", "sense-nova", "qwen21", "qwen_image_21")):
+                                  "sensenova", "sense-nova", "qwen21", "qwen_image_21", "ming-image", "ming_image")):
         return True
     try:
         from core.model_loader import ModelLoader
         return ModelLoader.detect_model_type(base_model_path) in (
-            "lens", "ltx2", "acestep", "minimax_h3", "sensenova", "yue2", "qwen_image_21")
+            "lens", "ltx2", "acestep", "minimax_h3", "sensenova", "yue2", "qwen_image_21", "ming_image_01")
     except Exception:
         return False
 
@@ -1251,9 +1251,9 @@ def _apply_reference_training_contract(
         raise ValueError(
             "SD1.5/SDXL use_reference_images=true requires vision_encoder_path"
         )
-    elif use_references and model_type not in ("flux2", "sensenova"):
+    elif use_references and model_type not in ("flux2", "sensenova", "ming_image_01"):
         raise ValueError(
-            "use_reference_images is supported only for FLUX.2, SenseNova, "
+            "use_reference_images is supported only for FLUX.2, SenseNova, Ming, "
             "and SD1.5/SDXL with a SigLIP2 vision encoder"
         )
 
@@ -1649,7 +1649,10 @@ def _prepare_training_process_config(
     from core.rewiring.training import validate_training_rewiring
     from core.model_loader import ModelLoader
     if ModelLoader.detect_model_type(base_model_path) == "ming_image_01":
-        raise ValueError("Ming shared dataset, optimization-loop and resume integration are pending")
+        from core.models.ming_image_01.training_options import preflight_training
+        for key in _TRAINING_SCOPE_FLAGS:
+            _normalize_scope_flag(train_config, key, key == "train_unet")
+        preflight_training(train_config, method=network_type)
     mode, topology = validate_training_rewiring(
         train_config, ModelLoader.detect_model_type(base_model_path))
     train_config["dit_rewiring_mode"] = mode

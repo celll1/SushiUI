@@ -42,9 +42,13 @@ def convert_package(source, destination, *, format_, device="cpu", max_shard_byt
     if os.path.lexists(destination):
         raise FileExistsError(destination)
     for component, headers in artifact.tensor_headers.items():
+        if component in {"mllm","connector"}:
+            continue
         if any(h.dtype not in {"F16", "BF16", "F32"} or key.endswith((".weight_scale", ".comfy_quant"))
                for key,h in headers.items()):
             raise ValueError(f"Ming conversion requires original floating weights: {component}")
+    from .conditioner_quantization import prepare_conditioner_components
+    prepare_conditioner_components(artifact,torch.float32,"eager")
     topology = read_directory_topology(artifact.components["transformer"])
     if topology is not None:
         topology = validate_topology_identity(topology,artifact.configs["transformer"])

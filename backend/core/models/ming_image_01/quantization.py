@@ -14,10 +14,10 @@ def _component_files(directory):
             if indices else list(directory.glob("*.safetensors")))
 
 
-def _convrot_layers(artifact):
+def _convrot_layers(artifact, component="transformer"):
     from safetensors import safe_open
     from core.models.common.convrot_marker import supported_int8_convrot_marker
-    headers = artifact.tensor_headers["transformer"]
+    headers = artifact.tensor_headers[component]
     markers = {key for key in headers if key.endswith(".comfy_quant")}
     if not markers:
         return {}
@@ -27,7 +27,7 @@ def _convrot_layers(artifact):
             raise ValueError(f"Invalid Ming ConvRot marker header: {key}")
     common_headers = {key: {"shape": list(h.shape), "dtype": h.dtype} for key, h in headers.items()}
     layers = {}
-    for path in _component_files(artifact.components["transformer"]):
+    for path in _component_files(artifact.components[component]):
         with safe_open(str(path), framework="pt", device="cpu") as handle:
             for key in markers.intersection(handle.keys()):
                 config = supported_int8_convrot_marker(key, handle.get_tensor(key), common_headers, path=str(path))
@@ -41,14 +41,11 @@ def _convrot_layers(artifact):
 
 def prepare_quantized_transformer(artifact, dtype):
     """Validate before loading other components; construct quantized slots on meta."""
-    import torch
     from .model_definition import create_transformer
-    from core.models.ideogram4.vendor.int8_linear import Int8Linear
-    from core.models.ideogram4.vendor.fp8_linear import Fp8Linear
 
     headers = artifact.tensor_headers["transformer"]
     for name, component in artifact.tensor_headers.items():
-        if name != "transformer" and any(key.endswith((".weight_scale", ".comfy_quant")) or
+        if name not in {"transformer", "mllm", "connector"} and any(key.endswith((".weight_scale", ".comfy_quant")) or
                 (key.endswith(".weight") and h.dtype in _QUANTIZED) for key, h in component.items()):
             raise ValueError(f"Ming quantized {name} loading is not implemented")
     if all(h.dtype in _FLOATS and not key.endswith((".weight_scale", ".comfy_quant"))
@@ -56,7 +53,28 @@ def prepare_quantized_transformer(artifact, dtype):
         return None
     convrot = _convrot_layers(artifact)
     model = create_transformer(artifact.configs["transformer"], device="meta", dtype=dtype)
-    expected = model.state_dict()
+    return prepare_component_slots(model,headers,convrot,dtype)
+
+
+def prepare_component_slots(model, headers, convrot, dtype):
+    """Validate a meta component and replace declared packed Linear slots."""
+    import torch
+    from core.models.ideogram4.vendor.int8_linear import Int8Linear
+    from core.models.ideogram4.vendor.fp8_linear import Fp8Linear
+    expected = model.state_dict(keep_vars=True)
+    tied = {}
+    for key,value in expected.items():
+        tied.setdefault(id(value),[]).append(key)
+    aliases = [keys for keys in tied.values() if len(keys)>1]
+    missing_aliases = set()
+    for keys in aliases:
+        present = set(keys).intersection(headers)
+        if not present:
+            continue
+        if any(headers[key].dtype not in _FLOATS for key in present):
+            raise ValueError("Ming packed tied weights are unsupported; keep embeddings/output heads floating")
+        missing_aliases.update(set(keys)-present)
+    model._ming_quantized_alias_groups = aliases
     quantized = {}
     for key, h in headers.items():
         if key.endswith(".weight") and h.dtype in _QUANTIZED:
@@ -78,10 +96,12 @@ def prepare_quantized_transformer(artifact, dtype):
             continue
         elif h.dtype not in _FLOATS or key.endswith(".comfy_quant"):
             raise ValueError(f"Unsupported Ming quantized tensor: {key} ({h.dtype})")
-    allowed = set(expected) | {path + ".weight_scale" for path in quantized} | {path + ".comfy_quant" for path in convrot}
+    allowed = (set(expected)-missing_aliases) | {path + ".weight_scale" for path in quantized} | {path + ".comfy_quant" for path in convrot}
     if set(headers) != allowed:
         raise ValueError(f"Ming quantized state mismatch: missing={sorted(allowed-set(headers))[:8]}, unexpected={sorted(set(headers)-allowed)[:8]}")
     for key, value in expected.items():
+        if key in missing_aliases:
+            continue
         if headers[key].shape != tuple(value.shape):
             raise ValueError(f"Ming quantized state shape differs: {key}")
     if convrot:
@@ -100,13 +120,13 @@ def prepare_quantized_transformer(artifact, dtype):
     return model
 
 
-def load_quantized_transformer(model, artifact, dtype):
+def load_quantized_component(model, artifact, component, dtype):
     """Assign validated CPU shards without materializing the whole checkpoint."""
     import torch
     from safetensors.torch import load_file
     from core.models.common.convrot_int8_linear import ConvRotInt8Linear
 
-    files = _component_files(artifact.components["transformer"])
+    files = _component_files(artifact.components[component])
     for path in files:
         state = load_file(str(path), device="cpu")
         for key, value in state.items():
@@ -114,15 +134,32 @@ def load_quantized_transformer(model, artifact, dtype):
                 raise ValueError(f"Ming quantized Linear scale must be finite and positive: {key}")
             if key.endswith(".weight_scale") and isinstance(model.get_submodule(key[:-len(".weight_scale")]), ConvRotInt8Linear):
                 state[key] = value.reshape(-1).contiguous()
-            if artifact.tensor_headers["transformer"][key].dtype in _FLOATS and not key.endswith(".weight_scale"):
+            if artifact.tensor_headers[component][key].dtype in _FLOATS and not key.endswith(".weight_scale"):
                 state[key] = value.to(dtype=dtype)
         info = model.load_state_dict(state, strict=False, assign=True)
         if info.unexpected_keys:
             raise ValueError(f"Ming quantized shard state mismatch: {info.unexpected_keys[:8]}")
         del state
+    for keys in getattr(model,"_ming_quantized_alias_groups",[]):
+        loaded = [key for key in keys if key in artifact.tensor_headers[component]]
+        if not loaded:
+            continue
+        def parameter(key):
+            parent,_,name=key.rpartition(".")
+            return getattr(model.get_submodule(parent) if parent else model,name)
+        canonical=parameter(loaded[0])
+        if any(not torch.equal(canonical,parameter(key)) for key in loaded[1:]):
+            raise ValueError("Ming tied floating checkpoint weights disagree")
+        for key in keys:
+            parent,_,name=key.rpartition(".")
+            setattr(model.get_submodule(parent) if parent else model,name,canonical)
     if any(value.device.type == "meta" for value in model.state_dict().values()):
         raise ValueError("Ming quantized checkpoint left unloaded tensors")
     return model
+
+
+def load_quantized_transformer(model, artifact, dtype):
+    return load_quantized_component(model,artifact,"transformer",dtype)
 
 
 def configure_frozen_quantized_training(model):

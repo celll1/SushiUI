@@ -6,3 +6,5 @@ Source files retain their original notices. Local adaptations use package-relati
 Additional adaptations preserve native default/partial RoPE, expose an explicit live-conditioning graph flag, map tied-weight declarations, and initialize tokenizer BOS state after the base constructor. Whitespace cleanup is checked for AST equivalence. The external loader regenerates nonpersistent rotary buffers after low-memory loading.
 
 - Vision declares `supports_gradient_checkpointing=True` so Transformers can configure its existing block checkpoint path during full TE training.
+
+- Vision activation-dtype discovery and language FlashAttention recasting use a packed Linear's `compute_dtype`, preserving the floating fallback for ordinary checkpoints.

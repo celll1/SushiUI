@@ -379,7 +379,8 @@ class Qwen2_5_VisionTransformer(PreTrainedModel):
         self.image_emb_dim = 8192
 
     def get_dtype(self) -> torch.dtype:
-        return self.blocks[0].mlp.down_proj.weight.dtype
+        module = self.blocks[0].mlp.down_proj
+        return getattr(module, "compute_dtype", module.weight.dtype)
 
     def rot_pos_emb(self, grid_thw):
         pos_ids = []

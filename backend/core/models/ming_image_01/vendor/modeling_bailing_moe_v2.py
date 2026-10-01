@@ -1126,7 +1126,7 @@ class BailingMoeV2FlashAttention2(BailingMoeV2Attention):
             elif torch.is_autocast_enabled():
                 target_dtype = torch.get_autocast_gpu_dtype()
             else:
-                target_dtype = self.query_key_value.weight.dtype
+                target_dtype = getattr(self.query_key_value, "compute_dtype", self.query_key_value.weight.dtype)
 
             logger.warning_once(
                 f"The input hidden states seems to be silently casted in float32, this might be related to"

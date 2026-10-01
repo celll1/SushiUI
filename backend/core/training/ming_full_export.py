@@ -16,8 +16,12 @@ def validate_checkpoint(checkpoint, output_dir):
             or metadata.get("kind") != "full_parameter_weights" or metadata.get("profile") != artifact.profile):
         raise ValueError("Ming export requires a native full-parameter checkpoint")
     if any(header.dtype not in {"F16", "BF16", "F32"} or key.endswith((".weight_scale", ".comfy_quant"))
-            for headers in artifact.tensor_headers.values() for key,header in headers.items()):
+            for component,headers in artifact.tensor_headers.items() if component not in {"mllm","connector"}
+            for key,header in headers.items()):
         raise ValueError("Ming training export requires a floating full checkpoint")
+    from core.models.ming_image_01.conditioner_quantization import prepare_conditioner_components
+    import torch
+    prepare_conditioner_components(artifact,torch.float32,"eager")
     return artifact
 
 

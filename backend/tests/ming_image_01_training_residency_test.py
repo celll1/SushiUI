@@ -114,3 +114,61 @@ def test_native_trainable_conditioner_retains_live_graph(tmp_path):
         (condition.direct.square().mean() + condition.queries.square().mean()).backward()
         assert next(value.conditioner.native.proj_in.parameters()).grad.abs().sum() > 0
     assert policy.active is None and not torch.cuda.is_initialized()
+
+
+@pytest.mark.parametrize("count", [0, 1, 3])
+def test_grouped_encoder_transfers_once_for_all_misses(count):
+    from core.models.ming_image_01.training_residency import grouped_encoder_phase
+    _, events, policy = setup()
+    with grouped_encoder_phase(policy, "vae") as group:
+        for index in range(count):
+            with group("vae"): events.append(("encode", index))
+    expected = [] if count == 0 else [("dit", "cpu"), ("vae", "cuda"),
+        *[("encode", index) for index in range(count)], ("vae", "cpu"), ("dit", "cuda")]
+    assert events == expected and policy.active is None
+    with pytest.raises(RuntimeError, match="grouped"):
+        with group("vae"): pass
+    assert not torch.cuda.is_initialized()
+
+
+def test_grouped_phase_releases_on_failure_and_refuses_reentry():
+    from core.models.ming_image_01.training_residency import grouped_encoder_phase
+    _, events, policy = setup()
+    with pytest.raises(ValueError, match="encode failed"):
+        with grouped_encoder_phase(policy, "vae") as group:
+            with group("vae"):
+                with pytest.raises(RuntimeError, match="grouped"):
+                    with group("vae"): pass
+                raise ValueError("encode failed")
+    assert events == [("dit", "cpu"), ("vae", "cuda"), ("vae", "cpu"), ("dit", "cuda")]
+    assert policy.active is None
+
+
+def test_native_owned_batch_groups_vae_misses_and_skips_complete_hits(tmp_path):
+    from contextlib import contextmanager
+    from ming_image_01_cache_test import cached_record_setup
+    from ming_image_01_training_batch_test import trainer
+    from core.models.ming_image_01.dataset import prepare_shared_latents
+    value, item, context = cached_record_setup(tmp_path)
+    owner = trainer(value)
+    owner.ming_image_01_components = value
+    owner.ming_cache_context = {**context, "cache": None, "dataset_owned": True, "dataset_cache_base": tmp_path / "datasets"}
+    owner.bucket_strategy, owner.ming_prompt_resolution = "resize", 32
+    policy = MingTrainingResidency(value, device="cpu", latent_mode="pre_encoded_cache", text_mode="pre_encoded_cache")
+    events = []
+    @contextmanager
+    def traced(phase):
+        events.append(("enter", phase))
+        with policy(phase):
+            try: yield
+            finally: events.append(("exit", phase))
+    owner.ming_training_residency = traced
+    pairs = [({"_ming_record": item.record, "width": 32, "height": 32, "caption": "word5"},
+              SimpleNamespace(unique_id=uid)) for uid in ("dataset-a", "dataset-b")]
+    cold = prepare_shared_latents(owner, pairs)
+    assert events == [("enter", "vae"), ("exit", "vae")]
+    events.clear()
+    cached = prepare_shared_latents(owner, pairs)
+    assert events == []
+    torch.testing.assert_close(cold.clean, cached.clean, rtol=0, atol=0)
+    assert policy.active is None and not torch.cuda.is_initialized()

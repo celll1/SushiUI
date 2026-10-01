@@ -367,14 +367,18 @@ def prepare_shared_items_latents(trainer, pairs, items):
     condition_context = shared_conditioning_context(trainer, pairs)
     if not context["latent_enabled"]:
         return prepare_record_latents(components, items, cache_context=condition_context, **options)
+    item_contexts = [dataset_cache_context({**context, "conditioning_enabled": False},
+        base_cache_dir=context["dataset_cache_base"], dataset_unique_id=dataset.unique_id)
+        for _source, dataset in pairs]
+    from .training_residency import grouped_encoder_phase
     clean, references = [], []
-    for item, (_source, dataset) in zip(items, pairs):
-        item_context = dataset_cache_context({**context, "conditioning_enabled": False},
-            base_cache_dir=context["dataset_cache_base"], dataset_unique_id=dataset.unique_id)
-        encoded = prepare_record_latents(components, [item], cache_context=item_context, **options)
-        clean.append(encoded.clean.detach().cpu())
-        reference = None if encoded.reference_latents is None else encoded.reference_latents[0]
-        references.append(None if reference is None else reference.detach().cpu())
+    with grouped_encoder_phase(policy, "vae") as grouped:
+        for item, item_context in zip(items, item_contexts):
+            encoded = prepare_record_latents(components, [item], cache_context=item_context,
+                                            **{**options, "residency": grouped})
+            clean.append(encoded.clean.detach().cpu())
+            reference = None if encoded.reference_latents is None else encoded.reference_latents[0]
+            references.append(None if reference is None else reference.detach().cpu())
     source = prepare_record_conditioning(components, items, resolution=trainer.ming_prompt_resolution,
         cache_context=condition_context, residency=policy)
     return MingLatentBatch(torch.cat(clean), source.prepared, torch.stack([item.weights for item in items]),

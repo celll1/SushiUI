@@ -139,6 +139,16 @@ verify language gradients and independent alpha/frame order. Shared trainer
 registration, dataset role manifests, optimizer resume and UI/API wiring remain
 pending; this bridge alone does not enable training requests.
 
+The shared full-parameter trainer factory can now select a native Ming adapter
+when its loader sets the Ming flag and explicit conditioner groups/rates.
+The adapter owns frozen/trainable modes, unique optimizer membership, component
+gradient accounting and full six-component bundle export. Save records profile,
+step/epoch and named learning-rate groups in an atomically published
+`training.json`; it restores component devices after success or failure.
+This file describes weight provenance, not optimizer/RNG/scaler resume state.
+End-to-end trainer registration and exact-resume orchestration remain pending.
+
+
 The default full-parameter scope can freeze the conditioner, but full TE
 training is required parity, not a future optional omission. Provide explicit
 component groups and independent learning rates. Frozen conditioning can be

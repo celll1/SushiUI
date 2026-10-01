@@ -34,6 +34,7 @@ from .adapters import (
     MiniT2IFullParameterAdapter,
     Krea2FullParameterAdapter,
     QwenImage21FullParameterAdapter,
+    MingImage01FullParameterAdapter,
     Ltx2FullParameterAdapter,
     AceStepFullParameterAdapter,
     SenseNovaFullParameterAdapter,
@@ -189,7 +190,12 @@ class FullParameterTrainer(BaseTrainer):
 
     def _create_adapter(self):
         """Create model-specific Full Parameter adapter based on detected model type."""
-        if self.is_zimage:
+        if getattr(self, "is_ming_image_01", False):
+            self.adapter = MingImage01FullParameterAdapter(self,
+                conditioner_groups=self.ming_conditioner_trainable_groups,
+                conditioner_lrs=self.ming_conditioner_lrs)
+            print(f"{self.log_prefix} Using MingImage01FullParameterAdapter")
+        elif self.is_zimage:
             self.adapter = ZImageFullParameterAdapter(self)
             print(f"{self.log_prefix} Using ZImageFullParameterAdapter")
         elif self.is_flux2:

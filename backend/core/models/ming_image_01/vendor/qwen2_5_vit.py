@@ -343,6 +343,7 @@ class Qwen2_5_VLVisionBlock(nn.Module):
         return hidden_states
 
 class Qwen2_5_VisionTransformer(PreTrainedModel):
+    supports_gradient_checkpointing = True
     config_class = Qwen2_5_VLVisionConfig
     _no_split_modules = ["Qwen2_5_VLVisionBlock"]
     _supports_flash_attn_2 = True

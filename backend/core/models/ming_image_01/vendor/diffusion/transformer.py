@@ -459,6 +459,7 @@ class DiffusionTransformer(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrigin
         f_patch_size: int,
         all_image_ref: List[torch.Tensor] = None,
         all_cap_feats_2: List[torch.Tensor] = None,
+        target_spatial_position_ids=None,
     ):
         pH = pW = patch_size
         pF = f_patch_size
@@ -527,25 +528,32 @@ class DiffusionTransformer(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrigin
                 all_cap_feats_out.append(cap_padded_feat)
 
             ### Process Image
-            if image_ref is not None:
-                image = torch.cat([image, image_ref], dim=1)
+            if target_spatial_position_ids is not None:
+                from ...partition import patchify_partition_image
+                image, size, image_ori_pos_ids = patchify_partition_image(self, image, image_ref,
+                    cap_ori_len + cap_padding_len, patch_size, f_patch_size, target_spatial_position_ids)
+                all_image_size.append(size)
+            else:
+                if image_ref is not None:
+                    image = torch.cat([image, image_ref], dim=1)
 
-            C, F, H, W = image.size()
-            all_image_size.append((F, H, W))
-            F_tokens, H_tokens, W_tokens = F // pF, H // pH, W // pW
+                C, F, H, W = image.size()
+                all_image_size.append((F, H, W))
+                F_tokens, H_tokens, W_tokens = F // pF, H // pH, W // pW
 
-            image = image.view(C, F_tokens, pF, H_tokens, pH, W_tokens, pW)
-            # "c f pf h ph w pw -> (f h w) (pf ph pw c)"
-            image = image.permute(1, 3, 5, 2, 4, 6, 0).reshape(F_tokens * H_tokens * W_tokens, pF * pH * pW * C)
+                image = image.view(C, F_tokens, pF, H_tokens, pH, W_tokens, pW)
+                # "c f pf h ph w pw -> (f h w) (pf ph pw c)"
+                image = image.permute(1, 3, 5, 2, 4, 6, 0).reshape(F_tokens * H_tokens * W_tokens, pF * pH * pW * C)
 
             image_ori_len = len(image)
             image_padding_len = (-image_ori_len) % SEQ_MULTI_OF
 
-            image_ori_pos_ids = self.create_coordinate_grid(
-                size=(F_tokens, H_tokens, W_tokens),
-                start=(cap_ori_len + cap_padding_len + 1, 0, 0),
-                device=device,
-            ).flatten(0, 2)
+            if target_spatial_position_ids is None:
+                image_ori_pos_ids = self.create_coordinate_grid(
+                    size=(F_tokens, H_tokens, W_tokens),
+                    start=(cap_ori_len + cap_padding_len + 1, 0, 0),
+                    device=device,
+                ).flatten(0, 2)
             image_padded_pos_ids = torch.cat(
                 [
                     image_ori_pos_ids,
@@ -597,6 +605,7 @@ class DiffusionTransformer(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrigin
         ref_x=None,
         cap_feats_2=None,
         return_dict: bool = True,
+        target_spatial_position_ids=None,
     ):
         assert patch_size in self.all_patch_size
         assert f_patch_size in self.all_f_patch_size
@@ -620,7 +629,8 @@ class DiffusionTransformer(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrigin
             x_inner_pad_mask,
             cap_inner_pad_mask,
             cap_feats_2,
-        ) = self.patchify_and_embed(x, cap_feats, patch_size, f_patch_size, ref_x, cap_feats_2)
+        ) = self.patchify_and_embed(x, cap_feats, patch_size, f_patch_size, ref_x, cap_feats_2,
+            target_spatial_position_ids=target_spatial_position_ids)
 
         # x embed & refine
         x_item_seqlens = [len(_) for _ in x]

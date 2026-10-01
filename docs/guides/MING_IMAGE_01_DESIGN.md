@@ -1873,3 +1873,39 @@ payload, GPU allocation or main edit occurred. Approximate spatial partition,
 global adapters, styles, optimized ConvRot training/cache, conditioner converter
 authoring, native pixel-debug/partition guidance and final parity acceptance
 remain active work; exact query chunks do not establish those capabilities.
+
+
+### Native spatial partition coordinate foundation
+
+`MingPartitionAdapter` declares joint caption/target attention and full-canvas
+positions. Its complete-coverage planner reuses the shared deterministic core
+and halo bookkeeping on the spatial patch grid. These regions are approximate
+attention contexts, unlike exact full-KV query chunking. Layer frames share the
+same spatial region and retain their native distinct first-axis coordinates.
+
+The native DiT accepts an optional `target_spatial_position_ids` rectangle.
+Target tiles and full reference frames are patchified independently, so a tile
+can retain every pixel of a larger reference grid. Reference first-axis IDs
+follow all target frames; spatial IDs remain native full-reference coordinates.
+Alignment padding is added after concatenating both streams. Only target frames
+are reconstructed on this explicit path; the ordinary forward still returns its
+native Layer target/reference frame layout. A full-canvas explicit rectangle
+produces exactly the ordinary target predictions and all parameter/input
+gradients in the CPU oracle. No parameter or checkpoint format changes.
+
+Target-only residual U-Net transport accepts a spatial origin. At each coarse
+level the origin maps to the corresponding coarse-grid cell by integer division;
+local coarse coordinates then advance normally. References/captions keep their
+own original rotary context. Default origin zero preserves existing behavior.
+Crop dimensions must still satisfy the recorded nested topology's alignment.
+
+Twenty unique affected CPU cases pass in staged checks: twelve new full-box,
+cropped-target/full-reference, malformed-coordinate and coverage cases plus
+eight existing rewiring cases. Both native padding profiles and dense/nested
+U-Net execution are covered. Independent patch oracles verify frame/token order
+and full-reference coordinates; gradients reach reference pixels outside the
+target tile. Backend compilation and real imports forbid CUDA initialization.
+No live API, official model weights, GPU resources or main files are touched.
+This is the coordinate/forward foundation: shared training-loop dispatch,
+sequential region backward, image-level guidance caps, native debug output,
+public partition options/UI and global adapters still require implementation.

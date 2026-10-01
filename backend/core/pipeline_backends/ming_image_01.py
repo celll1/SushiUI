@@ -187,10 +187,15 @@ class MingImage01Mixin:
 
             def callback(index, total, timestep, latents):
                 adapters.set_step(index + 1, total)
-                if progress_callback is not None:
-                    progress_callback(index, total, None, phase_label="Ming denoising")
                 if step_callback is not None:
                     step_callback(index, timestep, latents)
+
+            def preview(index,total,timestep,latents,prediction):
+                if progress_callback is not None:
+                    from core.models.ming_image_01.generation_preview import primary_latent
+                    progress_callback(index,total,primary_latent(latents,profile),None,
+                        None if prediction is None else primary_latent(prediction,profile))
+            preview.wants_predicted_x0=getattr(progress_callback,"wants_predicted_x0",None)
 
             try:
                 groups = generator.run(prompts=[resolved["prompt"]] * batch,
@@ -199,7 +204,8 @@ class MingImage01Mixin:
                     requested_layers=layers, negative_prompt=resolved["negative_prompt"], output_type="pil",
                     cancelled=lambda: self.cancel_requested, step_callback=callback, phase_context=phase,
                     reference_guides=guides,partition_plan=plan,
-                    style_transfers=styles,style_combine_mode=combine_mode)
+                    style_transfers=styles,style_combine_mode=combine_mode,
+                    preview_callback=preview if progress_callback is not None else None)
             except MingGenerationCancelled as exc:
                 raise RuntimeError("Generation cancelled by user") from exc
             model_info["dit_rewiring_spec"] = topology

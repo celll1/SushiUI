@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Callable
 
 import torch
@@ -69,7 +70,7 @@ class MingSampler:
     def run(self, *, task: str, conditioning: MingConditioning, width: int, height: int,
             steps: int, cfg: float, seed: int, requested_layers: int,
             reference_pixels=None, negative_prompt: str = "", output_type: str = "pil",
-            cancelled: Callable[[], bool] | None = None, step_callback=None, reference_guides=None, partition_plan=None, styles=None, style_combine_mode=None) -> list[MingResultGroup]:
+            cancelled: Callable[[], bool] | None = None, step_callback=None, reference_guides=None, partition_plan=None, styles=None, style_combine_mode=None, preview_callback=None) -> list[MingResultGroup]:
         if negative_prompt:
             raise ValueError("Ming native guidance uses zero conditioning; negative prompts are unsupported")
         if output_type not in {"pil", "latent"}:
@@ -106,6 +107,8 @@ class MingSampler:
             if cancelled is not None and cancelled():
                 raise MingGenerationCancelled("Ming generation cancelled")
 
+        preview_state={"index":0,"clean":None}
+
         def callback(_pipe, index, timestep, values):
             check_cancel()
             if reference_guides:
@@ -113,6 +116,10 @@ class MingSampler:
                 values["latents"] = blend_guides(values["latents"], reference_guides,
                     index=index, total=sampling.steps, sigma=_pipe.scheduler.sigmas[index+1],
                     profile=self.profile.inference_profile)
+            if preview_callback is not None:
+                preview_callback(index,sampling.steps,timestep,values["latents"],preview_state["clean"])
+                preview_state["clean"]=None
+                preview_state["index"]=index+1
             if step_callback is not None:
                 step_callback(index, sampling.steps, timestep, values["latents"])
             return values
@@ -134,16 +141,21 @@ class MingSampler:
                 from .partition_generation import MingPartitionExecutor
                 executor = MingPartitionExecutor(self.components.transformer,partition_plan,cancelled=cancelled or (lambda:False))
                 self.pipe.transformer.partition_executor = executor
-            result = self.pipe(
-                height=height, width=width, num_inference_steps=sampling.steps,
-                guidance_scale=sampling.cfg, generator=torch.Generator(device="cpu").manual_seed(seed),
-                num_frames_per_prompt=frames, ref_hidden_states=reference_pixels,
-                prompt_embeds=list(conditioning.queries.unbind(0)),
-                negative_prompt_embeds=list(negative.queries.unbind(0)),
-                prompt_embeds_2=list(conditioning.direct.unbind(0)),
-                negative_prompt_embeds_2=list(negative.direct.unbind(0)),
-                sample_mode="argmax", output_type=output_type,
-                callback_on_step_end=callback, callback_on_step_end_tensor_inputs=["latents"])
+            from .generation_preview import scheduler_preview
+            from core.inference.callback_utils import callback_requests
+            requested=lambda index:callback_requests(preview_callback,"wants_predicted_x0",index,sampling.steps)
+            preview_scope=scheduler_preview(self.pipe.scheduler,preview_state,requested) if preview_callback is not None else nullcontext()
+            with preview_scope:
+                result = self.pipe(
+                    height=height, width=width, num_inference_steps=sampling.steps,
+                    guidance_scale=sampling.cfg, generator=torch.Generator(device="cpu").manual_seed(seed),
+                    num_frames_per_prompt=frames, ref_hidden_states=reference_pixels,
+                    prompt_embeds=list(conditioning.queries.unbind(0)),
+                    negative_prompt_embeds=list(negative.queries.unbind(0)),
+                    prompt_embeds_2=list(conditioning.direct.unbind(0)),
+                    negative_prompt_embeds_2=list(negative.direct.unbind(0)),
+                    sample_mode="argmax", output_type=output_type,
+                    callback_on_step_end=callback, callback_on_step_end_tensor_inputs=["latents"])
             check_cancel()
             outputs = result.images
             if len(outputs) != batch * frames:

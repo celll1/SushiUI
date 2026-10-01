@@ -70,7 +70,8 @@ def test_native_manager_reference_batch_roles_reproducibility_and_progress(profi
     expected = ["image"] if profile == "generation_edit" else ["auxiliary_canvas", "layer_1", "layer_2"]
     assert all(group.roles == expected for group in output.groups)
     assert len(steps) == len(callback_steps) == 1
-    assert steps[0][0][2] is None and steps[0][1]["phase_label"] == "Ming denoising"
+    assert steps[0][0][2].shape == (2,16,4,4) and steps[0][0][4].shape == (2,16,4,4)
+    assert not steps[0][1]
     assert output.model_info["profile"] == profile and output.model_info["source"] == "tiny-Ming"
     repeated, *_ = value.generate_img2img(kwargs, source)
     for left, right in zip(output.groups, repeated.groups):

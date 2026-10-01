@@ -32,6 +32,7 @@ import MiniMaxH3ReferenceSelector from "../common/MiniMaxH3ReferenceSelector";
 import H3PromptAssist from "../common/H3PromptAssist";
 import Qwen21PromptUpsample from "../common/Qwen21PromptUpsample";
 import QwenPartitionControls from "../common/QwenPartitionControls";
+import { imageDefaultsArchKey } from "@/utils/archConstraints";
 import ImageViewer from "../common/ImageViewer";
 import PostEditControls from "../common/PostEditControls";
 import VideoAccelerationControls from "../common/VideoAccelerationControls";
@@ -175,6 +176,7 @@ interface OutpaintPanelParams extends ApiOutpaintParams {
 // unless the user already has localStorage state.
 const DEFAULT_PARAMS: OutpaintPanelParams = {
   prompt: "",
+  ming_image_01_layers: undefined,
   qwen_image_21_partition: undefined,
   negative_prompt: "",
   steps: 20,
@@ -1410,6 +1412,7 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
   // and/or last frame of the span it generates) lists only the placements it
   // can anchor. No arch name appears here.
   const loadedArchType = currentModelInfo?.model_info?.type as string | undefined;
+  const imageDefaultsArch = imageDefaultsArchKey(loadedArchType, modelInfo?.profile);
   // Audio-arch dispatch, same convention as Txt2ImgPanel's `isMusic3`: MiniMax
   // Music 3's extend mechanism (placement/extend_duration_sec/
   // music3_num_inference_steps/flow_guidance_scale) is a materially
@@ -1684,21 +1687,21 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
   // revert-to-base behavior when leaving an overlay-carrying arch
   // (steps/cfg_scale apply to every architecture).
   useEffect(() => {
-    if (isVideo || isAudio || !loadedArchType || !generationDefaults) return;
+    if (isVideo || isAudio || !imageDefaultsArch || !generationDefaults) return;
     setParams((prev) => {
-      if (prev.image_defaults_arch === loadedArchType) return prev;
-      const overlay = (generationDefaults.image_arch_overlays?.[loadedArchType] || {}) as Record<string, unknown>;
+      if (prev.image_defaults_arch === imageDefaultsArch) return prev;
+      const overlay = (generationDefaults.image_arch_overlays?.[imageDefaultsArch] || {}) as Record<string, unknown>;
       const prevHadOverlay = prev.image_defaults_arch
         && generationDefaults.image_arch_overlays?.[prev.image_defaults_arch];
       const base = generationDefaults.outpaint as Record<string, unknown> | undefined;
-      const next: OutpaintPanelParams = { ...prev, image_defaults_arch: loadedArchType };
+      const next: OutpaintPanelParams = { ...prev, image_defaults_arch: imageDefaultsArch };
       if ("steps" in overlay) next.steps = overlay.steps as number;
       else if (prevHadOverlay && base?.steps !== undefined) next.steps = base.steps as number;
       if ("cfg_scale" in overlay) next.cfg_scale = overlay.cfg_scale as number;
       else if (prevHadOverlay && base?.cfg_scale !== undefined) next.cfg_scale = base.cfg_scale as number;
       return next;
     });
-  }, [isVideo, isAudio, loadedArchType, generationDefaults, params.image_defaults_arch]);
+  }, [isVideo, isAudio, imageDefaultsArch, generationDefaults, params.image_defaults_arch]);
 
 
   const processAudioFile = (file: File) => {

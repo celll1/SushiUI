@@ -35,6 +35,8 @@ import InlineHelp from "../common/InlineHelp";
 import H3PromptAssist from "../common/H3PromptAssist";
 import Qwen21PromptUpsample from "../common/Qwen21PromptUpsample";
 import QwenPartitionControls from "../common/QwenPartitionControls";
+import MingLayerControls from "../common/MingLayerControls";
+import { imageDefaultsArchKey } from "@/utils/archConstraints";
 import MusicCaptionAssist from "../common/MusicCaptionAssist";
 import MusicLyricsAssist from "../common/MusicLyricsAssist";
 import SendToStudioButton from "../studio/SendToStudioButton";
@@ -94,6 +96,7 @@ const SENSENOVA_RESOLUTION_PRESETS: Array<{ label: string; width: number; height
 
 const DEFAULT_PARAMS: GenerationParams = {
   prompt: "",
+  ming_image_01_layers: undefined,
   qwen_image_21_partition: undefined,
   negative_prompt: "",
   steps: 20,
@@ -518,6 +521,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
   // that has not loaded) as supporting the feature, so a control is never
   // hidden merely because the matrix was unavailable.
   const loadedArch = currentModelInfo?.model_info?.type as string | undefined;
+  const imageDefaultsArch = imageDefaultsArchKey(loadedArch, modelInfo?.profile);
   const loadedArchName = archDisplayName(loadedArch);
   // MiniMax Music 3 is the second audio architecture (ACE-Step is the
   // first); its controls (duration-as-upper-bound, per-CHUNK steps, flow
@@ -636,21 +640,21 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
   // actually had an overlay entry, to preserve the same first-mount safety
   // as the audio effect.
   useEffect(() => {
-    if (isAudio || isVideo || !loadedArch || !generationDefaults) return;
+    if (isAudio || isVideo || !imageDefaultsArch || !generationDefaults) return;
     setParams((prev) => {
-      if (prev.image_defaults_arch === loadedArch) return prev;
-      const overlay = (generationDefaults.image_arch_overlays?.[loadedArch] || {}) as Record<string, unknown>;
+      if (prev.image_defaults_arch === imageDefaultsArch) return prev;
+      const overlay = (generationDefaults.image_arch_overlays?.[imageDefaultsArch] || {}) as Record<string, unknown>;
       const prevHadOverlay = prev.image_defaults_arch
         && generationDefaults.image_arch_overlays?.[prev.image_defaults_arch];
       const base = generationDefaults.txt2img as Partial<typeof DEFAULT_PARAMS> | undefined;
-      const next: GenerationParams = { ...prev, image_defaults_arch: loadedArch };
+      const next: GenerationParams = { ...prev, image_defaults_arch: imageDefaultsArch };
       if ("steps" in overlay) next.steps = overlay.steps as number;
       else if (prevHadOverlay && base?.steps !== undefined) next.steps = base.steps;
       if ("cfg_scale" in overlay) next.cfg_scale = overlay.cfg_scale as number;
       else if (prevHadOverlay && base?.cfg_scale !== undefined) next.cfg_scale = base.cfg_scale;
       return next;
     });
-  }, [isAudio, isVideo, loadedArch, generationDefaults, params.image_defaults_arch]);
+  }, [isAudio, isVideo, imageDefaultsArch, generationDefaults, params.image_defaults_arch]);
   // Snap a persisted clip length the LOADED video architecture does not accept
   // (LTX-2.3's 121 carried onto MiniMax-H3, whose grid starts at 124). Same
   // shape and same reason as the unet_quantization normaliser above: otherwise
@@ -2383,6 +2387,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
         cfg_norm: mainParams.cfg_norm, // Inherit SenseNova U1.5 CFG-overshoot clamp
         sensenova_mot_phase_eviction: mainParams.sensenova_mot_phase_eviction, // Inherit SenseNova U1.5 per-phase weight-half CPU eviction
         sensenova_kv_cache_streaming: mainParams.sensenova_kv_cache_streaming, // Inherit SenseNova U1.5 per-layer KV cache CPU streaming
+        ming_image_01_layers: mainParams.ming_image_01_layers,
         qwen_image_21_partition: mainParams.qwen_image_21_partition,
         qwen_image_21_kv_cache: mainParams.qwen_image_21_kv_cache,
         original_size_w: mainParams.original_size_w,
@@ -3485,6 +3490,8 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
           onApply={(prompt) => setParams((previous) => ({ ...previous, prompt }))}
         />
       )}
+      <MingLayerControls value={params.ming_image_01_layers}
+        onChange={ming_image_01_layers => setParams(previous => ({ ...previous, ming_image_01_layers }))} />
       {loadedArch === "qwen_image_21" && (
         <QwenPartitionControls value={params.qwen_image_21_partition}
           width={params.width} height={params.height}

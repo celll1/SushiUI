@@ -14503,6 +14503,12 @@ components:
             may be combined or used alone. Ignored (accepted and warned) by
             every other architecture.
           example: false
+        ming_image_01_layers:
+          type: integer
+          minimum: 1
+          default: 3
+          example: 3
+          description: Requested ordered RGBA layers for Ming Layer. The native output also includes one auxiliary canvas, making N+1 frames. Ignored by Design and other architectures; requires a Layer profile and reference image for decomposition.
         qwen_image_21_partition:
           allOf:
             - $ref: '#/components/schemas/QwenImage21Partition'

@@ -85,6 +85,7 @@ export const LOOP_GENRE_FIELDS = {
    * previously NOT inherited (coverage gaps) and are now included here.
    */
   modelEnvironment: [
+    "ming_image_01_layers",
     "unet_quantization",
     // Quantized GEMM path: model-global (it forces process-level flags), so a
     // loop step must not silently revert to the process default mid-loop.

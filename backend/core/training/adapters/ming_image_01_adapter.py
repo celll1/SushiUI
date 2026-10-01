@@ -23,6 +23,20 @@ class MingImage01FullParameterAdapter(BaseFullParameterAdapter):
         unknown = self.conditioner_groups - conditioner.component_groups().keys()
         if unknown:
             raise ValueError(f"Unknown Ming trainable groups: {sorted(unknown)}")
+        from core.models.ming_image_01.quantization import materialize_training_linears
+        from api.param_defaults import TRAINING_DEFAULTS
+        materialize = trainer.config.get("full_finetune_dequantize_int8_base", TRAINING_DEFAULTS["full_finetune_dequantize_int8_base"])
+        if type(materialize) is not bool:
+            raise ValueError("Ming full dequantization requires a boolean opt-in")
+        if materialize:
+            device = execution_device(transformer)
+            move_component(transformer,"cpu")
+            try:
+                report = materialize_training_linears(transformer,trainer.weight_dtype)
+                if report is not None:
+                    trainer.ming_full_initialization = report
+            finally:
+                move_component(transformer,device)
         reject_quantized_base(transformer, model_label="Ming DiT")
         if self.conditioner_groups:
             reject_quantized_base(conditioner, model_label="Ming conditioner")
@@ -48,6 +62,7 @@ class MingImage01FullParameterAdapter(BaseFullParameterAdapter):
     def arch_param_groups(self):
         trainer = self.trainer
         components = trainer.ming_image_01_components
+        reject_quantized_base(components.transformer, model_label="Ming DiT")
         groups = optimizer_groups(components.transformer, components.conditioner,
             dit_lr=resolve_component_lr(trainer, "unet_lr", label="Ming DiT"),
             conditioner_lrs=self.conditioner_lrs, caption_lr=trainer.config.get("adapter_lr"))
@@ -75,6 +90,8 @@ class MingImage01FullParameterAdapter(BaseFullParameterAdapter):
                     "adapter_lr": self.trainer.config.get("adapter_lr"),
                     "optimizer_groups": [{"name": group["name"], "lr": group["lr"], "component": group["component"]}
                                          for group in groups]}
+        if getattr(self.trainer,"ming_full_initialization",None) is not None:
+            metadata["ming_full_initialization"] = self.trainer.ming_full_initialization
         modules = (components.transformer, components.conditioner, components.vae)
         devices = []
         for module in modules:

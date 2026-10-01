@@ -16212,11 +16212,11 @@ def _check_qwen_full_finetune_params(request: "TrainingRunCreateRequest") -> Non
 
     arch = _detect_arch(request.base_model_path)
     if request.full_finetune_dequantize_int8_base and (
-        arch != "qwen_image_21" or request.training_method != "full_finetune"
+        arch not in {"qwen_image_21", "ming_image_01"} or request.training_method != "full_finetune"
     ):
         raise HTTPException(
             status_code=400,
-            detail="full_finetune_dequantize_int8_base requires Qwen-Image 2.1 full fine-tuning",
+            detail="full_finetune_dequantize_int8_base requires Qwen-Image 2.1 or Ming full fine-tuning",
         )
     if request.training_export_format == "int8_convrot" and (
         arch != "qwen_image_21" or request.training_method != "full_finetune"

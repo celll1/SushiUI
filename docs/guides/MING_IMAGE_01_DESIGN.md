@@ -1120,3 +1120,38 @@ weights, AdamW state and scheduler match uninterrupted execution. Changed Python
 files compile and guarded API/runner/trainer imports plus OpenAPI parsing pass.
 No live API, server, official weights or GPU execution was used. The remaining
 Qwen feature parity and production CUDA acceptance are still in progress.
+
+
+### Native DiT runtime INT8 conversion
+
+Ming now accepts unet_quantization=int8 through the common one-time in-place
+converter, before LoRA installation and phase residency. Native attention/FFN
+Linears are eligible; input/output, timestep, caption and modulation bridges
+remain floating point. Shared crest/error selection may retain an e4m3 fallback.
+This is a provisional memory-oriented selection policy, not a measured Ming
+quality/speed claim. Shared partial-conversion, already-quantized, retry and
+one-way persistence rules remain in force. Requesting null/none after conversion
+cannot restore discarded weights and emits the common reload warning.
+
+The converter wrapper now optionally preserves a caller's compute dtype; old
+callers retain their BF16 behavior. Ming requests its native dtype, and its LoRA
+branch builder uses a quantized base's compute dtype so native FP32/FP16 execution
+does not silently acquire BF16 factors. Existing layer buffers remain separate
+from parameter objects. The current-model census is refreshed after conversion
+while native architectural counts and serialized source storage stay separate;
+loaded parameter-object accounting explicitly excludes quantization payloads.
+
+Six CPU runtime cases pass: actual Design/Layer RGBA generation, protected bridge
+identity/frozen conditioner, audit/census consistency, null/none persistence,
+INT8-before-LoRA and quantized-base restoration, unsupported-format refusal, and
+both profiles' two-stage nested U-Net generation/topology preservation. Existing
+slot/branch and common converter lifecycle checks pass in staged runs; a stale
+OpenAPI architecture-list gate was fixed and all three documentation/capability
+gates pass. Python compilation, guarded real imports and OpenAPI parsing pass.
+Generation panel request fields and capability-derived INT8/GEMM choices were
+reviewed statically; owner frontend build/type checking remains deferred.
+
+No live API, server, official weights, GPU allocation or physical GPU kernel was
+used. Native quantized bundle export/loading, conditioner quantization, ConvRot
+and quantized-base training remain pending. GPU memory, throughput, W8A8 numerics
+and official-model image quality are unmeasured. Full Qwen parity is still active.

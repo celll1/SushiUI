@@ -636,7 +636,7 @@ for _feature, _reason in {
     "cfg_schedule": "Ming native generation applies constant native CFG",
     "advanced_cfg": "dynamic thresholding and CFG rescale are not wired into the native Ming loop",
     "attention_impl": "Ming DiT uses the common conduit; the legacy implementation is unavailable",
-    "unet_quantization": "Ming runtime quantization is awaiting integration",
+    "unet_quantization": "Ming supports runtime INT8 attention/FFN conversion; other runtime quantization formats are pending",
     "text_encoder_quantization": "Ming conditioner quantization is awaiting integration",
     "style_transfer": "Ming style conditioning is awaiting integration",
     "vae_drift_correction": "VAE drift correction is not wired into native Ming editing",
@@ -649,6 +649,8 @@ for _feature, _reason in {
     "vae_override": "Ming requires its native 16-latent-channel RGBA VAE",
 }.items():
     _add("ming_image_01", _feature, _reason)
+
+_add_supported_values("ming_image_01", "unet_quantization", ["int8"])
 
 # LTX-2.3 is a video model with its own flow-matching sampler; the image-oriented
 # guidance/conditioning features do not apply.

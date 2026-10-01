@@ -1376,22 +1376,23 @@ def _merge_runtime_int8_documents(documents):
 
 def apply_runtime_int8_quantization(manager, model, arch: str, quantization,
                                     label: str = "Transformer",
-                                    progress_callback=None, precheck=None):
+                                    progress_callback=None, precheck=None, compute_dtype=None):
     """Convert ``model`` to the mixed int8/e4m3 layout in place, once.
 
     The single-component spelling of ``apply_runtime_int8_quantization_multi``
     below, which holds the implementation and the full contract. Returns
     ``(model, converted)``; ``model`` is the SAME object either way (the
-    conversion replaces child modules in place).
+    conversion replaces child modules in place). A compute_dtype override keeps
+    native FP32/FP16 execution; otherwise the existing BF16 policy applies.
     """
     models, converted = apply_runtime_int8_quantization_multi(
         manager, [("transformer", label, model)], arch, quantization,
-        progress_callback=progress_callback, precheck=precheck)
+        progress_callback=progress_callback, precheck=precheck, compute_dtype=compute_dtype)
     return (models[0] if models else model), converted
 
 
 def apply_runtime_int8_quantization_multi(manager, components, arch: str, quantization,
-                                          progress_callback=None, precheck=None):
+                                          progress_callback=None, precheck=None, compute_dtype=None):
     """Convert EVERY module in ``components`` to the mixed int8/e4m3 layout, as one unit.
 
     ``components`` is a sequence of ``(component name, label, module)``; a
@@ -1637,7 +1638,7 @@ def apply_runtime_int8_quantization_multi(manager, components, arch: str, quanti
             document = quantize_linears_in_place(
                 mod,
                 arch=arch,
-                compute_dtype=torch.bfloat16,
+                compute_dtype=compute_dtype or torch.bfloat16,
                 work_device=work_device,
                 progress_cb=_multi_progress_adapter(progress_callback, index,
                                                     len(resolved), progress_totals),

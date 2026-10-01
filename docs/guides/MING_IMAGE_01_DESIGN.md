@@ -2024,3 +2024,39 @@ post-training restoration is asserted. Changed backend files compile and import
 with CUDA forbidden. Main API/GPU and official payload remain unused. Physical
 GPU memory/recompute performance, pending-gradient partition resume, final public
 UI/debug/error paths, global adapters and broader parity acceptance remain work.
+
+
+### Partition pending-gradient resume and initial training UI exposure
+
+Two new actual shared-loop CPU continuation cases pass on Design and Layer:
+MNT2/GAS4, two spatial regions, inherited nested U-Net, stochastic sigma-guidance,
+query chunk 17, full-frame checkpoint count 2 and partition count 1. The Layer
+case also uses sigma-null/per-MNT labels. A step-2 checkpoint contains two pending
+accumulated backwards before the first optimizer update. Resuming it matches the
+remaining six logical training traces exactly, including full-image clean/noise/
+sigma, both conditioning streams, region input coordinates and each native
+conditional tile prediction. Final DiT/conditioner tensors, optimizer moments,
+optimizer update count and scheduler state match uninterrupted CPU execution.
+Null forwards are confirmed selected. This proves same-config completed-batch
+continuation, not a mid-region interruption, changed-plan resume or CUDA bitwise
+promise. The existing runtime checkpoint mechanism needed no production changes.
+
+Training UI exposes Ming's verified spatial partition and main checkpoint counts
+alongside Qwen. Defaults use the server-provided parameter table, explicit zero
+checkpoint limits remain zero, empty limits remain null, and native upper-depth
+validation is performed by the server. Threshold text explains all target Layer
+patch tokens; references remain complete. Mode-dependent inputs now use the same
+fallback as their select state. Qwen-only ConvRot cache, synchronized CUDA timing
+and global-adapter controls remain separately gated while Ming wiring is pending.
+Ming global/profile settings imported from old Qwen presets are a remaining
+transition/preflight concern for that next milestone; hiding those controls is
+not evidence they are supported or that complete parity has been delivered.
+
+Static frontend review covers API number/null types, input bounds, fallback and
+mode state, existing serialization, and the shared approximate-context warning.
+No frontend build/type-check or physical browser interaction was run. Backend
+test compilation, real CUDA-guarded imports and SSOT/OpenAPI parsing pass.
+No live API/GPU/official payload/main use occurred. Owner frontend build/UI checks
+remain for final acceptance. Global adapters, synchronized timing/debug/error
+paths, generation partition parity and the other planned Qwen surfaces remain
+active work.

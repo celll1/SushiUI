@@ -6372,13 +6372,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </div>
             )}
 
-            {isQwenImage21Model && (
+            {(isQwenImage21Model || isMingImageModel) && (
               <div className="pt-2 border-t border-gray-700 space-y-2">
                 <div className="flex items-center space-x-2">
                   <input
                     type="checkbox"
                     id="qwen-partition-training"
-                    checked={params.dit_partition_training_enabled ?? false}
+                    checked={params.dit_partition_training_enabled ?? DEFAULT_PARAMS.dit_partition_training_enabled}
                     onChange={(e) => updateParam("dit_partition_training_enabled", e.target.checked)}
                     className="w-4 h-4"
                   />
@@ -6387,7 +6387,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   </label>
                 </div>
                 <p className="text-xs text-amber-400">
-                  Processes every image region before one optimizer step and lowers peak activation,
+                  Processes every image region before one optimizer step and may lower peak activation,
                   but removes target attention between regions. This is not numerically equivalent to a full forward.
                 </p>
                 {isQwenConvRotModel && <div>
@@ -6431,17 +6431,17 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   <input
                     type="number"
                     min={0}
-                    max={32}
+                    max={isMingImageModel ? undefined : 32}
                     placeholder="auto"
                     value={params.dit_gradient_checkpointing_blocks ?? ""}
                     onChange={(e) => updateParam(
                       "dit_gradient_checkpointing_blocks",
-                      e.target.value === "" ? null : Math.max(0, Math.min(32, parseInt(e.target.value) || 0))
+                      e.target.value === "" ? null : Math.max(0, isMingImageModel ? (parseInt(e.target.value) || 0) : Math.min(32, parseInt(e.target.value) || 0))
                     )}
                     className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
                   />
                   <p className="text-xs text-gray-500 mt-1">
-                    Empty uses the Qwen resolution policy (16/24/32). Lower values trade VRAM for less recomputation only when measured safe.
+                    {isMingImageModel ? "When checkpointing is enabled, empty checkpoints all main blocks. Refiners follow the global checkpointing switch; the server checks the native main-stream depth." : "Empty uses the Qwen resolution policy (16/24/32). Lower values trade VRAM for less recomputation only when measured safe."}
                   </p>
                 </div>
                 {params.dit_partition_training_enabled && (
@@ -6449,7 +6449,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <div className="col-span-2">
                       <label className="block text-xs text-gray-400 mb-1">When to partition</label>
                       <select
-                        value={params.dit_partition_mode ?? "token_threshold"}
+                        value={params.dit_partition_mode ?? DEFAULT_PARAMS.dit_partition_mode}
                         onChange={(e) => updateParam("dit_partition_mode", e.target.value as "fixed" | "token_threshold")}
                         className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
                       >
@@ -6457,26 +6457,26 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         <option value="fixed">Every image (legacy fixed mode)</option>
                       </select>
                     </div>
-                    {params.dit_partition_mode === "token_threshold" && (
+                    {(params.dit_partition_mode ?? DEFAULT_PARAMS.dit_partition_mode) === "token_threshold" && (
                       <div className="col-span-2">
                         <label className="block text-xs text-gray-400 mb-1">Full-frame limit (latent image tokens)</label>
                         <input
                           type="number"
                           min={1}
                           step={1}
-                          value={params.dit_partition_full_frame_max_tokens ?? 4096}
-                          onChange={(e) => updateParam("dit_partition_full_frame_max_tokens", Math.max(1, parseInt(e.target.value) || 4096))}
+                          value={params.dit_partition_full_frame_max_tokens ?? DEFAULT_PARAMS.dit_partition_full_frame_max_tokens}
+                          onChange={(e) => updateParam("dit_partition_full_frame_max_tokens", Math.max(1, parseInt(e.target.value) || DEFAULT_PARAMS.dit_partition_full_frame_max_tokens))}
                           className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
                         />
                         <p className="text-xs text-gray-500 mt-1">
-                          At or below this latent H × W: full frame. Above it: 2 regions; at 4× the limit or above: 4 regions.
+                          {isMingImageModel ? "Counts target frames × (latent H / 2) × (latent W / 2). References are retained in full. At the limit: full frame; above: 2 regions; at 4×: 4 regions." : "At or below this latent H × W: full frame. Above it: 2 regions; at 4× the limit or above: 4 regions."}
                         </p>
                       </div>
                     )}
-                    {params.dit_partition_mode === "fixed" && <div>
+                    {(params.dit_partition_mode ?? DEFAULT_PARAMS.dit_partition_mode) === "fixed" && <div>
                       <label className="block text-xs text-gray-400 mb-1">Regions</label>
                       <select
-                        value={params.dit_partition_fixed_count ?? 2}
+                        value={params.dit_partition_fixed_count ?? DEFAULT_PARAMS.dit_partition_fixed_count}
                         onChange={(e) => updateParam("dit_partition_fixed_count", parseInt(e.target.value) as 2 | 4)}
                         className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
                       >
@@ -6485,12 +6485,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       </select>
                     </div>}
                     <div>
-                      <label className="block text-xs text-gray-400 mb-1">Halo (latent tokens)</label>
+                      <label className="block text-xs text-gray-400 mb-1">Halo ({isMingImageModel ? "spatial patch tokens" : "latent tokens"})</label>
                       <input
                         type="number"
                         min={0}
                         step={2}
-                        value={params.dit_partition_halo_tokens ?? 0}
+                        value={params.dit_partition_halo_tokens ?? DEFAULT_PARAMS.dit_partition_halo_tokens}
                         onChange={(e) => updateParam("dit_partition_halo_tokens", Math.max(0, parseInt(e.target.value) || 0))}
                         className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
                       />
@@ -6500,25 +6500,26 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       <input
                         type="number"
                         min={0}
-                        max={32}
+                        max={isMingImageModel ? undefined : 32}
                         placeholder="auto"
                         value={params.dit_partition_gradient_checkpointing_blocks ?? ""}
                         onChange={(e) => {
                           updateParam(
                             "dit_partition_gradient_checkpointing_blocks",
-                            e.target.value === "" ? null : Math.max(0, Math.min(32, parseInt(e.target.value) || 0))
+                            e.target.value === "" ? null : Math.max(0, isMingImageModel ? (parseInt(e.target.value) || 0) : Math.min(32, parseInt(e.target.value) || 0))
                           );
                         }}
                         className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
                       />
                       <p className="text-xs text-gray-500 mt-1">
-                        Empty preserves the resolved full-frame checkpoint count; a lower override can increase peak VRAM. Zero was slower and larger in the SM89 probe.
+                        Empty preserves the resolved full-frame checkpoint count; a lower override can increase peak VRAM. {isQwenImage21Model && "Zero was slower and larger in the SM89 probe."}
                       </p>
                     </div>
+                    {isQwenImage21Model && <>
                     <label className="flex items-center gap-2 self-end pb-1 text-xs text-gray-300 cursor-pointer">
                       <input
                         type="checkbox"
-                        checked={params.dit_partition_profile ?? false}
+                        checked={params.dit_partition_profile ?? DEFAULT_PARAMS.dit_partition_profile}
                         onChange={(e) => updateParam("dit_partition_profile", e.target.checked)}
                         className="w-4 h-4"
                       />
@@ -6527,7 +6528,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <label className="col-span-2 flex items-center gap-2 text-xs text-gray-300 cursor-pointer">
                       <input
                         type="checkbox"
-                        checked={params.dit_partition_global_adapter_enabled ?? false}
+                        checked={params.dit_partition_global_adapter_enabled ?? DEFAULT_PARAMS.dit_partition_global_adapter_enabled}
                         onChange={(e) => updateParam("dit_partition_global_adapter_enabled", e.target.checked)}
                         className="w-4 h-4"
                       />
@@ -6539,8 +6540,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                           <label className="block text-xs text-gray-400 mb-1">Global Rank</label>
                           <input
                             type="number" min={1} max={512}
-                            value={params.dit_partition_global_rank ?? 64}
-                            onChange={(e) => updateParam("dit_partition_global_rank", Math.max(1, parseInt(e.target.value) || 64))}
+                            value={params.dit_partition_global_rank ?? DEFAULT_PARAMS.dit_partition_global_rank}
+                            onChange={(e) => updateParam("dit_partition_global_rank", Math.max(1, parseInt(e.target.value) || DEFAULT_PARAMS.dit_partition_global_rank))}
                             className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
                           />
                         </div>
@@ -6548,8 +6549,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                           <label className="block text-xs text-gray-400 mb-1">Global Summary Tokens</label>
                           <input
                             type="number" min={1} max={256}
-                            value={params.dit_partition_global_tokens ?? 16}
-                            onChange={(e) => updateParam("dit_partition_global_tokens", Math.max(1, parseInt(e.target.value) || 16))}
+                            value={params.dit_partition_global_tokens ?? DEFAULT_PARAMS.dit_partition_global_tokens}
+                            onChange={(e) => updateParam("dit_partition_global_tokens", Math.max(1, parseInt(e.target.value) || DEFAULT_PARAMS.dit_partition_global_tokens))}
                             className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
                           />
                         </div>
@@ -6558,6 +6559,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         </p>
                       </>
                     )}
+                    </>}
                   </div>
                 )}
               </div>

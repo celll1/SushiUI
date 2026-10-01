@@ -27240,7 +27240,8 @@ components:
             Train the architecture's conditioning bridge/adapter. Null preserves
             its existing method-specific policy. Qwen-Image 2.1 LoRA targets
             txt_in only when true; Ming LoRA similarly targets cap_embedder.1 only
-            when true. Ming full fine-tuning does not yet expose this override.
+            when true. Ming full fine-tuning null inherits DiT trainability; true/false
+            explicitly train/freeze its caption bridge, including normalization.
             This is not text-encoder training or a VAE swap.
           example: true
         adapter_lr:

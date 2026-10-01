@@ -51,11 +51,18 @@ def preflight_training(config, *, method):
         from api.param_defaults import resolve_full_finetune_train_text_encoder
         config["train_text_encoder"] = (resolve_full_finetune_train_text_encoder(None, "ming_image_01")
             if method == "full_finetune" else TRAINING_DEFAULTS["train_text_encoder"])
+    choice = config.get("train_adapter")
+    if choice is not None and type(choice) is not bool:
+        raise ValueError("Ming train_adapter must be null or a boolean")
+    rate = config.get("adapter_lr")
+    if rate is not None and (not isinstance(rate, (int, float)) or isinstance(rate, bool)
+            or not math.isfinite(rate) or rate < 0):
+        raise ValueError("Ming caption adapter rate must be finite and nonnegative")
     groups, _ = resolve_ownership(config)
     if method == "lora" and groups:
         raise ValueError("Ming conditioner LoRA is not yet connected; freeze native conditioner groups")
     config["train_text_encoder"] = bool(groups)
-    if not config.get("train_unet", TRAINING_DEFAULTS["train_unet"]) and not groups and not (method == "lora" and config.get("train_adapter") is True):
+    if not config.get("train_unet", TRAINING_DEFAULTS["train_unet"]) and not groups and config.get("train_adapter") is not True:
         raise ValueError("Ming training requires DiT parameters or a native conditioner group")
     if config.get("train_image_encoder") or config.get("train_vision_encoder") or config.get("vision_encoder_path"):
         raise ValueError("Ming native vision training uses ming_conditioner_groups, not an external image encoder")

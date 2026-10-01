@@ -1090,3 +1090,33 @@ Changed Python files compile and CUDA-guarded API/runner/trainer imports and
 OpenAPI parsing pass. No live API, server, official weights or physical GPU
 execution was used. Exact CUDA/mixed-precision continuation and full runner
 subprocess/DB execution are unverified. Remaining Qwen parity stays in progress.
+
+
+### Full-training caption bridge ownership and rates
+
+Ming full fine-tuning now consumes the same train_adapter/adapter_lr controls
+as its LoRA path. Null train_adapter inherits train_unet; true trains the native
+cap_embedder bridge even with the rest of DiT frozen, and false freezes that
+bridge while other DiT parameters train. Full scope includes the bridge RMSNorm
+and Linear; LoRA scope targets the Linear only. Conditioner groups remain
+independent. Explicit adapter_lr separates caption parameters into one unique
+optimizer group tagged component=adapter, preserving zero. With no adapter rate
+override, existing DiT grouping/order and inherited rate remain unchanged.
+Caption-only execution enables native gradient checkpointing when requested.
+
+API/runner nonempty-scope checks and UI controls accept caption-only full training.
+Method-gated request fields, preset/restored settings and effective conditioner
+scope were reviewed statically; frontend build/type checking remains owner work.
+Native full-bundle training metadata records caption scope/rate alongside groups.
+
+Thirty-two affected CPU cases pass. Eight use actual public request types through
+YAML/runner into real FullParameterTrainer for both Design and Layer: caption-only
+updates, explicit caption freeze, independent rate, and zero-rate preservation.
+They verify finite values, unique optimizer ownership, frozen/updated parameter
+scopes and exact native bundle reload. Two added batch-seam resume cases prove
+caption-only full training with a separate optimizer group, MNT=2, GAS=4 and CPU
+prefetch continues exactly from saved pending gradients: data/noise/timesteps,
+weights, AdamW state and scheduler match uninterrupted execution. Changed Python
+files compile and guarded API/runner/trainer imports plus OpenAPI parsing pass.
+No live API, server, official weights or GPU execution was used. The remaining
+Qwen feature parity and production CUDA acceptance are still in progress.

@@ -231,3 +231,57 @@ def attach_startup_snapshot(trainer, *, latent_mode, text_mode):
         raise ValueError("Ming encoder execution device changed since its startup cache snapshot")
     trainer.ming_cache_context = {**snapshot, "cache": MingTensorCache(Path(trainer.output_dir) / "ming_cache"),
                                 "latent_enabled": latent, "conditioning_enabled": condition}
+
+
+class MingDatasetTensorCache(MingTensorCache):
+    def __init__(self, vae_root, text_root, *, stamp):
+        super().__init__(vae_root)
+        self.text_root, self.stamp = Path(text_root), dict(stamp)
+
+    def _path(self, kind, key):
+        path = super()._path(kind, key)
+        return self.text_root / path.name if kind == "conditioning" else path
+
+    def write(self, kind, key, tensors, **kwargs):
+        super().write(kind, key, tensors, **kwargs)
+        if kind != "latents":
+            return
+        from datetime import datetime, timezone
+        path = self.root / "cache_info.json"
+        if path.is_file():
+            return
+        stamp = {**self.stamp, "created_at": datetime.now(timezone.utc).isoformat()}
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=self.root, prefix=".ming-stamp-", suffix=".tmp",
+                                             mode="w", encoding="utf-8", delete=False) as handle:
+                temporary = Path(handle.name)
+                json.dump(stamp, handle, sort_keys=True, allow_nan=False)
+            os.replace(temporary, path)
+        finally:
+            if temporary is not None and temporary.exists(): temporary.unlink()
+
+
+def dataset_cache_context(context, *, base_cache_dir, dataset_unique_id):
+    """Own native entries under the shared dataset cache lifecycle."""
+    from core.training.latent_cache import build_cache_namespace, vae_cache_namespace
+    if (not isinstance(dataset_unique_id, str) or not dataset_unique_id
+            or dataset_unique_id in {".", ".."}
+            or any(char in dataset_unique_id for char in ("/", "\\", ":", "\x00"))):
+        raise ValueError("Invalid Ming dataset cache identity")
+    base = Path(base_cache_dir).resolve()
+    namespace = build_cache_namespace("ming_image_01", latent_channels=16, latent_dtype=context["vae_dtype"])
+    arch_root = base / dataset_unique_id / namespace
+    latent_hash = (identity_key({"implementation": "ming_rgba_independent_frames_v1",
+        "weights": context["vae_weights"], "config": context["vae_config"],
+        "dtype": str(context["vae_dtype"]), "execution": context["execution"]})
+        if context["latent_enabled"] else None)
+    vae_root = arch_root / vae_cache_namespace(latent_hash)
+    text_root = arch_root / "text_embeddings"
+    if any(not path.resolve().is_relative_to(base) for path in (vae_root, text_root)):
+        raise ValueError("Ming dataset cache path escapes its owned base")
+    cache = MingDatasetTensorCache(vae_root, text_root,
+        stamp={"format": "ming_native_v1", "model_type": "ming_image_01",
+               "vae_latent_hash": latent_hash, "vae_family": "ming_rgba",
+               "artifact_config": context["artifact_config"]})
+    return {**context, "cache": cache}

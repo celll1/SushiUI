@@ -132,7 +132,7 @@ def test_loader_refuses_incomplete_native_state():
         _strict_loading_info({"missing_keys": ["vision.weight"]}, "mllm")
 
 
-def test_native_package_loader_round_trip(tmp_path, monkeypatch):
+def write_tiny_package(tmp_path):
     import json
     from tokenizers import Tokenizer
     from tokenizers.models import WordLevel
@@ -183,6 +183,13 @@ def test_native_package_loader_round_trip(tmp_path, monkeypatch):
     vae.register_to_config(scaling_factor=8.0064, shift_factor=0.0)
     vae.save_pretrained(tmp_path / "vae")
     FlowMatchEulerDiscreteScheduler(shift=6.0).save_pretrained(tmp_path / "scheduler")
+    return original, transformer, topology
+
+
+def test_native_package_loader_round_trip(tmp_path, monkeypatch):
+    import json
+    from core.models.ming_image_01.loader import load_components
+    original, transformer, topology = write_tiny_package(tmp_path)
     restored = load_components(tmp_path, dtype=torch.float32, conditioner_attention="eager")
     differences = [key for key, value in original.native.state_dict().items()
                    if not torch.equal(value, restored.conditioner.native.state_dict()[key])]

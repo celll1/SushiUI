@@ -550,3 +550,20 @@ CUDA guarded. These checks do not prove physical GPU residency, official-weight
 memory fit or optimizer-state movement. CPU prefetch still explicitly refuses at
 the native worker seam, and eager prefill/swap-buffer scheduling remain pending.
 The temporary generic on-the-fly dispatch and normal-training refusal remain.
+
+### Replayable native paired transforms
+
+Native shared pixel loading is now separate from encoder execution. Random crop
+uses an isolated RNG keyed by resolved run seed, epoch, absolute batch position,
+item occurrence, source content and bucket grid. Ahead-of-time calls therefore
+produce the same paired pixels and cache keys as consumption without advancing
+the common Python augmentation RNG. Targets and references share the crop; an
+existing common `CropSpec` remains authoritative. Missing resolved run seed
+refuses unplanned random crops. Dataset supervision identity is versioned to
+include this paired-transform contract, so older staged resume identities cannot
+silently continue under a different crop algorithm.
+
+70 affected dataset/shared-step/cache CPU tests pass; compile and guarded real
+import pass. This is the pixel preparation seam for prefill/prefetch, not their
+completed scheduling. Epoch prefill, bounded buffers and CPU worker lifecycle
+remain pending; normal Ming training remains unavailable. No GPU/API was used.

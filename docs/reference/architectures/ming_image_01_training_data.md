@@ -139,3 +139,10 @@ A cache context rejects producer parameter-version or precision changes. Its
 execution descriptor must describe the actual attention, tiling and runtime
 policy. Common mode selection/eager prefill remains pending; default training
 still follows the staged on-the-fly path until that connection is complete.
+
+Shared native random crop uses `ming_batch_crop_v1`: an isolated RNG binds the
+resolved run seed, epoch, absolute batch cursor, item occurrence, target content
+and bucket grid. Prefill and consumption must pass identical coordinates.
+Common `CropSpec` boxes take precedence. This does not consume the common Python
+augmentation RNG. Supervision identity v2 includes the transform version; older
+staged resume ledgers must be rebuilt rather than silently changing transforms.

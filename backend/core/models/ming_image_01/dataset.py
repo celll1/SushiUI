@@ -217,7 +217,7 @@ def pixel_cache_identity(record, *, width, height, crop_box, flip_horizontal):
 
 
 def supervision_identity(record):
-    payload = {"version": "ming_supervision_v1", "profile": record.profile,
+    payload = {"version": "ming_supervision_v2", "paired_crop": "ming_batch_crop_v1", "profile": record.profile,
         "source_size": record.source_size, "manifest": record.manifest_sha256,
         "targets": [asset.sha256 for asset in record.targets],
         "references": [asset.sha256 for asset in record.references],
@@ -275,31 +275,57 @@ def homogeneous_batches(batches):
     return result
 
 
-def prepare_shared_latents(trainer, pairs):
-    """Encode paired native pixels once per logical batch before the MNT window."""
+def paired_crop_box(strategy, source_size, width, height, *, seed=None):
     import random
+    ow, oh = source_size
+    if strategy == "resize":
+        return None
+    if strategy == "crop":
+        cw, ch = min(ow, max(1, round(oh * width / height))), min(oh, max(1, round(ow * height / width)))
+        return ((ow-cw)//2, (oh-ch)//2, cw, ch)
+    if strategy == "random_crop":
+        if type(seed) is not int:
+            raise ValueError("Ming random crop requires an explicit replay seed")
+        scale = max(1, width/ow, height/oh)
+        cw, ch = min(ow, max(1, round(width/scale))), min(oh, max(1, round(height/scale)))
+        rng = random.Random(seed)
+        return (rng.randint(0, ow-cw), rng.randint(0, oh-ch), cw, ch)
+    raise ValueError("Unknown Ming paired bucket strategy")
+
+
+def batch_crop_seed(trainer, record, *, item_index, width, height, epoch, batch_position):
+    seed = getattr(trainer, "run_seed", None)
+    if type(seed) is not int or any(type(value) is not int or value < 0 for value in (epoch, batch_position, item_index)):
+        raise ValueError("Ming random crop requires a resolved run seed and nonnegative batch coordinates")
+    identity = ["ming_batch_crop_v1", seed, epoch, batch_position, item_index,
+                record.targets[0].sha256, record.source_size, width, height]
+    return int.from_bytes(hashlib.sha256(json.dumps(identity).encode()).digest(), "big")
+
+
+def load_shared_items(trainer, pairs, *, epoch=None, batch_position=None):
+    """Replay paired transforms without consuming the shared augmentation RNG."""
     items = []
-    strategy = trainer.bucket_strategy
-    for item, _dataset in pairs:
+    epoch = getattr(trainer, "_current_epoch", 0) if epoch is None else epoch
+    batch_position = getattr(trainer, "_current_batch_position", 0) if batch_position is None else batch_position
+    for index, (item, _dataset) in enumerate(pairs):
         record = item["_ming_record"]
         width = item.get("bucket_width") or item["width"]
         height = item.get("bucket_height") or item["height"]
         spec = item.get("_crop_spec")
         crop = spec.crop_box if spec is not None else None
-        if crop is None and strategy != "resize":
-            ow, oh = record.source_size
-            if strategy == "crop":
-                cw, ch = min(ow, max(1, round(oh * width / height))), min(oh, max(1, round(ow * height / width)))
-                crop = ((ow-cw)//2, (oh-ch)//2, cw, ch)
-            elif strategy == "random_crop":
-                scale = max(1, width/ow, height/oh)
-                cw, ch = min(ow, max(1, round(width/scale))), min(oh, max(1, round(height/scale)))
-                crop = (random.randint(0, ow-cw), random.randint(0, oh-ch), cw, ch)
-            else:
-                raise ValueError("Unknown Ming paired bucket strategy")
+        if crop is None:
+            seed = (batch_crop_seed(trainer, record, item_index=index, width=width, height=height,
+                                   epoch=epoch, batch_position=batch_position)
+                    if trainer.bucket_strategy == "random_crop" else None)
+            crop = paired_crop_box(trainer.bucket_strategy, record.source_size, width, height, seed=seed)
         items.append(load_pixels(record, caption=item.get("caption", ""), width=width, height=height, crop_box=crop))
-    components = trainer.ming_image_01_components
-    return prepare_record_latents(components, items, resolution=trainer.ming_prompt_resolution,
+    return items
+
+
+def prepare_shared_latents(trainer, pairs):
+    """Encode paired native pixels once per logical batch before the MNT window."""
+    return prepare_record_latents(trainer.ming_image_01_components, load_shared_items(trainer, pairs),
+                                  resolution=trainer.ming_prompt_resolution,
                                   cache_context=getattr(trainer, "ming_cache_context", None),
                                   vae_device=trainer.device, residency=getattr(trainer, "ming_training_residency", None))
 

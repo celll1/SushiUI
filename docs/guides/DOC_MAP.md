@@ -38,8 +38,9 @@ machine-local working material.
 | [docs/guides/SPECTRUM.md](SPECTRUM.md) | Spectrum forecasting behavior and constraints. |
 | [docs/guides/MINIMAX_H3_HYBRID_LOADER_DESIGN.md](MINIMAX_H3_HYBRID_LOADER_DESIGN.md) | Current MiniMax-H3 hybrid-loader contract. |
 | [docs/guides/MINIMAX_MUSIC3_DESIGN.md](MINIMAX_MUSIC3_DESIGN.md) | Current MiniMax Music 3 integration and refusal boundary. |
-| [docs/guides/MING_IMAGE_01_DESIGN.md](MING_IMAGE_01_DESIGN.md) | Proposed Ming Design/Layer integration contract, full Qwen parity, U-Net layout and acceptance boundaries. |
+| [docs/guides/MING_IMAGE_01_DESIGN.md](MING_IMAGE_01_DESIGN.md) | Implemented Ming Design/Layer integration contract, Qwen feature mapping, U-Net layout and unverified owner/GPU gates. |
 | [docs/audits/MING_IMAGE_01_SOURCE_AUDIT.md](../audits/MING_IMAGE_01_SOURCE_AUDIT.md) | Pinned Ming source/configuration audit and provenance constraints; no GPU/API acceptance. |
+| [docs/audits/MING_IMAGE_01_PARITY_AUDIT.md](../audits/MING_IMAGE_01_PARITY_AUDIT.md) | Source/wiring parity audit, CPU evidence, native differences and remaining owner/GPU acceptance. |
 | [docs/legal/MING_IMAGE_01_PROVENANCE.md](../legal/MING_IMAGE_01_PROVENANCE.md) | File-level Ming vendoring licenses, upstream hashes and local modifications. |
 | [docs/guides/QWEN_IMAGE_21_DESIGN.md](QWEN_IMAGE_21_DESIGN.md) | Qwen-Image 2.1 artifacts, generation/editing, training, quantization, and implementation gates. |
 | [docs/guides/QWEN_IMAGE_21_GUIDANCE_LOSS.md](QWEN_IMAGE_21_GUIDANCE_LOSS.md) | Experimental mixed ordinary/guidance-target Qwen training objective and validation gate. |

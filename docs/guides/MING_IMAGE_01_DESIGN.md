@@ -1934,3 +1934,31 @@ backend files compile and import with CUDA forbidden; main API/GPU remain
 unused. Shared trainer dispatch, model backward graph lifetime, reconstruction
 loss, checkpoint policy, debug/metrics, public UI and global adapters remain
 in the partition milestone ahead.
+
+
+### Native sequential partition backward primitive
+
+`partition_training.backward_regions` executes actual native tile forwards and
+backwards sequentially with one supplied full-image noise tensor and sigma draw.
+All target frames share each spatial tile, while complete reference grids and
+dual caption streams remain present. Selected native-null forwards run without
+gradient before conditional tile forwards. Detached null cores establish one
+image-level guidance cap. Each region contributes its supervised core area
+fraction, frame-weighted prediction objective and clean reconstruction objective
+using Ming's clean-minus-noise velocity sign. Shared upstream conditioning graphs
+are retained until the last region backward; ordinary per-region model graphs
+can then be discarded. The caller supplies MNT/GAS backward scaling. GradScaler
+uses the same scaled loss path, but physical CUDA/scaler behavior is not verified.
+Per-item prediction/concept losses and area-weighted guidance metrics are retained.
+
+Eight new CPU cases pass on real tiny native Design/Layer models, with dense or
+nested U-Net topology and plain or image-capped sigma-guidance objectives. A
+separate one-backward oracle sums the same native tile predictions, computes
+weighted objectives/cap directly, and matches reported loss, per-item concept
+loss and every parameter gradient. Plain cases also match both live conditioning
+input gradients across all four regions. This establishes sequential native
+backward against a tile oracle, not equivalence to full-image model attention.
+Changed backend files compile and import with CUDA forbidden. No API/GPU/main
+use occurred. Shared trainer dispatch, MNT/GAS/resume integration, fused-optimizer
+refusal, partition checkpoint policy, cancellation/error paths, native debug,
+public options/UI and global adapter wiring are still pending.

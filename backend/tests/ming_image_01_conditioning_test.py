@@ -132,10 +132,11 @@ def test_loader_refuses_incomplete_native_state():
         _strict_loading_info({"missing_keys": ["vision.weight"]}, "mllm")
 
 
-def write_tiny_package(tmp_path):
+def write_tiny_package(tmp_path, *, profile="generation_edit"):
     import json
     from tokenizers import Tokenizer
     from tokenizers.models import WordLevel
+    from tokenizers.pre_tokenizers import Whitespace
     from safetensors.torch import save_file
     from diffusers import FlowMatchEulerDiscreteScheduler
     from core.models.ming_image_01.model_definition import create_transformer
@@ -151,11 +152,18 @@ def write_tiny_package(tmp_path):
     original.native.save_pretrained(tmp_path / "mllm", state_dict=mllm_state)
     original.native.connector.save_pretrained(tmp_path / "connector")
     vocabulary = {f"word{i}": i for i in range(64)}
-    tokenizer = BailingTokenizer(tokenizer_object=Tokenizer(WordLevel(vocabulary, unk_token="word3")),
+    for text, index in (("<imagePatch>", 40), ("<image>", 41), ("</image>", 42)):
+        del vocabulary[f"word{index}"]
+        vocabulary[text] = index
+    tokenizer_impl = Tokenizer(WordLevel(vocabulary, unk_token="word3"))
+    tokenizer_impl.pre_tokenizer = Whitespace()
+    tokenizer = BailingTokenizer(tokenizer_object=tokenizer_impl,
                                 bos_token="word1", eos_token="word2", pad_token="word0",
-                                gmask_token="word3", cls_token="word4")
+                                gmask_token="word3", cls_token="word4",
+                                additional_special_tokens=["<imagePatch>", "<image>", "</image>"])
     tokenizer.save_pretrained(tmp_path / "mllm")
-    BailingMM2ImageProcessor(patch_size=2, temporal_patch_size=1, merge_size=2).save_pretrained(tmp_path / "mllm")
+    BailingMM2ImageProcessor(patch_size=2, temporal_patch_size=1, merge_size=2,
+                            min_pixels=16, max_pixels=64).save_pretrained(tmp_path / "mllm")
     projection_dir = tmp_path / "mlp"
     projection_dir.mkdir()
     config = {"use_identity_mlp": True, "text_encoder_norm": False, "img_gen_scales": [2], "connector_norm": False,
@@ -168,6 +176,10 @@ def write_tiny_package(tmp_path):
                           "n_kv_heads": 3, "cap_feat_dim": 8, "in_channels": 16,
                           "axes_dims": [2, 2, 4], "axes_lens": [128, 32, 32],
                           "alignment_padding_mode": "zero_masked", "multi_frame_output": False}
+    if profile == "layer_decompose":
+        transformer_config.update(alignment_padding_mode="learned", multi_frame_output=True)
+    elif profile != "generation_edit":
+        raise ValueError(profile)
     transformer = create_transformer(transformer_config, device="cpu", dtype=torch.float32)
     from core.models.ming_image_01.residual_unet import native_config, restore_topology, model_topology_metadata
     from core.rewiring.spec import OPERATORS, build_spec

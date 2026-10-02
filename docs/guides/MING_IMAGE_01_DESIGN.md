@@ -2507,3 +2507,16 @@ Milestone verification: all four new Adafactor cases and four affected existing
 AdamW full/global-LoRA cases pass (eight cases). The changed test module compiles
 and imports with CUDA initialization forbidden. Owner build/UI and official GPU
 acceptance remain pending.
+
+
+### Prompt UI stale settings and panel identity
+
+GPU-free static review found and corrected out-of-order provider-default replies
+and repeated datalist IDs across generation panels. Initial/default settings
+requests are now scoped to a settings revision and unmount; local/shared settings
+changes invalidate stale replies and pending previews immediately. Candidate
+models clear when provider/URL changes, and each panel uses React `useId` for its
+input/datalist pair. Frontend types and request interfaces were reviewed in
+`api.ts`; React 18 dependencies provide `useId`. No build/type-check, browser,
+provider API or GPU execution was performed. See the parity audit's follow-up
+for the reviewed event sequences and remaining owner acceptance.

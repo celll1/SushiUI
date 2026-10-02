@@ -109,3 +109,23 @@ Milestone verification: all four new Adafactor cases and four affected existing
 AdamW full/global-LoRA cases pass (eight cases). The changed test module compiles
 and imports with CUDA initialization forbidden. Owner build/UI and official GPU
 acceptance remain pending.
+
+
+## CPU-only follow-up: prompt UI request ownership
+
+Static review found a delayed provider-default request could overwrite a newer
+provider choice or settings edit, and multiple generation panels shared one
+model datalist ID. The prompt component now invalidates stale initial/default
+responses on settings changes and unmount, aborts a pending rewrite immediately
+on shared/local settings updates, clears old provider model candidates, and uses
+React `useId` for each panel's model list. Review covers out-of-order provider
+responses, cross-panel settings events, edits during initialization, unmount and
+React StrictMode cleanup, failed defaults, and the existing preview cancellation
+and model-refresh revision guards. This is static evidence only: no frontend
+build/type-check, rendered browser verification, live API or local provider call
+was performed.
+
+At this check, local `main` is an ancestor of the feature branch (`git merge-base
+--is-ancestor main HEAD` succeeds), so committed histories do not currently
+diverge. This does not inspect or authorize overwriting main's working changes,
+and the feature branch has not been merged or pushed.

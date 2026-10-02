@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import Textarea from "./Textarea";
 import { getPromptAssistDefaults, listPromptAssistModels, clearMingPromptCache } from "@/utils/api";
 import type { MingPromptSettings, PromptAssistModel } from "@/utils/api";
@@ -17,20 +17,34 @@ export default function MingPromptUpsample({ onApply, ...args }: Props) {
   const controller = useRef<AbortController | null>(null);
   const mounted = useRef(false);
   const revision = useRef(0);
+  const settingsRevision = useRef(0);
+  const modelListId = useId();
   const imageKey = mingPromptImageKey(args.images);
   useEffect(() => {
     mounted.current = true;
-    resolveMingPromptSettings().then(s => { if (mounted.current) setSettings(s); }).catch(e => { if (mounted.current) setError(failure(e)); });
-    const update = (e: Event) => setSettings((e as CustomEvent<MingPromptSettings>).detail);
+    const stamp = settingsRevision.current;
+    resolveMingPromptSettings().then(s => {
+      if (mounted.current && stamp === settingsRevision.current) setSettings(s);
+    }).catch(e => { if (mounted.current && stamp === settingsRevision.current) setError(failure(e)); });
+    const update = (e: Event) => {
+      settingsRevision.current++; revision.current++;
+      controller.current?.abort(); controller.current = null; setBusy(false);
+      setSettings((e as CustomEvent<MingPromptSettings>).detail);
+    };
     window.addEventListener(mingPromptSettingsEvent, update);
-    return () => { mounted.current = false; revision.current++; controller.current?.abort(); window.removeEventListener(mingPromptSettingsEvent, update); };
+    return () => { mounted.current = false; settingsRevision.current++; revision.current++; controller.current?.abort(); window.removeEventListener(mingPromptSettingsEvent, update); };
   }, []);
   useEffect(() => {
     revision.current++;
     controller.current?.abort(); controller.current = null;
     setBusy(false); setResult(""); setError("");
   }, [args.prompt, args.mode, args.width, args.height, args.layers, settings?.engine, settings?.model, settings?.base_url, settings?.temperature, settings?.top_p, settings?.top_k, settings?.max_output_tokens, settings?.context_length, settings?.timeout_seconds, imageKey]);
-  const persist = (s: MingPromptSettings) => { setSettings(s); saveMingPromptSettings(s); };
+  useEffect(() => { setModels([]); }, [settings?.engine, settings?.base_url]);
+  const persist = (s: MingPromptSettings) => {
+    settingsRevision.current++; revision.current++;
+    controller.current?.abort(); controller.current = null; setBusy(false);
+    setSettings(s); saveMingPromptSettings(s);
+  };
   const refresh = async () => {
     if (!settings) return;
     const stamp = revision.current;
@@ -61,12 +75,17 @@ export default function MingPromptUpsample({ onApply, ...args }: Props) {
       <p>Uses your selected local provider. Canvas size and layer count stay fixed.</p>
       <select value={settings.engine} disabled={busy} onChange={async e => {
         const engine = e.target.value as MingPromptSettings["engine"];
-        try { const defaults = await getPromptAssistDefaults(); if (mounted.current) { persist({ ...settings, engine, model: "", base_url: engine === "ollama" ? defaults.ollama_base_url : defaults.lm_studio_base_url }); setModels([]); } }
-        catch (reason) { if (mounted.current) setError(failure(reason)); }
+        const stamp = ++settingsRevision.current;
+        try {
+          const defaults = await getPromptAssistDefaults();
+          if (mounted.current && stamp === settingsRevision.current) {
+            persist({ ...settings, engine, model: "", base_url: engine === "ollama" ? defaults.ollama_base_url : defaults.lm_studio_base_url });
+          }
+        } catch (reason) { if (mounted.current && stamp === settingsRevision.current) setError(failure(reason)); }
       }}><option value="lm_studio">LM Studio</option><option value="ollama">Ollama</option></select>
       <input aria-label="Local provider URL" value={settings.base_url} disabled={busy} onChange={e => persist({ ...settings, base_url: e.target.value, model: "" })} />
-      <input aria-label="Local model ID" value={settings.model} disabled={busy} onChange={e => persist({ ...settings, model: e.target.value })} list="ming-prompt-models" />
-      <datalist id="ming-prompt-models">{models.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</datalist>
+      <input aria-label="Local model ID" value={settings.model} disabled={busy} onChange={e => persist({ ...settings, model: e.target.value })} list={modelListId} />
+      <datalist id={modelListId}>{models.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</datalist>
       <details><summary>Provider inference settings</summary>
         {(["temperature", "top_p", "top_k", "max_output_tokens", "context_length", "timeout_seconds"] as const).map(field =>
           <label key={field} className="block">{field.replaceAll("_", " ")}

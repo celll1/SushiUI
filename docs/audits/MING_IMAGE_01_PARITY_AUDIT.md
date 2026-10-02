@@ -129,3 +129,12 @@ At this check, local `main` is an ancestor of the feature branch (`git merge-bas
 --is-ancestor main HEAD` succeeds), so committed histories do not currently
 diverge. This does not inspect or authorize overwriting main's working changes,
 and the feature branch has not been merged or pushed.
+
+
+## Frontend review follow-up
+
+The owner requested a deeper static frontend review. The resulting
+[frontend review and owner checklist](MING_IMAGE_01_FRONTEND_REVIEW.md) records
+additional queue/loop/transfer/profile/output findings and fixes. This supersedes
+any earlier suggestion that no frontend wiring gap could remain. Compiler,
+browser and official-model GPU acceptance are still separate pending evidence.

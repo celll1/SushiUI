@@ -2520,3 +2520,16 @@ input/datalist pair. Frontend types and request interfaces were reviewed in
 `api.ts`; React 18 dependencies provide `useId`. No build/type-check, browser,
 provider API or GPU execution was performed. See the parity audit's follow-up
 for the reviewed event sequences and remaining owner acceptance.
+
+
+### Owner-ready frontend static review
+
+The dedicated [frontend review](../audits/MING_IMAGE_01_FRONTEND_REVIEW.md) records
+Ming types/defaults, profile transitions, four request transports, queue/loop
+propagation, prompt cancellation, native output/gallery/Studio ownership,
+training/checkpoint controls and structural graphics. Findings corrected include
+lost partition values in inpaint/loops, lost Gallery layer count, Studio primary
+frame duplication/canvas omission, stale profile identity, early Layer input/task
+refusals, and all-frame partition token descriptions. The owner checklist separates
+compiler/browser confirmation from model execution requiring available resources.
+No frontend build/type-check or live API/GPU was run.

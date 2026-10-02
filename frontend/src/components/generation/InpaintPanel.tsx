@@ -3257,6 +3257,10 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
     // tab), and routing an image request at a video model costs a 400 about the
     // wrong thing. The cached flag stays the render-time hint.
     const modality = await resolveModality();
+    if (modality.modelInfo?.type === "ming_image_01" && modality.modelInfo.profile === "layer_decompose") {
+      alert("Ming Layer supports txt2img with references and img2img. Load the Design checkpoint for inpaint.");
+      return;
+    }
     if (modality.isVideo) {
       if (modality.modelInfo?.type === "minimax_h3" && modality.modelInfo?.variant === "hybrid") {
         alert("A merged MiniMax-H3 checkpoint is released for text-to-video only, which is the Txt2Img tab with this model loaded. Temporal inpaint is refused: it was not part of the comparison that released the merge.");
@@ -3696,6 +3700,7 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
         sensenova_mot_phase_eviction: mainParams.sensenova_mot_phase_eviction, // Inherit SenseNova U1.5 per-phase weight-half CPU eviction
         sensenova_kv_cache_streaming: mainParams.sensenova_kv_cache_streaming, // Inherit SenseNova U1.5 per-layer KV cache CPU streaming
         ming_image_01_layers: mainParams.ming_image_01_layers,
+        ming_image_01_partition: mainParams.ming_image_01_partition,
         qwen_image_21_partition: mainParams.qwen_image_21_partition,
         qwen_image_21_kv_cache: mainParams.qwen_image_21_kv_cache,
         original_size_w: mainParams.original_size_w,

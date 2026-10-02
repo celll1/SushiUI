@@ -2427,7 +2427,8 @@ export default function StudioWorkspace() {
   const generateClip = async () => {
     setNotice(null);
     const modality = await resolveModality();
-    if (modality.modelInfo?.type !== loadedArch || modality.modelInfo?.variant !== modelInfo?.variant) {
+    if (modality.modelInfo?.type !== loadedArch || modality.modelInfo?.variant !== modelInfo?.variant
+        || modality.modelInfo?.profile !== modelInfo?.profile) {
       setNotice("The loaded model changed. Studio refreshed its capability defaults; review them and generate again.");
       return;
     }
@@ -2473,6 +2474,16 @@ export default function StudioWorkspace() {
     const planMode: StudioGenerationMode = modality.isVideo && modelInfo?.variant === "ref2va" && referenceIds.length && !outpaintTakesReferences
       ? "ref2v"
       : inferredMode;
+    if (!modality.isVideo && modality.modelInfo?.type === "ming_image_01" && modality.modelInfo.profile === "layer_decompose") {
+      if (!imageInput) {
+        setNotice("Ming Layer requires an image input. Select an image and use img2img.");
+        return;
+      }
+      if (planMode === "image-inpaint" || imageInputMode === "inpaint" || imageInput.maskUrl || inpaintRange) {
+        setNotice("Ming Layer does not support inpaint. Use an unmasked img2img input or load the Design checkpoint.");
+        return;
+      }
+    }
     // A merged MiniMax-H3 checkpoint is released for text-to-video only, which
     // is the branch this submit takes when the plan is none of these four. The
     // notice waits for `planMode` because the same submit serves both.
@@ -2739,7 +2750,7 @@ export default function StudioWorkspace() {
         parameters: recipe,
       });
       const additionalAssets = generatedKind === "image"
-        ? getImageResultFiles(result).slice(1).map((file, index) => studioAssetFromGeneration(
+        ? getImageResultFiles(result).filter(file => file.filename !== getResultFilename(result)).map((file, index) => studioAssetFromGeneration(
             { image: file.image || { filename: file.filename } },
             { ...asset, id: `generation-${jobId}-${index + 1}`, filename: file.filename, kind: "image" },
           ))

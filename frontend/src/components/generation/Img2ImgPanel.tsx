@@ -3069,6 +3069,7 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
         sensenova_mot_phase_eviction: mainParams.sensenova_mot_phase_eviction, // Inherit SenseNova U1.5 per-phase weight-half CPU eviction
         sensenova_kv_cache_streaming: mainParams.sensenova_kv_cache_streaming, // Inherit SenseNova U1.5 per-layer KV cache CPU streaming
         ming_image_01_layers: mainParams.ming_image_01_layers,
+        ming_image_01_partition: mainParams.ming_image_01_partition,
         qwen_image_21_partition: mainParams.qwen_image_21_partition,
         qwen_image_21_kv_cache: mainParams.qwen_image_21_kv_cache,
         original_size_w: mainParams.original_size_w,

@@ -37,6 +37,7 @@ import QwenPartitionControls from "../common/QwenPartitionControls";
 import MingPartitionControls from "../common/MingPartitionControls";
 import { imageDefaultsArchKey } from "@/utils/archConstraints";
 import MingOutputGroups from "../common/MingOutputGroups";
+import MingLayerControls from "../common/MingLayerControls";
 import ImageViewer from "../common/ImageViewer";
 import PostEditControls from "../common/PostEditControls";
 import VideoAccelerationControls from "../common/VideoAccelerationControls";
@@ -1968,6 +1969,10 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
     // whose message is about the wrong thing. The cached flags remain the
     // render-time hint; only the dispatch decision is re-verified.
     const modality = await resolveModality();
+    if (modality.modelInfo?.type === "ming_image_01" && modality.modelInfo.profile === "layer_decompose") {
+      alert("Ming Layer supports txt2img with references and img2img. Load the Design checkpoint for outpaint.");
+      return;
+    }
     const videoMode = modality.isVideo;
     const audioMode = modality.isAudio;
 
@@ -3140,6 +3145,8 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
           width={params.canvas_width} height={params.canvas_height} layers={params.ming_image_01_layers}
           onApply={prompt => setParams(previous => ({ ...previous, prompt }))} />
       )}
+      <MingLayerControls mode="outpaint" value={params.ming_image_01_layers}
+        onChange={ming_image_01_layers => setParams(previous => ({ ...previous, ming_image_01_layers }))} />
       <MingOutputGroups panel="outpaint" />
       {loadedArchType === "qwen_image_21" && (
         <QwenPartitionControls value={params.qwen_image_21_partition}

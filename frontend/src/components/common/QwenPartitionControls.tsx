@@ -56,7 +56,7 @@ export default function QwenPartitionControls({ value, onChange, width, height, 
     </div>
     {config.mode === "off" ? <p className="text-xs text-gray-400">Full-frame path. Global adapters are unused.</p> : <>
       <p className="text-xs text-gray-400">{w * 16} × {h * 16} px · {w} × {h} {architecture === "ming_image_01" ? "patch grid" : "latent"} · {preview?.regions.length ?? "?"} regions
-        {preview && ` · largest input ${Math.max(...preview.regions.map(r => area(r.input) * targetFrames))} tokens`}. Reference Guide and Style Transfer are unavailable with multiple regions.</p>
+        {preview && ` · largest input ${Math.max(...preview.regions.map(r => area(r.input) * targetFrames))} tokens`}. Reference Guide and Style Transfer are unavailable {architecture === "ming_image_01" ? "while partition mode is enabled" : "with multiple regions"}.</p>
       {architecture === "ming_image_01" && <p className="text-xs text-gray-400">All {targetFrames} target frames, including the Layer auxiliary canvas, count toward the ceiling. References and captions stay complete; their attention is recomputed per region. Global summaries are used when saved in the base or LoRA.</p>}
       {config.mode === "manual" && <div className="flex flex-wrap gap-2 my-2 text-xs">
         {[2, 3, 6].map(n => <button key={n} type="button" onClick={() => layout(strips(n, "x"))}> {n} columns </button>)}
@@ -82,7 +82,7 @@ export default function QwenPartitionControls({ value, onChange, width, height, 
           <rect x={r.core.left} y={r.core.top} width={r.core.right - r.core.left} height={r.core.bottom - r.core.top}
             fill={colors[i % colors.length]} fillOpacity={selected === r.path ? 0.2 : 0.08}
             stroke={colors[i % colors.length]} strokeWidth={0.4} strokeDasharray="2 1"
-            onClick={() => setSelected(r.path)}><title>Region {i + 1}: ({r.core.left * 16}, {r.core.top * 16})–({r.core.right * 16}, {r.core.bottom * 16}) px; core {area(r.core)}, input {area(r.input)} tokens</title></rect>
+            onClick={() => setSelected(r.path)}><title>Region {i + 1}: ({r.core.left * 16}, {r.core.top * 16})–({r.core.right * 16}, {r.core.bottom * 16}) px; core {area(r.core) * targetFrames}, input {area(r.input) * targetFrames} target tokens</title></rect>
           <text x={(r.core.left + r.core.right) / 2} y={(r.core.top + r.core.bottom) / 2} fontSize={Math.min(w, h) / 18}
             fill={colors[i % colors.length]} textAnchor="middle" pointerEvents="none">{i + 1}</text>
         </g>)}

@@ -59,6 +59,23 @@
     "budget_policy": "Identical shared initialization, sampling seed, data, schedule, and sample/update budget across all three branches; no quality-driven budget change within this comparison."
   },
   "evaluation": {
+    "benchmarks": [
+      {
+        "name": "ground",
+        "manifest_repo_path": "docs/audits/FOVEATAG_GROUND_BENCHMARK_DANBOORU_V1.json",
+        "manifest_sha256": "876c16b382ccfad7d6f3d7cb2934cdb434e2cab321ab4a23da976d2a7acefe77",
+        "fixed_baseline_report_repo_path": "docs/audits/foveatag_ground_fixed_predictions/siglip2_fixed_report.json",
+        "fixed_baseline_report_sha256": "623ab6d3184d3a1a0a5de1db2d7222aecd05b7b37400f1dc9923401bec4887e3"
+      },
+      {
+        "name": "photo",
+        "manifest_repo_path": "docs/audits/FOVEATAG_WEAK_BENCHMARK_PHOTO_V1.json",
+        "manifest_sha256": "061fc372d470796d72ae69ea4dc8bac5c50ff20f9e8a4ad5cfe3ebecd675edfe",
+        "fixed_baseline_report_repo_path": "docs/audits/foveatag_fixed_predictions/siglip2_fixed_report.json",
+        "fixed_baseline_report_sha256": "90ee90d545a88e137b384433331dd19eb33f848be130d47f5e3536001e596d5b"
+      }
+    ],
+    "runner": "core.tagger.foveatag.phase3_evaluation; all manifest resolutions, after comparison_summary.status is complete",
     "requirement": "Generate all three branch predictions on both registered benchmark resolution ladders; compare C with compute-matched B and overview-only A and the untouched fixed-384 baseline. Report photo provenance limitations separately from illustration ground results.",
     "gate": "Explicit repository-owner Phase 3 decision under the existing design criteria after all evidence is available. This plan introduces no post-hoc numeric threshold.",
     "next_scope": "Production replacement also requires broad semantic-domain coverage and evaluation of every omitted domain. This experiment cannot be presented as matching all 16 domains of the existing tagger."

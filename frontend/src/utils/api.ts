@@ -5789,6 +5789,7 @@ export interface SigLIP2PredictResponse {
 }
 
 export interface SigLIP2StatusResponse {
+  architecture?: "siglip2" | "foveatag";
   loaded: boolean;
   checkpoint_path: string;
   vocab_path: string;
@@ -5862,7 +5863,7 @@ export interface SigLIP2PredictOptions {
 
 export const loadSigLIP2Model = async (req: SigLIP2LoadRequest) => {
   const response = await api.post("/tagger/siglip2/load", req);
-  return response.data as { status: string; model_type: string; num_tags: number };
+  return response.data as { status: string; model_type: string; num_tags: number; architecture?: "siglip2" | "foveatag" };
 };
 
 export const predictSigLIP2Tags = async (

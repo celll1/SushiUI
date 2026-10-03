@@ -270,10 +270,15 @@ class SigLIP2InferenceManager:
         self.processor = None
         self.is_naflex: bool = True   # NaFlex (variable-res) vs standard (fixed-res)
         self.vocabulary: Optional[Dict[str, Any]] = None   # from vocabulary.json
+        self.tag_metrics = None
         self.checkpoint_path: str = ""
         self.vision_encoder_path: str = ""
         self.vocab_path: str = ""
         self.model_type: str = ""   # "full" | "lora" | "onnx"
+        self.architecture = "siglip2"
+        self.max_source_pixels = None
+        self.native_amp_dtype = None
+        self.native_sidecar_base = None
         self.device: str = "cuda" if torch.cuda.is_available() else "cpu"
         # Sparse Likelihood-Ratio matrix for context-conditional inference (Phase 1).
         # Loaded from <model_dir>/lr_matrix.npz when present; None otherwise.
@@ -317,6 +322,14 @@ class SigLIP2InferenceManager:
             raise ValueError("checkpoint_path is empty")
         if not os.path.isfile(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+        native_meta = _read_metadata(checkpoint_path) if checkpoint_path.endswith(".safetensors") else {}
+        native = native_meta.get("architecture") == "foveatag"
+        if native:
+            from pathlib import Path
+            primary_vocab = native_meta.get("vocabulary_file", f"{Path(checkpoint_path).stem}_vocabulary.json")
+            if Path(primary_vocab).name != primary_vocab or not primary_vocab.endswith("_vocabulary.json"):
+                raise ValueError("native vocabulary reference must be a sibling filename")
+            vocab_path = str(Path(checkpoint_path).with_name(primary_vocab))
 
         # Resolve vocabulary path with per-checkpoint priority.
         # The per-checkpoint snapshot ``<ckpt_basename>_vocabulary.json`` is
@@ -328,13 +341,13 @@ class SigLIP2InferenceManager:
             _ckpt_dir  = os.path.dirname(os.path.abspath(checkpoint_path))
             _ckpt_base = os.path.splitext(os.path.basename(checkpoint_path))[0]
             _per_ckpt_vocab = os.path.join(_ckpt_dir, f"{_ckpt_base}_vocabulary.json")
-            if os.path.isfile(_per_ckpt_vocab):
+            if not native and os.path.isfile(_per_ckpt_vocab):
                 if vocab_path and os.path.normpath(vocab_path) != os.path.normpath(_per_ckpt_vocab):
                     print(f"[SigLIP2InferenceManager] Using per-checkpoint vocabulary "
                           f"'{os.path.basename(_per_ckpt_vocab)}' (caller passed "
                           f"'{os.path.basename(vocab_path)}')")
                 vocab_path = _per_ckpt_vocab
-            elif vocab_path and os.path.isfile(vocab_path):
+            elif not native and vocab_path and os.path.isfile(vocab_path):
                 print(f"[SigLIP2InferenceManager] WARNING: per-checkpoint vocabulary "
                       f"'{_ckpt_base}_vocabulary.json' not found; falling back to "
                       f"'{os.path.basename(vocab_path)}'. Tag→idx alignment with "
@@ -380,16 +393,28 @@ class SigLIP2InferenceManager:
             meta = _read_metadata(checkpoint_path)
 
         # 3. Load processor — repo derived from metadata so it always matches the vision encoder
-        from transformers import AutoProcessor
-        processor_repo = meta.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID)
-        print(f"[SigLIP2Manager] Loading processor from {processor_repo}...")
-        try:
-            processor = AutoProcessor.from_pretrained(processor_repo, local_files_only=True)
-        except Exception:
-            processor = AutoProcessor.from_pretrained(processor_repo)
+        if native:
+            from .foveatag.processor import FoveaProcessor
+            from .foveatag.views import ViewConfig
+            processor = FoveaProcessor(ViewConfig(**meta["fovea_view_config"]),
+                seed=meta["fovea_seed"], training=False)
+            if not isinstance(meta["max_source_pixels"], int) or meta["max_source_pixels"] <= 0:
+                raise ValueError("invalid native source-pixel cap")
+            if meta.get("mixed_precision") not in ("fp32", "no", "fp16", "bf16"):
+                raise ValueError("native inference precision contract is missing or invalid")
+        else:
+            from transformers import AutoProcessor
+            processor_repo = meta.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID)
+            print(f"[SigLIP2Manager] Loading processor from {processor_repo}...")
+            try:
+                processor = AutoProcessor.from_pretrained(processor_repo, local_files_only=True)
+            except Exception:
+                processor = AutoProcessor.from_pretrained(processor_repo)
         # Detect NaFlex vs standard by probing the processor output.
         # Prefer metadata field (written by trainer/exporter); fall back to probe.
-        if "is_naflex" in meta:
+        if native:
+            is_naflex = False
+        elif "is_naflex" in meta:
             is_naflex = bool(meta["is_naflex"])
         else:
             _probe = processor(images=[Image.new("RGB", (64, 64))], return_tensors="pt")
@@ -397,7 +422,23 @@ class SigLIP2InferenceManager:
         _mode_str = "NaFlex" if is_naflex else "standard"
         print(f"[SigLIP2Manager] Processor mode: {_mode_str}")
 
-        if checkpoint_path.endswith(".onnx"):
+        if native:
+            from .foveatag.trainer_model import load_native_checkpoint
+            model, _ = load_native_checkpoint(checkpoint_path, base_encoder_path=vision_encoder_path or None)
+            if (model.head.out_features != num_tags or set(idx_to_tag) != set(range(num_tags))
+                    or len(set(idx_to_tag.values())) != num_tags):
+                raise ValueError("native vocabulary differs from checkpoint head")
+            flash = meta.get("attention_requested") == "flash_attention_2"
+            if flash:
+                from flash_attn import flash_attn_func, flash_attn_varlen_func
+            optimized = meta.get("normalization_execution") == "fp32_statistics_v1"
+            model.vision_encoder.set_sdpa(optimized, allow_flash=flash, external_flash=flash)
+            model.to(self.device)
+            self.model = model
+            model_type = model.training_method
+            self.max_source_pixels = meta["max_source_pixels"]
+            self.native_amp_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}.get(meta.get("mixed_precision"))
+        elif checkpoint_path.endswith(".onnx"):
             import onnxruntime as ort
             opts = ort.SessionOptions()
             opts.log_severity_level = 2
@@ -471,6 +512,10 @@ class SigLIP2InferenceManager:
         self.vision_encoder_path = vision_encoder_path
         self.vocab_path          = vocab_path
         self.model_type          = model_type
+        self.architecture        = "foveatag" if native else "siglip2"
+        self.native_sidecar_base = os.path.join(_ckpt_dir, primary_vocab.removesuffix("_vocabulary.json")) if native else None
+        if native:
+            _ckpt_base = os.path.basename(self.native_sidecar_base)
 
         # Analytical CS-ASL logit bias overactivates rare labels before equilibrium;
         # inference therefore uses the measured raw probabilities.
@@ -549,7 +594,8 @@ class SigLIP2InferenceManager:
                 if emb.dim() > 1:
                     emb = emb[0]
                 self._last_cls_emb = emb.numpy()
-            self._cls_emb_hook_handle = self.model.head.register_forward_pre_hook(_capture_cls_emb)
+            self._cls_emb_hook_handle = (self.model.register_ood_feature_hook(_capture_cls_emb)
+                if native else self.model.head.register_forward_pre_hook(_capture_cls_emb))
 
         print(
             f"[SigLIP2Manager] Loaded {model_type} model | "
@@ -558,6 +604,7 @@ class SigLIP2InferenceManager:
         return {
             "status":     "ok",
             "model_type": model_type,
+            "architecture": self.architecture,
             "num_tags":   num_tags,
         }
 
@@ -617,8 +664,12 @@ class SigLIP2InferenceManager:
 
         import numpy as np
 
-        pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        proc_kwargs = {"images": pil_image, "return_tensors": "pt"}
+        native = self.architecture == "foveatag"
+        with Image.open(io.BytesIO(image_bytes)) as source:
+            if self.max_source_pixels is not None and source.width * source.height > self.max_source_pixels:
+                raise ValueError("Image exceeds the native model's source-pixel cap")
+            pil_image = source.convert("RGB")
+        proc_kwargs = {"images": [pil_image] if native else pil_image, "return_tensors": "pt"}
         if self.is_naflex:
             proc_kwargs["max_num_patches"] = max_num_patches
         inputs = self.processor(**proc_kwargs)
@@ -630,7 +681,19 @@ class SigLIP2InferenceManager:
         )
 
         ood_distance: Optional[float] = None
-        if self.model_type == "onnx":
+        if native:
+            views = inputs["fovea_views"].to(self.device)
+            self._last_cls_emb = None
+            with torch.no_grad(), torch.autocast(device_type=torch.device(self.device).type,
+                    dtype=self.native_amp_dtype,
+                    enabled=self.device.startswith("cuda") and self.native_amp_dtype is not None):
+                logits = self.model(views).float()
+            if use_ood_detection and self.ood_ref is not None and self._last_cls_emb is not None:
+                ood_distance = mahalanobis(self._last_cls_emb, self.ood_ref["mu"], self.ood_ref["cov_inv"])
+            if context_correction is not None:
+                logits = logits + torch.from_numpy(context_correction).to(logits.device)
+            probs = torch.sigmoid(logits[0]).cpu().numpy()
+        elif self.model_type == "onnx":
             pv_np = inputs["pixel_values"].float().numpy()
             _use_ood = (
                 use_ood_detection
@@ -888,6 +951,8 @@ class SigLIP2InferenceManager:
 
         Only valid when model_type == 'lora'.
         """
+        if self.architecture == "foveatag":
+            raise ValueError("Use the native trainer's merged inference export for FoveaTag")
         if self.model is None and self.onnx_session is None:
             raise RuntimeError("No model loaded.")
         if self.model_type == "onnx":
@@ -974,6 +1039,8 @@ class SigLIP2InferenceManager:
 
         Returns (onnx_path, vocab_path).
         """
+        if self.architecture == "foveatag":
+            raise ValueError("Native coordinate-aware FoveaTag ONNX export is not implemented")
         if self.model is None and self.onnx_session is None:
             raise RuntimeError("No model loaded.")
         if self.model_type == "onnx":
@@ -1265,10 +1332,15 @@ class SigLIP2InferenceManager:
             self.onnx_session = None
         self.processor           = None
         self.vocabulary          = None
+        self.tag_metrics         = None
         self.checkpoint_path     = ""
         self.vision_encoder_path = ""
         self.vocab_path          = ""
         self.model_type          = ""
+        self.architecture        = "siglip2"
+        self.max_source_pixels   = None
+        self.native_amp_dtype    = None
+        self.native_sidecar_base = None
         self.lr_matrix           = None
         if self.ood_emb_session is not None:
             del self.ood_emb_session
@@ -1373,6 +1445,7 @@ class SigLIP2InferenceManager:
             "name_calibration": name_calibration,
             "n_bins":           n_bins,
             "ood_ref":          self.ood_ref if want_ood else None,
+            "architecture":     self.architecture,
         }
 
     def build_ood_reference(
@@ -1483,7 +1556,7 @@ class SigLIP2InferenceManager:
         """Return _tag_metrics.npz path for the loaded checkpoint, or None if absent."""
         if not self.checkpoint_path:
             return None
-        base = os.path.splitext(self.checkpoint_path)[0]
+        base = self.native_sidecar_base or os.path.splitext(self.checkpoint_path)[0]
         p = base + "_tag_metrics.npz"
         return p if os.path.isfile(p) else None
 
@@ -1534,6 +1607,7 @@ class SigLIP2InferenceManager:
             "checkpoint_path":   self.checkpoint_path,
             "vocab_path":        self.vocab_path,
             "model_type":        self.model_type,
+            "architecture":      self.architecture,
             "num_tags":          len(self.vocabulary["idx_to_tag"]) if self.vocabulary else 0,
             "lr_matrix_loaded":  self.lr_matrix is not None,
             "has_tag_metrics":   self.get_tag_metrics_path() is not None,

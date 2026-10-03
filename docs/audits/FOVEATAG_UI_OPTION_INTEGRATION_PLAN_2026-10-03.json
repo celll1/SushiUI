@@ -69,6 +69,10 @@
       "implemented_on_branch": "The native shared trainer attaches a deterministic inference processor. The handle passes coordinate-aware views, checks the input pixel cap before decode, retains CUDA autocast precision and restores train/eval state on success or failure. It does not borrow SigLIP2 calibration or OOD feature-space references.",
       "verification": "Six synthetic CPU prediction tests cover full/LoRA, train/eval restoration, deterministic outputs, unchanged weights/RNG, foreign-assist exclusion, pre-decode cap refusal and failure cleanup. They do not establish live CUDA concurrency, checkpoint loading or API/UI deployment."
     },
+    "native_checkpoint_inference": {
+      "implemented_on_branch": "The historical inference load/predict endpoints recognize native metadata without downloading a processor or encoder. Self-contained full/LoRA and merged artifacts reconstruct strictly; compact exports require a fingerprint-matched scratch backbone. Native view/seed/cap/precision are mandatory, vocabulary indices must match the head, native metrics use the metadata's sibling vocabulary stem and OOD uses the native feature tap. Model-only best artifacts do not require optimizer state. Native ONNX/manager merge operations are refused explicitly.",
+      "remaining": "Publish fresh inference artifact paths to the training UI, verify CUDA/live prediction concurrency and complete API/UI deployment."
+    },
     "remaining": [
       "Verify the complete native shared training loop, metrics, online data and optimizer resume contracts, not only the model/data protocols.",
       "Finish online/metrics feature-specific verification. Keep the existing atomic A/B/C runner's resume contract separate and unchanged.",

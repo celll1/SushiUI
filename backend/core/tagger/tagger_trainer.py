@@ -2211,6 +2211,7 @@ class TaggerTrainer:
             metadata["fovea_view_config"] = asdict(view_config(self.config))
             metadata["max_source_pixels"] = self.config["fovea_max_source_pixels"]
             metadata["fovea_seed"] = self.config["fovea_seed"]
+            metadata["mixed_precision"] = self.config["mixed_precision"]
             metadata.pop("is_naflex", None)
             metadata["attention_requested"] = "flash_attention_2" if self.config["use_flash_attention"] else "sdpa_no_flash"
             metadata["attention_window_layout"] = "packed_connected_regions_v1"

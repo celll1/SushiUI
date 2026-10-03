@@ -1,0 +1,67 @@
+{
+  "format_version": 1,
+  "kind": "foveatag_phase3_abc_preregistered_plan",
+  "status": "registered_before_any_branch_quality",
+  "scope": "Two-domain architecture experiment, not broad-domain replacement training. All branches train the encoder and randomly initialized tag head end to end. No SigLIP2 weights enter FoveaTag.",
+  "phase2_gate": {
+    "repo_path": "docs/audits/FOVEATAG_PHASE2_GATE_2026-10-03.json",
+    "sha256": "2dead2318d3500a3f71178d3f5ea6a01199f806bc0a0180d2ffb920970e90c7c"
+  },
+  "throughput": {
+    "path": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase3_supervised_throughput_20261003.json",
+    "sha256": "81ba819e985caad81bb1826f4a36ad6852e5730b25d68fe2ee2ed41062610d63",
+    "batch_size": 16,
+    "measured_steps_per_mode": 16,
+    "samples_per_second": {
+      "overview_only": 75.95092785757369,
+      "overview_placebo": 40.35850841485962,
+      "source_native": 39.878090804286614
+    },
+    "measurement_limit": "Short steady-state measurement with synthetic labels; startup, long-run storage stalls, and validation require additional time. Not a tag-quality measurement."
+  },
+  "data": {
+    "database": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase3_abc_20261003\\datasets_snapshot.db",
+    "snapshot_method": "SQLite online backup from the owner database; no database mutations propagate into the comparison.",
+    "train_counts": {"16": 18000, "29": 200000},
+    "validation_counts": {"16": 512, "29": 2048},
+    "domain_weights": {"16": 0.15, "29": 0.85},
+    "photo_dataset_id": 16,
+    "photo_loss_weight": 0.25,
+    "photo_supervision": "Existing partially curated positives are retained; unverified fine-detail negatives are masked using the registered fine-detail vocabulary. No eye-specific routing or sampling.",
+    "holdout_manifests": [
+      "docs/audits/FOVEATAG_GROUND_BENCHMARK_DANBOORU_V1.json",
+      "docs/audits/FOVEATAG_WEAK_BENCHMARK_PHOTO_V1.json"
+    ],
+    "vocabulary": {
+      "path": "D:\\celll1\\webui_cl\\tagger_models\\cca72ce1-7420-4164-9f24-c30ae77cdf2f\\best_f1_vocabulary.json",
+      "sha256": "c78e64970fb0970cb008d64886179ef96a98b976cb9341352c83ae289002b7e6",
+      "num_tags": 107926
+    }
+  },
+  "training": {
+    "input_modes_in_order": ["overview_only", "overview_placebo", "source_native"],
+    "epochs": 10,
+    "epoch_samples": 240000,
+    "presented_samples_per_branch": 2400000,
+    "nominal_optimizer_steps_per_branch": 150000,
+    "batch_size": 16,
+    "workers": 8,
+    "local_views": 4,
+    "learning_rate": 0.0001,
+    "weight_decay": 0.0001,
+    "warmup_steps": 5000,
+    "checkpoint_every_steps": 1000,
+    "log_every": 100,
+    "seed": 20260929,
+    "max_source_pixels": 40000000,
+    "loss": "Existing masked asymmetric loss, global batch-by-tag mean",
+    "expected_abc_training_hours_excluding_validation_and_startup": 42.013829949913396,
+    "budget_policy": "Identical shared initialization, sampling seed, data, schedule, and sample/update budget across all three branches; no quality-driven budget change within this comparison."
+  },
+  "evaluation": {
+    "requirement": "Generate all three branch predictions on both registered benchmark resolution ladders; compare C with compute-matched B and overview-only A and the untouched fixed-384 baseline. Report photo provenance limitations separately from illustration ground results.",
+    "gate": "Explicit repository-owner Phase 3 decision under the existing design criteria after all evidence is available. This plan introduces no post-hoc numeric threshold.",
+    "next_scope": "Production replacement also requires broad semantic-domain coverage and evaluation of every omitted domain. This experiment cannot be presented as matching all 16 domains of the existing tagger."
+  },
+  "comparison_dir": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase3_abc_20261003"
+}

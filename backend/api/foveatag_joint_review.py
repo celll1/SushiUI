@@ -149,6 +149,7 @@ def start_joint_review(run, db, threads, callback_factory):
                 row.status, row.error_message = "failed", f"Joint training failed ({type(exc).__name__})"
                 session.commit()
             finally:
+                control.detach()
                 session.close()
                 with _lifecycle_lock:
                     threads.pop(run_id, None)

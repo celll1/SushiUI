@@ -15,7 +15,9 @@ fixed-square, unpadded overview policy, and retains square source-native locals
 inside source boundaries. Shape distortion of the overview is a recorded
 tradeoff. No fabricated gate or external tagger weights are used.
 Each start is bounded by `review_steps`; it stops with a resumable joint
-checkpoint for owner visual review. Defaults live in
+checkpoint and a model/router-only `review.safetensors` for owner visual review.
+The latter is the latest review export, not an automatically accepted best model.
+Defaults live in
 `TAGGER_JOINT_REVIEW_DEFAULTS`, not the generic SigLIP2 creation request.
 The monitor's loss curve uses the classification ASL term; the joint summary
 records classification/ranking/diversity terms separately.

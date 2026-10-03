@@ -111,7 +111,7 @@ views, uses deterministic validation sampling without consuming training RNG,
 checks the source-pixel cap before decode and retains the run's CUDA precision.
 It restores the prior train/eval mode even if prediction fails. Loaded SigLIP2
 calibration and OOD references are not applied to the native model; native
-live concurrency checks remain separate pending integration work.
+live concurrency is serialized with native training updates.
 
 The historical `/tagger/siglip2/load` and `/predict` endpoints also recognize
 native shared-trainer FoveaTag metadata. Full unmerged and merged checkpoints
@@ -123,7 +123,15 @@ reference. Native OOD uses overview-plus-mixed-evidence features, not the MIL
 classifier input. Model-only `best_f1` files do not require optimizer state.
 Native ONNX and inference-manager merge operations are explicitly refused;
 the trainer already produces native merged exports. Live API/UI deployment
-and concurrency verification remain pending.
+remains pending.
+
+Native shared training holds the handle's reentrant model lock from forward
+through optimizer update, and for head expansion. Prediction, offload/restore
+and attach/detach use the same lock. Validation acquires it per batch and
+restores the prior mode, allowing prediction between batches without exposing
+training to eval toggles or transient OOD hooks. Opt-in GPU concurrency tests
+cover full/LoRA, FP16/BF16 FlashAttention and exact RAM/disk state restoration.
+The frozen A/B/C runner's training numerics remain unchanged.
 
 Native model-only publications use `_inference_commit.json` after weights,
 metadata, vocabulary and selected optional artifacts finish saving. This also

@@ -24,11 +24,20 @@ from __future__ import annotations
 
 import os
 import threading
+from functools import wraps
 from typing import Any, Dict, Optional
 
 import torch
 
 from core.gpu_coordinator import OffloadDecision, TrainerHandle  # type: ignore
+
+
+def _exclusive_handle(method):
+    @wraps(method)
+    def call(self, *args, **kwargs):
+        with self._model_lock:
+            return method(self, *args, **kwargs)
+    return call
 
 
 def _move_state_dict_inplace(state: Dict[str, Any], device: torch.device | str) -> None:
@@ -77,6 +86,7 @@ class TaggerTrainerHandle:
         self._max_source_pixels = None
         self._inference_amp_dtype = None
         self._owner_tid: Optional[int] = None
+        self._model_lock = threading.RLock()
 
         self._param_origin_devices: Dict[int, torch.device] = {}
         self._buffer_origin_devices: Dict[int, torch.device] = {}
@@ -101,6 +111,11 @@ class TaggerTrainerHandle:
         return m + b + 2 * opt
 
 
+    def model_access(self):
+        """Serialize native updates, prediction and device/state changes."""
+        return self._model_lock
+
+    @_exclusive_handle
     def attach(
         self,
         model: torch.nn.Module,
@@ -122,6 +137,7 @@ class TaggerTrainerHandle:
         self._inference_amp_dtype = inference_amp_dtype
         self._owner_tid = threading.get_ident()
 
+    @_exclusive_handle
     def detach(self) -> None:
         """Called at train() exit (success, error, or stop)."""
         self._model = None
@@ -141,6 +157,7 @@ class TaggerTrainerHandle:
         self._swap_path = None
         self._cached_opt_state = None
 
+    @_exclusive_handle
     def offload(self, decision: OffloadDecision) -> None:
         """Move trainer state off GPU according to *decision*.  Must be
         invoked from the trainer thread."""
@@ -193,6 +210,7 @@ class TaggerTrainerHandle:
         self._active_decision = decision
         print(f"[TaggerHandle:{self.run_id[:8]}] offload complete (mode={decision.mode})")
 
+    @_exclusive_handle
     def restore(self) -> None:
         """Move trainer state back to GPU.  Must be invoked from the
         trainer thread."""
@@ -246,6 +264,7 @@ class TaggerTrainerHandle:
         p = next(iter(self._model.parameters()), None)
         return p is not None and p.device.type == "cuda"
 
+    @_exclusive_handle
     def predict(
         self,
         image_bytes: bytes,

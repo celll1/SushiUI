@@ -146,10 +146,12 @@ def test_native_rng_roundtrip_includes_numpy_and_current_cuda_stream(monkeypatch
 @pytest.mark.parametrize("metrics_enabled", [False, True])
 @pytest.mark.parametrize("f1_enabled", [False, True])
 @pytest.mark.parametrize("exposure_enabled", [False, True])
-def test_actual_common_loop_stop_resume_matches_uninterrupted(tmp_path, method, metrics_enabled, f1_enabled, exposure_enabled):
+def test_actual_common_loop_stop_resume_matches_uninterrupted(tmp_path, monkeypatch, method, metrics_enabled, f1_enabled, exposure_enabled):
     from core.tagger.tagger_trainer import TaggerTrainer, _load_training_state
     from core.tagger.tag_vocabulary import TagVocabulary
     from core.gpu_coordinator import gpu_coordinator
+    from core.tagger.foveatag.trainer_model import FoveaTrainerModel
+    original_forward = FoveaTrainerModel.forward
     encoder_config = FoveaEncoderConfig(widths=(8, 16, 32, 32), depths=(1, 1, 1, 1),
         attention_heads=(2, 2), scale_dropout=.2)
     encoder = FoveaEncoder(encoder_config)
@@ -184,6 +186,10 @@ def test_actual_common_loop_stop_resume_matches_uninterrupted(tmp_path, method, 
             if stop and event == "checkpoint" and values.get("step") == 2:
                 trainer.stop()
         trainer = TaggerTrainer("synthetic", config, vocabulary, str(directory), progress_callback=callback)
+        def locked_forward(instance, *args, **kwargs):
+            assert trainer._coordinator_handle._model_lock._is_owned()
+            return original_forward(instance, *args, **kwargs)
+        monkeypatch.setattr(FoveaTrainerModel, "forward", locked_forward)
         resume_name = "step_000002" if f1_enabled else "latest"
         state = _load_training_state(str(directory), resume_name) if resume else None
         try:

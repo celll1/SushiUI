@@ -23,6 +23,7 @@ import threading
 import time
 import numpy as np
 from collections import deque
+from contextlib import nullcontext
 from queue import Queue as _Queue
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -1562,7 +1563,8 @@ class TaggerTrainer:
             epoch_start_rng = _capture_rng()
 
             print(f"[TaggerTrainer] --- Epoch {epoch}/{epochs} ---")
-            model.train()
+            with self._coordinator_handle.model_access() if native_run else nullcontext():
+                model.train()
             epoch_loss       = 0.0
             batches_processed = 0
 
@@ -1660,65 +1662,54 @@ class TaggerTrainer:
                 labels     = labels.to(device)
                 loss_masks = loss_masks.to(device)
 
-                optimizer.zero_grad()
-
-                # Arm the OOD hook (one-shot flag) before the forward pass
-                if _save_ood_ref_enabled:
-                    _ood_cap_once[0] = True
-
-                if use_amp:
-                    with torch.autocast(device_type="cuda", dtype=amp_dtype):
+                with self._coordinator_handle.model_access() if native_run else nullcontext():
+                    optimizer.zero_grad()
+                    if _save_ood_ref_enabled:
+                        _ood_cap_once[0] = True
+                    if use_amp:
+                        with torch.autocast(device_type="cuda", dtype=amp_dtype):
+                            logits = model(pv, pam, ss)
+                            loss = criterion(logits, labels, loss_masks)
+                    else:
                         logits = model(pv, pam, ss)
                         loss   = criterion(logits, labels, loss_masks)
-                else:
-                    logits = model(pv, pam, ss)
-                    loss   = criterion(logits, labels, loss_masks)
 
-                # Feed any captured CLS embeddings to the OOD accumulator
-                if _save_ood_ref_enabled and _ood_cap_buf:
-                    _ood_emb_acc.update(_ood_cap_buf.pop().numpy())
-
-                # Skip batch only when loss itself is NaN/Inf (backward is meaningless)
-                loss_val = loss.item()
-                if loss_val != loss_val or loss_val == float("inf"):
-                    print(f"[TaggerTrainer] WARNING: NaN/Inf loss at step {global_step}, skipping batch")
-                    optimizer.zero_grad(set_to_none=True)
+                    if _save_ood_ref_enabled and _ood_cap_buf:
+                        _ood_emb_acc.update(_ood_cap_buf.pop().numpy())
+                    loss_val = loss.item()
+                    if loss_val != loss_val or loss_val == float("inf"):
+                        print(f"[TaggerTrainer] WARNING: NaN/Inf loss at step {global_step}, skipping batch")
+                        optimizer.zero_grad(set_to_none=True)
+                        if scaler is not None:
+                            scaler.update()
+                        continue
+                    if _n2_eval > 0 or _train_count_on or (native_run and _save_tag_metrics_enabled):
+                        _step_probs = torch.sigmoid(logits.detach()).to(torch.float16).cpu()
+                        _step_labels = labels.detach().bool().cpu()
                     if scaler is not None:
+                        scaler.scale(loss).backward()
+                        scaler.unscale_(optimizer)
+                        # Clipping non-finite gradients would create NaNs.
+                        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                        if not torch.isfinite(grad_norm):
+                            print(f"[TaggerTrainer] WARNING: non-finite grad norm ({grad_norm:.3g}) "
+                                  f"at step {global_step}, skipping optimizer step")
+                            optimizer.zero_grad(set_to_none=True)
+                            scaler.update()
+                            continue
+                        scaler.step(optimizer)
+                        self._optimizer_steps_completed += 1
                         scaler.update()
-                    continue
-
-                # Capture sigmoid probs for training F1 rolling buffer (fp16, CPU).
-                # Also needed when train-count augmentation is on (tag_count update).
-                if _n2_eval > 0 or _train_count_on or (native_run and _save_tag_metrics_enabled):
-                    _step_probs  = torch.sigmoid(logits.detach()).to(torch.float16).cpu()
-                    _step_labels = labels.detach().bool().cpu()
-
-                if scaler is not None:
-                    scaler.scale(loss).backward()
-                    scaler.unscale_(optimizer)
-                    # Clip first — large-but-finite gradients are clipped and learned from.
-                    # clip_grad_norm_ returns the pre-clip total norm; if it is non-finite
-                    # (fp16 overflow produced Inf gradients), skip to avoid 0×Inf = NaN.
-                    grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                    if not torch.isfinite(grad_norm):
-                        print(f"[TaggerTrainer] WARNING: non-finite grad norm ({grad_norm:.3g}) "
-                              f"at step {global_step}, skipping optimizer step")
-                        optimizer.zero_grad(set_to_none=True)
-                        scaler.update()
-                        continue
-                    scaler.step(optimizer)
-                    self._optimizer_steps_completed += 1
-                    scaler.update()
-                else:
-                    loss.backward()
-                    grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                    if not torch.isfinite(grad_norm):
-                        print(f"[TaggerTrainer] WARNING: non-finite grad norm ({grad_norm:.3g}) "
-                              f"at step {global_step}, skipping optimizer step")
-                        optimizer.zero_grad(set_to_none=True)
-                        continue
-                    optimizer.step()
-                    self._optimizer_steps_completed += 1
+                    else:
+                        loss.backward()
+                        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                        if not torch.isfinite(grad_norm):
+                            print(f"[TaggerTrainer] WARNING: non-finite grad norm ({grad_norm:.3g}) "
+                                  f"at step {global_step}, skipping optimizer step")
+                            optimizer.zero_grad(set_to_none=True)
+                            continue
+                        optimizer.step()
+                        self._optimizer_steps_completed += 1
 
                 # Injection (Danbooru pure-batch) updates: skip LR scheduler
                 # and step counter so resume reproducibility is preserved.
@@ -2108,7 +2099,10 @@ class TaggerTrainer:
         max_batches: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Collect validation predictions and labels as float16 tensors."""
-        model.eval()
+        native = getattr(model, "architecture", None) == "foveatag"
+        handle = getattr(self, "_coordinator_handle", None)
+        if not native:
+            model.eval()
         all_preds  = []
         all_labels = []
         with torch.no_grad():
@@ -2121,11 +2115,19 @@ class TaggerTrainer:
                 pv  = pv.to(device)
                 pam = pam.to(device)
                 ss  = ss.to(device)
-                if amp_dtype is not None:
-                    with torch.autocast(device_type="cuda", dtype=amp_dtype):
-                        logits = model(pv, pam, ss)
-                else:
-                    logits = model(pv, pam, ss)
+                with handle.model_access() if native and handle is not None else nullcontext():
+                    was_training = model.training
+                    if native:
+                        model.eval()
+                    try:
+                        if amp_dtype is not None:
+                            with torch.autocast(device_type="cuda", dtype=amp_dtype):
+                                logits = model(pv, pam, ss)
+                        else:
+                            logits = model(pv, pam, ss)
+                    finally:
+                        if native:
+                            model.train(was_training)
                 # Pad stale-width val labels after a mid-training vocab expansion.
                 if labels.shape[1] < logits.shape[1]:
                     labels = torch.nn.functional.pad(
@@ -2597,9 +2599,10 @@ def run_tagger_training(
                     # tags would wrongly survive resume.
                     _norms = [normalize_tag(t) for t in new_tags]
                     _were_present = {t for t in _norms if t in vocabulary.tag_to_idx}
-                    n = expand_vocab_and_head(
-                        new_tags, vocabulary, trainer.model, trainer.optimizer
-                    )
+                    with trainer._coordinator_handle.model_access() if config.get("architecture") == "foveatag" else nullcontext():
+                        n = expand_vocab_and_head(
+                            new_tags, vocabulary, trainer.model, trainer.optimizer
+                        )
                     if n > 0:
                         _newly = [
                             t for t in _norms

@@ -21324,7 +21324,12 @@ def get_tagger_training_run(run_id: str, training_db: Session = Depends(get_trai
     run = training_db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Tagger training run not found")
-    return run.to_list_dict()
+    result = run.to_list_dict()
+    if (run.config or {}).get("architecture") == "foveatag":
+        from core.tagger.foveatag.inference_bundle import published_inference_paths
+        result["inference_checkpoint_paths"] = [entry for name in ("latest", "best_f1")
+            for entry in published_inference_paths(run.output_dir, name)]
+    return result
 
 
 @router.patch("/tagger-training/runs/{run_id}")

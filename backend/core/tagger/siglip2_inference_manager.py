@@ -330,6 +330,12 @@ class SigLIP2InferenceManager:
             if Path(primary_vocab).name != primary_vocab or not primary_vocab.endswith("_vocabulary.json"):
                 raise ValueError("native vocabulary reference must be a sibling filename")
             vocab_path = str(Path(checkpoint_path).with_name(primary_vocab))
+            publication_name = primary_vocab.removesuffix("_vocabulary.json")
+            if Path(checkpoint_path).with_name(f"{publication_name}_inference_commit.json").is_file():
+                from .foveatag.inference_bundle import verify_inference_bundle
+                publication = verify_inference_bundle(Path(checkpoint_path).parent, publication_name)
+                if Path(checkpoint_path).name not in publication["files"]:
+                    raise ValueError("native checkpoint is not in the inference publication")
 
         # Resolve vocabulary path with per-checkpoint priority.
         # The per-checkpoint snapshot ``<ckpt_basename>_vocabulary.json`` is

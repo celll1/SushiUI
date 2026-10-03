@@ -122,8 +122,17 @@ Sibling vocabulary and calibration/OOD artifacts follow the native metadata
 reference. Native OOD uses overview-plus-mixed-evidence features, not the MIL
 classifier input. Model-only `best_f1` files do not require optimizer state.
 Native ONNX and inference-manager merge operations are explicitly refused;
-the trainer already produces native merged exports. Export-path publication,
-live API/UI deployment and concurrency verification remain pending.
+the trainer already produces native merged exports. Live API/UI deployment
+and concurrency verification remain pending.
+
+Native model-only publications use `_inference_commit.json` after weights,
+metadata, vocabulary and selected optional artifacts finish saving. This also
+covers `best_f1` without optimizer state. Training details expose completed
+latest/best publications as `inference_checkpoint_paths`, distinguishing
+full-unmerged, compact LoRA and merged files and showing their vocabulary path.
+UI polling checks file generation stamps; inference loading verifies hashes.
+Partial or overwritten publications are not displayed, and disabled stale
+optional files are not included. Step retention removes the publication marker.
 
 OOD reservoirs now retain their owned sampling RNG and capacity. Native restore
 is strict; legacy reservoir files without RNG remain readable in the legacy

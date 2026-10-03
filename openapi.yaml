@@ -7727,6 +7727,11 @@ paths:
     get:
       tags: [tagger-training]
       summary: Get a tagger training run
+      description: |
+        Native FoveaTag details include inference_checkpoint_paths for completed
+        latest/best_f1 publications only. Each entry identifies name, mode
+        (full_unmerged, lora, merged), path, vocabulary_path and requires_backbone.
+        Resume files and model-only inference publications are distinct.
       parameters:
         - name: run_id
           in: path
@@ -7741,6 +7746,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+                properties:
+                  inference_checkpoint_paths:
+                    type: array
+                    description: Completed native model-only publications; absent for non-native runs.
+                    items:
+                      $ref: '#/components/schemas/TaggerInferenceCheckpoint'
         '404':
           description: Tagger training run not found
           content:
@@ -28009,6 +28020,33 @@ components:
           type: string
           nullable: true
           default: null
+    TaggerInferenceCheckpoint:
+      type: object
+      additionalProperties: false
+      required: [name, mode, path, vocabulary_path, requires_backbone]
+      properties:
+        name:
+          type: string
+          enum: [latest, best_f1]
+        mode:
+          type: string
+          enum: [full_unmerged, lora, merged]
+        path:
+          type: string
+          description: Completed inference weights, not an optimizer/resume bundle.
+        vocabulary_path:
+          type: string
+          description: Checkpoint-specific vocabulary required for index alignment.
+        requires_backbone:
+          type: boolean
+          description: Compact LoRA requires the fingerprint-matched scratch encoder.
+      example:
+        name: latest
+        mode: lora
+        path: 'D:/training/native/latest_export.safetensors'
+        vocabulary_path: 'D:/training/native/latest_vocabulary.json'
+        requires_backbone: true
+
     TaggerTrainingRunCreateRequest:
       type: object
       properties:

@@ -133,7 +133,7 @@ def test_retention_removes_native_metrics_and_f1_companions(tmp_path):
     from core.tagger.tagger_trainer import _prune_step_checkpoints
     for name in ("step_000001", "step_000002"):
         bundle(tmp_path, name, int(name.rsplit("_", 1)[1]))
-        for suffix in ("_metrics_runtime.npz", "_f1_runtime.npz"):
+        for suffix in ("_metrics_runtime.npz", "_f1_runtime.npz", "_inference_commit.json"):
             (tmp_path / f"{name}{suffix}").write_bytes(b"runtime")
     _prune_step_checkpoints(str(tmp_path), 1)
     assert not list(tmp_path.glob("step_000001*"))

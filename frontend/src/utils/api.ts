@@ -8828,6 +8828,13 @@ export interface TaggerTrainingRun {
   lora_checkpoint_path: string | null;
   latest_checkpoint_path?: string | null;
   best_checkpoint_path?: string | null;
+  inference_checkpoint_paths?: Array<{
+    name: string;
+    mode: "full_unmerged" | "lora" | "merged";
+    path: string;
+    vocabulary_path: string;
+    requires_backbone: boolean;
+  }>;
   error_message: string | null;
   status_message: string | null;
   created_at: string;

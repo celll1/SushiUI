@@ -1227,7 +1227,7 @@ export default function TaggerTrainingMonitor({
               );
             })()}
 
-            {(run.head_checkpoint_path || run.lora_checkpoint_path || run.latest_checkpoint_path || run.best_checkpoint_path) && (
+            {(run.head_checkpoint_path || run.lora_checkpoint_path || run.latest_checkpoint_path || run.best_checkpoint_path || Boolean(run.inference_checkpoint_paths?.length)) && (
               <div>
                 <div className="text-sm font-medium text-gray-300 mb-2">Checkpoints</div>
                 <div className="space-y-1">
@@ -1241,6 +1241,13 @@ export default function TaggerTrainingMonitor({
                       Best: {run.best_checkpoint_path}
                     </div>
                   )}
+                  {run.inference_checkpoint_paths?.map((artifact) => (
+                    <div key={artifact.path} className="text-xs text-gray-400 bg-gray-800 rounded p-2 font-mono break-all">
+                      Inference ({artifact.name}, {artifact.mode}): {artifact.path}
+                      <div>Vocabulary: {artifact.vocabulary_path}</div>
+                      {artifact.requires_backbone && <div>Requires the matching scratch backbone.</div>}
+                    </div>
+                  ))}
                   {run.head_checkpoint_path && (
                     <div className="text-xs text-gray-400 bg-gray-800 rounded p-2 font-mono truncate" title={run.head_checkpoint_path}>
                       Head: {run.head_checkpoint_path}

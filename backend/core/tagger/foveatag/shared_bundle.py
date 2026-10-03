@@ -10,7 +10,7 @@ from pathlib import Path
 
 REQUIRED_SUFFIXES = (".safetensors", "_metadata.json", "_state.json", "_optimizer.pt", "_vocabulary.json")
 OPTIONAL_SUFFIXES = ("_tag_metrics.npz", "_metrics_runtime.npz", "_f1_runtime.npz", "_ood_ref.npz", "_ood_reservoir.npz",
-                    "_export.safetensors", "_export_metadata.json")
+                    "_export.safetensors", "_export_metadata.json", "_collection_runtime.json")
 
 
 def _sha256(path):
@@ -33,6 +33,12 @@ def commit_native_bundle(directory, name, *, optional_suffixes=None):
     selected = OPTIONAL_SUFFIXES if optional_suffixes is None else tuple(optional_suffixes)
     if not set(selected).issubset(OPTIONAL_SUFFIXES):
         raise ValueError("unsupported native optional artifact")
+    if state["native_runtime"].get("collection_enabled", False) and "_collection_runtime.json" not in selected:
+        raise ValueError("native bundle lacks selected collection runtime")
+    if state["native_runtime"].get("collection_enabled", False):
+        from .collection_runtime import load_collection_runtime
+        load_collection_runtime(directory / f"{name}_collection_runtime.json",
+            step=state["global_step"], epoch=metadata.get("epoch", state["epoch"]))
     for suffix in REQUIRED_SUFFIXES + selected:
         path = directory / f"{name}{suffix}"
         if optional_suffixes is not None or suffix in REQUIRED_SUFFIXES or path.is_file():
@@ -70,4 +76,12 @@ def verify_native_bundle(directory, name):
     state = json.loads((directory / f"{name}_state.json").read_text(encoding="utf-8"))
     if state.get("global_step") != document.get("global_step"):
         raise ValueError("native resume commit and runtime steps differ")
+    if state.get("native_runtime", {}).get("collection_enabled", False):
+        filename = f"{name}_collection_runtime.json"
+        if filename not in files:
+            raise ValueError("native resume bundle lacks collection runtime")
+        from .collection_runtime import load_collection_runtime
+        metadata = json.loads((directory / f"{name}_metadata.json").read_text(encoding="utf-8"))
+        load_collection_runtime(directory / filename, step=state["global_step"],
+            epoch=metadata.get("epoch", state["epoch"]))
     return document

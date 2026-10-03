@@ -746,6 +746,7 @@ def _prune_step_checkpoints(output_dir: str, keep_last_n: int) -> None:
             "_export.safetensors",
             "_export_metadata.json",
             "_inference_commit.json",
+            "_collection_runtime.json",
             "_ood_reservoir.npz",
             "_resume_commit.json",
         ):
@@ -1327,12 +1328,22 @@ class TaggerTrainer:
                 "version": 1, "cursor": cursor.to_dict(), "seed": cfg["fovea_seed"],
                 "rng": _capture_rng(native=True), "scheduler": scheduler.state_dict(),
                 "scaler": scaler.state_dict() if scaler is not None else None,
+                "collection_enabled": getattr(train_loader, "_buffer", None) is not None,
+                "expanded_tags": sorted(getattr(self, "_native_expanded_tags",
+                    getattr(getattr(train_loader, "_buffer", None), "_native_expanded_tags", set()))),
             }
 
         def _commit_native(name):
             if native_run:
                 from .foveatag.shared_bundle import commit_native_bundle
                 optional = []
+                collection = getattr(train_loader, "_buffer", None)
+                if collection is not None:
+                    from .foveatag.collection_runtime import save_collection_runtime
+                    save_collection_runtime(collection,
+                        os.path.join(self.output_dir, f"{name}_collection_runtime.json"),
+                        step=global_step, epoch=epoch)
+                    optional.append("_collection_runtime.json")
                 if _metrics_runtime_needed:
                     optional.append("_metrics_runtime.npz")
                 if _n2_eval > 0:
@@ -1390,6 +1401,12 @@ class TaggerTrainer:
                     raise ValueError("native resume checkpoint lacks supported replay runtime")
                 if native_saved_runtime.get("seed") != cfg["fovea_seed"]:
                     raise ValueError("native resume sampler seed differs from checkpoint")
+                expanded = native_saved_runtime.get("expanded_tags", [])
+                if not isinstance(expanded, list) or any(not isinstance(name, str) for name in expanded):
+                    raise ValueError("invalid native expanded-vocabulary ledger")
+                if not hasattr(self, "_native_expanded_tags"):
+                    self._native_expanded_tags = set()
+                self._native_expanded_tags.update(expanded)
                 native_cursor = NativeReplayCursor(**native_saved_runtime["cursor"])
 
             # Dataset-change detection: if the on-disk dataset differs from
@@ -2263,6 +2280,31 @@ def run_tagger_training(
 
     datasets_db = DatasetsSessionLocal()
     try:
+        native_run = config.get("architecture") == "foveatag"
+        native_resume = None
+        native_collection = None
+        native_expanded = set()
+        if native_run and resume_from_checkpoint:
+            if os.path.normcase(os.path.abspath(output_dir)) != os.path.normcase(os.path.abspath(resume_from_checkpoint)):
+                raise ValueError("native resume must use its existing output directory")
+            native_resume = _find_resume_checkpoint(resume_from_checkpoint)
+            if native_resume is None:
+                raise ValueError("native resume has no coherent checkpoint")
+            from .foveatag.shared_bundle import verify_native_bundle
+            name, state = native_resume
+            files = verify_native_bundle(output_dir, name)["files"]
+            if state["native_runtime"].get("collection_enabled", False):
+                if f"{name}_collection_runtime.json" not in files:
+                    raise ValueError("native resume lacks collection runtime")
+                from .foveatag.collection_runtime import load_collection_runtime
+                native_collection = load_collection_runtime(os.path.join(output_dir, f"{name}_collection_runtime.json"),
+                    step=state["global_step"])
+            recorded_expanded = state["native_runtime"].get("expanded_tags", [])
+            if not isinstance(recorded_expanded, list) or any(not isinstance(name, str) for name in recorded_expanded):
+                raise ValueError("invalid native expanded-vocabulary ledger")
+            native_expanded = set(recorded_expanded)
+            if native_collection is not None:
+                native_expanded.update(native_collection["expanded_tags"])
         print(f"[TaggerTraining] === Phase: vocabulary ===")
         print(f"[TaggerTraining] Building tag vocabulary from {len(dataset_ids)} dataset(s)...")
         progress_callback and progress_callback(run_id, "phase", {
@@ -2572,14 +2614,18 @@ def run_tagger_training(
                 _expanded_tags_path = os.path.join(output_dir, "danbooru_expanded_tags.json")
                 _expanded_accum: set = set()
                 try:
-                    if os.path.isfile(_expanded_tags_path):
+                    if not native_run and os.path.isfile(_expanded_tags_path):
                         with open(_expanded_tags_path, "r", encoding="utf-8") as _ef:
                             _el = json.load(_ef)
                         _expanded_accum = set(_el if isinstance(_el, list) else _el.keys())
                 except Exception:
                     _expanded_accum = set()
+                if native_run:
+                    _expanded_accum = native_expanded
 
                 def _save_expanded_tags() -> None:
+                    if native_run:
+                        return
                     try:
                         _tmp = _expanded_tags_path + ".tmp"
                         with open(_tmp, "w", encoding="utf-8") as _wf:
@@ -2620,12 +2666,16 @@ def run_tagger_training(
                             if _acc is not None:
                                 _acc.grow(_new_size)
                         except Exception as _ge:
+                            if native_run:
+                                raise
                             print(f"[TaggerTraining] metrics accumulator grow failed: {_ge}")
                         try:
                             _ng = _grow_criterion_buffers(trainer.criterion, _new_size)
                             if _ng:
                                 print(f"[TaggerTraining] Grew {_ng} per-tag loss buffer(s) for new tags")
                         except Exception as _ce:
+                            if native_run:
+                                raise
                             print(f"[TaggerTraining] criterion buffer grow failed: {_ce}")
                         # The train-F1 rolling buffer holds old-width probs/labels
                         # which can no longer be concatenated with new-width ones.
@@ -2668,7 +2718,7 @@ def run_tagger_training(
                 _initial_dynamic_tags: Any = None
                 try:
                     _dt_path = os.path.join(output_dir, "danbooru_dynamic_tags.json")
-                    if os.path.isfile(_dt_path):
+                    if not native_run and os.path.isfile(_dt_path):
                         with open(_dt_path, "r", encoding="utf-8") as _df:
                             _loaded = json.load(_df)
                         if isinstance(_loaded, (dict, list)) and len(_loaded) > 0:
@@ -2684,7 +2734,7 @@ def run_tagger_training(
                 _initial_cooc_active: Any = None
                 try:
                     _ct_path = os.path.join(output_dir, "danbooru_cooc_active_tags.json")
-                    if os.path.isfile(_ct_path):
+                    if not native_run and os.path.isfile(_ct_path):
                         with open(_ct_path, "r", encoding="utf-8") as _cf:
                             _cl = json.load(_cf)
                         # {tag: last_used} (current) or [tag, ...] (legacy) — the
@@ -2702,7 +2752,7 @@ def run_tagger_training(
                 _initial_query_tags: Any = None
                 try:
                     _qt_path = os.path.join(output_dir, "danbooru_query_tags.json")
-                    if os.path.isfile(_qt_path):
+                    if not native_run and os.path.isfile(_qt_path):
                         with open(_qt_path, "r", encoding="utf-8") as _qf:
                             _ql = json.load(_qf)
                         if isinstance(_ql, (dict, list)) and len(_ql) > 0:
@@ -2718,7 +2768,7 @@ def run_tagger_training(
                 # only if the resumed epoch matches the persisted epoch, so a
                 # cross-epoch resume still starts the new epoch's collection clean.
                 _initial_epoch_progress: Any = None
-                if resume_from_checkpoint:
+                if resume_from_checkpoint and not native_run:
                     try:
                         _epp_path = os.path.join(output_dir, "danbooru_epoch_progress.json")
                         if os.path.isfile(_epp_path):
@@ -2732,6 +2782,11 @@ def run_tagger_training(
                     except Exception as _eppe:
                         print(f"[TaggerTraining] Could not restore epoch progress: {_eppe}")
 
+                if native_run:
+                    _initial_dynamic_tags = native_collection["dynamic_tags"] if native_collection else None
+                    _initial_cooc_active = native_collection["cooc_active_tags"] if native_collection else None
+                    _initial_query_tags = native_collection["query_tags"] if native_collection else None
+                    _initial_epoch_progress = native_collection["epoch_progress"] if native_collection else None
                 _danbooru_buffer = DanbooruSampleBuffer(
                     tag_queries=_active_queries,
                     vocabulary=vocabulary,
@@ -2800,7 +2855,12 @@ def run_tagger_training(
                     min_slow_seconds=float(config.get("danbooru_speed_min_slow_seconds", 90)),
                     cooldown_seconds=float(config.get("danbooru_speed_cooldown_seconds", 3600)),
                 )
-                _danbooru_buffer.start()
+                if native_run:
+                    _danbooru_buffer._native_expanded_tags = _expanded_accum
+                    if native_collection is not None:
+                        _danbooru_buffer.restore_native_runtime(native_collection)
+                else:
+                    _danbooru_buffer.start()
                 train_loader = _MixedDL(
                     train_loader,
                     buffer=_danbooru_buffer,
@@ -2861,7 +2921,7 @@ def run_tagger_training(
         resume_ckpt_name: Optional[str] = None
 
         if resume_from_checkpoint:
-            result = _find_resume_checkpoint(resume_from_checkpoint)
+            result = native_resume if native_run else _find_resume_checkpoint(resume_from_checkpoint)
             if result is not None:
                 resume_ckpt_name, resume_state = result
                 print(
@@ -2945,10 +3005,13 @@ def run_tagger_training(
         # then copies the surviving head rows for the re-added tags by tag name.
         if resume_ckpt_name is not None and old_vocabulary is not None and output_dir:
             _exp_path = os.path.join(output_dir, "danbooru_expanded_tags.json")
-            if os.path.isfile(_exp_path):
+            if (native_run and native_expanded) or (not native_run and os.path.isfile(_exp_path)):
                 try:
-                    with open(_exp_path, "r", encoding="utf-8") as _ef:
-                        _exp_loaded = json.load(_ef)
+                    if native_run:
+                        _exp_loaded = list(native_expanded)
+                    else:
+                        with open(_exp_path, "r", encoding="utf-8") as _ef:
+                            _exp_loaded = json.load(_ef)
                     _exp_set = set(_exp_loaded if isinstance(_exp_loaded, list) else _exp_loaded.keys())
                     # Only re-add tags the checkpoint actually had (so a head row
                     # exists to inherit) AND that the rebuilt dataset vocab lacks.
@@ -2971,6 +3034,8 @@ def run_tagger_training(
                         print(f"[TaggerTraining] Expanded-tags file present ({len(_exp_set)} tags) "
                               f"but none needed re-adding (already in dataset vocab)")
                 except Exception as _xe:
+                    if native_run:
+                        raise
                     print(f"[TaggerTraining] WARNING: could not restore expanded tags: {_xe}")
 
         # Build the vocab lineage so renamed (alias) / merged (comma re-join) tags
@@ -3044,6 +3109,10 @@ def run_tagger_training(
                 _tag_refresh_detector = None
 
         try:
+            if native_run and _danbooru_buffer is not None:
+                _danbooru_buffer.start()
+            if native_run:
+                trainer._native_expanded_tags = native_expanded
             return trainer.train(
                 train_loader, val_loader, processor,
                 resume_state=resume_state,

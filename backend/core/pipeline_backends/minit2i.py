@@ -811,18 +811,63 @@ class MiniT2IMixin:
         files, so a mixed file is read once and keeps one branch name.
         """
         session = self._minit2i_lora_session
-        # Unconditional, and BEFORE the empty-config exit: a restore that failed in
-        # an earlier request must not leak wrappers into this one. `_minit2i_cleanup`
-        # swallows restore failures, and now that a second branch SUMS rather than
-        # being refused, a leaked wrapper would silently double-apply. This also
-        # performs the weakref reset both components need.
-        session.unload(self._minit2i_lora_components())
+        self._unload_lora_minit2i()
         if not lora_configs or not self.minit2i_components:
             return []
 
         files = session.parse(lora_configs)
+        self._minit2i_adapter_topology(files)
         for file in files:
             session.prepare(file)
+        return files
+
+    def _minit2i_adapter_topology(self, files):
+        from core.adapters import AdapterIncompatible
+        from core.rewiring.adapters import resolve_adapter_topology
+        from core.models.minit2i.residual_unet import validate_topology_identity
+        model = (self.minit2i_components or {}).get("transformer")
+        if model is None:
+            if files:
+                raise RuntimeError("MiniT2I LoRA requested but no transformer is loaded.")
+            return None
+        try:
+            return resolve_adapter_topology(model, files, validate_topology_identity)
+        except ValueError as exc:
+            raise AdapterIncompatible(str(exc), code="lora_rewiring_incompatible") from exc
+
+    def _minit2i_rewiring_preflight(self, params, cfg):
+        from api.error_handlers import ValidationError
+        from core.rewiring.spec import digest, preview_plan
+        from core.inference.fbcache import fbcache_active
+        from core.prompts.prompt_parser import prompt_has_negative_weight
+        files = self._minit2i_prepare_loras(params.get("loras") or [])
+        topology = self._minit2i_adapter_topology(files)
+        if topology is None:
+            params.pop("dit_rewiring_actual", None)
+            return files
+        if params.get("ref_images"):
+            raise ValidationError("MiniT2I residual U-Net does not support reference image grids")
+        if params.get("style_transfer") or params.get("style_transfers"):
+            raise ValidationError("MiniT2I residual U-Net does not support style injection")
+        if fbcache_active(params):
+            raise ValidationError("MiniT2I residual U-Net does not support FBCache")
+        if params.get("nag_enable"):
+            raise ValidationError("MiniT2I residual U-Net does not support NAG")
+        for key in ("prompt", "negative_prompt", "nag_negative_prompt"):
+            value = params.get(key) or ""
+            prompts = value if isinstance(value, list) else [value]
+            if any(prompt_has_negative_weight(prompt) for prompt in prompts):
+                raise ValidationError("MiniT2I residual U-Net does not support NegPip")
+        patch = self.minit2i_components["transformer"].mmjit_config.patch_size
+        scale = cfg["vae_scale_factor"] if cfg["is_latent"] else 1
+        stride = patch * scale
+        try:
+            if cfg["height"] % stride or cfg["width"] % stride:
+                raise ValueError("MiniT2I residual U-Net requires complete native image patches")
+            preview_plan(topology, cfg["height"] // stride, cfg["width"] // stride)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        params["dit_rewiring_actual"] = {"spec": topology, "spec_sha256": digest(topology), "kv_cache": False}
         return files
 
     def _apply_te_lora_minit2i(self, files) -> int:
@@ -867,7 +912,16 @@ class MiniT2IMixin:
         if components[0].module is None:
             raise RuntimeError("MiniT2I LoRA requested but no transformer is loaded.")
 
+        from copy import deepcopy
+        import weakref
+        from core.models.minit2i.residual_unet import restore_topology
+        model = components[0].module
+        base = deepcopy(getattr(model, "_residual_unet_spec", None))
+        required = self._minit2i_adapter_topology(files)
         result = self._minit2i_lora_session.load(files, components[:1])
+        if required is not None:
+            restore_topology(model, required)
+            self._minit2i_topology_restore = (weakref.ref(model), base)
         total = 0
         for i, (file, counts) in enumerate(result.files):
             prepared = file.prepared
@@ -888,7 +942,13 @@ class MiniT2IMixin:
         component that is not loaded at all is the same case, which is why an
         unload with only the text encoder present still restores it.
         """
-        return self._minit2i_lora_session.unload(self._minit2i_lora_components())
+        try:
+            return self._minit2i_lora_session.unload(self._minit2i_lora_components())
+        finally:
+            saved = self.__dict__.pop("_minit2i_topology_restore", None)
+            if saved is not None and saved[0]() is not None:
+                from core.models.minit2i.residual_unet import restore_topology
+                restore_topology(saved[0](), saved[1])
 
     def _minit2i_cleanup(self, model_key: Optional[str] = None,
                         keep_te: bool = False, keep_transformer: bool = False,
@@ -942,13 +1002,13 @@ class MiniT2IMixin:
         device = self.device
         dtype = torch.bfloat16
         cfg = self._minit2i_common_params(params, 512, 512)
+        prepared_loras = self._minit2i_rewiring_preflight(params, cfg)
         _kh_model_key, _kh_keep_te, _kh_keep_transformer, _kh_keep_vae, _kh_is_block_swapped = \
             self._minit2i_kh_setup(params)
         _kh_gen_succeeded = False
         try:
             # The text-encoder half goes on BEFORE the encode below, which produces the
             # embeddings once: a TE wrapper installed after it would change nothing.
-            prepared_loras = self._minit2i_prepare_loras(params.get("loras") or [])
             self._apply_te_lora_minit2i(prepared_loras)
             text, mask, neg_text, neg_mask, nag_text, nag_mask = self._minit2i_encode(
                 cfg["prompt"], cfg["negative_prompt"], cfg["prompt_length"], device, dtype,
@@ -1026,6 +1086,7 @@ class MiniT2IMixin:
         device = self.device
         dtype = torch.bfloat16
         cfg = self._minit2i_common_params(params, init_image.width, init_image.height)
+        prepared_loras = self._minit2i_rewiring_preflight(params, cfg)
         denoising_strength = float(params.get("denoising_strength", 0.7))
         _kh_model_key, _kh_keep_te, _kh_keep_transformer, _kh_keep_vae, _kh_is_block_swapped = \
             self._minit2i_kh_setup(params)
@@ -1033,7 +1094,6 @@ class MiniT2IMixin:
         try:
             # The text-encoder half goes on BEFORE the encode below, which produces the
             # embeddings once: a TE wrapper installed after it would change nothing.
-            prepared_loras = self._minit2i_prepare_loras(params.get("loras") or [])
             self._apply_te_lora_minit2i(prepared_loras)
             text, mask, neg_text, neg_mask, nag_text, nag_mask = self._minit2i_encode(
                 cfg["prompt"], cfg["negative_prompt"], cfg["prompt_length"], device, dtype,
@@ -1107,6 +1167,7 @@ class MiniT2IMixin:
         device = self.device
         dtype = torch.bfloat16
         cfg = self._minit2i_common_params(params, init_image.width, init_image.height)
+        prepared_loras = self._minit2i_rewiring_preflight(params, cfg)
         denoising_strength = float(params.get("denoising_strength", 0.8))
         _kh_model_key, _kh_keep_te, _kh_keep_transformer, _kh_keep_vae, _kh_is_block_swapped = \
             self._minit2i_kh_setup(params)
@@ -1114,7 +1175,6 @@ class MiniT2IMixin:
         try:
             # The text-encoder half goes on BEFORE the encode below, which produces the
             # embeddings once: a TE wrapper installed after it would change nothing.
-            prepared_loras = self._minit2i_prepare_loras(params.get("loras") or [])
             self._apply_te_lora_minit2i(prepared_loras)
             text, mask, neg_text, neg_mask, nag_text, nag_mask = self._minit2i_encode(
                 cfg["prompt"], cfg["negative_prompt"], cfg["prompt_length"], device, dtype,

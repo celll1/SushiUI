@@ -415,6 +415,7 @@ def _build_train_section(
     # "conduit"; base_trainer applies the resume backward-compat (missing key on a
     # resume -> "diffusers"). Orthogonal to attention_backend.
     train["attention_impl"] = p.get("attention_impl", "conduit")
+    train["tq_backward_mode"] = p.get("tq_backward_mode", _TD["tq_backward_mode"])
     train["min_snr_gamma"] = p.get("min_snr_gamma", 5.0)
     train["reconstruction_loss_weight"] = validate_reconstruction_loss_weight(
         p.get("reconstruction_loss_weight"))
@@ -473,6 +474,11 @@ def _build_train_section(
         ):
             train[key] = p.get(key, _TD[key])
 
+    from core.rewiring.training import validate_training_rewiring
+    mode, topology = validate_training_rewiring(p, arch)
+    train["dit_rewiring_mode"] = mode
+    train["dit_rewiring_spec"] = topology
+
     train["dit_gradient_checkpointing_blocks"] = p.get(
         "dit_gradient_checkpointing_blocks", _TD["dit_gradient_checkpointing_blocks"])
     canonical_partition_checkpoint = p.get(
@@ -510,11 +516,14 @@ def _build_train_section(
             train[canonical] = p[canonical]
         else:
             train[canonical] = p.get(legacy, _TD[canonical])
+    train["dit_partition_full_frame_max_tokens"] = p.get(
+        "dit_partition_full_frame_max_tokens", _TD["dit_partition_full_frame_max_tokens"])
     # Literal loop keeps the AST-derived editable-config vocabulary aligned
     # with the alias map above.
     for key in (
         "dit_partition_training_enabled", "dit_partition_mode",
         "dit_partition_fixed_count", "dit_partition_halo_tokens",
+        "dit_partition_full_frame_max_tokens",
         "dit_partition_split_ratio_min", "dit_partition_split_ratio_max",
         "dit_partition_seed", "dit_partition_profile",
         "dit_partition_global_adapter_enabled", "dit_partition_global_rank",
@@ -528,6 +537,7 @@ def _build_train_section(
         "qwen_convrot_backward_prefetch_depth",
         "qwen_guidance_loss_weight", "qwen_guidance_loss_mix_mode",
         "qwen_cfg_null_sigma_schedule", "qwen_guidance_loss_scale",
+        "qwen_guidance_loss_extrapolation_max_rms",
         "qwen_guidance_loss_schedule",
         "qwen_guidance_loss_weight_schedule", "qwen_guidance_loss_high_noise_weight",
         "qwen_guidance_loss_ramp_start", "qwen_guidance_loss_ramp_end",

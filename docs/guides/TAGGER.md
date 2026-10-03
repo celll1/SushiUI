@@ -26,6 +26,17 @@ the frontend request type.
 
 ## Inference paths
 
+Both PyTorch SigLIP2 variants expose `forward_features()` for the compact
+captioner foundation. It returns patch features, the actual head-input pooled
+features, and logits from one encoder call. Ordinary `forward()` still returns
+only logits. The caption feature provider requires evaluation mode and detaches
+its outputs. The compact captioner now borrows the loaded PyTorch tagger under
+a model-lifetime lock, with strict GPU pause acknowledgement for inference.
+The Captioner tab on `/tagger` supports inference preview and explicit natural-caption
+persistence. The Captioner Training section on `/training` owns dedicated training
+runs with a private frozen encoder and checkpoint sample review. FoveaTag remains a future
+plan. See [the captioner design](../plans/COMPACT_CAPTIONER_DESIGN_2026-10.md).
+
 `POST /api/v1/tagger/siglip2/load` detects full, LoRA, or ONNX weights. The UI
 may preview checkpoint metadata, but the status returned by the loaded manager
 is authoritative. A vocabulary beside a checkpoint is only an initial path

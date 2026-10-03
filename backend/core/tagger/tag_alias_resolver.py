@@ -8,9 +8,14 @@ tagother/tag_aliases.json (danbooru-format alias table).
 from __future__ import annotations
 
 import json
+import os
 from typing import Dict
 
 from .tag_vocabulary import normalize_tag
+
+
+def alias_table_path(root_dir: str) -> str:
+    return os.path.join(root_dir, "tagother", "tag_aliases.json")
 
 
 class TagAliasResolver:

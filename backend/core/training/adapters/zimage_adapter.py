@@ -159,7 +159,12 @@ class ZImageLoRAAdapter(BaseLoRAAdapter):
             "step": str(step),
             "epoch": str(epoch),
             "model_type": "zimage",
+            **self._topology_metadata(),
         }
+
+    def _topology_metadata(self):
+        from core.models.zimage_residual_unet import model_topology_metadata
+        return model_topology_metadata(self.trainer.transformer)
 
 
 
@@ -329,9 +334,11 @@ class ZImageFullParameterAdapter(BaseFullParameterAdapter):
             "model_type": "zimage",
             "format": "pt",
         }
-        # ZImageTransformer2DModel is a plain nn.Module without a serializable config
-        # object; the loader reconstructs config from the base repo + shape probes, so
-        # no transformer_config JSON is written here. Component hints are declarative.
+        if trainer.train_unet and trainer.transformer is not None:
+            import json
+            from core.models.zimage_residual_unet import native_config, model_topology_metadata
+            metadata["transformer_config"] = json.dumps(native_config(trainer.transformer))
+            metadata.update(model_topology_metadata(trainer.transformer))
         try:
             from core.models.common.single_file_format import build_component_metadata
             metadata.update(build_component_metadata(
@@ -358,3 +365,4 @@ class ZImageFullParameterAdapter(BaseFullParameterAdapter):
 
         total_params = sum(p.numel() for p in dedup_state.values())
         print(f"[ZImageFullParameterAdapter] Saved {len(dedup_state)} tensors ({total_params:,} params) to {written_path}")
+        return Path(written_path)

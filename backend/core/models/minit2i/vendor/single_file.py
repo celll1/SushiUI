@@ -93,25 +93,22 @@ def load_single_file(path: str, torch_dtype: torch.dtype = torch.bfloat16):
     Returns dict: {"transformer": MiniT2IMMJiTModel(cpu, eval),
                    "text_encoder_state_dict": dict|None, "variant": str}.
     """
+    from core.models.minit2i.residual_unet import preflight_checkpoint, restore_topology
+    topology, saved_config = preflight_checkpoint(path)
     raw, metadata = read_state_dict(path)
 
     tf_sd = _transformer_subdict(raw, TRANSFORMER_PREFIX)
     if not tf_sd:
         raise ValueError(f"[MiniT2I single-file] no '{TRANSFORMER_PREFIX}*' keys in {path}")
 
-    # The strict=False load below is already followed by a hard raise on missing
-    # OR unexpected keys, so a quantized checkpoint does not load silently here.
-    # The guard runs FIRST -- before shape-based variant detection, which would
-    # otherwise report a confusing geometry error on int8 tensors -- so the
-    # failure names the actual cause: a weight-only quantized file MiniT2I cannot
-    # read.
+    # Refuse quantized codes before shape-based variant detection.
     from core.models.common.quantized_checkpoint_guard import refuse_quantized_state_dict
     refuse_quantized_state_dict(tf_sd, arch="minit2i", path=path)
 
     # Prefer metadata config; else detect from shapes.
     variant = metadata.get("variant")
-    config = None
-    if metadata.get("mmjit_config"):
+    config = saved_config
+    if config is None and metadata.get("mmjit_config"):
         try:
             config = json.loads(metadata["mmjit_config"])
         except Exception:
@@ -129,6 +126,7 @@ def load_single_file(path: str, torch_dtype: torch.dtype = torch.bfloat16):
         raise RuntimeError(f"[MiniT2I single-file] missing transformer keys: {missing[:8]}")
     model.eval()
     model.to("cpu")
+    restore_topology(model, topology)
 
     te_sd = _transformer_subdict(raw, TEXT_ENCODER_PREFIX) or None
     vae_sd = _transformer_subdict(raw, VAE_PREFIX) or None
@@ -144,7 +142,7 @@ def save_single_file(
     vae: Optional[torch.nn.Module] = None,
     extra_metadata: Optional[Dict[str, str]] = None,
     max_shard_bytes: int = DEFAULT_MAX_SHARD_BYTES,
-) -> None:
+) -> str:
     """Write a MiniT2I single-file (transformer [+ optional FLAN-T5] + metadata).
 
     Tied tensors (e.g. FLAN-T5 shares `shared.weight` with `encoder.embed_tokens.weight`)
@@ -155,6 +153,10 @@ def save_single_file(
     ``max_shard_bytes`` (default 10 GB); otherwise writes diffusers-convention
     shards plus a ``<stem>.safetensors.index.json`` via the shared writer.
     """
+    from core.models.minit2i.residual_unet import model_topology_metadata, native_config
+    topology_metadata = model_topology_metadata(transformer)
+    saved_config = native_config(transformer) if topology_metadata else None
+
     def _named():
         for k, v in transformer.state_dict().items():
             yield f"{TRANSFORMER_PREFIX}{k}", v
@@ -184,4 +186,7 @@ def save_single_file(
         metadata["tied_weights_dropped"] = json.dumps(dropped_tied)
     if extra_metadata:
         metadata.update({k: str(v) for k, v in extra_metadata.items()})
-    save_single_file_state(state, metadata, path, max_shard_bytes=max_shard_bytes)
+    if topology_metadata:
+        metadata["mmjit_config"] = json.dumps(saved_config)
+        metadata.update(topology_metadata)
+    return save_single_file_state(state, metadata, path, max_shard_bytes=max_shard_bytes)

@@ -32,10 +32,12 @@ changes.
 
 - **`backend/api/param_defaults.py` is the single source of truth for every
   API default value.** `GENERATION_DEFAULTS`, `TRAINING_DEFAULTS`,
-  `TAGGER_TRAINING_DEFAULTS`, and `VAE_TRAINING_DEFAULTS` back the
-  Pydantic/`Form()` defaults in `backend/api/routes.py` and are exposed to the
-  frontend via the `/schema/generation-defaults`, `/schema/training-defaults`,
-  `/schema/tagger-training-defaults`, and `/schema/vae-training-defaults`
+  `TAGGER_TRAINING_DEFAULTS`, `STYLE_TRAINING_DEFAULTS`, and
+  `VAE_TRAINING_DEFAULTS` back the Pydantic/`Form()` defaults in
+  `backend/api/routes.py` (style runs: `backend/api/style_training_routes.py`)
+  and are exposed to the frontend via the `/schema/generation-defaults`,
+  `/schema/training-defaults`, `/schema/tagger-training-defaults`,
+  `/schema/style-training-defaults`, and `/schema/vae-training-defaults`
   endpoints. Never hardcode a default anywhere else.
 - **API changes are openapi-first.** `openapi.yaml` is kept in full sync with
   `backend/api/routes.py`; update the spec (paths, schemas under
@@ -76,6 +78,12 @@ changes.
   agents.** Do not run `npm run build` or `npm run type-check`; rely on
   careful reading of `frontend/src/utils/api.ts` and the generation panels
   instead.
+- **API-centered verification does not replace frontend/UI static review.**
+  For UI-facing changes, agents must review frontend types and API contracts,
+  defaults, state transitions, cancellation, error handling, and operation
+  paths. Report static-review findings separately from owner-run build and
+  type-check results. Missing build confirmation alone must not stop ongoing
+  implementation or API verification unless it is a concrete critical blocker.
 - **Commit style:** a concise, imperative summary line, optional body
   explaining the "why", and a `Co-Authored-By:` trailer identifying the
   agent. Follow the existing history (`git log --oneline`) for tone.

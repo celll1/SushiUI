@@ -1646,6 +1646,14 @@ def _prepare_training_process_config(
     train_config = process_config['train']
     network_config = process_config.get('network', {})
     network_type = network_config.get('type', 'lora')
+    from core.rewiring.training import validate_training_rewiring
+    from core.model_loader import ModelLoader
+    mode, topology = validate_training_rewiring(
+        train_config, ModelLoader.detect_model_type(base_model_path))
+    train_config["dit_rewiring_mode"] = mode
+    train_config["dit_rewiring_spec"] = topology
+    if (mode == "configure" or topology is not None) and network_type not in {"lora", "full_finetune"}:
+        raise ValueError("Residual rewiring currently supports lora and full_finetune training")
     _apply_dit_checkpoint_contract(base_model_path, train_config)
     _apply_yue2_training_contract(base_model_path, network_type, train_config)
     is_chimera = _apply_chimera_training_contract(
@@ -3387,6 +3395,9 @@ def main():
                 attention_impl=attention_impl,
                 min_snr_gamma=min_snr_gamma,
                 reconstruction_loss_weight=reconstruction_loss_weight,
+                blocks_to_swap=train_config.get('blocks_to_swap', TRAINING_DEFAULTS['blocks_to_swap']),
+                use_pinned_memory=train_config.get('use_pinned_memory', TRAINING_DEFAULTS['use_pinned_memory']),
+                num_optimizer_groups=train_config.get('num_optimizer_groups', TRAINING_DEFAULTS['num_optimizer_groups']),
                 # Component-specific learning rates
                 unet_lr=unet_lr,
                 text_encoder_lr=text_encoder_lr,

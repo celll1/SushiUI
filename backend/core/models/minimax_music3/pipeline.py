@@ -863,6 +863,8 @@ class MiniMaxMusic3Pipeline:
         duplicated as a literal in a pipeline signature. `progress_callback` is called as
         `(chunk * num_inference_steps + step, num_chunks * num_inference_steps, "flow")`.
         """
+        from .residual_unet import begin_flow_observation, observe_flow_evaluation, finish_flow_observation
+        observation = begin_flow_observation(self)
         device = self.flow_execution_device
         chunk_starts = self.prepare_chunks(frame_hiddens)
         num_chunks = len(chunk_starts)
@@ -904,6 +906,7 @@ class MiniMaxMusic3Pipeline:
             timesteps = self.scheduler.timesteps
 
             zeros_condition = torch.zeros_like(condition)
+            flow_evaluations = 0
 
             for i, t in enumerate(timesteps):
                 raise_if_cancelled()
@@ -917,9 +920,13 @@ class MiniMaxMusic3Pipeline:
                 cond_pred = self.transformer(
                     hidden_states=latents, timestep=timestep, encoder_hidden_states=condition, return_dict=False
                 )[0]
+                observe_flow_evaluation(self, observation)
+                flow_evaluations += 1
                 uncond_pred = self.transformer(
                     hidden_states=latents, timestep=timestep, encoder_hidden_states=zeros_condition, return_dict=False
                 )[0]
+                observe_flow_evaluation(self, observation)
+                flow_evaluations += 1
                 velocity = uncond_pred + flow_guidance_scale * (cond_pred - uncond_pred)
                 latents = self.scheduler.step(velocity, t, latents, return_dict=False)[0]
 
@@ -938,7 +945,14 @@ class MiniMaxMusic3Pipeline:
             previous_condition = condition[:, overlap_start:overlap_end]
 
             latent_chunks.append(latents)
+            if observation is not None:
+                actual = observe_flow_evaluation(self, observation)
+                observation['chunks'].append(dict(index=k, input_frame_start=chunk_start,
+                    input_frame_end=chunk_end, native_audio_tokens=actual['native_audio_tokens'],
+                    padded_audio_tokens=actual['padded_audio_tokens'], flow_evaluations=flow_evaluations,
+                    inference_steps=len(timesteps)))
 
+        finish_flow_observation(self, observation)
         return latent_chunks
 
     # ------------------------------------------------------------------

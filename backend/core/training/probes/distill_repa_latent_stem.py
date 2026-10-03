@@ -207,6 +207,8 @@ def _load_vae(args, dtype):
         from diffusers import AutoencoderKL
         return AutoencoderKL.from_pretrained(str(path), subfolder="vae", torch_dtype=dtype)
     from diffusers import StableDiffusionXLPipeline
+    from core.transformers_clip_compat import install as install_clip_compat
+    install_clip_compat()
     pipeline = StableDiffusionXLPipeline.from_single_file(
         str(path), torch_dtype=dtype, use_safetensors=True)
     vae = pipeline.vae

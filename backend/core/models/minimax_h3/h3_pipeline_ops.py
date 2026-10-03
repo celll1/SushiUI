@@ -681,6 +681,9 @@ def build_packed_layout(
 
     layout: Dict[str, Any] = {
         "sequence_length": sequence_length,
+        "target_video_grid": dict(frames=num_latent_frames,
+                                  height=latent_height // patch_h,
+                                  width=latent_width // patch_w, start_row=video_start),
         # float32: the rope casts to float32 anyway (and the two candidate
         # float64 spatial grids are bitwise equal after that cast), so the
         # sequence-length x 3 float64 buffer is not carried to the GPU.
@@ -1004,6 +1007,9 @@ def build_ref2va_packed_layout(
 
     layout: Dict[str, Any] = {
         "sequence_length": sequence_length,
+        "target_video_grid": dict(frames=num_latent_frames,
+                                  height=latent_height // patch_h,
+                                  width=latent_width // patch_w, start_row=video_start),
         "position_ids": position_ids.to(torch.float32),
         "token_tags": token_tags,
         "video_indices": video_indices,
@@ -1664,6 +1670,13 @@ def denoise(
             f"{n_cond_reference_video_rows} reference/anchor row(s)); it must be the layout's own "
             f"permutation.")
 
+    from core.models.minimax_h3.residual_unet import forward_kwargs
+    residual_kwargs = forward_kwargs(transformer, layout)
+    if residual_kwargs:
+        from core.inference.fbcache import fbcache_active
+        if (spectrum_params and spectrum_params.get("spectrum_enable", False)) or fbcache_active(spectrum_params or {}):
+            raise ValueError("MiniMax-H3 residual generation refuses Spectrum and FBCache")
+
     torch_device = torch.device(device)
     scheduler.set_shift(SHIFT_VIDEO)
     audio_scheduler.set_shift(SHIFT_AUDIO)
@@ -1749,6 +1762,7 @@ def denoise(
             timestep_indices=timestep_indices.to(torch_device),
             return_dict=False,
             **layout_kwargs,
+            **residual_kwargs,
         )
         if fbcache is None:
             return transformer(**kwargs)

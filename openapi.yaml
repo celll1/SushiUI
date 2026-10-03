@@ -23,6 +23,8 @@ servers:
     description: Local development server (API v1)
 
 tags:
+  - name: captioner
+    description: Compact SigLIP2 captioner inference, training, and natural caption persistence
   - name: generation
     description: Image generation endpoints
   - name: images
@@ -51,6 +53,8 @@ tags:
     description: LoRA/Full-FT training run and preset management
   - name: tagger-training
     description: Tagger (vision encoder) training run management
+  - name: style-training
+    description: Style embedding encoder training run management
   - name: logs
     description: Backend console log retrieval
   - name: video-mask
@@ -61,6 +65,365 @@ tags:
     description: Developer-mode diagnostics (VRAM inspection)
 
 paths:
+  /schema/captioner-batch-defaults:
+    get:
+      tags: [captioner]
+      summary: Read captioner batch defaults and limits
+      responses:
+        '200': {description: Centralized CAPTIONER_BATCH_DEFAULTS}
+  /captioner/batches:
+    get:
+      tags: [captioner]
+      summary: List persisted caption preview batches
+      responses:
+        '200': {description: Batch states and item counts; abandoned active jobs reported interrupted}
+    post:
+      tags: [captioner]
+      summary: Create a pending caption preview batch
+      description: Fixes the bundle manifest and inference options. Captions are never automatically written to dataset sidecars.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerBatchCreateRequest'}
+            example: {bundle_path: training/captioner/run/checkpoint_00000100, dataset_id: 1, item_ids: [12, 13], max_new_tokens: 32, device: cpu}
+      responses:
+        '200': {description: Persisted pending batch}
+        '400': {description: Invalid bundle, input options or duplicate item ids}
+        '404': {description: Dataset or item not found}
+  /captioner/batches/{job_id}:
+    get:
+      tags: [captioner]
+      summary: Read a persisted caption preview batch
+      parameters:
+        - {name: job_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: State, immutable options and item counts}
+        '404': {description: Batch not found}
+  /captioner/batches/{job_id}/start:
+    post:
+      tags: [captioner]
+      summary: Start or resume pending caption batch items
+      description: One batch worker per process. Completed items are retained. retry_failed explicitly requeues failed items. Reloads the pinned bundle on resume and refuses a changed manifest. Runs independently of the browser connection.
+      parameters:
+        - {name: job_id, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerBatchStartRequest'}
+            example: {retry_failed: false}
+      responses:
+        '200': {description: Started batch; poll state and results}
+        '404': {description: Batch not found}
+        '409': {description: Worker already active or no pending items}
+  /captioner/batches/{job_id}/stop:
+    post:
+      tags: [captioner]
+      summary: Cancel the active item and retain completed batch results
+      parameters:
+        - {name: job_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Stop requested; uncompleted items remain resumable}
+        '404': {description: Batch not found}
+  /captioner/batches/{job_id}/results:
+    get:
+      tags: [captioner]
+      summary: Read ordered per-item caption previews or failures
+      parameters:
+        - {name: job_id, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: offset, in: query, schema: {type: integer, minimum: 0, default: 0}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 1000, default: 200}}
+      responses:
+        '200': {description: Items with status, attempts, preview including dataset revision and image hash, or error and code}
+        '404': {description: Batch not found}
+  /captioner/batches/{job_id}/items/{item_id}/save:
+    post:
+      tags: [captioner]
+      summary: Save a reviewed batch caption and persist its receipt
+      description: Refuses active batches and stale previews. Uses the existing caption sidecar transaction. Advances matching sibling preview revisions only for this batch's own successful save. A durable intent permits retrying an identical save after receipt persistence fails; ambiguous external changes are refused.
+      parameters:
+        - {name: job_id, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: item_id, in: path, required: true, schema: {type: integer, minimum: 1}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerBatchSaveRequest'}
+            example: {caption: 'A girl with blue hair.', caption_type: compact_caption, dataset_revision: 0, image_hash: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'}
+      responses:
+        '200':
+          description: Saved caption receipt; an identical retry returns its existing receipt
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaptionerSaveResponse'}
+        '400': {description: Invalid caption destination or unsafe sidecar}
+        '404': {description: Batch or completed item not found}
+        '409': {description: Batch active, preview stale or prior save cannot be safely reconciled}
+  /schema/captioner-run-defaults:
+    get:
+      tags: [captioner]
+      summary: Read centralized captioner run and tagger loading defaults
+      responses:
+        '200':
+          description: Defaults from CAPTIONER_RUN_DEFAULTS
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+  /captioner-training/runs:
+    get:
+      tags: [captioner]
+      summary: List persisted captioner training runs
+      responses:
+        '200': {description: Runs with inactive transient states reported as interrupted}
+    post:
+      tags: [captioner]
+      summary: Create a pending captioner run without loading models
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerRunCreateRequest'}
+            example:
+              tagger: {checkpoint_path: models/tagger/model.safetensors, vocab_path: models/tagger/vocabulary.json}
+              dataset_configs: [{dataset_id: 1, input_tag_caption_types: [tags], target_caption_types: [natural_language], filters: {}}]
+              config: {device: cpu, epochs: 10, batch_size: 8}
+      responses:
+        '200': {description: Persisted pending run with assigned output directory}
+        '400': {description: Invalid configuration, dataset selection or missing tagger files}
+        '409': {description: Output directory already exists or is owned by another run}
+  /captioner-training/runs/{run_id}:
+    get:
+      tags: [captioner]
+      summary: Read persisted captioner run and checkpoint paths
+      parameters:
+        - {name: run_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Run state and immutable configuration}
+        '404': {description: Run not found}
+  /captioner-training/runs/{run_id}/start:
+    post:
+      tags: [captioner]
+      summary: Start or resume one captioner training thread
+      description: Loads a private frozen tagger on CPU before GPU admission. Only one captioner worker is active per process. Resume configuration is immutable.
+      parameters:
+        - {name: run_id, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerRunStartRequest'}
+            example: {resume: true, checkpoint: ''}
+      responses:
+        '200': {description: Started run; poll its state and events}
+        '400': {description: Invalid resume checkpoint or no resumable checkpoint}
+        '404': {description: Run not found}
+        '409': {description: Captioner worker already active or run must resume instead of starting fresh}
+  /captioner-training/runs/{run_id}/stop:
+    post:
+      tags: [captioner]
+      summary: Request a checkpointed stop at the next batch boundary
+      parameters:
+        - {name: run_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Stopping or already terminal run}
+        '404': {description: Run not found}
+  /captioner-training/runs/{run_id}/events:
+    get:
+      tags: [captioner]
+      summary: Read durable training metrics, preparation coverage and checkpoint events
+      parameters:
+        - {name: run_id, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: after_id, in: query, schema: {type: integer, minimum: 0, default: 0}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 5000, default: 500}}
+      responses:
+        '200': {description: Ascending event id rows with resume sequence and event payload}
+        '404': {description: Run not found}
+  /captioner-training/runs/{run_id}/sample:
+    post:
+      tags: [captioner]
+      summary: Preview a run-owned checkpoint on a registered dataset image
+      description: Borrows the currently loaded matching PyTorch tagger without replacing the preview captioner. Uses captioner GPU admission and request cancellation. Records the sample as a run event; never saves a caption sidecar automatically.
+      parameters:
+        - {name: run_id, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerSampleRequest'}
+            example: {dataset_id: 1, item_id: 12, request_id: '550e8400-e29b-41d4-a716-446655440000', checkpoint: '', tag_source: predicted, max_new_tokens: 32, device: cpu}
+      responses:
+        '200':
+          description: Caption preview with dataset revision, run id and checkpoint name
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaptionerPredictionResponse'}
+        '400': {description: Invalid checkpoint, input or mismatching tagger}
+        '404': {description: Run or dataset image not found}
+        '409': {description: Request cancelled, duplicate request id or GPU busy}
+        '413': {description: Image exceeds configured byte limit}
+  /captioner-training/runs/{run_id}/export:
+    post:
+      tags: [captioner]
+      summary: Export a verified optimizer-free inference bundle
+      parameters:
+        - {name: run_id, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerExportRequest'}
+            example: {checkpoint: ''}
+      responses:
+        '200': {description: New immutable export directory}
+        '400': {description: Checkpoint missing, corrupt or outside run output directory}
+        '404': {description: Run not found}
+  /captioner/load:
+    post:
+      tags: [captioner]
+      summary: Load a verified captioner bundle against the current PyTorch tagger
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerLoadRequest'}
+            example: {path: training/captioner/run/checkpoint_00000100}
+      responses:
+        '200':
+          description: Loaded captioner status
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaptionerStatusResponse'}
+        '400': {description: Invalid or incompatible bundle, missing tagger, or ONNX unsupported}
+        '404': {description: Bundle not found}
+  /captioner/status:
+    get:
+      tags: [captioner]
+      summary: Read captioner identity and generation limits
+      responses:
+        '200':
+          description: Loaded flag, language, identity hashes, source modes and output limits
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaptionerStatusResponse'}
+  /captioner/unload:
+    post:
+      tags: [captioner]
+      summary: Release captioner without unloading its borrowed tagger
+      responses:
+        '200':
+          description: Unloaded captioner status
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaptionerStatusResponse'}
+  /captioner/predict:
+    post:
+      tags: [captioner]
+      summary: Generate a caption from an uploaded image and optional concepts
+      description: Uses the loaded tagger once. Device must match the tagger. GPU admission refuses to proceed without trainer pause acknowledgement. Cancel by request_id; no caption is automatically saved.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [image, request_id]
+              properties:
+                image: {type: string, format: binary}
+                request_id: {type: string, format: uuid}
+                tag_source: {type: string, enum: [predicted, provided, merged], default: predicted}
+                tags: {type: string, default: '[]', description: JSON array of tag names}
+                max_new_tokens: {type: integer, minimum: 1, default: 96}
+                device: {type: string, enum: [cpu, 'cuda:0'], default: cpu}
+      responses:
+        '200':
+          description: Caption, raw concept scores, warnings, termination, token count, image/model identity, and phase timings
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaptionerPredictionResponse'}
+        '400': {description: Invalid image, settings, unsupported backend or mismatched tagger}
+        '409': {description: Request id busy, trainer pause failed, or request cancelled}
+        '413': {description: Image exceeds configured byte limit}
+  /captioner/predict-item:
+    post:
+      tags: [captioner]
+      summary: Preview caption for a registered dataset image
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptionerItemPredictRequest'}
+            example: {dataset_id: 1, item_id: 10, request_id: 'e667ba4b-57bf-4590-8156-3e56ddac33c0'}
+      responses:
+        '200':
+          description: Prediction with scoped item id and dataset revision for explicit save
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaptionerPredictionResponse'}
+        '400': {description: Invalid settings, image path or tagger identity}
+        '404': {description: Dataset image item not found}
+        '409': {description: Busy, cancelled, changed image or trainer pause failed}
+        '413': {description: Image exceeds configured byte limit}
+  /captioner/requests/{request_id}/cancel:
+    post:
+      tags: [captioner]
+      summary: Request cancellation at the next caption decoder step
+      parameters:
+        - {name: request_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Cancellation requested; worker retains GPU slot until it exits}
+        '404': {description: Request is no longer active}
+  /captioner/save:
+    post:
+      tags: [captioner]
+      summary: Save a reviewed natural caption without replacing tag sidecars
+      description: Checks dataset revision and image SHA256 under a SQLite write transaction. Writes the compact_caption JSON field and updates the dataset index atomically with rollback on failure.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaptionerSaveRequest'
+            example:
+              dataset_id: 1
+              item_id: 10
+              dataset_revision: 2
+              image_hash: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+              caption: A girl with blue hair.
+              caption_type: natural_language
+      responses:
+        '200':
+          description: Saved natural caption and new dataset revision
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaptionerSaveResponse'
+        '400':
+          description: Invalid caption type, tag-formatted destination, unsafe sidecar, or corrupt JSON
+        '404':
+          description: Dataset or scoped image item not found
+        '409':
+          description: Dataset revision or image content changed after preview
+  /schema/captioner-defaults:
+    get:
+      tags: [captioner]
+      summary: Get compact captioner inference defaults
+      responses:
+        '200':
+          description: Values from CAPTIONER_DEFAULTS
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+  /schema/captioner-training-defaults:
+    get:
+      tags: [captioner]
+      summary: Get compact captioner training defaults
+      responses:
+        '200':
+          description: Values from CAPTIONER_TRAINING_DEFAULTS
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
   /health:
     get:
       summary: Backend liveness check
@@ -703,6 +1066,33 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+  /schema/style-training-defaults:
+    get:
+      summary: Get default parameter values for style encoder training
+      description: |
+        Single source of truth for style encoder training defaults
+        (`backend/api/param_defaults.py` `STYLE_TRAINING_DEFAULTS`). The key set
+        is exactly the trainer configuration of `StyleTrainingConfig` except
+        `dataset_configs`, which every run must supply. The encoder, feature
+        layer and token width follow the Phase 0 measurement of
+        `docs/plans/STYLE_EMBEDDING_DESIGN_2026-09.md` §16; the patch budget
+        (`style_max_num_patches`) is still open.
+      tags: [Schema]
+      responses:
+        '200':
+          description: Map of style training parameter name to default value
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StyleTrainingConfig'
+              example:
+                vision_encoder_path: ""
+                vision_encoder_repo: google/siglip2-so400m-patch16-naflex
+                training_method: lora
+                style_feature_layers: [21]
+                style_token_dim: 1152
+                style_embed_dim: 512
+                style_eval_chunk_size: 256
   /schema/vae-training-defaults:
     get:
       summary: Get default parameter values for VAE (decoder-only) training
@@ -3446,6 +3836,165 @@ paths:
                     items:
                       $ref: '#/components/schemas/ModelInfo'
 
+  /schema/dit-rewiring:
+    get:
+      tags: [models]
+      summary: Read residual rewiring presets and implementation status
+      responses:
+        '200':
+          description: Architecture presets; runtime support is reported separately
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [presets, runtime_architectures]
+                properties:
+                  presets:
+                    type: object
+                    description: Native-layout presets can include pending integrations; runtime_architectures determines public configure support
+                    additionalProperties: true
+                  runtime_architectures:
+                    type: array
+                    description: Implemented backend architectures; topology and workflow compatibility are validated per request
+                    items: {type: string}
+                    example: [qwen_image_21, krea2, anima, zimage, flux2, lens, minit2i, ideogram4, sensenova, acestep, ltx2, minimax_h3]
+  /models/rewiring/inspect:
+    post:
+      tags: [models]
+      summary: Inspect native topology and checkpoint rewiring without loading weights
+      description: >-
+        Reads Qwen-Image 2.1, Krea 2, Anima, Z-Image, Flux2, Lens, MiniT2I,
+        Ideogram 4, SenseNova, ACE-Step, LTX-2 and MiniMax-H3 configs and checkpoint headers. MiniMax-H3
+        reads its Comfy-style DiT header and companion native config; references and audio
+        remain native while its target-video grid is pooled spatially per frame. LTX-2
+        exposes per-frame spatial scales; its time and audio grids remain native. ACE-Step
+        exposes a temporal-only main stream; custom files require embedded native
+        config, while published layouts must match the known native header geometry.
+        SenseNova requires
+        embedded native config and full model or refiner-base layout; swapped
+        VAE artifacts require declared channel count and spatial compression.
+        Transformer-only directories are supported where native formats provide them.
+        MiniMax Music 3 supports native flow component directories and flat safetensors/GGUF
+        with companion flow/condition configs. Its temporal preview represents one native
+        flow chunk and does not enable training for this generation-only architecture.
+        YuE2 requires its complete single-file native tensor census and embedded
+        tokenizer header. Inspection builds shape-only meta models and may read bounded
+        quantization markers; it does not read model/VAE weights or tokenizer payload.
+        Its acoustic NAR preview does not enable NAR training; Phase-A remains AR-only.
+        Flux2 exposes double/single streams.
+        Flux2 and Z-Image file inspection
+        requires a native constructor config declaration. Inspection and presets do not imply runtime
+        support; consult /schema/dit-rewiring runtime_architectures.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [model_path]
+              properties:
+                model_path:
+                  type: string
+                  minLength: 1
+                  example: models/qwen-image-21
+      responses:
+        '200':
+          description: Native layout, checkpoint topology and resolved default preset
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [architecture, streams, base_config_sha256, block_layout_sha256, topology, default_spec, initial_spec, latent_scale_factor, pixel_alignment]
+                properties:
+                  architecture: {type: string}
+                  streams: {type: array, items: {type: object}}
+                  base_config_sha256: {type: string}
+                  block_layout_sha256: {type: string}
+                  topology_sha256: {type: string, nullable: true}
+                  topology:
+                    allOf: [{$ref: '#/components/schemas/DiTRewiringSpec'}]
+                    nullable: true
+                  default_spec:
+                    allOf: [{$ref: '#/components/schemas/DiTRewiringSpec'}]
+                    nullable: true
+                  initial_spec:
+                    allOf: [{$ref: '#/components/schemas/DiTRewiringSpec'}]
+                    description: Explicit single-region starting topology for custom layouts; selecting configure without a spec still uses default_spec.
+                  parameter_counts:
+                    allOf: [{$ref: '#/components/schemas/DiTRewiringParameterCounts'}]
+                    nullable: true
+                    description: Logical native DiT parameters, independent of quantized storage; null when no exact architecture census is available. Excludes text encoders and VAE.
+                  latent_scale_factor: {type: integer}
+                  pixel_alignment: {type: integer}
+                  video_geometry:
+                    $ref: '#/components/schemas/DiTRewiringVideoGeometry'
+                  temporal_geometry:
+                    $ref: '#/components/schemas/DiTRewiringTemporalGeometry'
+        '422':
+          description: Unsupported model or incompatible artifact topology
+  /models/rewiring/export:
+    post:
+      tags: [models]
+      summary: Export an acoustic residual topology as a new safetensors file
+      description: >-
+        Supports complete YuE2 files and flat MiniMax Music 3 safetensors with
+        their existing companion configs. Writes beside the source using a new
+        filename and preserves all tensor bytes, dtypes, quantization declarations
+        and unrelated metadata. Does not modify the source, overwrite an output,
+        load weights or enable acoustic training. Native component directories,
+        shards and GGUF export are unsupported. The graph must match the inspected
+        native configuration and NAR/flow stream and shrink only the time axis.
+        Conversion does not calibrate weights; uncalibrated quality may degrade.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [model_path, output_name, spec]
+              properties:
+                model_path: {type: string, minLength: 1}
+                output_name: {type: string, minLength: 1, example: base-unet.safetensors, description: New basename ending in .safetensors; no directories or overwrite.}
+                spec: {$ref: '#/components/schemas/DiTRewiringSpec'}
+      responses:
+        '200':
+          description: New checkpoint with unchanged tensor payload and validated residual metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [model_path, spec_sha256]
+                properties:
+                  model_path: {type: string}
+                  spec_sha256: {type: string}
+        '422':
+          description: Unsupported source, incompatible graph, invalid filename or existing output
+  /models/rewiring/validate:
+    post:
+      tags: [models]
+      summary: Validate a residual topology and preview token grids without loading weights
+      description: This validates the declared layout, not its compatibility with a particular model artifact.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DiTRewiringPreviewRequest'}
+      responses:
+        '200':
+          description: Canonical topology, hash, levels, block grids and skip edges
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [spec, spec_sha256, plan]
+                properties:
+                  spec: {$ref: '#/components/schemas/DiTRewiringSpec'}
+                  spec_sha256: {type: string}
+                  plan: {type: object, additionalProperties: true}
+        '422':
+          description: Invalid topology, unsupported operator or indivisible grid
   /models/load:
     post:
       tags: [models]
@@ -3457,6 +4006,9 @@ paths:
         - `.safetensors` (recommended)
         - `.ckpt` (legacy)
         - Diffusers format (directory)
+        - LTX-2 full transformer `.safetensors` or `.safetensors.index.json` with
+          embedded native config and `ltx2_components` references to the original
+          Diffusers companion root. The referenced frozen components must remain available.
 
         **Note:** Loading a new model will unload the currently loaded model and clear VRAM.
 
@@ -6157,12 +6709,36 @@ paths:
             default: true
       responses:
         '200':
-          description: Scalar manifest with optional legacy base64 images
+          description: >-
+            Scalar manifest with display_resolution (unscaled target image or
+            latent preview width, height, and space), optional partition_count,
+            partition_grid_size and partition_regions (actual Qwen latent core bounds), and optional
+            legacy base64 images. Qwen guidance-loss debug files optionally include
+            uncond_prediction_status (computed or not_selected),
+            uncond_predicted_latent_image and its image_urls entry. Uncond uses an
+            already-computed null-prompt prediction; no preview-only model forward.
           content:
             application/json:
               schema:
                 type: object
                 additionalProperties: true
+                properties:
+                  uncond_prediction_status: {type: string, enum: [computed, not_selected]}
+                  uncond_predicted_latent_image:
+                    type: string
+                    description: Optional legacy base64 preview of null-prompt predicted x0.
+                  image_urls:
+                    type: object
+                    additionalProperties: {type: string}
+                    properties:
+                      uncond_predicted_latent_image: {type: string}
+              example:
+                step: 200
+                timestep: 0.5
+                loss: 0.1
+                uncond_prediction_status: computed
+                image_urls:
+                  uncond_predicted_latent_image: /api/v1/training/runs/1/debug-latents/200/images/uncond_predicted_latent?timestep=0.5000&v=example
         '404':
           description: Run or latents not found
           content:
@@ -6191,7 +6767,7 @@ paths:
           required: true
           schema:
             type: string
-            enum: [target, noisy, predicted_latent, predicted_noise, predicted_velocity, reference, audio_target, audio_noisy, audio_predicted_velocity, audio_actual_velocity, audio_predicted_latent]
+            enum: [target, noisy, predicted_latent, uncond_predicted_latent, predicted_noise, predicted_velocity, reference, audio_target, audio_noisy, audio_predicted_velocity, audio_actual_velocity, audio_predicted_latent]
         - name: timestep
           in: query
           required: false
@@ -6322,6 +6898,10 @@ paths:
         - name: limit
           in: query
           schema: {type: integer, minimum: 1, maximum: 50, default: 12}
+        - name: q
+          in: query
+          description: Literal case-insensitive partial name/key search across all groups, before sorting and limiting; underscores and whitespace are equivalent.
+          schema: {type: string, maxLength: 256, default: ""}
       responses:
         '200':
           description: Latest exposure snapshot, or disabled when not yet published
@@ -8042,6 +8622,448 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+  /style/embed:
+    post:
+      tags: [style]
+      summary: Embed an image with a distributable style encoder
+      description: Loads the encoder and its adjacent metadata from a local `latest` or `best` artifact. Inference runs on CPU and never needs the original base model repo.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StyleEmbedRequest'
+      responses:
+        '200':
+          description: L2-normalized style embedding
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StyleEmbedResponse'
+        '400':
+          description: Invalid image or artifact
+        '404':
+          description: Encoder artifact not found
+  /style/similarity:
+    post:
+      tags: [style]
+      summary: Compare two images with a style encoder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StyleSimilarityRequest'
+      responses:
+        '200':
+          description: Cosine similarity of normalized style embeddings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StyleSimilarityResponse'
+        '400':
+          description: Invalid image or artifact
+        '404':
+          description: Encoder artifact not found
+  /style/reference-select:
+    post:
+      tags: [style]
+      summary: Select a style reference image from candidates
+      description: |
+        Ranks candidate images against a style exemplar using the distributable
+        style encoder. Send the selected original image as image_base64 in an
+        is_style_transfer ControlNet entry on Qwen-Image 2.1's existing
+        /generate/txt2img endpoint. This endpoint does not generate an image.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StyleReferenceSelectRequest'
+      responses:
+        '200':
+          description: Best candidate index and all cosine similarities
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StyleReferenceSelectResponse'
+        '400':
+          description: Invalid image or candidate count
+        '404':
+          description: Encoder artifact not found
+  /style/sdxl-generate:
+    post:
+      tags: [style]
+      summary: Generate an SDXL image from text and a style reference image
+      description: |
+        Loads an SDXL single-file checkpoint, a distributable style encoder,
+        and its separately trained IP-Adapter bridge. The bridge artifact must
+        match both source files by SHA-256 and the U-Net cross-attention layout.
+        The reference image supplies style only; the prompt supplies content.
+        Strength 0 runs the ordinary text-only SDXL path. Generation is refused
+        while another backend-managed training run is active.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StyleSDXLGenerateRequest'
+      responses:
+        '200':
+          description: Generated PNG as base64
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StyleSDXLGenerateResponse'
+        '400':
+          description: Invalid settings, image, or incompatible artifact
+        '404':
+          description: Required local artifact not found
+        '409':
+          description: GPU is occupied by backend-managed training
+  /style-training/runs:
+    post:
+      tags: [style-training]
+      summary: Create a style encoder training run
+      description: |
+        Creates the catalogue row in `training.db` and the run's detail
+        database `<output_dir>/style_training_run.db` (training run storage
+        v2). The merged configuration is validated by the trainer's own
+        `StyleTrainingConfig` before anything is written, so a run that is
+        created can be started without a configuration error.
+
+        **Key parameters:**
+        - `dataset_configs` (required): `[{dataset_id, caption_types}]`, the
+          tagger's shape; empty `caption_types` means every tags-format caption.
+        - `vision_encoder_path`: the initial weights, a `.safetensors` path or
+          a HuggingFace repo id; the default `""` loads the published weights
+          of `vision_encoder_repo`.
+        - Cross-field constraints are checked here too (400):
+          `style_token_dim` divisible by `style_pool_heads`,
+          `style_images_per_artist <= style_min_images_per_artist`,
+          `style_mask_ratio_min <= style_mask_ratio_max`, no repeated
+          `style_feature_layers` entry, and an `attn_implementation` the
+          installed SigLIP2 model supports.
+        - `output_dir`: defaults to `<root>/style_models/<run_id>`; a directory
+          that any other training run (diffusion/VAE, tagger or style)
+          already uses is refused (409).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StyleTrainingRunCreateRequest'
+            example:
+              run_name: style-base
+              dataset_configs:
+                - dataset_id: 3
+                  caption_types: [tags]
+              vision_encoder_path: google/siglip2-so400m-patch16-naflex
+      responses:
+        '200':
+          description: Style training run created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StyleTrainingRun'
+        '400':
+          description: The configuration is refused by the trainer's validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: Invalid style training configuration
+                detail: "style_token_dim 1150 is not divisible by style_pool_heads 8"
+                code: null
+                status_code: 400
+                timestamp: "2026-09-23T12:00:00Z"
+                path: /api/v1/style-training/runs
+        '409':
+          description: The output directory belongs to another training run of any kind
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Unknown key, wrong JSON type, or `null` for a non-nullable key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      tags: [style-training]
+      summary: List style encoder training runs
+      description: Reads the catalogue only; no per-run detail database is opened.
+      responses:
+        '200':
+          description: Runs, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StyleTrainingRun'
+  /style-training/runs/{run_id}:
+    parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+        example: 7d0c7a2e-1f3b-4c55-9a8e-2b1f0c6d9e11
+    get:
+      tags: [style-training]
+      summary: Get a style encoder training run
+      description: |
+        The catalogue row plus `dataset_stats` and `warnings` from the run's
+        detail database. When that database cannot be opened, both are empty
+        and `detail_error` says why.
+      responses:
+        '200':
+          description: Run details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StyleTrainingRunDetail'
+        '404':
+          description: Style training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    patch:
+      tags: [style-training]
+      summary: Update a style encoder training run
+      description: |
+        Changes only the fields present in the body; the merged configuration
+        is re-validated. `output_dir` cannot change. A run resumed from its
+        checkpoints keeps its model identity (a changed identity key makes the
+        start fail) and its schedule (`learning_rate`, `head_lr_multiplier`,
+        `weight_decay`, `warmup_steps`, `min_lr_ratio`, `epochs` changes are
+        ignored with a warning).
+
+        The change is merged onto the committed row under the run lock, so
+        concurrent PATCHes do not lose each other's fields. A stored
+        configuration that predates a config key gets that key's default
+        (listed in `filled_defaults` and recorded as a run warning), except a
+        key a resume cannot change (model identity, split parameters) of a
+        run that already has checkpoints: that is refused (409) until the
+        key is set explicitly.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StyleTrainingRunUpdateRequest'
+            example:
+              num_workers: 8
+      responses:
+        '200':
+          description: Run updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StyleTrainingRunUpdated'
+        '400':
+          description: The merged configuration is refused by the trainer's validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Style training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >-
+            The run is active in this backend process, or its stored
+            configuration lacks a key its checkpoints depend on.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Unknown key (including `output_dir`), wrong JSON type, or `null` for a non-nullable key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags: [style-training]
+      summary: Delete a style encoder training run
+      description: |
+        Deletes the catalogue row. The output directory, its checkpoints and
+        its detail database are kept (training run storage v2).
+      responses:
+        '200':
+          description: Run deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: string
+              example:
+                deleted: 7d0c7a2e-1f3b-4c55-9a8e-2b1f0c6d9e11
+        '404':
+          description: Style training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The run is active in this backend process
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /style-training/runs/{run_id}/start:
+    post:
+      tags: [style-training]
+      summary: Start or resume a style encoder training run
+      description: |
+        Starts the run in a backend thread. The trainer resumes from the
+        furthest complete checkpoint bundle in the output directory, finishing
+        a save that was interrupted after its commit marker was staged; with
+        none it starts fresh. The configuration launched is the committed row
+        read under the run lock; it is validated, missing keys are filled as
+        for PATCH (`filled_defaults`), and `gpu_index` is checked against
+        `torch.cuda.device_count()` before anything is claimed.
+
+        A run is active while its thread lives; a catalogue status of
+        `starting`/`running`/`stopping` left by a previous backend process
+        does not block a start. `style_feature_layers` entries are checked
+        against the encoder's real layer count only when the model is built,
+        so a range error fails the run.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Training started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StyleTrainingRunLifecycleResponse'
+        '400':
+          description: The stored configuration is invalid, or `gpu_index` names no available GPU
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Style training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >-
+            The run is already active; its stored configuration lacks a key
+            its checkpoints depend on; or a model load or component switch is
+            changing the loaded model so the run cannot claim the lifecycle
+            gate yet.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /style-training/runs/{run_id}/stop:
+    post:
+      tags: [style-training]
+      summary: Stop a style encoder training run
+      description: |
+        Asks the active trainer to stop at its next batch or setup phase; the
+        status becomes `stopping` (only from `starting`/`running`, so a final
+        status the trainer already wrote is kept), then `stopped` once it has
+        written a resumable checkpoint (none when no optimizer step
+        completed). A run whose catalogue status is active but which has no
+        live trainer is marked `stopped` (`message: marked_stopped`).
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Stop requested
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StyleTrainingRunLifecycleResponse'
+        '404':
+          description: Style training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The run is not active
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /style-training/runs/{run_id}/metrics:
+    get:
+      tags: [style-training]
+      summary: Get per-step and evaluation metrics of a style training run
+      description: |
+        Rows from the run's detail database ordered by `(resume_seq, step)`.
+        Every row carries the `index_hash` of the style index it was measured
+        on: evaluation sets change with the index, so points with different
+        hashes are not comparable. Dense training rows are decimated per
+        resume to `max_points`; evaluation rows are always returned.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: since_step
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          example: 0
+        - name: max_points
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 2000
+          description: Decimation budget for the dense rows. 0 = no limit.
+          example: 2000
+      responses:
+        '200':
+          description: Metric rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StyleTrainingMetric'
+        '404':
+          description: Style training run not found, or its detail database is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Invalid query parameter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /tagger/siglip2/load:
     post:
       tags: [tagger]
@@ -10767,6 +11789,262 @@ components:
       bearerFormat: JWT
 
   schemas:
+    DiTRewiringParameterCounts:
+      type: object
+      required: [scope, source, total, shared, added, blocks]
+      properties:
+        scope: {type: string, enum: [native_dit]}
+        source: {type: string, enum: [native_config_census]}
+        total: {type: integer, minimum: 0, example: 7115124736}
+        shared: {type: integer, minimum: 0}
+        added: {type: integer, enum: [0]}
+        blocks:
+          type: array
+          items:
+            type: object
+            required: [stream, index, count]
+            properties:
+              stream: {type: string}
+              index: {type: integer, minimum: 0}
+              count: {type: integer, minimum: 0}
+    DiTRewiringSpec:
+      type: object
+      additionalProperties: false
+      required: [schema_version, method, architecture, streams, regions, base_config_sha256, block_layout_sha256]
+      properties:
+        schema_version: {type: integer, enum: [1]}
+        method: {type: string, enum: [residual_delta_unet]}
+        architecture: {type: string}
+        base_config_sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+        block_layout_sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+        streams:
+          type: array
+          minItems: 1
+          maxItems: 16
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, block_count]
+            properties:
+              name: {type: string}
+              block_count: {type: integer, minimum: 3, maximum: 4096}
+        regions:
+          type: array
+          minItems: 1
+          maxItems: 64
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, stream, parent, start_block, end_block, down_factor, down, up, align_corners, merge, position_policy, grid_policy, delta_dtype]
+            properties:
+              id: {type: string}
+              stream: {type: string}
+              parent: {type: string, nullable: true}
+              start_block: {type: integer, minimum: 1}
+              end_block: {type: integer, minimum: 2}
+              down_factor:
+                type: array
+                minItems: 2
+                maxItems: 2
+                items: {type: integer, enum: [1, 2, 4, 8]}
+                not: {enum: [[1, 1]]}
+                description: Per-axis parent reduction. One axis may remain unchanged; at least one axis must shrink.
+              down: {type: string, enum: [avg_pool]}
+              up: {type: string, enum: [bilinear]}
+              align_corners: {type: boolean, enum: [false]}
+              merge: {type: string, enum: [identity_delta_add]}
+              position_policy: {type: string, enum: [coarse_integer]}
+              grid_policy: {type: string, enum: [require_divisible]}
+              delta_dtype: {type: string, enum: [float32]}
+    DiTRewiringPreviewRequest:
+      type: object
+      additionalProperties: false
+      required: [spec, token_height, token_width]
+      properties:
+        spec: {$ref: '#/components/schemas/DiTRewiringSpec'}
+        token_height: {type: integer, minimum: 1, maximum: 65536, example: 64}
+        token_width: {type: integer, minimum: 1, maximum: 65536, example: 64}
+    CaptionerBatchCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [bundle_path, dataset_id, item_ids]
+      properties:
+        bundle_path: {type: string, minLength: 1}
+        dataset_id: {type: integer, minimum: 1}
+        item_ids: {type: array, minItems: 1, maxItems: 10000, items: {type: integer, minimum: 1}, uniqueItems: true}
+        tag_source: {type: string, enum: [predicted, provided, merged], default: predicted}
+        tags: {type: array, items: {type: string}, default: []}
+        max_new_tokens: {type: integer, minimum: 1, default: 96}
+        device: {type: string, enum: [cpu, 'cuda:0'], default: cpu}
+    CaptionerBatchSaveRequest:
+      type: object
+      additionalProperties: false
+      required: [caption, dataset_revision, image_hash]
+      properties:
+        caption: {type: string, minLength: 1, maxLength: 16384}
+        caption_type: {type: string, minLength: 1, maxLength: 128, default: compact_caption}
+        dataset_revision: {type: integer, minimum: 0}
+        image_hash: {type: string, pattern: '^[0-9a-f]{64}$'}
+    CaptionerBatchStartRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        retry_failed: {type: boolean, default: false}
+    CaptionerTaggerConfig:
+      type: object
+      additionalProperties: false
+      required: [checkpoint_path, vocab_path]
+      properties:
+        checkpoint_path: {type: string, minLength: 1}
+        vocab_path: {type: string, minLength: 1}
+        vision_encoder_path: {type: string, default: ''}
+        lora_rank: {type: integer, minimum: 1, default: 32}
+        lora_alpha: {type: number, exclusiveMinimum: true, minimum: 0, default: 16.0}
+    CaptionerDatasetConfig:
+      type: object
+      additionalProperties: false
+      required: [dataset_id, input_tag_caption_types, target_caption_types, filters]
+      properties:
+        dataset_id: {type: integer, minimum: 1}
+        input_tag_caption_types: {type: array, items: {type: string}}
+        target_caption_types: {type: array, minItems: 1, items: {type: string}}
+        filters: {type: object, additionalProperties: true, description: 'item_ids, min_width and min_height only'}
+    CaptionerRunCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [tagger, dataset_configs, config]
+      properties:
+        run_name: {type: string, minLength: 1, default: captioner}
+        output_dir: {type: string, nullable: true, default: null, description: New exclusive directory; otherwise assigned below training/captioner}
+        tagger: {$ref: '#/components/schemas/CaptionerTaggerConfig'}
+        dataset_configs: {type: array, minItems: 1, items: {$ref: '#/components/schemas/CaptionerDatasetConfig'}}
+        config: {$ref: '#/components/schemas/CaptionerTrainingConfig'}
+    CaptionerRunStartRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        resume: {type: boolean, default: false}
+        checkpoint: {type: string, default: '', description: Owned checkpoint directory name; empty selects latest}
+    CaptionerExportRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        checkpoint: {type: string, default: '', description: Owned checkpoint directory name; empty selects latest}
+    CaptionerSampleRequest:
+      type: object
+      additionalProperties: false
+      required: [dataset_id, item_id, request_id]
+      properties:
+        dataset_id: {type: integer, minimum: 1}
+        item_id: {type: integer, minimum: 1}
+        request_id: {type: string, format: uuid}
+        checkpoint: {type: string, default: '', description: Run-owned directory name; empty selects latest}
+        tag_source: {type: string, enum: [predicted, provided, merged], default: predicted}
+        tags: {type: array, items: {type: string}, default: []}
+        max_new_tokens: {type: integer, minimum: 1, default: 96}
+        device: {type: string, enum: [cpu, 'cuda:0'], default: cpu}
+    CaptionerTrainingConfig:
+      type: object
+      additionalProperties: false
+      properties:
+        device: {type: string, default: cpu}
+        max_num_patches: {type: integer, default: 256}
+        allowed_categories: {type: array, items: {type: string}, default: [General]}
+        max_concepts: {type: integer, default: 64}
+        hidden_dim: {type: integer, default: 384}
+        heads: {type: integer, default: 6}
+        layers: {type: integer, default: 4}
+        ffn_dim: {type: integer, default: 1536}
+        visual_queries: {type: integer, default: 32}
+        max_length: {type: integer, default: 96}
+        dropout: {type: number, default: 0.1}
+        vocab_size: {type: integer, default: 8192}
+        tokenizer_min_frequency: {type: integer, default: 2}
+        learning_rate: {type: number, default: 0.0003}
+        weight_decay: {type: number, default: 0.01}
+        warmup_ratio: {type: number, default: 0.05}
+        epochs: {type: integer, default: 10}
+        batch_size: {type: integer, default: 8}
+        label_smoothing: {type: number, default: 0.05}
+        max_grad_norm: {type: number, default: 1.0}
+        seed: {type: integer, default: 42}
+        val_ratio: {type: number, default: 0.05}
+        test_ratio: {type: number, default: 0.05}
+        near_duplicate_distance: {type: integer, default: 4}
+        concept_dropout: {type: number, default: 0.15}
+        all_concept_dropout: {type: number, default: 0.1}
+        source_weights: {type: object, additionalProperties: {type: number}, default: {predicted: 0.7, provided: 0.2, merged: 0.1}}
+        cache_max_gb: {type: number, default: 20.0}
+        save_every_steps: {type: integer, default: 100}
+        use_tag_aliases: {type: boolean, default: true}
+        language: {type: string, default: en}
+    CaptionerStatusResponse:
+      type: object
+      required: [loaded]
+      additionalProperties: true
+      properties:
+        loaded: {type: boolean}
+    CaptionerPredictionResponse:
+      type: object
+      additionalProperties: true
+      required: [caption, used_tags, warnings, termination, token_count, image_hash, model_identity, timings_ms]
+      description: Dataset previews additionally carry dataset_id, item_id and dataset_revision.
+      properties:
+        caption: {type: string}
+        used_tags:
+          type: array
+          items: {$ref: '#/components/schemas/CaptionerUsedTag'}
+        warnings: {type: array, items: {type: string}}
+        termination: {type: string, enum: [eos, length_limit]}
+        token_count: {type: integer}
+        image_hash: {type: string}
+        model_identity: {type: string}
+        timings_ms: {type: object, additionalProperties: {type: number}}
+    CaptionerUsedTag:
+      type: object
+      required: [name, source, score, score_calibrated]
+      properties:
+        name: {type: string}
+        source: {type: string, enum: [predicted, provided]}
+        score: {type: number, nullable: true, description: Raw sigmoid for predictions; null for supplied tags}
+        score_calibrated: {type: boolean}
+    CaptionerLoadRequest:
+      type: object
+      additionalProperties: false
+      required: [path]
+      properties:
+        path: {type: string, minLength: 1, description: Local immutable bundle directory, example: training/captioner/run/checkpoint_00000100}
+    CaptionerItemPredictRequest:
+      type: object
+      additionalProperties: false
+      required: [dataset_id, item_id, request_id]
+      properties:
+        dataset_id: {type: integer, minimum: 1}
+        item_id: {type: integer, minimum: 1}
+        request_id: {type: string, format: uuid}
+        tag_source: {type: string, enum: [predicted, provided, merged], default: predicted}
+        tags: {type: array, items: {type: string}, default: []}
+        max_new_tokens: {type: integer, minimum: 1, default: 96}
+        device: {type: string, enum: [cpu, 'cuda:0'], default: cpu}
+    CaptionerSaveRequest:
+      type: object
+      additionalProperties: false
+      required: [dataset_id, item_id, dataset_revision, image_hash, caption]
+      properties:
+        dataset_id: {type: integer, minimum: 1, example: 1}
+        item_id: {type: integer, minimum: 1, example: 10}
+        dataset_revision: {type: integer, minimum: 0, example: 2}
+        image_hash: {type: string, pattern: '^[0-9a-f]{64}$', description: SHA256 of the preview image file, example: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
+        caption: {type: string, minLength: 1, maxLength: 16384, example: A girl with blue hair.}
+        caption_type: {type: string, minLength: 1, maxLength: 128, default: compact_caption, description: Separate natural-language index column. tags and columns owned by other sources are refused. The selected type is preserved on JSON rescan., example: compact_caption}
+    CaptionerSaveResponse:
+      type: object
+      required: [caption_id, dataset_revision, sidecar_path, source_field]
+      properties:
+        caption_id: {type: integer}
+        dataset_revision: {type: integer}
+        sidecar_path: {type: string}
+        source_field: {type: string, enum: [compact_caption]}
     ConceptExposureResponse:
       type: object
       required: [enabled, rows]
@@ -10775,6 +12053,12 @@ components:
         mode: {type: string, enum: [concept, priority]}
         total_groups: {type: integer}
         order: {type: string, enum: [latest, top]}
+        matched_groups: {type: integer, minimum: 0}
+        query: {type: string}
+        timestep_bin_edges:
+          type: array
+          description: Fixed 37 edges, 0=clean and 1=noisy; bins are left-inclusive and right-exclusive except the final bin includes 1.
+          items: {type: number, minimum: 0, maximum: 1}
         rows:
           type: array
           items:
@@ -10787,6 +12071,35 @@ components:
               target_images: {type: integer}
               mean_passes_per_image: {type: number}
               last_step: {type: integer}
+              timestep_counts:
+                type: array
+                description: Completed sample passes per bin, including repeated items and MNT; historical passes without timestep data are excluded.
+                items: {type: integer, minimum: 0}
+              timestep_recorded_passes: {type: integer, minimum: 0}
+              timestep_unknown_passes: {type: integer, minimum: 0}
+              timestep_loss_counts:
+                type: array
+                description: Per-bin passes with an actual per-image loss; never includes historical or unsupported losses.
+                items: {type: integer, minimum: 0}
+              timestep_loss_means:
+                type: array
+                description: Mean per-image Qwen prediction/reconstruction objective before gradient accumulation or micro-batch scaling; null when unrecorded. Excludes auxiliary losses.
+                items: {type: number, nullable: true, minimum: 0}
+              timestep_loss_recorded_passes: {type: integer, minimum: 0}
+              timestep_loss_unknown_passes: {type: integer, minimum: 0}
+              timestep_loss_metric: {type: string, enum: [qwen_prediction_reconstruction_v1]}
+              timestep_loss_variance_counts:
+                type: array
+                description: Per-bin passes observed since variance recording began; excludes historical mean-only observations.
+                items: {type: integer, minimum: 0}
+              timestep_loss_variance_means:
+                type: array
+                description: Mean of the variance-recorded cohort, which may differ from the cumulative loss mean.
+                items: {type: number, nullable: true, minimum: 0}
+              timestep_loss_stddevs:
+                type: array
+                description: Sample standard deviation from Welford M2/(n-1); null for fewer than two recorded observations.
+                items: {type: number, nullable: true, minimum: 0}
     StudioRenderAssetRef:
       type: object
       required: [id, kind]
@@ -13048,6 +14361,32 @@ components:
         std: 0.8
         min_timestep: 0.0
         max_timestep: 1.0
+    QwenImage21Split:
+      type: object
+      additionalProperties: false
+      required: [axis, ratio, first, second]
+      properties:
+        axis: {type: string, enum: [x, y]}
+        ratio: {type: number, exclusiveMinimum: 0, exclusiveMaximum: 1}
+        first:
+          allOf: [{ $ref: '#/components/schemas/QwenImage21Split' }]
+          nullable: true
+          description: Null is a leaf region.
+        second:
+          allOf: [{ $ref: '#/components/schemas/QwenImage21Split' }]
+          nullable: true
+    QwenImage21Partition:
+      type: object
+      additionalProperties: false
+      properties:
+        version: {type: integer, enum: [1], default: 1}
+        mode: {type: string, enum: ['off', auto, manual], default: 'off'}
+        max_target_tokens: {type: integer, minimum: 1, default: 4096}
+        layout:
+          allOf: [{ $ref: '#/components/schemas/QwenImage21Split' }]
+          nullable: true
+          default: null
+        halo_tokens: {type: integer, minimum: 0, multipleOf: 2, default: 16}
     GenerationParams:
       type: object
       description: |
@@ -13205,6 +14544,13 @@ components:
             may be combined or used alone. Ignored (accepted and warned) by
             every other architecture.
           example: false
+        qwen_image_21_partition:
+          allOf:
+            - $ref: '#/components/schemas/QwenImage21Partition'
+          nullable: true
+          description: Qwen-only partitioned generation. Multipart requests encode this object as JSON. Off uses the existing full-frame path.
+          default: {version: 1, mode: 'off', max_target_tokens: 4096, layout: null, halo_tokens: 16}
+          example: {version: 1, mode: auto, max_target_tokens: 4096, layout: null, halo_tokens: 16}
         qwen_image_21_kv_cache:
           type: boolean
           default: true
@@ -18521,10 +19867,64 @@ components:
             reports it under `LoadedModelInfo`.
           example: fl2va
 
+    DiTRewiringVideoGeometry:
+      type: object
+      additionalProperties: false
+      required: [temporal_scale_factor, height_scale_factor, width_scale_factor, grid_policy]
+      description: Native pixel-to-token scales for frame-local video residual execution. Time and audio tokens are never pooled; preview token grids describe one frame.
+      properties:
+        temporal_scale_factor: {type: integer, nullable: true, minimum: 1, example: 8, description: "Null for a causal temporal mapping without one constant pixel-to-latent ratio, such as MiniMax-H3. Actual latent frames are preserved."}
+        height_scale_factor: {type: integer, minimum: 1, example: 32}
+        width_scale_factor: {type: integer, minimum: 1, example: 32}
+        grid_policy: {type: string, enum: [independent_spatial_frames_v1, packed_target_spatial_frames_v1]}
+
+    DiTRewiringTemporalGeometry:
+      type: object
+      additionalProperties: false
+      required: [frame_rate, patch_size, preview_frames, grid_policy]
+      description: >-
+        Native audio latent frames per second and frames per decoder token.
+        Use ceil(frames/patch_size) tokens on the time axis and width 1.
+        zero_token_tail_v1 and zero_hidden_tail_v1 round tokens up to the least
+        common multiple of cumulative region factors. YuE2 zero_hidden_tail_v1
+        pads embedded acoustic hidden states while preserving both boundary
+        tokens and the immutable AR prefix KV. require_divisible never extends the grid.
+        Legacy checkpoint identities without the policy field retain require_divisible.
+      properties:
+        frame_rate: {type: number, minimum: 0, exclusiveMinimum: true, example: 25}
+        patch_size: {type: integer, minimum: 1, example: 2}
+        preview_frames:
+          type: integer
+          minimum: 1
+          description: Initial native audio preview frames, resolved from generation defaults or the native flow chunk geometry.
+          example: 750
+        grid_policy:
+          type: string
+          enum: [zero_token_tail_v1, zero_hidden_tail_v1, require_divisible]
+          example: zero_token_tail_v1
+
     LoadedModelInfo:
       type: object
       additionalProperties: true
       properties:
+        dit_rewiring_spec:
+          allOf: [{$ref: '#/components/schemas/DiTRewiringSpec'}]
+          nullable: true
+          description: Restored residual U-Net topology of the loaded model; null is the native sequence.
+          example: null
+        dit_rewiring_parameter_counts:
+          allOf: [{$ref: '#/components/schemas/DiTRewiringParameterCounts'}]
+          nullable: true
+          description: Exact logical native DiT parameter census where available; excludes text encoders, VAE and quantization storage buffers.
+        dit_rewiring_video_geometry:
+          $ref: '#/components/schemas/DiTRewiringVideoGeometry'
+        dit_rewiring_temporal_geometry:
+          $ref: '#/components/schemas/DiTRewiringTemporalGeometry'
+        dit_rewiring_token_stride:
+          type: integer
+          minimum: 1
+          description: Native image pixels per DiT token on each spatial axis, used for the restored-topology preview.
+          example: 16
         source_type:
           type: string
         source:
@@ -21147,6 +22547,27 @@ components:
           items:
             type: string
           example: ["IN00", "IN01", "MID", "OUT00"]
+        partition_guidance:
+          nullable: true
+          type: object
+          description: Qwen global adapter halo guidance; informational only, never applied automatically.
+          required: [halo_tokens, halo_pixels, source]
+          properties:
+            halo_tokens:
+              type: integer
+              minimum: 0
+              description: Halo width in VAE latent cells, must be even.
+            halo_pixels:
+              type: integer
+              description: Halo width in pixels (16 pixels per latent cell).
+            training_halo_tokens:
+              type: integer
+              nullable: true
+              description: Training halo when recorded; unknown for older artifacts.
+            source:
+              type: string
+              enum: [file_metadata, sushiui_default]
+              description: Distinguishes artifact recommendation from a legacy fallback starting point.
         recommended:
           allOf:
             - $ref: '#/components/schemas/LoRARecommendedSettings'
@@ -25031,6 +26452,27 @@ components:
           description: >-
             Optional checkpointed-block count during complete-coverage DiT
             partition forwards. Null inherits the resolved full-frame count.
+        dit_rewiring_mode:
+          type: string
+          enum: [inherit, configure]
+          default: inherit
+          example: configure
+          description: >-
+            Inherit the checkpoint topology, or configure a new residual U-Net.
+            Supported architectures are reported by /schema/dit-rewiring runtime_architectures.
+            SenseNova residual training requires batch_size 1. Resume requires the same topology.
+            Incompatible with token/block skipping and positive stochastic block dropout.
+        dit_rewiring_spec:
+          allOf:
+            - {$ref: '#/components/schemas/DiTRewiringSpec'}
+          nullable: true
+          default: null
+          example: null
+          description: >-
+            Canonical topology. Null with configure resolves the architecture preset
+            (Qwen 32 blocks: two stages, four deepest blocks; Flux2 5 double/20 single:
+            full-resolution double stream and two stages with four deepest single blocks). With inherit an explicit
+            spec asserts the required checkpoint topology instead of replacing it.
         dit_partition_training_enabled:
           type: boolean
           default: false
@@ -25039,13 +26481,26 @@ components:
             Unsupported attention topologies are refused before model loading.
         dit_partition_mode:
           type: string
-          enum: [fixed]
-          default: fixed
+          enum: [fixed, token_threshold]
+          default: token_threshold
+          description: >-
+            Fixed partitions every Qwen image. Token threshold uses the full
+            image through the limit, two regions above it, and four regions
+            at four times the limit or above.
         dit_partition_fixed_count:
           type: integer
           enum: [2, 4]
           default: 2
-          description: Number of target regions; boundaries vary deterministically by epoch and item.
+          description: Number of target regions in fixed mode; boundaries vary deterministically by epoch and item.
+        dit_partition_full_frame_max_tokens:
+          type: integer
+          minimum: 1
+          default: 4096
+          example: 4096
+          description: >-
+            In token_threshold mode, keep the full image when latent height
+            times latent width is at or below this number; use two regions above
+            it and four regions at four times this number or above.
         dit_partition_halo_tokens:
           type: integer
           minimum: 0
@@ -25247,6 +26702,20 @@ components:
           description: >-
             Sigma schedule uses effective scale 1 + (scale - 1) * sigma,
             avoiding full extrapolation at nearly clean timesteps.
+        qwen_guidance_loss_extrapolation_max_rms:
+          type: number
+          format: float
+          minimum: 0
+          default: 0.0
+          example: 0.5
+          description: >-
+            Qwen guidance-only cap on the per-image clean-latent RMS distance
+            of the extrapolated target from the ordinary target. Zero disables
+            the cap. Positive tau uses g_eff = 1 + min(g_base - 1, tau / d),
+            where d is the detached RMS error of the empty-prompt clean estimate.
+            Partitioned training measures d across all non-overlapping cores
+            before backward and uses one factor per image. Ordinary MSE and
+            CFG-null training samples are unaffected; no extra model forwards.
         qwen_guidance_loss_weight_schedule:
           type: string
           enum: [constant, high_noise_smoothstep]
@@ -28525,6 +29994,802 @@ components:
           type: integer
           nullable: true
           description: Skip only if this matches the dataset currently being rescanned
+    StyleDatasetConfig:
+      type: object
+      required: [dataset_id]
+      properties:
+        dataset_id:
+          type: integer
+          example: 3
+        caption_types:
+          type: array
+          items:
+            type: string
+          description: Tags-format caption types to read; empty or absent means all of them.
+          example: [tags]
+    StyleEmbedRequest:
+      type: object
+      additionalProperties: false
+      required: [encoder_path, image_base64]
+      properties:
+        encoder_path:
+          type: string
+          description: Local path to a complete `_style_encoder.safetensors` artifact.
+        image_base64:
+          type: string
+          description: Base64 image bytes, optionally prefixed by a data URL header.
+    StyleEmbedResponse:
+      type: object
+      required: [embedding, dim]
+      properties:
+        embedding:
+          type: array
+          items: {type: number}
+          description: Unit-length style embedding.
+        dim: {type: integer}
+    StyleSimilarityRequest:
+      type: object
+      additionalProperties: false
+      required: [encoder_path, image_a_base64, image_b_base64]
+      properties:
+        encoder_path: {type: string}
+        image_a_base64: {type: string}
+        image_b_base64: {type: string}
+    StyleSimilarityResponse:
+      type: object
+      required: [cosine_similarity]
+      properties:
+        cosine_similarity:
+          type: number
+          minimum: -1
+          maximum: 1
+    StyleReferenceSelectRequest:
+      type: object
+      additionalProperties: false
+      required: [encoder_path, query_image_base64, candidate_images_base64]
+      properties:
+        encoder_path:
+          type: string
+          description: Local distributable style encoder artifact.
+        query_image_base64:
+          type: string
+          description: Base64 style exemplar image, optionally with a data URL header.
+        candidate_images_base64:
+          type: array
+          minItems: 2
+          maxItems: 16
+          items:
+            type: string
+          description: Original candidate images in input order, encoded as base64; 64 MiB total encoded limit.
+    StyleReferenceSelectResponse:
+      type: object
+      required: [selected_index, cosine_similarities]
+      properties:
+        selected_index:
+          type: integer
+          minimum: 0
+          description: Zero-based index of the highest scoring candidate.
+        cosine_similarities:
+          type: array
+          items:
+            type: number
+          description: Style cosine similarities in candidate order.
+    StyleSDXLGenerateRequest:
+      type: object
+      additionalProperties: false
+      required: [sdxl_model_path, encoder_path, adapter_path, reference_image_base64, prompt]
+      properties:
+        sdxl_model_path:
+          type: string
+          description: Local SDXL single-file `.safetensors` checkpoint.
+        encoder_path:
+          type: string
+          description: Local distributable style encoder artifact.
+        adapter_path:
+          type: string
+          description: Local SDXL style IP-Adapter artifact bound to both source files.
+        reference_image_base64:
+          type: string
+          description: Base64 style reference image, optionally with a data URL header.
+        prompt: {type: string}
+        negative_prompt: {type: string, default: ''}
+        width: {type: integer, minimum: 256, maximum: 2048, multipleOf: 64, default: 512}
+        height: {type: integer, minimum: 256, maximum: 2048, multipleOf: 64, default: 512}
+        steps: {type: integer, minimum: 1, maximum: 150, default: 20}
+        guidance_scale: {type: number, minimum: 0, maximum: 30, default: 5.0}
+        style_strength: {type: number, minimum: 0, maximum: 2, default: 0.1}
+        seed: {type: integer, minimum: 0, maximum: 2147483647, default: 0}
+    StyleSDXLGenerateResponse:
+      type: object
+      required: [image_base64, seed]
+      properties:
+        image_base64:
+          type: string
+          description: PNG image bytes as base64 without a data URL header.
+        seed: {type: integer}
+    StyleTrainingConfigFields:
+      type: object
+      description: |
+        The style trainer configuration keys (`StyleTrainingConfig`) except
+        `dataset_configs`, without defaults. JSON types and unknown keys are
+        checked by the request model (422); the bounds below and the
+        cross-field constraints are the trainer's validator (400).
+      properties:
+        vision_encoder_path:
+          type: string
+          description: |
+            Initial encoder weights: a local `.safetensors` path or a
+            HuggingFace repo id / URL. Empty (default) loads the published
+            weights of `vision_encoder_repo`; checkpoint metadata records the
+            source actually used (a local path by file name only).
+          example: ""
+        vision_encoder_repo:
+          type: string
+          description: |
+            Repo id supplying the module structure and the NaFlex image
+            processor. Must be non-empty.
+          example: google/siglip2-so400m-patch16-naflex
+        training_method:
+          type: string
+          enum: [full, lora]
+          example: lora
+        lora_rank:
+          type: integer
+          minimum: 1
+          example: 32
+        lora_alpha:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+          example: 16.0
+        lora_dropout:
+          type: number
+          minimum: 0
+          maximum: 1
+          exclusiveMaximum: true
+          description: Seeded per training step, so an exact resume redraws the same masks.
+          example: 0.0
+        attn_implementation:
+          type: string
+          description: |
+            Encoder self-attention (`sdpa` or `eager`). An implementation the
+            installed `Siglip2VisionModel` does not support, such as
+            `flash_attention_2`, fails the run at start instead of falling back.
+          example: sdpa
+        mixed_precision:
+          type: string
+          enum: [bf16, fp32]
+          example: bf16
+        gradient_checkpointing:
+          type: boolean
+          example: true
+        gpu_index:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: |
+            Physical GPU index; `null` uses the default device. Applied with a
+            thread-local `torch.cuda.set_device()` and checked at start against
+            `torch.cuda.device_count()`.
+          example: 0
+        optimizer:
+          type: string
+          enum: [adamw, adamw8bit, lion8bit]
+          example: adamw8bit
+        learning_rate:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+          description: Encoder (or adapter) rate; the pooling and projector use it times `head_lr_multiplier`.
+          example: 0.0003
+        head_lr_multiplier:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+          example: 10.0
+        weight_decay:
+          type: number
+          minimum: 0
+          example: 0.0001
+        warmup_steps:
+          type: integer
+          minimum: 0
+          example: 100
+        min_lr_ratio:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Cosine floor as a fraction of the peak rate.
+          example: 0.0
+        max_grad_norm:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+          example: 1.0
+        epochs:
+          type: integer
+          minimum: 1
+          description: |
+            An epoch is (training images) / (artists_per_batch x
+            images_per_artist) steps; the step total is fixed at run start.
+          example: 10
+        num_workers:
+          type: integer
+          minimum: 0
+          description: Image-loading worker processes, shared by training and evaluation.
+          example: 4
+        save_every_n_steps:
+          type: integer
+          minimum: 0
+          description: Step checkpoint interval; 0 writes only `latest` (epoch ends and stop) and `best`. LoRA step bundles contain adapter and resume state; merged distributable encoders are written for `latest` and `best`.
+          example: 500
+        keep_last_n_checkpoints:
+          type: integer
+          minimum: 0
+          description: Step bundles kept; 0 keeps all. `latest` and `best` are never pruned.
+          example: 3
+        validate_every:
+          type: integer
+          minimum: 1
+          description: Evaluation interval in epochs.
+          example: 1
+        log_every_n_steps:
+          type: integer
+          minimum: 1
+          example: 10
+        style_seed:
+          type: integer
+          minimum: 0
+          description: Sampler, view, initialisation and evaluation tie-break seed.
+          example: 0
+        style_split_seed:
+          type: integer
+          minimum: 0
+          description: Seed of the artist / image hash split. Changing it refuses a resume.
+          example: 0
+        style_use_tag_aliases:
+          type: boolean
+          description: Canonicalise artist names through the tag alias table (refused when the table is missing).
+          example: true
+        style_use_gelbooru_categories:
+          type: boolean
+          example: true
+        style_signature_tags:
+          type: array
+          items:
+            type: string
+          description: Tags that mark an image as signed, for the signed / unsigned evaluation split.
+          example: [signature, watermark]
+        style_non_copyright_tags:
+          type: array
+          items:
+            type: string
+          description: Copyright tags that name no shared work and are removed from the copyright set.
+          example: [original]
+        style_val_artist_ratio:
+          type: number
+          minimum: 0
+          maximum: 1
+          exclusiveMaximum: true
+          description: Fraction of artists held out of training (by name hash). Changing it refuses a resume.
+          example: 0.05
+        style_val_image_ratio:
+          type: number
+          minimum: 0
+          maximum: 1
+          exclusiveMaximum: true
+          description: Fraction of trained artists' images held out (by item key). Changing it refuses a resume.
+          example: 0.02
+        style_min_images_per_artist:
+          type: integer
+          minimum: 1
+          description: Training images an artist needs to be trained on. Changing it refuses a resume.
+          example: 4
+        style_danbooru_enable:
+          type: boolean
+          description: Add a fixed, run-local Danbooru Artist-tag source before training starts.
+          example: false
+        style_danbooru_min_post_count:
+          type: integer
+          minimum: 1
+          description: Minimum Danbooru post_count for an Artist tag; usable downloaded images may be fewer.
+          example: 100
+        style_danbooru_order:
+          type: string
+          enum: [count_desc, random]
+          description: Artist candidate order after the tag scan. Random order uses style_danbooru_seed.
+          example: count_desc
+        style_danbooru_seed:
+          type: integer
+          minimum: 0
+          example: 0
+        style_danbooru_max_artists:
+          type: integer
+          minimum: 1
+          example: 16
+        style_danbooru_max_tag_pages:
+          type: integer
+          minimum: 1
+          description: Fail if the tag scan is still full at this page, rather than silently sampling a prefix.
+          example: 100
+        style_danbooru_max_posts_per_artist:
+          type: integer
+          minimum: 1
+          example: 32
+        style_danbooru_max_post_pages_per_artist:
+          type: integer
+          minimum: 1
+          example: 4
+        style_danbooru_api_interval:
+          type: number
+          minimum: 1.4
+          description: Minimum seconds between API calls; the shared client also enforces a 1.4-second floor.
+          example: 1.4
+        style_danbooru_dl_speed_kbps:
+          type: integer
+          minimum: 1
+          example: 500
+        style_artists_per_batch:
+          type: integer
+          minimum: 1
+          example: 16
+        style_images_per_artist:
+          type: integer
+          minimum: 1
+          description: At most `style_min_images_per_artist`, so every trained artist can fill its slots.
+          example: 4
+        style_same_copyright_batch_ratio:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Fraction of batches whose artists all draw from one shared copyright.
+          example: 0.5
+        style_artist_sampling_power:
+          type: number
+          description: Artists are drawn with probability proportional to (image count)^power.
+          example: 0.5
+        style_mask_ratio_min:
+          type: number
+          minimum: 0
+          maximum: 1
+          exclusiveMaximum: true
+          description: Block-mask ratio of the masked view for an artist with no copyright confound; at most `style_mask_ratio_max`.
+          example: 0.3
+        style_mask_ratio_max:
+          type: number
+          minimum: 0
+          maximum: 1
+          exclusiveMaximum: true
+          example: 0.75
+        style_max_num_patches:
+          type: integer
+          minimum: 1
+          description: NaFlex patch budget per image.
+          example: 256
+        style_temperature:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+          example: 0.1
+        style_view_positive_weight:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+          description: SupCon weight of the other view of the same image.
+          example: 1.0
+        style_positive_weight_min:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Floor of the content-overlap weight of same-artist positives.
+          example: 0.3
+        style_hsic_tagger_path:
+          type: string
+          description: Frozen SigLIP2 tagger checkpoint for HSIC; empty disables HSIC. Changing it refuses resume.
+          example: ""
+        style_hsic_weights:
+          type: object
+          additionalProperties:
+            type: number
+            minimum: 0
+          description: Nonnegative HSIC weights for Character, Copyright, Rating and Quality. A positive weight requires that category in the checkpoint vocabulary; changing weights refuses resume.
+          example: {Character: 0.1, Copyright: 0.1, Rating: 0.1, Quality: 0.0}
+        style_feature_layers:
+          type: array
+          minItems: 1
+          items:
+            type: integer
+          description: |
+            Hidden states whose tokens are concatenated: 0 = embeddings, i =
+            output of encoder layer i, negative counts from the last. Layers
+            past the deepest one listed are not run.
+          example: [21]
+        style_token_dim:
+          type: integer
+          minimum: 1
+          description: Must be divisible by `style_pool_heads`.
+          example: 1152
+        style_pool_heads:
+          type: integer
+          minimum: 1
+          example: 8
+        style_projector_hidden_dim:
+          type: integer
+          minimum: 1
+          example: 2048
+        style_embed_dim:
+          type: integer
+          minimum: 1
+          example: 512
+        style_val_max_items:
+          type: integer
+          minimum: 0
+          description: Cap on each evaluation set, whole artists at a time; 0 = no cap.
+          example: 20000
+        style_val_batch_size:
+          type: integer
+          minimum: 1
+          example: 64
+        style_eval_chunk_size:
+          type: integer
+          minimum: 1
+          description: |
+            Retrieval queries per chunk. With collapsed embeddings every
+            similarity ties and a chunk holds about 65 bytes per (query,
+            gallery) pair on the device.
+          example: 256
+    StyleTrainingConfig:
+      description: '`StyleTrainingConfigFields` with the defaults of `STYLE_TRAINING_DEFAULTS`.'
+      allOf:
+        - $ref: '#/components/schemas/StyleTrainingConfigFields'
+        - type: object
+          properties:
+            vision_encoder_path: {default: ""}
+            vision_encoder_repo: {default: "google/siglip2-so400m-patch16-naflex"}
+            training_method: {default: "lora"}
+            lora_rank: {default: 32}
+            lora_alpha: {default: 16.0}
+            lora_dropout: {default: 0.0}
+            attn_implementation: {default: "sdpa"}
+            mixed_precision: {default: "bf16"}
+            gradient_checkpointing: {default: true}
+            gpu_index: {default: null}
+            optimizer: {default: "adamw8bit"}
+            learning_rate: {default: 0.0003}
+            head_lr_multiplier: {default: 10.0}
+            weight_decay: {default: 0.0001}
+            warmup_steps: {default: 100}
+            min_lr_ratio: {default: 0.0}
+            max_grad_norm: {default: 1.0}
+            epochs: {default: 10}
+            num_workers: {default: 4}
+            save_every_n_steps: {default: 500}
+            keep_last_n_checkpoints: {default: 3}
+            validate_every: {default: 1}
+            log_every_n_steps: {default: 10}
+            style_seed: {default: 0}
+            style_split_seed: {default: 0}
+            style_use_tag_aliases: {default: true}
+            style_use_gelbooru_categories: {default: true}
+            style_signature_tags: {default: ["signature", "artist name", "watermark", "twitter username", "web address"]}
+            style_non_copyright_tags: {default: ["original"]}
+            style_val_artist_ratio: {default: 0.05}
+            style_val_image_ratio: {default: 0.02}
+            style_min_images_per_artist: {default: 4}
+            style_danbooru_enable: {default: false}
+            style_danbooru_min_post_count: {default: 100}
+            style_danbooru_order: {default: count_desc}
+            style_danbooru_seed: {default: 0}
+            style_danbooru_max_artists: {default: 16}
+            style_danbooru_max_tag_pages: {default: 100}
+            style_danbooru_max_posts_per_artist: {default: 32}
+            style_danbooru_max_post_pages_per_artist: {default: 4}
+            style_danbooru_api_interval: {default: 1.4}
+            style_danbooru_dl_speed_kbps: {default: 500}
+            style_artists_per_batch: {default: 16}
+            style_images_per_artist: {default: 4}
+            style_same_copyright_batch_ratio: {default: 0.5}
+            style_artist_sampling_power: {default: 0.5}
+            style_mask_ratio_min: {default: 0.3}
+            style_mask_ratio_max: {default: 0.75}
+            style_max_num_patches: {default: 256}
+            style_temperature: {default: 0.1}
+            style_view_positive_weight: {default: 1.0}
+            style_positive_weight_min: {default: 0.3}
+            style_hsic_tagger_path: {default: ""}
+            style_hsic_weights: {default: {Character: 0.1, Copyright: 0.1, Rating: 0.1, Quality: 0.0}}
+            style_feature_layers: {default: [21]}
+            style_token_dim: {default: 1152}
+            style_pool_heads: {default: 8}
+            style_projector_hidden_dim: {default: 2048}
+            style_embed_dim: {default: 512}
+            style_val_max_items: {default: 20000}
+            style_val_batch_size: {default: 64}
+            style_eval_chunk_size: {default: 256}
+    StyleTrainingRunCreateRequest:
+      description: |
+        Omitted keys take their defaults. 422: unknown keys, a wrong JSON
+        type, or `null` for a key that is not nullable. 400: a value outside
+        the bounds shown, or a cross-field constraint.
+      allOf:
+        - $ref: '#/components/schemas/StyleTrainingConfig'
+        - type: object
+          required: [dataset_configs]
+          properties:
+            run_name:
+              type: string
+              nullable: true
+              description: Defaults to `style-<first 8 characters of run_id>`.
+              example: style-base
+            output_dir:
+              type: string
+              nullable: true
+              description: Defaults to `<root>/style_models/<run_id>`. Fixed after creation.
+            dataset_configs:
+              type: array
+              minItems: 1
+              items:
+                $ref: '#/components/schemas/StyleDatasetConfig'
+    StyleTrainingRunUpdateRequest:
+      description: |
+        Any subset of the create fields except `output_dir`. An omitted key is
+        unchanged (no defaults apply). The same 422 / 400 split as
+        `StyleTrainingRunCreateRequest`, checked on the merged configuration.
+      allOf:
+        - $ref: '#/components/schemas/StyleTrainingConfigFields'
+        - type: object
+          properties:
+            run_name:
+              type: string
+              nullable: true
+              description: '`null` keeps the current name.'
+            dataset_configs:
+              type: array
+              minItems: 1
+              items:
+                $ref: '#/components/schemas/StyleDatasetConfig'
+    StyleTrainingRun:
+      type: object
+      properties:
+        id:
+          type: integer
+        run_id:
+          type: string
+          example: 7d0c7a2e-1f3b-4c55-9a8e-2b1f0c6d9e11
+        run_name:
+          type: string
+        status:
+          type: string
+          enum: [pending, starting, running, stopping, completed, failed, stopped]
+        active:
+          type: boolean
+          description: A trainer thread for this run is alive in this backend process.
+        progress:
+          type: number
+          description: global_step / total_steps, 0-1.
+        current_epoch:
+          type: integer
+        total_epochs:
+          type: integer
+        current_step:
+          type: integer
+        total_steps:
+          type: integer
+          nullable: true
+          description: Fixed by the trainer at run start; null until the first logged step.
+        training_method:
+          type: string
+          enum: [full, lora]
+        vision_encoder_path:
+          type: string
+        vision_encoder_repo:
+          type: string
+        dataset_configs:
+          type: array
+          items:
+            $ref: '#/components/schemas/StyleDatasetConfig'
+        output_dir:
+          type: string
+        config:
+          type: object
+          additionalProperties: true
+          description: The trainer configuration (`StyleTrainingConfig` keys and `dataset_configs`).
+        index_hash:
+          type: string
+          nullable: true
+          description: Hash of the style index built at the last start.
+        latest_loss:
+          type: number
+          nullable: true
+        latest_lr:
+          type: number
+          nullable: true
+        best_map_at_r:
+          type: number
+          nullable: true
+          description: Held-out-artist mAP@R of the `best` checkpoint.
+        best_step:
+          type: integer
+          nullable: true
+        best_checkpoint_path:
+          type: string
+          nullable: true
+        latest_checkpoint_path:
+          type: string
+          nullable: true
+        resumed_from_step:
+          type: integer
+          nullable: true
+        last_resume_mode:
+          type: string
+          nullable: true
+          enum: [exact, epoch_boundary, null]
+        last_resumed_at:
+          type: string
+          format: date-time
+          nullable: true
+        error_message:
+          type: string
+          nullable: true
+        status_message:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          nullable: true
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+    StyleTrainingRunDetail:
+      allOf:
+        - $ref: '#/components/schemas/StyleTrainingRun'
+        - type: object
+          properties:
+            dataset_stats:
+              type: object
+              nullable: true
+              additionalProperties: true
+              description: Ingest, label and index counts, `index_hash` and epoch length of the last start.
+            warnings:
+              type: array
+              items:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+                  ignored:
+                    type: object
+                    additionalProperties: true
+                    description: Settings a resume kept at their saved values (saved vs requested).
+                  filled_defaults:
+                    type: array
+                    items:
+                      type: string
+                    description: Keys a start or PATCH filled from the current defaults.
+            detail_error:
+              type: string
+              nullable: true
+              description: Why the detail database could not be read; null when it was.
+    StyleTrainingRunLifecycleResponse:
+      type: object
+      properties:
+        message:
+          type: string
+          enum: [started, stop_requested, marked_stopped]
+        run:
+          $ref: '#/components/schemas/StyleTrainingRun'
+        filled_defaults:
+          type: array
+          items:
+            type: string
+          description: |
+            `start` only: config keys the stored configuration lacked (it
+            predates them), filled from the current defaults and recorded as a
+            run warning.
+    StyleTrainingRunUpdated:
+      allOf:
+        - $ref: '#/components/schemas/StyleTrainingRun'
+        - type: object
+          properties:
+            filled_defaults:
+              type: array
+              items:
+                type: string
+              description: Keys the stored configuration lacked, filled from the current defaults.
+    StyleTrainingMetric:
+      type: object
+      properties:
+        step:
+          type: integer
+          description: Global optimizer step.
+        resume_seq:
+          type: integer
+          description: 0 for the first start, n for the n-th resume.
+        epoch:
+          type: integer
+          nullable: true
+        index_hash:
+          type: string
+          nullable: true
+          description: Style index the row was measured on.
+        loss:
+          type: number
+          nullable: true
+        supcon_loss:
+          type: number
+          nullable: true
+        hsic_loss:
+          type: number
+          nullable: true
+          description: Weighted sum of the content HSIC penalties; null when HSIC is disabled.
+        hsic_components:
+          type: object
+          nullable: true
+          additionalProperties:
+            type: number
+          description: Unweighted nHSIC by active category.
+        learning_rate:
+          type: number
+          nullable: true
+        grad_norm:
+          type: number
+          nullable: true
+        epoch_loss:
+          type: number
+          nullable: true
+          description: Mean training loss of the epoch ending at this step.
+        val_map_at_r:
+          type: number
+          nullable: true
+          description: Held-out-artist mAP@R.
+        val_recall_at_1:
+          type: number
+          nullable: true
+        val_recall_at_5:
+          type: number
+          nullable: true
+        evaluation:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: |
+            Full evaluation payload: held-out artists (all, same copyright,
+            with / without signature, masked view) and trained artists'
+            held-out images, each with query counts and exclusions.
+        timestamp:
+          type: string
+          format: date-time
+          nullable: true
+      example:
+        step: 1200
+        resume_seq: 0
+        epoch: 2
+        index_hash: 3f9a0c1b2d4e
+        loss: 3.12
+        supcon_loss: 3.12
+        hsic_loss: null
+        hsic_components: null
+        learning_rate: 0.00028
+        grad_norm: 0.84
+        epoch_loss: null
+        val_map_at_r: 0.41
+        val_recall_at_1: 0.63
+        val_recall_at_5: 0.81
+        evaluation: null
+        timestamp: "2026-09-23T12:00:00"
     SigLIP2LoadRequest:
       type: object
       required: [checkpoint_path]

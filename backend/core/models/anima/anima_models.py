@@ -18,6 +18,7 @@ from einops.layers.torch import Rearrange
 from torch import nn
 
 from . import anima_attention as attention
+from .config import ANIMA_DIT_CONFIG
 
 import logging
 logger = logging.getLogger(__name__)
@@ -1000,35 +1001,35 @@ class Anima(nn.Module):
 
     def __init__(
         self,
-        max_img_h: int = 512,
-        max_img_w: int = 512,
-        max_frames: int = 128,
-        in_channels: int = 16,
-        out_channels: int = 16,
-        patch_spatial: int = 2,
-        patch_temporal: int = 1,
-        concat_padding_mask: bool = True,
-        model_channels: int = 2048,
-        num_blocks: int = 28,
-        num_heads: int = 16,
-        mlp_ratio: float = 4.0,
-        crossattn_emb_channels: int = 1024,
-        pos_emb_cls: str = "rope3d",
-        pos_emb_learnable: bool = True,
-        pos_emb_interpolation: str = "crop",
-        min_fps: int = 1,
-        max_fps: int = 30,
-        use_adaln_lora: bool = True,
-        adaln_lora_dim: int = 256,
-        rope_h_extrapolation_ratio: float = 4.0,
-        rope_w_extrapolation_ratio: float = 4.0,
-        rope_t_extrapolation_ratio: float = 1.0,
-        extra_per_block_abs_pos_emb: bool = False,
-        extra_h_extrapolation_ratio: float = 1.0,
-        extra_w_extrapolation_ratio: float = 1.0,
-        extra_t_extrapolation_ratio: float = 1.0,
-        rope_enable_fps_modulation: bool = False,
-        use_llm_adapter: bool = True,
+        max_img_h: int = ANIMA_DIT_CONFIG["max_img_h"],
+        max_img_w: int = ANIMA_DIT_CONFIG["max_img_w"],
+        max_frames: int = ANIMA_DIT_CONFIG["max_frames"],
+        in_channels: int = ANIMA_DIT_CONFIG["in_channels"],
+        out_channels: int = ANIMA_DIT_CONFIG["out_channels"],
+        patch_spatial: int = ANIMA_DIT_CONFIG["patch_spatial"],
+        patch_temporal: int = ANIMA_DIT_CONFIG["patch_temporal"],
+        concat_padding_mask: bool = ANIMA_DIT_CONFIG["concat_padding_mask"],
+        model_channels: int = ANIMA_DIT_CONFIG["model_channels"],
+        num_blocks: int = ANIMA_DIT_CONFIG["num_blocks"],
+        num_heads: int = ANIMA_DIT_CONFIG["num_heads"],
+        mlp_ratio: float = ANIMA_DIT_CONFIG["mlp_ratio"],
+        crossattn_emb_channels: int = ANIMA_DIT_CONFIG["crossattn_emb_channels"],
+        pos_emb_cls: str = ANIMA_DIT_CONFIG["pos_emb_cls"],
+        pos_emb_learnable: bool = ANIMA_DIT_CONFIG["pos_emb_learnable"],
+        pos_emb_interpolation: str = ANIMA_DIT_CONFIG["pos_emb_interpolation"],
+        min_fps: int = ANIMA_DIT_CONFIG["min_fps"],
+        max_fps: int = ANIMA_DIT_CONFIG["max_fps"],
+        use_adaln_lora: bool = ANIMA_DIT_CONFIG["use_adaln_lora"],
+        adaln_lora_dim: int = ANIMA_DIT_CONFIG["adaln_lora_dim"],
+        rope_h_extrapolation_ratio: float = ANIMA_DIT_CONFIG["rope_h_extrapolation_ratio"],
+        rope_w_extrapolation_ratio: float = ANIMA_DIT_CONFIG["rope_w_extrapolation_ratio"],
+        rope_t_extrapolation_ratio: float = ANIMA_DIT_CONFIG["rope_t_extrapolation_ratio"],
+        extra_per_block_abs_pos_emb: bool = ANIMA_DIT_CONFIG["extra_per_block_abs_pos_emb"],
+        extra_h_extrapolation_ratio: float = ANIMA_DIT_CONFIG["extra_h_extrapolation_ratio"],
+        extra_w_extrapolation_ratio: float = ANIMA_DIT_CONFIG["extra_w_extrapolation_ratio"],
+        extra_t_extrapolation_ratio: float = ANIMA_DIT_CONFIG["extra_t_extrapolation_ratio"],
+        rope_enable_fps_modulation: bool = ANIMA_DIT_CONFIG["rope_enable_fps_modulation"],
+        use_llm_adapter: bool = ANIMA_DIT_CONFIG["use_llm_adapter"],
         attn_mode: str = "torch",
         split_attn: bool = False,
     ) -> None:
@@ -1042,6 +1043,8 @@ class Anima(nn.Module):
         self.patch_temporal = patch_temporal
         self.num_heads = num_heads
         self.num_blocks = num_blocks
+        self.mlp_ratio = mlp_ratio
+        self.crossattn_emb_channels = crossattn_emb_channels
         self.model_channels = model_channels
         self.concat_padding_mask = concat_padding_mask
         self.pos_emb_cls = pos_emb_cls
@@ -1117,6 +1120,11 @@ class Anima(nn.Module):
     @property
     def dtype(self):
         return next(self.parameters()).dtype
+
+    @property
+    def config(self):
+        from .residual_unet import native_config
+        return native_config(self)
 
     def enable_gradient_checkpointing(self, cpu_offload: bool = False,
                                        async_offload: bool = False) -> None:
@@ -1353,13 +1361,18 @@ class Anima(nn.Module):
         # composes with FBCache (inference-only) or block-swap (guarded off).
         blockskip = getattr(self, "_blockskip_config", None) if self.training else None
 
-        # REPA tap (training-only): drop any stream a previous forward stashed,
-        # so a step whose tap does not fire reads None rather than stale tokens.
+        # Clear the previous REPA tap before this forward can fail or skip its block.
         repa_tap_depth = self._repa_tap_depth
         if repa_tap_depth is not None:
             self._repa_tap_out = None
 
-        if blockskip is not None:
+        rewiring = getattr(self, "_residual_unet_spec", None)
+        if rewiring is not None:
+            from .residual_unet import run_rewired_anima
+            x_B_T_H_W_D = run_rewired_anima(
+                self, x_B_T_H_W_D, t_embedding_B_T_D, crossattn_emb,
+                attn_params, use_fp32, rope_emb_L_1_1_D, adaln_lora_B_T_3D, fps, rewiring)
+        elif blockskip is not None:
             x_B_T_H_W_D = self._blockskip_forward(
                 blockskip, x_B_T_H_W_D, t_embedding_B_T_D, crossattn_emb,
                 attn_params, use_fp32, rope_emb_L_1_1_D, adaln_lora_B_T_3D,
@@ -1554,36 +1567,3 @@ class Anima(nn.Module):
             context[~target_attention_mask.bool()] = 0
             return context
         return source_hidden_states
-
-
-# Default Anima DiT config (anima-base-v1.0). Match sd-scripts anima_utils.py.
-ANIMA_DIT_CONFIG = dict(
-    max_img_h=512,
-    max_img_w=512,
-    max_frames=128,
-    in_channels=16,
-    out_channels=16,
-    patch_spatial=2,
-    patch_temporal=1,
-    model_channels=2048,
-    concat_padding_mask=True,
-    crossattn_emb_channels=1024,
-    pos_emb_cls="rope3d",
-    pos_emb_learnable=True,
-    pos_emb_interpolation="crop",
-    min_fps=1,
-    max_fps=30,
-    use_adaln_lora=True,
-    adaln_lora_dim=256,
-    num_blocks=28,
-    num_heads=16,
-    extra_per_block_abs_pos_emb=False,
-    rope_h_extrapolation_ratio=4.0,
-    rope_w_extrapolation_ratio=4.0,
-    rope_t_extrapolation_ratio=1.0,
-    extra_h_extrapolation_ratio=1.0,
-    extra_w_extrapolation_ratio=1.0,
-    extra_t_extrapolation_ratio=1.0,
-    rope_enable_fps_modulation=False,
-    use_llm_adapter=True,
-)

@@ -31,6 +31,7 @@ from api.param_defaults import (
     QWEN_IMAGE_21_PROMPT_UPSAMPLE_DEFAULTS,
     REF2VID_DEFAULTS,
     STUDIO_RENDER_DEFAULTS,
+    STYLE_TRAINING_DEFAULTS,
     TAGGER_TRAINING_DEFAULTS,
     TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH,
     TRAINING_DEFAULTS,
@@ -110,6 +111,11 @@ async def get_training_defaults():
 @router.get("/schema/tagger-training-defaults")
 async def get_tagger_training_defaults():
     return TAGGER_TRAINING_DEFAULTS
+
+
+@router.get("/schema/style-training-defaults")
+async def get_style_training_defaults():
+    return STYLE_TRAINING_DEFAULTS
 
 
 @router.get("/schema/vae-training-defaults")

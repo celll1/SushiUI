@@ -407,6 +407,152 @@ def test_qwen_guidance_sigma_schedule_returns_to_ordinary_at_clean_end():
     assert float(guided) == pytest.approx(float(normal))
 
 
+@pytest.mark.parametrize("schedule", ["constant", "sigma"])
+def test_guidance_cap_bounds_clean_extrapolation_and_detaches(schedule):
+    sigma = torch.tensor([0.0, 0.5, 1.0])
+    distance_squared = torch.tensor([0.0, 0.01, 100.0], requires_grad=True)
+    condition = (None, None, torch.ones(3, dtype=torch.bool), 1.0, 3.0, schedule)
+    scale = qwen_image_21_ops._capped_guidance_scale(sigma, condition, distance_squared, 0.5)
+    base = torch.full_like(sigma, 3.0) if schedule == "constant" else 1 + 2 * sigma
+    assert not scale.requires_grad
+    assert torch.isfinite(scale).all()
+    assert torch.all((scale >= 1) & (scale <= base))
+    assert torch.all((scale - 1) * distance_squared.detach().sqrt() <= 0.500001)
+    assert scale[1] == base[1]
+    assert float(scale[2]) == pytest.approx(1.05)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("weight,drop", [(0.0, False), (0.25, False), (1.0, False), (1.0, True)])
+@pytest.mark.parametrize("mix_mode", ["blend", "stochastic"])
+def test_guidance_cap_partition_matches_whole_image_and_reuses_null(dtype, weight, drop, mix_mode):
+    class CountingTransformer(_GuidanceTransformer):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+        def forward(self, **kwargs):
+            self.calls.append(torch.is_grad_enabled())
+            return super().forward(**kwargs)
+
+    def run(partitioned, cap):
+        transformer = CountingTransformer()
+        metrics = {}
+        trainer = SimpleNamespace(
+            device=torch.device("cpu"), training_dtype=dtype,
+            mixed_precision=False, use_grad_scaler=False, transformer=transformer,
+            arch=QwenImage21ArchHandler(),
+            config={"dit_partition_fixed_count": 2, "dit_partition_halo_tokens": 2,
+                    "qwen_guidance_loss_weight": weight, "qwen_guidance_loss_mix_mode": mix_mode,
+                    "qwen_guidance_loss_extrapolation_max_rms": cap},
+            _active_mnt_noise=torch.arange(256).reshape(2, 32, 4).to(dtype) / 32,
+            _qwen_guidance_blank_encoding=(torch.zeros(1, 3, 4), torch.ones(3, dtype=torch.bool)),
+            _qwen_guidance_draw=torch.tensor([0.8, 0.1]),
+            reconstruction_loss_weight=0.0, _collect_concept_sample_loss=True,
+            log_extra_metric=lambda key, value: metrics.__setitem__(key, value),
+        )
+        inputs = dict(latents=torch.zeros(2, 32, 4),
+                      encoder_features=torch.ones(2, 2, 4), encoder_mask=torch.ones(2, 2, dtype=torch.bool),
+                      timesteps=torch.tensor([0.5, 0.9]), latent_h=4, latent_w=8,
+                      cfg_drop_mask=torch.tensor([drop, False]))
+        if partitioned:
+            loss, _, _ = qwen_image_21_ops.train_step_partitioned_backward(trainer, **inputs, backward_scale=1.0)
+        else:
+            loss, _, _ = qwen_image_21_ops.train_step(trainer, **inputs)
+            loss.backward()
+        return float(loss), transformer.scale.grad, metrics, transformer.calls, trainer._pending_concept_sample_loss
+
+    plain = run(False, 0.0)
+    capped = run(False, 0.1)
+    partitioned = run(True, 0.1)
+    uncapped_partitioned = run(True, 0.0)
+    loose = run(False, 100.0)
+    assert capped[0] == pytest.approx(partitioned[0], rel=0.01 if dtype == torch.bfloat16 else 1e-6)
+    torch.testing.assert_close(capped[1], partitioned[1], rtol=0.01, atol=1e-5)
+    torch.testing.assert_close(capped[4], partitioned[4], rtol=0.01, atol=1e-5)
+    assert capped[3] == plain[3]
+    assert len(partitioned[3]) == len(uncapped_partitioned[3])
+    assert sum(not x for x in partitioned[3]) == sum(not x for x in uncapped_partitioned[3])
+    assert loose[0] == plain[0]
+    torch.testing.assert_close(loose[1], plain[1], rtol=0, atol=0)
+    if weight == 0:
+        assert capped[0] == plain[0]
+        assert "qwen_guidance_effective_scale_mean" not in capped[2]
+    else:
+        assert capped[2]["qwen_guidance_effective_scale_mean"] == pytest.approx(
+            partitioned[2]["qwen_guidance_effective_scale_mean"], rel=1e-6)
+        if drop or (mix_mode == "stochastic" and weight == 0.25):
+            assert capped[4][0] == plain[4][0]
+
+
+@pytest.mark.parametrize("cap", [-1.0, float("inf"), float("nan")])
+def test_guidance_cap_rejects_invalid_api_and_yaml(cap):
+    with pytest.raises(ValueError):
+        routes.TrainingRunCreateRequest(base_model_path="unused", training_method="lora",
+                                       qwen_guidance_loss_extrapolation_max_rms=cap)
+    with pytest.raises(ValueError):
+        qwen_image_21_ops._extrapolation_cap(SimpleNamespace(config={"qwen_guidance_loss_extrapolation_max_rms": cap}))
+
+
+def test_guidance_cap_survives_api_yaml_roundtrip():
+    from core.training.training_config import _build_train_section, train_section_key_vocabulary
+    key = "qwen_guidance_loss_extrapolation_max_rms"
+    request = routes.TrainingRunCreateRequest(base_model_path="unused", training_method="lora", **{key: 0.5})
+    train = _build_train_section(request.model_dump(), total_steps=20, epochs=None,
+                                 train_unet=True, train_text_encoder=False, arch="qwen_image_21")
+    assert train[key] == 0.5
+    assert key in train_section_key_vocabulary()
+    restored = routes._extract_request_params_from_yaml({"train": train}, "lora")
+    assert restored[key] == 0.5
+    import yaml
+    from api.param_defaults import TRAINING_DEFAULTS
+    spec = yaml.safe_load((BACKEND.parent / "openapi.yaml").read_text(encoding="utf-8"))
+    field = spec["components"]["schemas"]["TrainingRunCreateRequest"]["properties"][key]
+    assert field["default"] == TRAINING_DEFAULTS[key]
+    assert routes.TrainingRunCreateRequest.model_fields[key].default == TRAINING_DEFAULTS[key]
+
+
+@pytest.mark.parametrize("partitioned", [False, True])
+@pytest.mark.parametrize("guidance_weight", [0.0, 0.25, 1.0])
+def test_exposure_loss_is_per_image_and_preserves_objective_and_gradient(partitioned, guidance_weight):
+    def run(track):
+        transformer = _GuidanceTransformer()
+        trainer = SimpleNamespace(
+            device=torch.device("cpu"), training_dtype=torch.float32,
+            mixed_precision=False, use_grad_scaler=False, transformer=transformer,
+            arch=QwenImage21ArchHandler(),
+            config={"dit_partition_fixed_count": 2, "qwen_guidance_loss_weight": guidance_weight,
+                    "qwen_guidance_loss_scale": 3.0, "qwen_guidance_loss_schedule": "sigma"},
+            _active_mnt_noise=torch.stack([torch.ones(32, 4), torch.ones(32, 4) * 2]),
+            _qwen_guidance_blank_encoding=(torch.zeros(1, 3, 4), torch.ones(3, dtype=torch.bool)),
+            _concept_exposure=object() if track else None,
+            _collect_concept_sample_loss=track,
+            reconstruction_loss_weight=0.2,
+            log_extra_metric=lambda *_args: None,
+        )
+        inputs = dict(latents=torch.zeros(2, 32, 4),
+                      encoder_features=torch.stack([torch.ones(2, 4), torch.ones(2, 4) * 3]),
+                      encoder_mask=torch.ones(2, 2, dtype=torch.bool),
+                      timesteps=torch.tensor([0.5, 0.9]), latent_h=4, latent_w=8,
+                      cfg_drop_mask=torch.tensor([False, False]))
+        if partitioned:
+            total, _, _ = qwen_image_21_ops.train_step_partitioned_backward(
+                trainer, **inputs, backward_scale=0.25)
+        else:
+            loss, _, _ = qwen_image_21_ops.train_step(trainer, **inputs)
+            total = float(loss.detach())
+            (loss * 0.25).backward()
+        return trainer, total, transformer.scale.grad.clone()
+    plain, plain_total, plain_grad = run(False)
+    tracked, total, grad = run(True)
+    values = tracked._pending_concept_sample_loss
+    assert values.shape == (2,)
+    assert not values.requires_grad
+    assert float(values[0]) != pytest.approx(float(values[1]))
+    assert float(values.mean()) == pytest.approx(total)
+    assert total == pytest.approx(plain_total)
+    torch.testing.assert_close(grad, plain_grad)
+
+
 @pytest.mark.parametrize("partitioned", [False, True])
 def test_qwen_reconstruction_loss_is_reported_and_weighted(partitioned):
     transformer = _DebugTransformer()
@@ -477,7 +623,8 @@ def test_qwen_sigma_null_schedule_rejects_blend_mode():
         )
 
 
-def test_qwen_pixel_debug_decodes_after_forward(tmp_path):
+@pytest.mark.parametrize("guidance", [False, True])
+def test_qwen_pixel_debug_decodes_after_forward(tmp_path, guidance):
     class VAE(torch.nn.Module):
         def __init__(self):
             super().__init__()
@@ -497,7 +644,8 @@ def test_qwen_pixel_debug_decodes_after_forward(tmp_path):
         vae_dtype=torch.float32, mixed_precision=False,
         transformer=_DebugTransformer(), vae=VAE(),
         qwen_image_21_pipeline=SimpleNamespace(image_processor=Processor()),
-        config={"qwen_debug_latent_view": "pixel"},
+        config={"qwen_debug_latent_view": "pixel", "qwen_guidance_loss_weight": 1.0 if guidance else 0.0},
+        _qwen_guidance_blank_encoding=(torch.zeros(1, 3, 4), torch.ones(3, dtype=torch.bool)),
         _active_mnt_noise=torch.ones(1, 32, 4),
         log_extra_metric=lambda *_args: None,
     )
@@ -510,12 +658,63 @@ def test_qwen_pixel_debug_decodes_after_forward(tmp_path):
     )
     assert list(tmp_path.glob("decode_*.webp")) == []
     qwen_image_21_ops.flush_pending_debug_previews(trainer)
-    assert sorted(p.name for p in tmp_path.glob("decode_*.webp")) == [
+    expected = [
         "decode_t0.5000_noisy.webp", "decode_t0.5000_pred_x0.webp",
         "decode_t0.5000_target.webp",
     ]
+    if guidance:
+        expected.append("decode_t0.5000_uncond_pred_x0.webp")
+    assert sorted(p.name for p in tmp_path.glob("decode_*.webp")) == sorted(expected)
     saved = torch.load(next(tmp_path.glob("latents_t*.pt")), weights_only=False)
     assert saved["recon_loss"] > 0
+
+
+@pytest.mark.parametrize("partitioned", [False, True])
+@pytest.mark.parametrize("mode", ["normal", "guidance", "first_not_selected"])
+def test_debug_uncond_reuses_forward_and_only_saves_computed_first_image(tmp_path, partitioned, mode):
+    class CountingTransformer(_GuidanceTransformer):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+        def forward(self, **kwargs):
+            self.calls += 1
+            return super().forward(**kwargs)
+    def run(path):
+        transformer = CountingTransformer()
+        trainer = SimpleNamespace(
+            device=torch.device("cpu"), training_dtype=torch.float32,
+            mixed_precision=False, use_grad_scaler=False, transformer=transformer,
+            arch=QwenImage21ArchHandler(), log_prefix="[test]",
+            config={"dit_partition_fixed_count": 2, "qwen_guidance_loss_weight": 0 if mode == "normal" else 0.25,
+                    "qwen_guidance_loss_mix_mode": "stochastic" if mode == "first_not_selected" else "blend"},
+            _qwen_guidance_draw=torch.tensor([0.9, 0.0]),
+            _qwen_guidance_blank_encoding=(torch.zeros(1, 3, 4), torch.ones(3, dtype=torch.bool)),
+            _active_mnt_noise=torch.ones(2, 32, 4), log_extra_metric=lambda *_args: None,
+        )
+        inputs = dict(latents=torch.zeros(2, 32, 4), encoder_features=torch.ones(2, 2, 4),
+                      encoder_mask=torch.ones(2, 2, dtype=torch.bool), timesteps=torch.tensor([0.5, 0.9]),
+                      latent_h=4, latent_w=8, debug_save_path=path)
+        if partitioned:
+            loss, _, _ = qwen_image_21_ops.train_step_partitioned_backward(trainer, **inputs, backward_scale=1.0)
+        else:
+            value, _, _ = qwen_image_21_ops.train_step(trainer, **inputs)
+            loss = float(value.detach())
+            value.backward()
+        return transformer.calls, loss, transformer.scale.grad
+    calls, loss, grad = run(None)
+    debug_calls, debug_loss, debug_grad = run(tmp_path)
+    assert debug_calls == calls
+    assert debug_loss == pytest.approx(loss)
+    torch.testing.assert_close(debug_grad, grad)
+    saved = torch.load(next(tmp_path.glob("latents_t*.pt")), weights_only=False)
+    if mode == "guidance":
+        assert saved["uncond_prediction_status"] == "computed"
+        torch.testing.assert_close(saved["uncond_predicted_velocity"], torch.full((1, 4, 4, 8), 0.25))
+        torch.testing.assert_close(saved["uncond_predicted_latent"], torch.full((1, 4, 4, 8), 0.375))
+    else:
+        assert "uncond_predicted_velocity" not in saved
+        assert "uncond_predicted_latent" not in saved
+        assert saved.get("uncond_prediction_status") == ("not_selected" if mode == "first_not_selected" else None)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
@@ -588,6 +787,16 @@ def test_qwen_debug_latents_save_full_canvas(tmp_path, partitioned):
         saved["predicted_latent"], as_grid(noisy - sigma * expected_prediction)
     )
     assert saved["partition_count"] == (2 if partitioned else 1)
+    if partitioned:
+        plan = qwen_image_21_ops._partition_plan(trainer, height, width)
+        assert saved["partition_grid_size"] == [width, height]
+        assert saved["partition_regions"] == [
+            {"top": region.core.top, "left": region.core.left,
+             "bottom": region.core.bottom, "right": region.core.right}
+            for region in plan.regions
+        ]
+    else:
+        assert "partition_regions" not in saved
     assert saved["caption"] == "caption"
 
 
@@ -1047,6 +1256,61 @@ def test_qwen_partition_api_refuses_odd_halo():
         routes.TrainingRunCreateRequest(qwen_partition_halo_tokens=3)
 
 
+def test_qwen_partition_token_limit_routes_full_and_partitioned_views():
+    trainer = SimpleNamespace(
+        config={"dit_partition_training_enabled": True,
+                "dit_partition_mode": "token_threshold",
+                "dit_partition_full_frame_max_tokens": 4096,
+                "dit_partition_fixed_count": 2},
+        arch=QwenImage21ArchHandler(),
+    )
+    small = torch.zeros(1, 64 * 64, 4)
+    large = torch.zeros(1, 64 * 66, 4)
+    huge = torch.zeros(1, 128 * 128, 4)
+    assert qwen_image_21_ops.partition_region_count(trainer, latent_h=64, latent_w=64) == 1
+    assert not qwen_image_21_ops.partition_training_enabled(trainer, latent_h=64, latent_w=64)
+    assert qwen_image_21_ops.partition_dispatch_view(
+        trainer, small, latent_h=64, latent_w=64) is small
+    assert qwen_image_21_ops.partition_training_enabled(trainer, latent_h=64, latent_w=66)
+    assert qwen_image_21_ops.partition_region_count(trainer, latent_h=64, latent_w=66) == 2
+    assert qwen_image_21_ops.partition_dispatch_view(
+        trainer, large, latent_h=64, latent_w=66).shape[1] < large.shape[1]
+    assert qwen_image_21_ops.partition_region_count(trainer, latent_h=128, latent_w=128) == 4
+    assert len(qwen_image_21_ops._partition_plan(trainer, 128, 128).regions) == 4
+    assert qwen_image_21_ops.partition_dispatch_view(
+        trainer, huge, latent_h=128, latent_w=128).shape[1] < huge.shape[1]
+    trainer.config["dit_partition_mode"] = "fixed"
+    assert qwen_image_21_ops.partition_training_enabled(trainer, latent_h=64, latent_w=64)
+    del trainer.config["dit_partition_mode"]
+    assert qwen_image_21_ops.partition_training_enabled(trainer, latent_h=64, latent_w=64)
+
+
+def test_qwen_partition_token_limit_request_contract():
+    from core.training.training_config import _build_train_section
+
+    request = routes.TrainingRunCreateRequest(
+        training_method="lora", base_model_path="unused",
+        dit_partition_training_enabled=True,
+        dit_partition_mode="token_threshold",
+        dit_partition_full_frame_max_tokens=6144,
+    )
+    assert request.dit_partition_full_frame_max_tokens == 6144
+    assert routes.TrainingRunCreateRequest(
+        training_method="lora", base_model_path="unused",
+    ).dit_partition_mode == "token_threshold"
+    train = _build_train_section(
+        request.model_dump(), total_steps=20, epochs=None,
+        train_unet=True, train_text_encoder=False, arch="qwen_image_21",
+    )
+    assert train["dit_partition_mode"] == "token_threshold"
+    assert train["dit_partition_full_frame_max_tokens"] == 6144
+    with pytest.raises(ValueError):
+        routes.TrainingRunCreateRequest(
+            training_method="lora", base_model_path="unused",
+            dit_partition_full_frame_max_tokens=0,
+        )
+
+
 def test_qwen_partition_legacy_request_populates_canonical_fields():
     request = routes.TrainingRunCreateRequest(
         training_method="lora",
@@ -1240,7 +1504,8 @@ def test_qwen_trainable_prompt_encoding_preserves_text_encoder_gradient():
     assert bool(mask.all())
 
 
-def test_qwen_full_te_bundle_round_trip(tmp_path, monkeypatch):
+@pytest.mark.parametrize("with_global", [False, True])
+def test_qwen_full_te_bundle_round_trip(tmp_path, monkeypatch, with_global):
     from transformers import Qwen3VLConfig, Qwen3VLForConditionalGeneration
     from core.models.qwen_image_21 import loader
 
@@ -1270,7 +1535,18 @@ def test_qwen_full_te_bundle_round_trip(tmp_path, monkeypatch):
     trainer = SimpleNamespace(
         transformer=dit, text_encoder=te, model_path=str(companion),
         qwen_image_21_companion_path=str(companion), train_text_encoder=True,
+        trains_base_weights=True,
     )
+    if with_global:
+        from core.models.qwen_image_21.partition_global import prepare_training_global_adapter
+        trainer.config = {
+            "dit_partition_training_enabled": True,
+            "dit_partition_global_adapter_enabled": True,
+            "dit_partition_global_rank": 4, "dit_partition_global_tokens": 3,
+        }
+        prepare_training_global_adapter(trainer, dtype=torch.float32)
+        with torch.no_grad():
+            dit.qwen_partition_global_adapter.out.weight.fill_(0.25)
     checkpoint = QwenImage21FullParameterAdapter(trainer).write_checkpoint(
         1, 0, tmp_path / "run_step_000001"
     )
@@ -1292,6 +1568,11 @@ def test_qwen_full_te_bundle_round_trip(tmp_path, monkeypatch):
         loaded["transformer"].txt_in.in_layer.weight,
         dit.txt_in.in_layer.weight,
     )
+    if with_global:
+        trainer.transformer = loaded["transformer"]
+        restored = prepare_training_global_adapter(trainer, dtype=torch.float32)
+        for key, value in restored.branch_tensors().items():
+            assert torch.equal(value, dit.qwen_partition_global_adapter.branch_tensors()[key])
 
 
 def test_convrot_materialization_releases_packed_weight_and_preserves_gradient():
@@ -1387,6 +1668,7 @@ def test_api_defaults_and_capabilities_expose_qwen_controls():
         "steps": 40,
         "cfg_scale": 1.0,
         "qwen_image_21_kv_cache": True,
+        "qwen_image_21_partition": defaults["txt2img"]["qwen_image_21_partition"],
     }
     assert defaults["txt2img"]["qwen_image_21_kv_cache"] is True
     capabilities = asyncio.run(get_arch_capabilities())

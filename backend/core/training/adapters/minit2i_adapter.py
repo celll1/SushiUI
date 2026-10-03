@@ -105,6 +105,7 @@ class MiniT2ILoRAAdapter(BaseLoRAAdapter):
 
     def checkpoint_metadata(self, lora_layers: Dict[str, nn.Module],
                             step: int, epoch: int) -> Dict[str, str]:
+        from core.models.minit2i.residual_unet import model_topology_metadata
         active_te_scopes = ",".join(k for k, v in self.te_scope.items() if v)
         has_te = any(name.startswith("lora_te_") for name in lora_layers)
         return {
@@ -118,6 +119,7 @@ class MiniT2ILoRAAdapter(BaseLoRAAdapter):
             "step": str(step),
             "epoch": str(epoch),
             "format": "pt",
+            **model_topology_metadata(self.trainer.transformer),
         }
 
 
@@ -201,10 +203,10 @@ class MiniT2IFullParameterAdapter(BaseFullParameterAdapter):
                   f"not bundled; resolved on load via {swapped.locator}")
         extra = {"step": str(step), "epoch": str(epoch)}
         extra.update(swap_md)
-        save_single_file(str(output_path), trainer.transformer, variant=variant,
+        written_path = save_single_file(str(output_path), trainer.transformer, variant=variant,
                          text_encoder=text_encoder, vae=vae_to_bundle,
                          extra_metadata=extra)
         print(f"[MiniT2IFullParameterAdapter] Saved single-file "
-              f"({'transformer+FLAN-T5' if text_encoder is not None else 'transformer'}) -> {output_path}")
+              f"({'transformer+FLAN-T5' if text_encoder is not None else 'transformer'}) -> {written_path}")
         # The resolved path, so the base class pairs the REPA sidecar with it.
-        return output_path
+        return Path(written_path)

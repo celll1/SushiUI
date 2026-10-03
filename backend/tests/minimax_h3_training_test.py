@@ -648,6 +648,7 @@ def test_latent_regeneration_does_not_assume_a_unet(tmp_path):
         _main_model_module = BaseTrainer._main_model_module
         # `_main_model_module` dispatches on these flags; H3's is the live case.
         is_anima = is_lens = is_ideogram4 = is_krea2 = is_ltx2 = is_acestep = False
+        is_qwen_image_21 = is_sensenova = False
         is_minimax_h3 = True
 
         def encode_image(self, image=None, target_width=None, target_height=None):

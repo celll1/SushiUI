@@ -1311,6 +1311,11 @@ def load_components(trainer: Any) -> None:
 
         handler = SenseNovaArchHandler()
     handler.resolve_latent_refiner(trainer)
+    from core.models.sensenova.residual_unet import configure_training_topology
+    resume_path = getattr(trainer, "resume_from_checkpoint", None)
+    configure_training_topology(trainer.transformer, trainer.config,
+        resuming=bool(resume_path and Path(trainer.model_path).resolve() == Path(resume_path).resolve()),
+        pending_adapter_resume=bool(resume_path and getattr(trainer, "_manages_own_resume", False)))
     if getattr(trainer, "vae", None) is not None:
         trainer.vae.requires_grad_(False)
         trainer.vae.eval()
@@ -3091,6 +3096,12 @@ def forward_gen_decoder_layers(
         )
     if packed_gen is not None and packed_gen.prefix is not cache_packed:
         raise ValueError("SenseNova generation training: plan and prefix cache disagree")
+    if getattr(model, "_residual_unet_spec", None) is not None:
+        from core.models.sensenova.residual_unet import run_rewired_generation
+        states = run_rewired_generation(model, hidden_states, indexes, prefix_cache,
+            attention_mask=attention_mask, checkpoint_layers=checkpoint_layers, packed_gen=packed_gen)
+        return model.norm_mot_gen(states)
+
     image_gen_indicators = torch.ones(
         hidden_states.shape[:2], dtype=torch.bool, device=hidden_states.device
     )

@@ -328,6 +328,15 @@ class HostResidentStateRoundTripTest(unittest.TestCase):
         self.assertIs(_train_section(fixed)[self.KEY], True)
 
 
+class TqBackwardModeRoundTripTest(unittest.TestCase):
+    def test_panel_edit_writes_the_selected_mode(self):
+        old = _with_train_keys(_generate(), tq_backward_mode="fa2")
+        updated, preserved = preserve_unmodelled_train_keys(
+            old, _generate(tq_backward_mode="triton"))
+        self.assertEqual(_train_section(updated)["tq_backward_mode"], "triton")
+        self.assertNotIn("tq_backward_mode", preserved)
+
+
 class ConfigChannelCensusTest(unittest.TestCase):
     """Which trainer-read keys no request field can set -- pinned exactly."""
 

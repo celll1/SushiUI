@@ -1,0 +1,109 @@
+"""Qwen image-tail residual rewiring; native block execution remains authoritative."""
+import torch
+
+from core.rewiring.training import NO_RESUME_SPEC as _NO_RESUME_SPEC
+
+from core.rewiring.runtime import run_rewired_stream
+from core.rewiring.spec import validate_spec
+
+
+def run_rewired_qwen(model, hidden, modulation, rotary, mask, target_mask,
+                     segments, key_valid, image_shape, spec):
+    from .vendor.transformer import build_qwenimage21_block_causal_mask
+
+    spec = validate_spec(spec)
+    if not model.config.causal_condition:
+        raise ValueError("Qwen rewiring currently requires native causal modulation")
+    frame, height, width = image_shape
+    if frame != 1:
+        raise ValueError("Qwen rewiring requires one 2D target grid")
+    prefix = hidden.shape[1] - height * width
+    if (prefix < 0 or target_mask is None or target_mask.ndim != 1
+            or target_mask.shape[0] != hidden.shape[1]
+            or not target_mask[prefix:].all() or target_mask[:prefix].any()):
+        raise ValueError("Qwen rewiring requires a contiguous target-token tail")
+    if spec["architecture"] != "qwen_image_21" or spec["streams"] != [
+            {"name": "main", "block_count": len(model.transformer_blocks)}]:
+        raise ValueError("Qwen rewiring architecture or block layout mismatch")
+
+    def coarse_context(context, value, h, w, text_count):
+        old_rotary, old_mask, old_target, old_valid = context
+        image_mask = torch.zeros(value.shape[1], dtype=torch.bool, device=value.device)
+        image_mask[text_count:] = True
+        new_rotary = model.pos_embed([(1, h, w)], image_mask, value.device)
+        new_valid = None if old_valid is None else torch.cat((
+            old_valid[:, :text_count], old_valid.new_ones(value.shape[0], h*w)), dim=1)
+        new_mask = None
+        if old_mask is not None:
+            image_ids = torch.full_like(image_mask, -1, dtype=torch.long)
+            image_ids[text_count:] = 0
+            new_mask = build_qwenimage21_block_causal_mask(
+                image_ids, new_valid, value.shape[0], value.device)
+        return new_rotary, new_mask, image_mask, new_valid
+
+    def execute(index, value, context):
+        block = model.transformer_blocks[index]
+        current_rotary, current_mask, current_target, current_valid = context
+        checkpoint_blocks = int(getattr(model, "_training_gradient_checkpointing_blocks",
+                                        len(model.transformer_blocks)))
+        if torch.is_grad_enabled() and model.gradient_checkpointing and index < checkpoint_blocks:
+            return model._gradient_checkpointing_func(
+                block, value, modulation, current_rotary, current_mask,
+                current_target, None, None, None, segments, current_valid)
+        return block(hidden_states=value, modulation=modulation, rotary_emb=current_rotary,
+                     attention_mask=current_mask, target_token_mask=current_target,
+                     segments=segments, key_valid=current_valid)
+
+    return run_rewired_stream(hidden, spec, "main", height, width, prefix,
+                              (rotary, mask, target_mask, key_valid), execute, coarse_context)
+
+
+def native_config(config):
+    from .artifact import DEFAULT_TRANSFORMER_CONFIG
+    return {key: config.get(key, value) for key, value in DEFAULT_TRANSFORMER_CONFIG.items()}
+
+
+def validate_topology_identity(spec, config):
+    from core.rewiring.spec import validate_model_identity
+    resolved = native_config(config)
+    if resolved["causal_condition"] is not True:
+        raise ValueError("Qwen rewiring currently requires native causal modulation")
+    return validate_model_identity(spec, "qwen_image_21",
+        [{"name": "main", "block_count": resolved["num_layers"]}], resolved)
+
+
+def restore_topology(model, spec):
+    if spec is not None:
+        model._residual_unet_spec = validate_topology_identity(spec, dict(model.config))
+    else:
+        model.__dict__.pop("_residual_unet_spec", None)
+
+
+def model_topology_metadata(model):
+    from core.rewiring.spec import checkpoint_metadata
+    spec = getattr(model, "_residual_unet_spec", None)
+    return {} if spec is None else checkpoint_metadata(
+        validate_topology_identity(spec, dict(model.config)))
+
+
+
+
+def configure_training_topology(model, config, *, resuming=False, pending_adapter_resume=False,
+                                resume_spec=_NO_RESUME_SPEC, install=True):
+    from core.rewiring.training import resolve_training_topology
+    return resolve_training_topology(
+        model, config, "qwen_image_21", validate_topology_identity, restore_topology,
+        default_topology, resuming=resuming, pending_adapter_resume=pending_adapter_resume,
+        resume_spec=resume_spec, install=install)
+
+
+def default_topology(config):
+    from copy import deepcopy
+    from api.param_defaults import DIT_REWIRING_PRESETS
+    from core.rewiring.spec import OPERATORS, build_spec
+    preset = deepcopy(DIT_REWIRING_PRESETS["qwen_image_21"])
+    if native_config(config)["num_layers"] != preset["block_count"]:
+        return None
+    spec = build_spec("qwen_image_21", [{"name":"main","block_count":preset["block_count"]}],
+                      [dict(region, **OPERATORS) for region in preset["regions"]], native_config(config))
+    return validate_topology_identity(spec, config)

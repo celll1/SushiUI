@@ -391,7 +391,8 @@ class Ltx2BlockLoopWrapper(nn.Module):
         return bool(swap_on or self._fbcache is not None or self._spectrum_video is not None
                     or self._tread_router is not None or self._block_dropout is not None
                     or self._blockskip_config is not None or self._style_cfg is not None
-                    or self._style_refs is not None)
+                    or self._style_refs is not None
+                    or getattr(self.transformer, "_residual_unet_spec", None) is not None)
 
     # ------------------------------------------------------------------
     # Forward
@@ -426,6 +427,13 @@ class Ltx2BlockLoopWrapper(nn.Module):
 
         Fast path (no feature attached) delegates verbatim to the inner model.
         """
+        if getattr(self.transformer, "_residual_unet_spec", None) is not None:
+            from core.models.ltx2.residual_unet import preflight_forward
+            preflight_forward(self, hidden_states, audio_hidden_states, num_frames, height, width, video_coords,
+                timestep=timestep, audio_timestep=audio_timestep, sigma=sigma, audio_sigma=audio_sigma,
+                attention_kwargs=attention_kwargs, stg_blocks=spatio_temporal_guidance_blocks,
+                perturbation_mask=perturbation_mask)
+
         # Spectrum: on a forecast (non-anchor) step, skip the ENTIRE forward
         # (RoPE / projections / block loop / output layers) and return the
         # forecasted (video, audio) output directly. The wrapper receives the
@@ -685,6 +693,23 @@ class Ltx2BlockLoopWrapper(nn.Module):
             audio_encoder_hidden_states = audio_encoder_hidden_states.view(
                 batch_size, -1, audio_hidden_states.size(-1)
             )
+
+        if getattr(t, "_residual_unet_spec", None) is not None:
+            from core.models.ltx2.residual_unet import run_rewired_blocks
+            hidden_states, audio_hidden_states = run_rewired_blocks(
+                self, hidden_states, audio_hidden_states, num_frames, height, width, video_coords,
+                encoder_hidden=encoder_hidden_states, audio_encoder_hidden=audio_encoder_hidden_states,
+                temb=temb, temb_audio=temb_audio,
+                video_scale_shift=video_cross_attn_scale_shift, audio_scale_shift=audio_cross_attn_scale_shift,
+                video_gate=video_cross_attn_a2v_gate, audio_gate=audio_cross_attn_v2a_gate,
+                temb_prompt=temb_prompt, temb_prompt_audio=temb_prompt_audio,
+                video_rope=video_rotary_emb, audio_rope=audio_rotary_emb,
+                video_cross_rope=video_cross_attn_rotary_emb, audio_cross_rope=audio_cross_attn_rotary_emb,
+                encoder_mask=encoder_attention_mask, audio_encoder_mask=audio_encoder_attention_mask,
+                isolate_modalities=isolate_modalities,
+                grad_ckpt=torch.is_grad_enabled() and t.gradient_checkpointing)
+            return self._finish_stage6(t, hidden_states, audio_hidden_states,
+                                      embedded_timestep, audio_embedded_timestep, return_dict)
 
         # === Training-free reference-style transfer: REF CAPTURE sub-pass ===
         # Runs BEFORE the real (stage 5) block loop below so the per-block

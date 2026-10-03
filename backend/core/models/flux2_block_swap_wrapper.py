@@ -96,6 +96,14 @@ class Flux2BlockSwapWrapper(nn.Module):
         # forward to intercept the dual+single block loops.
         fbcache = getattr(self, "_fbcache", None)
         swap_on = self._block_offloader is not None and self._block_offloader.blocks_to_swap > 0
+        if getattr(self.transformer, "_residual_unet_spec", None) is not None:
+            if (self._single_procs is not None or fbcache is not None or pooled_projections is not None
+                    or controlnet_block_samples is not None or controlnet_single_block_samples is not None):
+                raise ValueError("Flux2 residual execution does not support guidance/cache/control wrappers")
+            from core.models.flux2.residual_unet import run_rewired_flux2
+            return run_rewired_flux2(self.transformer, hidden_states, encoder_hidden_states,
+                timestep, img_ids, txt_ids, guidance, joint_attention_kwargs, return_dict,
+                block_offloader=self._block_offloader if swap_on else None)
         if not swap_on and self._single_procs is None and fbcache is None:
             return self.transformer(
                 hidden_states=hidden_states,

@@ -175,7 +175,9 @@ class AceStepLoRAAdapter(BaseLoRAAdapter):
     def checkpoint_metadata(self, lora_layers: Dict[str, nn.Module],
                             step: int, epoch: int) -> Dict[str, str]:
         """sd-scripts native format."""
+        from core.models.acestep.residual_unet import model_topology_metadata
         return {
+            **model_topology_metadata(self.trainer.transformer),
             "model_type": "acestep",
             "modelspec.architecture": "acestep",
             "lora_rank": str(self.lora_rank),
@@ -250,7 +252,9 @@ class AceStepFullParameterAdapter(BaseFullParameterAdapter):
         for k, v in dit_state.items():
             combined[f"net.{k}"] = v.detach().to("cpu").contiguous()
 
+        from core.models.acestep.residual_unet import export_metadata
         metadata = {
+            **export_metadata(trainer.transformer),
             "step": str(step),
             "epoch": str(epoch),
             "model_type": "acestep",

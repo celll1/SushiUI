@@ -22,6 +22,7 @@ dispatch onto this backend for a MiniMax Music 3-flagged manager.
 
 import os
 import sys
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -64,6 +65,10 @@ class _MockComponent:
         self._move_log = move_log
         self._fail_on_to_device = fail_on_to_device
         self.device = "cpu"
+        if name == "language_model":
+            self.model = SimpleNamespace(layers=[])
+        elif name == "transformer":
+            self.transformer_blocks = []
 
     def to(self, device):
         if self._fail_on_to_device is not None and str(device) == self._fail_on_to_device:

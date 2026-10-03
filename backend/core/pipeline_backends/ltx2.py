@@ -464,30 +464,95 @@ class LTX2Mixin:
     def _ltx2_lora_wrapped_keys(self):
         return self._ltx2_lora_session.state("transformer").wrapped
 
+    def _ltx2_rewiring_preflight(self, params, height, width):
+        from core.adapters import AdapterIncompatible
+        from core.inference.fbcache import fbcache_active
+        from core.models.ltx2.residual_unet import resolve_generation_topology, native_config
+        from core.rewiring.spec import preview_plan
+        params.pop("dit_rewiring_actual", None)
+        self._unload_lora_ltx2()
+        files = self._ltx2_lora_session.parse(params.get("loras"))
+        model = self._ltx2_lora_transformer()
+        try:
+            required = resolve_generation_topology(model, files) if model is not None else None
+            if required is not None:
+                if (fbcache_active(params) or params.get("spectrum_enable") or params.get("stg_scale") or
+                        params.get("audio_stg_scale") or (params.get("style_transfer") or {}).get("image") or
+                        params.get("style_transfers")):
+                    raise ValueError("LTX-2 residual generation currently refuses caches, STG and style transfer")
+                factors = native_config(model.config)["vae_scale_factors"]
+                if (type(height) is not int or type(width) is not int or height < 1 or width < 1 or
+                        height % factors[1] or width % factors[2]):
+                    raise ValueError("LTX-2 residual dimensions must match native spatial VAE factors")
+                preview_plan(required, height // factors[1], width // factors[2])
+        except ValueError as exc:
+            raise AdapterIncompatible(str(exc), code="lora_rewiring_incompatible") from exc
+        return files, required
+
     def _load_lora_ltx2(self, lora_configs: Optional[List[Dict]]) -> int:
+        from copy import deepcopy
+        from core.adapters import AdapterIncompatible
+        from core.adapters.session import AdapterFile
+        from core.models.ltx2.residual_unet import resolve_generation_topology, restore_topology, wrap_transformer
         transformer = self._ltx2_lora_transformer()
         self._unload_lora_ltx2()
-
         if not lora_configs:
             return 0
         if transformer is None:
-            raise RuntimeError(
-                "LTX-2.3 components not loaded; cannot apply the selected LoRA(s)")
-
-        print(f"[LTX-2.3 LoRA] Loading {len(lora_configs)} LoRA(s)...")
-        applied = self._ltx2_lora_session.load(lora_configs, self._ltx2_lora_components()).applied
+            raise RuntimeError("LTX-2.3 components not loaded; cannot apply the selected LoRA(s)")
+        files = list(lora_configs) if all(isinstance(file, AdapterFile) for file in lora_configs) else self._ltx2_lora_session.parse(lora_configs)
+        try:
+            required = resolve_generation_topology(transformer, files)
+        except ValueError as exc:
+            raise AdapterIncompatible(str(exc), code="lora_rewiring_incompatible") from exc
+        base_topology = deepcopy(getattr(transformer, "_residual_unet_spec", None))
+        print(f"[LTX-2.3 LoRA] Loading {len(files)} LoRA(s)...")
+        applied = self._ltx2_lora_session.load(files, self._ltx2_lora_components()).applied
+        if required is not None:
+            self._ltx2_topology_restore = (weakref.ref(transformer), base_topology)
+            try:
+                current = self.ltx2_components["transformer"]
+                wrapper = wrap_transformer(current, required)
+                self.ltx2_components["transformer"] = wrapper
+                for name in ("pipeline", "i2v_pipeline", "cond_pipeline"):
+                    pipeline = self.ltx2_components.get(name)
+                    if pipeline is not None:
+                        pipeline.transformer = wrapper
+            except Exception:
+                self._unload_lora_ltx2()
+                raise
         if applied:
             self._ltx2_sync_block_swap_after_lora()
         return applied
 
     def _unload_lora_ltx2(self) -> int:
-        restored = self._ltx2_lora_session.unload(self._ltx2_lora_components())
-        if restored:
-            offloader = self._ltx2_block_offloader()
-            if offloader is not None and getattr(offloader, "blocks_to_swap", 0):
-                _ltx2_invalidate_block_swap_caches(offloader)
-            print(f"[LTX-2.3 LoRA] Unloaded {restored} LoRA wrapper(s)")
-        return restored
+        try:
+            restored = self._ltx2_lora_session.unload(self._ltx2_lora_components())
+            if restored:
+                offloader = self._ltx2_block_offloader()
+                if offloader is not None and getattr(offloader, "blocks_to_swap", 0):
+                    _ltx2_invalidate_block_swap_caches(offloader)
+                print(f"[LTX-2.3 LoRA] Unloaded {restored} LoRA wrapper(s)")
+            return restored
+        finally:
+            saved = self.__dict__.pop("_ltx2_topology_restore", None)
+            if saved is not None and saved[0]() is not None:
+                from core.models.ltx2.residual_unet import restore_topology
+                restore_topology(saved[0](), saved[1])
+
+    def _ltx2_begin_rewiring_metadata(self, params):
+        params.pop("dit_rewiring_actual", None)
+        model = self._ltx2_lora_transformer()
+        if model is not None:
+            model.__dict__.pop("_residual_unet_last_grid", None)
+
+    def _ltx2_capture_rewiring_metadata(self, params):
+        from core.models.ltx2.residual_unet import generation_metadata
+        actual = generation_metadata(self._ltx2_lora_transformer())
+        if actual is None:
+            params.pop("dit_rewiring_actual", None)
+        else:
+            params["dit_rewiring_actual"] = actual
 
     def _ltx2_sync_block_swap_after_lora(self) -> None:
         """Reconcile the block offloader with the adapters just installed.
@@ -901,6 +966,7 @@ class LTX2Mixin:
 
         current = pipeline.transformer
         inner = current.transformer if isinstance(current, Ltx2BlockLoopWrapper) else current
+        force_wrap = force_wrap or getattr(inner, "_residual_unet_spec", None) is not None
 
         if blocks_to_swap <= 0:
             if force_wrap:
@@ -926,7 +992,7 @@ class LTX2Mixin:
                 if cond is not None:
                     cond.transformer = wrapper
                 self._ltx2_block_swap_count = 0
-                print("[LTX-2.3] FBCache-only wrap active (Ltx2BlockLoopWrapper, no block offloader)")
+                print("[LTX-2.3] Custom block loop active (no block offloader)")
                 return
             if isinstance(current, Ltx2BlockLoopWrapper):
                 offloader = current._block_offloader
@@ -1008,6 +1074,9 @@ class LTX2Mixin:
         hook (device-mismatch on the next call). Unwrapping first makes the hook
         bind to the restored inner transformer.
         """
+        current = self.ltx2_components["pipeline"].transformer
+        inner = getattr(current, "transformer", current)
+        force_wrap = force_wrap or getattr(inner, "_residual_unet_spec", None) is not None
         if blocks_to_swap > 0:
             pipeline = self._ensure_ltx2_offload(blocks_to_swap=blocks_to_swap)
             self._ensure_ltx2_block_swap_wrapper(blocks_to_swap)
@@ -1116,7 +1185,9 @@ class LTX2Mixin:
         spectrum_video, spectrum_audio = self._ltx2_build_spectrum(
             params, num_inference_steps_probe, blocks_to_swap > 0
         )
+        rewiring_files, rewiring_required = self._ltx2_rewiring_preflight(params, height, width)
         force_wrap = (fbcache is not None or spectrum_video is not None or style_active) and blocks_to_swap <= 0
+        force_wrap = force_wrap or rewiring_required is not None
 
         # One-time in-place INT8 conversion (unet_quantization="int8"). MUST be
         # before the block-swap/offload step below: the block offloader captures
@@ -1223,7 +1294,8 @@ class LTX2Mixin:
 
         try:
             # LoRA: see _generate_txt2vid_ltx2's note (same ordering contract).
-            self._load_lora_ltx2(params.get("loras"))
+            self._load_lora_ltx2(rewiring_files)
+            self._ltx2_begin_rewiring_metadata(params)
 
             video, audio = pipeline(
                 image=input_image,
@@ -1242,9 +1314,10 @@ class LTX2Mixin:
                 max_sequence_length=max_sequence_length,
                 callback_on_step_end=callback,
             )
+            self._ltx2_capture_rewiring_metadata(params)
         finally:
             self._unload_lora_ltx2()
-            if fbcache_target is not None:
+            if fbcache_target is not None and fbcache is not None:
                 print(f"[FBCache] LTX-2.3 summary: {fbcache.n_hits} hit(s), {fbcache.n_miss} miss(es)")
                 fbcache_target.attach_fbcache(None)
             if style_saved_processors:
@@ -1476,7 +1549,9 @@ class LTX2Mixin:
         spectrum_video, spectrum_audio = self._ltx2_build_spectrum(
             params, num_inference_steps, blocks_to_swap > 0
         )
+        rewiring_files, rewiring_required = self._ltx2_rewiring_preflight(params, height, width)
         force_wrap = (fbcache is not None or spectrum_video is not None) and blocks_to_swap <= 0
+        force_wrap = force_wrap or rewiring_required is not None
 
         # One-time in-place INT8 conversion, before the offloader is built (see
         # _ltx2_runtime_int8; same ordering as the other two generate paths).
@@ -1536,7 +1611,8 @@ class LTX2Mixin:
 
         try:
             # LoRA: see _generate_txt2vid_ltx2's note (same ordering contract).
-            self._load_lora_ltx2(params.get("loras"))
+            self._load_lora_ltx2(rewiring_files)
+            self._ltx2_begin_rewiring_metadata(params)
 
             video, audio = cond_pipeline(
                 conditions=[condition],
@@ -1555,9 +1631,10 @@ class LTX2Mixin:
                 max_sequence_length=max_sequence_length,
                 callback_on_step_end=callback,
             )
+            self._ltx2_capture_rewiring_metadata(params)
         finally:
             self._unload_lora_ltx2()
-            if fbcache_target is not None:
+            if fbcache_target is not None and fbcache is not None:
                 print(f"[FBCache] LTX-2.3 vid_outpaint summary: {fbcache.n_hits} hit(s), {fbcache.n_miss} miss(es)")
                 fbcache_target.attach_fbcache(None)
             if spectrum_target is not None:
@@ -1729,7 +1806,9 @@ class LTX2Mixin:
         spectrum_video, spectrum_audio = self._ltx2_build_spectrum(
             params, num_inference_steps_probe, blocks_to_swap > 0
         )
+        rewiring_files, rewiring_required = self._ltx2_rewiring_preflight(params, height, width)
         force_wrap = (fbcache is not None or spectrum_video is not None or style_active) and blocks_to_swap <= 0
+        force_wrap = force_wrap or rewiring_required is not None
 
         # One-time in-place INT8 conversion, before the offloader is built (see
         # _ltx2_runtime_int8; same ordering as the other two generate paths).
@@ -1828,7 +1907,8 @@ class LTX2Mixin:
             # still restores the FBCache/Spectrum/style state attached above, and
             # unloaded in the finally below. See _load_lora_ltx2 for the ordering
             # and block-swap contracts.
-            self._load_lora_ltx2(params.get("loras"))
+            self._load_lora_ltx2(rewiring_files)
+            self._ltx2_begin_rewiring_metadata(params)
 
             video, audio = pipeline(
                 prompt=prompt,
@@ -1846,9 +1926,10 @@ class LTX2Mixin:
                 max_sequence_length=max_sequence_length,
                 callback_on_step_end=callback,
             )
+            self._ltx2_capture_rewiring_metadata(params)
         finally:
             self._unload_lora_ltx2()
-            if fbcache_target is not None:
+            if fbcache_target is not None and fbcache is not None:
                 print(f"[FBCache] LTX-2.3 summary: {fbcache.n_hits} hit(s), {fbcache.n_miss} miss(es)")
                 fbcache_target.attach_fbcache(None)
             if style_saved_processors:

@@ -24,7 +24,7 @@ branch's ``.to(device)``), so this stage is a no-op skip there, keeping the
 default and ``blocks_to_swap=0`` paths byte-identical to before this stage
 existed.
 
-Fast path: with no feature attached (no block offloader or FBCache) the wrapper delegates
+Fast path: with no feature attached (including no residual topology) the wrapper delegates
 verbatim to ``self.transformer(...)``, so the default MiniMax-H3 path is
 byte-identical to the unwrapped model.
 
@@ -37,6 +37,10 @@ the only thing that can rename ``proj_in`` / ``token_refiner`` /
 ``transformer_blocks`` / ``norm_out`` is an edit to a file in this repository,
 which changes this file's own tree. There is no external version to pin, so an
 assert here would only restate the file next to it.
+
+Residual topology on the inner model uses explicit target-video geometry,
+coarsens only its spatial rows, and restores native packing before the heads.
+See ``docs/guides/DIT_REWIRING_DESIGN.md`` for its conditioning constraints.
 
 Extension slot (None by default -> fast path):
   * ``_block_offloader`` — generation block swap, via the shared
@@ -195,7 +199,8 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
 
     def _any_feature_active(self) -> bool:
         return bool(
-            self._fbcache is not None
+            getattr(self.transformer, '_residual_unet_spec', None) is not None
+            or self._fbcache is not None
             or self._skip_blocks is not None
             or self._residual_probe is not None
             or (
@@ -221,8 +226,16 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
         text_indices: torch.Tensor,
         attention_kwargs: Optional[dict] = None,
         return_dict: bool = True,
+        *, residual_video_grid: Optional[dict] = None,
     ):
-        """Forward with the EXACT stock ``MiniMaxH3Transformer3DModel`` signature."""
+        """Native forward plus explicit target geometry for residual execution."""
+        residual_state = None
+        if getattr(self.transformer, '_residual_unet_spec', None) is not None:
+            self.transformer.__dict__.pop('_residual_unet_last_grid', None)
+            from core.models.minimax_h3.residual_unet import preflight_forward
+            residual_state = preflight_forward(self, hidden_states, audio_hidden_states,
+                encoder_hidden_states, timestep, timestep_indices, token_tags, position_ids,
+                video_indices, audio_indices, text_indices, residual_video_grid, attention_kwargs)
         if not self._any_feature_active():
             # Byte-identical default: the inner model's own forward. The
             # @apply_lora_scale decorator on it still fires here.
@@ -244,7 +257,7 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
         return self._custom_forward(
             hidden_states, audio_hidden_states, encoder_hidden_states,
             timestep, timestep_indices, token_tags, position_ids,
-            video_indices, audio_indices, text_indices, return_dict,
+            video_indices, audio_indices, text_indices, return_dict, residual_state,
         )
 
     # NOTE on ``attention_kwargs``: the stock forward carries the
@@ -254,8 +267,7 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
     # so a LoRA scale passed through this path would be ignored. Nothing in this
     # repo sets one for MiniMax-H3 (the sampler never populates
     # ``attention_kwargs``), and the training phase applies its scale on the
-    # adapter rather than per call; the argument is accepted on ``forward`` for
-    # signature parity and asserted-empty here rather than silently dropped.
+    # adapter rather than per call; residual execution refuses a nonempty ``attention_kwargs`` before projection.
     def _custom_forward(
         self,
         hidden_states,
@@ -269,6 +281,7 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
         audio_indices,
         text_indices,
         return_dict,
+        residual_state=None,
     ):
         t = self.transformer
         offloader = self._block_offloader
@@ -364,87 +377,65 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
         original_hidden_states = hidden_states.clone() if fbcache is not None else hidden_states
         fbcache_hit = False
 
-        for block_idx, block in enumerate(t.transformer_blocks):
-            if swap_on:
-                offloader.wait_for_block(block_idx)
+        if residual_state is not None:
+            from core.models.minimax_h3.residual_unet import run_native_blocks
+            hidden_states = run_native_blocks(self, hidden_states, temb, residual_state)
+        else:
+            for block_idx, block in enumerate(t.transformer_blocks):
+                if swap_on:
+                    offloader.wait_for_block(block_idx)
 
-            skipped = skip_blocks is not None and block_idx in skip_blocks
+                skipped = skip_blocks is not None and block_idx in skip_blocks
 
-            # Residual probe (debug/research only, Experiment B): capture the
-            # video-row state BEFORE the block runs, restricted the same way
-            # FBCache's own block-0 residual is -- only when this block is
-            # actually going to run (a skipped block's delta is zero by
-            # definition). `index_select` always allocates a fresh tensor
-            # (never a view), so `probe_before` survives the block's own
-            # in-place gated residual add with no extra clone needed.
-            # `self._fbcache_condition_video_rows` is the FBCache slot's own
-            # geometry (0 unless FBCache is also attached); txt2vid -- the
-            # only route this probe is reachable from -- never has condition
-            # video rows, so this is currently a no-op cut. A future route
-            # that reaches this probe WITH condition rows would need its own
-            # geometry threaded through `attach_residual_probe`, not this one.
-            probe_before = None
-            if probe is not None and not skipped:
-                probe_before = hidden_states.index_select(
-                    1, video_indices)[:, self._fbcache_condition_video_rows:]
+                # index_select allocates: the snapshot survives native in-place residual adds.
+                probe_before = None
+                if probe is not None and not skipped:
+                    probe_before = hidden_states.index_select(
+                        1, video_indices)[:, self._fbcache_condition_video_rows:]
 
-            # Identity skip (ablation only): `hidden_states` is left exactly as
-            # it entered this iteration -- no block call, no gradient
-            # checkpointing wrapper. The offloader bookkeeping above/below still
-            # runs for this index so the swap rotation stays in lock-step even
-            # though the block's weights go unused this step.
-            if skipped:
-                pass
-            elif grad_ckpt:
-                hidden_states = t._gradient_checkpointing_func(
-                    block, hidden_states, temb, adaln_indices, rotary_emb)
-            else:
-                hidden_states = block(hidden_states, temb, adaln_indices, rotary_emb)
+                # Skipped blocks still advance the offloader rotation.
+                if skipped:
+                    pass
+                elif grad_ckpt:
+                    hidden_states = t._gradient_checkpointing_func(
+                        block, hidden_states, temb, adaln_indices, rotary_emb)
+                else:
+                    hidden_states = block(hidden_states, temb, adaln_indices, rotary_emb)
 
-            if swap_on:
-                offloader.submit_move_blocks_forward(block_idx)
+                if swap_on:
+                    offloader.submit_move_blocks_forward(block_idx)
 
-            if probe_before is not None:
-                probe_after = hidden_states.index_select(
-                    1, video_indices)[:, self._fbcache_condition_video_rows:]
-                # In-place sub_ on the fresh `probe_after` copy (one fewer
-                # allocation) and cast to fp32 before the norm/division:
-                # production hidden_states is bf16, whose ~0.4% granularity
-                # would otherwise quantise the very ranking this experiment
-                # exists to produce.
-                before_norm = probe_before.norm().float().clamp_min(_RESIDUAL_PROBE_EPS)
-                rel_residual = probe_after.sub_(probe_before).norm().float() / before_norm
-                # Read off `self` (the wrapper), not `t` (the inner model): the
-                # call site (`h3_pipeline_ops.py::call_transformer`) sets
-                # `_probe_step_idx` on whatever object it calls, which is this
-                # wrapper whenever the probe is attached at all -- the same
-                # object `_fbcache_step` above is read from. Defensive default
-                # (`-1`) covers a probe attached without that plumbing (e.g. a
-                # unit test driving the wrapper directly).
-                probe(block_idx, int(getattr(self, "_probe_step_idx", -1)), float(rel_residual))
+                if probe_before is not None:
+                    probe_after = hidden_states.index_select(
+                        1, video_indices)[:, self._fbcache_condition_video_rows:]
+                    # FP32 avoids BF16 quantisation of small residual ratios.
+                    before_norm = probe_before.norm().float().clamp_min(_RESIDUAL_PROBE_EPS)
+                    rel_residual = probe_after.sub_(probe_before).norm().float() / before_norm
+                    # The sampler stamps the called wrapper's step index.
+                    probe(block_idx, int(getattr(self, "_probe_step_idx", -1)), float(rel_residual))
 
-            if fbcache is not None and block_idx == 0:
-                first_residual = hidden_states - original_hidden_states
-                video_residual = first_residual.index_select(1, video_indices)
-                video_residual = video_residual[:, self._fbcache_condition_video_rows:]
-                rows_per_frame = int(self._fbcache_rows_per_frame)
-                if not video_residual.shape[1] or video_residual.shape[1] % rows_per_frame:
-                    raise RuntimeError(
-                        "MiniMax-H3 FBCache target video rows do not divide into latent "
-                        f"frames: {video_residual.shape[1]} rows / {rows_per_frame}."
-                    )
-                frames = video_residual.shape[1] // rows_per_frame
-                frame_groups = video_residual.reshape(
-                    video_residual.shape[0], frames, rows_per_frame, video_residual.shape[-1]
-                ).flatten(0, 1)
-                if fbcache.use_cache(
-                    video_residual,
-                    int(self._fbcache_step),
-                    guard_indicator=frame_groups,
-                ):
-                    hidden_states = original_hidden_states + fbcache.get()
-                    fbcache_hit = True
-                    break
+                if fbcache is not None and block_idx == 0:
+                    first_residual = hidden_states - original_hidden_states
+                    video_residual = first_residual.index_select(1, video_indices)
+                    video_residual = video_residual[:, self._fbcache_condition_video_rows:]
+                    rows_per_frame = int(self._fbcache_rows_per_frame)
+                    if not video_residual.shape[1] or video_residual.shape[1] % rows_per_frame:
+                        raise RuntimeError(
+                            "MiniMax-H3 FBCache target video rows do not divide into latent "
+                            f"frames: {video_residual.shape[1]} rows / {rows_per_frame}."
+                        )
+                    frames = video_residual.shape[1] // rows_per_frame
+                    frame_groups = video_residual.reshape(
+                        video_residual.shape[0], frames, rows_per_frame, video_residual.shape[-1]
+                    ).flatten(0, 1)
+                    if fbcache.use_cache(
+                        video_residual,
+                        int(self._fbcache_step),
+                        guard_indicator=frame_groups,
+                    ):
+                        hidden_states = original_hidden_states + fbcache.get()
+                        fbcache_hit = True
+                        break
 
         if fbcache is not None and not fbcache_hit:
             fbcache.store(hidden_states - original_hidden_states)
@@ -466,6 +457,9 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
             video_output = t.proj_out(hidden_states).index_select(1, video_indices)
             audio_output = t.audio_proj_out(hidden_states).index_select(1, audio_indices)
 
+        if residual_state is not None:
+            from core.models.minimax_h3.residual_unet import record_execution
+            record_execution(t, residual_state, video_indices.numel(), audio_indices.numel(), text_indices.numel())
         if not return_dict:
             return (video_output, audio_output)
         return MiniMaxH3TransformerOutput(sample=video_output, audio_sample=audio_output)

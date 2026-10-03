@@ -40,6 +40,31 @@ def require_trainable_algebra(trainer, arch) -> None:
                                config.get("fp8_base_dtype") or None)
 
 
+def resolve_lora_resume_checkpoint(trainer, requested):
+    """Resolve the same adapter artifact for load-time preflight and resume."""
+    if not requested:
+        return None
+    if str(requested).lower() == "latest":
+        candidates = list(trainer.output_dir.glob(f"{trainer.run_name}_step_*.safetensors"))
+        from .base_trainer import _checkpoint_step_from_name
+        candidates = [path for path in candidates
+                      if path.name.removeprefix(f"{trainer.run_name}_step_")
+                      .removesuffix(".safetensors").isdigit()
+                      and _checkpoint_step_from_name(path.name) is not None]
+        checkpoint = max(candidates, key=lambda path: _checkpoint_step_from_name(path.name)) if candidates else None
+        if checkpoint is None:
+            if list(trainer.output_dir.glob(f"{trainer.run_name}_step_*_state.json")):
+                raise RuntimeError("LoRA resume state exists but no weight checkpoint remains")
+            return None
+    else:
+        checkpoint = trainer.output_dir / requested
+        if not checkpoint.is_file():
+            checkpoint = Path(requested)
+        if not checkpoint.is_file():
+            raise FileNotFoundError(f"LoRA resume checkpoint does not exist: {requested}")
+    return checkpoint
+
+
 class LoRATrainer(BaseTrainer):
     """
     LoRA Trainer for SD/SDXL/Z-Image models.
@@ -91,6 +116,12 @@ class LoRATrainer(BaseTrainer):
         # LoRA modules storage
         self.lora_layers: Dict[str, nn.Module] = {}
 
+        # Adapter checkpoints cannot be loaded as base-model checkpoints.
+        self._manages_own_resume = True
+        resume_request = kwargs.get("resume_from_checkpoint") or (
+            kwargs.get("train_config") or {}).get("resume_from_checkpoint")
+        kwargs["resume_from_checkpoint"] = resume_request
+
         super().__init__(**kwargs)
 
         # Convert lora_dtype string to torch.dtype (after super().__init__ to have access to get_torch_dtype)
@@ -103,6 +134,8 @@ class LoRATrainer(BaseTrainer):
         self._create_adapter()
 
         self._apply_lora()
+        if not getattr(self, "is_yue2", False):
+            self._load_resume_adapter(resume_request)
 
         # Block swap deferred until after LoRA wraps Linear modules — the
         # LayerOffloadConductor snapshots layer state_dicts at registration
@@ -149,6 +182,10 @@ class LoRATrainer(BaseTrainer):
                     writer = getattr(self, "writer", None)
                     if writer is not None:
                         writer.close()
+            requested = kwargs.get("resume_from_checkpoint") or self.resume_from_checkpoint
+            self._load_resume_adapter(requested)
+            if requested and "resume_from_checkpoint" not in kwargs:
+                kwargs["resume_from_checkpoint"] = requested
             return super().train(*args, **kwargs)
         finally:
             evictor = getattr(self, "sensenova_phase_evictor", None)
@@ -159,6 +196,23 @@ class LoRATrainer(BaseTrainer):
                     print(f"{self.log_prefix} WARNING: SenseNova eviction teardown failed: {exc}")
                 finally:
                     self.sensenova_phase_evictor = None
+
+    def _load_resume_adapter(self, requested: Optional[str]) -> None:
+        if not requested:
+            return
+        if self._loaded_checkpoint_path:
+            return
+        checkpoint = resolve_lora_resume_checkpoint(self, requested)
+        if checkpoint is None:
+            print(f"{self.log_prefix} Resume: no LoRA checkpoint found; starting fresh")
+            return
+        step = self.load_checkpoint(str(checkpoint))
+        from .base_trainer import _checkpoint_step_from_name
+        expected = _checkpoint_step_from_name(checkpoint.name)
+        if expected is None or step != expected:
+            raise ValueError(f"LoRA checkpoint step mismatch: filename={expected}, metadata={step}")
+        self._loaded_checkpoint_path = str(checkpoint)
+        print(f"{self.log_prefix} Resume: LoRA weights loaded from {checkpoint.name}")
 
     def _setup_sensenova_phase_eviction(self) -> None:
         if not self.is_sensenova:
@@ -263,6 +317,56 @@ class LoRATrainer(BaseTrainer):
                         f"does not match this run's {value!r}"
                     )
 
+        configure_topology = None
+        if getattr(self, "is_qwen_image_21", False):
+            from core.models.qwen_image_21.residual_unet import configure_training_topology
+            configure_topology = configure_training_topology
+        elif getattr(self, "is_krea2", False):
+            from core.models.krea2.residual_unet import configure_training_topology
+            configure_topology = configure_training_topology
+        elif getattr(self, "is_anima", False):
+            from core.models.anima.residual_unet import configure_training_topology
+            configure_topology = configure_training_topology
+        elif getattr(self, "is_zimage", False):
+            from core.models.zimage_residual_unet import configure_training_topology
+            configure_topology = configure_training_topology
+        elif getattr(self, "is_flux2", False):
+            from core.models.flux2.residual_unet import configure_training_topology
+            configure_topology = configure_training_topology
+        elif getattr(self, "is_lens", False):
+            from core.models.lens.residual_unet import configure_training_topology
+            configure_topology = configure_training_topology
+        elif getattr(self, "is_minit2i", False):
+            from core.models.minit2i.residual_unet import configure_training_topology
+            configure_topology = configure_training_topology
+        elif getattr(self, "is_ideogram4", False):
+            from functools import partial
+            from core.models.ideogram4.residual_unet import configure_training_topology
+            if "train_uncond" in metadata and metadata["train_uncond"] != str(bool(getattr(self,"ideogram4_train_uncond",False))):
+                raise ValueError("Ideogram 4 resume train_uncond does not match this run")
+            if getattr(self,"ideogram4_train_uncond",False) and getattr(self,"transformer_uncond",None) is None:
+                raise ValueError("Ideogram 4 train_uncond requires a loaded unconditional transformer")
+            configure_topology = partial(configure_training_topology,
+                unconditional_transformer=getattr(self,"transformer_uncond",None))
+        elif getattr(self, "is_sensenova", False):
+            from core.models.sensenova.residual_unet import configure_training_topology
+            configure_topology = configure_training_topology
+        elif getattr(self, "is_acestep", False):
+            from core.models.acestep.residual_unet import configure_training_topology
+            configure_topology = configure_training_topology
+        elif getattr(self, "is_ltx2", False):
+            from functools import partial
+            from core.models.ltx2.residual_unet import configure_training_topology
+            configure_topology = partial(configure_training_topology, trainer=self)
+        elif getattr(self, "is_minimax_h3", False):
+            from functools import partial
+            from core.models.minimax_h3.residual_unet import configure_training_topology
+            configure_topology = partial(configure_training_topology, trainer=self)
+        if configure_topology is not None:
+            from core.rewiring.spec import read_checkpoint_metadata
+            resume_topology = read_checkpoint_metadata(metadata)
+            configure_topology(self.transformer, self.config, resuming=True,
+                               resume_spec=resume_topology, install=False)
         if getattr(self, "is_qwen_image_21", False):
             expected_forward = (
                 "convrot_int8_bf16_backward_v1"
@@ -285,6 +389,29 @@ class LoRATrainer(BaseTrainer):
                 )
 
         checkpoint = load_file(checkpoint_path)
+
+        if getattr(self, "is_qwen_image_21", False):
+            global_name = "qwen_partition_global_adapter"
+            saved_global = (
+                bool(metadata.get(global_name))
+                or any(key.startswith(f"{global_name}.") for key in checkpoint)
+            )
+            current_global = self.lora_layers.get(global_name)
+            if saved_global and current_global is None:
+                raise ValueError(
+                    "Qwen-Image 2.1 checkpoint contains partition global adapter "
+                    "weights, but this run has the global adapter disabled"
+                )
+            if current_global is not None:
+                for field, expected in (
+                    ("qwen_partition_global_rank", current_global.rank),
+                    ("qwen_partition_global_tokens", current_global.summary_tokens),
+                ):
+                    if field in metadata and metadata[field] != str(expected):
+                        raise ValueError(
+                            f"Qwen-Image 2.1 checkpoint {field}={metadata[field]!r} "
+                            f"conflicts with this run's {expected}"
+                        )
 
         for field in ("lora_rank", "lora_alpha"):
             expected = getattr(self, field, None)
@@ -351,5 +478,8 @@ class LoRATrainer(BaseTrainer):
                             tensor.copy_(snapshot[name])
             raise
 
+        if configure_topology is not None:
+            configure_topology(self.transformer, self.config, resuming=True,
+                               resume_spec=resume_topology)
         print(f"{self.log_prefix} Loaded LoRA checkpoint from step {step}")
         return step

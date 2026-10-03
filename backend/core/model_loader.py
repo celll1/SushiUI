@@ -606,7 +606,7 @@ class ModelLoader:
             return "sd15"
         if mt in ("zimage", "z-image"):
             return "zimage"
-        if mt in ("minit2i", "krea2", "qwen_image_21", "anima", "lens", "ideogram4", "sensenova", "sensenova_sdxl_chimera"):
+        if mt in ("minit2i", "krea2", "qwen_image_21", "anima", "lens", "ideogram4", "sensenova", "sensenova_sdxl_chimera", "ltx2"):
             return mt
         if mt == "siglip2_vision_encoder":
             return "vision_encoder"
@@ -962,6 +962,15 @@ class ModelLoader:
                         if model_type == "siglip2_vision_encoder":
                             return "vision_encoder"
 
+                        if model_type == "qwen_image_21":
+                            return "qwen_image_21"
+                        if model_type == "ltx2":
+                            return "ltx2"
+                        if model_type == "acestep" and (
+                                "null_condition_emb" in keys or "net.null_condition_emb" in keys) and any(
+                                key.startswith(("decoder.layers.", "net.decoder.layers.")) for key in keys):
+                            return "acestep"
+
                         if model_type in ["flux2", "flux.2", "flux2-klein", "flux.2-klein"]:
                             return "flux2"
                         elif model_type in ["sdxl", "sd-xl", "stable-diffusion-xl", "stable_diffusion_xl"]:
@@ -1176,6 +1185,13 @@ class ModelLoader:
         the original is dropped, so a caller must not reuse it afterwards.
         """
         from core.models.zimage_transformer import ZImageTransformer2DModel
+        from core.models.zimage_residual_unet import preflight_artifact, validate_topology_identity, restore_topology
+        topology = None
+        if Path(path).is_file() or Path(str(path)+".index.json").is_file():
+            topology, _declared_config = preflight_artifact(path)
+            if topology is not None:
+                validate_topology_identity(topology, dict(transformer_config,
+                    n_layers=n_layers, in_channels=in_channels))
 
         print("[ModelLoader] Creating Z-Image transformer...")
         with torch.device("meta"):
@@ -1269,6 +1285,7 @@ class ModelLoader:
             state_dict = cast_float8_tensors(state_dict, torch_dtype)
 
         transformer.load_state_dict(state_dict, strict=True, assign=True)
+        restore_topology(transformer, topology)
         return transformer
 
     @staticmethod
@@ -1409,8 +1426,12 @@ class ModelLoader:
         Returns:
             Dict containing transformer, vae, text_encoder, tokenizer, scheduler
         """
+        if not os.path.exists(file_path) and Path(str(file_path)+".index.json").is_file():
+            file_path = str(file_path)+".index.json"
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"Z-Image Comfy safetensors not found: {file_path}")
+        from core.models.zimage_residual_unet import preflight_artifact
+        _topology, declared_transformer_config = preflight_artifact(file_path)
 
         print(f"[ModelLoader] Loading Z-Image from Comfy safetensors: {file_path}")
         print(f"[ModelLoader] Base components will be downloaded from: {base_model_repo}")
@@ -1472,6 +1493,8 @@ class ModelLoader:
             transformer_config_path = os.path.join(base_model_path, "transformer", "config.json")
             with open(transformer_config_path, 'r') as f:
                 transformer_config = json.load(f)
+            if declared_transformer_config is not None:
+                transformer_config = declared_transformer_config
 
             # Step 3: Detect actual layer count from safetensors file. Read once
             # via the shared reader so a sharded <stem>.safetensors.index.json
@@ -1524,23 +1547,9 @@ class ModelLoader:
             # If it has 16 input channels, use FLUX VAE (standard Z-Image)
             actual_in_channels = transformer_config["in_channels"]  # Default from config (16)
 
-            # Get patch size from config for x_embedder shape calculation
-            # all_patch_size can be [patch_h, patch_w] = [4, 4] or single value [4]
-            all_patch_size = transformer_config["all_patch_size"]
-            if isinstance(all_patch_size, (list, tuple)):
-                if len(all_patch_size) == 2:
-                    patch_h, patch_w = all_patch_size
-                elif len(all_patch_size) == 1:
-                    patch_h = patch_w = all_patch_size[0]
-                else:
-                    patch_h = patch_w = 4  # Default fallback
-            else:
-                patch_h = patch_w = all_patch_size  # Single integer
-            patch_product = patch_h * patch_w  # 16 for standard Z-Image (4x4)
-            # NOTE: no f_patch factor here, unlike subapps/fp8_quantize/quantize_transformer_fp8.py's
-            # _zimage_config, which multiplies by all_f_patch_size[0]. The two agree numerically
-            # only while all_f_patch_size == (1,), true of every published Z-Image config today.
-            # Keep both formulas in sync if that ever changes.
+            # Comfy's single embedder uses the first native patch bank.
+            patch_h = patch_w = transformer_config["all_patch_size"][0]
+            patch_product = patch_h * patch_w * transformer_config["all_f_patch_size"][0]
 
             # Try to detect from state_dict (x_embedder weight shape)
             # ComfyUI format: x_embedder.weight shape is [dim, in_channels * patch_h * patch_w]
@@ -1549,6 +1558,10 @@ class ModelLoader:
             for key in comfy_state_dict.keys():
                 if "x_embedder" in key and "weight" in key:
                     weight_shape = comfy_state_dict[key].shape
+                    if key.startswith("all_x_embedder."):
+                        spatial, temporal = map(int, key.split(".")[1].split("-"))
+                        patch_h = patch_w = spatial
+                        patch_product = spatial * spatial * temporal
                     if len(weight_shape) == 2:
                         # 2D weight: [dim, in_channels * patch_h * patch_w]
                         flattened_in = weight_shape[1]
@@ -1875,6 +1888,11 @@ class ModelLoader:
 
             print(f"[ModelLoader] Loading FLUX.2 Klein from safetensors: {file_path}")
 
+            from core.models.flux2.residual_unet import preflight_checkpoint, validate_topology_identity, restore_topology
+            if not os.path.exists(file_path) and os.path.isfile(str(file_path) + ".index.json"):
+                file_path = str(file_path) + ".index.json"
+            topology, saved_transformer_config = preflight_checkpoint(file_path)
+
             # Single consolidated read: handles both a plain <stem>.safetensors
             # and a sharded <stem>.safetensors.index.json path, returning the
             # full state dict (CPU) plus the metadata block. All subsequent
@@ -1955,6 +1973,8 @@ class ModelLoader:
             transformer_config_path = os.path.join(cache_dir, "transformer", "config.json")
             with open(transformer_config_path, 'r') as f:
                 transformer_config = json.load(f)
+            if saved_transformer_config is not None:
+                transformer_config = saved_transformer_config
             print(f"[ModelLoader] Transformer config loaded:")
             print(f"  - in_channels: {transformer_config.get('in_channels', 128)}")
             print(f"  - num_layers: {transformer_config.get('num_layers', 8)} (dual stream)")
@@ -2081,6 +2101,8 @@ class ModelLoader:
                         f"features but its declaration says {declared_vae.latent_channels} "
                         f"latent channels ({packed}); refusing to load a checkpoint "
                         f"whose declaration and weights disagree about the latent space")
+            if topology is not None:
+                validate_topology_identity(topology, transformer_config)
             print(f"[ModelLoader] Creating Flux2Transformer2DModel...")
             transformer = Flux2Transformer2DModel(**transformer_config)
 
@@ -2116,6 +2138,8 @@ class ModelLoader:
 
             # Load weights
             missing_keys, unexpected_keys = transformer.load_state_dict(transformer_state_dict, strict=False)
+            if topology is not None and (missing_keys or unexpected_keys):
+                raise ValueError("Rewired Flux2 checkpoint does not match its native transformer_config")
             if missing_keys:
                 print(f"[ModelLoader] WARNING: Missing keys: {missing_keys[:5]}..." if len(missing_keys) > 5 else f"[ModelLoader] WARNING: Missing keys: {missing_keys}")
             if unexpected_keys:
@@ -2123,6 +2147,7 @@ class ModelLoader:
 
             if quant_report is None:
                 transformer = transformer.to(dtype=torch_dtype)
+            restore_topology(transformer, topology)
             print(f"[ModelLoader] Transformer loaded with {sum(p.numel() for p in transformer.parameters()):,} parameters")
 
             # Step 4: Load VAE — ALWAYS from the Apache-2.0 FLUX.2 store
@@ -2267,6 +2292,13 @@ class ModelLoader:
         if model_type == "flux2":
             print(f"[ModelLoader] Loading as FLUX.2 Klein (Flux2Transformer2DModel)")
             return ModelLoader.load_flux2_from_safetensors(file_path, device, torch.bfloat16)
+
+        if model_type == "qwen_image_21":
+            print("[ModelLoader] Loading as Qwen-Image 2.1 (split artifact)")
+            return ModelLoader.load_qwen_image_21_from_path(file_path, torch.bfloat16)
+
+        if model_type == "ltx2":
+            return ModelLoader.load_ltx2_from_path(file_path, torch.bfloat16)
 
         # Anima (DiT + Qwen3 + Qwen-Image VAE)
         if model_type == "anima":
@@ -2511,6 +2543,8 @@ class ModelLoader:
         # Use single_file loading which is the standard way to load safetensors
         print(f"[ModelLoader] Loading as {'SDXL' if model_type == 'sdxl' else 'SD1.5'} (standard pipeline)")
         try:
+            from core.transformers_clip_compat import install as install_clip_compat
+            install_clip_compat()
             if model_type == "sdxl":
                 # Only pass vae parameter if external VAE was loaded
                 if external_vae is not None:
@@ -2668,13 +2702,15 @@ class ModelLoader:
         Returns:
             Dict containing transformer, vae, text_encoder, tokenizer, scheduler
         """
+        if not os.path.exists(model_path) and Path(str(model_path)+".index.json").is_file():
+            model_path = str(model_path)+".index.json"
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Z-Image model directory not found: {model_path}")
 
         print(f"[ModelLoader] Loading Z-Image from: {model_path}")
 
         # Check if model_path is a single safetensors file (Comfy format) or directory (diffusers format)
-        is_single_file = os.path.isfile(model_path) and model_path.endswith('.safetensors')
+        is_single_file = os.path.isfile(model_path) and model_path.endswith((".safetensors", ".safetensors.index.json"))
 
         if is_single_file:
             print(f"[ModelLoader] Detected Comfy format safetensors, delegating to Comfy loader")
@@ -3153,6 +3189,8 @@ class ModelLoader:
 
         Returns a component dict consumed by PipelineManager.load_model().
         """
+        if isinstance(path, str) and path.endswith(".safetensors") and not os.path.isfile(path) and os.path.isfile(path + ".index.json"):
+            path += ".index.json"
         if isinstance(path, str) and (
             path.endswith(".safetensors") or path.endswith(".safetensors.index.json")
         ) and os.path.isfile(path):
@@ -3172,6 +3210,8 @@ class ModelLoader:
 
         Returns a component dict consumed by PipelineManager.load_model().
         """
+        if isinstance(path, str) and not os.path.exists(path) and os.path.isfile(path+".index.json"):
+            path = path+".index.json"
         if isinstance(path, str) and os.path.isfile(path) and (
             path.endswith(".safetensors") or path.endswith(".safetensors.index.json")
         ):
@@ -3237,8 +3277,8 @@ class ModelLoader:
         Returns a component dict consumed by PipelineManager.load_model()
         (type == "ltx2"). bf16 by default to halve the fp32 Gemma-3 text encoder.
         """
-        from core.models.ltx2.loader import load_ltx2_from_diffusers
-        return load_ltx2_from_diffusers(model_path=path, torch_dtype=torch_dtype)
+        from core.models.ltx2.loader import load_ltx2_from_path
+        return load_ltx2_from_path(model_path=path, torch_dtype=torch_dtype)
 
     @staticmethod
     def load_acestep_from_path(

@@ -284,7 +284,7 @@ class Ideogram4Mixin:
             f"{list(file.tensors.keys())[:5]}"
         )
 
-    def _load_lora_ideogram4(self, lora_configs: List[Dict]) -> int:
+    def _load_lora_ideogram4(self, lora_configs: List[Dict], *, parsed_files=None) -> int:
         """Cover Ideogram 4 transformer Linear/Fp8Linear modules with LoRA adapters.
 
         Applies the conditional-branch keys to `transformer` and the
@@ -305,18 +305,23 @@ class Ideogram4Mixin:
             successful generation.
         """
         components = self._ideogram4_lora_components()
-        # Unconditional, and BEFORE the empty-config exit: a restore that failed in
-        # an earlier request must not leak wrappers into this one. `_ideogram4_cleanup`
-        # swallows restore failures, and now that a second branch SUMS rather than
-        # being refused, a leaked wrapper would silently double-apply. This also
-        # performs the weakref reset both halves need.
-        self._ideogram4_lora_session.unload(components)
+        self._unload_lora_ideogram4()
 
         if components[0].module is None:
             if lora_configs:
                 print("[Ideogram 4 LoRA] WARNING: no Ideogram 4 transformer is loaded")
             return 0
-        result = self._ideogram4_lora_session.load(lora_configs, components)
+        from copy import deepcopy
+        import weakref
+        from core.models.ideogram4.residual_unet import restore_topology
+        files = self._ideogram4_lora_session.parse(lora_configs) if parsed_files is None else parsed_files
+        required = self._ideogram4_adapter_topology(files)
+        saved = [(weakref.ref(component.module),deepcopy(getattr(component.module,"_residual_unet_spec",None)))
+                 for component in components if component.module is not None]
+        result = self._ideogram4_lora_session.load(files, components)
+        if required is not None:
+            for reference,_ in saved:restore_topology(reference(),required)
+            self._ideogram4_topology_restore = saved
         self._ideogram4_report_lora_files(result, components)
         return result.applied
 
@@ -345,7 +350,66 @@ class Ideogram4Mixin:
         so a reload of one branch (whose state the session has just reset) leaves
         the other branch's wrappers installed and restorable.
         """
-        return self._ideogram4_lora_session.unload(self._ideogram4_lora_components())
+        try:
+            return self._ideogram4_lora_session.unload(self._ideogram4_lora_components())
+        finally:
+            saved = self.__dict__.pop("_ideogram4_topology_restore", [])
+            from core.models.ideogram4.residual_unet import restore_topology
+            for reference,topology in saved:
+                model = reference()
+                if model is not None:restore_topology(model,topology)
+
+    def _ideogram4_adapter_topology(self, files):
+        from core.adapters import AdapterIncompatible
+        from core.rewiring.adapters import resolve_adapter_topology
+        from core.models.ideogram4.residual_unet import pair_topology_metadata, validate_topology_identity
+        components = self.ideogram4_components or {}
+        model = components.get("transformer")
+        uncond = components.get("unconditional_transformer")
+        try:
+            if model is None:
+                if files:raise ValueError("Ideogram 4 residual adapters require a loaded transformer")
+                return None
+            pair_topology_metadata(model,uncond)
+            required = resolve_adapter_topology(model,files,validate_topology_identity)
+            if required is not None and uncond is None:
+                raise ValueError("Ideogram 4 residual inference requires both transformers")
+            if uncond is not None and resolve_adapter_topology(uncond,files,validate_topology_identity) != required:
+                raise ValueError("Ideogram 4 conditional and unconditional adapter topologies disagree")
+            return required
+        except ValueError as exc:
+            raise AdapterIncompatible(str(exc),code="lora_rewiring_incompatible") from exc
+
+    def _ideogram4_rewiring_preflight(self, params, cfg):
+        from api.error_handlers import ValidationError
+        from core.rewiring.spec import digest, preview_plan
+        from core.inference.fbcache import fbcache_active
+        from core.prompts.prompt_parser import prompt_has_negative_weight
+        self._unload_lora_ideogram4()
+        files = self._ideogram4_lora_session.parse(params.get("loras") or [])
+        topology = self._ideogram4_adapter_topology(files)
+        if topology is None:
+            params.pop("dit_rewiring_actual",None)
+            return files
+        if params.get("ref_images"):
+            raise ValidationError("Ideogram 4 residual U-Net does not support reference image grids")
+        if params.get("style_transfer") or params.get("style_transfers"):
+            raise ValidationError("Ideogram 4 residual U-Net does not support style injection")
+        if fbcache_active(params):
+            raise ValidationError("Ideogram 4 residual U-Net does not support FBCache")
+        if params.get("nag_enable"):
+            raise ValidationError("Ideogram 4 residual U-Net does not support NAG")
+        for key in ("prompt","negative_prompt","nag_negative_prompt"):
+            value = params.get(key) or ""
+            prompts = value if isinstance(value,list) else [value]
+            if any(prompt_has_negative_weight(prompt) for prompt in prompts):
+                raise ValidationError("Ideogram 4 residual U-Net does not support NegPip")
+        try:
+            preview_plan(topology,cfg["grid_h"],cfg["grid_w"])
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        params["dit_rewiring_actual"] = {"spec":topology,"spec_sha256":digest(topology),"kv_cache":False}
+        return files
 
     def _ideogram4_runtime_int8(self, params: Dict[str, Any], progress_callback=None) -> None:
         """Apply the one-time in-place INT8 conversion, if this request asks for it.
@@ -966,6 +1030,7 @@ class Ideogram4Mixin:
         device = self.device
         dtype = torch.bfloat16
         cfg = self._ideogram4_common_params(params, 1024, 1024)
+        prepared_loras = self._ideogram4_rewiring_preflight(params, cfg)
         cfg["negpip_prompt"] = cfg["prompt"]  # original (with emphasis syntax) for weight build
         cfg["prompt"] = self._ideogram4_negpip_clean_prompt(cfg["prompt"], params)
         scheduler = self.ideogram4_components["scheduler"]
@@ -1045,7 +1110,7 @@ class Ideogram4Mixin:
                 set_ideogram4_attention_backend(transformer, uncond_transformer, "normal")
                 print("[Ideogram4] Style transfer active: forcing native attention backend "
                       "(flash's cu_seqlens path cannot see the appended reference-K columns)")
-            applied_lora = self._load_lora_ideogram4(params.get("loras") or [])
+            applied_lora = self._load_lora_ideogram4(params.get("loras") or [], parsed_files=prepared_loras)
             transformer = self._ideogram4_wrap_nag(transformer, nag_cfg)
             negpip_handle = None if style_active else self._ideogram4_maybe_negpip(
                 transformer, params, cfg, cond, device, dtype)
@@ -1140,6 +1205,7 @@ class Ideogram4Mixin:
         device = self.device
         dtype = torch.bfloat16
         cfg = self._ideogram4_common_params(params, init_image.width, init_image.height)
+        prepared_loras = self._ideogram4_rewiring_preflight(params, cfg)
         cfg["negpip_prompt"] = cfg["prompt"]
         cfg["prompt"] = self._ideogram4_negpip_clean_prompt(cfg["prompt"], params)
         denoising_strength = float(params.get("denoising_strength", 0.7))
@@ -1223,7 +1289,7 @@ class Ideogram4Mixin:
                 set_ideogram4_attention_backend(transformer, uncond_transformer, "normal")
                 print("[Ideogram4] Style transfer active: forcing native attention backend "
                       "(flash's cu_seqlens path cannot see the appended reference-K columns)")
-            applied_lora = self._load_lora_ideogram4(params.get("loras") or [])
+            applied_lora = self._load_lora_ideogram4(params.get("loras") or [], parsed_files=prepared_loras)
             transformer = self._ideogram4_wrap_nag(transformer, nag_cfg)
             negpip_handle = None if style_active else self._ideogram4_maybe_negpip(
                 transformer, params, cfg, cond, device, dtype)
@@ -1317,6 +1383,7 @@ class Ideogram4Mixin:
         device = self.device
         dtype = torch.bfloat16
         cfg = self._ideogram4_common_params(params, init_image.width, init_image.height)
+        prepared_loras = self._ideogram4_rewiring_preflight(params, cfg)
         cfg["negpip_prompt"] = cfg["prompt"]
         cfg["prompt"] = self._ideogram4_negpip_clean_prompt(cfg["prompt"], params)
         denoising_strength = float(params.get("denoising_strength", 0.8))
@@ -1413,7 +1480,7 @@ class Ideogram4Mixin:
                 set_ideogram4_attention_backend(transformer, uncond_transformer, "normal")
                 print("[Ideogram4] Style transfer active: forcing native attention backend "
                       "(flash's cu_seqlens path cannot see the appended reference-K columns)")
-            applied_lora = self._load_lora_ideogram4(params.get("loras") or [])
+            applied_lora = self._load_lora_ideogram4(params.get("loras") or [], parsed_files=prepared_loras)
             transformer = self._ideogram4_wrap_nag(transformer, nag_cfg)
             negpip_handle = None if style_active else self._ideogram4_maybe_negpip(
                 transformer, params, cfg, cond, device, dtype)

@@ -219,6 +219,8 @@ def save_audio_with_metadata(
         "sampler_mode": params.get("sampler_mode"),
         "vocal_language": params.get("vocal_language"),
     }
+    if "dit_rewiring_actual" in params:
+        sidecar["dit_rewiring_actual"] = params["dit_rewiring_actual"]
     if "cover_strength" in params:
         sidecar["cover_strength"] = params.get("cover_strength")
     if "source_audio_hash" in params:

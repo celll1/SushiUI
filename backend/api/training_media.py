@@ -25,6 +25,7 @@ _DEBUG_TENSOR_KEYS = {
     "target": "latents",
     "noisy": "noisy_latents",
     "predicted_latent": "predicted_latent",
+    "uncond_predicted_latent": "uncond_predicted_latent",
     "predicted_noise": "predicted_noise",
     "predicted_velocity": "predicted_velocity",
     "audio_target": "audio_latents",
@@ -38,6 +39,7 @@ _DEBUG_RESPONSE_KEYS = {
     "target": "latents_image",
     "noisy": "noisy_latents_image",
     "predicted_latent": "predicted_latent_image",
+    "uncond_predicted_latent": "uncond_predicted_latent_image",
     "predicted_noise": "predicted_noise_image",
     "predicted_velocity": "predicted_velocity_image",
     "reference": "reference_image",
@@ -123,6 +125,7 @@ def _decoded_webp_path(latent_file: Path, kind: str) -> Path | None:
     suffix = {
         "target": "target",
         "predicted_latent": "pred_x0",
+        "uncond_predicted_latent": "uncond_pred_x0",
         "noisy": "noisy",
     }.get(kind)
     if suffix is None:
@@ -135,6 +138,8 @@ def _decoded_webp_path(latent_file: Path, kind: str) -> Path | None:
 def debug_image_sources(data: dict[str, Any], latent_file: Path) -> dict[str, Path]:
     sources: dict[str, Path] = {}
     for kind, tensor_key in _DEBUG_TENSOR_KEYS.items():
+        if kind == "uncond_predicted_latent" and tensor_key not in data:
+            continue
         decoded = _decoded_webp_path(latent_file, kind)
         if decoded is not None:
             sources[kind] = decoded
@@ -146,6 +151,31 @@ def debug_image_sources(data: dict[str, Any], latent_file: Path) -> dict[str, Pa
         if path.is_file():
             sources["reference"] = path
     return sources
+
+
+def debug_display_resolution(data: dict[str, Any], latent_file: Path) -> dict[str, Any] | None:
+    """Report the target source dimensions before the monitor resizes its preview."""
+    decoded = _decoded_webp_path(latent_file, "target")
+    if decoded is not None:
+        from PIL import Image
+
+        try:
+            with Image.open(decoded) as image:
+                width, height = image.size
+            return {"width": width, "height": height, "space": "image"}
+        except OSError:
+            pass
+
+    target = data.get("latents")
+    shape = getattr(target, "shape", ())
+    if len(shape) < 3:
+        return None
+    height, width = int(shape[-2]), int(shape[-1])
+    if data.get("model_type") == "flux2" and int(shape[-3]) == 128:
+        height, width = height * 2, width * 2
+    is_pixel_minit2i = data.get("model_type") == "minit2i" and not data.get("is_latent")
+    space = "image" if is_pixel_minit2i else "latent"
+    return {"width": width, "height": height, "space": space}
 
 
 def debug_image_urls(

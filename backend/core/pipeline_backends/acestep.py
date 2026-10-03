@@ -149,7 +149,7 @@ def _restores_acestep_lora(fn):
         try:
             return fn(self, *args, **kwargs)
         finally:
-            if getattr(self, "_acestep_lora_wrapped_modules", None):
+            if getattr(self, "_acestep_lora_wrapped_modules", None) or getattr(self, "_acestep_topology_restore", None):
                 try:
                     self._unload_lora_acestep()
                 except Exception as e:
@@ -1051,11 +1051,35 @@ class AceStepMixin:
                 "Cannot apply a LoRA: the loaded ACE-Step DiT has no decoder.layers",
                 detail="The LoRA target scope (decoder.layers.*) does not exist on this model.",
             )
+        from copy import deepcopy
+        import weakref
+        from core.adapters import AdapterIncompatible
+        from core.models.acestep.residual_unet import resolve_generation_topology, restore_topology
+        files = self._acestep_lora_session.parse(lora_configs)
+        try:
+            required = resolve_generation_topology(dit, files)
+        except ValueError as exc:
+            raise AdapterIncompatible(str(exc), code="lora_rewiring_incompatible") from exc
+        base_topology = deepcopy(getattr(dit, "_residual_unet_spec", None))
         print(f"[AceStep LoRA] Loading {len(lora_configs)} LoRA(s)...")
-        return self._acestep_lora_session.load(lora_configs, self._acestep_lora_components()).applied
+        result = self._acestep_lora_session.load(files, self._acestep_lora_components())
+        if required is not None:
+            self._acestep_topology_restore = (weakref.ref(dit), base_topology)
+            try:
+                restore_topology(dit, required)
+            except Exception:
+                self._unload_lora_acestep()
+                raise
+        return result.applied
 
     def _unload_lora_acestep(self) -> int:
-        return self._acestep_lora_session.unload(self._acestep_lora_components())
+        try:
+            return self._acestep_lora_session.unload(self._acestep_lora_components())
+        finally:
+            saved = self.__dict__.pop("_acestep_topology_restore", None)
+            if saved is not None and saved[0]() is not None:
+                from core.models.acestep.residual_unet import restore_topology
+                restore_topology(saved[0](), saved[1])
 
     def _apply_or_clear_lora_acestep(self, lora_configs: list):
         """Shared load/unload gate, called by every generate path before the
@@ -1066,10 +1090,22 @@ class AceStepMixin:
             # `_load_lora_acestep` unloads first, unconditionally.
             self._load_lora_acestep(lora_configs)
         else:
-            if getattr(self, "_acestep_lora_wrapped_modules", None):
+            if getattr(self, "_acestep_lora_wrapped_modules", None) or getattr(self, "_acestep_topology_restore", None):
                 print("[AceStep LoRA] No LoRAs in params, unloading existing LoRAs")
                 self._unload_lora_acestep()
 
+
+    def _acestep_rewiring_preflight(self, params, length):
+        from api.error_handlers import ValidationError
+        from core.models.acestep.residual_unet import generation_metadata
+        try:
+            actual = generation_metadata(self.acestep_components["dit"], length)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        if actual is None:
+            params.pop("dit_rewiring_actual", None)
+        else:
+            params["dit_rewiring_actual"] = actual
 
     @_restores_acestep_lora
     def _generate_txt2aud_acestep(
@@ -1171,6 +1207,11 @@ class AceStepMixin:
             except Exception:
                 pass
 
+        latent_frames = int(round(round(audio_duration, 1) * 25))
+        latent_frames = max(latent_frames, 1)
+
+        self._acestep_rewiring_preflight(params, latent_frames)
+
         silence_latent = self._acestep_ensure_silence_latent(device)  # [1, 750, 64] on device
 
         self._acestep_move("text_encoder", device)
@@ -1194,9 +1235,6 @@ class AceStepMixin:
             self._acestep_move("text_encoder", "cpu")
             self._acestep_empty_cache()
 
-        latent_frames = int(round(round(audio_duration, 1) * 25))
-        latent_frames = max(latent_frames, 1)
-
         src_latents = self._acestep_silence_slice(silence_latent, latent_frames).to(model_dtype)  # [1, T, 64]
         chunk_masks = torch.ones(1, latent_frames, 64, dtype=model_dtype, device=device)
         is_covers = torch.zeros(1, dtype=torch.bool, device=device)
@@ -1219,6 +1257,7 @@ class AceStepMixin:
                 raw = [shift * t / (1.0 + (shift - 1.0) * t) for t in raw]
             custom_timesteps = torch.tensor(raw, device=device, dtype=model_dtype)
 
+        self._acestep_rewiring_preflight(params, src_latents.shape[1])
         self._acestep_move("dit", device)
         block_offloader = self._acestep_maybe_install_block_offload(params, dit, device)
         try:
@@ -1560,6 +1599,7 @@ class AceStepMixin:
             mode_kwargs["non_cover_text_hidden_states"] = text_hidden_states
             mode_kwargs["non_cover_text_attention_mask"] = text_attention_mask
 
+        self._acestep_rewiring_preflight(params, src_latents.shape[1])
         self._acestep_move("dit", device)
         block_offloader = self._acestep_maybe_install_block_offload(params, dit, device)
         try:
@@ -1915,6 +1955,7 @@ class AceStepMixin:
                 raw = [shift * t / (1.0 + (shift - 1.0) * t) for t in raw]
             custom_timesteps = torch.tensor(raw, device=device, dtype=model_dtype)
 
+        self._acestep_rewiring_preflight(params, src_latents.shape[1])
         self._acestep_move("dit", device)
         block_offloader = self._acestep_maybe_install_block_offload(params, dit, device)
         try:

@@ -104,14 +104,19 @@ def detect_acestep_layout(path: str) -> Optional[Dict[str, Optional[str]]]:
     layout (``diffusion_models/`` + ``vae/`` + ``text_encoders/``), return a
     dict `{dit, vae, text_encoder, root}` of absolute paths. Otherwise None.
 
-    Also accepts a DiT `.safetensors` file living inside
-    `<root>/diffusion_models/` directly (walks up to find `<root>`).
+    DiT files may declare exact frozen component sources; otherwise their
+    ancestors supply the existing flat tree.
     """
     if not path:
         return None
 
     p = Path(path)
     if p.is_file() and p.suffix == ".safetensors":
+        from .component_sources import read_sources
+        sources = read_sources(p)
+        if sources is not None:
+            return {"dit": str(p), "vae": sources["vae"], "text_encoder": sources["text_encoder"],
+                    "root": sources["root"], "tokenizer_source": sources["tokenizer"]}
         for parent in p.parents:
             if (parent / "diffusion_models").is_dir():
                 root = parent
@@ -134,14 +139,7 @@ def detect_acestep_layout(path: str) -> Optional[Dict[str, Optional[str]]]:
     dit = _find_first(dit_dir, ACESTEP_DIT_PATTERNS)
     if dit is None:
         return None
-    vae = _find_first(p / "vae", ACESTEP_VAE_PATTERNS)
-    te = _find_first(p / "text_encoders", ACESTEP_TE_PATTERNS)
-    return {
-        "dit": str(dit),
-        "vae": str(vae) if vae else None,
-        "text_encoder": str(te) if te else None,
-        "root": str(p),
-    }
+    return detect_acestep_layout(str(dit))
 
 
 def _looks_like_qwen3_tokenizer_dir(d: Path) -> bool:
@@ -243,12 +241,18 @@ def _build_dit(dit_path: str, torch_dtype: torch.dtype):
     from .vendor import AceStepConditionGenerationModel, AceStepConfig
     from safetensors import safe_open
 
-    config = AceStepConfig(**ACESTEP_DIT_CONFIG)
+    from .residual_unet import preflight_checkpoint, restore_topology
+    topology, embedded_config = preflight_checkpoint(dit_path)
+    config = AceStepConfig(**(ACESTEP_DIT_CONFIG if embedded_config is None else embedded_config))
     model = AceStepConditionGenerationModel(config)
     model = model.to(dtype=torch_dtype)
 
     with safe_open(dit_path, framework="pt") as f:
         state_dict = {k: f.get_tensor(k) for k in f.keys()}
+    if any(key.startswith("net.") for key in state_dict):
+        if not all(key.startswith("net.") for key in state_dict):
+            raise ValueError("ACE-Step checkpoint mixes native and net-prefixed weights")
+        state_dict = {key.removeprefix("net."): value for key, value in state_dict.items()}
 
     # Detected and verified AROUND the swap: the census fires on EITHER a
     # ``.weight_scale`` key or an int8/float8 ``.weight``, while the swap helpers
@@ -285,6 +289,7 @@ def _build_dit(dit_path: str, torch_dtype: torch.dtype):
                 f"missing={missing[:5]} ({len(missing)}), "
                 f"unexpected={unexpected[:5]} ({len(unexpected)})"
             )
+        restore_topology(model, topology)
         model.eval()
         return model, config
 
@@ -297,6 +302,7 @@ def _build_dit(dit_path: str, torch_dtype: torch.dtype):
             f"ACE-Step DiT state_dict mismatch: missing={missing}, unexpected={unexpected}"
         )
 
+    restore_topology(model, topology)
     model.eval()
     return model, config
 
@@ -387,7 +393,7 @@ def load_acestep_from_path(
         raise ValueError(
             f"ACE-Step model layout not found at {model_path!r}. "
             f"Expected a directory containing diffusion_models/ + vae/ + text_encoders/, "
-            f"or a DiT .safetensors file inside a diffusion_models/ directory."
+            f"a DiT file inside diffusion_models/, or a standalone artifact declaring acestep_components."
         )
 
     dit_path = layout["dit"]
@@ -408,7 +414,9 @@ def load_acestep_from_path(
     vae = _build_vae(vae_path, torch_dtype)
     text_encoder, te_config = _build_text_encoder(te_path, torch_dtype)
 
-    tokenizer_source = _resolve_qwen3_tokenizer_source(root)
+    tokenizer_source = layout.get("tokenizer_source") or _resolve_qwen3_tokenizer_source(root)
+    if Path(tokenizer_source).is_dir():
+        tokenizer_source = str(Path(tokenizer_source).resolve())
     tokenizer = None
     try:
         from transformers import AutoTokenizer
@@ -416,6 +424,9 @@ def load_acestep_from_path(
         print(f"[AceStepLoader] Tokenizer:    {tokenizer_source}")
     except Exception as e:
         print(f"[AceStepLoader] WARNING: tokenizer load failed from {tokenizer_source!r}: {e}")
+
+    dit._acestep_component_sources = dict(schema_version=1, root=str(Path(root).resolve()),
+        vae=str(Path(vae_path).resolve()), text_encoder=str(Path(te_path).resolve()), tokenizer=tokenizer_source)
 
     # Keep everything on CPU after load (VRAM discipline; GPU staging is Phase 2).
     for comp in (dit, vae, text_encoder):

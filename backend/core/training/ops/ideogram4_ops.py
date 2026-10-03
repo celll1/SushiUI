@@ -18,6 +18,7 @@ attention body; imported here (import adjustment, allowed by the plan).
 from __future__ import annotations
 
 from typing import Optional, Tuple
+from pathlib import Path
 
 import torch
 
@@ -36,16 +37,24 @@ def load_components(trainer) -> None:
     trainer.ideogram4_train_uncond = bool(trainer.config.get("ideogram4_train_uncond", False))
     trainer.ideogram4_uncond_loss_weight = float(trainer.config.get("ideogram4_uncond_loss_weight", 1.0))
 
-    from core.models.ideogram4.ideogram4_loader import load_ideogram4_components
-    components = load_ideogram4_components(
-        model_path=trainer.model_path,
-        torch_dtype=trainer.weight_dtype,
-        load_unconditional=trainer.ideogram4_train_uncond,
-    )
+    from core.models.ideogram4.ideogram4_loader import load_ideogram4_components, load_ideogram4_single_file
+    source = Path(trainer.model_path)
+    if source.is_file() or Path(str(source)+".index.json").is_file():
+        if not source.is_file():source = Path(str(source)+".index.json")
+        components = load_ideogram4_single_file(file_path=str(source),torch_dtype=trainer.weight_dtype,
+                                              load_unconditional=trainer.ideogram4_train_uncond)
+    else:
+        components = load_ideogram4_components(
+            model_path=trainer.model_path,
+            torch_dtype=trainer.weight_dtype,
+            load_unconditional=trainer.ideogram4_train_uncond,
+        )
 
     trainer.transformer = components["transformer"]
     trainer.transformer_original = trainer.transformer
     trainer.transformer_uncond = components.get("unconditional_transformer")
+    if trainer.ideogram4_train_uncond and trainer.transformer_uncond is None:
+        raise ValueError("Ideogram 4 train_uncond requires a loaded unconditional transformer")
     trainer.vae = components["vae"]
     trainer.text_encoder = components["text_encoder"]
     trainer.tokenizer = components["tokenizer"]
@@ -80,6 +89,13 @@ def load_components(trainer) -> None:
         if _module is not None:
             disable_scaled_mm(_module, label=f"ideogram4 training {_label}")
             disable_int8_mm(_module, label=f"ideogram4 training {_label}")
+
+    from core.models.ideogram4.residual_unet import configure_training_topology
+    resume_path = getattr(trainer,"resume_from_checkpoint",None)
+    configure_training_topology(trainer.transformer,trainer.config,
+        unconditional_transformer=trainer.transformer_uncond,
+        resuming=bool(resume_path and Path(trainer.model_path).resolve() == Path(resume_path).resolve()),
+        pending_adapter_resume=bool(resume_path and getattr(trainer,"_manages_own_resume",False)))
 
     # Gradient checkpointing.
     if not trainer.gradient_checkpointing:

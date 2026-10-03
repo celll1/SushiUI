@@ -377,6 +377,9 @@ class MMJiT(nn.Module):
         return x.reshape(b, c, grid_h * p, grid_w * p)
 
     def forward(self, img, t, context, attn_mask):
+        if getattr(self, "_residual_unet_spec", None) is not None:
+            from core.models.minit2i.residual_unet import run_rewired_minit2i
+            return run_rewired_minit2i(self, img, t, context, attn_mask)
         if img.ndim == 4 and img.shape[1] != self.cfg.in_channels:
             img = img.permute(0, 3, 1, 2)
         attn_mask = attn_mask.to(device=context.device)

@@ -1,6 +1,6 @@
 # Qwen-Image 2.1 partitioned full-frame training design
 
-Status: **fixed-count prototype and architecture-gated DiT extraction implemented; adaptive policy planned**
+Status: **fixed-count and deterministic token-threshold routing implemented; memory-profile adaptive policy planned**
 
 Architecture key: `qwen_image_21`
 
@@ -181,6 +181,7 @@ The design admits these modes:
 |---|---|
 | `off` | Existing dense full-frame training. |
 | `fixed` | Prototype and diagnostic mode with a requested count such as 2 or 4. |
+| `token_threshold` | Full-canvas through the latent-token limit, 2 regions above it, and 4 regions at four times the limit or above. |
 | `adaptive` | Production candidate driven by predicted peak residency and an optional elective policy. |
 
 Fixed mode does not require fixed boundaries. It fixes only the requested
@@ -459,8 +460,9 @@ aliases remain read-compatible for saved runs and older API clients.
 
 ```text
 dit_partition_training_enabled
-dit_partition_mode                 # fixed in the prototype
-dit_partition_fixed_count          # prototype: 2 or 4
+dit_partition_mode                 # token_threshold (default) | fixed
+dit_partition_fixed_count          # fixed mode only: 2 or 4
+dit_partition_full_frame_max_tokens # threshold mode: full when H * W <= limit
 dit_partition_split_ratio_min
 dit_partition_split_ratio_max
 dit_partition_halo_tokens
@@ -471,13 +473,17 @@ dit_partition_global_tokens
 dit_partition_gradient_checkpointing_blocks
 ```
 
-Adaptive budget, elective probability, sigma adaptation, and position sidecar
+The token threshold uses target latent tokens and does not estimate memory from
+prefix length or batch size. Existing runs that explicitly saved `fixed` keep
+partitioning every image. With limit 4096, 4096 tokens are full-frame,
+4097 through 16383 use two regions, and 16384 or more use four. Adaptive
+budget, elective probability, sigma adaptation, and position sidecar
 remain designed follow-ups rather than accepted configuration fields.
 
-The UI should expose a simple off/fixed/adaptive selector, fixed count for the
-prototype, elective probability, halo, and an advanced memory safety control.
-Planner internals such as measured profile coefficients are diagnostics, not
-user-authored tuning fields.
+The current UI exposes the enable switch, token-threshold/fixed selector,
+threshold, fixed count (in fixed mode), and halo. An adaptive memory policy
+and its safety controls remain future work; planner profile coefficients
+would be diagnostics rather than user-authored tuning fields.
 
 The checkpoint identity records the complete policy, policy version, seed,
 immutable planning-profile snapshot, and any position-sidecar declaration.
@@ -635,7 +641,9 @@ halo, exact full-canvas target RoPE coordinates, area-weighted loss cores,
 sequential region backward, activation-dispatch sizing from the largest input
 region, and per-region checkpoint selection. A failed minimum-size region is a
 run error after the activation-offload retry, not a silently skipped image.
-Adaptive feasibility and elective full/partition mixing remain later stages.
+The token-threshold mode now routes small images through the existing dense
+training path and larger images through this prototype. Adaptive feasibility
+and elective mixing remain later stages.
 
 The sequential-backward oracle passes on a one-block CPU model: backward after
 each region matches backward of the summed partition graph for loss and every
@@ -725,8 +733,9 @@ step from 1.999 s to 2.069 s and the step allocation delta from 17.2280 GiB to
 Flash optimization: the kernel already performs its own query tiling and the
 extra launches cost about 3.5% here.
 
-`qwen_partition_global_adapter_enabled` adds a training-only latent-summary
-adapter to partitioned LoRA training. Full-canvas noisy latent features plus
+`dit_partition_global_adapter_enabled` (legacy alias
+`qwen_partition_global_adapter_enabled`) adds a latent-summary adapter to
+partitioned LoRA or full-parameter training. Full-canvas noisy latent features plus
 normalized coordinates are gathered into learned summary tokens, then
 broadcast through a low-rank query path into each tile immediately after
 `img_in`. Its output projection is zero-initialized, so enabling it does not
@@ -734,6 +743,16 @@ perturb the initial model. The branch has its own
 `qwen_partition_global_adapter.*` checkpoint namespace and metadata; ordinary
 full-frame generation warns and ignores this disposable branch while loading
 the standard LoRA matrices.
+
+Full FT includes the same global module in its transformer optimizer group and
+checkpoint, including transformer/TE bundles. Component loaders retain its
+validated weights as an unregistered CPU payload, so ordinary generation never
+moves or forwards it. Training preparation restores it before block swap and
+optimizer setup; dimensions and enabled state must match on resume. Old full-FT
+checkpoints contain no global weights, even if that option was set: adding the
+adapter requires a new run, not an implicit random initialization on resume.
+See [the generation contract](QWEN_IMAGE_21_PARTITIONED_GENERATION_DESIGN.md)
+for loading, visual partition controls, and the planned inference executor.
 
 This changes the approximation boundary relative to the hard-partition
 baseline. Direct target-target attention edges across regions remain absent,

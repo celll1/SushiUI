@@ -95,6 +95,7 @@ class LensLoRAAdapter(BaseLoRAAdapter):
     def checkpoint_metadata(self, lora_layers: Dict[str, nn.Module],
                             step: int, epoch: int) -> Dict[str, str]:
         """sd-scripts native format, compatible with the Phase B.3 loader."""
+        from core.models.lens.residual_unet import model_topology_metadata
         return {
             "model_type":              "lens",
             "modelspec.architecture":  "lens",
@@ -104,6 +105,7 @@ class LensLoRAAdapter(BaseLoRAAdapter):
             "step":                    str(step),
             "epoch":                   str(epoch),
             "format":                  "pt",
+            **model_topology_metadata(self.trainer.transformer),
         }
 
 
@@ -201,8 +203,6 @@ class LensFullParameterAdapter(BaseFullParameterAdapter):
         return groups
 
     def write_checkpoint(self, step: int, epoch: int, output_path: Path):
-        from safetensors.torch import save_file as _save
-
         trainer = self.trainer
         if trainer.transformer is None:
             print("[LensFullParameterAdapter] WARNING: no transformer to save")
@@ -267,6 +267,12 @@ class LensFullParameterAdapter(BaseFullParameterAdapter):
         except Exception as _e:
             print(f"[LensFullParameterAdapter] transformer_config not serialized: {_e}")
 
+        from core.models.lens.residual_unet import model_topology_metadata, native_config
+        topology_metadata = model_topology_metadata(trainer.transformer)
+        if topology_metadata:
+            metadata["transformer_config"] = _json.dumps(native_config(trainer.transformer))
+            metadata.update(topology_metadata)
+
         try:
             from core.models.common.single_file_format import build_component_metadata
             metadata.update(build_component_metadata(
@@ -279,10 +285,14 @@ class LensFullParameterAdapter(BaseFullParameterAdapter):
             print(f"[LensFullParameterAdapter] component metadata skipped: {_e}")
 
         print(f"[LensFullParameterAdapter] Saving to {output_path}...")
-        _save(combined, str(output_path), metadata=metadata)
+        from core.models.common.single_file_format import save_single_file_state, dedup_tensors
+        combined, dropped = dedup_tensors(combined.items())
+        if dropped:
+            metadata["tied_weights_dropped"] = ",".join(dropped)
+        written_path = save_single_file_state(combined, metadata, str(output_path))
         total_params = sum(t.numel() for t in combined.values())
         print(f"[LensFullParameterAdapter] Saved {len(combined)} tensors "
-              f"({total_params:,} params) -> {output_path}")
+              f"({total_params:,} params) -> {written_path}")
         # The resolved path, not the argument: BaseFullParameterAdapter pairs the
         # REPA projector sidecar with the file actually written.
-        return output_path
+        return Path(written_path)

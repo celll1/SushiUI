@@ -643,6 +643,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             )
 
             if isinstance(model_result, dict) and model_result.get("type") == "yue2":
+                from core.models.yue2.residual_unet import model_info as residual_model_info
+                residual_info = residual_model_info(model_result)
                 from core.models.components.wiring import YUE2_WIRING
                 from utils.hash_cache import get_cached_file_hash
                 self.yue2_components = model_result
@@ -657,6 +659,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     sample_rate=48000, frame_rate=25, latent_frame_rate=25, latent_channels=64,
                     weight_license=model_result["model_identity"].get("license"),
                     weight_source=model_result["model_identity"].get("source"))
+                self.current_model_info.update(residual_info)
                 self._save_last_model(source_type, source, pipeline_type)
                 return
 
@@ -681,6 +684,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 torch.cuda.empty_cache()
                 print("[VRAM] All FLUX.2 components moved to CPU. Will load to GPU as needed.")
 
+                from core.models.flux2.residual_unet import generation_token_stride
                 # FLUX.2 info
                 model_type = "flux2"
                 is_v_prediction = False  # FLUX.2 uses flow matching
@@ -695,6 +699,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "source": source,
                     "type": model_type,
                     "is_v_prediction": is_v_prediction,
+                    "dit_rewiring_spec": getattr(model_result["transformer"], "_residual_unet_spec", None),
+                    "dit_rewiring_token_stride": generation_token_stride(model_result.get("vae")),
                     "model_hash": model_hash,
                 }
 
@@ -738,6 +744,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "source_type": source_type,
                     "source": source,
                     "type": "anima",
+                    "dit_rewiring_spec": getattr(self.anima_components["transformer"], "_residual_unet_spec", None),
+                    "dit_rewiring_token_stride": self.anima_components["transformer"].patch_spatial * 8,
                     "is_v_prediction": False,  # flow matching
                     "model_hash": model_hash,
                 }
@@ -791,6 +799,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "type": "lens",
                     "is_v_prediction": False,
                     "model_hash": model_hash,
+                    "dit_rewiring_spec": getattr(model_result["transformer"], "_residual_unet_spec", None),
+                    "dit_rewiring_token_stride": 16,
                 }
                 self.current_model_info.update(
                     self._fold_component_latent_identity(model_result, "lens"))
@@ -838,6 +848,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "type": "ideogram4",
                     "is_v_prediction": False,  # flow matching
                     "model_hash": model_hash,
+                    "dit_rewiring_spec": getattr(model_result["transformer"], "_residual_unet_spec", None),
+                    "dit_rewiring_token_stride": 16,
                 }
                 self._save_last_model(source_type, source, pipeline_type)
                 print("[Pipeline] Ideogram 4 model loaded successfully")
@@ -883,6 +895,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "is_v_prediction": False,  # flow matching, x0 prediction
                     "model_hash": model_hash,
                     "variant": self.minit2i_components.get("variant"),
+                    "dit_rewiring_spec": getattr(model_result["transformer"], "_residual_unet_spec", None),
+                    "dit_rewiring_token_stride": model_result["transformer"].mmjit_config.patch_size * (
+                        model_result.get("vae_scale_factor", 8) if model_result.get("vae_type", "none") != "none" else 1),
                 }
                 self.current_model_info.update(
                     self._fold_component_latent_identity(model_result, "minit2i"))
@@ -931,6 +946,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "is_v_prediction": False,  # flow matching, velocity prediction
                     "model_hash": model_hash,
                     "is_distilled": self.krea2_components.get("is_distilled", False),
+                    "dit_rewiring_spec": getattr(model_result["transformer"], "_residual_unet_spec", None),
+                    "dit_rewiring_token_stride": 16,
                 }
                 self.current_model_info.update(
                     self._fold_component_latent_identity(model_result, "krea2"))
@@ -939,6 +956,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 return
 
             if isinstance(model_result, dict) and model_result.get("type") == "qwen_image_21":
+                from core.rewiring.parameters import parameter_counts
                 print("[Pipeline] Qwen-Image 2.1 model detected")
                 self.qwen_image_21_components = model_result
                 self.is_qwen_image_21_model = True
@@ -955,8 +973,12 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "source": source,
                     "type": "qwen_image_21",
                     "is_v_prediction": False,
+                    "dit_rewiring_parameter_counts": parameter_counts(
+                        "qwen_image_21", dict(model_result["transformer"].config)),
                     "transformer_variant": model_result.get("transformer_variant", "bf16"),
                     "text_encoder_variant": model_result.get("text_encoder_variant", "bf16"),
+                    "dit_rewiring_spec": getattr(model_result["transformer"], "_residual_unet_spec", None),
+                    "dit_rewiring_token_stride": 16,
                 }
                 self._save_last_model(source_type, source, pipeline_type)
                 print("[Pipeline] Qwen-Image 2.1 model loaded successfully")
@@ -1000,10 +1022,14 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     except Exception as e:
                         print(f"[Pipeline] Hash compute skipped: {e}")
 
+                from core.models.ltx2.residual_unet import video_geometry
                 self.current_model_info = {
                     "source_type": source_type,
                     "source": source,
                     "type": "ltx2",
+                    "dit_rewiring_spec": getattr(self.ltx2_components["transformer"], "_residual_unet_spec", None),
+                    "dit_rewiring_video_geometry": video_geometry(
+                        self.ltx2_components["transformer"].config),
                     "is_v_prediction": False,  # flow matching, velocity prediction
                     "model_hash": model_hash,
                     "is_video": True,
@@ -1056,10 +1082,15 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     except Exception as e:
                         print(f"[Pipeline] Hash compute skipped: {e}")
 
+                from core.models.acestep.residual_unet import temporal_geometry
                 self.current_model_info = {
                     "source_type": source_type,
                     "source": source,
                     "type": "acestep",
+                    "dit_rewiring_spec": getattr(self.acestep_components["dit"], "_residual_unet_spec", None),
+                    "dit_rewiring_temporal_geometry": temporal_geometry(
+                        self.acestep_components["dit"].config,
+                        getattr(self.acestep_components["dit"], "_residual_unet_spec", None)),
                     "is_v_prediction": False,  # flow matching, velocity prediction
                     "model_hash": model_hash,
                     "is_audio": True,
@@ -1122,11 +1153,16 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                         print(f"[Pipeline] Hash compute skipped: {e}")
 
                 from core.models.minimax_h3.hybrid_spec import hybrid_model_info_fields
+                from core.models.minimax_h3.residual_unet import video_geometry
                 from core.models.minimax_h3.loader import minimax_h3_te_model_info_fields
                 self.current_model_info = {
                     "source_type": source_type,
                     "source": source,
                     "type": "minimax_h3",
+                    "dit_rewiring_spec": getattr(self.minimax_h3_components["transformer"], "_residual_unet_spec", None),
+                    "dit_rewiring_video_geometry": video_geometry(
+                        self.minimax_h3_components["transformer"].config,
+                        self.minimax_h3_components.get("vae_scale_factor_spatial")),
                     "is_v_prediction": False,  # flow matching, velocity prediction
                     "model_hash": model_hash,
                     "is_video": True,
@@ -1206,6 +1242,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     FALLBACK_FRAME_RATE, FALLBACK_NUM_CHANNELS_LATENTS, FALLBACK_SAMPLING_RATE,
                 )
 
+                from core.models.minimax_music3.residual_unet import model_info as residual_model_info
+
                 self.current_model_info = {
                     "source_type": source_type,
                     "source": source,
@@ -1213,6 +1251,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "is_v_prediction": False,  # flow matching, velocity prediction (flow stage only)
                     "model_hash": model_hash,
                     "is_audio": True,
+                    **residual_model_info(self.minimax_music3_components),
                     "sample_rate": self.minimax_music3_components.get("sample_rate", FALLBACK_SAMPLING_RATE),
                     "frame_rate": self.minimax_music3_components.get("frame_rate", FALLBACK_FRAME_RATE),
                     "latent_channels": self.minimax_music3_components.get(
@@ -1309,6 +1348,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     except Exception as e:
                         print(f"[Pipeline] Hash compute skipped: {e}")
 
+                from core.models.sensenova.latent_space import token_pixel_width
                 self.current_model_info = {
                     "source_type": source_type,
                     "source": source,
@@ -1317,12 +1357,15 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "model_hash": model_hash,
                     **self._fold_component_latent_identity(model_result, "sensenova"),
                     **self._sensenova_token_grid_info(model_result),
+                    "dit_rewiring_spec": getattr(model_result["transformer"], "_residual_unet_spec", None),
+                    "dit_rewiring_token_stride": token_pixel_width(model_result["transformer"]),
                 }
                 self._save_last_model(source_type, source, pipeline_type)
                 print("[Pipeline] SenseNova model loaded successfully")
                 return
 
-            if isinstance(model_result, dict) and "transformer" in model_result:
+            if isinstance(model_result, dict) and "transformer" in model_result and not hasattr(
+                    getattr(model_result["transformer"], "config", None), "num_single_layers"):
                 # Z-Image component-based model
                 print("[Pipeline] Z-Image model detected (component-based dict returned)")
                 self.zimage_components = model_result
@@ -1355,6 +1398,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     print(f"[Pipeline] Model hash: {model_hash[:16]}...")
 
                 zimage_vae_type = model_result.get("vae_type", "flux")
+                from core.models.zimage_residual_unet import generation_token_stride
 
                 self.current_model_info = {
                     "source_type": source_type,
@@ -1362,7 +1406,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "type": model_type,
                     "is_v_prediction": is_v_prediction,
                     "model_hash": model_hash,
-                    "vae_type": zimage_vae_type  # "flux" (16ch) or "sdxl" (4ch)
+                    "vae_type": zimage_vae_type,
+                    "dit_rewiring_spec": getattr(model_result["transformer"], "_residual_unet_spec", None),
+                    "dit_rewiring_token_stride": generation_token_stride(model_result.get("vae")),
                 }
                 self.current_model_info.update(
                     self._fold_component_latent_identity(model_result, "zimage"))
@@ -1399,6 +1445,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     torch.cuda.empty_cache()
                     print("[VRAM] All FLUX.2 components moved to CPU. Will load to GPU as needed.")
 
+                    from core.models.flux2.residual_unet import generation_token_stride
                     # FLUX.2 info
                     model_type = "flux2"
                     is_v_prediction = False  # FLUX.2 uses Flow Matching with velocity prediction
@@ -1413,6 +1460,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                         "source": source,
                         "type": model_type,
                         "is_v_prediction": is_v_prediction,
+                        "dit_rewiring_spec": getattr(model_result["transformer"], "_residual_unet_spec", None),
+                        "dit_rewiring_token_stride": generation_token_stride(model_result.get("vae")),
                         "model_hash": model_hash
                     }
                     self.current_model_info.update(
@@ -1603,6 +1652,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         merge leaves the live transformer, TE, VAEs and schedulers untouched.
         """
         from core.models.minimax_h3.hybrid_spec import hybrid_model_info_fields
+        from core.models.minimax_h3.residual_unet import video_geometry
         from core.models.minimax_h3.loader import minimax_h3_te_model_info_fields
         from core.models.minimax_h3.reload import build_dit_only_reload
 
@@ -1612,6 +1662,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             **({} if hybrid is None else {"hybrid": hybrid}))
         if replacement is None:
             return False
+        residual_geometry = video_geometry(
+            replacement["transformer"].config, replacement.get("vae_scale_factor_spatial"))
 
         model_hash = ""
         if os.path.exists(source):
@@ -1642,6 +1694,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             "source_type": source_type,
             "source": source,
             "type": "minimax_h3",
+            "dit_rewiring_spec": getattr(replacement["transformer"], "_residual_unet_spec", None),
+            "dit_rewiring_video_geometry": residual_geometry,
             "is_v_prediction": False,
             "model_hash": model_hash,
             "is_video": True,
@@ -4234,6 +4288,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         """
         # VAE tiling flag for this request (read by all decode paths, incl. the
         # per-architecture handlers dispatched just below).
+        self._validate_qwen_partition_arch(params)
         self._vae_tiling = bool(params.get("vae_tiling", False))
         self._vae_tile_threshold = int(params.get("vae_tile_threshold", 0) or 0)
         self._vae_tile_mode = str(params.get("vae_tile_mode", "blend") or "blend")
@@ -4946,6 +5001,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             params["loop_decode"] == "none" (SD1.5/SDXL legacy path only) --
             see generate_txt2img's docstring for the same contract.
         """
+        self._validate_qwen_partition_arch(params)
         self._vae_tiling = bool(params.get("vae_tiling", False))
         self._vae_tile_threshold = int(params.get("vae_tile_threshold", 0) or 0)
         self._vae_tile_mode = str(params.get("vae_tile_mode", "blend") or "blend")
@@ -5712,6 +5768,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             supported for inpaint (see the guard below) because its
             pixel-space mask compositing needs a decoded image.
         """
+        self._validate_qwen_partition_arch(params)
         self._vae_tiling = bool(params.get("vae_tiling", False))
         self._vae_tile_threshold = int(params.get("vae_tile_threshold", 0) or 0)
         self._vae_tile_mode = str(params.get("vae_tile_mode", "blend") or "blend")
@@ -6871,6 +6928,14 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             work, canvas_img, mask_img,
             progress_callback=progress_callback, step_callback=step_callback,
         )
+        if "dit_rewiring_actual" in work:
+            params["dit_rewiring_actual"] = work["dit_rewiring_actual"]
+        else:
+            params.pop("dit_rewiring_actual", None)
+        if "qwen_image_21_partition_actual" in work:
+            params["qwen_image_21_partition_actual"] = work["qwen_image_21_partition_actual"]
+        else:
+            params.pop("qwen_image_21_partition_actual", None)
 
         # BDR Variant B (feather): when boundary relaxation is active AND the
         # paste mode is "feather", erode/feather a thin strip at the rect's

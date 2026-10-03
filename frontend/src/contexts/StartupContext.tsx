@@ -5,6 +5,7 @@ import {
   fetchGenerationDefaults,
   fetchTrainingDefaults,
   fetchTaggerTrainingDefaults,
+  fetchStyleTrainingDefaults,
   fetchVaeTrainingDefaults,
   fetchLrRetargetDefaults,
   fetchLrTriggerDefaults,
@@ -17,6 +18,7 @@ import {
   ArchCapabilities,
   LrRetargetDefaults,
   LrTriggerDefaults,
+  StyleTrainingConfig,
 } from "@/utils/api";
 
 // Loaded-model info object returned by GET /models/current -> model_info.
@@ -78,6 +80,8 @@ interface StartupContextType {
   trainingSampleDefaultsByArch: Record<string, Record<string, unknown>> | null;
   trainingGuidanceLossDefaultsByArch: Record<string, number> | null;
   taggerTrainingDefaults: Record<string, unknown> | null;
+  // null also when the backend predates GET /schema/style-training-defaults.
+  styleTrainingDefaults: StyleTrainingConfig | null;
   vaeTrainingDefaults: Record<string, unknown> | null;
   // What an omitted field of a runtime LR retarget resolves to, and the three
   // vocabularies its form offers.
@@ -130,6 +134,7 @@ const StartupContext = createContext<StartupContextType>({
   trainingSampleDefaultsByArch: null,
   trainingGuidanceLossDefaultsByArch: null,
   taggerTrainingDefaults: null,
+  styleTrainingDefaults: null,
   vaeTrainingDefaults: null,
   lrRetargetDefaults: null,
   lrTriggerDefaults: null,
@@ -179,6 +184,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
   const [trainingSampleDefaultsByArch, setTrainingSampleDefaultsByArch] = useState<Record<string, Record<string, unknown>> | null>(null);
   const [trainingGuidanceLossDefaultsByArch, setTrainingGuidanceLossDefaultsByArch] = useState<Record<string, number> | null>(null);
   const [taggerTrainingDefaults, setTaggerTrainingDefaults] = useState<Record<string, unknown> | null>(null);
+  const [styleTrainingDefaults, setStyleTrainingDefaults] = useState<StyleTrainingConfig | null>(null);
   const [vaeTrainingDefaults, setVaeTrainingDefaults] = useState<Record<string, unknown> | null>(null);
   const [lrRetargetDefaults, setLrRetargetDefaults] = useState<LrRetargetDefaults | null>(null);
   const [lrTriggerDefaults, setLrTriggerDefaults] = useState<LrTriggerDefaults | null>(null);
@@ -209,10 +215,12 @@ export function StartupProvider({ children }: StartupProviderProps) {
 
     const inFlight = (async () => {
       try {
-        const [genDef, trainDef, taggerDef, vaeDef, lrRetargetDef, lrTriggerDef, tsByArch, bvByArch, archCaps, genSettings] = await Promise.all([
+        const [genDef, trainDef, taggerDef, styleDef, vaeDef, lrRetargetDef, lrTriggerDef, tsByArch, bvByArch, archCaps, genSettings] = await Promise.all([
           fetchGenerationDefaults(),
           fetchTrainingDefaults(),
           fetchTaggerTrainingDefaults(),
+          // Own catch, like the LR defaults below: an older backend answers 404.
+          fetchStyleTrainingDefaults().catch(() => null),
           fetchVaeTrainingDefaults(),
           // Its own catch: this is the first call that can be NEWER than
           // the backend, and the shared Promise.all has one catch for all
@@ -236,6 +244,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
           (guidanceByArch as Record<string, number> | undefined) ?? null
         );
         setTaggerTrainingDefaults(taggerDef);
+        setStyleTrainingDefaults(styleDef);
         setVaeTrainingDefaults(vaeDef);
         setLrRetargetDefaults(lrRetargetDef);
         setLrTriggerDefaults(lrTriggerDef);
@@ -397,6 +406,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
       trainingSampleDefaultsByArch,
       trainingGuidanceLossDefaultsByArch,
       taggerTrainingDefaults,
+      styleTrainingDefaults,
       vaeTrainingDefaults,
       lrRetargetDefaults,
       lrTriggerDefaults,

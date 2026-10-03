@@ -85,7 +85,7 @@ class Krea2LoRAAdapter(BaseLoRAAdapter):
 
     def checkpoint_metadata(self, lora_layers: Dict[str, nn.Module],
                             step: int, epoch: int) -> Dict[str, str]:
-        return {
+        metadata = {
             "model_type":             "krea2",
             "modelspec.architecture": "krea2",
             "variant":                "turbo" if bool(getattr(self.trainer, "krea2_is_distilled", False)) else "raw",
@@ -96,6 +96,9 @@ class Krea2LoRAAdapter(BaseLoRAAdapter):
             "epoch":                  str(epoch),
             "format":                 "pt",
         }
+        from core.models.krea2.residual_unet import model_topology_metadata
+        metadata.update(model_topology_metadata(self.trainer.transformer))
+        return metadata
 
 
 class Krea2FullParameterAdapter(BaseFullParameterAdapter):

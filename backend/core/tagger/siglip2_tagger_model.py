@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import torch
@@ -61,6 +62,13 @@ def _save_file_safe(tensors: dict, path: str) -> None:
 # Stored in checkpoint metadata so merged checkpoints can be loaded
 # without requiring the user to specify vision_encoder_path.
 SIGLIP2_DEFAULT_REPO_ID = "google/siglip2-so400m-patch16-naflex"
+
+
+@dataclass(frozen=True)
+class SigLIP2TaggerFeatures:
+    patch_features: torch.Tensor
+    pooled_features: torch.Tensor
+    tag_logits: torch.Tensor
 
 
 def _is_hf_repo_or_url(path: str) -> "tuple[bool, str]":
@@ -123,6 +131,28 @@ class LoRALinear(nn.Module):
             delta = (self.lora_A @ self.lora_B).T * self.scale
             self.base.weight.data += delta
 
+
+def inject_lora(
+    root: nn.Module, patterns: List[str], rank: int, alpha: float, dropout: float,
+) -> Dict[str, LoRALinear]:
+    """Replace each nn.Linear under *root* whose qualified name matches a pattern with LoRALinear."""
+    compiled = [re.compile(p) for p in patterns]
+    injected: Dict[str, LoRALinear] = {}
+    for name, module in list(root.named_modules()):
+        if not isinstance(module, nn.Linear):
+            continue
+        if not any(p.match(name) for p in compiled):
+            continue
+
+        parts  = name.split(".")
+        parent = root
+        for part in parts[:-1]:
+            parent = getattr(parent, part)
+
+        lora_linear = LoRALinear(module, rank=rank, alpha=alpha, dropout=dropout)
+        setattr(parent, parts[-1], lora_linear)
+        injected[name] = lora_linear
+    return injected
 
 
 def _load_vision_encoder(
@@ -430,6 +460,15 @@ class SigLIP2TaggerModel(nn.Module):
         spatial_shapes: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Return logits [B, num_tags]."""
+        return self.forward_features(pixel_values, pixel_attention_mask, spatial_shapes).tag_logits
+
+    def forward_features(
+        self,
+        pixel_values: torch.Tensor,
+        pixel_attention_mask: Optional[torch.Tensor] = None,
+        spatial_shapes: Optional[torch.Tensor] = None,
+    ) -> SigLIP2TaggerFeatures:
+        """Expose request-local features without a second vision forward."""
         if self.is_naflex:
             out = self.vision_encoder(
                 pixel_values=pixel_values,
@@ -445,7 +484,7 @@ class SigLIP2TaggerModel(nn.Module):
             )                                                   # [B, cls_dim]
         else:
             pooled = out.pooler_output                          # [B, hidden_size]
-        return self.head(pooled)                                # [B, num_tags]
+        return SigLIP2TaggerFeatures(out.last_hidden_state, pooled, self.head(pooled))
 
 
     def expand_head(self, new_num_tags: int) -> Tuple[nn.Parameter, Optional[nn.Parameter]]:
@@ -603,23 +642,9 @@ class SigLIP2TaggerLoRAModel(nn.Module):
         self._inject_lora(lora_rank, lora_alpha, lora_dropout)
 
     def _inject_lora(self, rank: int, alpha: float, dropout: float) -> None:
-        patterns = [re.compile(p) for p in self.LORA_TARGET_PATTERNS]
-
-        for name, module in list(self.vision_encoder.named_modules()):
-            if not isinstance(module, nn.Linear):
-                continue
-            if not any(p.match(name) for p in patterns):
-                continue
-
-            parts  = name.split(".")
-            parent = self.vision_encoder
-            for part in parts[:-1]:
-                parent = getattr(parent, part)
-
-            lora_linear = LoRALinear(module, rank=rank, alpha=alpha, dropout=dropout)
-            setattr(parent, parts[-1], lora_linear)
-            self._lora_modules[name] = lora_linear
-
+        self._lora_modules.update(
+            inject_lora(self.vision_encoder, self.LORA_TARGET_PATTERNS, rank, alpha, dropout)
+        )
         print(f"[TaggerLoRA] Injected LoRA into {len(self._lora_modules)} modules")
 
     def forward(
@@ -628,6 +653,15 @@ class SigLIP2TaggerLoRAModel(nn.Module):
         pixel_attention_mask: Optional[torch.Tensor] = None,
         spatial_shapes: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        return self.forward_features(pixel_values, pixel_attention_mask, spatial_shapes).tag_logits
+
+    def forward_features(
+        self,
+        pixel_values: torch.Tensor,
+        pixel_attention_mask: Optional[torch.Tensor] = None,
+        spatial_shapes: Optional[torch.Tensor] = None,
+    ) -> SigLIP2TaggerFeatures:
+        """Expose merged or live LoRA features using the same classification path."""
         if self.is_naflex:
             out = self.vision_encoder(
                 pixel_values=pixel_values,
@@ -636,7 +670,9 @@ class SigLIP2TaggerLoRAModel(nn.Module):
             )
         else:
             out = self.vision_encoder(pixel_values=pixel_values)
-        return self.head(out.pooler_output)  # [B, num_tags]
+        return SigLIP2TaggerFeatures(
+            out.last_hidden_state, out.pooler_output, self.head(out.pooler_output),
+        )
 
     def expand_head(self, new_num_tags: int) -> Tuple[nn.Parameter, Optional[nn.Parameter]]:
         """Grow the output axis while preserving existing tag rows."""

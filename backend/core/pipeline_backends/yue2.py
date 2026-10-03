@@ -112,6 +112,7 @@ class YuE2Mixin:
     def _generate_txt2aud_yue2(self, params, progress_callback=None, step_callback=None):
         from core.models.yue2.pipeline import generate
         from core.inference.cancellation import raise_if_cancelled
+        params.pop("dit_rewiring_actual", None)
         if not self.yue2_components:
             raise ValueError("Load a complete YuE2 checkpoint before generating music")
         required = ("prompt", "lyrics", "audio_duration", "yue2_cot", "yue2_abc", "yue2_abc_max_tokens",
@@ -136,10 +137,14 @@ class YuE2Mixin:
                 progress_callback(start + int(width * n / max(total, 1)), 10000)
         try:
             lora_files = self._prepare_yue2_loras(params.get("loras") or [])
-            return generate(
+            result = generate(
                 self.yue2_components, params, self.device, seed, cancelled, progress,
                 set_adapter_stage=lambda stage: self._set_yue2_adapter_stage(lora_files, stage),
             )
+            if "dit_rewiring_actual" in result.effective_config:
+                from copy import deepcopy
+                params["dit_rewiring_actual"] = deepcopy(result.effective_config["dit_rewiring_actual"])
+            return result
         except ValueError as exc:
             if str(exc).startswith(("Prefix + requested generation budget exceeds",
                                     "Negative prefix + generation budget exceeds")):

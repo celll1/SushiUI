@@ -17,7 +17,7 @@ from core.tagger.siglip2_tagger_model import (
 
 
 class _IdentityEncoder(nn.Module):
-    def forward(self, pixel_values, pixel_attention_mask=None, spatial_shapes=None):
+    def forward(self, pixel_values, pixel_attention_mask=None, spatial_shapes=None, **kwargs):
         return SimpleNamespace(last_hidden_state=pixel_values)
 
 

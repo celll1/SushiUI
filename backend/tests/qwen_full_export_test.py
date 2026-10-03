@@ -55,9 +55,15 @@ def test_qwen_full_export_keeps_float_checkpoint_and_publishes_quantized_artifac
     checkpoint = run_dir / "example_step_000010.safetensors"
     metadata = artifact_metadata("training_bundle", config)
     metadata.update(step="10", companion_path=str(companion))
+    metadata.update(qwen_partition_global_adapter="latent_summary_v1",
+                    qwen_partition_global_rank="4", qwen_partition_global_tokens="3",
+                    qwen_partition_global_generation_halo_tokens="16",
+                    qwen_partition_global_training_halo_tokens="0")
+    global_weight = torch.randn(32, 4)
     save_file({
         "transformer.linear.weight": torch.randn(256, 256, dtype=torch.bfloat16),
         "text_encoder.linear.weight": torch.randn(256, 256, dtype=torch.bfloat16),
+        "transformer.qwen_partition_global_adapter.out.weight": global_weight,
     }, checkpoint, metadata=metadata)
     monkeypatch.setattr(qwen_full_export, "_linear_names", lambda *_: {"linear"})
     exported = qwen_full_export.export_qwen_full_checkpoint(checkpoint, run_dir)
@@ -70,3 +76,10 @@ def test_qwen_full_export_keeps_float_checkpoint_and_publishes_quantized_artifac
             assert "linear.weight_scale" in handle.keys()
     with pytest.raises(FileExistsError):
         qwen_full_export.export_qwen_full_checkpoint(checkpoint, run_dir)
+    with safe_open(manifest.transformer, framework="pt", device="cpu") as handle:
+        assert handle.metadata()["qwen_partition_global_adapter"] == "latent_summary_v1"
+        assert handle.metadata()["qwen_partition_global_generation_halo_tokens"] == "16"
+        assert handle.metadata()["qwen_partition_global_training_halo_tokens"] == "0"
+        assert torch.equal(handle.get_tensor("qwen_partition_global_adapter.out.weight"), global_weight)
+    with safe_open(manifest.text_encoder, framework="pt", device="cpu") as handle:
+        assert "qwen_partition_global_adapter" not in handle.metadata()

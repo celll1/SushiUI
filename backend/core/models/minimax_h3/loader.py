@@ -2223,6 +2223,13 @@ def _build_transformer(dit_path: str, torch_dtype: torch.dtype,
         require_w4a8_runtime()
 
     config = _synthesize_transformer_config(header, official_dir)
+    from core.rewiring.spec import read_checkpoint_metadata
+    from .residual_unet import validate_topology_identity, wrap_transformer
+    residual_graph = read_checkpoint_metadata(metadata)
+    if overlay_path is not None and read_checkpoint_metadata(_overlay_metadata) != residual_graph:
+        raise ValueError("MiniMax-H3 hybrid base and overlay residual topologies disagree")
+    if residual_graph is not None:
+        residual_graph = validate_topology_identity(residual_graph, config)
     curve = config.get("adaln_curve_grid") is not None
     print(f"[MiniMaxH3Loader] transformer geometry (synthesised from the header): "
           f"{config['num_layers']} blocks, hidden {config['hidden_size']}, ffn {config['ffn_dim']}, "
@@ -2365,6 +2372,8 @@ def _build_transformer(dit_path: str, torch_dtype: torch.dtype,
               f"({hybrid.spec.compatibility_digest})")
 
     model.eval().requires_grad_(False)
+    if residual_graph is not None:
+        model = wrap_transformer(model, residual_graph)
     return model, config
 
 

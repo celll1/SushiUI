@@ -1147,6 +1147,88 @@ class TrainingMetrics(TrainingBase):
 
 
 
+class CaptionerBatch(TrainingBase):
+    __tablename__ = "captioner_batches"
+    job_id = Column(String, primary_key=True)
+    dataset_id = Column(Integer, nullable=False)
+    bundle_path = Column(String, nullable=False)
+    manifest_hash = Column(String, nullable=False)
+    options = Column(JSON, nullable=False)
+    status = Column(String, nullable=False)
+    error = Column(Text, nullable=True)
+    error_code = Column(String, nullable=True)
+    created_at = Column(DateTime, default=get_local_now)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
+    def to_dict(self):
+        return {"job_id": self.job_id, "dataset_id": self.dataset_id, "bundle_path": self.bundle_path,
+                "manifest_hash": self.manifest_hash, "options": self.options, "status": self.status,
+                "error": self.error, "error_code": self.error_code,
+                "created_at": self.created_at.isoformat(), "updated_at": self.updated_at.isoformat()}
+
+
+class CaptionerBatchItem(TrainingBase):
+    __tablename__ = "captioner_batch_items"
+    job_id = Column(String, ForeignKey("captioner_batches.job_id"), primary_key=True)
+    item_id = Column(Integer, primary_key=True)
+    position = Column(Integer, nullable=False)
+    status = Column(String, nullable=False)
+    attempts = Column(Integer, nullable=False)
+    preview = Column(JSON, nullable=True)
+    saved = Column(JSON, nullable=True)
+    save_intent = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    error_code = Column(String, nullable=True)
+
+    def to_dict(self):
+        return {"item_id": self.item_id, "position": self.position, "status": self.status,
+                "attempts": self.attempts, "preview": self.preview, "error": self.error,
+                "error_code": self.error_code, "saved": self.saved,
+                "pending_save": self.save_intent is not None,
+                "reviewed_caption": (self.save_intent or self.saved or {}).get("caption"),
+                "reviewed_caption_type": (self.save_intent or self.saved or {}).get("caption_type")}
+
+
+class CaptionerTrainingRun(TrainingBase):
+    __tablename__ = "captioner_training_runs"
+    run_id = Column(String, primary_key=True)
+    run_name = Column(String, nullable=False)
+    output_dir = Column(String, unique=True, nullable=False)
+    status = Column(String, nullable=False)
+    config = Column(JSON, nullable=False)
+    tagger_config = Column(JSON, nullable=False)
+    dataset_configs = Column(JSON, nullable=False)
+    aliases = Column(JSON, nullable=False)
+    progress = Column(JSON, nullable=False)
+    checkpoints = Column(JSON, nullable=False)
+    resume_seq = Column(Integer, nullable=False)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=get_local_now)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
+    def to_dict(self):
+        return {"run_id": self.run_id, "run_name": self.run_name, "output_dir": self.output_dir,
+                "status": self.status, "config": self.config, "tagger": self.tagger_config,
+                "dataset_configs": self.dataset_configs, "progress": self.progress,
+                "checkpoints": self.checkpoints, "resume_seq": self.resume_seq, "error": self.error,
+                "alias_count": len(self.aliases),
+                "created_at": self.created_at.isoformat() if self.created_at else None,
+                "updated_at": self.updated_at.isoformat() if self.updated_at else None}
+
+
+class CaptionerTrainingEvent(TrainingBase):
+    __tablename__ = "captioner_training_events"
+    id = Column(Integer, primary_key=True)
+    run_id = Column(String, ForeignKey("captioner_training_runs.run_id"), nullable=False, index=True)
+    resume_seq = Column(Integer, nullable=False)
+    payload = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=get_local_now)
+
+    def to_dict(self):
+        return {"id": self.id, "run_id": self.run_id, "resume_seq": self.resume_seq,
+                "payload": self.payload, "timestamp": self.created_at.isoformat()}
+
+
 class TaggerTrainingRun(TrainingBase):
     """Training run for SigLIP2-based image tagger."""
     __tablename__ = "tagger_training_runs"
@@ -1292,5 +1374,152 @@ class TaggerTrainingMetrics(TrainingBase):
             "learning_rate": self.learning_rate,
             "precision": self.precision,
             "recall": self.recall,
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
+        }
+
+
+class StyleTrainingRun(TrainingBase):
+    """Catalogue row of a style encoder training run (design STYLE_EMBEDDING_DESIGN_2026-09 §12).
+
+    The per-run detail store (`style_training_run.db`) holds a copy of this row whose
+    `dataset_stats` and `warnings` are written there only.
+    """
+    __tablename__ = "style_training_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(String, unique=True, index=True, nullable=False, default=lambda: str(uuid.uuid4()))
+    run_name = Column(String, nullable=False, default="")
+
+    status = Column(String, default="pending", index=True)  # pending|starting|running|stopping|completed|failed|stopped
+    progress = Column(Float, default=0.0)
+    current_epoch = Column(Integer, default=0)
+    total_epochs = Column(Integer, default=0)
+    current_step = Column(Integer, default=0)
+    total_steps = Column(Integer, nullable=True)
+
+    training_method = Column(String, nullable=False)
+    # Columns added after a table exists must be nullable: auto_migrate cannot ALTER in a NOT NULL one.
+    vision_encoder_path = Column(String, nullable=True)
+    vision_encoder_repo = Column(String, nullable=True)
+    dataset_configs = Column(JSON, nullable=True)
+    output_dir = Column(String, nullable=False)
+    config = Column(JSON, nullable=True)  # the trainer config, every STYLE_TRAINING_DEFAULTS key
+
+    detail_store = Column(String, nullable=True)
+    detail_schema_version = Column(Integer, nullable=True)
+    detail_state = Column(String, nullable=True)
+    detail_db_name = Column(String, nullable=True)
+
+    index_hash = Column(String, nullable=True)
+    latest_loss = Column(Float, nullable=True)
+    latest_lr = Column(Float, nullable=True)
+    best_map_at_r = Column(Float, nullable=True)
+    best_step = Column(Integer, nullable=True)
+    best_checkpoint_path = Column(String, nullable=True)
+    latest_checkpoint_path = Column(String, nullable=True)
+
+    resumed_from_step = Column(Integer, nullable=True)
+    last_resume_mode = Column(String, nullable=True)  # exact | epoch_boundary
+    last_resumed_at = Column(DateTime, nullable=True)
+
+    error_message = Column(Text, nullable=True)
+    status_message = Column(String, nullable=True)
+
+    # Detail store only.
+    dataset_stats = Column(JSON, nullable=True)
+    warnings = Column(JSON, nullable=True)
+
+    created_at = Column(DateTime, default=get_local_now)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+    def to_dict(self):
+        """Catalogue fields only; the detail endpoint adds `dataset_stats` and `warnings`."""
+        iso = lambda value: value.isoformat() if value else None  # noqa: E731
+        return {
+            "id": self.id,
+            "run_id": self.run_id,
+            "run_name": self.run_name,
+            "status": self.status,
+            "progress": self.progress,
+            "current_epoch": self.current_epoch,
+            "total_epochs": self.total_epochs,
+            "current_step": self.current_step,
+            "total_steps": self.total_steps,
+            "training_method": self.training_method,
+            "vision_encoder_path": self.vision_encoder_path,
+            "vision_encoder_repo": self.vision_encoder_repo,
+            "dataset_configs": self.dataset_configs,
+            "output_dir": self.output_dir,
+            "config": self.config,
+            "index_hash": self.index_hash,
+            "latest_loss": self.latest_loss,
+            "latest_lr": self.latest_lr,
+            "best_map_at_r": self.best_map_at_r,
+            "best_step": self.best_step,
+            "best_checkpoint_path": self.best_checkpoint_path,
+            "latest_checkpoint_path": self.latest_checkpoint_path,
+            "resumed_from_step": self.resumed_from_step,
+            "last_resume_mode": self.last_resume_mode,
+            "last_resumed_at": iso(self.last_resumed_at),
+            "error_message": self.error_message,
+            "status_message": self.status_message,
+            "created_at": iso(self.created_at),
+            "updated_at": iso(self.updated_at),
+            "started_at": iso(self.started_at),
+            "completed_at": iso(self.completed_at),
+        }
+
+
+class StyleTrainingMetrics(TrainingBase):
+    """Per-step and per-evaluation metrics of a style run, one row per (run_id, resume_seq, step).
+
+    `index_hash` names the style index the row was measured on: evaluation sets change with it,
+    so a chart must not join points across different hashes.
+    """
+    __tablename__ = "style_training_metrics"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String, nullable=False, index=True)
+    resume_seq = Column(Integer, nullable=False, default=0, server_default="0")
+    step = Column(Integer, nullable=False)
+    epoch = Column(Integer, nullable=True)
+    index_hash = Column(String, nullable=True)
+    loss = Column(Float, nullable=True)
+    supcon_loss = Column(Float, nullable=True)
+    hsic_loss = Column(Float, nullable=True)
+    hsic_components = Column(JSON, nullable=True)
+    learning_rate = Column(Float, nullable=True)
+    grad_norm = Column(Float, nullable=True)
+    epoch_loss = Column(Float, nullable=True)
+    val_map_at_r = Column(Float, nullable=True)
+    val_recall_at_1 = Column(Float, nullable=True)
+    val_recall_at_5 = Column(Float, nullable=True)
+    evaluation = Column(JSON, nullable=True)  # the trainer's full validation payload
+    timestamp = Column(DateTime, default=get_local_now)
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "resume_seq", "step", name="uq_style_run_resume_step"),
+        Index("idx_style_run_resume_step", "run_id", "resume_seq", "step"),
+    )
+
+    def to_dict(self):
+        return {
+            "step": self.step,
+            "resume_seq": self.resume_seq,
+            "epoch": self.epoch,
+            "index_hash": self.index_hash,
+            "loss": self.loss,
+            "supcon_loss": self.supcon_loss,
+            "hsic_loss": self.hsic_loss,
+            "hsic_components": self.hsic_components,
+            "learning_rate": self.learning_rate,
+            "grad_norm": self.grad_norm,
+            "epoch_loss": self.epoch_loss,
+            "val_map_at_r": self.val_map_at_r,
+            "val_recall_at_1": self.val_recall_at_1,
+            "val_recall_at_5": self.val_recall_at_5,
+            "evaluation": self.evaluation,
             "timestamp": self.timestamp.isoformat() if self.timestamp else None,
         }

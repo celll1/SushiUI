@@ -25,7 +25,7 @@ import asyncio
 import os
 import threading
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from typing import Callable, List, Literal, Optional, Protocol
 
@@ -148,6 +148,14 @@ class GPUCoordinator:
             if h not in self._handles:
                 self._handles.append(h)
                 print(f"[GPUCoordinator] Registered trainer: {h.trainer_label()}")
+
+    @contextmanager
+    def trainer_allocation(self):
+        """Serialize initial trainer allocation against generation admission."""
+        with self._lock:
+            if self._active_generations or self._currently_paused:
+                raise RuntimeError("GPU is serving generation; retry trainer allocation later")
+            yield
 
     def unregister_trainer(self, h: TrainerHandle) -> None:
         with self._lock:
@@ -353,7 +361,8 @@ class GPUCoordinator:
     # -- public async context manager -----------------------------------
 
     @asynccontextmanager
-    async def generation_slot(self, estimated_peak_gb: float, timeout: float = 60.0):
+    async def generation_slot(self, estimated_peak_gb: float, timeout: float = 60.0,
+                              require_pause_ack: bool = False):
         """Acquire the GPU for image generation.  Refcounted.
 
         On entry, if a previous grace period is still running (trainers
@@ -385,11 +394,35 @@ class GPUCoordinator:
 
         try:
             if need_pause:
-                new_paused = await loop.run_in_executor(
+                pause_worker = loop.run_in_executor(
                     None, self._begin_pause_cycle, estimated_peak_gb, timeout
                 )
+                cancelled = False
+                while True:
+                    try:
+                        new_paused = await asyncio.shield(pause_worker)
+                        break
+                    except asyncio.CancelledError:
+                        cancelled = True
                 with self._lock:
                     self._currently_paused = new_paused
+                    if cancelled and self._active_generations == 1:
+                        for h in self._handles:
+                            if h not in new_paused:
+                                h.pause_event.clear()
+                if cancelled:
+                    raise asyncio.CancelledError
+            if require_pause_ack:
+                with self._lock:
+                    device = _generation_device_index()
+                    unready = [h for h in self._handles
+                               if getattr(h, "device_index", None) in (None, device)
+                               and not (h.pause_event.is_set() and h.resumed_event.is_set())]
+                    if unready:
+                        if self._active_generations == 1:
+                            for h in unready:
+                                h.pause_event.clear()
+                        raise RuntimeError("GPU trainer pause was not acknowledged")
             yield
         finally:
             start_grace = False

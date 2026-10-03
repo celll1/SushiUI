@@ -36,22 +36,7 @@ class FoveaRunControl:
         self._handle = handle
 
     def batch_boundary(self) -> None:
-        handle = self._handle
-        if handle is None or not handle.pause_event.is_set():
-            return
-        decision = handle.pending_decision
-        if decision is not None:
-            handle.offload(decision)
-        handle.resumed_event.set()
-        # A stop must not restore optimizer VRAM while generation owns it.
-        pause_wait = threading.Event()
-        while handle.pause_event.is_set():
-            pause_wait.wait(0.5)
-        if decision is not None:
-            handle.restore()
-        handle.pending_decision = None
-        # The coordinator clears acknowledgements at the next pause cycle.
-        handle.restored_event.set()
+        wait_for_gpu_release(self._handle)
 
     def detach(self) -> None:
         if self._handle is None:
@@ -60,3 +45,21 @@ class FoveaRunControl:
         gpu_coordinator.unregister_trainer(self._handle)
         self._handle.detach()
         self._handle = None
+
+
+def wait_for_gpu_release(handle) -> None:
+    if handle is None or not handle.pause_event.is_set():
+        return
+    decision = handle.pending_decision
+    if decision is not None:
+        handle.offload(decision)
+    handle.resumed_event.set()
+    # A stop must not restore optimizer VRAM while generation owns it.
+    pause_wait = threading.Event()
+    while handle.pause_event.is_set():
+        pause_wait.wait(0.5)
+    if decision is not None:
+        handle.restore()
+    handle.pending_decision = None
+    # The coordinator clears acknowledgements at the next pause cycle.
+    handle.restored_event.set()

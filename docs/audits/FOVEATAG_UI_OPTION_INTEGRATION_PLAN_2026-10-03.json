@@ -36,7 +36,13 @@
     "status": "shared_trainer_wired_internally_not_yet_public_or_deployed",
     "data": "Native overview/local tensors and source geometry can use the shared dataset and online-buffer collator without NaFlex encoding.",
     "model": "Full and attention-linear LoRA protocols support forward, head growth and exact self-contained unmerged weight roundtrips. No SigLIP2 weights are used.",
-    "verification": "67 focused CPU tests pass with CUDA availability disabled for checkpoint tests and CUDA import triggers stubbed. Export parity, unchanged live LoRA parameters, exact unmerged weight restoration, wrong-base refusal, complete export retention, scratch lineage, backbone loading before LoRA insertion, evidence-head inheritance and per-image OOD capture are covered. Backend compile and separate real import checks preserve an uninitialized CUDA context; six native API defaults match OpenAPI.",
+    "verification": "78 focused CPU tests pass with CUDA availability disabled for checkpoint tests and CUDA import triggers stubbed. Actual common-loop full and LoRA stop/resume runs with stochastic scale dropout reach bit-identical final weights to uninterrupted runs. Indexed views, sampler suffixes, pending injection/cadence, source identity fingerprints and Python/Torch/NumPy/current-device CUDA RNG serialization are covered, alongside prior export/model/data contracts. Backend compile and separate real import checks preserve an uninitialized CUDA context; six native API defaults match OpenAPI.",
+    "replay": {
+      "offline": "Native sampling uses an owned per-epoch generator; views use source index, epoch and seed. Resume records completed source batches separately from mixed-loader events and restores exact scheduler/scaler plus latest RNG state.",
+      "online": "Source cursor and injection cadence are restored separately, including an injection pending at the stop boundary. Live network arrivals and prefetched online samples are not claimed to be bit-reproducible.",
+      "gpu_pause": "Both the comparison and native shared trainer wait for generation's GPU release before restoring state and retain coordinator acknowledgements.",
+      "remaining": "Checkpoint files are individually atomic, but a multi-file native bundle commit/integrity protocol remains to be implemented and tested before public run creation."
+    },
     "exports": {
       "resume": "The primary safetensors checkpoint always retains complete unmerged weights; shared optimizer and training-state files remain alongside it.",
       "inference": "LoRA runs additionally write name_export.safetensors and metadata in compact or merged form according to checkpoint_save_mode. Compact exports require a scratch backbone with the recorded frozen-tensor fingerprint. Merged exports are self-contained for weights, with vocabulary referenced separately.",
@@ -45,7 +51,7 @@
     },
     "remaining": [
       "Verify the complete native shared training loop, metrics, online data and optimizer resume contracts, not only the model/data protocols.",
-      "Verify native shared-loop RNG, permutation and view replay. The legacy common RNG snapshot is CPU-only and its efficient permutation reconstruction has not been proven equivalent to DataLoader sampling. Keep the existing atomic A/B/C runner's resume contract separate and unchanged.",
+      "Finish native multi-file checkpoint consistency checks and online/metrics feature-specific verification. Keep the existing atomic A/B/C runner's resume contract separate and unchanged.",
       "Implement attention-option semantics and finish visualization/inference and API/UI export integrations.",
       "Synchronize API defaults, OpenAPI, request types and UI for native runs and audit remaining shared options.",
       "Enable native run creation only after applicable options and their API/UI controls are complete; SigLIP2-only pooling dimensions must be explicitly refused.",

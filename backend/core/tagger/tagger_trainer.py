@@ -21,6 +21,7 @@ import random
 import re as _re
 import threading
 import time
+import numpy as np
 from collections import deque
 from queue import Queue as _Queue
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -269,10 +270,10 @@ def _compute_label_stats(
 
 
 
-def _capture_rng() -> Dict[str, Any]:
-    """Capture current Python + PyTorch CPU RNG state as a serialisable dict."""
+def _capture_rng(*, native=False) -> Dict[str, Any]:
+    """Capture CPU RNG, plus native NumPy and current-device CUDA streams."""
     rs = random.getstate()
-    return {
+    snapshot = {
         "random_state": {
             "version": rs[0],
             "state": list(rs[1]),
@@ -282,10 +283,19 @@ def _capture_rng() -> Dict[str, Any]:
             torch.get_rng_state().numpy().tobytes()
         ).decode("utf-8"),
     }
+    if native:
+        numpy_state = np.random.get_state()
+        snapshot["numpy_rng_state"] = {
+            "algorithm": numpy_state[0], "state": numpy_state[1].tolist(),
+            "position": numpy_state[2], "has_gauss": numpy_state[3], "cached_gaussian": numpy_state[4],
+        }
+        if torch.cuda.is_initialized():
+            snapshot["cuda_rng_state"] = base64.b64encode(torch.cuda.get_rng_state().numpy().tobytes()).decode("utf-8")
+    return snapshot
 
 
 def _restore_rng(rng_snapshot: Dict[str, Any]) -> None:
-    """Restore Python + PyTorch CPU RNG state from a snapshot produced by _capture_rng."""
+    """Restore the RNG streams recorded by _capture_rng."""
     rs = rng_snapshot.get("random_state")
     if rs:
         random.setstate((rs["version"], tuple(rs["state"]), rs["gauss_next"]))
@@ -293,6 +303,13 @@ def _restore_rng(rng_snapshot: Dict[str, Any]) -> None:
     if torch_rng:
         rng_bytes = base64.b64decode(torch_rng)
         torch.set_rng_state(torch.frombuffer(bytearray(rng_bytes), dtype=torch.uint8))
+    numpy_state = rng_snapshot.get("numpy_rng_state")
+    if numpy_state is not None:
+        np.random.set_state((numpy_state["algorithm"], np.asarray(numpy_state["state"], dtype=np.uint32),
+                             numpy_state["position"], numpy_state["has_gauss"], numpy_state["cached_gaussian"]))
+    cuda_state = rng_snapshot.get("cuda_rng_state")
+    if cuda_state is not None:
+        torch.cuda.set_rng_state(torch.frombuffer(bytearray(base64.b64decode(cuda_state)), dtype=torch.uint8))
 
 
 def _compute_dataset_fingerprint(dataset: Any) -> Dict[str, Any]:
@@ -357,6 +374,7 @@ def _save_training_state(
     best_threshold: float,
     epoch_start_rng: Optional[Dict[str, Any]] = None,
     dataset_fingerprint: Optional[Dict[str, Any]] = None,
+    native_runtime: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Save training state JSON for resume.
 
@@ -381,9 +399,12 @@ def _save_training_state(
         state["epoch_start_rng"] = epoch_start_rng
     if dataset_fingerprint is not None:
         state["dataset_fingerprint"] = dataset_fingerprint
+    if native_runtime is not None:
+        state["native_runtime"] = native_runtime
+        if batch_idx >= 0:
+            state["batch_idx"] = native_runtime["cursor"]["last_batch_idx"]
     path = os.path.join(output_dir, f"{name}_state.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(state, f)
+    _write_json_atomic(path, state)
 
 
 def _load_training_state(output_dir: str, name: str) -> Optional[Dict[str, Any]]:
@@ -434,7 +455,9 @@ def _save_danbooru_runtime_state(buffer: Any, output_dir: str, epoch: int) -> No
 def _save_optimizer_state(optimizer: Any, output_dir: str, name: str) -> None:
     """Save optimizer state dict to <name>_optimizer.pt."""
     path = os.path.join(output_dir, f"{name}_optimizer.pt")
-    torch.save(optimizer.state_dict(), path)
+    temporary = path + ".tmp"
+    torch.save(optimizer.state_dict(), temporary)
+    os.replace(temporary, path)
 
 
 def _save_vocabulary_snapshot(vocabulary: Any, output_dir: str, name: str) -> None:
@@ -1229,12 +1252,30 @@ class TaggerTrainer:
         # resume_epoch.  Restoring it before iterating the DataLoader reproduces
         # the exact shuffle permutation and therefore the exact batch order.
         epoch_start_rng_for_resume: Optional[Dict[str, Any]] = None
+        native_run = cfg.get("architecture") == "foveatag"
+        native_saved_runtime = None
+        if native_run:
+            from .foveatag.shared_replay import NativeReplayCursor, native_epoch_loader, native_dataset_fingerprint
+            native_cursor = NativeReplayCursor()
+
+        def _native_runtime(saved_batch_idx):
+            if not native_run:
+                return None
+            cursor = NativeReplayCursor() if saved_batch_idx == -1 else native_cursor
+            return {
+                "version": 1, "cursor": cursor.to_dict(), "seed": cfg["fovea_seed"],
+                "rng": _capture_rng(native=True), "scheduler": scheduler.state_dict(),
+                "scaler": scaler.state_dict() if scaler is not None else None,
+            }
 
         # Compute the *current* dataset fingerprint up-front so we can both
         # (a) compare it to the saved one to detect mid-run dataset changes
         #     (e.g. caused by a pre-flight rescan adding/removing items), and
         # (b) include it in every state file we save below.
-        current_fingerprint = _compute_dataset_fingerprint(train_loader.dataset)
+        current_fingerprint = (
+            native_dataset_fingerprint(train_loader.dataset) if native_run
+            else _compute_dataset_fingerprint(train_loader.dataset)
+        )
         print(
             f"[TaggerTrainer] Dataset fingerprint: {current_fingerprint['total_item_count']} items, "
             f"hash={current_fingerprint['image_paths_hash'][:8]}..."
@@ -1247,6 +1288,13 @@ class TaggerTrainer:
             best_f1          = resume_state.get("best_f1", 0.0)
             best_threshold   = resume_state.get("best_threshold", 0.5)
             epoch_start_rng_for_resume = resume_state.get("epoch_start_rng")
+            if native_run:
+                native_saved_runtime = resume_state.get("native_runtime")
+                if native_saved_runtime is None or native_saved_runtime.get("version") != 1:
+                    raise ValueError("native resume checkpoint lacks supported replay runtime")
+                if native_saved_runtime.get("seed") != cfg["fovea_seed"]:
+                    raise ValueError("native resume sampler seed differs from checkpoint")
+                native_cursor = NativeReplayCursor(**native_saved_runtime["cursor"])
 
             # Dataset-change detection: if the on-disk dataset differs from
             # the one this checkpoint was saved against, the saved RNG +
@@ -1265,6 +1313,8 @@ class TaggerTrainer:
                 )
                 resume_batch_idx           = -1
                 epoch_start_rng_for_resume = None
+                if native_run:
+                    native_cursor = NativeReplayCursor()
 
             # Restore optimizer state.  Pass the old/new vocab maps so that
             # the head's per-parameter state can be tag-name aligned when the
@@ -1311,8 +1361,16 @@ class TaggerTrainer:
                 _ood_emb_acc.restore_from_reservoir(_ood_reservoir_npz)
 
             # Fast-forward LR scheduler to match resumed global_step
-            for _ in range(global_step):
-                scheduler.step()
+            if native_run:
+                scheduler.load_state_dict(native_saved_runtime["scheduler"])
+                saved_scaler = native_saved_runtime.get("scaler")
+                if (scaler is None) != (saved_scaler is None):
+                    raise ValueError("native resume precision/scaler configuration differs")
+                if scaler is not None:
+                    scaler.load_state_dict(saved_scaler)
+            else:
+                for _ in range(global_step):
+                    scheduler.step()
 
             print(
                 f"[TaggerTrainer] Resuming from step {global_step} "
@@ -1367,7 +1425,7 @@ class TaggerTrainer:
             # call, then let the DataLoader re-generate the same permutation,
             # and simply skip the already-processed batches.
             # -------------------------------------------------------
-            if epoch == resume_epoch and epoch_start_rng_for_resume is not None:
+            if not native_run and epoch == resume_epoch and epoch_start_rng_for_resume is not None:
                 # Restore the saved epoch-start RNG so the DataLoader produces
                 # the same shuffle permutation as the interrupted run.
                 _restore_rng(epoch_start_rng_for_resume)
@@ -1388,7 +1446,23 @@ class TaggerTrainer:
             # PIL decode and NaFlex transforms release the GIL, so true CPU/GPU
             # parallelism is achievable.  With num_workers>0, the DataLoader
             # already handles prefetching via worker processes.
-            if epoch == resume_epoch and resume_batch_idx >= 0:
+            if native_run:
+                if epoch != resume_epoch:
+                    native_cursor = NativeReplayCursor()
+                _loader_for_epoch = native_epoch_loader(
+                    train_loader, seed=cfg["fovea_seed"], epoch=epoch,
+                    base_batches=native_cursor.base_batches,
+                )
+                if hasattr(train_loader, "rewrap"):
+                    _loader_for_epoch = train_loader.rewrap(
+                        _loader_for_epoch, base_step_offset=native_cursor.valid_base_batches,
+                        pending_injection=native_cursor.pending_injection,
+                    )
+                _batch_idx_offset = native_cursor.last_batch_idx + 1
+                if native_saved_runtime is not None:
+                    _restore_rng(native_saved_runtime["rng"])
+                    native_saved_runtime = None
+            elif epoch == resume_epoch and resume_batch_idx >= 0:
                 # Efficiently skip already-processed batches by reconstructing the
                 # same shuffle permutation (RNG was restored to epoch-start state above)
                 # and slicing off the first (resume_batch_idx + 1) batches.
@@ -1441,12 +1515,19 @@ class TaggerTrainer:
                     batch, is_injection_batch = _yielded, False
 
                 if batch is None:
+                    if native_run:
+                        native_cursor.complete(batch_idx, is_injection=is_injection_batch,
+                            readable=False, injection_interval=max(1, cfg.get("danbooru_injection_interval", 4)))
                     continue  # entire batch was corrupt images
 
                 pv, pam, ss, labels, loss_masks = batch
 
                 if self._stop_requested:
                     break
+
+                if native_run:
+                    native_cursor.complete(batch_idx, is_injection=is_injection_batch,
+                        readable=True, injection_interval=max(1, cfg.get("danbooru_injection_interval", 4)))
 
                 pv         = pv.to(device)
                 pam        = pam.to(device)
@@ -1533,8 +1614,11 @@ class TaggerTrainer:
                 # Generation requests set ``pause_event`` and stash an offload
                 # ``OffloadDecision`` in ``pending_decision``.  We perform the
                 # state movement here (in the trainer thread) so cross-thread
-                # ``.to()`` calls never happen.  Stop wins over pause.
-                if self._pause_event.is_set():
+                # ``.to()`` calls never happen.
+                if native_run:
+                    from .foveatag.run_control import wait_for_gpu_release
+                    wait_for_gpu_release(self._coordinator_handle)
+                if not native_run and self._pause_event.is_set():
                     decision = self._coordinator_handle.pending_decision
                     if decision is not None:
                         self._coordinator_handle.offload(decision)
@@ -1581,6 +1665,7 @@ class TaggerTrainer:
                         best_f1, best_threshold,
                         epoch_start_rng=epoch_start_rng,  # epoch-start RNG for exact replay
                         dataset_fingerprint=current_fingerprint,
+                        native_runtime=_native_runtime(batch_idx),
                     )
                     _save_optimizer_state(optimizer, self.output_dir, ckpt_name)
                     _save_artifacts(ckpt_name, epoch_boundary=False)
@@ -1670,6 +1755,7 @@ class TaggerTrainer:
                     best_f1, best_threshold,
                     epoch_start_rng=epoch_start_rng,
                     dataset_fingerprint=current_fingerprint,
+                    native_runtime=_native_runtime(batch_idx),
                 )
                 _save_optimizer_state(optimizer, self.output_dir, ckpt_name)
                 _save_artifacts(ckpt_name, epoch_boundary=False)
@@ -1681,6 +1767,7 @@ class TaggerTrainer:
                     best_f1, best_threshold,
                     epoch_start_rng=epoch_start_rng,
                     dataset_fingerprint=current_fingerprint,
+                    native_runtime=_native_runtime(batch_idx),
                 )
                 _save_optimizer_state(optimizer, self.output_dir, "latest")
                 _save_artifacts("latest", epoch_boundary=False)
@@ -1773,6 +1860,7 @@ class TaggerTrainer:
                     epoch + 1, global_step, -1,
                     best_f1, best_threshold,
                     dataset_fingerprint=current_fingerprint,
+                    native_runtime=_native_runtime(-1),
                 )
                 _save_optimizer_state(optimizer, self.output_dir, "latest")
 

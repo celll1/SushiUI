@@ -1134,7 +1134,8 @@ class DanbooruSampleBuffer:
             return None
 
         try:
-            inputs = self._processor(images=[img], return_tensors="pt")
+            options = {"sample_index": int(post["id"])} if getattr(self._processor, "is_native_fovea_processor", False) else {}
+            inputs = self._processor(images=[img], return_tensors="pt", **options)
         except Exception as exc:
             print(f"[DanbooruSampler] Processor error (post {post.get('id')}): {exc}")
             return None
@@ -1235,6 +1236,8 @@ class MixedDataLoader:
         # Current epoch index, set by the trainer before each epoch's iteration so
         # __iter__ can pass it to the buffer for mid-epoch-resume progress matching.
         self._current_epoch: Optional[int] = None
+        self._base_step_offset = 0
+        self._pending_injection = False
 
     def set_epoch(self, epoch: int) -> None:
         """Record the epoch index so the next __iter__ passes it to the buffer's
@@ -1258,7 +1261,8 @@ class MixedDataLoader:
     def __len__(self) -> int:
         return len(self.base_loader)
 
-    def rewrap(self, new_base_loader: DataLoader) -> "MixedDataLoader":
+    def rewrap(self, new_base_loader: DataLoader, *, base_step_offset=None,
+               pending_injection=None) -> "MixedDataLoader":
         """Return a new MixedDataLoader over *new_base_loader*, sharing this
         instance's Danbooru buffer, expander, vocabulary and injection settings.
 
@@ -1280,6 +1284,8 @@ class MixedDataLoader:
             alias_resolver=self._alias_resolver,
         )
         _re._current_epoch = self._current_epoch
+        _re._base_step_offset = self._base_step_offset if base_step_offset is None else int(base_step_offset)
+        _re._pending_injection = self._pending_injection if pending_injection is None else bool(pending_injection)
         return _re
 
     def _build_injection_batch(self) -> Optional[Tuple]:
@@ -1307,7 +1313,11 @@ class MixedDataLoader:
         # when it matches (otherwise it clears for a fresh cycle).
         if hasattr(self._buffer, "reset_download_cycle"):
             self._buffer.reset_download_cycle(self._current_epoch)
-        base_step = 0
+        base_step = self._base_step_offset
+        if self._pending_injection:
+            inj = self._build_injection_batch()
+            if inj is not None:
+                yield (inj, True)
         for batch in self.base_loader:
             if batch is None:
                 yield (None, False)

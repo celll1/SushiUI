@@ -127,3 +127,15 @@ def test_native_best_reservoir_does_not_overwrite_committed_latest(tmp_path):
     _save_ood_reference(Accumulator(), str(tmp_path), "best_f1", strict=True)
     assert latest.read_bytes() == b"committed latest"
     assert (tmp_path / "best_f1_ood_reservoir.npz").read_bytes() == b"new reservoir"
+
+
+def test_retention_removes_native_metrics_and_f1_companions(tmp_path):
+    from core.tagger.tagger_trainer import _prune_step_checkpoints
+    for name in ("step_000001", "step_000002"):
+        bundle(tmp_path, name, int(name.rsplit("_", 1)[1]))
+        for suffix in ("_metrics_runtime.npz", "_f1_runtime.npz"):
+            (tmp_path / f"{name}{suffix}").write_bytes(b"runtime")
+    _prune_step_checkpoints(str(tmp_path), 1)
+    assert not list(tmp_path.glob("step_000001*"))
+    assert (tmp_path / "step_000002_metrics_runtime.npz").is_file()
+    assert (tmp_path / "step_000002_f1_runtime.npz").is_file()

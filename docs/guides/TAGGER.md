@@ -108,7 +108,19 @@ UI verification remain pending; the frozen comparison uses its import endpoint.
 
 OOD reservoirs now retain their owned sampling RNG and capacity. Native restore
 is strict; legacy reservoir files without RNG remain readable in the legacy
-path. This does not replace exact training-histogram state persistence.
+path.
+
+Native checkpoints save exact current/previous/previous-previous histograms and
+exposure counters in `_metrics_runtime.npz`, separately from inference metrics.
+Epoch-boundary snapshots represent the state after rotation without mutating the
+live accumulator. Rolling F1 buffers and learned thresholds use `_f1_runtime.npz`;
+native step saves occur after periodic F1/threshold updates. Runtime sidecars are
+atomic, hash-bound to resume bundles and included in retention cleanup.
+Exact metrics are persisted whenever saving metrics, rolling F1 or exposure
+tracking requires them. Masked labels do not count as observed negatives in
+native histograms, rolling F1 or validation. Vocabulary reorders and one-source
+renames align rows; new or multi-source-merged rows restart because their joint
+observations cannot be reconstructed from marginal histograms.
 
 CPU contract tests live under `backend/tests/` for response selection, head
 growth, optimizer migration, validation collection, browser sidecars, and

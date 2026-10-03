@@ -739,6 +739,8 @@ def _prune_step_checkpoints(output_dir: str, keep_last_n: int) -> None:
             "_optimizer.pt",
             "_vocabulary.json",
             "_tag_metrics.npz",
+            "_metrics_runtime.npz",
+            "_f1_runtime.npz",
             "_ood_ref.npz",
             "_export.safetensors",
             "_export_metadata.json",
@@ -1233,6 +1235,7 @@ class TaggerTrainer:
         # Per-tag threshold metrics accumulator
         from core.tagger.tag_metrics_accumulator import TagMetricsAccumulator
         _save_tag_metrics_enabled = bool(cfg.get("save_tag_metrics", True))
+        _metrics_runtime_needed = _save_tag_metrics_enabled or _n2_eval > 0 or _train_count_on
         _hard_lo = float(cfg.get("hard_rate_lo", 0.25))
         _hard_hi = float(cfg.get("hard_rate_hi", 0.75))
         _calib_method         = str(cfg.get("calib_method", "jeffreys"))
@@ -1263,6 +1266,16 @@ class TaggerTrainer:
                 save_ood_reference=_save_ood_ref_enabled,
                 strict=cfg.get("architecture") == "foveatag",
             )
+            if cfg.get("architecture") == "foveatag" and _metrics_runtime_needed:
+                from .foveatag.metrics_runtime import save_metrics_runtime
+                save_metrics_runtime(_tag_metrics_acc,
+                    os.path.join(self.output_dir, f"{name}_metrics_runtime.npz"),
+                    step=global_step, epoch_boundary=epoch_boundary)
+            if cfg.get("architecture") == "foveatag" and _n2_eval > 0:
+                from .foveatag.metrics_runtime import save_f1_runtime
+                save_f1_runtime(_train_f1_buffer,
+                    os.path.join(self.output_dir, f"{name}_f1_runtime.npz"),
+                    step=global_step, threshold=_f1_threshold, vocab_size=self.vocabulary.num_tags)
 
         # Training state
         best_f1         = 0.0
@@ -1301,6 +1314,10 @@ class TaggerTrainer:
             if native_run:
                 from .foveatag.shared_bundle import commit_native_bundle
                 optional = []
+                if _metrics_runtime_needed:
+                    optional.append("_metrics_runtime.npz")
+                if _n2_eval > 0:
+                    optional.append("_f1_runtime.npz")
                 if _save_tag_metrics_enabled and _tag_metrics_acc.has_data:
                     optional.append("_tag_metrics.npz")
                 if _save_ood_ref_enabled and _ood_emb_acc.n_seen >= 10:
@@ -1308,6 +1325,21 @@ class TaggerTrainer:
                 if model.training_method == "lora" and checkpoint_save_mode != "full":
                     optional.extend(("_export.safetensors", "_export_metadata.json"))
                 commit_native_bundle(self.output_dir, name, optional_suffixes=optional)
+
+        def _save_step_checkpoint():
+            ckpt_name = f"step_{global_step:06d}"
+            metadata = self._make_metadata(epoch, global_step, best_f1, best_threshold)
+            ckpt_path = _save_model_checkpoint(model, self.output_dir, ckpt_name, metadata, checkpoint_save_mode)
+            _save_training_state(self.output_dir, ckpt_name, epoch, global_step, batch_idx,
+                best_f1, best_threshold, epoch_start_rng=epoch_start_rng,
+                dataset_fingerprint=current_fingerprint, native_runtime=_native_runtime(batch_idx))
+            _save_optimizer_state(optimizer, self.output_dir, ckpt_name)
+            _save_artifacts(ckpt_name, epoch_boundary=False)
+            _commit_native(ckpt_name)
+            if keep_last_n_checkpoints > 0:
+                _prune_step_checkpoints(self.output_dir, keep_last_n_checkpoints)
+            self._emit("checkpoint", {"name": ckpt_name, "step": global_step,
+                                      "epoch": epoch, "path": ckpt_path})
 
         # Compute the *current* dataset fingerprint up-front so we can both
         # (a) compare it to the saved one to detect mid-run dataset changes
@@ -1383,20 +1415,41 @@ class TaggerTrainer:
                 elif native_run:
                     raise ValueError("native optimizer state could not be restored")
 
-            # Restore tag metrics accumulator from latest_tag_metrics.npz so
-            # histogram data is not discarded across resume boundaries.
-            if _save_tag_metrics_enabled:
+            if native_run and _n2_eval > 0:
+                from .foveatag.metrics_runtime import restore_f1_runtime
+                runtime_name = f"{resume_ckpt_name}_f1_runtime.npz"
+                if runtime_name not in native_bundle_files:
+                    raise ValueError("native resume lacks rolling F1 runtime")
+                _f1_threshold = restore_f1_runtime(_train_f1_buffer,
+                    os.path.join(self.output_dir, runtime_name), step=global_step,
+                    vocab_size=self.vocabulary.num_tags,
+                    saved_vocab=(self.old_vocabulary.tag_to_idx if self.old_vocabulary is not None else None),
+                    current_vocab=(self.vocabulary.tag_to_idx if self.old_vocabulary is not None else None),
+                    lineage=self.vocab_lineage)
+
+            # Native training slots are distinct from merged inference calibration.
+            if _save_tag_metrics_enabled or (native_run and _metrics_runtime_needed):
                 metrics_name = resume_ckpt_name if native_run and resume_ckpt_name else "latest"
                 _metrics_npz = os.path.join(self.output_dir, f"{metrics_name}_tag_metrics.npz")
-                restored = (
-                    _tag_metrics_acc.restore_from_npz(_metrics_npz)
-                    if native_bundle_files is None or os.path.basename(_metrics_npz) in native_bundle_files
-                    else False
-                )
+                if native_run:
+                    from .foveatag.metrics_runtime import restore_metrics_runtime
+                    runtime_name = f"{metrics_name}_metrics_runtime.npz"
+                    if runtime_name not in native_bundle_files:
+                        raise ValueError("native resume lacks exact training metric runtime")
+                    alignment = restore_metrics_runtime(_tag_metrics_acc,
+                        os.path.join(self.output_dir, runtime_name), step=global_step,
+                        saved_vocab=(self.old_vocabulary.tag_to_idx if self.old_vocabulary is not None else None),
+                        current_vocab=(self.vocabulary.tag_to_idx if self.old_vocabulary is not None else None),
+                        lineage=self.vocab_lineage)
+                    print(f"[TaggerTrainer] Exact metric runtime restored; reset rows={alignment['reset_rows']}")
+                    restored = True
+                else:
+                    restored = _tag_metrics_acc.restore_from_npz(_metrics_npz)
                 if restored:
+                    restored_name = runtime_name if native_run else "latest_tag_metrics.npz"
                     print(
                         f"[TaggerTrainer] Tag metrics accumulator restored from "
-                        f"latest_tag_metrics.npz "
+                        f"{restored_name} "
                         f"(prev={_tag_metrics_acc.total_images_prev:,}, "
                         f"pp={_tag_metrics_acc.total_images_pp:,}, "
                         f"all={_tag_metrics_acc.total_images_all:,})"
@@ -1618,7 +1671,7 @@ class TaggerTrainer:
 
                 # Capture sigmoid probs for training F1 rolling buffer (fp16, CPU).
                 # Also needed when train-count augmentation is on (tag_count update).
-                if _n2_eval > 0 or _train_count_on:
+                if _n2_eval > 0 or _train_count_on or (native_run and _save_tag_metrics_enabled):
                     _step_probs  = torch.sigmoid(logits.detach()).to(torch.float16).cpu()
                     _step_labels = labels.detach().bool().cpu()
 
@@ -1660,9 +1713,17 @@ class TaggerTrainer:
                 # Append to training F1 rolling buffer (F1 only); accumulate
                 # tag_count whenever F1 metrics OR train-count augmentation is on.
                 if _n2_eval > 0:
-                    _train_f1_buffer.append((_step_probs, _step_labels))
-                if _n2_eval > 0 or _train_count_on:
-                    _tag_metrics_acc.update(_step_probs, _step_labels)
+                    if native_run:
+                        from .foveatag.metrics_runtime import masked_metric_inputs
+                        _train_f1_buffer.append(masked_metric_inputs(_step_probs, _step_labels, loss_masks.detach().cpu()))
+                    else:
+                        _train_f1_buffer.append((_step_probs, _step_labels))
+                if _n2_eval > 0 or _train_count_on or (native_run and _save_tag_metrics_enabled):
+                    if native_run:
+                        _tag_metrics_acc.update(_step_probs, _step_labels,
+                            observation_mask=(loss_masks.detach() > 0).cpu())
+                    else:
+                        _tag_metrics_acc.update(_step_probs, _step_labels)
 
                 # ----- GPU-coordinator pause check (batch boundary) ----------
                 # Generation requests set ``pause_event`` and stash an offload
@@ -1709,29 +1770,8 @@ class TaggerTrainer:
                         _save_danbooru_runtime_state(_db_buf, self.output_dir, epoch)
 
                 # Step-based checkpoint (model + state + optimizer + vocab)
-                if save_every_n_steps > 0 and global_step % save_every_n_steps == 0:
-                    ckpt_name = f"step_{global_step:06d}"
-                    metadata  = self._make_metadata(epoch, global_step, best_f1, best_threshold)
-                    ckpt_path = _save_model_checkpoint(model, self.output_dir, ckpt_name, metadata, checkpoint_save_mode)
-                    _save_training_state(
-                        self.output_dir, ckpt_name,
-                        epoch, global_step, batch_idx,
-                        best_f1, best_threshold,
-                        epoch_start_rng=epoch_start_rng,  # epoch-start RNG for exact replay
-                        dataset_fingerprint=current_fingerprint,
-                        native_runtime=_native_runtime(batch_idx),
-                    )
-                    _save_optimizer_state(optimizer, self.output_dir, ckpt_name)
-                    _save_artifacts(ckpt_name, epoch_boundary=False)
-                    _commit_native(ckpt_name)
-                    if keep_last_n_checkpoints > 0:
-                        _prune_step_checkpoints(self.output_dir, keep_last_n_checkpoints)
-                    self._emit("checkpoint", {
-                        "name": ckpt_name,
-                        "step": global_step,
-                        "epoch": epoch,
-                        "path": ckpt_path,
-                    })
+                if not native_run and save_every_n_steps > 0 and global_step % save_every_n_steps == 0:
+                    _save_step_checkpoint()
 
                 # Training F1 periodic evaluation (N2 steps) and threshold search (N1 steps)
                 if _n2_eval > 0 and global_step > 0 and global_step % _n2_eval == 0 \
@@ -1780,6 +1820,9 @@ class TaggerTrainer:
                         "fp_fn_scatter": _scatter_data,
                     })
                     del _buf_p, _buf_l
+
+                if native_run and save_every_n_steps > 0 and global_step % save_every_n_steps == 0:
+                    _save_step_checkpoint()
 
             if self._stop_requested:
                 # Release the DataLoader iterator early so worker processes
@@ -2056,7 +2099,7 @@ class TaggerTrainer:
                     break
                 if batch is None:
                     continue
-                pv, pam, ss, labels, _ = batch
+                pv, pam, ss, labels, loss_masks = batch
                 pv  = pv.to(device)
                 pam = pam.to(device)
                 ss  = ss.to(device)
@@ -2070,7 +2113,14 @@ class TaggerTrainer:
                     labels = torch.nn.functional.pad(
                         labels, (0, logits.shape[1] - labels.shape[1]), value=0.0
                     )
-                all_preds.append(torch.sigmoid(logits).to(torch.float16).cpu())
+                probabilities = torch.sigmoid(logits).to(torch.float16).cpu()
+                if getattr(model, "architecture", None) == "foveatag":
+                    from .foveatag.metrics_runtime import masked_metric_inputs
+                    if loss_masks.shape[1] < logits.shape[1]:
+                        loss_masks = torch.nn.functional.pad(loss_masks,
+                            (0, logits.shape[1] - loss_masks.shape[1]), value=0.0)
+                    probabilities, labels = masked_metric_inputs(probabilities, labels.cpu(), loss_masks.cpu())
+                all_preds.append(probabilities)
                 all_labels.append(labels.to(torch.float16))
         if not all_preds:
             raise RuntimeError("Validation produced no readable batches")

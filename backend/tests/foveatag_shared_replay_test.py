@@ -143,7 +143,10 @@ def test_native_rng_roundtrip_includes_numpy_and_current_cuda_stream(monkeypatch
 
 
 @pytest.mark.parametrize("method", ["full", "lora"])
-def test_actual_common_loop_stop_resume_matches_uninterrupted(tmp_path, method):
+@pytest.mark.parametrize("metrics_enabled", [False, True])
+@pytest.mark.parametrize("f1_enabled", [False, True])
+@pytest.mark.parametrize("exposure_enabled", [False, True])
+def test_actual_common_loop_stop_resume_matches_uninterrupted(tmp_path, method, metrics_enabled, f1_enabled, exposure_enabled):
     from core.tagger.tagger_trainer import TaggerTrainer, _load_training_state
     from core.tagger.tag_vocabulary import TagVocabulary
     from core.gpu_coordinator import gpu_coordinator
@@ -157,13 +160,16 @@ def test_actual_common_loop_stop_resume_matches_uninterrupted(tmp_path, method):
         fovea_feature_dim=16, fovea_overview_size=32, fovea_local_size=32, fovea_local_views=2,
         epochs=1, batch_size=2, num_workers=0, optimizer="adamw", mixed_precision="fp32",
         gradient_checkpointing=False, head_lr_multiplier=1., warmup_steps=2,
-        save_every_n_steps=1, keep_last_n_checkpoints=0, save_tag_metrics=False, save_ood_ref=False,
-        train_f1_eval_every_n_steps=0, train_f1_threshold_search_every_n_steps=0)
+        save_every_n_steps=1, keep_last_n_checkpoints=0, save_tag_metrics=metrics_enabled, save_ood_reference=False,
+        train_f1_eval_every_n_steps=1 if f1_enabled else 0,
+        train_f1_threshold_search_every_n_steps=2 if f1_enabled else 0,
+        danbooru_train_count_enable=exposure_enabled)
     vocabulary = TagVocabulary()
     vocabulary.tag_to_idx = {f"anonymous-{i}": i for i in range(5)}
     vocabulary.idx_to_tag = {i: name for name, i in vocabulary.tag_to_idx.items()}
     vocabulary.tag_to_category = {name: "General" for name in vocabulary.tag_to_idx}
 
+    traces = {}
     def run(directory, *, stop=False, resume=False):
         torch.manual_seed(15)
         random.seed(15)
@@ -171,18 +177,23 @@ def test_actual_common_loop_stop_resume_matches_uninterrupted(tmp_path, method):
         source = SyntheticNativeDataset()
         loader = DataLoader(source, batch_size=2, collate_fn=tagger_collate_fn)
         trainer = None
+        events = []
         def callback(run_id, event, values):
+            if event == "train_f1":
+                events.append({key: values[key] for key in ("step", "train_f1", "train_precision", "train_recall", "threshold")})
             if stop and event == "checkpoint" and values.get("step") == 2:
                 trainer.stop()
         trainer = TaggerTrainer("synthetic", config, vocabulary, str(directory), progress_callback=callback)
-        state = _load_training_state(str(directory), "latest") if resume else None
+        resume_name = "step_000002" if f1_enabled else "latest"
+        state = _load_training_state(str(directory), resume_name) if resume else None
         try:
             trainer.train(loader, None, source.processor, resume_state=state,
-                          resume_ckpt_name="latest" if resume else None)
+                          resume_ckpt_name=resume_name if resume else None)
             result = {key: value.detach().clone() for key, value in trainer.model.state_dict().items()}
         finally:
             gpu_coordinator.unregister_trainer(trainer._coordinator_handle)
             trainer._coordinator_handle.detach()
+        traces[(directory.name, resume)] = events
         return result
 
     expected = run(tmp_path / "continuous")
@@ -192,5 +203,20 @@ def test_actual_common_loop_stop_resume_matches_uninterrupted(tmp_path, method):
     assert saved["batch_idx"] == 1
     assert saved["native_runtime"]["cursor"]["base_batches"] == 2
     actual = run(tmp_path / "interrupted", resume=True)
+    if f1_enabled:
+        assert traces[("continuous", False)] == traces[("interrupted", False)] + traces[("interrupted", True)]
+    if metrics_enabled or f1_enabled or exposure_enabled:
+        from core.tagger.tag_metrics_accumulator import TagMetricsAccumulator
+        from core.tagger.foveatag.metrics_runtime import restore_metrics_runtime, HISTOGRAMS, VECTORS, COUNTERS
+        metrics = []
+        for directory in ("continuous", "interrupted"):
+            value = TagMetricsAccumulator(5)
+            state = _load_training_state(str(tmp_path / directory), "latest")
+            restore_metrics_runtime(value, tmp_path / directory / "latest_metrics_runtime.npz", step=state["global_step"])
+            metrics.append(value)
+        for key in HISTOGRAMS + VECTORS:
+            np.testing.assert_array_equal(getattr(metrics[0], key), getattr(metrics[1], key))
+        for key in COUNTERS:
+            assert getattr(metrics[0], key) == getattr(metrics[1], key)
     for key in expected:
         torch.testing.assert_close(expected[key], actual[key], rtol=0, atol=0)

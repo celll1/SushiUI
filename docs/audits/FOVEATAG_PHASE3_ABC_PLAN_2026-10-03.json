@@ -59,6 +59,12 @@
     "budget_policy": "Identical shared initialization, sampling seed, data, schedule, and sample/update budget across all three branches; no quality-driven budget change within this comparison."
   },
   "evaluation": {
+    "user_facing_reporting": {
+      "individual_tag_names_or_results": "Do not display in chat, tables, or user-facing summaries.",
+      "epoch_validation": "Report loss alongside macro precision, macro recall, macro F1, chosen threshold, sample count, and active-tag count. Best checkpoint selection already uses macro F1, not loss.",
+      "final_comparison": "Report aggregate mAP, F1, matched-FPR recall, and timing by benchmark, resolution, and tag group; do not display individual tags. Preserve the partially curated photo-label limitations.",
+      "interpretation": "Precision, recall, F1 and AP do not count true negatives as correct detections. Threshold-selected validation F1 is for model selection; benchmark comparisons provide separate held-out evidence."
+    },
     "benchmarks": [
       {
         "name": "ground",

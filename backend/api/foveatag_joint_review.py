@@ -8,6 +8,7 @@ import math
 from pathlib import Path
 import threading
 import uuid
+from types import SimpleNamespace
 
 from fastapi import HTTPException
 from api.foveatag_training import _lifecycle_lock
@@ -75,14 +76,15 @@ def register_joint_review(request, db):
         return run.to_list_dict()
 
 
-def start_joint_review(run, db, threads, callback_factory):
+def start_joint_review(run, db, threads, callback_factory, *, continuous=False):
     from database import TrainingSessionLocal
     from database.models import TaggerTrainingRun
     from core.model_state_coordinator import model_state_coordinator, ModelStateBusyError
     from core.tagger.foveatag.run_control import FoveaRunControl
     from core.tagger.foveatag.direct_joint import run_direct_joint
-    from api.tagger_diagnostics import schedule
+    from api.tagger_diagnostics import training_due, schedule_training
     run_id, plan = run.run_id, run.config["joint_review"]
+    diagnostic_run = SimpleNamespace(run_id=run_id, output_dir=run.output_dir, config=run.config)
     activity = "FoveaTag joint review " + run_id
     with _lifecycle_lock:
         if run.status in ("running", "starting", "completed") or run_id in threads:
@@ -117,13 +119,18 @@ def start_joint_review(run, db, threads, callback_factory):
                     row.best_f1, row.best_threshold = saved["best_validation_f1"], saved["best_threshold"]
                     del saved
                 session.commit()
-                if event == "checkpoint_saved":
-                    try:
-                        schedule(row)
-                    except Exception:
-                        pass
             finally:
                 session.close()
+
+        def diagnostic(snapshot):
+            try:
+                schedule_training(diagnostic_run, snapshot)
+            except Exception as exc:
+                from api.tagger_diagnostics import directory, write_json
+                try:
+                    write_json(directory(diagnostic_run) / "error.json", {"error": f"Training-step diagnostic failed ({type(exc).__name__})"})
+                except OSError:
+                    pass
 
         def worker():
             session = TrainingSessionLocal()
@@ -133,16 +140,15 @@ def start_joint_review(run, db, threads, callback_factory):
                 session.commit()
                 checkpoint = Path(row.output_dir) / "latest.pt"
                 result = run_direct_joint(plan, progress_callback=emit, run_control=control,
-                    resume=checkpoint if checkpoint.exists() else None, segment_steps=plan["review_steps"])
+                    resume=checkpoint if checkpoint.exists() else None,
+                    segment_steps=None if continuous else plan["review_steps"],
+                    diagnostic_due=lambda step: training_due(diagnostic_run, step), diagnostic_callback=diagnostic)
                 session.expire_all()
                 row = session.query(TaggerTrainingRun).filter_by(run_id=run_id).one()
                 row.status = "completed" if result["status"] == "complete" else "stopped"
                 row.status_message = "Saved routed checkpoint; awaiting owner visual review"
                 row.current_step = result["global_step"]
                 session.commit()
-                from api.tagger_diagnostics import status as diagnostic_status
-                if diagnostic_status(row)["settings"]["enabled"] and checkpoint.exists():
-                    schedule(row, force=True)
             except Exception as exc:
                 session.rollback()
                 row = session.query(TaggerTrainingRun).filter_by(run_id=run_id).one()

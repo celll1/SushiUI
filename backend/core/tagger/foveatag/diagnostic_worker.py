@@ -1,4 +1,4 @@
-"""Render anonymous General-only panels without touching training RNG or CUDA."""
+"""Render anonymous step-native or legacy panels without training RNG or CUDA."""
 from __future__ import annotations
 
 import json
@@ -26,6 +26,76 @@ def probability_groups(probs, positive, known, threshold):
     }
 
 
+def render_training(job, request):
+    import torch
+    from PIL import Image
+    import numpy as np
+    import matplotlib
+    matplotlib.use("Agg")
+    from matplotlib.figure import Figure
+    from matplotlib.patches import Rectangle
+    snapshot = torch.load(job / "training_snapshot.pt", map_location="cpu", weights_only=False)
+    if snapshot.get("prediction_origin") != "training_forward_before_optimizer_update":
+        raise ValueError("Actual training predictions are required")
+    source = snapshot["source"]
+    with Image.open(source["source_path"]) as original:
+        if original.width * original.height > request["arguments"]["max_source_pixels"]:
+            raise ValueError("Training source exceeds input cap")
+        image = original.convert("RGB")
+        image.load()
+    probs, positive, known = (snapshot[key].numpy() for key in ("probabilities", "positive", "known"))
+    threshold = float(snapshot["threshold"])
+    groups = probability_groups(probs, positive, known, threshold)
+    counts = {key: int(mask.sum()) for key, mask in groups.items()}
+    rows = []
+    for key, color in (("TP", "green"), ("FP", "red"), ("FN", "blue")):
+        indices = np.flatnonzero(groups[key])
+        indices = indices[np.argsort(-probs[indices], kind="stable")][:100]
+        rows.extend((f"{key} {rank + 1:03d}", float(probs[index]), color) for rank, index in enumerate(indices))
+    fig = Figure(figsize=(15, 10))
+    axes = fig.subplots(1, 2)
+    axes[0].imshow(image)
+    axes[0].axis("off")
+    geometry = []
+    for index, (box, random_slot) in enumerate(zip(snapshot["boxes"].tolist(), snapshot["random_slots"].tolist())):
+        cx, cy, width, height = box
+        x, y = (cx - width / 2) * image.width, (cy - height / 2) * image.height
+        width, height = width * image.width, height * image.height
+        color = f"C{index % 10}"
+        axes[0].add_patch(Rectangle((x, y), width, height, fill=False, linewidth=2,
+            edgecolor=color, linestyle="--" if random_slot else "-"))
+        scale = width / snapshot["local_size"]
+        axes[0].text(x, y, f"L{index + 1}: {'exploration' if random_slot else 'router'}; {scale:.2f} source px/canvas px", color=color, fontsize=8)
+        geometry.append({"x": x, "y": y, "width": width, "height": height,
+            "random_exploration": random_slot, "source_pixels_per_canvas_pixel": scale})
+    axes[0].set_xlim(0, image.width)
+    axes[0].set_ylim(image.height, 0)
+    axes[0].set_title("Actual step training input (no rating filter)\nSolid: router selection; dashed: random exploration", fontsize=10)
+    axes[1].barh(np.arange(len(rows)), [row[1] for row in rows], color=[row[2] for row in rows])
+    axes[1].set_yticks(np.arange(len(rows)), [row[0] for row in rows], fontsize=max(3, min(8, 650 / max(1, len(rows)))))
+    axes[1].set_xlim(0, 1)
+    axes[1].axvline(threshold, color="black", linestyle="--")
+    axes[1].set_title(" / ".join(f"{key}={count}" for key, count in counts.items()))
+    axes[1].set_xlabel("Training probabilities; top 100 per TP / FP / FN; TN count only")
+    step = int(snapshot["step"])
+    fig.suptitle(f"FoveaTag training forward / step {step}")
+    fig.text(.5, .02, "Before optimizer update; actual selected training views. Anonymous ranks; no tag names/IDs. Annotation-based counts.", ha="center", fontsize=8)
+    fig.tight_layout(rect=(0, .04, 1, .96))
+    root = job.parent
+    name = f"training_routed_{step}_{uuid.uuid4().hex[:8]}.png"
+    temporary = root / (name + ".tmp")
+    fig.savefig(temporary, format="png", dpi=120)
+    os.replace(temporary, root / name)
+    index_path = root / "index.json"
+    previous = json.loads(index_path.read_text()) if index_path.is_file() else {"items": []}
+    item = {"filename": name, "mode": "routed_training", "step": step, "epoch": snapshot["epoch"],
+        "catalog_step": step, "counts": counts, "threshold": threshold,
+        "sample_id": source["source_index"], "native_focus_used": True, "learned_routing": True,
+        "focus_preview": False, "local_boxes": geometry, "prediction_origin": snapshot["prediction_origin"]}
+    atomic_json(index_path, {"items": [item, *previous["items"]], "error": None})
+    assert not torch.cuda.is_initialized()
+
+
 def render(job):
     import torch
     torch.cuda.get_device_capability = lambda *a, **k: (8, 9)
@@ -46,6 +116,9 @@ def render(job):
     from matplotlib.patches import Rectangle
 
     request = json.loads((job / "request.json").read_text())
+    if request.get("training_snapshot"):
+        render_training(job, request)
+        return
     comparison = Path(request["comparison"])
     args = request["arguments"]
     index_path = job.parent / "index.json"
@@ -181,7 +254,7 @@ def render(job):
         "catalog_step": request["catalog_step"], "counts": counts, "threshold": threshold,
         "sample_id": item_id, "native_focus_used": mode in ("source_native", "routed"), "learned_routing": joint,
         "focus_preview": preview, "local_boxes": geometry}
-    atomic_json(index_path, {"items": [item, *previous["items"]][:12], "error": None})
+    atomic_json(index_path, {"items": [item, *previous["items"]], "error": None})
     assert not torch.cuda.is_initialized()
 
 

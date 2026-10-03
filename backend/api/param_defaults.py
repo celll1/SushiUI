@@ -3705,6 +3705,8 @@ TAGGER_DIAGNOSTIC_DEFAULTS: Dict[str, Any] = {
     "focus_preview": False,
 }
 
+TAGGER_TRAINING_START_DEFAULTS: Dict[str, Any] = {"continuous": False}
+
 TAGGER_JOINT_REVIEW_DEFAULTS: Dict[str, Any] = {
     "batch_size": 8, "workers": 8, "epochs": 10, "epoch_samples": 240000,
     "candidate_count": 16, "selection_budget": 4, "random_count": 1,

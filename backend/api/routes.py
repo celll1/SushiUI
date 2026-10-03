@@ -51,7 +51,7 @@ from api.param_defaults import (
     UPSCALE_DEFAULTS, TXT2VID_DEFAULTS, IMG2VID_DEFAULTS, REF2VID_DEFAULTS,
     TXT2AUD_DEFAULTS, AUD2AUD_DEFAULTS, YUE2_REQUEST_DEFAULT,
     OUTPAINT_AUDIO_DEFAULTS,
-    TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS, TAGGER_DIAGNOSTIC_DEFAULTS, TAGGER_JOINT_REVIEW_DEFAULTS, VAE_TRAINING_DEFAULTS,
+    TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS, TAGGER_DIAGNOSTIC_DEFAULTS, TAGGER_JOINT_REVIEW_DEFAULTS, TAGGER_TRAINING_START_DEFAULTS, VAE_TRAINING_DEFAULTS,
     DATASET_DEFAULTS,
     LR_RETARGET_DEFAULTS,
     LR_PREVIEW_DEFAULTS,
@@ -21559,7 +21559,8 @@ def get_tagger_training_vocabulary(run_id: str, training_db: Session = Depends(g
 
 
 @router.post("/tagger-training/runs/{run_id}/start")
-async def start_tagger_training_run(run_id: str, training_db: Session = Depends(get_training_db)):
+async def start_tagger_training_run(run_id: str, training_db: Session = Depends(get_training_db),
+        continuous: bool = TAGGER_TRAINING_START_DEFAULTS["continuous"]):
     """Start or resume a tagger training run in a background thread.
 
     When ``config.rescan_before_training`` is True, runs a pre-flight
@@ -21572,12 +21573,14 @@ async def start_tagger_training_run(run_id: str, training_db: Session = Depends(
     run = training_db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Tagger training run not found")
+    if continuous and (run.config or {}).get("architecture") != "foveatag_joint_review":
+        raise HTTPException(422, "Continuous override is supported only for FoveaTag joint-review runs")
     if (run.config or {}).get("architecture") == "foveatag_phase3":
         from api.foveatag_training import start_experiment
         return start_experiment(run, training_db, _tagger_training_threads, _make_tagger_progress_callback)
     if (run.config or {}).get("architecture") == "foveatag_joint_review":
         from api.foveatag_joint_review import start_joint_review
-        return start_joint_review(run, training_db, _tagger_training_threads, _make_tagger_progress_callback)
+        return start_joint_review(run, training_db, _tagger_training_threads, _make_tagger_progress_callback, continuous=continuous)
     if run.status in ("running", "starting"):
         raise HTTPException(status_code=400, detail="Run is already running")
 
@@ -21977,7 +21980,7 @@ def create_tagger_diagnostic(run_id: str, training_db: Session = Depends(get_tra
         run = _diagnostic_run(run_id, training_db)
         training_db.refresh(run)
         if run.status in ("running", "starting"):
-            raise HTTPException(409, "Manual generation requires a paused run; periodic generation runs at checkpoint boundaries")
+            raise HTTPException(409, "Manual generation requires a paused run; periodic generation runs at training-step intervals")
         try:
             schedule(run, force=True)
             return status(run)

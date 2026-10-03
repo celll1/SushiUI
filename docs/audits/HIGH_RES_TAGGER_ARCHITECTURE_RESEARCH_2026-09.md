@@ -44,16 +44,22 @@ An untrained router can be wrong; retaining exploration prevents exclusive
 dependence on its early choices. Oracle frequency and gradient balance remain
 measured optimization questions, not evidence of useful learned focus.
 
-Each start initially runs at most 1,000 updates, saves model/router/optimizer/
-scheduler/RNG/offset, then stops for owner review. Checkpoints are saved every
-250 updates. The owner can continue the same new run after review. The review
-budget is not a quality gate or a claim that 1,000 steps suffice for convergence.
+Initial bounded starts used 1,000 updates per review segment. The owner now
+requests continuous training and step-native diagnostics. The monitor resumes
+with `continuous=true`, without a review-segment stop. Explicit stop and epoch
+completion still save model/router/optimizer/scheduler/RNG/offset; periodic
+checkpoints remain every 250 updates. Review is not requested during training.
 
-Optional CPU diagnostics run the actual learned-router inference path from a
-saved joint checkpoint. A single source image panel overlays the selected
-native regions and is paired with anonymous TP/FP/FN probabilities; TN is only
-a count. No individual tag names or IDs are published. The first annotated
-Rating:General example is pinned; missing labels remain a limitation. This
+Optional diagnostics capture an actual training forward at global-step multiples
+of the user-selected interval: an image without a rating filter from that
+step's batch, its pre-update probabilities, supervision mask and selected native
+regions. Router slots and retained random exploration slots are distinguished.
+Rendering runs on CPU without a second model forward. Unavailable source metadata
+or a busy renderer is recorded as skipped, never replaced with a fixed sample.
+TP/FP/FN ranks are anonymous; TN is only a count. No individual tag names or IDs
+are published. The frontend retains history and provides older/newer and step
+selection without polling away from the selected panel. Missing labels remain
+a limitation. This
 workflow explicitly enables diagnostics, but the owner can disable them.
 Generated diagnostic images are not opened or read by the agent.
 

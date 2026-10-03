@@ -9330,9 +9330,9 @@ export const getTaggerTrainingRun = async (runId: string): Promise<TaggerTrainin
 };
 
 export const startTaggerTrainingRun = async (
-  runId: string
+  runId: string, options?: {continuous: boolean}
 ): Promise<{ message: string; run: TaggerTrainingRun }> => {
-  const response = await api.post(`/tagger-training/runs/${runId}/start`);
+  const response = await api.post(`/tagger-training/runs/${runId}/start`, undefined, { params: options });
   return response.data;
 };
 
@@ -9711,10 +9711,12 @@ export interface TaggerDiagnosticStatus {
   settings: TaggerDiagnosticSettings;
   busy: boolean;
   error: string | null;
+  attempts?: Array<{step: number; status: "scheduled" | "skipped"; reason: string | null}>;
   items: Array<{
     filename: string; mode: string; step: number; epoch: number;
     counts: Record<"TP" | "FP" | "FN" | "TN", number>;
     native_focus_used: boolean; focus_preview: boolean;
+    prediction_origin?: string;
   }>;
 }
 export const getTaggerDiagnostics = async (runId: string): Promise<TaggerDiagnosticStatus> =>

@@ -8251,7 +8251,8 @@ paths:
     parameters:
       - {name: run_id, in: path, required: true, schema: {type: string}}
     get:
-      summary: Get optional anonymous General-only FoveaTag diagnostics
+      summary: Get optional anonymous FoveaTag diagnostic history
+      description: Joint runs publish the actual training-step forward and selected views without a rating filter; legacy comparison panels use a fixed General sample. All published history is retained. Attempts lists skipped interval steps.
       responses:
         '200':
           description: Settings, published panels, worker status and sanitized error
@@ -8271,14 +8272,14 @@ paths:
               additionalProperties: false
               properties:
                 enabled: {type: boolean, default: false, example: false, description: Opt-in periodic generation}
-                interval_steps: {type: integer, minimum: 1000, maximum: 1000000, default: 15000, example: 15000, description: Minimum catalog-step interval; evaluated at saved checkpoints}
+                interval_steps: {type: integer, minimum: 1000, maximum: 1000000, default: 15000, example: 15000, description: Joint runs capture actual training forwards at global-step multiples of this interval with no rating filter. Legacy comparisons evaluate a minimum interval at checkpoints.}
                 focus_preview: {type: boolean, default: false, example: false, description: Show clearly marked C-policy preview for A/B; never claim it was used}
       responses:
         '200': {description: Updated diagnostic status}
         '404': {description: Run not found}
         '422': {description: Invalid settings or unsupported architecture}
     post:
-      summary: Generate one checkpoint-based panel regardless of periodic enablement
+      summary: Render a captured training-step panel or a legacy checkpoint panel
       responses:
         '200': {description: Current status; busy worker is not duplicated}
         '409': {description: Manual generation requires a paused run}
@@ -8292,7 +8293,7 @@ paths:
         - {name: name, in: path, required: true, schema: {type: string}}
       responses:
         '200':
-          description: Published General-only panel
+          description: Published anonymous panel (joint training has no rating filter)
           content:
             image/png:
               schema: {type: string, format: binary}
@@ -8503,6 +8504,12 @@ paths:
           required: true
           schema:
             type: string
+        - name: continuous
+          in: query
+          required: false
+          schema: {type: boolean, default: false}
+          description: Joint-review runs only. If true, resume until configured epochs finish or explicitly stopped, without the review_steps segment stop. Other architectures reject true.
+          example: true
       responses:
         '200':
           description: Tagger training started

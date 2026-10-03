@@ -72,6 +72,10 @@ class FoveaJointTrainer:
         self.max_grad_norm = max_grad_norm
         self.scheduler = scheduler
         self.batch_boundary = None
+        self.diagnostic_due = None
+        self.diagnostic_callback = None
+        self.diagnostic_threshold = .35
+        self.diagnostic_epoch = 0
         self.scaler = torch.amp.GradScaler(
             "cuda",
             enabled=self.device.type == "cuda" and mixed_precision == torch.float16,
@@ -178,6 +182,8 @@ class FoveaJointTrainer:
         if self.scheduler is not None:
             self.scheduler.step()
         self.optimizer.zero_grad(set_to_none=True)
+        if self.diagnostic_due is not None and self.diagnostic_due(global_step + 1):
+            self._capture_diagnostic(batch, logits, selected, global_step + 1)
         return FoveaJointTrainResult(
             loss=float(loss.detach()),
             classification=float(classification.detach()),
@@ -186,6 +192,25 @@ class FoveaJointTrainer:
             oracle_used=use_oracle,
             selected_views=int(selected_views.local_view_mask.sum().item()),
         )
+
+    def _capture_diagnostic(self, batch, logits, selected, step):
+        if self.diagnostic_callback is None:
+            return
+        index = next((i for i, source in enumerate(batch.diagnostic_sources)
+            if source and source.get("source_path")), None)
+        if index is None:
+            self.diagnostic_callback({"step": step, "skip_reason": "no_source_metadata_in_step_batch"})
+            return
+        indices = selected[index].detach().cpu()
+        valid = indices >= 0
+        self.diagnostic_callback({"step": step, "epoch": self.diagnostic_epoch, "source": batch.diagnostic_sources[index],
+            "probabilities": logits[index].detach().float().sigmoid().cpu(),
+            "positive": (batch.labels[index] >= .5).detach().cpu(),
+            "known": (batch.loss_masks[index] > 0).detach().cpu(),
+            "boxes": batch.candidate_boxes[index].detach().float().cpu()[indices[valid]],
+            "random_slots": (torch.arange(len(indices))[valid] >= self.selection_budget - self.random_count),
+            "threshold": self.diagnostic_threshold, "local_size": int(batch.views.local_images.shape[-1]),
+            "prediction_origin": "training_forward_before_optimizer_update"})
 
     @torch.inference_mode()
     def validate_epoch(

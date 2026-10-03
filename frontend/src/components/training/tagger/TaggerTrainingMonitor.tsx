@@ -648,7 +648,8 @@ export default function TaggerTrainingMonitor({
     setActionLoading(true);
     setError(null);
     try {
-      const result = await startTaggerTrainingRun(run.run_id);
+      const result = await startTaggerTrainingRun(run.run_id,
+        run.config?.architecture === "foveatag_joint_review" ? {continuous: true} : undefined);
       updateRun(result.run);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);

@@ -704,7 +704,7 @@ export default function TaggerTrainingMonitor({
           <div className="flex items-center gap-3 mt-0.5">
             <span className={`text-sm font-medium ${statusColor}`}>{run.status}</span>
             <span className="text-xs text-gray-500">
-              {run.training_method.toUpperCase()} · {run.num_tags} tags
+              {run.config.architecture === "foveatag_phase3" ? "FoveaTag A/B/C · FULL" : run.training_method.toUpperCase()} · {run.num_tags} tags
             </span>
           </div>
         </div>
@@ -1281,7 +1281,7 @@ export default function TaggerTrainingMonitor({
           Delete
         </button>
         <div className="flex gap-2">
-          {onEditConfig && ["pending", "stopped", "failed"].includes(run.status) && (
+          {onEditConfig && run.config.architecture !== "foveatag_phase3" && ["pending", "stopped", "failed"].includes(run.status) && (
             <button
               onClick={onEditConfig}
               disabled={actionLoading}

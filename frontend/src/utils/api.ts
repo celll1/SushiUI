@@ -8840,6 +8840,7 @@ export interface TaggerDatasetConfig {
 }
 
 export interface TaggerTrainingRunCreateRequest {
+  architecture?: "siglip2";
   run_name: string;
   training_method: "full" | "lora";
   vision_encoder_path: string;

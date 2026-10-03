@@ -3521,6 +3521,7 @@ CONCEPT_EXPOSURE_DEFAULTS: Dict[str, Any] = {
 # ---------------------------------------------------------------------------
 
 TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
+    "architecture": "siglip2",
     "run_name": None,
     "vision_encoder_path": "",
     # Physical GPU index this run trains on. None uses the default device.

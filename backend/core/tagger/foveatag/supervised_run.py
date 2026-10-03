@@ -455,6 +455,10 @@ def run_supervised_training(
         best_threshold = float(payload["best_threshold"])
         history = [dict(row) for row in payload.get("history", [])]
         accumulator = payload.get("epoch_accumulator")
+        _emit_progress(progress_callback, "resumed", {
+            "input_mode": input_mode, "epoch": start_epoch,
+            "global_step": global_step, "sample_offset": sample_offset,
+        })
 
     torch.cuda.reset_peak_memory_stats(device)
     steps_this_run = 0
@@ -462,6 +466,9 @@ def run_supervised_training(
     status = "complete"
     resume_epoch = start_epoch
     try:
+        if run_control is not None:
+            run_control.attach(model, optimizer, criterion)
+            trainer.batch_boundary = run_control.batch_boundary
         for epoch in range(start_epoch, epochs):
             train_dataset.set_epoch(epoch)
             epoch_offset = sample_offset if epoch == start_epoch else 0
@@ -574,6 +581,8 @@ def run_supervised_training(
                 history=history,
             )
             _write_json_atomic(branch_dir / "history.json", history)
+            _emit_checkpoint(progress_callback, branch_dir, input_mode, best_f1, best_threshold,
+                             epoch=resume_epoch, global_step=global_step, sample_offset=0)
             print(
                 f"[FoveaTagSupervised] mode={input_mode} epoch={epoch} "
                 f"validation_f1={validation.macro_f1:.6f} best={best_f1:.6f}",
@@ -622,8 +631,12 @@ def run_supervised_training(
                 history=history,
                 epoch_accumulator=accumulator,
             )
+            _emit_checkpoint(progress_callback, branch_dir, input_mode, best_f1, best_threshold,
+                             epoch=resume_epoch, global_step=global_step, sample_offset=sample_offset)
         return summary
     finally:
+        if run_control is not None:
+            run_control.detach()
         del trainer, criterion, optimizer, scheduler, model
         gc.collect()
         torch.cuda.empty_cache()
@@ -709,6 +722,7 @@ def _train_epoch(
                     "epoch_samples": len(dataset),
                     "global_step": global_step,
                     "loss": loss,
+                    "learning_rate": trainer.optimizer.param_groups[0]["lr"],
                     "samples_per_second": accumulator["samples"] / max(elapsed, 1e-9),
                 },
             )
@@ -730,6 +744,8 @@ def _train_epoch(
                 history=list(history),
                 epoch_accumulator=accumulator,
             )
+            _emit_checkpoint(progress_callback, output_dir, run_contract["input_mode"], best_f1, best_threshold,
+                             epoch=epoch, global_step=global_step, sample_offset=current_offset)
             _write_json_atomic(
                 output_dir / "progress.json",
                 {
@@ -1003,6 +1019,15 @@ def _write_json_atomic(path: Path, value: Any) -> None:
         encoding="utf-8",
     )
     os.replace(temporary, path)
+
+
+def _emit_checkpoint(callback, directory, mode, best_f1, best_threshold, **progress) -> None:
+    _emit_progress(callback, "checkpoint_saved", {
+        "input_mode": mode, "path": str(directory / "latest.pt"),
+        "best_path": str(directory / "best_f1.safetensors"),
+        "best_f1": best_f1, "best_threshold": best_threshold,
+        **progress,
+    })
 
 
 def _emit_progress(

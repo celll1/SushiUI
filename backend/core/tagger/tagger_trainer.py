@@ -1207,9 +1207,16 @@ class TaggerTrainer:
         # pause us at the next batch boundary.  Cleanup happens at the end of
         # train() and defensively in run_tagger_training()'s finally.
         from core.gpu_coordinator import gpu_coordinator
+        inference_processor = processor
+        if cfg.get("architecture") == "foveatag":
+            from .foveatag.shared_factory import build_processor
+            inference_processor = build_processor(cfg, training=False)
         self._coordinator_handle.attach(model, optimizer, criterion,
-                                        processor=processor,
-                                        vocabulary=self.vocabulary)
+                                        processor=inference_processor,
+                                        vocabulary=self.vocabulary,
+                                        max_source_pixels=(cfg["fovea_max_source_pixels"]
+                                            if cfg.get("architecture") == "foveatag" else None),
+                                        inference_amp_dtype=amp_dtype if use_amp else None)
         gpu_coordinator.register_trainer(self._coordinator_handle)
 
         # Step-based checkpoint interval (0 = disabled)

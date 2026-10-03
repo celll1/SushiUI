@@ -891,6 +891,16 @@ class TaggerTrainer:
                           "(flash-attn not installed or unsupported here) — falling back to SDPA")
 
         def _build_model(_attn: str):
+            if cfg.get("architecture") == "foveatag":
+                from .foveatag.shared_factory import build_model as build_fovea_model
+                resume_path = (
+                    os.path.join(self.output_dir, f"{resume_ckpt_name}.safetensors")
+                    if resume_state is not None and resume_ckpt_name is not None else None
+                )
+                return build_fovea_model(
+                    cfg, self.vocabulary.num_tags, vocabulary=self.vocabulary.tag_to_idx,
+                    lineage=self.vocab_lineage, resume_path=resume_path,
+                )
             return build_tagger_model(
                 training_method=cfg.get("training_method", "lora"),
                 num_tags=self.vocabulary.num_tags,
@@ -1331,7 +1341,10 @@ class TaggerTrainer:
                 inp = args[0]  # (B, D) on GPU, possibly bf16/fp16
                 _ood_cap_buf.append(inp.detach().float().cpu())
 
-        _ood_hook_handle = model.head.register_forward_pre_hook(_ood_forward_pre_hook)
+        if hasattr(model, "register_ood_feature_hook"):
+            _ood_hook_handle = model.register_ood_feature_hook(_ood_forward_pre_hook)
+        else:
+            _ood_hook_handle = model.head.register_forward_pre_hook(_ood_forward_pre_hook)
 
         for epoch in range(1, epochs + 1):
             if self._stop_requested:
@@ -2121,6 +2134,11 @@ def run_tagger_training(
         #   4. Default (patch16-naflex)
         _ve_path = config.get("vision_encoder_path", "")
         _is_hf_ve, _resolved_ve = _is_hf_repo_or_url(_ve_path)
+        if config.get("architecture") == "foveatag":
+            if _is_hf_ve:
+                raise ValueError("native FoveaTag accepts local scratch encoder artifacts, not SigLIP2 repositories")
+            config = dict(config)
+            config["vision_encoder_repo"] = "foveatag-scratch"
         if _is_hf_ve or "vision_encoder_repo" not in config:
             config = dict(config)  # shallow copy — do not mutate caller's dict
             if _is_hf_ve:
@@ -2146,14 +2164,21 @@ def run_tagger_training(
         processor_repo = config["vision_encoder_repo"]
         print(f"[TaggerTraining] === Phase: processor ===")
         print(f"[TaggerTraining] Loading processor from {processor_repo}...")
-        try:
-            processor = AutoProcessor.from_pretrained(processor_repo, local_files_only=True)
-        except Exception:
-            processor = AutoProcessor.from_pretrained(processor_repo)
+        if config.get("architecture") == "foveatag":
+            from .foveatag.shared_factory import build_processor as build_fovea_processor
+            processor = build_fovea_processor(config, training=True)
+        else:
+            try:
+                processor = AutoProcessor.from_pretrained(processor_repo, local_files_only=True)
+            except Exception:
+                processor = AutoProcessor.from_pretrained(processor_repo)
         # Probe processor to detect architecture (NaFlex vs standard fixed-resolution).
         _probe = processor(images=[_PILImage.new("RGB", (64, 64))], return_tensors="pt")
         _is_naflex = "pixel_attention_mask" in _probe and "spatial_shapes" in _probe
-        _mode_str = "NaFlex (variable resolution)" if _is_naflex else "standard (fixed resolution)"
+        _mode_str = (
+            "FoveaTag (source-local views)" if "fovea_views" in _probe else
+            "NaFlex (variable resolution)" if _is_naflex else "standard (fixed resolution)"
+        )
         print(f"[TaggerTraining] Processor loaded (repo: {processor_repo}, mode: {_mode_str})")
         # Store in config so build_tagger_model() and _make_metadata() can access it.
         # Ensure config is a mutable dict copy (the if-branch above may not have copied it).
@@ -2184,6 +2209,7 @@ def run_tagger_training(
             comma_resolver=comma_resolver,
             quality_masking_mode=config.get("quality_masking_mode", "intra_group"),
             progress_callback=_ds_progress,
+            max_source_pixels=(config["fovea_max_source_pixels"] if config.get("architecture") == "foveatag" else None),
         )
         total_samples = len(full_ds)
         print(f"[TaggerTraining] Dataset: {total_samples} samples total")
@@ -2198,8 +2224,13 @@ def run_tagger_training(
         train_size = total_samples - val_size
         train_ds, val_ds = torch.utils.data.random_split(
             full_ds, [train_size, val_size],
-            generator=torch.Generator().manual_seed(42),
+            generator=torch.Generator().manual_seed(config["fovea_seed"] if config.get("architecture") == "foveatag" else 42),
         )
+        if config.get("architecture") == "foveatag":
+            import copy
+            validation_source = copy.copy(full_ds)
+            validation_source.processor = build_fovea_processor(config, training=False)
+            val_ds = torch.utils.data.Subset(validation_source, val_ds.indices)
         print(f"[TaggerTraining] Split: {train_size} train / {val_size} val "
               f"(mode={val_split_mode})")
 

@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 
+import torch
 from torch import nn
 from safetensors.torch import load_file
 
@@ -21,6 +22,7 @@ class FoveaTrainerModel(nn.Module):
         self, num_tags: int, *, encoder_config: FoveaEncoderConfig,
         feature_dim: int, evidence_slots: int, pool_heads: int, temperature: float,
         training_method: str, lora_rank: int, lora_alpha: float,
+        encoder_path: str | None = None,
     ) -> None:
         super().__init__()
         if training_method not in ("full", "lora"):
@@ -39,6 +41,10 @@ class FoveaTrainerModel(nn.Module):
         self.lora_rank = lora_rank
         self.lora_alpha = lora_alpha
         self._lora_modules = {}
+        self._ood_tap = nn.Identity()
+        if encoder_path:
+            from .pretraining_checkpoint import load_pretrained_encoder
+            load_pretrained_encoder(encoder_path, self.core.encoder)
         if training_method == "lora":
             for parameter in self.core.encoder.parameters():
                 parameter.requires_grad = False
@@ -60,11 +66,29 @@ class FoveaTrainerModel(nn.Module):
     def forward(self, views: FoveaViewTensorBatch, pixel_attention_mask=None, spatial_shapes=None):
         if not isinstance(views, FoveaViewTensorBatch):
             raise TypeError("FoveaTag requires native coordinate-aware view tensors")
-        return self.core(
+        capture = bool(self._ood_tap._forward_pre_hooks)
+        result = self.core(
             views.overview_images, views.overview_geometry,
             views.local_images, views.local_geometry,
             local_view_mask=views.local_view_mask,
+            return_details=capture,
         )
+        if not capture:
+            return result
+        evidence = result.head_output.mixed_evidence
+        mask = views.local_view_mask.repeat_interleave(self.core.evidence_slots_per_view, dim=1)
+        local_mean = (evidence * mask[..., None]).sum(1) / mask.sum(1).clamp_min(1)[:, None]
+        self._ood_tap(torch.cat((result.global_features, local_mean), dim=1).detach())
+        return result.logits
+
+    def register_ood_feature_hook(self, hook):
+        return self._ood_tap.register_forward_pre_hook(hook)
+
+    def replace_head(self, head):
+        if head.in_features != self.head.in_features:
+            raise ValueError("FoveaTag head input dimension must not change during inheritance")
+        self.core.evidence_head.head = head
+        self.core.evidence_head.num_tags = head.out_features
 
     def trainable_parameters(self):
         return [parameter for parameter in self.parameters() if parameter.requires_grad]
@@ -102,6 +126,7 @@ class FoveaTrainerModel(nn.Module):
             "evidence_slots_per_view": self.core.evidence_slots_per_view,
             "lora_rank": self.lora_rank, "lora_alpha": self.lora_alpha,
             "contains_frozen_base": True,
+            "ood_feature_definition": "overview_plus_masked_mean_mixed_evidence_v1",
         })
         metadata_path = directory / f"{name}_metadata.json"
         temporary = metadata_path.with_suffix(".json.tmp")

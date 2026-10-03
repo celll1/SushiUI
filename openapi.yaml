@@ -28012,6 +28012,42 @@ components:
           default: siglip2
           description: New standard runs use SigLIP2; existing FoveaTag comparisons use the explicit import endpoint.
           example: siglip2
+        fovea_overview_size:
+          type: integer
+          minimum: 1
+          default: 448
+          description: Native FoveaTag overview canvas size; unused by SigLIP2 and frozen imported comparisons.
+          example: 448
+        fovea_local_size:
+          type: integer
+          minimum: 1
+          default: 256
+          description: Native FoveaTag source-local canvas size; unused by SigLIP2 and frozen imported comparisons.
+          example: 256
+        fovea_local_views:
+          type: integer
+          minimum: 0
+          default: 4
+          description: Native FoveaTag local view budget; unused by SigLIP2 and frozen imported comparisons.
+          example: 4
+        fovea_feature_dim:
+          type: integer
+          minimum: 1
+          default: 512
+          description: Native evidence feature width, not SigLIP2 cls_dim; unused by SigLIP2.
+          example: 512
+        fovea_max_source_pixels:
+          type: integer
+          minimum: 1
+          default: 40000000
+          description: Native pre-decode pixel cap; larger sources are skipped. Unused by SigLIP2 and frozen imported comparisons.
+          example: 40000000
+        fovea_seed:
+          type: integer
+          minimum: 0
+          default: 42
+          description: Native validation view and dataset split seed; unused by SigLIP2 and frozen imported comparisons.
+          example: 42
         vision_encoder_path:
           type: string
         dataset_configs:

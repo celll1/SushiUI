@@ -16,6 +16,7 @@ from .siglip2_control import MaskedSlotPooler
 @dataclass(frozen=True)
 class FoveaTaggerOutput:
     logits: torch.Tensor
+    global_features: torch.Tensor
     head_output: EvidenceHeadOutput
     evidence_view_indices: torch.Tensor
 
@@ -136,6 +137,7 @@ class FoveaTagger(nn.Module):
         indices.masked_fill_(~evidence_mask.to(indices.device), -1)
         return FoveaTaggerOutput(
             logits=head_output.logits,
+            global_features=global_summary,
             head_output=head_output,
             evidence_view_indices=indices,
         )

@@ -8843,6 +8843,12 @@ export interface TaggerDatasetConfig {
 
 export interface TaggerTrainingRunCreateRequest {
   architecture?: "siglip2";
+  fovea_overview_size?: number;
+  fovea_local_size?: number;
+  fovea_local_views?: number;
+  fovea_feature_dim?: number;
+  fovea_max_source_pixels?: number;
+  fovea_seed?: number;
   run_name: string;
   training_method: "full" | "lora";
   vision_encoder_path: string;

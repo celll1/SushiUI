@@ -8825,6 +8825,8 @@ export interface TaggerTrainingRun {
   latest_loss: number | null;
   head_checkpoint_path: string | null;
   lora_checkpoint_path: string | null;
+  latest_checkpoint_path?: string | null;
+  best_checkpoint_path?: string | null;
   error_message: string | null;
   status_message: string | null;
   created_at: string;

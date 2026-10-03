@@ -9,6 +9,7 @@ from typing import Tuple
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 
 
 @dataclass(frozen=True)
@@ -148,6 +149,7 @@ class SpatialAttention(nn.Module):
         self.head_dim = dim // heads
         self.qkv = nn.Linear(dim, dim * 3)
         self.output = nn.Linear(dim, dim)
+        self.use_sdpa = False
 
     def forward(
         self,
@@ -159,6 +161,10 @@ class SpatialAttention(nn.Module):
         qkv = self.qkv(value).reshape(batch, tokens, 3, self.heads, self.head_dim)
         query, key, content = qkv.permute(2, 0, 3, 1, 4).unbind(0)
         query, key = apply_2d_rope(query, key, coordinates)
+        if self.use_sdpa:
+            mask = allowed[:, None] if allowed is not None else None
+            attended = F.scaled_dot_product_attention(query, key, content, attn_mask=mask)
+            return self.output(attended.transpose(1, 2).reshape(batch, tokens, self.dim))
         scores = torch.matmul(query, key.transpose(-2, -1)) * self.head_dim ** -0.5
         if allowed is not None:
             scores = scores.masked_fill(~allowed[:, None], -torch.inf)
@@ -275,6 +281,7 @@ class FoveaEncoder(nn.Module):
     def __init__(self, config: FoveaEncoderConfig = FoveaEncoderConfig()) -> None:
         super().__init__()
         self.config = config
+        self.gradient_checkpointing = False
         widths = config.widths
         self.stem_conv = nn.Conv2d(3, widths[0], kernel_size=5, stride=1, padding=2)
         self.stem_blur = BlurPool2d(widths[0])
@@ -327,7 +334,7 @@ class FoveaEncoder(nn.Module):
         )
         value = value + self.local_geometry(geometry.to(value.dtype)).unsqueeze(-1).unsqueeze(-1)
         for block in self.window_stage:
-            value = block(value, local_coordinates)
+            value = self._run_block(block, value, local_coordinates)
         local_map = value
 
         value = self.global_merge(value)
@@ -342,7 +349,7 @@ class FoveaEncoder(nn.Module):
         tokens = tokens + self.global_geometry(geometry.to(tokens.dtype)).unsqueeze(1)
         flat_coordinates = global_coordinates.flatten(1, 2)
         for block in self.global_stage:
-            tokens = block(tokens, flat_coordinates)
+            tokens = self._run_block(block, tokens, flat_coordinates)
         tokens = self.global_norm(tokens)
         return FoveaEncoderOutput(
             local_map=local_map,
@@ -359,6 +366,19 @@ class FoveaEncoder(nn.Module):
         result = geometry.clone()
         result[:, 4:6] *= keep.to(result.dtype)
         return result
+
+    def gradient_checkpointing_enable(self) -> None:
+        self.gradient_checkpointing = True
+
+    def set_sdpa(self, enabled: bool) -> None:
+        for module in self.modules():
+            if isinstance(module, SpatialAttention):
+                module.use_sdpa = enabled
+
+    def _run_block(self, block, value, coordinates):
+        if self.training and self.gradient_checkpointing and torch.is_grad_enabled():
+            return checkpoint(block, value, coordinates, use_reentrant=False)
+        return block(value, coordinates)
 
     def parameter_count(self) -> int:
         return sum(parameter.numel() for parameter in self.parameters())

@@ -338,7 +338,11 @@ class TaggerDataset(Dataset):
             print(f"[TaggerDataset] Skipping image rejected by processor {image_path}: {e}")
             return None
 
-        if self.is_naflex:
+        if "fovea_views" in inputs:
+            pixel_values = inputs["fovea_views"]
+            pixel_attention_mask = torch.zeros(0, dtype=torch.int32)
+            spatial_shapes = torch.zeros(0, dtype=torch.int64)
+        elif self.is_naflex:
             pixel_values         = inputs["pixel_values"].squeeze(0)          # [num_patches, patch_dim]
             pixel_attention_mask = inputs["pixel_attention_mask"].squeeze(0)  # [num_patches]
             spatial_shapes       = inputs["spatial_shapes"].squeeze(0)        # [2]
@@ -413,6 +417,19 @@ def tagger_collate_fn(batch):
         return None
 
     pixel_values_list, masks_list, shapes_list, labels_list, loss_masks_list = zip(*valid)
+
+    if not isinstance(pixel_values_list[0], torch.Tensor):
+        from .foveatag.batch import FoveaViewTensorBatch
+        from .foveatag.processor import concatenate_view_tensors
+        if not all(isinstance(value, FoveaViewTensorBatch) for value in pixel_values_list):
+            raise ValueError("cannot mix native and SigLIP2 inputs in one batch")
+        return (
+            concatenate_view_tensors(pixel_values_list),
+            torch.stack(masks_list),
+            torch.stack(shapes_list),
+            torch.stack(labels_list),
+            torch.stack(loss_masks_list),
+        )
 
     # Stack pixel_values; for NaFlex with varying patch counts, pad to max.
     try:

@@ -1139,7 +1139,11 @@ class DanbooruSampleBuffer:
             print(f"[DanbooruSampler] Processor error (post {post.get('id')}): {exc}")
             return None
 
-        if self._is_naflex:
+        if "fovea_views" in inputs:
+            pixel_values = inputs["fovea_views"]
+            pixel_attention_mask = torch.zeros(0, dtype=torch.int32)
+            spatial_shapes = torch.zeros(0, dtype=torch.int64)
+        elif self._is_naflex:
             pixel_values         = inputs["pixel_values"].squeeze(0)
             pixel_attention_mask = inputs["pixel_attention_mask"].squeeze(0)
             spatial_shapes       = inputs["spatial_shapes"].squeeze(0)

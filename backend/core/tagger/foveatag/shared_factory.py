@@ -66,7 +66,13 @@ def build_model(config, num_tags, *, vocabulary, lineage, resume_path=None):
         training_method=method, lora_rank=config["lora_rank"], lora_alpha=config["lora_alpha"],
         encoder_path=base_path or None,
     )
-    model.vision_encoder.set_sdpa(True)
+    flash = config["use_flash_attention"]
+    if flash:
+        try:
+            from flash_attn import flash_attn_func, flash_attn_varlen_func
+        except ImportError as exc:
+            raise ValueError("FoveaTag FlashAttention requires an importable flash-attn installation") from exc
+    model.vision_encoder.set_sdpa(True, allow_flash=flash, external_flash=flash)
     source = config.get("init_head_from")
     if source and resume_path is None:
         source_metadata = json.loads(Path(source).with_name(

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Tuple
 
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.utils.checkpoint import checkpoint
 
 
@@ -50,8 +52,12 @@ class RMSNorm(nn.Module):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(dim))
         self.eps = eps
+        self.use_fp32 = False
 
     def forward(self, value: torch.Tensor) -> torch.Tensor:
+        if self.use_fp32:
+            normalized = value.float() * torch.rsqrt(value.float().pow(2).mean(dim=-1, keepdim=True) + self.eps)
+            return normalized.to(value.dtype) * self.weight
         normalized = value * torch.rsqrt(value.pow(2).mean(dim=-1, keepdim=True) + self.eps)
         return normalized * self.weight
 
@@ -150,20 +156,30 @@ class SpatialAttention(nn.Module):
         self.qkv = nn.Linear(dim, dim * 3)
         self.output = nn.Linear(dim, dim)
         self.use_sdpa = False
+        self.allow_flash = True
+        self.use_external_flash = False
 
     def forward(
         self,
         value: torch.Tensor,
         coordinates: torch.Tensor,
         allowed: torch.Tensor | None = None,
+        packed_plan=None,
     ) -> torch.Tensor:
         batch, tokens, _ = value.shape
         qkv = self.qkv(value).reshape(batch, tokens, 3, self.heads, self.head_dim)
         query, key, content = qkv.permute(2, 0, 3, 1, 4).unbind(0)
         query, key = apply_2d_rope(query, key, coordinates)
+        if self.use_external_flash and _flash_eligible(query) and (allowed is None or packed_plan is not None):
+            attended = _external_flash_attention(query, key, content, packed_plan, training=self.training)
+            return self.output(attended.transpose(1, 2).reshape(batch, tokens, self.dim))
         if self.use_sdpa:
             mask = allowed[:, None] if allowed is not None else None
-            attended = F.scaled_dot_product_attention(query, key, content, attn_mask=mask)
+            backends = [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
+            if self.allow_flash:
+                backends.insert(0, SDPBackend.FLASH_ATTENTION)
+            with sdpa_kernel(backends):
+                attended = F.scaled_dot_product_attention(query, key, content, attn_mask=mask)
             return self.output(attended.transpose(1, 2).reshape(batch, tokens, self.dim))
         scores = torch.matmul(query, key.transpose(-2, -1)) * self.head_dim ** -0.5
         if allowed is not None:
@@ -232,7 +248,10 @@ class WindowAttentionBlock(nn.Module):
         allowed &= region_windows[:, :, None] == region_windows[:, None, :]
         identity = torch.eye(window * window, dtype=torch.bool, device=value.device)
         allowed |= (~valid_windows)[:, :, None] & identity[None]
-        attended = self.attention(windows, coordinate_windows, allowed)
+        plan = None
+        if self.attention.use_external_flash:
+            plan = _window_flash_plan(batch, height, width, window, self.shift, str(value.device))
+        attended = self.attention(windows, coordinate_windows, allowed, packed_plan=plan)
         attended = _window_reverse(attended, window, batch, padded_height, padded_width)
         x = x + attended * self.attention_scale
         x = x + self.mlp(self.norm2(x)) * self.mlp_scale
@@ -260,6 +279,51 @@ def _shift_regions(
             labels[:, height_slice, width_slice] = index
             index += 1
     return labels.expand(batch, -1, -1)
+
+
+def _flash_eligible(query):
+    return query.is_cuda and query.dtype in (torch.float16, torch.bfloat16) and query.shape[-1] <= 256
+
+
+def _external_flash_attention(query, key, value, plan=None, *, training):
+    from core.attention import AttentionMode, dispatch_attention, dispatch_attention_varlen
+    mode = AttentionMode.TRAINING if training else AttentionMode.INFERENCE
+    if plan is None:
+        return dispatch_attention(query, key, value, backend="flash", layout="BHSD",
+                                  mode=mode, fallback_policy="error")
+    order, inverse, offsets, maximum = plan
+    batch, heads, tokens, dim = query.shape
+    packed = [tensor.transpose(1, 2).reshape(-1, heads, dim)[order].contiguous()
+              for tensor in (query, key, value)]
+    result = dispatch_attention_varlen(*packed, offsets, offsets, maximum, maximum,
+        backend="flash", mode=mode, fallback_policy="error")
+    return result[inverse].reshape(batch, tokens, heads, dim).transpose(1, 2)
+
+
+@lru_cache(maxsize=16)
+def _window_flash_plan(batch, height, width, window, shift, device):
+    """Pack each connected region; padded tokens retain singleton self-attention."""
+    padded_height = math.ceil(height / window) * window
+    padded_width = math.ceil(width / window) * window
+    valid = torch.zeros((batch, padded_height, padded_width), dtype=torch.bool)
+    valid[:, :height, :width] = True
+    if shift:
+        valid = torch.roll(valid, shifts=(-shift, -shift), dims=(1, 2))
+    valid = _window_partition(valid[..., None], window).squeeze(-1)
+    regions = _window_partition(
+        _shift_regions(batch, padded_height, padded_width, window, shift, torch.device("cpu"))[..., None],
+        window).squeeze(-1)
+    labels = torch.where(valid, regions, torch.arange(window * window)[None] + 9)
+    order, offsets = [], [0]
+    for index, row in enumerate(labels):
+        for label in row.unique(sorted=True):
+            positions = (row == label).nonzero().flatten() + index * window * window
+            order.extend(positions.tolist())
+            offsets.append(len(order))
+    maximum = max(right - left for left, right in zip(offsets, offsets[1:]))
+    order = torch.tensor(order, dtype=torch.long)
+    inverse = order.argsort()
+    return (order.to(device), inverse.to(device), torch.tensor(offsets, dtype=torch.int32, device=device), maximum)
 
 
 class GlobalAttentionBlock(nn.Module):
@@ -370,10 +434,14 @@ class FoveaEncoder(nn.Module):
     def gradient_checkpointing_enable(self) -> None:
         self.gradient_checkpointing = True
 
-    def set_sdpa(self, enabled: bool) -> None:
+    def set_sdpa(self, enabled: bool, *, allow_flash: bool = True, external_flash: bool = False) -> None:
         for module in self.modules():
+            if isinstance(module, RMSNorm):
+                module.use_fp32 = enabled
             if isinstance(module, SpatialAttention):
                 module.use_sdpa = enabled
+                module.allow_flash = allow_flash
+                module.use_external_flash = enabled and allow_flash and external_flash
 
     def _run_block(self, block, value, coordinates):
         if self.training and self.gradient_checkpointing and torch.is_grad_enabled():

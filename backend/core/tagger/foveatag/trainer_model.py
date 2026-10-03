@@ -123,6 +123,7 @@ class FoveaTrainerModel(nn.Module):
         }
         _save_file_safe(state, str(path))
         document = dict(metadata or {})
+        document.pop("inference_export", None)
         document.update({
             "format_version": 1,
             "architecture": "foveatag", "kind": "foveatag_shared_trainer_weights",

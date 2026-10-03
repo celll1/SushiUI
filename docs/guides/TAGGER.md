@@ -82,6 +82,22 @@ is not reset.
 
 ## Verification boundaries
 
+The experimental native FoveaTag shared trainer maps `use_flash_attention` to
+the external `flash-attn` kernels through `core/attention/`. Global attention
+uses the dense kernel; shifted and padded windows pack connected regions into
+independent varlen segments, preserving the existing mask and singleton padded
+tokens. Selecting this option requires an importable installation. CUDA
+FP16/BF16 with supported head dimensions use FlashAttention; CPU/FP32 and
+unsupported head dimensions use SDPA. A selected kernel failure is fatal rather
+than silently changing execution during training. Disabling the option excludes
+both external FlashAttention and PyTorch's flash SDPA kernel.
+
+The native optimized path computes RMSNorm statistics in FP32 to prevent FP16
+padding-gradient NaNs. The frozen A/B/C runner retains its original eager path.
+Opt-in real GPU tests in `backend/tests/foveatag_flash_attention_test.py` compare
+outputs and gradients for global, shifted/padded, FP16/BF16 and checkpointed
+execution. These checks do not establish end-to-end speedups or UI deployment.
+
 CPU contract tests live under `backend/tests/` for response selection, head
 growth, optimizer migration, validation collection, browser sidecars, and
 checkpoint artifacts. Real model throughput, VRAM, FlashAttention behavior, and

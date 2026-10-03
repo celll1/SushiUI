@@ -71,3 +71,59 @@ def test_optional_metrics_and_exports_are_integrity_bound(tmp_path):
     (tmp_path / "latest_ood_reservoir.npz").write_bytes(b"changed")
     with pytest.raises(ValueError, match="integrity differs"):
         verify_native_bundle(tmp_path, "latest")
+
+
+def test_stale_optional_files_are_not_published_when_disabled(tmp_path):
+    bundle(tmp_path, "latest", 2)
+    (tmp_path / "latest_export.safetensors").write_bytes(b"old export")
+    (tmp_path / "latest_tag_metrics.npz").write_bytes(b"old metrics")
+    commit_native_bundle(tmp_path, "latest", optional_suffixes=[])
+    files = verify_native_bundle(tmp_path, "latest")["files"]
+    assert "latest_export.safetensors" not in files
+    assert "latest_tag_metrics.npz" not in files
+
+
+def test_requested_optional_artifact_must_exist(tmp_path):
+    bundle(tmp_path, "latest", 2)
+    with pytest.raises(OSError):
+        commit_native_bundle(tmp_path, "latest", optional_suffixes=["_tag_metrics.npz"])
+
+
+def test_native_sidecar_save_errors_cannot_publish_stale_data(tmp_path):
+    from core.tagger.tagger_trainer import _save_vocabulary_snapshot, _save_tag_metrics, _save_ood_reference
+    class Broken:
+        has_data = True
+        n_seen = 10
+        num_tags = 0
+        idx_to_tag = {}
+        def to_dict(self):
+            raise OSError("unavailable storage")
+        def save(self, *args, **kwargs):
+            raise OSError("unavailable storage")
+        def finalize(self, *args, **kwargs):
+            raise OSError("unavailable storage")
+    value = Broken()
+    for call in (
+        lambda: _save_vocabulary_snapshot(value, str(tmp_path), "latest", strict=True),
+        lambda: _save_tag_metrics(value, str(tmp_path), "latest", value, False, strict=True),
+        lambda: _save_ood_reference(value, str(tmp_path), "latest", strict=True),
+    ):
+        with pytest.raises(OSError, match="unavailable storage"):
+            call()
+
+
+def test_native_best_reservoir_does_not_overwrite_committed_latest(tmp_path):
+    from core.tagger.tagger_trainer import _save_ood_reference
+    class Accumulator:
+        n_seen = 10
+        def finalize(self, path):
+            from pathlib import Path
+            Path(path).write_bytes(b"reference")
+        def save_reservoir(self, path):
+            from pathlib import Path
+            Path(path).write_bytes(b"new reservoir")
+    latest = tmp_path / "latest_ood_reservoir.npz"
+    latest.write_bytes(b"committed latest")
+    _save_ood_reference(Accumulator(), str(tmp_path), "best_f1", strict=True)
+    assert latest.read_bytes() == b"committed latest"
+    assert (tmp_path / "best_f1_ood_reservoir.npz").read_bytes() == b"new reservoir"

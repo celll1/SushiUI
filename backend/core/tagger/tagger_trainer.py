@@ -470,7 +470,7 @@ def _save_optimizer_state(optimizer: Any, output_dir: str, name: str) -> None:
     os.replace(temporary, path)
 
 
-def _save_vocabulary_snapshot(vocabulary: Any, output_dir: str, name: str) -> None:
+def _save_vocabulary_snapshot(vocabulary: Any, output_dir: str, name: str, *, strict=False) -> None:
     """Save a per-checkpoint vocabulary snapshot to ``<name>_vocabulary.json``.
 
     This pinpoints the exact tag→idx mapping that was active when this
@@ -483,6 +483,8 @@ def _save_vocabulary_snapshot(vocabulary: Any, output_dir: str, name: str) -> No
         with open(path, "w", encoding="utf-8") as f:
             json.dump(vocabulary.to_dict(), f, ensure_ascii=False, indent=2)
     except Exception as e:   # noqa: BLE001
+        if strict:
+            raise
         print(f"[TaggerTrainer] WARNING: could not save vocabulary snapshot for {name}: {e}")
 
 
@@ -498,6 +500,7 @@ def _save_tag_metrics(
     calib_method: str = "jeffreys",
     calib_eps: float = 0.5,
     calib_prior_strength: float = 10.0,
+    strict: bool = False,
 ) -> None:
     """Save per-tag threshold metrics alongside a checkpoint.
 
@@ -522,6 +525,8 @@ def _save_tag_metrics(
             calib_prior_strength=calib_prior_strength,
         )
     except Exception as e:   # noqa: BLE001
+        if strict:
+            raise
         print(f"[TaggerTrainer] WARNING: could not save tag_metrics for {name}: {e}")
 
 
@@ -530,6 +535,7 @@ def _save_ood_reference(
     output_dir: str,
     name: str,
     save_enabled: bool = True,
+    strict: bool = False,
 ) -> None:
     """Fit and save the OOD reference distribution alongside a checkpoint.
 
@@ -546,9 +552,12 @@ def _save_ood_reference(
         path = os.path.join(output_dir, f"{name}_ood_ref.npz")
         accumulator.finalize(path)
         # Persist raw reservoir for resume
-        reservoir_path = os.path.join(output_dir, "latest_ood_reservoir.npz")
+        reservoir_name = name if strict else "latest"
+        reservoir_path = os.path.join(output_dir, f"{reservoir_name}_ood_reservoir.npz")
         accumulator.save_reservoir(reservoir_path)
     except Exception as _e:
+        if strict:
+            raise
         print(f"[TaggerTrainer] WARNING: could not save ood_reference for {name}: {_e}")
 
 
@@ -567,9 +576,10 @@ def _save_checkpoint_artifacts(
     calib_eps: float,
     calib_prior_strength: float,
     save_ood_reference: bool,
+    strict: bool = False,
 ) -> None:
     """Save the vocabulary and inference sidecars paired with a checkpoint."""
-    _save_vocabulary_snapshot(vocabulary, output_dir, name)
+    _save_vocabulary_snapshot(vocabulary, output_dir, name, strict=strict)
     _save_tag_metrics(
         tag_metrics_accumulator,
         output_dir,
@@ -582,12 +592,14 @@ def _save_checkpoint_artifacts(
         calib_method=calib_method,
         calib_eps=calib_eps,
         calib_prior_strength=calib_prior_strength,
+        strict=strict,
     )
     _save_ood_reference(
         ood_accumulator,
         output_dir,
         name,
         save_enabled=save_ood_reference,
+        strict=strict,
     )
 
 
@@ -905,14 +917,14 @@ class TaggerTrainer:
         print(f"[TaggerTrainer] Building model (method={cfg.get('training_method', 'lora')}, "
               f"num_tags={self.vocabulary.num_tags}, device={device})...")
         self._emit("phase", {"phase": "initializing", "message": "Building model..."})
-        # FlashAttention-2 for the encoder self-attention (opt-in per run).
-        # Three guards before we commit to FA2, each falling back to SDPA:
-        #   1. dtype  — FA2 only engages under fp16/bf16 autocast (not fp32).
-        #   2. avail. — flash-attn must be installed/usable in this environment.
-        #   3. build  — if the FA2 model build still fails, retry with SDPA.
-        _use_fa2 = bool(cfg.get("use_flash_attention", False))
+        # SigLIP2 probes HF FA2; native Fovea uses the shared attention conduit.
+        _native_fovea = cfg.get("architecture") == "foveatag"
+        _use_fa2 = bool(cfg.get("use_flash_attention", False)) and not _native_fovea
         _mp_str = str(cfg.get("mixed_precision", "bf16")).lower()
         _attn_impl = "sdpa"
+        if _native_fovea:
+            policy = "external FlashAttention (dense/packed windows)" if cfg["use_flash_attention"] else "PyTorch SDPA, flash disabled"
+            print(f"[TaggerTrainer] Native FoveaTag attention: {policy}; CPU/fp32 use SDPA")
         if _use_fa2:
             if _mp_str not in ("bf16", "fp16"):
                 print(f"[TaggerTrainer] FlashAttention-2 requested but mixed_precision={_mp_str} "
@@ -1249,9 +1261,8 @@ class TaggerTrainer:
                 calib_eps=_calib_eps,
                 calib_prior_strength=_calib_prior_strength,
                 save_ood_reference=_save_ood_ref_enabled,
+                strict=cfg.get("architecture") == "foveatag",
             )
-            if cfg.get("architecture") == "foveatag" and _save_ood_ref_enabled and _ood_emb_acc.n_seen >= 10:
-                _ood_emb_acc.save_reservoir(os.path.join(self.output_dir, f"{name}_ood_reservoir.npz"))
 
         # Training state
         best_f1         = 0.0
@@ -1289,7 +1300,14 @@ class TaggerTrainer:
         def _commit_native(name):
             if native_run:
                 from .foveatag.shared_bundle import commit_native_bundle
-                commit_native_bundle(self.output_dir, name)
+                optional = []
+                if _save_tag_metrics_enabled and _tag_metrics_acc.has_data:
+                    optional.append("_tag_metrics.npz")
+                if _save_ood_ref_enabled and _ood_emb_acc.n_seen >= 10:
+                    optional.extend(("_ood_ref.npz", "_ood_reservoir.npz"))
+                if model.training_method == "lora" and checkpoint_save_mode != "full":
+                    optional.extend(("_export.safetensors", "_export_metadata.json"))
+                commit_native_bundle(self.output_dir, name, optional_suffixes=optional)
 
         # Compute the *current* dataset fingerprint up-front so we can both
         # (a) compare it to the saved one to detect mid-run dataset changes
@@ -1305,6 +1323,10 @@ class TaggerTrainer:
         )
 
         if resume_state is not None:
+            native_bundle_files = None
+            if native_run:
+                from .foveatag.shared_bundle import verify_native_bundle
+                native_bundle_files = verify_native_bundle(self.output_dir, resume_ckpt_name)["files"]
             resume_epoch     = resume_state["epoch"]         # next epoch to train
             resume_batch_idx = resume_state["batch_idx"]     # last completed batch (-1 = full epoch done)
             global_step      = resume_state["global_step"]
@@ -1366,7 +1388,11 @@ class TaggerTrainer:
             if _save_tag_metrics_enabled:
                 metrics_name = resume_ckpt_name if native_run and resume_ckpt_name else "latest"
                 _metrics_npz = os.path.join(self.output_dir, f"{metrics_name}_tag_metrics.npz")
-                restored = _tag_metrics_acc.restore_from_npz(_metrics_npz)
+                restored = (
+                    _tag_metrics_acc.restore_from_npz(_metrics_npz)
+                    if native_bundle_files is None or os.path.basename(_metrics_npz) in native_bundle_files
+                    else False
+                )
                 if restored:
                     print(
                         f"[TaggerTrainer] Tag metrics accumulator restored from "
@@ -1385,7 +1411,8 @@ class TaggerTrainer:
             if _save_ood_ref_enabled:
                 reservoir_name = resume_ckpt_name if native_run and resume_ckpt_name else "latest"
                 _ood_reservoir_npz = os.path.join(self.output_dir, f"{reservoir_name}_ood_reservoir.npz")
-                _ood_emb_acc.restore_from_reservoir(_ood_reservoir_npz)
+                if native_bundle_files is None or os.path.basename(_ood_reservoir_npz) in native_bundle_files:
+                    _ood_emb_acc.restore_from_reservoir(_ood_reservoir_npz)
 
             # Fast-forward LR scheduler to match resumed global_step
             if native_run:
@@ -2127,6 +2154,10 @@ class TaggerTrainer:
             metadata["fovea_view_config"] = asdict(view_config(self.config))
             metadata["max_source_pixels"] = self.config["fovea_max_source_pixels"]
             metadata["fovea_seed"] = self.config["fovea_seed"]
+            metadata.pop("is_naflex", None)
+            metadata["attention_requested"] = "flash_attention_2" if self.config["use_flash_attention"] else "sdpa_no_flash"
+            metadata["attention_window_layout"] = "packed_connected_regions_v1"
+            metadata["normalization_execution"] = "fp32_statistics_v1"
         return metadata
 
     def _emit(self, event_type: str, data: Dict[str, Any]) -> None:

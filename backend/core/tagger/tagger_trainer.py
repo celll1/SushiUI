@@ -407,13 +407,23 @@ def _save_training_state(
     _write_json_atomic(path, state)
 
 
-def _load_training_state(output_dir: str, name: str) -> Optional[Dict[str, Any]]:
+def _load_training_state(output_dir: str, name: str, *, verify_native=True) -> Optional[Dict[str, Any]]:
     """Load training state JSON. Returns None if not found."""
     path = os.path.join(output_dir, f"{name}_state.json")
     if not os.path.isfile(path):
         return None
     with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        state = json.load(f)
+    if verify_native:
+        native = "native_runtime" in state or os.path.isfile(os.path.join(output_dir, f"{name}_resume_commit.json"))
+        metadata_path = os.path.join(output_dir, f"{name}_metadata.json")
+        if os.path.isfile(metadata_path):
+            with open(metadata_path, encoding="utf-8") as handle:
+                native = native or json.load(handle).get("kind") == "foveatag_shared_trainer_weights"
+        if native:
+            from .foveatag.shared_bundle import verify_native_bundle
+            verify_native_bundle(output_dir, name)
+    return state
 
 
 def _write_json_atomic(path: str, payload: Any) -> None:
@@ -683,6 +693,8 @@ def _load_optimizer_state(
                     f"weight stats={summary['weight']}, bias stats={summary['bias']}"
                 )
         except Exception as e:   # noqa: BLE001
+            if getattr(model, "architecture", None) == "foveatag":
+                raise ValueError("native head optimizer migration failed") from e
             print(
                 f"[TaggerTrainer] WARNING: head optimizer state migration failed: {e}; "
                 f"loading raw state (may produce loss spike). "
@@ -718,6 +730,8 @@ def _prune_step_checkpoints(output_dir: str, keep_last_n: int) -> None:
             "_ood_ref.npz",
             "_export.safetensors",
             "_export_metadata.json",
+            "_ood_reservoir.npz",
+            "_resume_commit.json",
         ):
             path = os.path.join(output_dir, f"{name}{suffix}")
             if os.path.isfile(path):
@@ -766,29 +780,31 @@ def _find_resume_checkpoint(output_dir: str) -> Optional[Tuple[str, Dict[str, An
         return None
 
     candidates: List[Tuple[int, str, Dict[str, Any]]] = []
-
-    # Epoch-boundary checkpoint ("latest")
-    state = _load_training_state(output_dir, "latest")
-    if state is not None and os.path.isfile(os.path.join(output_dir, "latest.safetensors")):
-        candidates.append((state.get("global_step", 0), "latest", state))
-
-    # Step-based checkpoints
+    names = ["latest"]
+    damaged = False
     for fn in os.listdir(output_dir):
         m = _re.match(r"^step_(\d+)_state\.json$", fn)
         if m:
-            ckpt_name = f"step_{int(m.group(1)):06d}"
-            if os.path.isfile(os.path.join(output_dir, f"{ckpt_name}.safetensors")):
-                s = _load_training_state(output_dir, ckpt_name)
-                if s is not None:
-                    candidates.append((s.get("global_step", 0), ckpt_name, s))
-
-    if not candidates:
-        return None
-
-    # Pick the checkpoint that advanced furthest in training
+            names.append(f"step_{int(m.group(1)):06d}")
+    for name in names:
+        try:
+            state = _load_training_state(output_dir, name, verify_native=False)
+            weights_exist = os.path.isfile(os.path.join(output_dir, f"{name}.safetensors"))
+            if state is not None and weights_exist:
+                candidates.append((state.get("global_step", 0), name, state))
+            elif state is not None or weights_exist:
+                damaged = True
+        except (OSError, ValueError):
+            damaged = True
     candidates.sort(key=lambda x: x[0], reverse=True)
-    _, best_name, best_state = candidates[0]
-    return best_name, best_state
+    for _, name, _ in candidates:
+        try:
+            return name, _load_training_state(output_dir, name)
+        except (OSError, ValueError):
+            damaged = True
+    if damaged:
+        raise ValueError("No consistent resumable checkpoint found; refusing to start from scratch")
+    return None
 
 
 
@@ -1234,6 +1250,8 @@ class TaggerTrainer:
                 calib_prior_strength=_calib_prior_strength,
                 save_ood_reference=_save_ood_ref_enabled,
             )
+            if cfg.get("architecture") == "foveatag" and _save_ood_ref_enabled and _ood_emb_acc.n_seen >= 10:
+                _ood_emb_acc.save_reservoir(os.path.join(self.output_dir, f"{name}_ood_reservoir.npz"))
 
         # Training state
         best_f1         = 0.0
@@ -1267,6 +1285,11 @@ class TaggerTrainer:
                 "rng": _capture_rng(native=True), "scheduler": scheduler.state_dict(),
                 "scaler": scaler.state_dict() if scaler is not None else None,
             }
+
+        def _commit_native(name):
+            if native_run:
+                from .foveatag.shared_bundle import commit_native_bundle
+                commit_native_bundle(self.output_dir, name)
 
         # Compute the *current* dataset fingerprint up-front so we can both
         # (a) compare it to the saved one to detect mid-run dataset changes
@@ -1335,11 +1358,14 @@ class TaggerTrainer:
                 )
                 if loaded:
                     print(f"[TaggerTrainer] Optimizer state restored from {resume_ckpt_name}")
+                elif native_run:
+                    raise ValueError("native optimizer state could not be restored")
 
             # Restore tag metrics accumulator from latest_tag_metrics.npz so
             # histogram data is not discarded across resume boundaries.
             if _save_tag_metrics_enabled:
-                _metrics_npz = os.path.join(self.output_dir, "latest_tag_metrics.npz")
+                metrics_name = resume_ckpt_name if native_run and resume_ckpt_name else "latest"
+                _metrics_npz = os.path.join(self.output_dir, f"{metrics_name}_tag_metrics.npz")
                 restored = _tag_metrics_acc.restore_from_npz(_metrics_npz)
                 if restored:
                     print(
@@ -1357,7 +1383,8 @@ class TaggerTrainer:
 
             # Restore OOD embedding reservoir for resume continuity
             if _save_ood_ref_enabled:
-                _ood_reservoir_npz = os.path.join(self.output_dir, "latest_ood_reservoir.npz")
+                reservoir_name = resume_ckpt_name if native_run and resume_ckpt_name else "latest"
+                _ood_reservoir_npz = os.path.join(self.output_dir, f"{reservoir_name}_ood_reservoir.npz")
                 _ood_emb_acc.restore_from_reservoir(_ood_reservoir_npz)
 
             # Fast-forward LR scheduler to match resumed global_step
@@ -1669,6 +1696,7 @@ class TaggerTrainer:
                     )
                     _save_optimizer_state(optimizer, self.output_dir, ckpt_name)
                     _save_artifacts(ckpt_name, epoch_boundary=False)
+                    _commit_native(ckpt_name)
                     if keep_last_n_checkpoints > 0:
                         _prune_step_checkpoints(self.output_dir, keep_last_n_checkpoints)
                     self._emit("checkpoint", {
@@ -1759,6 +1787,7 @@ class TaggerTrainer:
                 )
                 _save_optimizer_state(optimizer, self.output_dir, ckpt_name)
                 _save_artifacts(ckpt_name, epoch_boundary=False)
+                _commit_native(ckpt_name)
                 # Also update "latest" to the stop position
                 _save_model_checkpoint(model, self.output_dir, "latest", metadata, checkpoint_save_mode)
                 _save_training_state(
@@ -1771,6 +1800,7 @@ class TaggerTrainer:
                 )
                 _save_optimizer_state(optimizer, self.output_dir, "latest")
                 _save_artifacts("latest", epoch_boundary=False)
+                _commit_native("latest")
                 self._emit("checkpoint", {
                     "name": ckpt_name,
                     "step": global_step,
@@ -1863,6 +1893,7 @@ class TaggerTrainer:
                     native_runtime=_native_runtime(-1),
                 )
                 _save_optimizer_state(optimizer, self.output_dir, "latest")
+                _commit_native("latest")
 
             # Rotate epoch histograms: prev ← cur, cur ← zero. This also finalizes
             # the per-epoch exposure delta used by train-count deficiency.
@@ -2793,6 +2824,8 @@ def run_tagger_training(
                     print(f"[TaggerTraining] Loaded old vocabulary ({old_vocabulary.num_tags} tags) "
                           f"from {_src} for head alignment")
                 except Exception as _e:
+                    if config.get("architecture") == "foveatag":
+                        raise ValueError("native checkpoint vocabulary could not be restored") from _e
                     print(f"[TaggerTraining] WARNING: could not load old vocabulary: {_e}")
             else:
                 print(f"[TaggerTraining] WARNING: no vocabulary file found for {resume_ckpt_name}; "

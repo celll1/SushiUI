@@ -111,8 +111,19 @@ views, uses deterministic validation sampling without consuming training RNG,
 checks the source-pixel cap before decode and retains the run's CUDA precision.
 It restores the prior train/eval mode even if prediction fails. Loaded SigLIP2
 calibration and OOD references are not applied to the native model; native
-checkpoint loading, export-path publication and live concurrency checks remain
-separate pending integration work.
+live concurrency checks remain separate pending integration work.
+
+The historical `/tagger/siglip2/load` and `/predict` endpoints also recognize
+native shared-trainer FoveaTag metadata. Full unmerged and merged checkpoints
+are self-contained; compact LoRA exports require their fingerprint-matched
+scratch encoder. Native view configuration, seed, decode cap and precision
+come from the artifact, not NaFlex patch settings or a downloaded processor.
+Sibling vocabulary and calibration/OOD artifacts follow the native metadata
+reference. Native OOD uses overview-plus-mixed-evidence features, not the MIL
+classifier input. Model-only `best_f1` files do not require optimizer state.
+Native ONNX and inference-manager merge operations are explicitly refused;
+the trainer already produces native merged exports. Export-path publication,
+live API/UI deployment and concurrency verification remain pending.
 
 OOD reservoirs now retain their owned sampling RNG and capacity. Native restore
 is strict; legacy reservoir files without RNG remain readable in the legacy

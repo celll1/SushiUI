@@ -195,6 +195,32 @@ class FoveaTrainerModel(nn.Module):
         }
 
 
+def load_native_checkpoint(path, *, base_encoder_path=None):
+    """Load model-only artifacts without requiring optimizer/resume files."""
+    path = Path(path)
+    metadata = json.loads(path.with_name(f"{path.stem}_metadata.json").read_text(encoding="utf-8"))
+    if metadata.get("kind") == "foveatag_inference_export":
+        return load_inference_export(path, base_encoder_path=base_encoder_path)
+    if (metadata.get("format_version") != 1 or metadata.get("architecture") != "foveatag"
+            or metadata.get("kind") != "foveatag_shared_trainer_weights"
+            or metadata.get("resume_weight_mode") != "full_unmerged"
+            or metadata.get("contains_frozen_base") is not True):
+        raise ValueError("not a supported self-contained native FoveaTag checkpoint")
+    config = dict(metadata["encoder_config"])
+    for key in ("widths", "depths", "attention_heads"):
+        config[key] = tuple(config[key])
+    state = load_file(str(path), device="cpu")
+    instance = FoveaTrainerModel(
+        state["head.weight"].shape[0], encoder_config=FoveaEncoderConfig(**config),
+        feature_dim=metadata["feature_dim"], evidence_slots=metadata["evidence_slots_per_view"],
+        pool_heads=metadata["pool_heads"], temperature=metadata["temperature"],
+        training_method=metadata["training_method"], lora_rank=metadata["lora_rank"],
+        lora_alpha=metadata["lora_alpha"],
+    )
+    instance.load_state_dict(state, strict=True)
+    return instance.eval(), metadata
+
+
 def load_inference_export(path, *, base_encoder_path=None):
     path = Path(path)
     metadata = json.loads(path.with_name(f"{path.stem}_metadata.json").read_text(encoding="utf-8"))

@@ -293,7 +293,7 @@ class TaggerTrainerHandle:
         vocab    = self._vocabulary
         native = getattr(self._model, "architecture", None) == "foveatag"
         # A loaded SigLIP2 checkpoint is not native calibration or feature space.
-        _assist = {} if native else (assist or {})
+        _assist = (assist or {}) if not native or (assist or {}).get("architecture") == "foveatag" else {}
         _ood_ref = _assist.get("ood_ref") if use_ood_detection else None
 
         with PILImage.open(io.BytesIO(image_bytes)) as source:
@@ -322,7 +322,8 @@ class TaggerTrainerHandle:
                 if e.dim() > 1:
                     e = e[0]
                 _cap["emb"] = e.numpy()
-            _hook = self._model.head.register_forward_pre_hook(_capture_cls_emb)
+            _hook = (self._model.register_ood_feature_hook(_capture_cls_emb)
+                if native else self._model.head.register_forward_pre_hook(_capture_cls_emb))
 
         was_training = self._model.training
         self._model.eval()

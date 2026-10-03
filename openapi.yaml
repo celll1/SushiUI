@@ -8034,7 +8034,12 @@ paths:
   /tagger/siglip2/load:
     post:
       tags: [tagger]
-      summary: Load a SigLIP2 tagger checkpoint
+      summary: Load a SigLIP2 or native FoveaTag tagger checkpoint
+      description: |
+        The historical endpoint also accepts native shared-trainer FoveaTag weights
+        and compact/merged native exports. Native inputs come from checkpoint view
+        metadata; compact exports require their fingerprint-matched scratch encoder.
+        Per-checkpoint vocabulary is authoritative. Native ONNX export is not yet supported.
       requestBody:
         required: true
         content:
@@ -8052,7 +8057,11 @@ paths:
   /tagger/siglip2/predict:
     post:
       tags: [tagger]
-      summary: Predict tags with the SigLIP2 tagger
+      summary: Predict tags with the loaded tagger
+      description: |
+        Native FoveaTag uses deterministic source-local views and the checkpoint's
+        source-pixel cap and precision. max_num_patches applies only to NaFlex;
+        it does not alter the native view budget.
       requestBody:
         required: true
         content:

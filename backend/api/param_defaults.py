@@ -3699,6 +3699,12 @@ CONCEPT_EXPOSURE_DEFAULTS: Dict[str, Any] = {
 # Tagger Training (TaggerTrainingRunCreateRequest)
 # ---------------------------------------------------------------------------
 
+TAGGER_DIAGNOSTIC_DEFAULTS: Dict[str, Any] = {
+    "enabled": False,
+    "interval_steps": 15000,
+    "focus_preview": False,
+}
+
 TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "architecture": "siglip2",
     "fovea_overview_size": 448,

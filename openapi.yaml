@@ -8247,6 +8247,57 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /tagger-training/runs/{run_id}/diagnostics:
+    parameters:
+      - {name: run_id, in: path, required: true, schema: {type: string}}
+    get:
+      summary: Get optional anonymous General-only FoveaTag diagnostics
+      responses:
+        '200':
+          description: Settings, published panels, worker status and sanitized error
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        '404': {description: Run not found}
+        '422': {description: Unsupported run architecture}
+    put:
+      summary: Configure diagnostics independently of the frozen training contract
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                enabled: {type: boolean, default: false, example: false, description: Opt-in periodic generation}
+                interval_steps: {type: integer, minimum: 1000, maximum: 1000000, default: 15000, example: 15000, description: Minimum catalog-step interval; evaluated at saved checkpoints}
+                focus_preview: {type: boolean, default: false, example: false, description: Show clearly marked C-policy preview for A/B; never claim it was used}
+      responses:
+        '200': {description: Updated diagnostic status}
+        '404': {description: Run not found}
+        '422': {description: Invalid settings or unsupported architecture}
+    post:
+      summary: Generate one checkpoint-based panel regardless of periodic enablement
+      responses:
+        '200': {description: Current status; busy worker is not duplicated}
+        '409': {description: Manual generation requires a paused run}
+        '404': {description: Run not found}
+        '422': {description: Unsupported run or unavailable checkpoint}
+  /tagger-training/runs/{run_id}/diagnostics/images/{name}:
+    get:
+      summary: Serve a published anonymous diagnostic PNG
+      parameters:
+        - {name: run_id, in: path, required: true, schema: {type: string}}
+        - {name: name, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: Published General-only panel
+          content:
+            image/png:
+              schema: {type: string, format: binary}
+        '404': {description: Run or published image not found}
+        '422': {description: Invalid name or unsupported architecture}
   /tagger-training/foveatag/import:
     post:
       summary: Register an existing paused Phase 3 FoveaTag comparison

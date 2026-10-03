@@ -51,7 +51,7 @@ from api.param_defaults import (
     UPSCALE_DEFAULTS, TXT2VID_DEFAULTS, IMG2VID_DEFAULTS, REF2VID_DEFAULTS,
     TXT2AUD_DEFAULTS, AUD2AUD_DEFAULTS, YUE2_REQUEST_DEFAULT,
     OUTPAINT_AUDIO_DEFAULTS,
-    TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS, VAE_TRAINING_DEFAULTS,
+    TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS, TAGGER_DIAGNOSTIC_DEFAULTS, VAE_TRAINING_DEFAULTS,
     DATASET_DEFAULTS,
     LR_RETARGET_DEFAULTS,
     LR_PREVIEW_DEFAULTS,
@@ -21889,6 +21889,68 @@ def resume_tagger_danbooru(run_id: str, training_db: Session = Depends(get_train
         raise HTTPException(status_code=400, detail="Run output dir unavailable")
     _write_danbooru_resume(run.output_dir)
     return {"success": True}
+
+
+class TaggerDiagnosticSettings(BaseModel):
+    enabled: bool = TAGGER_DIAGNOSTIC_DEFAULTS["enabled"]
+    interval_steps: int = Field(default=TAGGER_DIAGNOSTIC_DEFAULTS["interval_steps"], ge=1000, le=1000000)
+    focus_preview: bool = TAGGER_DIAGNOSTIC_DEFAULTS["focus_preview"]
+
+    class Config:
+        extra = "forbid"
+
+
+def _diagnostic_run(run_id, training_db):
+    run = training_db.query(TaggerTrainingRun).filter_by(run_id=run_id).first()
+    if run is None:
+        raise HTTPException(404, "Run not found")
+    return run
+
+
+@router.get("/tagger-training/runs/{run_id}/diagnostics")
+def get_tagger_diagnostics(run_id: str, training_db: Session = Depends(get_training_db)):
+    from api.tagger_diagnostics import status
+    try:
+        return status(_diagnostic_run(run_id, training_db))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.put("/tagger-training/runs/{run_id}/diagnostics")
+def set_tagger_diagnostics(run_id: str, request: TaggerDiagnosticSettings, training_db: Session = Depends(get_training_db)):
+    from api.tagger_diagnostics import configure
+    try:
+        return configure(_diagnostic_run(run_id, training_db), request.model_dump())
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/tagger-training/runs/{run_id}/diagnostics")
+def create_tagger_diagnostic(run_id: str, training_db: Session = Depends(get_training_db)):
+    from api.tagger_diagnostics import schedule, status
+    from api.foveatag_training import _lifecycle_lock
+    with _lifecycle_lock:
+        run = _diagnostic_run(run_id, training_db)
+        training_db.refresh(run)
+        if run.status in ("running", "starting"):
+            raise HTTPException(409, "Manual generation requires a paused run; periodic generation runs at checkpoint boundaries")
+        try:
+            schedule(run, force=True)
+            return status(run)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(422, "Diagnostic checkpoint unavailable") from exc
+
+
+@router.get("/tagger-training/runs/{run_id}/diagnostics/images/{name}")
+def get_tagger_diagnostic_image(run_id: str, name: str, training_db: Session = Depends(get_training_db)):
+    from api.tagger_diagnostics import image_path
+    try:
+        path = image_path(_diagnostic_run(run_id, training_db), name)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, max-age=86400"})
 
 
 @router.get("/tagger-training/runs/{run_id}/metrics")

@@ -136,6 +136,10 @@ def run_direct_joint(plan, *, progress_callback, run_control, resume=None, segme
             if segment_steps is not None and step - start_step >= segment_steps:
                 status = "stopped_for_owner_review"
                 break
+        save_inference_artifact(root / "review.safetensors", model, cfg, router=router,
+            vocabulary=vocab.to_dict(), provenance={"initialization": "scratch", "external_weights": [],
+                "stage": "direct_joint_owner_review", "acceptance": "awaiting_owner_visual_review",
+                "global_step": step, "epoch": epoch, "threshold": threshold})
         summary = {"status": status, "global_step": step, "epoch": epoch, "sample_offset": offset, "train": train_summary,
             "acceptance": "awaiting_owner_visual_review", "history": history}
         _write_json_atomic(root / "summary.json", summary)

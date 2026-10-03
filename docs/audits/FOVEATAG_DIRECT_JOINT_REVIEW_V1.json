@@ -1,0 +1,19 @@
+{
+  "kind": "foveatag_direct_joint_review_implementation",
+  "owner_direction": "Abandon A/B/C and review actual learned focus/prediction diagnostics visually",
+  "abandoned_run": {"run_id": "18e75bfd-4145-46c6-a155-d0ac83e2fa22", "status": "stopped", "step": 43322, "resume_state_retained": true},
+  "joint_run": {"run_id": "bcb720cc-2077-4314-b794-33f11c730345", "name": "FoveaTag learned router / human review", "output_dir": "D:\\celll1\\webui_cl\\outputs\\foveatag_joint_review_20261004", "review_updates_per_start": 1000},
+  "view_policy": {"overview": "fixed 448x448 full-image resize without artificial bands", "overview_tradeoff": "aspect distortion; extrapolation and shape-dependent quality are not assumed solved", "locals": "square source-native 256x256 views shifted/shrunk inside source bounds"},
+  "optimization": {"encoder_head_router": "joint", "candidate_count": 16, "K": 4, "training_random_slots": 1, "diagnostic_random_slots": 0, "oracle_interval": 16, "oracle_chunk_size": 4, "initialization": "own scratch-derived stopped supervised weights; new router and optimizer", "external_weights": []},
+  "verified": {
+    "cpu_regressions": {"passed": 457, "opt_in_gpu_skipped": 16},
+    "compile_and_real_import": "passed; CUDA initialization suppressed",
+    "openapi_defaults": "match",
+    "real_gpu_training": {"checkpoint_step": 595, "sample_offset": 4760, "model_optimizer_states": 232, "router_optimizer_states": 8, "router_optimizer_updates": 38},
+    "cpu_restore_of_real_checkpoint": {"model": true, "router": true, "optimizer": true, "scheduler_step": 595, "python_torch_cuda_rng_saved": true, "cuda_initialized_by_verification": false},
+    "actual_routed_diagnostic": {"step": 250, "learned_routing": true, "native_focus_used": true, "opened_by_agent": false},
+    "frontend": "static types/authenticated-blob fetching/defaults/state/stop-start/error paths reviewed; owner build/type-check not run; diagnostic image not visually inspected"
+  },
+  "acceptance": "awaiting_owner_visual_review",
+  "not_claimed": ["useful focus", "tagger quality superiority", "passed A/B/C gate", "completed normal inference-manager integration", "repeated adaptive refinement"]
+}

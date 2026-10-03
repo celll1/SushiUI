@@ -627,9 +627,11 @@ frequency, and local `logsumexp` head each require an ablation. Local-view
 teacher distillation (section 5.1) is compared against pure self-supervised
 pretraining at equal images presented and optimizer steps.
 
-### 8.3 Go/no-go gates
+### 8.3 Historical numeric gate proposal (superseded by owner visual review)
 
-Do not integrate the new architecture into the API until measurements show:
+The abandoned staged protocol proposed the following requirements. They are
+not prerequisites for the current experimental joint-review API; the current
+owner-directed acceptance process is specified in section 1:
 
 - a material gain on the ground-illustration fine-detail slice at matched
   false-positive rate;

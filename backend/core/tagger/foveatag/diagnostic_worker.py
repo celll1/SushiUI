@@ -48,6 +48,9 @@ def render(job):
     request = json.loads((job / "request.json").read_text())
     comparison = Path(request["comparison"])
     args = request["arguments"]
+    index_path = job.parent / "index.json"
+    previous = json.loads(index_path.read_text()) if index_path.is_file() else {"items": []}
+    pinned_id = previous["items"][0]["sample_id"] if previous["items"] else None
     payload = torch.load(job / "checkpoint.pt", map_location="cpu", weights_only=False)
     contract = payload["run_contract"]
     mode = contract["input_mode"]
@@ -68,6 +71,8 @@ def render(job):
                 AND (c.content LIKE '%general%' OR c.tag_data LIKE '%general%'))
                 ORDER BY i.id LIMIT 200""", (domain,)).fetchall()
             for item_id, image_path in candidates:
+                if pinned_id is not None and item_id != pinned_id:
+                    continue
                 tags = set()
                 for data, content in db.execute("SELECT tag_data,content FROM dataset_captions WHERE item_id=? AND is_tags_format=1", (item_id,)):
                     tags.update(resolve_caption_tags(data, content))
@@ -121,11 +126,10 @@ def render(job):
     preview = request["focus_preview"] and mode != "source_native"
     focus = build_supervised_views(image, cfg.views, seed=args["seed"], training=False,
         input_mode="source_native") if preview else views
-    fig = Figure(figsize=(17, 11))
-    axes = fig.subplots(1, 3)
+    fig = Figure(figsize=(15, 10))
+    axes = fig.subplots(1, 2)
     axes[0].imshow(image)
     axes[0].axis("off")
-    axes[0].set_title("Input: annotated Rating:General")
     y = np.arange(len(rows))
     axes[1].barh(y, [r[1] for r in rows], color=[r[2] for r in rows])
     axes[1].set_yticks(y, [r[0] for r in rows], fontsize=max(3, min(8, 650 / max(1, len(rows)))))
@@ -133,23 +137,21 @@ def render(job):
     axes[1].axvline(threshold, color="black", linestyle="--")
     axes[1].set_title(" / ".join(f"{key}={count}" for key, count in counts.items()))
     axes[1].set_xlabel("Probability; top 100 per TP / FP / FN; TN count only")
-    axes[2].imshow(image)
     geometry = []
     for index, spec in enumerate(focus.local_specs):
         box = spec.source_box
         color = f"C{index % 10}"
-        axes[2].add_patch(Rectangle((box.x, box.y), box.width, box.height,
+        axes[0].add_patch(Rectangle((box.x, box.y), box.width, box.height,
             fill=False, linewidth=2, edgecolor=color, linestyle="--" if preview else "-"))
-        axes[2].text(max(0, box.x), max(0, box.y), f"L{index + 1}: {spec.pixels_per_canvas_pixel:.2f} source px/canvas px", color=color, fontsize=8)
+        axes[0].text(max(0, box.x), max(0, box.y), f"L{index + 1}: {spec.pixels_per_canvas_pixel:.2f} source px/canvas px", color=color, fontsize=8)
         geometry.append({"x": box.x, "y": box.y, "width": box.width, "height": box.height,
             "source_pixels_per_canvas_pixel": spec.pixels_per_canvas_pixel})
-    axes[2].set_xlim(0, image.width)
-    axes[2].set_ylim(image.height, 0)
-    axes[2].axis("off")
+    axes[0].set_xlim(0, image.width)
+    axes[0].set_ylim(image.height, 0)
     label = "C policy PREVIEW (NOT used by this inference)" if preview else (
         "Source-native views USED (not attribution)" if mode == "source_native" else
         "No source-native focus: overview only" if mode == "overview_only" else "Placebo views from overview; NOT native focus")
-    axes[2].set_title(label, fontsize=10)
+    axes[0].set_title("Input: annotated Rating:General\n" + label, fontsize=10)
     fig.suptitle(f"FoveaTag {mode} / checkpoint epoch cursor {epoch}, step {step}")
     fig.text(.5, .02, "Anonymous group ranks, no tag names/IDs. Annotation-based FP may include missing labels. Boxes show input views, not causal evidence or a learned router.", ha="center", fontsize=8)
     fig.tight_layout(rect=(0, .04, 1, .96))
@@ -158,8 +160,6 @@ def render(job):
     temporary = root / (name + ".tmp")
     fig.savefig(temporary, format="png", dpi=120)
     os.replace(temporary, root / name)
-    index_path = root / "index.json"
-    previous = json.loads(index_path.read_text()) if index_path.is_file() else {"items": []}
     item = {"filename": name, "mode": mode, "step": step, "epoch": epoch,
         "catalog_step": request["catalog_step"], "counts": counts, "threshold": threshold,
         "sample_id": item_id, "native_focus_used": mode == "source_native",

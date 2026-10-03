@@ -108,3 +108,16 @@ def test_render_synthetic_general_and_exact_view_geometry(tmp_path, mode, previe
     assert len(item["local_boxes"]) == (0 if mode == "overview_only" and not preview else 2)
     assert (root / item["filename"]).stat().st_size > 0
     assert "anonymous_a" not in (root / "index.json").read_text()
+    if mode == "overview_only" and not preview:
+        with sqlite3.connect(database) as db:
+            db.execute("INSERT INTO dataset_items VALUES(0,29,?)", (str(source),))
+            db.execute("INSERT INTO dataset_captions VALUES(0,1,NULL,'general')")
+        job.mkdir()
+        torch.save({"model":model.state_dict(), "run_contract":{"input_mode":mode}, "global_step":2000,
+            "epoch":0, "best_threshold":.35}, job / "checkpoint.pt")
+        (job / "request.json").write_text(json.dumps({"comparison":str(tmp_path), "catalog_step":2000,
+            "arguments":args, "focus_preview":preview}))
+        completed = subprocess.run([sys.executable, worker.__file__, str(job)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+        assert completed.returncode == 0
+        assert json.loads((root / "index.json").read_text())["items"][0]["sample_id"] == 1

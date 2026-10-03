@@ -65,6 +65,10 @@
       "retention": "Expired step bundles remove both export files; latest and best_f1 remain outside step retention.",
       "ui_requirement": "Explain compact/merged inference export versus full unmerged resume storage and expose the export path; do not label the primary resume file compact or merged."
     },
+    "live_prediction": {
+      "implemented_on_branch": "The native shared trainer attaches a deterministic inference processor. The handle passes coordinate-aware views, checks the input pixel cap before decode, retains CUDA autocast precision and restores train/eval state on success or failure. It does not borrow SigLIP2 calibration or OOD feature-space references.",
+      "verification": "Six synthetic CPU prediction tests cover full/LoRA, train/eval restoration, deterministic outputs, unchanged weights/RNG, foreign-assist exclusion, pre-decode cap refusal and failure cleanup. They do not establish live CUDA concurrency, checkpoint loading or API/UI deployment."
+    },
     "remaining": [
       "Verify the complete native shared training loop, metrics, online data and optimizer resume contracts, not only the model/data protocols.",
       "Finish online/metrics feature-specific verification. Keep the existing atomic A/B/C runner's resume contract separate and unchanged.",

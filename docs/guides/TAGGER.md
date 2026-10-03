@@ -106,6 +106,14 @@ repository initialization are refused. The configuration form exposes the
 native input settings alongside shared training options. Deployment and live
 UI verification remain pending; the frozen comparison uses its import endpoint.
 
+The native shared training-model prediction handle accepts coordinate-aware
+views, uses deterministic validation sampling without consuming training RNG,
+checks the source-pixel cap before decode and retains the run's CUDA precision.
+It restores the prior train/eval mode even if prediction fails. Loaded SigLIP2
+calibration and OOD references are not applied to the native model; native
+checkpoint loading, export-path publication and live concurrency checks remain
+separate pending integration work.
+
 OOD reservoirs now retain their owned sampling RNG and capacity. Native restore
 is strict; legacy reservoir files without RNG remain readable in the legacy
 path.

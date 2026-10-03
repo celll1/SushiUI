@@ -111,16 +111,24 @@ def test_shared_data_contract_is_immutable_across_branches(tmp_path):
 
 
 def test_shared_training_contract_is_immutable_across_branches(tmp_path):
+    from dataclasses import asdict
+    from core.tagger.foveatag.views import ViewConfig
     contract = {
         "format_version": 1,
         "kind": "foveatag_phase3_shared_training",
         "optimizer": {"learning_rate": 1e-4},
+        "views": asdict(ViewConfig()),
     }
 
     digest = _bind_shared_training_contract(tmp_path, contract)
+    path = tmp_path / "shared_training_contract.json"
+    saved = path.read_bytes()
+    modified = path.stat().st_mtime_ns
 
     assert len(digest) == 64
     assert _bind_shared_training_contract(tmp_path, contract) == digest
+    assert path.read_bytes() == saved
+    assert path.stat().st_mtime_ns == modified
     changed = {**contract, "optimizer": {"learning_rate": 2e-4}}
     try:
         _bind_shared_training_contract(tmp_path, changed)
@@ -128,6 +136,7 @@ def test_shared_training_contract_is_immutable_across_branches(tmp_path):
         assert "shared training contract" in str(error)
     else:
         raise AssertionError("expected changed Phase-3 training settings to fail")
+    assert path.read_bytes() == saved
 
 
 def test_train_epoch_stops_at_exact_resumable_sample_offset(tmp_path):

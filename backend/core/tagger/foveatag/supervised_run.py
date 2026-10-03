@@ -989,7 +989,8 @@ def _bind_shared_contract(
 ) -> str:
     if path.is_file():
         existing = json.loads(path.read_text(encoding="utf-8"))
-        if existing != contract:
+        # JSON turns view-config tuples into arrays without changing the contract.
+        if existing != json.loads(json.dumps(contract, allow_nan=False)):
             raise ValueError(mismatch)
     else:
         _write_json_atomic(path, contract)

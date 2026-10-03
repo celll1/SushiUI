@@ -7,6 +7,25 @@ share checkpoint assumptions between them.
 
 ## Ownership
 
+The owner abandoned the A/B/C prerequisite at step 43,322. The new
+`/tagger-training/foveatag/joint-review` route registers a separate
+`foveatag_joint_review` run using only the stopped scratch run's own weights.
+It trains encoder/head/router together, uses a new optimizer and an explicit
+fixed-square, unpadded overview policy, and retains square source-native locals
+inside source boundaries. Shape distortion of the overview is a recorded
+tradeoff. No fabricated gate or external tagger weights are used.
+Each start is bounded by `review_steps`; it stops with a resumable joint
+checkpoint for owner visual review. Defaults live in
+`TAGGER_JOINT_REVIEW_DEFAULTS`, not the generic SigLIP2 creation request.
+The monitor's loss curve uses the classification ASL term; the joint summary
+records classification/ranking/diversity terms separately.
+Diagnostics are enabled for this review workflow but remain optional. They
+load the actual joint router checkpoint and call staged routed inference;
+selected native boxes are overlaid on the same source image. Neither a numeric
+gate nor the agent's inspection of generated images substitutes for owner
+review. Normal inference-manager integration and repeated refinement remain
+separate unfinished production work.
+
 Registered `foveatag_phase3` comparison monitors expose optional diagnostic
 panels under `/tagger-training/runs/{run_id}/diagnostics`. They default to OFF;
 settings can be changed while running without changing the frozen A/B/C training
@@ -29,7 +48,7 @@ preview for A/B is explicitly marked as NOT used by that inference. Boxes are
 input footprints, not causal attribution or a trained router. The monitor shows
 the latest published panel; the metadata index retains the latest 12 entries.
 Disabling generation does not delete prior images or cancel an in-flight worker.
-This diagnostic option currently supports registered comparisons, not general
+This diagnostic option supports registered comparisons and joint-review runs, not general
 SigLIP2/native trainer runs. Frontend build/type-check remains owner-run.
 
 | Concern | Owner |

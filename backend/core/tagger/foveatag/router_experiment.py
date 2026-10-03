@@ -231,7 +231,7 @@ def run_router_training(
         "warmup_steps": min(warmup_steps, max(total_steps - 1, 0)),
         "checkpoint_every_steps": checkpoint_every_steps,
         "seed": seed,
-        "views": asdict(candidate_views),
+        "views": candidate_views.to_dict(),
         "diversity_weight": diversity_weight,
         "max_source_pixels": max_source_pixels,
         "gate_decision": gate["decision"],

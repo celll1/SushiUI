@@ -69,7 +69,7 @@ export default function TaggerDiagnosticsPanel({ runId, active }: { runId: strin
       <label className="flex gap-2 text-xs text-gray-300">
         <input type="checkbox" checked={draft.focus_preview} disabled={pending}
           onChange={e => setDraft({ ...draft, focus_preview: e.target.checked })} />
-        A/BではC方式のfocusプレビューを併記（実際の使用領域とは別）
+        旧A/B診断のみ：C方式のプレビューを併記（router Runには適用しない）
       </label>
       <div className="flex gap-2">
         <button disabled={pending || !Number.isInteger(draft.interval_steps) || draft.interval_steps < 1000 || draft.interval_steps > 1000000}
@@ -78,7 +78,7 @@ export default function TaggerDiagnosticsPanel({ runId, active }: { runId: strin
           onClick={() => void update(true)} className="text-xs bg-gray-700 rounded px-2 py-1 disabled:opacity-40">今すぐ作成（停止中のみ）</button>
       </div>
     </>}
-    <p className="text-xs text-gray-400">Generalの固定画像。TP/FP/FNは各上位100件、TNは件数のみ。CPUで別実行し、保存境界で判定します。focus枠は入力範囲であり、タグの根拠や学習済みrouterではありません。</p>
+    <p className="text-xs text-gray-400">Generalの固定画像。TP/FP/FNは各上位100件、TNは件数のみ。CPUで別実行。router Runでは学習中routerが実際に選択した原画像領域を表示します。枠だけでタグへの寄与や選択の正しさを保証するものではなく、目視レビュー待ちです。</p>
     {state?.busy && <p className="text-xs text-gray-400">診断画像を作成中…</p>}
     {(error || state?.error) && <p className="text-xs text-red-400">{error || state?.error}</p>}
     {latest && <>

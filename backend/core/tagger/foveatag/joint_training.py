@@ -71,6 +71,7 @@ class FoveaJointTrainer:
         self.mixed_precision = mixed_precision
         self.max_grad_norm = max_grad_norm
         self.scheduler = scheduler
+        self.batch_boundary = None
         self.scaler = torch.amp.GradScaler(
             "cuda",
             enabled=self.device.type == "cuda" and mixed_precision == torch.float16,
@@ -85,6 +86,8 @@ class FoveaJointTrainer:
     ) -> Optional[FoveaJointTrainResult]:
         if global_step < 0:
             raise ValueError("global_step must be non-negative")
+        if self.batch_boundary is not None:
+            self.batch_boundary()
         self.model.train()
         self.router.train()
         batch = batch.stage_for_routing(self.device, non_blocking=True)

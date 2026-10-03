@@ -9690,6 +9690,18 @@ export const resumeTrainingDanbooru = async (runId: number): Promise<{ success: 
   return response.data;
 };
 
+export interface FoveaJointReviewRequest {
+  source_run_id: string; output_dir: string; run_name?: string;
+  batch_size?: number; workers?: number; epochs?: number; epoch_samples?: number;
+  candidate_count?: number; selection_budget?: number; random_count?: number;
+  oracle_interval?: number; oracle_chunk_size?: number; learning_rate?: number;
+  weight_decay?: number; warmup_steps?: number; router_weight?: number;
+  checkpoint_every_steps?: number; log_every?: number; review_steps?: number;
+  external_flash?: boolean;
+}
+export const createFoveaJointReview = async (request: FoveaJointReviewRequest): Promise<TaggerTrainingRun> =>
+  (await api.post("/tagger-training/foveatag/joint-review", request)).data;
+
 export interface TaggerDiagnosticSettings {
   enabled: boolean;
   interval_steps: number;

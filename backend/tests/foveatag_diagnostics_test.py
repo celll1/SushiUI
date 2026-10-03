@@ -63,7 +63,7 @@ def test_groups_ignore_unknown_and_retain_fn():
     assert {key: int(value.sum()) for key, value in groups.items()} == {"TP": 1, "FP": 1, "FN": 1, "TN": 1}
 
 
-@pytest.mark.parametrize("mode,preview,native", [("overview_only", False, False), ("overview_only", True, False), ("overview_placebo", False, False), ("source_native", False, True)])
+@pytest.mark.parametrize("mode,preview,native", [("overview_only", False, False), ("overview_only", True, False), ("overview_placebo", False, False), ("source_native", False, True), ("routed", False, True)])
 def test_render_synthetic_general_and_exact_view_geometry(tmp_path, mode, preview, native):
     import sqlite3
     from PIL import Image
@@ -75,6 +75,11 @@ def test_render_synthetic_general_and_exact_view_geometry(tmp_path, mode, previe
         encoder=FoveaEncoderConfig(widths=(8,16,32,48), depths=(1,1,1,1), attention_heads=(2,3)),
         views=ViewConfig(overview_size=32, local_size=32, local_views=2))
     model = FoveaTagger(3, encoder_config=cfg.encoder, feature_dim=16, pool_heads=2)
+    if mode == "routed":
+        from dataclasses import replace
+        from core.tagger.foveatag.artifact import InferenceMode
+        cfg = replace(cfg, views=replace(cfg.views, overview_resize_mode="stretch", local_border_mode="shift_inside"),
+            inference_modes={"balanced": InferenceMode(32,2)})
     root = tmp_path / "diagnostics"
     job = root / "job-synthetic"
     job.mkdir(parents=True)
@@ -92,6 +97,11 @@ def test_render_synthetic_general_and_exact_view_geometry(tmp_path, mode, previe
     (tmp_path / "shared_initialization_metadata.json").write_text(json.dumps({"initialization_contract":{"model":cfg.to_dict()}}))
     torch.save({"model":model.state_dict(), "run_contract":{"input_mode":mode}, "global_step":1000,
         "epoch":0, "best_threshold":.35}, job / "checkpoint.pt")
+    if mode == "routed":
+        from core.tagger.foveatag.router import EvidenceRouter
+        router = EvidenceRouter(cfg.encoder.widths[2], routing_dim=cfg.routing_dim, routing_slots=cfg.routing_slots)
+        torch.save({"kind":"foveatag_joint_training", "model":model.state_dict(), "router":router.state_dict(),
+            "run_contract":{"artifact_config":cfg.to_dict()}, "global_step":1000, "epoch":0, "best_threshold":.35}, job / "checkpoint.pt")
     args = {"vocabulary_path":str(vocab_path), "datasets_db":str(database), "train_counts":{"29":1},
         "photo_dataset_id":16, "max_source_pixels":40000000, "seed":20260929}
     (job / "request.json").write_text(json.dumps({"comparison":str(tmp_path), "catalog_step":1000,
@@ -104,6 +114,7 @@ def test_render_synthetic_general_and_exact_view_geometry(tmp_path, mode, previe
     assert completed.returncode == 0
     item = json.loads((root / "index.json").read_text())["items"][0]
     assert item["native_focus_used"] is native
+    assert item["learned_routing"] is (mode == "routed")
     assert item["focus_preview"] is preview
     assert len(item["local_boxes"]) == (0 if mode == "overview_only" and not preview else 2)
     assert (root / item["filename"]).stat().st_size > 0

@@ -3705,6 +3705,15 @@ TAGGER_DIAGNOSTIC_DEFAULTS: Dict[str, Any] = {
     "focus_preview": False,
 }
 
+TAGGER_JOINT_REVIEW_DEFAULTS: Dict[str, Any] = {
+    "batch_size": 8, "workers": 8, "epochs": 10, "epoch_samples": 240000,
+    "candidate_count": 16, "selection_budget": 4, "random_count": 1,
+    "oracle_interval": 16, "oracle_chunk_size": 4, "learning_rate": 0.0001,
+    "weight_decay": 0.0001, "warmup_steps": 1000, "router_weight": 1.0,
+    "checkpoint_every_steps": 250, "log_every": 25, "review_steps": 1000,
+    "external_flash": True,
+}
+
 TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "architecture": "siglip2",
     "fovea_overview_size": 448,

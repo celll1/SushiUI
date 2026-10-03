@@ -259,7 +259,7 @@ def run_joint_training(
         "warmup_steps": min(warmup_steps, max(total_steps - 1, 0)),
         "checkpoint_every_steps": checkpoint_every_steps,
         "seed": seed,
-        "views": asdict(candidate_views),
+        "views": candidate_views.to_dict(),
         "router_weight": router_weight,
         "diversity_weight": diversity_weight,
         "max_source_pixels": max_source_pixels,
@@ -506,6 +506,7 @@ def _train_epoch(
     seed: int,
     progress_callback: Optional[Callable[[str, Mapping[str, Any]], None]],
     run_control: Optional[FoveaRunControl],
+    checkpoint_callback: Optional[Callable[[], None]] = None,
 ) -> tuple[dict[str, Any], int, int, int, Optional[str], dict[str, Any]]:
     if min(epoch, sample_offset, global_step) < 0 or sample_offset > len(dataset):
         raise ValueError("joint epoch progress is invalid")
@@ -514,6 +515,8 @@ def _train_epoch(
     accumulator = _restore_accumulator(initial_accumulator)
     if run_control is not None and run_control.should_stop():
         _save_progress(trainer, output_dir, epoch, sample_offset, global_step, best_f1, best_threshold, run_contract, history, accumulator)
+        if checkpoint_callback:
+            checkpoint_callback()
         return _training_summary(accumulator), sample_offset, global_step, 0, "stopped_by_request", accumulator
     if remaining_step_budget is not None and remaining_step_budget <= 0:
         return _training_summary(accumulator), sample_offset, global_step, 0, "stopped_after_requested_steps", accumulator
@@ -528,6 +531,8 @@ def _train_epoch(
         if run_control is not None and run_control.should_stop():
             accumulator["seconds"] += time.monotonic() - segment_started
             _save_progress(trainer, output_dir, epoch, sample_offset + consumed, global_step, best_f1, best_threshold, run_contract, history, accumulator)
+            if checkpoint_callback:
+                checkpoint_callback()
             return _training_summary(accumulator), sample_offset + consumed, global_step, steps_added, "stopped_by_request", accumulator
         requested = min(batch_size, len(dataset) - sample_offset - consumed)
         consumed += requested
@@ -566,6 +571,8 @@ def _train_epoch(
                 "global_step": global_step,
                 "loss": result.loss,
                 "classification": result.classification,
+                "router_ranking": result.router_ranking,
+                "router_diversity": result.router_diversity,
                 "oracle_used": result.oracle_used,
                 "samples_per_second": accumulator["samples"] / max(elapsed, 1e-9),
             }
@@ -583,6 +590,8 @@ def _train_epoch(
             accumulator["seconds"] += now - segment_started
             segment_started = now
             _save_progress(trainer, output_dir, epoch, current_offset, global_step, best_f1, best_threshold, run_contract, history, accumulator)
+            if checkpoint_callback:
+                checkpoint_callback()
         if should_stop:
             return _training_summary(accumulator), current_offset, global_step, steps_added, "stopped_after_requested_steps", accumulator
     accumulator["seconds"] += time.monotonic() - segment_started

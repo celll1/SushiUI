@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import random
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import List, Optional, Protocol, Sequence, Tuple, runtime_checkable
 
 import numpy as np
@@ -90,8 +90,20 @@ class ViewConfig:
     field_levels: Tuple[float, ...] = (2.0, 1.0, 0.5)
     scale_jitter: Tuple[float, float] = (0.8, 1.2)
     pad_color: Tuple[int, int, int] = (255, 255, 255)
+    overview_resize_mode: str = "letterbox"
+    local_border_mode: str = "pad"
+
+    def to_dict(self):
+        value = asdict(self)
+        if self.overview_resize_mode == "letterbox":
+            value.pop("overview_resize_mode")
+        if self.local_border_mode == "pad":
+            value.pop("local_border_mode")
+        return value
 
     def __post_init__(self) -> None:
+        if self.overview_resize_mode not in ("letterbox", "stretch") or self.local_border_mode not in ("pad", "shift_inside"):
+            raise ValueError("unsupported view boundary policy")
         # JSON contracts deserialize tuples as lists; Pillow requires tuple colors.
         for field in ("field_levels", "scale_jitter", "pad_color"):
             object.__setattr__(self, field, tuple(getattr(self, field)))
@@ -120,10 +132,16 @@ class RegionImageSource(Protocol):
     ) -> Image.Image: ...
 
 
-def overview_spec(image_width: int, image_height: int, canvas_size: int) -> ViewSpec:
+def overview_spec(image_width: int, image_height: int, canvas_size: int, resize_mode: str = "letterbox") -> ViewSpec:
     """Fit the full image into a square canvas without enlarging it."""
     if image_width <= 0 or image_height <= 0 or canvas_size <= 0:
         raise ValueError("image and canvas dimensions must be positive")
+    if resize_mode == "stretch":
+        return ViewSpec("overview", SourceBox(0, 0, float(image_width), float(image_height)),
+            canvas_size, canvas_size, (0, 0, float(canvas_size), float(canvas_size)),
+            math.sqrt(image_width * image_height) / canvas_size)
+    if resize_mode != "letterbox":
+        raise ValueError("unsupported overview resize mode")
     scale = min(1.0, canvas_size / float(max(image_width, image_height)))
     content_width = max(1, round(image_width * scale))
     content_height = max(1, round(image_height * scale))
@@ -337,6 +355,15 @@ def sample_local_specs(
     return tuple(specs)
 
 
+def fit_local_spec(spec: ViewSpec, image_width: int, image_height: int) -> ViewSpec:
+    side = min(spec.source_box.width, spec.source_box.height, image_width, image_height)
+    cx, cy = spec.source_box.center
+    x = min(max(cx - side / 2, 0), image_width - side)
+    y = min(max(cy - side / 2, 0), image_height - side)
+    return ViewSpec(spec.role, SourceBox(x, y, side, side), spec.canvas_width, spec.canvas_height,
+        (0, 0, float(spec.canvas_width), float(spec.canvas_height)), side / spec.canvas_width)
+
+
 def build_views(
     image: Image.Image | RegionImageSource,
     config: ViewConfig,
@@ -346,10 +373,12 @@ def build_views(
     specs: Optional[Sequence[ViewSpec]] = None,
 ) -> ViewBatch:
     """Build an overview and local views; callers may replay explicit specs."""
-    ov_spec = overview_spec(image.width, image.height, config.overview_size)
+    ov_spec = overview_spec(image.width, image.height, config.overview_size, config.overview_resize_mode)
     local_specs = tuple(specs) if specs is not None else sample_local_specs(
         image.width, image.height, config, seed=seed, training=training,
     )
+    if config.local_border_mode == "shift_inside":
+        local_specs = tuple(fit_local_spec(spec, image.width, image.height) for spec in local_specs)
     overview = render_source_view(image, ov_spec, config.pad_color)
     locals_rendered = tuple(
         render_source_view(image, spec, config.pad_color) for spec in local_specs

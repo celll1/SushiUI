@@ -704,7 +704,9 @@ export default function TaggerTrainingMonitor({
           <div className="flex items-center gap-3 mt-0.5">
             <span className={`text-sm font-medium ${statusColor}`}>{run.status}</span>
             <span className="text-xs text-gray-500">
-              {run.config.architecture === "foveatag_phase3" ? "FoveaTag A/B/C · FULL" : run.training_method.toUpperCase()} · {run.num_tags} tags
+              {run.config.architecture === "foveatag_phase3"
+                ? "FoveaTag A/B/C · FULL"
+                : `${run.config.architecture === "foveatag" ? "FoveaTag · " : ""}${run.training_method.toUpperCase()}`} · {run.num_tags} tags
             </span>
           </div>
         </div>
@@ -933,6 +935,13 @@ export default function TaggerTrainingMonitor({
               </div>
               {run.config && typeof run.config === "object" && (() => {
                 const CONFIG_LABELS: Record<string, string> = {
+                  architecture: "Architecture",
+                  fovea_overview_size: "Overview canvas",
+                  fovea_local_size: "Local canvas",
+                  fovea_local_views: "Local views",
+                  fovea_feature_dim: "Evidence width",
+                  fovea_max_source_pixels: "Source pixel cap",
+                  fovea_seed: "Sampling seed",
                   learning_rate: "LR",
                   head_lr_multiplier: "Head LR ×",
                   epochs: "Epochs",

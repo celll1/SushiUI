@@ -8842,7 +8842,7 @@ export interface TaggerDatasetConfig {
 }
 
 export interface TaggerTrainingRunCreateRequest {
-  architecture?: "siglip2";
+  architecture?: "siglip2" | "foveatag";
   fovea_overview_size?: number;
   fovea_local_size?: number;
   fovea_local_views?: number;

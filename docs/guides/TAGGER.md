@@ -98,6 +98,18 @@ Opt-in real GPU tests in `backend/tests/foveatag_flash_attention_test.py` compar
 outputs and gradients for global, shifted/padded, FP16/BF16 and checkpointed
 execution. These checks do not establish end-to-end speedups or UI deployment.
 
+On the isolated design branch, standard run creation also accepts
+`architecture=foveatag` and the six `fovea_*` defaults exposed by the schema.
+Full training accepts an empty encoder path for random initialization; LoRA
+requires a local scratch-pretrained encoder. SigLIP2 pooling dimensions and
+repository initialization are refused. The configuration form exposes the
+native input settings alongside shared training options. Deployment and live
+UI verification remain pending; the frozen comparison uses its import endpoint.
+
+OOD reservoirs now retain their owned sampling RNG and capacity. Native restore
+is strict; legacy reservoir files without RNG remain readable in the legacy
+path. This does not replace exact training-histogram state persistence.
+
 CPU contract tests live under `backend/tests/` for response selection, head
 growth, optimizer migration, validation collection, browser sidecars, and
 checkpoint artifacts. Real model throughput, VRAM, FlashAttention behavior, and

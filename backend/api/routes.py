@@ -20852,7 +20852,7 @@ async def debug_vram_force_release():
 
 
 class TaggerTrainingRunCreateRequest(BaseModel):
-    architecture: Literal["siglip2"] = TAGGER_TRAINING_DEFAULTS["architecture"]
+    architecture: Literal["siglip2", "foveatag"] = TAGGER_TRAINING_DEFAULTS["architecture"]
     fovea_overview_size: int = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_overview_size"], ge=1)
     fovea_local_size: int = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_local_size"], ge=1)
     fovea_local_views: int = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_local_views"], ge=0)
@@ -21017,6 +21017,13 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     save_tag_metrics: bool = True
     hard_rate_lo: float = 0.25
     hard_rate_hi: float = 0.75
+
+    @model_validator(mode="after")
+    def validate_native_architecture(self):
+        if self.architecture == "foveatag":
+            from core.tagger.foveatag.shared_factory import validate_config
+            validate_config(self.model_dump())
+        return self
 
 
 # Active tagger training threads

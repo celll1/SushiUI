@@ -28008,9 +28008,9 @@ components:
           nullable: true
         architecture:
           type: string
-          enum: [siglip2]
+          enum: [siglip2, foveatag]
           default: siglip2
-          description: New standard runs use SigLIP2; existing FoveaTag comparisons use the explicit import endpoint.
+          description: Standard SigLIP2 or native scratch FoveaTag shared-trainer run. Frozen A/B/C comparisons use the explicit import endpoint and retain immutable settings. Native full training accepts an empty encoder path for random initialization; native LoRA requires a local scratch-pretrained encoder. SigLIP2 pooling dimensions are refused for native runs.
           example: siglip2
         fovea_overview_size:
           type: integer
@@ -28137,6 +28137,8 @@ components:
         use_flash_attention:
           type: boolean
           default: false
+          description: SigLIP2 selects HF FlashAttention-2 when usable. Native FoveaTag selects external flash-attn dense/global and packed-varlen local kernels on supported CUDA FP16/BF16 inputs; CPU/FP32 use SDPA. Native explicit selection requires an importable flash-attn installation and kernel failures are fatal. Disabled native runs exclude external and PyTorch flash kernels.
+          example: true
         gradient_checkpointing:
           type: boolean
           default: true

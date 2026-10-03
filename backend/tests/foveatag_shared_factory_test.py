@@ -94,3 +94,15 @@ def test_factory_applies_native_flash_permission(native_config, enabled):
     assert attention
     assert all(module.use_sdpa and module.allow_flash == enabled
                and module.use_external_flash == enabled for module in attention)
+
+
+def test_lora_resume_is_self_contained_without_initial_backbone_path(native_config, tmp_path):
+    config, _ = native_config
+    config["training_method"] = "lora"
+    instance = build_model(config, 5, vocabulary={}, lineage={})
+    path = instance.save_checkpoint(tmp_path, "latest")
+    config["vision_encoder_path"] = ""
+    restored = build_model(config, 5, vocabulary={}, lineage={}, resume_path=path)
+    restored.load_weights_inplace(path)
+    for key, value in instance.state_dict().items():
+        torch.testing.assert_close(value, restored.state_dict()[key], rtol=0, atol=0)

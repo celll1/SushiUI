@@ -19,6 +19,8 @@ from .model import FoveaTagger
 
 
 class FoveaTrainerModel(nn.Module):
+    architecture = "foveatag"
+
     def __init__(
         self, num_tags: int, *, encoder_config: FoveaEncoderConfig,
         feature_dim: int, evidence_slots: int, pool_heads: int, temperature: float,

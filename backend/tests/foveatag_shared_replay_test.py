@@ -120,7 +120,9 @@ def test_native_training_state_uses_completed_not_fetched_position(tmp_path):
     cursor = NativeReplayCursor(base_batches=2, valid_base_batches=2, last_batch_idx=1)
     _save_training_state(str(tmp_path), "latest", 1, 2, 2, 0., .35,
                          native_runtime={"cursor": cursor.to_dict()})
-    state = _load_training_state(str(tmp_path), "latest")
+    with pytest.raises(ValueError, match="no readable commit"):
+        _load_training_state(str(tmp_path), "latest")
+    state = json.loads((tmp_path / "latest_state.json").read_text())
     assert state["batch_idx"] == 1
     assert not (tmp_path / "latest_state.json.tmp").exists()
 

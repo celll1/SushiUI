@@ -36,12 +36,13 @@
     "status": "shared_trainer_wired_internally_not_yet_public_or_deployed",
     "data": "Native overview/local tensors and source geometry can use the shared dataset and online-buffer collator without NaFlex encoding.",
     "model": "Full and attention-linear LoRA protocols support forward, head growth and exact self-contained unmerged weight roundtrips. No SigLIP2 weights are used.",
-    "verification": "78 focused CPU tests pass with CUDA availability disabled for checkpoint tests and CUDA import triggers stubbed. Actual common-loop full and LoRA stop/resume runs with stochastic scale dropout reach bit-identical final weights to uninterrupted runs. Indexed views, sampler suffixes, pending injection/cadence, source identity fingerprints and Python/Torch/NumPy/current-device CUDA RNG serialization are covered, alongside prior export/model/data contracts. Backend compile and separate real import checks preserve an uninitialized CUDA context; six native API defaults match OpenAPI.",
+    "verification": "87 focused CPU tests pass with CUDA availability disabled for checkpoint tests and CUDA import triggers stubbed. Actual common-loop full and LoRA stop/resume runs with stochastic scale dropout reach bit-identical final weights to uninterrupted runs. Bundle corruption, incomplete publication, fallback to an earlier committed step and refusal of implicit scratch restart are covered, alongside prior replay/export/model/data contracts. Backend compile and separate real import checks preserve an uninitialized CUDA context; six native API defaults match OpenAPI.",
     "replay": {
       "offline": "Native sampling uses an owned per-epoch generator; views use source index, epoch and seed. Resume records completed source batches separately from mixed-loader events and restores exact scheduler/scaler plus latest RNG state.",
       "online": "Source cursor and injection cadence are restored separately, including an injection pending at the stop boundary. Live network arrivals and prefetched online samples are not claimed to be bit-reproducible.",
       "gpu_pause": "Both the comparison and native shared trainer wait for generation's GPU release before restoring state and retain coordinator acknowledgements.",
-      "remaining": "Checkpoint files are individually atomic, but a multi-file native bundle commit/integrity protocol remains to be implemented and tested before public run creation."
+      "bundle": "Native resume commits bind weights, metadata, runtime, optimizer and vocabulary, plus present optional artifacts. The selector verifies candidates in descending step order, falls back only to coherent retained bundles, and refuses an implicit scratch restart if all candidates are inconsistent. Native optimizer/vocabulary recovery and momentum migration must not silently fail.",
+      "remaining": "Validate freshness and failure handling of optional metrics/export sidecars when settings change, and finish native option-specific, API and frontend verification before public run creation."
     },
     "exports": {
       "resume": "The primary safetensors checkpoint always retains complete unmerged weights; shared optimizer and training-state files remain alongside it.",
@@ -51,7 +52,7 @@
     },
     "remaining": [
       "Verify the complete native shared training loop, metrics, online data and optimizer resume contracts, not only the model/data protocols.",
-      "Finish native multi-file checkpoint consistency checks and online/metrics feature-specific verification. Keep the existing atomic A/B/C runner's resume contract separate and unchanged.",
+      "Finish optional-sidecar generation/freshness and online/metrics feature-specific verification. Keep the existing atomic A/B/C runner's resume contract separate and unchanged.",
       "Implement attention-option semantics and finish visualization/inference and API/UI export integrations.",
       "Synchronize API defaults, OpenAPI, request types and UI for native runs and audit remaining shared options.",
       "Enable native run creation only after applicable options and their API/UI controls are complete; SigLIP2-only pooling dimensions must be explicitly refused.",

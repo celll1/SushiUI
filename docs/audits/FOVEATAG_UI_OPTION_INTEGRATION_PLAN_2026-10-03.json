@@ -33,7 +33,7 @@
   "goal_status": "active",
   "goal_update": "Owner-requested run/UI/option integration and the original remaining Phase 3/4/5 work are now recorded in the active goal.",
   "shared_trainer_adapter": {
-    "status": "deployed_api_verified_comparison_registered_ui_login_required_not_resumed",
+    "status": "deployed_api_and_authenticated_ui_verified_existing_comparison_resumed",
     "data": "Native overview/local tensors and source geometry can use the shared dataset and online-buffer collator without NaFlex encoding.",
     "model": "Full and attention-linear LoRA protocols support forward, head growth and exact self-contained unmerged weight roundtrips. No SigLIP2 weights are used.",
     "verification": "174 focused CPU tests pass, with 16 explicit GPU checks skipped in that invocation. Separate opt-in runs pass all 12 FlashAttention tests and all 11 concurrency/lifecycle tests; 16 actual GPU cases are covered across those suites. Sixteen CPU common-loop full/LoRA stop/resume combinations cover histogram saving, rolling F1 and exposure tracking; final weights, metric slots and F1 traces match uninterrupted execution, with model-lock ownership asserted at forward. Native schema default parity, configuration admission/refusal, self-contained LoRA reconstruction, owned OOD reservoir RNG, native inference restoration, completed model-only publication and complete option-name inventory are covered. Compile and real-import checks pass without initializing CUDA. These checks do not establish complete option behavior parity, live API/UI deployment or resumption of the existing comparison.",
@@ -100,6 +100,13 @@
       "sha256": "a40e44ff083930e78c583bfca34a96b4b9825c4354c776b1f9ac43644b483ac2"
     },
     "ui": "Browser tab 1 remains at localhost:3000/login. Run remains stopped. No login credentials are requested in chat, no bypass attempted and no resume issued before real-screen verification."
+  },
+  "authenticated_ui_resume": {
+    "observed_at_jst": "2026-10-03 22:50",
+    "ui": "After owner login, inspected Training > Tagger > FoveaTag Phase 3 A/B/C. Verified stopped state, aggregate loss/F1/precision-recall/threshold charts, original latest.pt and best_f1 paths, and Start Training. After resume verified running state, Stop button, a new resume-session curve and step 30100/Epoch 3. Did not open vocabulary or diagnostic images.",
+    "repair": "The first start failed before optimization because Python tuple-valued ViewConfig fields were compared directly with JSON arrays. Commit 30221c9f canonicalizes the candidate JSON representation only; existing contract bytes and hashes are not modified, and changed optimizer values remain refused. Compile/import and 27 focused resume/contract/import regressions passed. The original checkpoint SHA-256 remained a40e44ff083930e78c583bfca34a96b4b9825c4354c776b1f9ac43644b483ac2 before retry. Backend updated only by restart API while idle.",
+    "runtime": "Same run_id 18e75bfd-4145-46c6-a155-d0ac83e2fa22 resumed from step 30000 using the original weights/optimizer/scheduler/RNG and immutable comparison budget. REST detail and live WebSocket both confirm running at step 30100, displayed epoch 3, loss 0.0002591006050352007, progress 0.0668888888888889, no run error. Source branch remains overview_only; no new comparison was created.",
+    "boundary": "UI integration and existing-run resumption are verified. This is not a Phase 3 gate pass, superior-to-SigLIP2 quality claim, router acceptance or completion of the full objective. Frontend build/type-check remains owner-run. Earlier login-blocked observations above are historical."
   },
   "reporting_policy": "Aggregate metrics only; do not display individual tag names or read generated diagnostic images."
 }

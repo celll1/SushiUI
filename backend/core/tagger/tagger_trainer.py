@@ -744,6 +744,7 @@ def _prune_step_checkpoints(output_dir: str, keep_last_n: int) -> None:
             "_ood_ref.npz",
             "_export.safetensors",
             "_export_metadata.json",
+            "_inference_commit.json",
             "_ood_reservoir.npz",
             "_resume_commit.json",
         ):
@@ -1283,6 +1284,16 @@ class TaggerTrainer:
                 save_f1_runtime(_train_f1_buffer,
                     os.path.join(self.output_dir, f"{name}_f1_runtime.npz"),
                     step=global_step, threshold=_f1_threshold, vocab_size=self.vocabulary.num_tags)
+            if cfg.get("architecture") == "foveatag":
+                from .foveatag.inference_bundle import publish_inference_bundle
+                optional = []
+                if _save_tag_metrics_enabled and _tag_metrics_acc.has_data:
+                    optional.append("_tag_metrics.npz")
+                if _save_ood_ref_enabled and _ood_emb_acc.n_seen >= 10:
+                    optional.append("_ood_ref.npz")
+                if model.training_method == "lora" and checkpoint_save_mode != "full":
+                    optional.extend(("_export.safetensors", "_export_metadata.json"))
+                publish_inference_bundle(self.output_dir, name, optional_suffixes=optional)
 
         # Training state
         best_f1         = 0.0

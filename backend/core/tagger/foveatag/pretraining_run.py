@@ -158,7 +158,7 @@ def run_pretraining(
         "warmup_steps": min(warmup_steps, max(total_steps - 1, 0)),
         "seed": seed,
         "encoder": asdict(encoder_config),
-        "views": asdict(view_config),
+        "views": view_config.to_dict(),
         "mask_ratio": model.mask_ratio,
         "objective": {
             "correspondence_weight": objective.correspondence_weight,

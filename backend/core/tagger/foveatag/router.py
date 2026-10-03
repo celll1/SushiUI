@@ -92,6 +92,19 @@ def build_scale_space_candidates(
     return torch.cat((centers, sizes), dim=-1).reshape(centers.shape[0], -1, 4)
 
 
+def fit_candidate_boxes(boxes: torch.Tensor, image_width: int, image_height: int) -> torch.Tensor:
+    if min(image_width, image_height) <= 0:
+        raise ValueError("source dimensions must be positive")
+    result = boxes.clone()
+    side = torch.minimum(boxes[..., 2] * image_width, boxes[..., 3] * image_height)
+    side = side.clamp_max(min(image_width, image_height))
+    for axis, size in ((0, image_width), (1, image_height)):
+        center = boxes[..., axis] * size
+        result[..., axis] = torch.minimum(torch.maximum(center, side / 2), size - side / 2) / size
+        result[..., axis + 2] = side / size
+    return result
+
+
 def source_candidate_mask(candidate_boxes: torch.Tensor) -> torch.Tensor:
     """Reject candidates centered in overview padding outside the source image."""
     if candidate_boxes.ndim != 3 or candidate_boxes.shape[-1] != 4:

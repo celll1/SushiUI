@@ -53,6 +53,7 @@ class FoveaArtifactConfig:
 
     def to_dict(self) -> Dict[str, Any]:
         value = asdict(self)
+        value["views"] = self.views.to_dict()
         value["format_version"] = FOVEATAG_FORMAT_VERSION
         value["coordinate_convention"] = COORDINATE_CONVENTION
         return value

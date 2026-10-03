@@ -707,6 +707,7 @@ export default function TaggerTrainingMonitor({
             <span className="text-xs text-gray-500">
               {run.config.architecture === "foveatag_phase3"
                 ? "FoveaTag A/B/C · FULL"
+                : run.config.architecture === "foveatag_joint_review" ? "FoveaTag · learned router joint · owner review"
                 : `${run.config.architecture === "foveatag" ? "FoveaTag · " : ""}${run.training_method.toUpperCase()}`} · {run.num_tags} tags
             </span>
           </div>
@@ -912,7 +913,7 @@ export default function TaggerTrainingMonitor({
           </div>
 
           <div className="space-y-4 min-w-0">
-            {run.config.architecture === "foveatag_phase3" && (
+            {(run.config.architecture === "foveatag_phase3" || run.config.architecture === "foveatag_joint_review") && (
               <TaggerDiagnosticsPanel runId={run.run_id} active={run.status === "running" || run.status === "starting"} />
             )}
             <DanbooruMetricsPanel
@@ -1311,7 +1312,7 @@ export default function TaggerTrainingMonitor({
           Delete
         </button>
         <div className="flex gap-2">
-          {onEditConfig && run.config.architecture !== "foveatag_phase3" && ["pending", "stopped", "failed"].includes(run.status) && (
+          {onEditConfig && !["foveatag_phase3", "foveatag_joint_review"].includes(String(run.config.architecture)) && ["pending", "stopped", "failed"].includes(run.status) && (
             <button
               onClick={onEditConfig}
               disabled={actionLoading}

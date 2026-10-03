@@ -346,7 +346,7 @@ def run_supervised_training(
         "epoch_samples": int(epoch_samples),
         "batch_size": int(batch_size),
         "workers": int(workers),
-        "views": asdict(view_config),
+        "views": view_config.to_dict(),
         "optimizer": {
             "kind": "adamw",
             "learning_rate": float(learning_rate),
@@ -432,7 +432,7 @@ def run_supervised_training(
         "weight_decay": weight_decay,
         "warmup_steps": min(warmup_steps, max(total_steps - 1, 0)),
         "seed": seed,
-        "views": asdict(view_config),
+        "views": view_config.to_dict(),
         "max_source_pixels": max_source_pixels,
     }
     start_epoch = sample_offset = global_step = 0

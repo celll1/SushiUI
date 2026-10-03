@@ -1,6 +1,6 @@
 # High-resolution tagger architecture research
 
-Status: **isolated prototype; Phase 2 accepted, registered Phase 3 A/B/C training in progress**
+Status: **Phase 2 accepted; A/B/C abandoned by owner; direct joint router training for owner visual review**
 
 Date: 2026-09-29
 
@@ -9,6 +9,68 @@ classification at arbitrary source resolutions. Measurements in section 9 are
 specific to the listed checkpoints, datasets, and RTX 6000 Ada.
 
 ## 1. Decision
+
+### Current owner-directed revision (supersedes the staged A/B/C gates below)
+
+The owner has explicitly rejected further A/B/C training as unnecessary for the
+desired decision. The comparison stopped at step 43,322; its checkpoint,
+optimizer, scheduler and RNG remain recoverable. It is neither a passed gate
+nor evidence that the final architecture works. Historical Phase 3/4 tables
+and measurements below record the abandoned protocol, not current prerequisites.
+
+The active path jointly trains the encoder, head and generic router. It starts
+from this project's scratch-derived supervised weights and a newly initialized
+router; no SigLIP2 weights or external teacher are introduced. Because the input
+policy changes, this is a new run with a new optimizer/scheduler, not continuation
+of the old A optimizer under a silently changed contract. All provenance and
+data/initialization hashes are saved in `review_plan.json`.
+
+The initial overview is a fixed 448x448 full-image resize, without an artificial
+RGB letterbox/pillarbox. This preserves a fixed compute budget rather than
+letting native source resolution dictate the token count. Aspect distortion is
+an explicit tradeoff, not a solved extrapolation guarantee. Native local windows
+remain square, use a fixed 256x256 canvas, and shift/shrink inside the actual
+source bounds to avoid invented local border content. Original image borders
+remain real image content. Geometry describes the actual crop after adjustment.
+
+The initial joint budget has 16 generic multiscale candidates, K=4 selected
+windows, and one retained random training slot. Dense-oracle router supervision
+is refreshed every 16 updates in chunks of four candidates; ordinary steps
+transfer/encode only the selected K local inputs. Hard top-K is not falsely
+described as differentiable: the tagger learns from classification and the
+router learns from the periodically refreshed ranking/diversity objective.
+There are no eye-specific candidates, routing rules or manual evidence boxes.
+An untrained router can be wrong; retaining exploration prevents exclusive
+dependence on its early choices. Oracle frequency and gradient balance remain
+measured optimization questions, not evidence of useful learned focus.
+
+Each start initially runs at most 1,000 updates, saves model/router/optimizer/
+scheduler/RNG/offset, then stops for owner review. Checkpoints are saved every
+250 updates. The owner can continue the same new run after review. The review
+budget is not a quality gate or a claim that 1,000 steps suffice for convergence.
+
+Optional CPU diagnostics run the actual learned-router inference path from a
+saved joint checkpoint. A single source image panel overlays the selected
+native regions and is paired with anonymous TP/FP/FN probabilities; TN is only
+a count. No individual tag names or IDs are published. The first annotated
+Rating:General example is pinned; missing labels remain a limitation. This
+workflow explicitly enables diagnostics, but the owner can disable them.
+Generated diagnostic images are not opened or read by the agent.
+
+Acceptance is owner visual review of (a) whether selected regions are useful,
+(b) whether the anonymous prediction diagnostic improves the desired decisions,
+and (c) whether the fixed overview causes unacceptable distortion-related errors.
+Aggregate metrics are supporting diagnostics, not automatic pass/fail rules.
+All-tag averages cannot substitute for the small-detail objective. AP/F1 slices
+may still be recorded, but paired confidence/power analysis is not a prerequisite
+for this owner-directed visual experiment. No A/B/C or learned-vs-random quality
+gate is fabricated to unlock this path. Existing legacy gated CLIs remain gated.
+
+Remaining after the first visual review: adjust budgets/optimization if requested,
+add bounded repeated/refine visits (current routed inference is one selection
+pass), expand reviewed examples/domains, and connect accepted combined artifacts
+to the normal inference manager. A live joint-training run is not a completed
+production replacement and does not prove superiority to the existing tagger.
 
 Build a new, weight-independent architecture, provisionally named
 **FoveaTag**, rather than replacing SigLIP2 with another fixed-resolution

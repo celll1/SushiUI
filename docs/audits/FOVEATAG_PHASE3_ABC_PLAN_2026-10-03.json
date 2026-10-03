@@ -1,7 +1,9 @@
 {
   "format_version": 1,
   "kind": "foveatag_phase3_abc_preregistered_plan",
-  "status": "registered_before_any_branch_quality",
+  "status": "abandoned_by_owner_before_completion",
+  "superseded_by": "direct encoder/head/router joint training with owner visual review; no A/B/C prerequisite",
+  "stopped_at_step": 43322,
   "scope": "Two-domain architecture experiment, not broad-domain replacement training. All branches train the encoder and randomly initialized tag head end to end. No SigLIP2 weights enter FoveaTag.",
   "phase2_gate": {
     "repo_path": "docs/audits/FOVEATAG_PHASE2_GATE_2026-10-03.json",

@@ -8298,6 +8298,27 @@ paths:
               schema: {type: string, format: binary}
         '404': {description: Run or published image not found}
         '422': {description: Invalid name or unsupported architecture}
+  /tagger-training/foveatag/joint-review:
+    post:
+      summary: Create a direct encoder/head/router training run for owner visual review
+      description: |
+        Replaces the abandoned A/B/C prerequisite, not a fabricated Phase 3 pass.
+        Uses only a stopped scratch FoveaTag run's own weights. New optimizer,
+        scheduler and input contract; fixed square overview without added bands,
+        source-native square local views shifted inside source bounds.
+        Each start runs at most review_steps, then saves for owner review.
+        Diagnostics are enabled for this review workflow and remain configurable.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/FoveaJointReviewRequest'}
+            example: {source_run_id: '18e75bfd-4145-46c6-a155-d0ac83e2fa22', output_dir: 'outputs/foveatag_joint_review', review_steps: 1000}
+      responses:
+        '200': {description: Registered new pending joint-review run}
+        '404': {description: Source run not found}
+        '409': {description: Source must be stopped or output directory exists}
+        '422': {description: Invalid routing budget or source checkpoint}
   /tagger-training/foveatag/import:
     post:
       summary: Register an existing paused Phase 3 FoveaTag comparison
@@ -29567,6 +29588,31 @@ components:
         vocabulary_path: 'D:/training/native/latest_vocabulary.json'
         requires_backbone: true
 
+    FoveaJointReviewRequest:
+      type: object
+      additionalProperties: false
+      required: [source_run_id, output_dir]
+      properties:
+        source_run_id: {type: string}
+        output_dir: {type: string}
+        run_name: {type: string, nullable: true}
+        batch_size: {type: integer, minimum: 1, default: 8}
+        workers: {type: integer, minimum: 0, default: 8}
+        epochs: {type: integer, minimum: 1, default: 10}
+        epoch_samples: {type: integer, minimum: 1, default: 240000}
+        candidate_count: {type: integer, minimum: 1, default: 16}
+        selection_budget: {type: integer, minimum: 1, default: 4}
+        random_count: {type: integer, minimum: 0, default: 1}
+        oracle_interval: {type: integer, minimum: 1, default: 16}
+        oracle_chunk_size: {type: integer, minimum: 1, default: 4}
+        learning_rate: {type: number, exclusiveMinimum: true, minimum: 0, default: 0.0001}
+        weight_decay: {type: number, minimum: 0, default: 0.0001}
+        warmup_steps: {type: integer, minimum: 0, default: 1000}
+        router_weight: {type: number, exclusiveMinimum: true, minimum: 0, default: 1.0}
+        checkpoint_every_steps: {type: integer, minimum: 1, default: 250}
+        log_every: {type: integer, minimum: 1, default: 25}
+        review_steps: {type: integer, minimum: 1, default: 1000}
+        external_flash: {type: boolean, default: true}
     TaggerTrainingRunCreateRequest:
       type: object
       description: Shared tagger options default from TAGGER_TRAINING_DEFAULTS in backend/api/param_defaults.py, also exposed by /schema/tagger-training-defaults. Encoder path and dataset_configs remain required. Defaults apply to new requests only; imported A/B/C comparisons preserve their saved configuration.

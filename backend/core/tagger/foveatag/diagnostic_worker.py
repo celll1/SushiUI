@@ -53,9 +53,13 @@ def render(job):
     pinned_id = previous["items"][0]["sample_id"] if previous["items"] else None
     payload = torch.load(job / "checkpoint.pt", map_location="cpu", weights_only=False)
     contract = payload["run_contract"]
-    mode = contract["input_mode"]
-    shared = json.loads((comparison / "shared_initialization_metadata.json").read_text())
-    cfg = FoveaArtifactConfig.from_dict(shared["initialization_contract"]["model"])
+    joint = payload.get("kind") == "foveatag_joint_training"
+    mode = "routed" if joint else contract["input_mode"]
+    if joint:
+        cfg = FoveaArtifactConfig.from_dict(contract["artifact_config"])
+    else:
+        shared = json.loads((comparison / "shared_initialization_metadata.json").read_text())
+        cfg = FoveaArtifactConfig.from_dict(shared["initialization_contract"]["model"])
     vocab = json.loads(Path(args["vocabulary_path"]).read_text())
     mapping, categories = vocab["tag_to_idx"], vocab["tag_to_category"]
     db = sqlite3.connect(f"file:{Path(args['datasets_db']).as_posix()}?mode=ro", uri=True)
@@ -100,13 +104,25 @@ def render(job):
     model.load_state_dict(payload["model"], strict=True)
     step, epoch = int(payload["global_step"]), int(payload["epoch"])
     threshold = float(payload["best_threshold"])
-    del payload
     model.eval()
-    views = build_supervised_views(image, cfg.views, seed=args["seed"], training=False, input_mode=mode)
-    batch = collate_view_batches([views])
-    with torch.inference_mode():
-        probs = model(batch.overview_images, batch.overview_geometry, batch.local_images,
-            batch.local_geometry, local_view_mask=batch.local_view_mask)[0].sigmoid().numpy()
+    if joint:
+        from core.tagger.foveatag.router import EvidenceRouter
+        from core.tagger.foveatag.inference import predict_image
+        from core.tagger.foveatag.views import build_views, local_spec
+        router = EvidenceRouter(cfg.encoder.widths[2], routing_dim=cfg.routing_dim, routing_slots=cfg.routing_slots)
+        router.load_state_dict(payload["router"], strict=True)
+        result = predict_image(image, model, router, cfg, mode="balanced")
+        probs = result.probabilities.numpy()
+        specs = tuple(local_spec(center_x=box.center[0], center_y=box.center[1], canvas_size=cfg.views.local_size,
+            pixels_per_canvas_pixel=box.width / cfg.views.local_size, role="routed-local") for box in result.selected_boxes)
+        views = build_views(image, cfg.views, seed=args["seed"], training=False, specs=specs)
+    else:
+        views = build_supervised_views(image, cfg.views, seed=args["seed"], training=False, input_mode=mode)
+        batch = collate_view_batches([views])
+        with torch.inference_mode():
+            probs = model(batch.overview_images, batch.overview_geometry, batch.local_images,
+                batch.local_geometry, local_view_mask=batch.local_view_mask)[0].sigmoid().numpy()
+    del payload
     positive = np.zeros(cfg.num_tags, dtype=bool)
     for tag in tags:
         if tag in mapping:
@@ -123,7 +139,7 @@ def render(job):
         indices = np.flatnonzero(groups[key])
         indices = indices[np.argsort(-probs[indices], kind="stable")][:100]
         rows.extend((f"{key} {rank + 1:03d}", float(probs[index]), color) for rank, index in enumerate(indices))
-    preview = request["focus_preview"] and mode != "source_native"
+    preview = request["focus_preview"] and mode not in ("source_native", "routed")
     focus = build_supervised_views(image, cfg.views, seed=args["seed"], training=False,
         input_mode="source_native") if preview else views
     fig = Figure(figsize=(15, 10))
@@ -149,11 +165,12 @@ def render(job):
     axes[0].set_xlim(0, image.width)
     axes[0].set_ylim(image.height, 0)
     label = "C policy PREVIEW (NOT used by this inference)" if preview else (
+        "LEARNED ROUTER: selected inputs (owner review pending)" if joint else
         "Source-native views USED (not attribution)" if mode == "source_native" else
         "No source-native focus: overview only" if mode == "overview_only" else "Placebo views from overview; NOT native focus")
     axes[0].set_title("Input: annotated Rating:General\n" + label, fontsize=10)
     fig.suptitle(f"FoveaTag {mode} / checkpoint epoch cursor {epoch}, step {step}")
-    fig.text(.5, .02, "Anonymous group ranks, no tag names/IDs. Annotation-based FP may include missing labels. Boxes show input views, not causal evidence or a learned router.", ha="center", fontsize=8)
+    fig.text(.5, .02, "Anonymous group ranks; no tag names/IDs. Annotation-based FP may include missing labels. Boxes show selected inputs, not causal attribution. Owner review pending.", ha="center", fontsize=8)
     fig.tight_layout(rect=(0, .04, 1, .96))
     name = f"general_{mode}_{step}_{uuid.uuid4().hex[:8]}.png"
     root = job.parent
@@ -162,7 +179,7 @@ def render(job):
     os.replace(temporary, root / name)
     item = {"filename": name, "mode": mode, "step": step, "epoch": epoch,
         "catalog_step": request["catalog_step"], "counts": counts, "threshold": threshold,
-        "sample_id": item_id, "native_focus_used": mode == "source_native",
+        "sample_id": item_id, "native_focus_used": mode in ("source_native", "routed"), "learned_routing": joint,
         "focus_preview": preview, "local_boxes": geometry}
     atomic_json(index_path, {"items": [item, *previous["items"]][:12], "error": None})
     assert not torch.cuda.is_initialized()

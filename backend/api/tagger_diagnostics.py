@@ -17,7 +17,7 @@ _jobs: dict[str, subprocess.Popen] = {}
 
 
 def directory(run):
-    if (run.config or {}).get("architecture") != "foveatag_phase3":
+    if (run.config or {}).get("architecture") not in ("foveatag_phase3", "foveatag_joint_review"):
         raise ValueError("Diagnostics currently support registered FoveaTag comparisons only")
     return Path(run.output_dir).resolve() / "diagnostics"
 
@@ -58,9 +58,10 @@ def schedule(run, *, force=False):
         checkpoint = Path(run.latest_checkpoint_path or "")
         root = directory(run)
         comparison = root.parent
-        if checkpoint.name != "latest.pt" or checkpoint.parent.parent.resolve() != comparison:
+        joint = run.config.get("architecture") == "foveatag_joint_review"
+        if checkpoint.name != "latest.pt" or (checkpoint.parent.resolve() if joint else checkpoint.parent.parent.resolve()) != comparison:
             raise ValueError("A comparison resume checkpoint is required")
-        mode = checkpoint.parent.name
+        mode = "routed" if joint else checkpoint.parent.name
         last = next((item for item in state["items"] if item["mode"] == mode), None)
         step = int(run.current_step)
         if not force and last and step - last["catalog_step"] < state["settings"]["interval_steps"]:
@@ -71,7 +72,7 @@ def schedule(run, *, force=False):
             shutil.copyfile(checkpoint, job_dir / "checkpoint.pt")
             request = {
                 "comparison": str(comparison), "catalog_step": step,
-                "arguments": run.config["foveatag"]["arguments"],
+                "arguments": run.config["joint_review"] if joint else run.config["foveatag"]["arguments"],
                 "focus_preview": state["settings"]["focus_preview"],
             }
             write_json(job_dir / "request.json", request)

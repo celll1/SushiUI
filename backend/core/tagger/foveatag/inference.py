@@ -90,6 +90,8 @@ def predict_image(
             field_levels=config.views.field_levels,
             scale_jitter=config.views.scale_jitter,
             pad_color=config.views.pad_color,
+            overview_resize_mode=config.views.overview_resize_mode,
+            local_border_mode=config.views.local_border_mode,
         )
         overview_views = build_views(image, view_config, seed=0, training=False)
         overview_batch = collate_view_batches([overview_views]).to(device, dtype=dtype)
@@ -113,6 +115,9 @@ def predict_image(
             config.views.field_levels,
         )
         candidates = build_scale_space_candidates(overview.local_coordinates, field_sizes)
+        if config.views.local_border_mode == "shift_inside":
+            from .router import fit_candidate_boxes
+            candidates = fit_candidate_boxes(candidates, image.width, image.height)
         candidate_mask = source_candidate_mask(candidates)
         if mode_config.local_views:
             with torch.autocast(

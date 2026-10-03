@@ -51,7 +51,7 @@ from api.param_defaults import (
     UPSCALE_DEFAULTS, TXT2VID_DEFAULTS, IMG2VID_DEFAULTS, REF2VID_DEFAULTS,
     TXT2AUD_DEFAULTS, AUD2AUD_DEFAULTS, YUE2_REQUEST_DEFAULT,
     OUTPAINT_AUDIO_DEFAULTS,
-    TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS, TAGGER_DIAGNOSTIC_DEFAULTS, VAE_TRAINING_DEFAULTS,
+    TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS, TAGGER_DIAGNOSTIC_DEFAULTS, TAGGER_JOINT_REVIEW_DEFAULTS, VAE_TRAINING_DEFAULTS,
     DATASET_DEFAULTS,
     LR_RETARGET_DEFAULTS,
     LR_PREVIEW_DEFAULTS,
@@ -21356,6 +21356,44 @@ class FoveaExperimentImportRequest(BaseModel):
         extra = "forbid"
 
 
+class FoveaJointReviewRequest(BaseModel):
+    source_run_id: str
+    output_dir: str
+    run_name: Optional[str] = TAGGER_TRAINING_DEFAULTS["run_name"]
+    batch_size: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["batch_size"], ge=1)
+    workers: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["workers"], ge=0)
+    epochs: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["epochs"], ge=1)
+    epoch_samples: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["epoch_samples"], ge=1)
+    candidate_count: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["candidate_count"], ge=1)
+    selection_budget: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["selection_budget"], ge=1)
+    random_count: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["random_count"], ge=0)
+    oracle_interval: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["oracle_interval"], ge=1)
+    oracle_chunk_size: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["oracle_chunk_size"], ge=1)
+    learning_rate: float = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["learning_rate"], gt=0)
+    weight_decay: float = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["weight_decay"], ge=0)
+    warmup_steps: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["warmup_steps"], ge=0)
+    router_weight: float = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["router_weight"], gt=0)
+    checkpoint_every_steps: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["checkpoint_every_steps"], ge=1)
+    log_every: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["log_every"], ge=1)
+    review_steps: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["review_steps"], ge=1)
+    external_flash: bool = TAGGER_JOINT_REVIEW_DEFAULTS["external_flash"]
+
+    @model_validator(mode="after")
+    def validate_budget(self):
+        if not 0 <= self.random_count < self.selection_budget <= self.candidate_count:
+            raise ValueError("At least one learned routing slot is required within the candidate budget")
+        return self
+
+    class Config:
+        extra = "forbid"
+
+
+@router.post("/tagger-training/foveatag/joint-review")
+def create_fovea_joint_review(request: FoveaJointReviewRequest, training_db: Session = Depends(get_training_db)):
+    from api.foveatag_joint_review import register_joint_review
+    return register_joint_review(request.model_dump(), training_db)
+
+
 @router.post("/tagger-training/foveatag/import")
 def import_fovea_experiment(
     request: FoveaExperimentImportRequest,
@@ -21444,8 +21482,8 @@ def update_tagger_training_run(
     run = training_db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Tagger training run not found")
-    if (run.config or {}).get("architecture") == "foveatag_phase3":
-        raise HTTPException(status_code=409, detail="Registered A/B/C settings are immutable; resume the existing comparison unchanged.")
+    if (run.config or {}).get("architecture") in ("foveatag_phase3", "foveatag_joint_review"):
+        raise HTTPException(status_code=409, detail="Registered experimental training contracts are immutable; create a new run to change them.")
     if run.status not in ("pending", "stopped", "failed"):
         raise HTTPException(
             status_code=400,
@@ -21537,6 +21575,9 @@ async def start_tagger_training_run(run_id: str, training_db: Session = Depends(
     if (run.config or {}).get("architecture") == "foveatag_phase3":
         from api.foveatag_training import start_experiment
         return start_experiment(run, training_db, _tagger_training_threads, _make_tagger_progress_callback)
+    if (run.config or {}).get("architecture") == "foveatag_joint_review":
+        from api.foveatag_joint_review import start_joint_review
+        return start_joint_review(run, training_db, _tagger_training_threads, _make_tagger_progress_callback)
     if run.status in ("running", "starting"):
         raise HTTPException(status_code=400, detail="Run is already running")
 
@@ -21803,6 +21844,9 @@ def stop_tagger_training_run(run_id: str, training_db: Session = Depends(get_tra
     if not run:
         raise HTTPException(status_code=404, detail="Tagger training run not found")
     if (run.config or {}).get("architecture") == "foveatag_phase3":
+        from api.foveatag_training import stop_experiment
+        return stop_experiment(run, training_db, _tagger_training_threads)
+    if (run.config or {}).get("architecture") == "foveatag_joint_review":
         from api.foveatag_training import stop_experiment
         return stop_experiment(run, training_db, _tagger_training_threads)
 

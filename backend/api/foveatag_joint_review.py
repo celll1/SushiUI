@@ -107,7 +107,7 @@ def start_joint_review(run, db, threads, callback_factory):
             session = TrainingSessionLocal()
             try:
                 row = session.query(TaggerTrainingRun).filter_by(run_id=run_id).one()
-                row.status_message = f"FoveaTag learned routing: {event}; owner review pending"
+                row.status_message = f"FoveaTag learned routing: {event}"
                 if event == "checkpoint_saved":
                     import torch
                     saved = torch.load(data["path"], map_location="cpu", weights_only=False)

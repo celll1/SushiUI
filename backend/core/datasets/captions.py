@@ -104,6 +104,8 @@ def update_caption(
     source_field: str | None = None,
     persist_sidecar: bool = False,
     source: str | None = None,
+    sidecar_json_only: bool = False,
+    sidecar_image_path: str | None = None,
 ) -> CaptionUpdateResult:
     item_query = db.query(DatasetItem).filter(DatasetItem.id == item_id)
     if dataset_id is not None:
@@ -127,16 +129,18 @@ def update_caption(
         source_field=source_field,
     )
     old_content = caption.content if caption else None
-    snapshot = capture_sidecars(item.image_path) if persist_sidecar else None
+    media_path = sidecar_image_path or item.image_path
+    snapshot = capture_sidecars(media_path) if persist_sidecar else None
     sidecar = None
 
     try:
         if persist_sidecar:
             sidecar = write_indexed_caption(
-                item.image_path,
+                media_path,
                 content,
                 caption_type=caption_type,
                 source_field=(caption.source_field if caption else source_field),
+                json_only=sidecar_json_only,
             )
 
         if caption is None:

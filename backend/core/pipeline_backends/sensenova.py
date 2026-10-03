@@ -229,10 +229,11 @@ class SenseNovaMixin:
         self,
         lora_configs: List[Dict],
         component_names: Optional[List[str]] = None,
+        *, parsed_files=None,
     ) -> int:
         components = self._sensenova_lora_components()
-        self._sensenova_lora_session.unload(components)
-        if not lora_configs or components[0].module is None:
+        self._unload_lora_sensenova()
+        if components[0].module is None:
             return 0
         if component_names is not None:
             requested = set(component_names)
@@ -240,7 +241,21 @@ class SenseNovaMixin:
             if unknown:
                 raise ValueError(f"Unknown SenseNova LoRA component(s): {sorted(unknown)}")
             components = [component for component in components if component.name in requested]
-        result = self._sensenova_lora_session.load(lora_configs, components)
+        from copy import deepcopy
+        from core.models.sensenova.residual_unet import restore_topology
+        files = self._sensenova_lora_session.parse(lora_configs) if parsed_files is None else parsed_files
+        required = self._sensenova_adapter_topology(files)
+        model = (self.sensenova_components or {})["transformer"]
+        saved = None if required is None else (
+            weakref.ref(model), deepcopy(getattr(model, "_residual_unet_spec", None)))
+        result = self._sensenova_lora_session.load(files, components)
+        if required is not None:
+            self._sensenova_topology_restore = saved
+            try:
+                restore_topology(model, required)
+            except Exception:
+                self._unload_lora_sensenova()
+                raise
         self._sensenova_report_lora_files(result)
         return result.applied
 
@@ -252,7 +267,77 @@ class SenseNovaMixin:
                   f"format={fmt} modules={len(grouped)} wrapped={counts.applied} strength={file.strength}")
 
     def _unload_lora_sensenova(self) -> int:
-        return self._sensenova_lora_session.unload(self._sensenova_lora_components())
+        try:
+            return self._sensenova_lora_session.unload(self._sensenova_lora_components())
+        finally:
+            saved = self.__dict__.pop("_sensenova_topology_restore", None)
+            if saved is not None:
+                from core.models.sensenova.residual_unet import restore_topology
+                reference, topology = saved
+                model = reference()
+                if model is not None:
+                    restore_topology(model, topology)
+
+    def _sensenova_adapter_topology(self, files):
+        from types import SimpleNamespace
+        from core.adapters import AdapterIncompatible
+        from core.rewiring.adapters import resolve_adapter_topology
+        from core.rewiring.spec import read_checkpoint_metadata
+        from core.models.sensenova.residual_unet import (
+            model_topology_metadata, validate_topology_identity, validate_owner_topology)
+        try:
+            model = (self.sensenova_components or {}).get("transformer")
+            if model is None:
+                if files:
+                    raise ValueError("SenseNova residual adapters require a loaded transformer")
+                return None
+            model_topology_metadata(model)
+            base = getattr(model, "_residual_unet_spec", None)
+            declarations = [read_checkpoint_metadata(file.metadata) for file in files]
+            native = {}
+            if base is not None or any(spec is not None for spec in declarations):
+                from core.models.sensenova.loader import _serializable_sensenova_config
+                if not hasattr(model, "config"):
+                    raise ValueError("SenseNova residual adapters require a native config")
+                native = _serializable_sensenova_config(model.config)
+            view = SimpleNamespace(config=native, _residual_unet_spec=base)
+            required = resolve_adapter_topology(view, files, validate_topology_identity)
+            if required is not None:
+                validate_owner_topology(required, model)
+            return required
+        except ValueError as exc:
+            raise AdapterIncompatible(str(exc), code="lora_rewiring_incompatible") from exc
+
+    def _sensenova_rewiring_preflight(self, params, cfg):
+        from api.error_handlers import ValidationError
+        from core.rewiring.spec import digest, preview_plan
+        from core.inference.fbcache import fbcache_active
+        from core.prompts.prompt_parser import prompt_has_negative_weight
+        from core.models.sensenova.latent_space import token_pixel_width
+        self._unload_lora_sensenova()
+        files = self._sensenova_lora_session.parse(params.get("loras") or [])
+        topology = self._sensenova_adapter_topology(files)
+        if topology is None:
+            params.pop("dit_rewiring_actual", None)
+            return files
+        if params.get("style_transfer") or params.get("style_transfers"):
+            raise ValidationError("SenseNova residual U-Net does not support style injection")
+        if fbcache_active(params):
+            raise ValidationError("SenseNova residual U-Net does not support FBCache")
+        if params.get("nag_enable"):
+            raise ValidationError("SenseNova residual U-Net does not support NAG")
+        for key in ("prompt", "negative_prompt", "nag_negative_prompt"):
+            value = params.get(key) or ""
+            prompts = value if isinstance(value, list) else [value]
+            if any(prompt_has_negative_weight(prompt) for prompt in prompts):
+                raise ValidationError("SenseNova residual U-Net does not support NegPip")
+        stride = token_pixel_width(self.sensenova_components["transformer"])
+        try:
+            preview_plan(topology, cfg["height"] // stride, cfg["width"] // stride)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        params["dit_rewiring_actual"] = {"spec": topology, "spec_sha256": digest(topology), "kv_cache": False}
+        return files
 
     def _sensenova_move(self, component_name: str, target_device: str):
         # Takes the component KEY, not the component. Passing the module itself
@@ -717,6 +802,7 @@ class SenseNovaMixin:
         device = self.device
         dtype = torch.bfloat16
         cfg = self._sensenova_common_params(params, 1024, 1024)
+        prepared_loras = self._sensenova_rewiring_preflight(params, cfg)
         transformer = self.sensenova_components["transformer"]
         tokenizer = self.sensenova_components["tokenizer"]
 
@@ -727,7 +813,7 @@ class SenseNovaMixin:
         kv_streamer = None
         block_offloader = None
         try:
-            applied_lora = self._load_lora_sensenova(params.get("loras") or [])
+            applied_lora = self._load_lora_sensenova(params.get("loras") or [], parsed_files=prepared_loras)
             # Installed AFTER LoRA (if any) has wrapped the gen-branch Linears
             # in place -- see mot_phase_eviction.py's MotPhaseEvictor docstring.
             block_offloader = self._sensenova_maybe_install_block_offload(
@@ -851,6 +937,7 @@ class SenseNovaMixin:
         device = self.device
         dtype = torch.bfloat16
         cfg = self._sensenova_common_params(params, init_image.width, init_image.height)
+        prepared_loras = self._sensenova_rewiring_preflight(params, cfg)
         denoising_strength = float(params.get("denoising_strength", GENERATION_DEFAULTS["denoising_strength"]))
         transformer = self.sensenova_components["transformer"]
         tokenizer = self.sensenova_components["tokenizer"]
@@ -864,7 +951,7 @@ class SenseNovaMixin:
         kv_streamer = None
         block_offloader = None
         try:
-            applied_lora = self._load_lora_sensenova(params.get("loras") or [])
+            applied_lora = self._load_lora_sensenova(params.get("loras") or [], parsed_files=prepared_loras)
             # Installed AFTER LoRA -- see mot_phase_eviction.py's MotPhaseEvictor
             # docstring. Split-aware placement, not a blanket move -- see
             # txt2img's move_non_gen_to_device comment.
@@ -963,6 +1050,7 @@ class SenseNovaMixin:
         device = self.device
         dtype = torch.bfloat16
         cfg = self._sensenova_common_params(params, init_image.width, init_image.height)
+        prepared_loras = self._sensenova_rewiring_preflight(params, cfg)
         denoising_strength = float(params.get("denoising_strength", GENERATION_DEFAULTS["denoising_strength"]))
         mask_blur = int(params.get("mask_blur", GENERATION_DEFAULTS["mask_blur"]) or 0)
         transformer = self.sensenova_components["transformer"]
@@ -976,7 +1064,7 @@ class SenseNovaMixin:
         kv_streamer = None
         block_offloader = None
         try:
-            applied_lora = self._load_lora_sensenova(params.get("loras") or [])
+            applied_lora = self._load_lora_sensenova(params.get("loras") or [], parsed_files=prepared_loras)
             # Installed AFTER LoRA -- see mot_phase_eviction.py's MotPhaseEvictor
             # docstring. Split-aware placement, not a blanket move -- see
             # txt2img's move_non_gen_to_device comment.

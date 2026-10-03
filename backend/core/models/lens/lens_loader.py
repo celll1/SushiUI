@@ -19,6 +19,7 @@ import torch
 def load_lens_components(
     model_path: str,
     torch_dtype: torch.dtype = torch.bfloat16,
+    *, transformer_override=None,
 ) -> dict:
     """Load Lens components from a HF repo or local diffusers directory.
 
@@ -41,12 +42,25 @@ def load_lens_components(
     print(f"[LensLoader] Loading components from: {model_path}")
 
     print("[LensLoader] Loading transformer (LensTransformer2DModel)...")
-    transformer = LensTransformer2DModel.from_pretrained(
-        model_path,
-        subfolder="transformer",
-        torch_dtype=torch_dtype,
-        low_cpu_mem_usage=True,
-    )
+    transformer = transformer_override
+    if transformer is None:
+        from core.models.lens.residual_unet import preflight_directory, restore_topology
+        topology, saved_config, weights_path = preflight_directory(model_path)
+        if topology is None:
+            transformer = LensTransformer2DModel.from_pretrained(
+                model_path, subfolder="transformer", torch_dtype=torch_dtype, low_cpu_mem_usage=True,
+            )
+        else:
+            from core.models.common.single_file_format import read_state_dict
+            from core.models.common.quantized_checkpoint_guard import refuse_quantized_state_dict
+            state, _ = read_state_dict(str(weights_path))
+            refuse_quantized_state_dict(state, arch="lens", path=str(weights_path), label="DiT")
+            transformer = LensTransformer2DModel(**saved_config)
+            info = transformer.load_state_dict(state, strict=False)
+            if info.missing_keys or info.unexpected_keys:
+                raise ValueError("Rewired Lens directory weights do not match their native config")
+            transformer.to(torch_dtype)
+            restore_topology(transformer, topology)
     transformer.eval()
     transformer.to("cpu")
 
@@ -225,11 +239,14 @@ def load_lens_single_file(
 
     The DiT weights come from ``dit_path``; the text encoder, VAE, tokenizer and
     scheduler are resolved from a base Lens diffusers directory (see
-    ``_resolve_lens_base_dir``). The base transformer is loaded and then its
-    weights are overridden by the trained single-file DiT.
+    ``_resolve_lens_base_dir``). Saved native config constructs the DiT directly;
+    legacy files without it use the base transformer config.
     """
     import os
     from core.models.common.single_file_format import read_state_dict, reattach_embedded_weights
+
+    from core.models.lens.residual_unet import preflight_checkpoint, validate_topology_identity, restore_topology
+    topology, saved_config = preflight_checkpoint(dit_path)
 
     # Single consolidated read (also tolerates a <stem>.safetensors.index.json path).
     raw, md = read_state_dict(dit_path)
@@ -240,7 +257,11 @@ def load_lens_single_file(
     print(f"[LensLoader] Single-file DiT: {dit_path}")
     print(f"[LensLoader] Resolved base Lens directory: {base_dir}")
 
-    components = load_lens_components(model_path=base_dir, torch_dtype=torch_dtype)
+    if saved_config is not None:
+        from core.models.lens.vendor.transformer import LensTransformer2DModel
+        components = {"transformer": LensTransformer2DModel(**saved_config)}
+    else:
+        components = load_lens_components(model_path=base_dir, torch_dtype=torch_dtype)
 
     # Split off an embedded VAE section. A native bundle_vae save writes
     # first_stage_model.*; a VAE-swap save uses the unified vae.* prefix (§8.7).
@@ -250,17 +271,13 @@ def load_lens_single_file(
         for p in _vae_prefixes if k.startswith(p)
     } or None
 
-    # Override the base transformer weights with the trained single-file DiT
-    # (net.*-stripped; the VAE sections are excluded here).
+    # VAE sections are excluded from the native DiT state.
     dit_sd = {
         (k[len("net."):] if k.startswith("net.") else k): v
         for k, v in raw.items() if not k.startswith(_vae_prefixes)
     }
 
-    # The VAE this checkpoint was trained with, when it is not Lens's own. The
-    # base directory built the transformer at Lens's native 32 channels, so the
-    # latent faces are resized to the declared count BEFORE the strict-ish load
-    # below installs the trained weights over them (design §8.2, §9.1).
+    # Resize latent faces to the declared VAE before loading trained weights.
     from core.models.common.vae_source import load_declared_latent_io
     declared_vae = load_declared_latent_io(dit_path, arch="lens")
     if declared_vae is not None:
@@ -278,22 +295,25 @@ def load_lens_single_file(
                 f"its declaration says {declared_vae.latent_channels} latent channels "
                 f"({expected}); refusing to load a checkpoint whose declaration and "
                 f"weights disagree about the latent space")
-    # strict=False is right here (the base transformer is being OVERRIDDEN, and a
-    # bundle may legitimately omit sections) and fatal for one input: a
-    # weight-only quantized DiT would land every .weight_scale in unexpected_keys
-    # and cast its int8/e4m3 codes into the base bf16 parameters, i.e. load
-    # "successfully" into a silently wrong model. Lens has no quantized-Linear
-    # swap, so refuse instead.
+    # Lens cannot reinterpret weight-only quantized codes as native linear weights.
     from core.models.common.quantized_checkpoint_guard import refuse_quantized_state_dict
     refuse_quantized_state_dict(dit_sd, arch="lens", path=dit_path, label="DiT")
 
+    if topology is not None:
+        validate_topology_identity(topology, dict(components["transformer"].config))
     info = components["transformer"].load_state_dict(dit_sd, strict=False)
     missing = getattr(info, "missing_keys", [])
     unexpected = getattr(info, "unexpected_keys", [])
+    if topology is not None and (missing or unexpected):
+        raise ValueError("Rewired Lens weights do not match their native transformer_config")
     print(f"[LensLoader] Applied single-file DiT: missing={len(missing)}, unexpected={len(unexpected)}")
     if unexpected:
         print(f"[LensLoader]   unexpected (first 5): {list(unexpected)[:5]}")
     components["transformer"].to(torch_dtype).to("cpu").eval()
+    restore_topology(components["transformer"], topology)
+    if saved_config is not None:
+        components = load_lens_components(model_path=base_dir, torch_dtype=torch_dtype,
+                                         transformer_override=components["transformer"])
 
     if declared_vae is not None:
         # The declared VAE carries its own class and config; reattaching its

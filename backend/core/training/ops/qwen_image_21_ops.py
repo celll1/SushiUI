@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Optional
 
@@ -11,11 +12,35 @@ import torch.nn.functional as F
 from api.param_defaults import TRAINING_DEFAULTS
 
 
-def partition_training_enabled(trainer) -> bool:
-    return bool(trainer.config.get(
+def partition_region_count(trainer, *, latent_h=None, latent_w=None) -> int:
+    enabled = bool(trainer.config.get(
         "dit_partition_training_enabled",
         trainer.config.get("qwen_partition_training_enabled", False),
     ))
+    if not enabled:
+        return 1
+    # Older saved runs may enable partitioning without recording a mode.
+    mode = str(_partition_config(trainer.config, "mode", "fixed")).strip().lower()
+    if mode == "fixed":
+        return int(_partition_config(trainer.config, "fixed_count", 2))
+    if mode == "token_threshold":
+        if latent_h is None or latent_w is None:
+            raise ValueError("Qwen token-threshold partitioning requires latent_h/latent_w")
+        limit = int(trainer.config.get(
+            "dit_partition_full_frame_max_tokens",
+            TRAINING_DEFAULTS["dit_partition_full_frame_max_tokens"],
+        ))
+        if limit < 1:
+            raise ValueError("dit_partition_full_frame_max_tokens must be positive")
+        tokens = int(latent_h) * int(latent_w)
+        if tokens <= limit:
+            return 1
+        return 4 if tokens >= 4 * limit else 2
+    raise ValueError(f"Invalid Qwen partition mode: {mode}")
+
+
+def partition_training_enabled(trainer, *, latent_h=None, latent_w=None) -> bool:
+    return partition_region_count(trainer, latent_h=latent_h, latent_w=latent_w) > 1
 
 
 def resolve_guidance_weight_schedule(config, low_weight: float):
@@ -134,9 +159,44 @@ def _guidance_condition(trainer, batch: int, cfg_drop_mask, device, dtype):
     )
 
 
-def _guidance_loss(prediction, target, uncond_prediction, sigma, condition, selection=None):
+def _extrapolation_cap(trainer):
+    cap = float(trainer.config.get(
+        "qwen_guidance_loss_extrapolation_max_rms",
+        TRAINING_DEFAULTS["qwen_guidance_loss_extrapolation_max_rms"],
+    ))
+    if not math.isfinite(cap) or cap < 0:
+        raise ValueError("Qwen guidance extrapolation RMS cap must be finite and nonnegative")
+    return cap
+
+
+@torch.no_grad()
+def _capped_guidance_scale(sigma, condition, distance_squared, cap):
+    scale, schedule = condition[4:6]
+    base = (torch.full_like(sigma, scale, dtype=torch.float32) if schedule == "constant"
+            else 1 + (scale - 1) * sigma.float())
+    distance = distance_squared.detach().float().clamp_min(0).sqrt()
+    return 1 + torch.minimum(base - 1, cap / distance.clamp_min(torch.finfo(torch.float32).tiny))
+
+
+def _log_extrapolation_cap(trainer, sigma, condition, selected, distance_squared, effective):
+    scale, schedule = condition[4:6]
+    base = (torch.full_like(sigma, scale, dtype=torch.float32) if schedule == "constant"
+            else 1 + (scale - 1) * sigma.float())
+    values = torch.stack([
+        effective[selected].mean(), effective[selected].min(),
+        (effective[selected] < base[selected]).float().mean(),
+        distance_squared[selected].clamp_min(0).sqrt().mean(),
+    ]).detach().tolist()
+    for name, value in zip(("effective_scale_mean", "effective_scale_min", "capped_fraction", "null_clean_rms"), values):
+        trainer.log_extra_metric(f"qwen_guidance_{name}", value)
+
+
+def _guidance_loss(prediction, target, uncond_prediction, sigma, condition, selection=None, sample_losses=None,
+                   guide_scale_override=None):
     _, _, eligible, _, scale, schedule, *_ = condition
     guide_scale = scale if schedule == "constant" else 1 + (scale - 1) * sigma.float()
+    if guide_scale_override is not None:
+        guide_scale = guide_scale_override.detach()
     while isinstance(guide_scale, torch.Tensor) and guide_scale.ndim < target.ndim:
         guide_scale = guide_scale.unsqueeze(-1)
     guided_target = uncond_prediction.float() + guide_scale * (
@@ -145,10 +205,18 @@ def _guidance_loss(prediction, target, uncond_prediction, sigma, condition, sele
     normal = (prediction.float() - target.float()).square().flatten(1).mean(1)
     guided = (prediction.float() - guided_target).square().flatten(1).mean(1)
     mix = (_guidance_mix_for_condition(sigma, condition) if selection is None else selection).to(dtype=normal.dtype)
-    loss = ((1 - mix) * normal + mix * guided).mean()
+    per_image = (1 - mix) * normal + mix * guided
+    loss = per_image.mean()
+    if sample_losses is not None:
+        sample_losses.append(per_image.detach())
     used = eligible & (mix > 0)
     guided_metric = guided[used].mean() if bool(used.any()) else guided.new_zeros(())
     return loss, normal.mean().detach(), guided_metric.detach()
+
+
+@torch.no_grad()
+def _per_image_mse(prediction, target):
+    return (prediction.float() - target.float()).square().flatten(1).mean(1)
 
 
 def _partition_config(config, name: str, default):
@@ -159,17 +227,19 @@ def _partition_config(config, name: str, default):
 
 def _partition_plan(trainer, latent_h: int, latent_w: int):
     mode = str(_partition_config(trainer.config, "mode", "fixed")).strip().lower()
-    if mode != "fixed":
-        raise ValueError(
-            "The first Qwen partitioned-training implementation supports mode='fixed'; "
-            f"got {mode!r}"
-        )
+    if mode not in {"fixed", "token_threshold"}:
+        raise ValueError(f"Unsupported Qwen partition mode: {mode!r}")
+    count = (int(_partition_config(trainer.config, "fixed_count", 2))
+             if mode == "fixed" else
+             partition_region_count(trainer, latent_h=latent_h, latent_w=latent_w))
+    if count == 1:
+        raise ValueError("Full-frame Qwen training has no partition plan")
     key = (
         int(getattr(trainer, "_current_epoch", 0)),
         int(getattr(trainer, "_current_batch_position", 0)),
         int(latent_h),
         int(latent_w),
-        int(_partition_config(trainer.config, "fixed_count", 2)),
+        count,
         int(_partition_config(trainer.config, "halo_tokens", 0)),
         int(_partition_config(trainer.config, "seed", 0)),
     )
@@ -196,7 +266,7 @@ def _partition_plan(trainer, latent_h: int, latent_w: int):
 
 def partition_dispatch_view(trainer, latents: torch.Tensor, *, latent_h: int, latent_w: int):
     """Shape-only view used so activation dispatch sees the largest region."""
-    if not partition_training_enabled(trainer):
+    if not partition_training_enabled(trainer, latent_h=latent_h, latent_w=latent_w):
         return latents
     plan = _partition_plan(trainer, latent_h, latent_w)
     return latents[:, : plan.largest_input_tokens]
@@ -254,12 +324,19 @@ def _resolve_convrot_training_forward(trainer, requested: str) -> tuple[str, str
 
 
 def load_components(trainer) -> None:
+    _extrapolation_cap(trainer)
     from core.models.qwen_image_21.loader import build_pipeline, load_qwen_image_21_components
 
     components = load_qwen_image_21_components(
         trainer.model_path, torch_dtype=trainer.weight_dtype, load_text_encoder=True
     )
     trainer.transformer = components["transformer"]
+    from core.models.qwen_image_21.residual_unet import configure_training_topology
+    is_resume = bool(getattr(trainer, "resume_from_checkpoint", None))
+    configure_training_topology(
+        trainer.transformer, trainer.config,
+        resuming=is_resume and bool(components.get("checkpoint_path")),
+        pending_adapter_resume=is_resume and not components.get("checkpoint_path"))
     trainer.transformer_original = trainer.transformer
     trainer.vae = components["vae"].to(dtype=trainer.vae_dtype)
     trainer.text_encoder = components["text_encoder"]
@@ -510,7 +587,8 @@ def vae_decode(trainer, latents, *, latent_h: int, latent_w: int):
 def _save_debug_latents(
     trainer, path, *, latents, noisy, target, prediction, timesteps,
     latent_h, latent_w, loss, recon_loss, captions=None, reference_image_paths=None,
-    partition_count=1,
+    partition_count=1, partition_plan=None,
+    uncond_prediction=None,
 ):
     if path is None:
         return
@@ -540,6 +618,19 @@ def _save_debug_latents(
             "model_type": "qwen_image_21",
             "partition_count": int(partition_count),
         }
+        if float(trainer.config.get("qwen_guidance_loss_weight", TRAINING_DEFAULTS["qwen_guidance_loss_weight"]) or 0) > 0:
+            data["uncond_prediction_status"] = "computed" if uncond_prediction is not None else "not_selected"
+        if uncond_prediction is not None:
+            uncond_grid = image_grid(uncond_prediction)
+            data["uncond_predicted_velocity"] = uncond_grid
+            data["uncond_predicted_latent"] = noisy_grid - timestep * uncond_grid
+        if partition_plan is not None:
+            data["partition_grid_size"] = [int(latent_w), int(latent_h)]
+            data["partition_regions"] = [
+                {"top": region.core.top, "left": region.core.left,
+                 "bottom": region.core.bottom, "right": region.core.right}
+                for region in partition_plan.regions
+            ]
         if captions:
             data["caption"] = captions[0]
             data["all_captions"] = captions
@@ -560,7 +651,8 @@ def _save_debug_latents(
                     ("target", clean_grid),
                     ("noisy", noisy_grid),
                     ("pred_x0", data["predicted_latent"]),
-                ),
+                ) + ((("uncond_pred_x0", data["uncond_predicted_latent"]),)
+                     if "uncond_predicted_latent" in data else ()),
             }
     except Exception as exc:
         print(f"{trainer.log_prefix} [debug_latents] save failed: {exc}")
@@ -675,11 +767,23 @@ def train_step(
     else:
         prediction = forward(encoder_features, encoder_mask)
     prediction = prediction[:, -tokens:]
+    exposure_losses = [] if getattr(trainer, "_collect_concept_sample_loss", False) else None
     if guidance is None or not bool(guided_mask.any()):
         pred_loss = F.mse_loss(prediction.float(), target.float())
+        if exposure_losses is not None:
+            exposure_losses.append(_per_image_mse(prediction, target))
     else:
+        effective_scale = None
+        cap = _extrapolation_cap(trainer)
+        if cap > 0:
+            distance_squared = (sigma.float().view(-1, 1, 1) * (
+                target.float() - uncond_prediction.float()
+            )).square().flatten(1).mean(1)
+            effective_scale = _capped_guidance_scale(sigma, guidance, distance_squared, cap)
+            _log_extrapolation_cap(trainer, sigma, guidance, guided_mask, distance_squared, effective_scale)
         pred_loss, normal_loss, guided_loss = _guidance_loss(
-            prediction, target, uncond_prediction, sigma, guidance, selection
+            prediction, target, uncond_prediction, sigma, guidance, selection, exposure_losses,
+            guide_scale_override=effective_scale,
         )
         trainer.log_extra_metric("qwen_guidance_loss_normal", float(normal_loss))
         trainer.log_extra_metric("qwen_guidance_loss_guided", float(guided_loss))
@@ -693,12 +797,19 @@ def train_step(
         predicted_clean = noisy.float() - sigma.float().view(-1, 1, 1) * prediction.float()
         recon_loss = F.mse_loss(predicted_clean, latents.float())
     loss = (1 - recon_weight) * pred_loss + recon_weight * recon_loss
+    if exposure_losses is not None:
+        trainer._pending_concept_sample_loss = (
+            (1 - recon_weight) * exposure_losses[0]
+            + (recon_weight * _per_image_mse(predicted_clean, latents) if recon_weight else 0)
+        ).detach()
     _save_debug_latents(
         trainer, debug_save_path, latents=latents, noisy=noisy, target=target,
         prediction=prediction, timesteps=timesteps, latent_h=latent_h,
         latent_w=latent_w, loss=loss.detach(), recon_loss=recon_loss.detach(),
         captions=debug_captions,
         reference_image_paths=debug_reference_image_paths,
+        uncond_prediction=(uncond_prediction if debug_save_path is not None
+                           and uncond_prediction is not None and bool(guided_mask[0]) else None),
     )
     return loss, pred_loss.detach(), recon_loss.detach()
 
@@ -748,6 +859,9 @@ def train_step_partitioned_backward(
         torch.empty((int(latent_h), int(latent_w), channels), dtype=torch.float32)
         if debug_save_path is not None else None
     )
+    debug_uncond_grid = (torch.empty_like(debug_prediction_grid)
+                         if debug_prediction_grid is not None and guidance is not None
+                         and bool(guided_mask[0]) else None)
 
     original_checkpoint_blocks = getattr(
         trainer.transformer, "_training_gradient_checkpointing_blocks", None
@@ -770,19 +884,78 @@ def train_step_partitioned_backward(
     normal_loss_total = 0.0
     guided_loss_total = 0.0
     total_input_tokens = 0
+    exposure_total = (torch.zeros(batch, device=trainer.device, dtype=torch.float32)
+                      if getattr(trainer, "_collect_concept_sample_loss", False) else None)
+    positions_by_box = {}
+
+    def forward_region(region, features, mask, indices=None, states=None):
+        if states is None:
+            states = flatten_region(noisy_grid, region.input)
+        if indices is not None:
+            states = states[indices]
+        step_sigma = sigma if indices is None else sigma[indices]
+        image_mask = torch.cat([
+            torch.zeros(features.shape[:2], dtype=torch.bool, device=trainer.device),
+            torch.ones(states.shape[0], region.input.tokens // 4, dtype=torch.bool, device=trainer.device),
+        ], dim=1)
+        global_adapter = getattr(trainer.transformer, "qwen_partition_global_adapter", None)
+        residual = (global_adapter(noisy_grid if indices is None else noisy_grid[indices], region.input)
+                    if global_adapter is not None else None)
+        box = region.input
+        key = (box.top, box.left, box.bottom, box.right)
+        if key not in positions_by_box:
+            positions_by_box[key] = partition_adapter.position_ids(plan.full_height, plan.full_width, box)
+        return trainer.transformer(
+            hidden_states=states, timestep=step_sigma,
+            encoder_hidden_states=features, encoder_hidden_states_mask=mask,
+            img_shapes=[[(1, region.input.height, region.input.width)]] * states.shape[0],
+            img_mask=image_mask,
+            target_spatial_position_ids=positions_by_box[key],
+            target_input_residual=residual, return_dict=False,
+        )[0]
+
+    cached_uncond_cores = None
+    effective_scale = None
     wall_start = time.perf_counter()
     try:
+        cap = _extrapolation_cap(trainer) if guidance is not None else 0.0
+        if cap > 0 and bool(guided_mask.any()):
+            # All cores share one image-level cap; reuse the detached uncond forwards.
+            cached_uncond_cores = []
+            distance_squared = torch.zeros(batch, device=trainer.device, dtype=torch.float32)
+            indices = guided_mask.nonzero(as_tuple=True)[0]
+            if cuda_timing:
+                null_start, null_end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+                null_start.record(torch.cuda.current_stream(trainer.device))
+            with torch.no_grad():
+                for region in plan.regions:
+                    if trainer.mixed_precision:
+                        with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
+                            value = forward_region(region, guidance[0][indices], guidance[1][indices], indices)
+                    else:
+                        value = forward_region(region, guidance[0][indices], guidance[1][indices], indices)
+                    value = value[:, -region.input.tokens:].reshape(
+                        indices.shape[0], region.input.height, region.input.width, channels)
+                    selected_core = flatten_region(value, region.core_in_input)
+                    core_uncond = selected_core.new_zeros(batch, region.core.tokens, channels)
+                    core_uncond[indices] = selected_core
+                    cached_uncond_cores.append(core_uncond)
+                    core_target = flatten_region(target_grid, region.core)
+                    distance_squared += region.core.tokens / plan.full_tokens * (
+                        sigma.float().view(-1, 1, 1) * (core_target.float() - core_uncond.float())
+                    ).square().flatten(1).mean(1)
+                    del value, selected_core, core_target
+            if cuda_timing:
+                null_end.record(torch.cuda.current_stream(trainer.device))
+                null_end.synchronize()
+                forward_ms += null_start.elapsed_time(null_end)
+            effective_scale = _capped_guidance_scale(sigma, guidance, distance_squared, cap)
+            _log_extrapolation_cap(trainer, sigma, guidance, guided_mask, distance_squared, effective_scale)
         for region_index, region in enumerate(plan.regions):
             input_tokens = region.input.tokens
             total_input_tokens += input_tokens
             tile = flatten_region(noisy_grid, region.input)
             tile_target = flatten_region(target_grid, region.input)
-            global_adapter = getattr(
-                trainer.transformer, "qwen_partition_global_adapter", None
-            )
-            positions = partition_adapter.position_ids(
-                plan.full_height, plan.full_width, region.input
-            )
 
             if cuda_timing:
                 forward_start = torch.cuda.Event(enable_timing=True)
@@ -791,32 +964,10 @@ def train_step_partitioned_backward(
                 forward_start.record(torch.cuda.current_stream(trainer.device))
 
             def forward(features, mask, indices=None):
-                states = tile if indices is None else tile[indices]
-                step_sigma = sigma if indices is None else sigma[indices]
-                forward_batch = states.shape[0]
-                image_mask = torch.cat([
-                    torch.zeros(features.shape[:2], dtype=torch.bool, device=trainer.device),
-                    torch.ones(forward_batch, input_tokens // 4, dtype=torch.bool, device=trainer.device),
-                ], dim=1)
-                target_input_residual = (
-                    global_adapter(noisy_grid if indices is None else noisy_grid[indices], region.input)
-                    if global_adapter is not None
-                    else None
-                )
-                return trainer.transformer(
-                    hidden_states=states,
-                    timestep=step_sigma,
-                    encoder_hidden_states=features,
-                    encoder_hidden_states_mask=mask,
-                    img_shapes=[[(1, region.input.height, region.input.width)]] * forward_batch,
-                    img_mask=image_mask,
-                    target_spatial_position_ids=positions,
-                    target_input_residual=target_input_residual,
-                    return_dict=False,
-                )[0]
+                return forward_region(region, features, mask, indices, states=tile)
 
             uncond_prediction = None
-            if guidance is not None and bool(guided_mask.any()):
+            if cached_uncond_cores is None and guidance is not None and bool(guided_mask.any()):
                 indices = guided_mask.nonzero(as_tuple=True)[0]
                 with torch.no_grad():
                     if trainer.mixed_precision:
@@ -849,12 +1000,22 @@ def train_step_partitioned_backward(
                     ).cpu()
                 )
             core_fraction = region.core.tokens / plan.full_tokens
+            exposure_losses = [] if exposure_total is not None else None
             if guidance is None or not bool(guided_mask.any()):
                 core_loss = F.mse_loss(core_prediction.float(), core_target.float())
+                if exposure_losses is not None:
+                    exposure_losses.append(_per_image_mse(core_prediction, core_target))
             else:
-                core_uncond = flatten_region(uncond_prediction, local)
+                core_uncond = (cached_uncond_cores[region_index] if cached_uncond_cores is not None
+                               else flatten_region(uncond_prediction, local))
+                if debug_uncond_grid is not None:
+                    core = region.core
+                    debug_uncond_grid[core.top:core.bottom, core.left:core.right] = (
+                        core_uncond[0].detach().float().reshape(core.height, core.width, channels).cpu()
+                    )
                 core_loss, normal_loss, guided_loss = _guidance_loss(
-                    core_prediction, core_target, core_uncond, sigma, guidance, selection
+                    core_prediction, core_target, core_uncond, sigma, guidance, selection, exposure_losses,
+                    guide_scale_override=effective_scale,
                 )
                 normal_loss_total += core_fraction * normal_loss
                 guided_loss_total += core_fraction * guided_loss
@@ -867,6 +1028,11 @@ def train_step_partitioned_backward(
             weighted_pred_loss = core_fraction * core_loss
             weighted_recon_loss = core_fraction * core_recon_loss
             weighted_loss = (1 - recon_weight) * weighted_pred_loss + recon_weight * weighted_recon_loss
+            if exposure_total is not None:
+                exposure_total += core_fraction * (
+                    (1 - recon_weight) * exposure_losses[0]
+                    + (recon_weight * _per_image_mse(core_predicted_clean, core_clean) if recon_weight else 0)
+                )
 
             if cuda_timing:
                 forward_end.record(torch.cuda.current_stream(trainer.device))
@@ -896,6 +1062,8 @@ def train_step_partitioned_backward(
             trainer.transformer._training_gradient_checkpointing_blocks = original_checkpoint_blocks
 
     logical_loss = float(logical_loss_tensor.item())
+    if exposure_total is not None:
+        trainer._pending_concept_sample_loss = exposure_total
     pred_loss_value = float(pred_loss_tensor.item())
     recon_loss_value = float(recon_loss_tensor.item())
     if guidance is not None:
@@ -914,6 +1082,9 @@ def train_step_partitioned_backward(
             loss=logical_loss, recon_loss=recon_loss_value, captions=debug_captions,
             reference_image_paths=debug_reference_image_paths,
             partition_count=len(plan.regions),
+            partition_plan=plan,
+            uncond_prediction=(debug_uncond_grid.reshape(1, tokens, channels)
+                               if debug_uncond_grid is not None else None),
         )
     wall_ms = (time.perf_counter() - wall_start) * 1000.0
     trainer.log_extra_metric("qwen_partition_count", float(len(plan.regions)))
@@ -987,7 +1158,7 @@ def generate_sample(
                 num_inference_steps=int(num_inference_steps),
                 generator=generator,
                 callback_on_step_end=callback,
-                use_kv_cache=True,
+                use_kv_cache=getattr(trainer.transformer, "_residual_unet_spec", None) is None,
             )
         return result.images[0]
     finally:

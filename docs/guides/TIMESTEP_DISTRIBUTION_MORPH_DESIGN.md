@@ -129,9 +129,10 @@ three can diverge after skipped work.
 
 `cosine` is the default: the derivative of λ with respect to update position is
 zero at both endpoints, so the interpolation parameter departs from A and
-arrives at B without a slope discontinuity. This does not claim that every
-endpoint law has a smooth density: clamped normal has boundary atoms, for
-example. `linear` is kept because it is easier to reason about in a chart.
+arrives at B without a slope discontinuity. `linear` is kept because it is
+easier to reason about in a chart. Normal timestep sampling now renormalizes
+the Gaussian density within the configured range instead of clamping to its
+endpoints.
 
 λ is fixed for one gradient-accumulation window, so every draw contributing
 to one optimizer update comes from the same law. When an MNT window crosses an
@@ -373,8 +374,8 @@ Frontend:
    midpoint quantiles, which is ample for a sparkline. Before adding the overlay,
    its endpoint evaluators
    must match the backend: logit-normal and Beta outputs are affine-scaled to
-   `[min_timestep,max_timestep]`, normal clamp atoms are represented at the
-   boundaries, and custom/quantile-table samplers are supported. All curves in
+   `[min_timestep,max_timestep]`, normal density is renormalized within that
+   range, and custom/quantile-table samplers are supported. All curves in
    an overlay share one y-scale.
 4. **Chart**: the four new series appear automatically through the
    extra-metrics channel, get legend entries from the registry, and are

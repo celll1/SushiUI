@@ -13,7 +13,7 @@
  *
  * Endpoint conventions that must match the backend, not be re-invented here:
  * logit-normal and beta outputs are affine-scaled into
- * `[min_timestep, max_timestep]`, and a clamped normal keeps its boundary atoms.
+ * `[min_timestep, max_timestep]`, and a normal is conditioned on that range.
  */
 
 export type SamplerConfig = {
@@ -76,6 +76,14 @@ function ndtri(p: number): number {
          (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
 }
 
+function normalSurvival(z: number): number {
+  const x = Math.abs(z);
+  const t = 1 / (1 + 0.2316419 * x);
+  const tail = Math.exp(-x * x / 2) / Math.sqrt(2 * Math.PI) * t *
+    (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+  return z >= 0 ? tail : 1 - tail;
+}
+
 function normalizeDistribution(name: string): string {
   const key = (name || "uniform").toLowerCase();
   if (key === "lognormal" || key === "logit-normal" || key === "logitnormal") {
@@ -105,8 +113,19 @@ function configIcdf(config: SamplerConfig, u: number): number | null {
       return scale(1 / (1 + Math.exp(-z)));
     }
     case "normal": {
-      const z = ndtri(u) * (config.std ?? 0.2) + (config.mean ?? 0.5);
-      return Math.min(max, Math.max(min, z));
+      const mean = config.mean ?? 0.5;
+      const std = config.std ?? 0.2;
+      if (!(std > 0) || !(max > min)) return null;
+      const lower = (min - mean) / std;
+      const upper = (max - mean) / std;
+      if (lower >= 0) {
+        const start = normalSurvival(lower);
+        const span = start - normalSurvival(upper);
+        return span > 0 ? mean - std * ndtri(start - u * span) : null;
+      }
+      const start = normalSurvival(-lower);
+      const span = normalSurvival(-upper) - start;
+      return span > 0 ? mean + std * ndtri(start + u * span) : null;
     }
     case "custom": {
       const weights = config.custom_weights || [];
@@ -194,6 +213,27 @@ function betaDensity(config: SamplerConfig, bins: number): Curve | null {
   });
 }
 
+function normalDensity(config: SamplerConfig, bins: number): Curve | null {
+  const min = config.min_timestep ?? 0;
+  const max = config.max_timestep ?? 1;
+  const mean = config.mean ?? 0.5;
+  const std = config.std ?? 0.2;
+  if (!(std > 0) || !(max > min)) return null;
+  const lower = (min - mean) / std;
+  const upper = (max - mean) / std;
+  const mass = lower >= 0
+    ? normalSurvival(lower) - normalSurvival(upper)
+    : normalSurvival(-upper) - normalSurvival(-lower);
+  if (!(mass > 0)) return null;
+  return Array.from({ length: bins }, (_, i) => {
+    const x = (i + 0.5) / bins;
+    const z = (x - mean) / std;
+    return { x, y: x >= min && x <= max
+      ? Math.exp(-z * z / 2) / (std * Math.sqrt(2 * Math.PI) * mass)
+      : 0 };
+  });
+}
+
 /**
  * Density of a sampler expression, as a normalised histogram of its midpoint
  * quantiles. Deterministic — no sampling — and works for any expression with a
@@ -217,6 +257,9 @@ export function densityFromIcdf(
 
 /** Density of one endpoint expression, for both interpolation modes. */
 export function densityOf(expr: SamplerExpr, bins = 64): Curve | null {
+  if (expr.kind === "config" && normalizeDistribution(expr.config.distribution) === "normal") {
+    return normalDensity(expr.config, bins);
+  }
   if (expr.kind === "config" && normalizeDistribution(expr.config.distribution) === "beta") {
     return betaDensity(expr.config, bins);
   }

@@ -183,8 +183,16 @@ def _build_ideogram4_transformer(
     with open(os.path.join(component_dir, "config.json"), encoding="utf-8") as f:
         config = json.load(f)
 
+    from core.rewiring.artifacts import read_directory_topology
+    from .residual_unet import native_config, validate_topology_identity, restore_topology
+    topology = read_directory_topology(component_dir)
+    if topology is not None:
+        config = native_config(config)
+        validate_topology_identity(topology,config)
     state_dict = _load_component_state_dict(component_dir, "diffusion_pytorch_model")
-    return _build_ideogram4_transformer_from_state(config, state_dict, torch_dtype, subfolder)
+    model = _build_ideogram4_transformer_from_state(config, state_dict, torch_dtype, subfolder)
+    restore_topology(model,topology)
+    return model
 
 
 def _build_ideogram4_transformer_from_state(
@@ -283,6 +291,8 @@ def load_ideogram4_components(
     from diffusers import AutoencoderKLFlux2, FlowMatchEulerDiscreteScheduler
     from transformers import AutoTokenizer
 
+    from .residual_unet import preflight_directory
+    preflight_directory(model_path,load_unconditional=load_unconditional)
     print(f"[Ideogram4Loader] Loading components from: {model_path}")
 
     print("[Ideogram4Loader] Loading transformer (conditional)...")
@@ -439,6 +449,8 @@ def load_ideogram4_single_file(
 
     from core.models.common.single_file_format import read_state_dict, strip_prefix
 
+    from .residual_unet import preflight_checkpoint, restore_topology
+    topology, saved_configs = preflight_checkpoint(file_path,load_unconditional=load_unconditional)
     raw, md = read_state_dict(file_path)
     md = md or {}
     hint = base_dir_hint or md.get("component.base_dir") or md.get("sushi.base_model_path")
@@ -464,7 +476,7 @@ def load_ideogram4_single_file(
             return json.load(f)
 
     print("[Ideogram4Loader] Building transformer (conditional) from single-file...")
-    cond_cfg = _config_for("transformer_config", "transformer")
+    cond_cfg = saved_configs.get("transformer") or _config_for("transformer_config", "transformer")
     transformer = _build_ideogram4_transformer_from_state(
         cond_cfg, cond_sd, torch_dtype, "transformer"
     )
@@ -472,13 +484,15 @@ def load_ideogram4_single_file(
     unconditional_transformer = None
     if load_unconditional and uncond_sd:
         print("[Ideogram4Loader] Building unconditional_transformer from single-file...")
-        uncond_cfg = _config_for("unconditional_transformer_config", "unconditional_transformer")
+        uncond_cfg = saved_configs.get("unconditional_transformer") or _config_for("unconditional_transformer_config", "unconditional_transformer")
         unconditional_transformer = _build_ideogram4_transformer_from_state(
             uncond_cfg, uncond_sd, torch_dtype, "unconditional_transformer"
         )
     elif not uncond_sd:
         print("[Ideogram4Loader] No unconditional_transformer keys in single-file (skipping)")
 
+    restore_topology(transformer,topology)
+    if unconditional_transformer is not None:restore_topology(unconditional_transformer,topology)
     print("[Ideogram4Loader] Loading text encoder (Qwen3-VL) from base directory...")
     text_encoder = load_ideogram4_text_encoder(base_dir, torch_dtype=torch_dtype, device="cpu")
 

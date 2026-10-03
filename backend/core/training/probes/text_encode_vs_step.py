@@ -256,6 +256,8 @@ def load_text_encoder(arch: str, model_path: str, device: str,
 
     if arch == "sdxl":
         from diffusers import StableDiffusionXLPipeline
+        from core.transformers_clip_compat import install as install_clip_compat
+        install_clip_compat()
 
         pipeline = StableDiffusionXLPipeline.from_single_file(
             model_path, torch_dtype=dtype, use_safetensors=True,

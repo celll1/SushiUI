@@ -57,7 +57,11 @@ def validate_context_budget(request, tokenizer, config):
 
 @torch.inference_mode()
 def generate(components, params, device, seed, cancelled, progress, set_adapter_stage=None):
+    from .residual_unet import (begin_generation_observation, observe_completed_chunk,
+                                finish_generation_observation)
+    params.pop("dit_rewiring_actual", None)
     model, vae, tokenizer = (components[key] for key in ("transformer", "vae", "tokenizer"))
+    residual_observation = begin_generation_observation(model)
     request = SongRequest(style=params["prompt"], lyrics=params["lyrics"], cot=params["yue2_cot"],
                           seed=seed, abc=params["yue2_abc"] or None, cfg_scale=params["guidance_scale"])
     config = GenerationConfig()
@@ -107,6 +111,7 @@ def generate(components, params, device, seed, cancelled, progress, set_adapter_
         move(ar_modules(model), "cpu")
         if set_adapter_stage is not None:
             set_adapter_stage("nar")
+        frame_start = 0
         for index, chunk in enumerate(chunks):
             check()
             # CachedNAR reads acoustic projection dtype/device while building the AR prefix.
@@ -118,6 +123,8 @@ def generate(components, params, device, seed, cancelled, progress, set_adapter_
                 move(nar_modules(model), device)
                 latents.append(engine.solve(steps=32, cancelled=cancelled,
                     on_progress=lambda n, total: progress("nar", index * total + n, len(chunks) * total)))
+                observe_completed_chunk(residual_observation, engine, frame_start, 32)
+                frame_start += len(chunk.noise)
             finally:
                 engine.close()
                 move(nar_modules(model), "cpu")
@@ -148,13 +155,15 @@ def generate(components, params, device, seed, cancelled, progress, set_adapter_
         waveform = waveform.clamp(-1, 1)
         progress("vae", 1, 1)
         timings["vae"] = {"seconds": time.perf_counter() - started}
+        actual = finish_generation_observation(residual_observation, model)
+        residual_config = {} if actual is None else {"dit_rewiring_actual": actual}
         return YuE2Txt2AudResult(waveform, 48000, seed, abc_text, abc_ids, codec, latent,
             {"abc": abc_truncated, "semantic": semantic_truncated},
             {**config.to_dict(), "request": request.to_dict(), "guidance_scale": request.guidance,
              "audio_duration": float(params["audio_duration"]), "vae_decode_mode": effective_decode_mode,
              "requested_vae_decode_mode": decode_mode, "vae_oom_fallback": oom_fallback,
              "vae_tile_frames": int(params["vae_tile_frames"]), "vae_halo_frames": 16,
-             "prefix_ids": prefix}, timings, components["model_identity"])
+             "prefix_ids": prefix, **residual_config}, timings, components["model_identity"])
     finally:
         if set_adapter_stage is not None:
             set_adapter_stage(None)

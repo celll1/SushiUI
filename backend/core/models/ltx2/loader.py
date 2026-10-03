@@ -277,6 +277,22 @@ def _transformer_config(directory: str, metadata: dict) -> dict:
         f"transformer/config.json next to the weights.")
 
 
+def _source_transformer_config(directory):
+    if os.path.isfile(os.path.join(directory, "config.json")):
+        return _transformer_config(directory, {})
+    from safetensors import safe_open
+    _, _, source = _transformer_shards(directory)
+    if source is None:
+        raise ValueError("LTX-2 companion root requires native transformer config headers")
+    if source.endswith(".index.json"):
+        with open(source, encoding="utf-8") as handle:
+            metadata = json.load(handle).get("metadata") or {}
+    else:
+        with safe_open(source, framework="pt", device="cpu") as handle:
+            metadata = handle.metadata() or {}
+    return _transformer_config(directory, metadata)
+
+
 def _load_quantized_ltx2_transformer(model_path: str, torch_dtype: torch.dtype):
     """The pre-built ``transformer`` component, or ``None`` to let diffusers load it.
 
@@ -366,6 +382,7 @@ def _load_quantized_ltx2_transformer(model_path: str, torch_dtype: torch.dtype):
 def load_ltx2_from_diffusers(
     model_path: str,
     torch_dtype: torch.dtype = torch.bfloat16,
+    *, transformer_checkpoint: Optional[str] = None,
 ) -> dict:
     """Load LTX-2.3 from a diffusers directory (model_index.json + subfolders).
 
@@ -399,7 +416,31 @@ def load_ltx2_from_diffusers(
     # transformer component is rebuilt and swapped here, because from_pretrained
     # would drop its scales and cast its codes. Everything else -- including a
     # plain float8 cast -- returns None and takes the original path unchanged.
-    quantized_transformer = _load_quantized_ltx2_transformer(model_path, torch_dtype)
+    from core.rewiring.artifacts import read_directory_topology
+    from .residual_unet import native_config, validate_topology_identity, wrap_transformer
+    from .component_sources import validate_sources
+    sources = validate_sources(dict(schema_version=1, root=os.path.abspath(model_path)))
+    directory = _resolve_transformer_dir(model_path)
+    if transformer_checkpoint is not None:
+        from .residual_unet import preflight_checkpoint
+        graph, saved_config = preflight_checkpoint(transformer_checkpoint)
+        config = _source_transformer_config(directory)
+        if saved_config is None or native_config(saved_config) != native_config(config):
+            raise ValueError("LTX-2 saved transformer and companion root geometry disagree")
+        restored = load_ltx2_transformer_checkpoint(transformer_checkpoint, torch_dtype)
+        quantized_transformer = getattr(restored, "transformer", restored)
+    else:
+        graph = read_directory_topology(directory) if directory is not None else None
+    if transformer_checkpoint is None and graph is not None:
+        _, _, source = _transformer_shards(directory)
+        config = _source_transformer_config(directory)
+        validate_topology_identity(graph, config)
+        restored = load_ltx2_transformer_checkpoint(source, torch_dtype)
+        if native_config(restored.config) != native_config(config):
+            raise ValueError("LTX-2 directory and checkpoint native configs disagree")
+        quantized_transformer = restored.transformer
+    elif transformer_checkpoint is None:
+        quantized_transformer = _load_quantized_ltx2_transformer(model_path, torch_dtype)
     overrides = {"transformer": quantized_transformer} if quantized_transformer is not None else {}
 
     pipeline = LTX2Pipeline.from_pretrained(model_path, torch_dtype=torch_dtype, **overrides)
@@ -420,6 +461,11 @@ def load_ltx2_from_diffusers(
         torch.cuda.empty_cache()
 
     transformer = getattr(pipeline, "transformer", None)
+    if graph is not None:
+        transformer = wrap_transformer(transformer, graph)
+        pipeline.transformer = transformer
+    inner = getattr(transformer, "transformer", transformer)
+    inner._ltx2_component_sources = sources
     vae = getattr(pipeline, "vae", None)
 
     # VAE scale factors (spatial 32x, temporal 8x) — pull from the transformer
@@ -459,3 +505,47 @@ def load_ltx2_from_diffusers(
         "latent_channels": latent_channels,
         "is_video": True,
     }
+
+
+def load_ltx2_transformer_checkpoint(path: str, torch_dtype: torch.dtype = torch.bfloat16):
+    """Restore a standalone native AV transformer; companion loading is separate."""
+    from accelerate import init_empty_weights
+    from diffusers import LTX2VideoTransformer3DModel
+    from core.models.common.single_file_format import read_state_dict
+    from core.models.common.quantized_checkpoint_guard import quantized_state_dict_report, scaled_quantization_report, verify_quantized_swap
+    from .residual_unet import preflight_checkpoint, wrap_transformer, native_config, GRID_POLICY_KEY
+    graph, config = preflight_checkpoint(path)
+    if config is None:
+        raise ValueError("LTX-2 transformer checkpoint requires native transformer_config")
+    state, _ = read_state_dict(path)
+    state = {key.removeprefix("net."):value for key,value in state.items()}
+    report = scaled_quantization_report(quantized_state_dict_report(state,arch="LTX-2.3",path=path,label="transformer"),
+                                        arch="LTX-2.3",path=path,label="transformer")
+    construction = native_config(config)
+    construction.pop(GRID_POLICY_KEY)
+    with init_empty_weights():
+        model = LTX2VideoTransformer3DModel.from_config(construction)
+        model.to(torch_dtype)
+    swapped = _swap_ltx2_quantized_linears(model,state,torch_dtype)
+    verify_quantized_swap(report,swapped,arch="LTX-2.3",path=path,label="transformer")
+    quantized_weights = {key.removesuffix(".weight_scale")+".weight" for key in state if key.endswith(".weight_scale")}
+    state = {key:(value.to(torch_dtype) if value.is_floating_point() and
+                  key not in quantized_weights and not key.endswith(".weight_scale") else value)
+             for key,value in state.items()}
+    model.load_state_dict(state,strict=True,assign=True)
+    if any(value.is_meta for value in list(model.parameters())+list(model.buffers())):
+        raise ValueError("LTX-2 checkpoint left native tensors on the meta device")
+    model.eval().requires_grad_(False)
+    return wrap_transformer(model,graph) if graph is not None else model
+
+
+def load_ltx2_from_path(model_path: str, torch_dtype: torch.dtype = torch.bfloat16):
+    from pathlib import Path
+    from .component_sources import read_sources
+    source = Path(model_path)
+    if source.is_dir():
+        return load_ltx2_from_diffusers(str(source), torch_dtype)
+    sources = read_sources(source)
+    if sources is None:
+        raise ValueError("Standalone LTX-2 model requires ltx2_components companion references")
+    return load_ltx2_from_diffusers(sources["root"], torch_dtype, transformer_checkpoint=str(source))

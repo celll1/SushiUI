@@ -169,7 +169,7 @@ class AnimaLoRAAdapter(BaseLoRAAdapter):
     def checkpoint_metadata(self, lora_layers: Dict[str, nn.Module],
                             step: int, epoch: int) -> Dict[str, str]:
         """sd-scripts native format."""
-        return {
+        metadata = {
             "model_type": "anima",
             "modelspec.architecture": "anima",
             "lora_rank": str(self.lora_rank),
@@ -179,6 +179,9 @@ class AnimaLoRAAdapter(BaseLoRAAdapter):
             "epoch": str(epoch),
             "format": "pt",
         }
+        from core.models.anima.residual_unet import model_topology_metadata
+        metadata.update(model_topology_metadata(self.trainer.transformer))
+        return metadata
 
 
 
@@ -390,20 +393,10 @@ class AnimaFullParameterAdapter(BaseFullParameterAdapter):
         # Transformer config JSON (declarative) + component hints. The TE is never
         # embedded (resolved out-of-band by anima_loader); the VAE is embedded only
         # when bundle_vae is set (else the loader resolves companion/store VAE).
-        try:
-            import json as _json
-            from core.models.anima.anima_models import ANIMA_DIT_CONFIG
-            _cfg = dict(ANIMA_DIT_CONFIG)
-            # The channel count is the run's, not the constant's: a swap resized
-            # x_embedder and final_layer away from the shipped 16.
-            _channels = int(getattr(trainer.transformer, "in_channels",
-                                    _cfg["in_channels"]))
-            _cfg["in_channels"] = _channels
-            _cfg["out_channels"] = int(getattr(trainer.transformer, "out_channels",
-                                               _cfg["out_channels"]))
-            metadata["transformer_config"] = _json.dumps(_cfg)
-        except Exception as _e:
-            print(f"[AnimaFullParameterAdapter] transformer_config not serialized: {_e}")
+        import json as _json
+        from core.models.anima.residual_unet import native_config, model_topology_metadata
+        metadata["transformer_config"] = _json.dumps(native_config(trainer.transformer))
+        metadata.update(model_topology_metadata(trainer.transformer))
         try:
             from core.models.common.single_file_format import build_component_metadata
             metadata.update(build_component_metadata(

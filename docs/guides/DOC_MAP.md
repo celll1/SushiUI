@@ -25,6 +25,7 @@ machine-local working material.
 | [docs/guides/API_TESTING.md](API_TESTING.md) | Safe API verification procedures. |
 | [docs/guides/DATABASE_MIGRATION.md](DATABASE_MIGRATION.md) | SQLite schema migration procedure. |
 | [docs/guides/GENERATION_QUEUE_PROCESSOR.md](GENERATION_QUEUE_PROCESSOR.md) | Frontend queue ownership and dispatch invariants. |
+| [docs/guides/DIT_REWIRING_DESIGN.md](DIT_REWIRING_DESIGN.md) | Implemented residual U-Net topology, artifact restoration, graph editor/acoustic export and GPU/CPU verification boundaries. |
 
 ## Generation behavior
 
@@ -42,6 +43,7 @@ machine-local working material.
 | [docs/guides/QWEN_IMAGE_21_BRANCH_LORA_DESIGN.md](QWEN_IMAGE_21_BRANCH_LORA_DESIGN.md) | Proposed Qwen conditional/empty-branch LoRA separation, loss routing, negative-prompt policy, and checkpoint contract. |
 | [docs/guides/QWEN_IMAGE_21_BRANCH_LORA_EVALUATION.md](QWEN_IMAGE_21_BRANCH_LORA_EVALUATION.md) | Paired Run 156 CFG branch-rollout plan and subsequent split-adapter acceptance gates. |
 | [docs/guides/QWEN_IMAGE_21_PARTITIONED_TRAINING_DESIGN.md](QWEN_IMAGE_21_PARTITIONED_TRAINING_DESIGN.md) | Proposed complete-coverage partitioned training for Qwen-Image 2.1, including adaptive feasibility, optional halo, and validation gates. |
+| [docs/guides/QWEN_IMAGE_21_PARTITIONED_GENERATION_DESIGN.md](QWEN_IMAGE_21_PARTITIONED_GENERATION_DESIGN.md) | Partitioned generation design, visual layouts, ordinary-path cost boundary, and implemented full-FT global-adapter checkpoint foundation. |
 | [docs/reference/architectures/sensenova_sdxl_chimera.md](../reference/architectures/sensenova_sdxl_chimera.md) | Implemented Chimera component, tensor, generation, training, and constraint reference. |
 | [docs/guides/SENSENOVA_SDXL_CHIMERA_DESIGN.md](SENSENOVA_SDXL_CHIMERA_DESIGN.md) | Chimera architecture contract, bootstrap workflow, and remaining measured acceptance gates. |
 | [docs/guides/SENSENOVA_SDXL_CHIMERA_V2_DESIGN.md](SENSENOVA_SDXL_CHIMERA_V2_DESIGN.md) | Accepted v2 endpoint-observable path, analytic skip, residual target, versioning, and implementation gates. |
@@ -59,8 +61,10 @@ machine-local working material.
 | [docs/guides/SDXL_REGULARIZATION.md](SDXL_REGULARIZATION.md) | SD/SDXL regularization behavior. |
 | [docs/guides/SENSENOVA_TRAINING_DESIGN.md](SENSENOVA_TRAINING_DESIGN.md) | SenseNova training contract and measured validation boundary. |
 | [docs/guides/TAGGER.md](TAGGER.md) | Legacy WD and trainable SigLIP2 tagger ownership, safety, and resume contracts. |
+| [docs/plans/COMPACT_CAPTIONER_DESIGN_2026-10.md](../plans/COMPACT_CAPTIONER_DESIGN_2026-10.md) | SigLIP2 captioner foundation and remaining training/API/quality gates; FoveaTag integration remains a future plan after main integration. |
 | [docs/plans/CONCEPT_BATCH_ORDER_DESIGN_2026-09.md](../plans/CONCEPT_BATCH_ORDER_DESIGN_2026-09.md) | Character/Artist concept batch ordering, caption matching, replay, and resume contract. |
 | [docs/plans/RESUME_DATASET_REBASE_DESIGN_2026-09.md](../plans/RESUME_DATASET_REBASE_DESIGN_2026-09.md) | Proposed mid-epoch batch-plan revision after adding or deselecting training datasets. |
+| [docs/plans/STYLE_EMBEDDING_DESIGN_2026-09.md](../plans/STYLE_EMBEDDING_DESIGN_2026-09.md) | Standalone artist-supervised style encoder: training, HSIC comparison, UI, and CPU inference; generation conditioning remains planned. |
 | [docs/decisions/TRAINING_RUN_STORAGE_V2.md](../decisions/TRAINING_RUN_STORAGE_V2.md) | Central catalogue and per-run database contract. |
 | [docs/guides/INT8_CONVROT_TRAINING_DESIGN.md](INT8_CONVROT_TRAINING_DESIGN.md) | INT8 ConvRot investigation and measurements. |
 | [docs/guides/FULL_PARAMETER_CHECKPOINT_EXPORT_DESIGN.md](FULL_PARAMETER_CHECKPOINT_EXPORT_DESIGN.md) | Architecture-neutral separation of exact training checkpoints and optional quantized inference exports. |

@@ -166,7 +166,19 @@ def load_components(trainer) -> None:
 
     trainer.minimax_h3_components = components
     trainer.transformer = components["transformer"]
-    trainer.transformer_original = trainer.transformer
+    trainer.transformer_original = getattr(trainer.transformer, "transformer", trainer.transformer)
+    from core.models.minimax_h3.residual_unet import configure_training_topology
+    from core.rewiring.training import NO_RESUME_SPEC
+    resume_spec = NO_RESUME_SPEC
+    resume_path = getattr(trainer, "resume_from_checkpoint", None)
+    if resume_path and getattr(trainer, "_manages_own_resume", False):
+        from core.rewiring.artifacts import read_artifact_topology
+        from core.training.lora_trainer import resolve_lora_resume_checkpoint
+        checkpoint = resolve_lora_resume_checkpoint(trainer, resume_path)
+        if checkpoint is not None:
+            resume_spec = read_artifact_topology(checkpoint)
+    configure_training_topology(trainer.transformer, trainer.config, trainer=trainer,
+                                resume_spec=resume_spec)
     trainer.vae = components["vae"]
     trainer.audio_vae = components["audio_vae"]
     trainer.text_encoder = components["text_encoder"]
@@ -838,6 +850,8 @@ def train_step(
     # would override those casts and change the function from the one generation
     # runs. The LoRA layers cast their fp32 masters to the activation dtype
     # themselves for the same reason (see MiniMaxH3LoRALinearLayer).
+    from core.models.minimax_h3.residual_unet import forward_kwargs
+    residual_kwargs = forward_kwargs(trainer.transformer, layout)
     video_velocity, audio_velocity = trainer.transformer(
         hidden_states=video_rows,
         # fp32: `audio_proj_in` is one of the model's `_keep_in_fp32_modules`, so
@@ -854,6 +868,7 @@ def train_step(
         audio_indices=layout["audio_indices"],
         text_indices=layout["text_indices"],
         return_dict=False,
+        **residual_kwargs,
     )
 
     if profile_vram:

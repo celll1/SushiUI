@@ -102,6 +102,12 @@ def load_components(trainer) -> None:
     trainer.unet = None
     trainer.noise_scheduler = trainer.scheduler
 
+    from core.models.minit2i.residual_unet import configure_training_topology
+    resume_path = getattr(trainer, "resume_from_checkpoint", None)
+    configure_training_topology(trainer.transformer, trainer.config,
+        resuming=bool(resume_path and Path(trainer.model_path).resolve() == Path(resume_path).resolve()),
+        pending_adapter_resume=bool(resume_path and getattr(trainer, "_manages_own_resume", False)))
+
     # Gradient checkpointing on the MM-JiT transformer.
     if trainer.gradient_checkpointing and hasattr(trainer.transformer, "enable_gradient_checkpointing"):
         try:

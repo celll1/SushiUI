@@ -148,10 +148,17 @@ def _finish_load(module: torch.nn.Module, state: dict[str, torch.Tensor], label:
 def load_transformer(path: str, config: dict[str, Any], dtype: torch.dtype) -> tuple[torch.nn.Module, str]:
     from accelerate import init_empty_weights
 
+    from core.rewiring.artifacts import read_artifact_topology
+    from .residual_unet import restore_topology, validate_topology_identity
+    topology = read_artifact_topology(path)
+    if topology is not None:
+        topology = validate_topology_identity(topology, config)
     state, metadata = read_state_dict(path)
     variant = _validate_component(path, metadata, "transformer")
     with init_empty_weights():
         model = QwenImage21Transformer2DModel(**config)
+    from .partition_global import stash_partition_global_payload
+    stash_partition_global_payload(model, state, metadata)
     if variant == "int8_convrot":
         from core.models.common.convrot_int8_linear import require_convrot_int8_runtime, swap_linears_to_convrot_int8
 
@@ -163,6 +170,7 @@ def load_transformer(path: str, config: dict[str, Any], dtype: torch.dtype) -> t
     model = _finish_load(model, state, "Qwen-Image 2.1 transformer")
     if variant == "bf16":
         model.to(dtype=dtype)
+    restore_topology(model, topology)
     return model.to("cpu"), variant
 
 

@@ -267,8 +267,8 @@ class BatchedZImageWrapperOptimized(BatchedZImageWrapper):
         if cap_padding_len > 0:
             # For each batch item, repeat last valid token
             cap_last_valid_indices = (cap_ori_lens - 1).clamp(min=0).long()  # [B]
-            cap_last_tokens = cap_feats_trimmed[torch.arange(B, device=device), cap_last_valid_indices]  # [B, 2560]
-            cap_pad_tokens = cap_last_tokens.unsqueeze(1).expand(B, cap_padding_len, 2560)
+            cap_last_tokens = cap_feats_trimmed[torch.arange(B, device=device), cap_last_valid_indices]
+            cap_pad_tokens = cap_last_tokens.unsqueeze(1).expand(B, cap_padding_len, cap_feats.shape[-1])
             cap_feats_padded = torch.cat([cap_feats_trimmed, cap_pad_tokens], dim=1)
         else:
             cap_feats_padded = cap_feats_trimmed
@@ -352,6 +352,10 @@ class BatchedZImageWrapperOptimized(BatchedZImageWrapper):
             output: [B, C, F, H, W] - Batched output latents
             info: dict - Additional information
         """
+        if getattr(self.transformer, "_residual_unet_spec", None) is not None:
+            # Rewired training uses the same learned padding and coordinates as inference.
+            return super().forward(x, t, cap_feats, cap_mask, patch_size, f_patch_size)
+
         B, C, F, H, W = x.shape
         device = x.device
 

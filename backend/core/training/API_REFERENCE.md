@@ -18,6 +18,21 @@ This document provides a comprehensive API reference for all components, classes
 
 ---
 
+## Residual DiT topology
+
+Training requests and run YAML carry `dit_rewiring_mode` and
+`dit_rewiring_spec`. Defaults and native-layout presets come from
+`backend/api/param_defaults.py`. `inherit` follows checkpoint metadata;
+`configure` selects an explicit graph or the model preset. Resume requires the
+same topology. Supported architectures are published by
+`GET /api/v1/schema/dit-rewiring`; this list does not enable NAR training for
+YuE2 or generation-only Music 3 training. Existing per-architecture training
+method gates still apply.
+
+See [the residual topology contract](../../../docs/guides/DIT_REWIRING_DESIGN.md)
+for metadata, graphical editing, configuration refusals, measured Qwen behavior
+and the provisional non-Qwen verification boundary.
+
 ## LatentCache
 
 **File**: `latent_cache.py`
@@ -1603,6 +1618,17 @@ passes. `multi_noise_mode` accepts `independent`, `shared`, `trajectory`, and
 `0` means "never" for every optional periodic action. `gradient_accumulation_steps`
 is not optional, so `0` folds to `1` rather than disabling the optimizer step.
 
+Successful LoRA/full-parameter completion writes weights, training state and
+`<run_name>_step_<step>_optimizer.pt`, even between periodic-save intervals.
+A same-step periodic save is reused only after all bundle stages succeeded;
+an optimizer/state/EMA write failure requires a final retry. A final save
+failure fails the run instead of reporting completion. Optimizer retention
+protects the current saved step and is independent of weight retention.
+To extend a completed run, increase its epoch/step target and resume from the
+latest checkpoint in the same output directory. Keep the matching optimizer
+and state sidecars; changing optimizer/parameter layout can require remapping
+or fresh state and is reported separately in the resume log.
+
 `text_encoding_mode` (Z-Image and other swap-capable architectures) accepts
 `"swap_onthefly"` (swap text encoder and transformer, encode on the fly),
 `"pre_encoded_cache"` (disk cache), and `"onthefly_gpu"` (encode on GPU without
@@ -1824,3 +1850,92 @@ bucket_manager = BucketManager(
 
 - [MODEL_ARCHITECTURES.md](MODEL_ARCHITECTURES.md) - Model architecture specifications (SD1.5, SDXL, Z-Image)
 - [../../../AGENTS.md](../../../AGENTS.md) - Task router and development guidelines
+
+
+### Concept exposure timestep coverage
+
+`GET /api/v1/training/runs/{run_id}/concept-exposure` reads the trainer's atomic
+snapshot only; it never calls the training process. Each row now includes
+`timestep_counts`, `timestep_recorded_passes`, and `timestep_unknown_passes`,
+with shared `timestep_bin_edges`. The fixed 36-bin geometry uses 0.05 intervals
+through 0.8 and 0.01 intervals above 0.8. The axis is always 0=clean, 1=noisy;
+t1 architectures are inverted. For Qwen, the histogram records the BF16 or
+other configured training dtype's actual sigma rather than the pre-cast draw.
+Repeated images and successful MNT backwards count separately; skipped
+backwards do not count. Text-only steps and old checkpoint passes without
+recorded timesteps remain unknown. Unknown counts are not reconstructed from
+the configured probability distribution.
+
+Checkpoint state preserves counts and histograms. Version 1 snapshots/checkpoints
+load with their existing total counts and unknown timestep coverage; version 2
+adds the histogram. Invalid/incompatible histogram geometry is rejected on resume.
+Background items without tracked groups do not incur a timestep read. Target
+items are accumulated after backward's existing synchronization, and JSON is
+published through the existing asynchronous writer every 25 completed passes.
+No history proportional to the number of training steps is retained.
+
+The monitor renders one 24px histogram per row, left=clean/right=noisy,
+with marks at 0.8/0.95 and a separate recorded-pass count beside the cumulative
+total. Heights use passes per unit timestep width on a shared linear scale
+across visible rows, so colored area is proportional to recorded passes even
+with unequal bin widths. Color shows mean per-image loss on a shared linear
+scale across visible rows (blue=low, orange=high). Greater sample standard
+deviation reduces saturation toward a pale color; its scale is also shared
+across visible rows. Gray area represents passes without loss, and stripes
+mark loss with unavailable standard deviation. Bins are not interpolated.
+Hover intervals for exact counts and mean
+passes per image; focus/hover the chart for coverage, unknown passes, and the
+total above 0.95. Row means do not guarantee that every target image saw that
+noise range.
+
+Version 3 snapshots/checkpoint state add `timestep_loss_sums` and
+`timestep_loss_counts`, each with 36 entries per recorded group. Versions 1/2
+resume without inventing historical losses: old exposure counts remain intact,
+and only finite, nonnegative losses with known timesteps enter the loss mean.
+The API returns `timestep_loss_counts`, nullable `timestep_loss_means`, recorded
+and unknown loss coverage, and `timestep_loss_metric`.
+
+Version 4 adds independent `timestep_loss_variance_counts`,
+`timestep_loss_variance_means`, and `timestep_loss_m2` arrays. Welford updates
+accumulate the centered sum of squared deviations, including repeated passes,
+without retaining observations. Versions 1/2/3 retain their cumulative counts
+and loss means but start a new variance cohort; historical mean-only losses
+are never treated as having zero variance. The API exposes cohort counts and
+means alongside `timestep_loss_stddevs` (sample standard deviation,
+`sqrt(M2/(n-1))`, null for n<2). Hover text identifies the cohort separately
+from the cumulative loss mean. Unknown variance does not imply low variance.
+
+The initial metric `qwen_prediction_reconstruction_v1` records Qwen's per-image
+prediction/reconstruction objective, including guidance blend/selection and
+reconstruction weighting, before gradient-accumulation/micro-batch scaling.
+Auxiliary losses are excluded. Partition cores accumulate with token-area
+weights into one value per logical image. Successful micro-chunks preserve
+image order; failed OOM attempts are discarded before retry, and skipped
+batches add no exposure. Other architectures leave loss coverage unknown.
+Only detached batch-size vectors are read after existing backward synchronization;
+the monitor continues reading the asynchronous snapshot without trainer RPC.
+Loss values describe the training objective, not character-generation quality,
+and depend on timestep and the objective settings used when observed.
+
+Storage grows with recorded groups, not iterations. A filled-bin JSON estimate
+using the current 398 groups, 36 float sums and 36 integer counts per group
+(representative sums `123.4567890123456`, counts `100`) adds 364,269 bytes
+(356 KiB) to the monitor snapshot and 604,685 bytes (591 KiB) to each indented
+checkpoint state. At 10,000 groups this is about 8.73 MiB / 14.49 MiB;
+retained checkpoints multiply the state increment. Actual size depends on
+number lengths and groups with recorded loss; these are estimates, not caps.
+For the same 398 groups, filled variance arrays (counts `100`, means
+`1.234567890123456`, M2 `123.4567890123456`) add a further approximately
+632 KiB to the snapshot / 984 KiB per checkpoint state. Separate cohort count
+and mean are necessary to resume mean-only history correctly; all storage
+still scales with groups rather than training iterations.
+
+
+The concept-exposure endpoint also accepts `q` (maximum 256 characters), a
+literal partial name/key search. Matching ignores case and treats underscores
+as spaces. It filters all groups before applying `order` and `limit`, returns
+`matched_groups` alongside the unfiltered `total_groups`, and does not treat
+regex or wildcard syntax specially. Search reads the existing snapshot only;
+no trainer RPC, CUDA work, or training locks are used. The monitor debounces
+input by 350ms, aborts superseded requests, and prevents overlapping polls.
+The existing five-second polling interval is unchanged.

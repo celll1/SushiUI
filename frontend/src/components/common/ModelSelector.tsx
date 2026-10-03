@@ -5,6 +5,8 @@ import Card from "./Card";
 import Button from "./Button";
 import Select from "./Select";
 import MiniMaxH3ReferenceBankPanel from "./MiniMaxH3ReferenceBankPanel";
+import DiTRewiringSummary from "./DiTRewiringSummary";
+import DiTAcousticExportPanel from "./DiTAcousticExportPanel";
 import { ChevronDown, ChevronUp, Folder } from "lucide-react";
 import { useStartup } from "@/contexts/StartupContext";
 import { getModels, loadModel } from "@/utils/api";
@@ -231,7 +233,18 @@ export default function ModelSelector({
                   v-prediction
                 </span>
               )}
-              {loadedHybridSummary && (
+              {currentModel.dit_rewiring_spec && <DiTRewiringSummary spec={currentModel.dit_rewiring_spec} tokenStride={currentModel.dit_rewiring_token_stride} temporalGeometry={currentModel.dit_rewiring_temporal_geometry} videoGeometry={currentModel.dit_rewiring_video_geometry} parameterCounts={currentModel.dit_rewiring_parameter_counts} />}
+              {["yue2", "minimax_music3"].includes(currentModel.type) && currentModel.source.toLowerCase().endsWith(".safetensors") &&
+                <DiTAcousticExportPanel key={currentModel.source} modelPath={currentModel.source} onExported={path => {
+                  setModels(previous => previous.some(model => model.path === path) ? previous : [...previous, {
+                    ...previous.find(model => model.path === currentModel.source),
+                    name: path.split(/[\\/]/).pop() || path, path,
+                    type: "safetensors", source_type: "safetensors", architecture: currentModel.type,
+                  }]);
+                  setSelectedModelPath(path);
+                }} />}
+
+            {loadedHybridSummary && (
                 <span className="rounded bg-amber-600/80 px-2 py-0.5 text-[10px] text-white">
                   merged
                 </span>

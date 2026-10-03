@@ -85,6 +85,41 @@ const debugImageUrl = (
   return typeof legacy === "string" ? `data:image/png;base64,${legacy}` : undefined;
 };
 
+const PARTITION_COLORS = ["#22d3ee", "#f472b6", "#a3e635", "#fb923c"];
+
+function DebugPartitionOverlay({ visualization }: { visualization: DebugLatentVisualization }) {
+  const [width, height] = visualization.partition_grid_size ?? [];
+  const regions = visualization.partition_regions;
+  if (!width || !height || !regions?.length) return null;
+
+  return (
+    <svg
+      className="absolute inset-0 w-full h-full pointer-events-none"
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="xMidYMid meet"
+      aria-label="Actual training partition boundaries"
+    >
+      {regions.map((region, index) => {
+        const color = PARTITION_COLORS[index % PARTITION_COLORS.length];
+        return (
+          <g key={index} fill="none" stroke={color} strokeWidth="2"
+            strokeDasharray="5 4" strokeLinecap="round"
+            style={{ filter: "drop-shadow(0 0 1px black)" }}>
+            {region.right < width && (
+              <line x1={region.right} y1={region.top} x2={region.right} y2={region.bottom}
+                vectorEffect="non-scaling-stroke" />
+            )}
+            {region.bottom < height && (
+              <line x1={region.left} y1={region.bottom} x2={region.right} y2={region.bottom}
+                vectorEffect="non-scaling-stroke" />
+            )}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 // Per-pane persistence slot and the preset each pane opens on. Pane 3 defaults
 // to the param-change view, which is why ParamChangeChart no longer exists as a
 // component -- its two tabs are two presets now.
@@ -512,13 +547,13 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
     };
   }, [currentRun.id, currentRun.status]);
 
-  // The overlay: source and target faint, the law actually being sampled solid.
+  // The overlay: source and target faint, the active sampling law solid.
   const timestepCurves = useMemo<TimestepGraphCurve[] | null>(() => {
     const status = timestepStatus?.status;
     if (!status) return null;
     if (!status.active || !status.source || !status.target) {
       const single = status.target ? densityOf(status.target) : null;
-      return single ? [{ points: single, color: "#3b82f6", label: "sampled" }] : null;
+      return single ? [{ points: single, color: "#3b82f6", label: "active law" }] : null;
     }
     const source = densityOf(status.source);
     const target = densityOf(status.target);
@@ -698,6 +733,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
     let upgrade: ReturnType<typeof setTimeout> | null = null;
     const preloads = [
       "latents_image", "predicted_latent_image", "noisy_latents_image",
+      "uncond_predicted_latent_image",
       "predicted_noise_image",
     ].map((key) => {
       const source = debugImageUrl(
@@ -1734,6 +1770,23 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                         <div className="text-xs space-y-1 bg-gray-800 rounded p-2">
                           <div><span className="text-gray-400">Step:</span> {debugVisualization.step}</div>
                           <div><span className="text-gray-400">Timestep:</span> {debugVisualization.timestep}</div>
+                          {debugVisualization.display_resolution && (
+                            <div>
+                              <span className="text-gray-400">
+                                {debugVisualization.display_resolution.space === "image" ? "Image resolution" : "Latent preview resolution"} (W×H):
+                              </span>{" "}
+                              {debugVisualization.display_resolution.width}×{debugVisualization.display_resolution.height}
+                            </div>
+                          )}
+                          {debugVisualization.partition_count !== undefined && (
+                            <div><span className="text-gray-400">Partitions:</span>{" "}
+                              {debugVisualization.partition_count === 1
+                                ? "Full frame"
+                                : debugVisualization.partition_regions?.length
+                                  ? `${debugVisualization.partition_count} regions (colored dashed boundaries)`
+                                  : `${debugVisualization.partition_count} regions (boundaries unavailable in this save)`}
+                            </div>
+                          )}
                           <div><span className="text-gray-400">Prediction Loss:</span> {debugVisualization.loss.toFixed(6)}</div>
                           {debugVisualization.recon_loss !== undefined && (
                             <div><span className="text-gray-400">Recon Loss:</span> {debugVisualization.recon_loss.toFixed(6)}</div>
@@ -1796,13 +1849,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                         <div className="space-y-2">
                           <div className="text-xs text-gray-400">Latent Comparison (Goal: Minimize Difference)</div>
 
-                          {/* Comparison Container — staged left→right wipe so the yellow
-                              line ALWAYS sits exactly on the image transition.
-                              3-way (latent runs): drag right reveals noisy→predicted→target.
-                                stage 1 [0..50]: base=noisy,     top=predicted (clip [0,wipe])
-                                stage 2 [50..100]: base=predicted, top=target    (clip [0,wipe])
-                              wipe = position of the transition (= the line), 0→100 per stage.
-                              2-way fallback (no noisy): base=target, top=predicted clipped to s. */}
+                          {/* Each slider stage wipes between two adjacent saved images. */}
                           {(() => {
                             const v = debugVisualization;
                             const has = (key: keyof NonNullable<DebugLatentVisualization["image_urls"]>) =>
@@ -1812,25 +1859,26 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                             const s = comparisonSlider;
                             const px = (key: keyof NonNullable<DebugLatentVisualization["image_urls"]>) =>
                               debugImageUrl(v, key, debugImageSize);
+                            type ImageKey = keyof NonNullable<DebugLatentVisualization["image_urls"]>;
                             const GREEN = "bg-green-700/80", BLUE = "bg-blue-700/80", PURPLE = "bg-purple-700/80";
-                            let baseSrc: string | undefined, baseLabel = "", baseColor = GREEN;
-                            let topSrc: string | undefined, topLabel = "", topColor = BLUE;
-                            let wipe: number;  // transition position (%) = yellow line
+                            const frames: { key: ImageKey; label: string; color: string }[] = [];
                             if (has3) {
-                              const stage2 = s > 50;
-                              wipe = stage2 ? (s - 50) * 2 : s * 2;  // 0→100 within each stage
-                              if (stage2) {
-                                baseSrc = px("predicted_latent_image"); baseLabel = "Predicted"; baseColor = BLUE;
-                                topSrc = px("latents_image");           topLabel = "Target";     topColor = GREEN;
-                              } else {
-                                baseSrc = px("noisy_latents_image");    baseLabel = "Noisy";     baseColor = PURPLE;
-                                topSrc = px("predicted_latent_image");  topLabel = "Predicted";  topColor = BLUE;
+                              frames.push({ key: "noisy_latents_image", label: "Noisy", color: PURPLE });
+                              if (has("uncond_predicted_latent_image")) {
+                                frames.push({ key: "uncond_predicted_latent_image", label: "Uncond predicted", color: "bg-orange-700/80" });
                               }
+                              frames.push({ key: "predicted_latent_image", label: "Predicted", color: BLUE },
+                                { key: "latents_image", label: "Target", color: GREEN });
                             } else {
-                              wipe = s;
-                              baseSrc = px("latents_image");            baseLabel = "Target";    baseColor = GREEN;
-                              topSrc = px("predicted_latent_image");    topLabel = "Predicted";  topColor = BLUE;
+                              frames.push({ key: "latents_image", label: "Target", color: GREEN },
+                                { key: "predicted_latent_image", label: "Predicted", color: BLUE });
                             }
+                            const scaled = s / 100 * (frames.length - 1);
+                            const stage = Math.min(Math.floor(scaled), frames.length - 2);
+                            const wipe = (scaled - stage) * 100;
+                            const base = frames[stage], top = frames[stage + 1];
+                            const baseSrc = px(base.key), baseLabel = base.label, baseColor = base.color;
+                            const topSrc = px(top.key), topLabel = top.label, topColor = top.color;
                             return (
                           <div className="relative aspect-square bg-gray-800 rounded overflow-hidden">
                             {/* Base layer (right side of the wipe) */}
@@ -1847,6 +1895,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                                 <div className={`absolute top-1 left-1 ${topColor} text-white text-xs px-1.5 py-0.5 rounded`}>{topLabel}</div>
                               </div>
                             )}
+                            <DebugPartitionOverlay visualization={v} />
                             {/* Yellow line exactly on the transition */}
                             <div
                               className="absolute top-0 bottom-0 w-0.5 bg-yellow-500 pointer-events-none"
@@ -1870,6 +1919,8 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                             {(debugVisualization.image_urls?.noisy_latents_image || debugVisualization.noisy_latents_image) ? (
                               <>
                                 <span>Noisy (t={debugVisualization.timestep})</span>
+                                {(debugVisualization.image_urls?.uncond_predicted_latent_image || debugVisualization.uncond_predicted_latent_image) &&
+                                  <span>Uncond predicted (t=0)</span>}
                                 <span>Predicted (t=0)</span>
                                 <span>Target</span>
                               </>
@@ -1880,6 +1931,8 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                               </>
                             )}
                           </div>
+                          {debugVisualization.uncond_prediction_status === "not_selected" &&
+                            <p className="text-xs text-gray-500">Uncond preview unavailable: guidance did not compute it for this image.</p>}
 
                           {/* Additional Debug Images */}
                           <div className="grid grid-cols-2 gap-2 mt-3">
@@ -1897,6 +1950,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                                     decoding="async"
                                     className="w-full h-full object-contain"
                                   />
+                                  <DebugPartitionOverlay visualization={debugVisualization} />
                                 </div>
                               </div>
                             )}
@@ -1912,6 +1966,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                                     decoding="async"
                                     className="w-full h-full object-contain"
                                   />
+                                  <DebugPartitionOverlay visualization={debugVisualization} />
                                 </div>
                               </div>
                             )}

@@ -328,6 +328,7 @@ def test_the_substring_list_is_gone_from_both_sites():
 @pytest.mark.parametrize("method", ["__init__(", "_try_load_checkpoint_with_fallback(self"])
 def test_each_decision_point_calls_the_shared_discriminator(method):
     source = _source()
-    body = source[source.index(f"    def {method}"):]
+    trainer_source = source[source.index("class BaseTrainer("):]
+    body = trainer_source[trainer_source.index(f"    def {method}"):]
     body = body[:body.index("\n    def ", 10)]
     assert "is_checkpoint_corruption_error(e)" in body

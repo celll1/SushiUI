@@ -65,6 +65,13 @@ def load_components(trainer) -> None:
     from core.training.vae_swap import apply_latent_space
     apply_latent_space(trainer, components.get("declared_vae"))
 
+    from pathlib import Path
+    from core.models.lens.residual_unet import configure_training_topology
+    resume_path = getattr(trainer, "resume_from_checkpoint", None)
+    configure_training_topology(trainer.transformer, trainer.config,
+        resuming=bool(resume_path and Path(trainer.model_path).resolve() == Path(resume_path).resolve()),
+        pending_adapter_resume=bool(resume_path and getattr(trainer, "_manages_own_resume", False)))
+
     # Gradient checkpointing.
     cpu_offload_ckpt  = bool(trainer.config.get("cpu_offload_checkpointing", False))
     async_offload_ckpt = bool(trainer.config.get("async_cpu_offload_checkpointing", False))

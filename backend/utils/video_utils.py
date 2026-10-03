@@ -368,6 +368,8 @@ def save_video_with_metadata(
         )
            if params.get(key) is not None},
         **chain_meta,
+        **({"dit_rewiring_actual": params["dit_rewiring_actual"]}
+           if params.get("dit_rewiring_actual") is not None else {}),
     }
     try:
         with open(os.path.join(settings.outputs_dir, f"{base_name}.json"), "w", encoding="utf-8") as f:

@@ -162,9 +162,26 @@ from api.schema_routes import (
     get_vae_training_defaults,
     router as schema_router,
 )
+from api.style_training_routes import router as style_training_router
+from api.captioner_routes import router as captioner_router
+from api.captioner_training_routes import router as captioner_training_router
+from api.captioner_batch_routes import router as captioner_batch_router
+from api.style_inference_routes import router as style_inference_router
+from api.training_run_helpers import (
+    LazySerialExecutor,
+    decimate_metric_rows,
+    next_resume_seq,
+    upsert_metric_row,
+    validate_gpu_index,
+)
 
 router = APIRouter()
 router.include_router(schema_router)
+router.include_router(style_training_router)
+router.include_router(captioner_router)
+router.include_router(captioner_training_router)
+router.include_router(captioner_batch_router)
+router.include_router(style_inference_router)
 
 minimax_h3_prompt_assistant = MiniMaxH3PromptAssistant(
     PROMPT_ASSIST_DEFAULTS["cache_max_entries"]
@@ -546,6 +563,7 @@ class GenerationParams(BaseModel):
     # architecture ignores it.
     sensenova_kv_cache_streaming: bool = GENERATION_DEFAULTS["sensenova_kv_cache_streaming"]
     qwen_image_21_kv_cache: bool = GENERATION_DEFAULTS["qwen_image_21_kv_cache"]
+    qwen_image_21_partition: Optional[Dict[str, Any]] = GENERATION_DEFAULTS["qwen_image_21_partition"]
     sampler: str = "euler"
     schedule_type: str = "uniform"
     seed: int = -1
@@ -629,11 +647,28 @@ class GenerationParams(BaseModel):
     # Preview mode
     preview_predicted_x0: bool = False  # Show predicted x0 instead of current latent in preview
 
+    @field_validator("qwen_image_21_partition", mode="before")
+    @classmethod
+    def _partition_config(cls, value):
+        from core.inference.qwen_image_21_partition import normalize_partition_config
+        return normalize_partition_config(value)
+
 class Txt2ImgRequest(GenerationParams):
     pass
 
 class Img2ImgRequest(GenerationParams):
     denoising_strength: float = 0.75
+
+
+def _parse_qwen_partition(value, *, arch=None):
+    from core.inference.qwen_image_21_partition import normalize_partition_config
+    try:
+        config = normalize_partition_config(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if arch is not None and config["mode"] != "off" and arch != "qwen_image_21":
+        raise HTTPException(status_code=400, detail="Partitioned generation requires Qwen-Image 2.1")
+    return config
 
 
 @router.get("/health", tags=["system"])
@@ -1227,6 +1262,7 @@ async def generate_txt2img(
     sensenova_mot_phase_eviction: bool = Form(GENERATION_DEFAULTS["sensenova_mot_phase_eviction"]),  # SenseNova U1.5 per-phase weight-half CPU eviction; other archs ignore it
     sensenova_kv_cache_streaming: bool = Form(GENERATION_DEFAULTS["sensenova_kv_cache_streaming"]),  # SenseNova U1.5 per-phase KV cache CPU streaming; other archs ignore it
     qwen_image_21_kv_cache: bool = Form(GENERATION_DEFAULTS["qwen_image_21_kv_cache"]),
+    qwen_image_21_partition: str = Form(json.dumps(GENERATION_DEFAULTS["qwen_image_21_partition"])),
     sampler: str = Form("euler"),
     schedule_type: str = Form("uniform"),
     seed: int = Form(-1),
@@ -1458,6 +1494,7 @@ async def generate_txt2img(
             "sensenova_mot_phase_eviction": sensenova_mot_phase_eviction,
             "sensenova_kv_cache_streaming": sensenova_kv_cache_streaming,
             "qwen_image_21_kv_cache": qwen_image_21_kv_cache,
+            "qwen_image_21_partition": _parse_qwen_partition(qwen_image_21_partition),
             "sampler": sampler,
             "schedule_type": schedule_type,
             "seed": seed,
@@ -1594,6 +1631,7 @@ async def generate_txt2img(
 
         # Warn about parameters the loaded architecture silently ignores
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
+        _parse_qwen_partition(params.get("qwen_image_21_partition"), arch=_current_arch)
         check_arch_capabilities(params, _current_arch, defaults=_img_defaults)
 
         # Progress callback to send updates via WebSocket
@@ -2218,6 +2256,7 @@ async def generate_img2img(
     sensenova_mot_phase_eviction: bool = Form(GENERATION_DEFAULTS["sensenova_mot_phase_eviction"]),  # SenseNova U1.5 per-phase weight-half CPU eviction; other archs ignore it
     sensenova_kv_cache_streaming: bool = Form(GENERATION_DEFAULTS["sensenova_kv_cache_streaming"]),  # SenseNova U1.5 per-phase KV cache CPU streaming; other archs ignore it
     qwen_image_21_kv_cache: bool = Form(GENERATION_DEFAULTS["qwen_image_21_kv_cache"]),
+    qwen_image_21_partition: str = Form(json.dumps(GENERATION_DEFAULTS["qwen_image_21_partition"])),
     denoising_strength: float = Form(0.75),
     img2img_fix_steps: bool = Form(True),
     sampler: str = Form("euler"),
@@ -2468,6 +2507,7 @@ async def generate_img2img(
             "sensenova_mot_phase_eviction": sensenova_mot_phase_eviction,
             "sensenova_kv_cache_streaming": sensenova_kv_cache_streaming,
             "qwen_image_21_kv_cache": qwen_image_21_kv_cache,
+            "qwen_image_21_partition": _parse_qwen_partition(qwen_image_21_partition),
             "denoising_strength": denoising_strength,
             "img2img_fix_steps": img2img_fix_steps,
             "sampler": sampler,
@@ -2576,6 +2616,7 @@ async def generate_img2img(
 
         # Warn about parameters the loaded architecture silently ignores
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
+        _parse_qwen_partition(params.get("qwen_image_21_partition"), arch=_current_arch)
         check_arch_capabilities(params, _current_arch, defaults=_img_defaults)
 
         # Progress callback to send updates via WebSocket
@@ -7652,6 +7693,7 @@ async def generate_inpaint(
     sensenova_mot_phase_eviction: bool = Form(GENERATION_DEFAULTS["sensenova_mot_phase_eviction"]),  # SenseNova U1.5 per-phase weight-half CPU eviction; other archs ignore it
     sensenova_kv_cache_streaming: bool = Form(GENERATION_DEFAULTS["sensenova_kv_cache_streaming"]),  # SenseNova U1.5 per-phase KV cache CPU streaming; other archs ignore it
     qwen_image_21_kv_cache: bool = Form(GENERATION_DEFAULTS["qwen_image_21_kv_cache"]),
+    qwen_image_21_partition: str = Form(json.dumps(GENERATION_DEFAULTS["qwen_image_21_partition"])),
     denoising_strength: float = Form(0.75),
     img2img_fix_steps: bool = Form(True),
     sampler: str = Form("euler"),
@@ -7935,6 +7977,7 @@ async def generate_inpaint(
             "sensenova_mot_phase_eviction": sensenova_mot_phase_eviction,
             "sensenova_kv_cache_streaming": sensenova_kv_cache_streaming,
             "qwen_image_21_kv_cache": qwen_image_21_kv_cache,
+            "qwen_image_21_partition": _parse_qwen_partition(qwen_image_21_partition),
             "denoising_strength": denoising_strength,
             "img2img_fix_steps": img2img_fix_steps,
             "sampler": sampler,
@@ -8070,6 +8113,7 @@ async def generate_inpaint(
 
         # Warn about parameters the loaded architecture silently ignores
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
+        _parse_qwen_partition(params.get("qwen_image_21_partition"), arch=_current_arch)
         check_arch_capabilities(params, _current_arch, defaults=_img_defaults)
 
         # Progress callback to send updates via WebSocket
@@ -8247,6 +8291,7 @@ async def generate_outpaint(
     steps: Optional[int] = Form(None),
     cfg_scale: Optional[float] = Form(None),
     qwen_image_21_kv_cache: bool = Form(OUTPAINT_DEFAULTS["qwen_image_21_kv_cache"]),
+    qwen_image_21_partition: str = Form(json.dumps(OUTPAINT_DEFAULTS["qwen_image_21_partition"])),
     # KNOWN GAP: this signature has no `cfg_norm`/`timestep_shift`/
     # `img_cfg_scale` Form() params, but openapi.yaml's OutpaintRequest
     # advertises all three via its `allOf` on GenerationParams -- FastAPI
@@ -8594,6 +8639,7 @@ async def generate_outpaint(
             "steps": steps,
             "cfg_scale": cfg_scale,
             "qwen_image_21_kv_cache": qwen_image_21_kv_cache,
+            "qwen_image_21_partition": _parse_qwen_partition(qwen_image_21_partition),
             "denoising_strength": denoising_strength,
             "img2img_fix_steps": img2img_fix_steps,
             "sampler": sampler,
@@ -8776,6 +8822,7 @@ async def generate_outpaint(
 
         # Warn about parameters the loaded architecture silently ignores
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
+        _parse_qwen_partition(params.get("qwen_image_21_partition"), arch=_current_arch)
         check_arch_capabilities(params, _current_arch, defaults=_img_defaults)
 
         # Progress callback to send updates via WebSocket. Uses the CANVAS
@@ -10007,6 +10054,10 @@ async def create_scratch_minit2i_endpoint(
         "variant": request.variant,
         "vae_type": request.vae_type,
     }
+
+
+from api.rewiring_routes import router as rewiring_router
+router.include_router(rewiring_router)
 
 
 @router.post("/models/load")
@@ -15519,9 +15570,32 @@ class TrainingRunCreateRequest(BaseModel):
     dit_partition_gradient_checkpointing_blocks: Optional[int] = Field(
         default=TRAINING_DEFAULTS["dit_partition_gradient_checkpointing_blocks"], ge=0
     )
+    dit_rewiring_mode: Literal["inherit", "configure"] = TRAINING_DEFAULTS["dit_rewiring_mode"]
+    dit_rewiring_spec: Optional[Dict[str, Any]] = TRAINING_DEFAULTS["dit_rewiring_spec"]
+
+    @field_validator("dit_rewiring_spec")
+    @classmethod
+    def _rewiring_spec_valid(cls, value):
+        if value is None:
+            return value
+        from core.rewiring.spec import validate_spec
+        return validate_spec(value)
+
+    @model_validator(mode="after")
+    def _rewiring_training_method_valid(self):
+        if self.dit_rewiring_mode == "configure" or self.dit_rewiring_spec is not None:
+            if self.training_method not in {"lora", "full_finetune"}:
+                raise ValueError("Residual rewiring currently supports lora and full_finetune training")
+            from core.rewiring.training import validate_training_features
+            validate_training_features(self.model_dump())
+        return self
+
     dit_partition_training_enabled: bool = TRAINING_DEFAULTS["dit_partition_training_enabled"]
-    dit_partition_mode: Literal["fixed"] = TRAINING_DEFAULTS["dit_partition_mode"]
+    dit_partition_mode: Literal["fixed", "token_threshold"] = TRAINING_DEFAULTS["dit_partition_mode"]
     dit_partition_fixed_count: Literal[2, 4] = TRAINING_DEFAULTS["dit_partition_fixed_count"]
+    dit_partition_full_frame_max_tokens: int = Field(
+        default=TRAINING_DEFAULTS["dit_partition_full_frame_max_tokens"], ge=1
+    )
     dit_partition_halo_tokens: int = Field(
         default=TRAINING_DEFAULTS["dit_partition_halo_tokens"], ge=0
     )
@@ -15543,7 +15617,7 @@ class TrainingRunCreateRequest(BaseModel):
         default=TRAINING_DEFAULTS["dit_partition_global_tokens"], ge=1, le=256
     )
     qwen_partition_training_enabled: Optional[bool] = TRAINING_DEFAULTS["qwen_partition_training_enabled"]
-    qwen_partition_mode: Optional[Literal["fixed"]] = TRAINING_DEFAULTS["qwen_partition_mode"]
+    qwen_partition_mode: Optional[Literal["fixed", "token_threshold"]] = TRAINING_DEFAULTS["qwen_partition_mode"]
     qwen_partition_fixed_count: Optional[Literal[2, 4]] = TRAINING_DEFAULTS["qwen_partition_fixed_count"]
     qwen_partition_halo_tokens: Optional[int] = Field(
         default=TRAINING_DEFAULTS["qwen_partition_halo_tokens"], ge=0
@@ -15589,6 +15663,10 @@ class TrainingRunCreateRequest(BaseModel):
     qwen_cfg_null_sigma_schedule: bool = TRAINING_DEFAULTS["qwen_cfg_null_sigma_schedule"]
     qwen_guidance_loss_scale: float = Field(
         default=TRAINING_DEFAULTS["qwen_guidance_loss_scale"], ge=1, le=10
+    )
+    qwen_guidance_loss_extrapolation_max_rms: float = Field(
+        default=TRAINING_DEFAULTS["qwen_guidance_loss_extrapolation_max_rms"],
+        ge=0, allow_inf_nan=False,
     )
     qwen_guidance_loss_schedule: Literal["constant", "sigma"] = TRAINING_DEFAULTS[
         "qwen_guidance_loss_schedule"
@@ -18215,11 +18293,13 @@ async def visualize_debug_latent(
     if "channel_stats" in data:
         result["channel_stats"] = data["channel_stats"]
     for _k in ("window_latent_frames", "clip_latent_frames", "audio_sigma",
-               "audio_present", "latent_frames"):
+               "audio_present", "latent_frames", "partition_count", "partition_grid_size",
+               "partition_regions", "uncond_prediction_status"):
         if _k in data:
             result[_k] = data[_k]
 
-    from api.training_media import debug_image_urls
+    from api.training_media import debug_display_resolution, debug_image_urls
+    result["display_resolution"] = debug_display_resolution(data, latent_file)
     result["image_urls"] = debug_image_urls(
         run_id, step, data, latent_file
     )
@@ -18261,6 +18341,7 @@ async def visualize_debug_latent(
         _target_webp = latent_file.parent / f"decode_t{_ts_part}_target.webp"
         _pred_webp = latent_file.parent / f"decode_t{_ts_part}_pred_x0.webp"
         _noisy_webp = latent_file.parent / f"decode_t{_ts_part}_noisy.webp"
+        _uncond_webp = latent_file.parent / f"decode_t{_ts_part}_uncond_pred_x0.webp"
         def _webp_preview(p):
             im = Image.open(p).convert("RGB")
             im.thumbnail((768, 768))  # downscale: debug preview doesn't need full res
@@ -18271,6 +18352,8 @@ async def visualize_debug_latent(
             result["predicted_latent_image"] = _webp_preview(_pred_webp)
         if _noisy_webp.exists():  # older runs have no noisy webp -> falls back below
             result["noisy_latents_image"] = _webp_preview(_noisy_webp)
+        if "uncond_predicted_latent" in data and _uncond_webp.exists():
+            result["uncond_predicted_latent_image"] = _webp_preview(_uncond_webp)
     except Exception as _webp_e:
         print(f"[debug-latents] webp preview load failed: {_webp_e}")
 
@@ -18294,6 +18377,9 @@ async def visualize_debug_latent(
     if "predicted_latent" in data and "predicted_latent_image" not in result:
         img = latent_to_image(data["predicted_latent"], is_flux2=is_flux2)
         result["predicted_latent_image"] = image_to_base64(img)
+    if "uncond_predicted_latent" in data and "uncond_predicted_latent_image" not in result:
+        result["uncond_predicted_latent_image"] = image_to_base64(
+            latent_to_image(data["uncond_predicted_latent"], is_flux2=is_flux2))
 
     # MiniMax-H3 trains video and audio jointly and dumps both streams into one
     # file, so an audio-side collapse is diagnosable separately. Audio tensors
@@ -18310,7 +18396,7 @@ def get_debug_latent_image(
     run_id: int,
     step: int,
     kind: Literal[
-        "target", "noisy", "predicted_latent", "predicted_noise",
+        "target", "noisy", "predicted_latent", "uncond_predicted_latent", "predicted_noise",
         "predicted_velocity", "reference", "audio_target", "audio_noisy",
         "audio_predicted_velocity", "audio_actual_velocity",
         "audio_predicted_latent",
@@ -18583,6 +18669,7 @@ def get_training_concept_exposure(
     order: Literal["latest", "top"] = CONCEPT_EXPOSURE_DEFAULTS["order"],
     limit: int = CONCEPT_EXPOSURE_DEFAULTS["limit"],
     db: Session = Depends(get_training_db),
+    q: str = CONCEPT_EXPOSURE_DEFAULTS["q"],
 ):
     """Read the trainer's atomic exposure snapshot without contacting its process."""
     run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
@@ -18590,6 +18677,11 @@ def get_training_concept_exposure(
         raise HTTPException(status_code=404, detail="Training run not found")
     if not 1 <= limit <= 50:
         raise HTTPException(status_code=422, detail="limit must be between 1 and 50")
+    if len(q) > 256:
+        raise HTTPException(status_code=422, detail="q must be at most 256 characters")
+    def search_text(value):
+        return " ".join(str(value).casefold().replace("_", " ").split())
+    needle = search_text(q)
     path = Path(run.output_dir) / "concept_exposure.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -18597,19 +18689,51 @@ def get_training_concept_exposure(
         return {"enabled": False, "rows": []}
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=503, detail=f"Exposure snapshot unavailable: {exc}")
+    from core.training.concept_exposure import TIMESTEP_BIN_EDGES, LOSS_METRIC, loss_histogram, loss_moments
+    edges = list(TIMESTEP_BIN_EDGES)
     rows = []
-    for key, count in data.get("counts", {}).items():
+    counts = data.get("counts", {})
+    for key, count in counts.items():
+        name = data.get("names", {}).get(key, key)
+        if needle and needle not in search_text(name) and needle not in search_text(key):
+            continue
         target = int(data.get("target_items", {}).get(key, 0))
-        rows.append({"key": key, "name": data.get("names", {}).get(key, key),
+        bins = data.get("timestep_counts", {}).get(key, [0] * (len(edges) - 1))
+        if (data.get("timestep_bin_edges", edges) != edges
+                or len(bins) != len(edges) - 1
+                or any(not isinstance(value, int) or value < 0 for value in bins)):
+            raise HTTPException(status_code=503, detail="Exposure histogram snapshot is invalid")
+        recorded = sum(bins)
+        try:
+            loss_sums, loss_counts = loss_histogram(data, key, bins)
+            variance_counts, variance_means, m2s = loss_moments(data, key, loss_counts)
+        except ValueError as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
+        loss_recorded = sum(loss_counts)
+        rows.append({"key": key, "name": name,
                      "sample_passes": int(count), "target_images": target,
                      "mean_passes_per_image": count / target if target else 0,
-                     "last_step": int(data.get("last_step", {}).get(key, 0))})
+                     "last_step": int(data.get("last_step", {}).get(key, 0)),
+                     "timestep_counts": bins, "timestep_recorded_passes": recorded,
+                     "timestep_unknown_passes": max(0, int(count) - recorded),
+                     "timestep_loss_counts": loss_counts,
+                     "timestep_loss_means": [total / n if n else None
+                                             for total, n in zip(loss_sums, loss_counts)],
+                     "timestep_loss_recorded_passes": loss_recorded,
+                     "timestep_loss_unknown_passes": max(0, int(count) - loss_recorded),
+                     "timestep_loss_metric": LOSS_METRIC,
+                     "timestep_loss_variance_counts": variance_counts,
+                     "timestep_loss_variance_means": [mean if n else None
+                                                     for mean, n in zip(variance_means, variance_counts)],
+                     "timestep_loss_stddevs": [(m2 / (n - 1)) ** 0.5 if n >= 2 else None
+                                               for m2, n in zip(m2s, variance_counts)]})
     sort_key = ((lambda row: (row["last_step"], row["sample_passes"]))
                 if order == "latest" else
                 (lambda row: (row["sample_passes"], row["last_step"])))
     rows.sort(key=sort_key, reverse=True)
-    return {"enabled": True, "mode": data.get("mode"), "total_groups": len(rows),
-            "order": order, "rows": rows[:limit]}
+    return {"enabled": True, "mode": data.get("mode"), "total_groups": len(counts),
+            "matched_groups": len(rows), "query": q.strip(),
+            "order": order, "timestep_bin_edges": edges, "rows": rows[:limit]}
 
 
 @router.get("/training/runs/{run_id}/metrics_db")
@@ -21028,18 +21152,12 @@ class TaggerTrainingRunCreateRequest(BaseModel):
 
 # Active tagger training threads
 _tagger_training_threads: Dict[str, Any] = {}
-_tagger_detail_executor = None
+_tagger_detail_writer = LazySerialExecutor("tagger_detail_db")
 
 
 def _get_tagger_detail_executor():
     """One ordered history writer for all tagger runs, created on first use."""
-    global _tagger_detail_executor
-    if _tagger_detail_executor is None:
-        from concurrent.futures import ThreadPoolExecutor
-        _tagger_detail_executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="tagger_detail_db"
-        )
-    return _tagger_detail_executor
+    return _tagger_detail_writer.get()
 
 
 def _make_tagger_progress_callback(run_id: str, training_db_factory):
@@ -21052,7 +21170,6 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
     contributes a distinct curve in the loss chart.
     """
     from database.training_detail_store import open_tagger_history_session
-    from sqlalchemy import func as _sa_func
     _db = training_db_factory()
     _history_db = None
     _owns_history_db = False
@@ -21060,10 +21177,7 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
         _history_db, _owns_history_db, _ = open_tagger_history_session(
             _db, run_id
         )
-        _max_seq = _history_db.query(
-            _sa_func.coalesce(_sa_func.max(TaggerTrainingMetrics.resume_seq), -1)
-        ).filter(TaggerTrainingMetrics.run_id == run_id).scalar()
-        resume_seq = int(_max_seq) + 1   # 0 for fresh; existing_max + 1 on resume
+        resume_seq = next_resume_seq(_history_db, TaggerTrainingMetrics, run_id)
     except Exception as e:
         print(f"[TaggerCallback] Could not determine resume_seq for {run_id}: {e}; defaulting to 0")
         resume_seq = 0
@@ -21084,19 +21198,7 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
             history_db, owns_history_db, _ = open_tagger_history_session(
                 catalog_db, rid
             )
-            existing = history_db.query(TaggerTrainingMetrics).filter(
-                TaggerTrainingMetrics.run_id == rid,
-                TaggerTrainingMetrics.resume_seq == resume_seq,
-                TaggerTrainingMetrics.step == step,
-            ).first()
-            if existing:
-                for key, value in values.items():
-                    if value is not None:
-                        setattr(existing, key, value)
-            else:
-                history_db.add(TaggerTrainingMetrics(
-                    run_id=rid, resume_seq=resume_seq, step=step, **values
-                ))
+            upsert_metric_row(history_db, TaggerTrainingMetrics, rid, resume_seq, step, values)
             history_db.commit()
         except Exception as exc:
             if history_db is not None:
@@ -21440,18 +21542,7 @@ async def start_tagger_training_run(run_id: str, training_db: Session = Depends(
 
     # GPU selection is validated before the row is moved to "starting": the
     # trainer thread would otherwise have to fail the run to report it.
-    _tagger_gpu_index = (run.config or {}).get("gpu_index")
-    if _tagger_gpu_index is not None:
-        import torch as _torch
-        _device_count = _torch.cuda.device_count()
-        if not isinstance(_tagger_gpu_index, int) or not (0 <= _tagger_gpu_index < _device_count):
-            raise CustomValidationError(
-                "Selected GPU is not available",
-                detail=(
-                    f"gpu_index={_tagger_gpu_index!r} but this machine exposes "
-                    f"{_device_count} CUDA device(s)."
-                ),
-            )
+    validate_gpu_index((run.config or {}).get("gpu_index"))
 
     previous_status = run.status
     previous_started_at = run.started_at
@@ -21856,43 +21947,12 @@ def get_tagger_training_metrics(
             .order_by(TaggerTrainingMetrics.resume_seq, TaggerTrainingMetrics.step)
             .all()
         )
-    # Group by resume_seq so each curve gets its own decimation budget.
-    # Without this, sparse early resumes can get fully decimated away when a
-    # later resume has many more points.
-    from collections import defaultdict as _defaultdict
-    groups: Dict[int, List] = _defaultdict(list)
-    for m in rows:
-        groups[m.resume_seq].append(m)
-
-    # Validation rows (f1 / threshold non-null) are sparse — typically one per
-    # epoch — and easily fall through the cracks of a fixed-step decimation
-    # grid.  Split them out, decimate only the dense training-loss rows, and
-    # always include the full validation set.  Without this the Validation F1
-    # and Optimal Threshold charts render empty for any run with > max_points
-    # total metrics.
+    # Validation rows (f1 / threshold non-null) are one per epoch; without keeping
+    # them whole the Validation F1 / Threshold charts empty past max_points.
     def _is_validation_row(m) -> bool:
         return getattr(m, "f1", None) is not None or getattr(m, "threshold", None) is not None
 
-    data: List[dict] = []
-    if max_points > 0 and len(rows) > max_points:
-        per_group_max = max(50, max_points // max(1, len(groups)))
-        for seq in sorted(groups):
-            g_all   = groups[seq]
-            g_train = [m for m in g_all if not _is_validation_row(m)]
-            g_val   = [m for m in g_all if _is_validation_row(m)]
-            # Decimate training-loss rows only
-            if len(g_train) > per_group_max:
-                step_size = max(1, len(g_train) // per_group_max)
-                indices = list(range(0, len(g_train), step_size))
-                if indices[-1] != len(g_train) - 1:
-                    indices.append(len(g_train) - 1)
-                g_train = [g_train[i] for i in indices]
-            # Re-merge by step so the consumer sees a monotonic series
-            merged = sorted(g_train + g_val, key=lambda m: m.step)
-            data.extend(m.to_dict() for m in merged)
-    else:
-        for seq in sorted(groups):
-            data.extend(m.to_dict() for m in groups[seq])
+    data = decimate_metric_rows(rows, max_points, _is_validation_row)
     if owns_metrics_db:
         metrics_db.close()
     return data

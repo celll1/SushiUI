@@ -1734,6 +1734,14 @@ def _checkpoint_aux_base(entry_path: Path) -> str:
     return entry_path.name if entry_path.is_dir() else entry_path.stem
 
 
+def _require_loaded_resume_weights(loaded_path: Optional[str], selected_path: Path) -> None:
+    if not loaded_path or Path(loaded_path).resolve() != Path(selected_path).resolve():
+        raise RuntimeError(
+            "Resume checkpoint was selected without loading its model/adapter weights: "
+            f"{selected_path}. Refusing to restore step and optimizer state onto fresh weights."
+        )
+
+
 # Marker inserted into the run_name for weight-EMA checkpoint saves
 # (base_trainer._save_ema_checkpoint temporarily sets self.run_name to
 # f"{run_name}{EMA_RUN_NAME_SUFFIX}" before calling the normal
@@ -4437,6 +4445,20 @@ class BaseTrainer(ABC):
         self.is_yue2 = (model_type == "yue2")
         self.is_sdxl = False
 
+        if self.is_ltx2:
+            self.model_path = checkpoint_path
+            from core.training.ops import ltx2_ops
+            ltx2_ops.load_components(self)
+            print(f"{self.log_prefix} LTX-2 checkpoint loaded successfully as base model")
+            return
+
+        if self.is_acestep:
+            self.model_path = checkpoint_path
+            from core.training.ops import acestep_ops
+            acestep_ops.load_components(self)
+            print(f"{self.log_prefix} ACE-Step checkpoint loaded successfully as base model")
+            return
+
         if self.is_yue2:
             self.model_path = checkpoint_path
             from core.training.ops import yue2_ops
@@ -4490,6 +4512,9 @@ class BaseTrainer(ABC):
             # over a correct one on the next save.
             from core.training.vae_swap import apply_latent_space
             apply_latent_space(self, components.get("declared_vae"))
+
+            from core.models.flux2.residual_unet import configure_training_topology
+            configure_training_topology(self.transformer, self.config, resuming=True)
 
             # Enable gradient checkpointing for Transformer (CRITICAL for VRAM reduction)
             if not self.gradient_checkpointing:
@@ -4867,6 +4892,8 @@ class BaseTrainer(ABC):
                           f"layer={self.te_hidden_layer}, train_encoder={self.sdxl_te_train_encoder})")
             else:
                 # Standard SD1.5 / SDXL: plain from_single_file (unchanged path)
+                from core.transformers_clip_compat import install as install_clip_compat
+                install_clip_compat()
                 if is_sdxl_model:
                     print(f"{self.log_prefix} Detected SDXL checkpoint")
                     from diffusers import StableDiffusionXLPipeline
@@ -7143,7 +7170,13 @@ class BaseTrainer(ABC):
                 self, "sensenova_refiner_training_mode", ""
             )).strip().lower() == "refiner_only"
         )
+        progress = getattr(self, "_checkpoint_bundle_progress", None)
+        bundle_complete = (
+            isinstance(progress, tuple) and progress[0] == int(step)
+            and set(CHECKPOINT_BUNDLE_STAGES).issubset(progress[1])
+        )
         if (getattr(self, "_last_periodic_checkpoint_step", None) == step
+                and bundle_complete
                 and not refiner_delta_needs_portable_final):
             print(f"{self.log_prefix} Final checkpoint: step {step} was already "
                   f"written by the periodic interval; not writing it twice")
@@ -11365,6 +11398,7 @@ class BaseTrainer(ABC):
             cuda_error_skip is True if batch was skipped due to unrecoverable CUDA error
         """
         batch_size = mnt_latents.shape[0]
+        self._concept_sample_loss_chunks = []
         if getattr(self, "_adaptive_timestep", None) is not None:
             self._adaptive_prediction_loss_chunks = []
         # A failed attempt must not leak its detached REPA scalar into an OOM retry.
@@ -11421,7 +11455,9 @@ class BaseTrainer(ABC):
         if self.is_qwen_image_21:
             from core.training.ops import qwen_image_21_ops
 
-            if qwen_image_21_ops.partition_training_enabled(self):
+            if qwen_image_21_ops.partition_training_enabled(
+                    self, latent_h=lens_latent_shape[0] if lens_latent_shape else None,
+                    latent_w=lens_latent_shape[1] if lens_latent_shape else None):
                 _qwen_partitioned = True
                 if lens_latent_shape is None:
                     raise ValueError("Qwen partitioned training requires latent_h/latent_w")
@@ -11472,6 +11508,7 @@ class BaseTrainer(ABC):
                 # per-forward footprint. The two-stage helper handles on-the-fly
                 # encoder graphs, so we no longer have to skip those batches.
                 self._oom_recovery_cleanup()
+                self._concept_sample_loss_chunks = []
                 if getattr(self, "_adaptive_timestep", None) is not None:
                     self._adaptive_prediction_loss_chunks = []
                 # OFFLOAD-FIRST rung (mirrors the proactive ordering): before
@@ -11505,6 +11542,7 @@ class BaseTrainer(ABC):
                             self._refuse_partial_fused_step(e_off)
                             e = e_off
                             self._oom_recovery_cleanup()
+                            self._concept_sample_loss_chunks = []
                             if getattr(self, "_adaptive_timestep", None) is not None:
                                 self._adaptive_prediction_loss_chunks = []
                 if not activation_dispatch_batch_reduction_enabled(self):
@@ -11550,6 +11588,7 @@ class BaseTrainer(ABC):
                     print(f"{self.log_prefix} [OOM] retrying batch {batch_size} micro-batched "
                           f"(micro={_retry_micro}) after: {str(e)[:80]}")
                     try:
+                        self._concept_sample_loss_chunks = []
                         if getattr(self, "_adaptive_timestep", None) is not None:
                             self._adaptive_prediction_loss_chunks = []
                         loss, pred_loss, recon_loss = self._microbatch_two_stage(
@@ -12079,12 +12118,15 @@ class BaseTrainer(ABC):
         The returned loss VALUE stays unscaled (per-chunk mean) for reporting.
         """
         self._active_mnt_noise = mnt_noise
+        self._pending_concept_sample_loss = None
         self._qwen_guidance_draw = qwen_guidance_draw
         self._begin_repa_profile_call(mnt_repa_pixels)
         if self.is_qwen_image_21:
             from core.training.ops import qwen_image_21_ops
 
-            if qwen_image_21_ops.partition_training_enabled(self):
+            if qwen_image_21_ops.partition_training_enabled(
+                    self, latent_h=lens_latent_shape[0] if lens_latent_shape else None,
+                    latent_w=lens_latent_shape[1] if lens_latent_shape else None):
                 return self._execute_qwen_partitioned_forward_backward(
                     mnt_latents=mnt_latents,
                     mnt_text_embeddings=mnt_text_embeddings,
@@ -12441,6 +12483,7 @@ class BaseTrainer(ABC):
         self._finish_repa_profile_call(_loss_item_wait_s, _repa_item_wait_s)
         pred_loss_value = pred_loss.item() if isinstance(pred_loss, torch.Tensor) else pred_loss
         recon_loss_value = recon_loss.item() if isinstance(recon_loss, torch.Tensor) else recon_loss
+        self._flush_concept_sample_loss()
 
         # Free computation graph
         del loss, loss_for_backward, pred_loss, recon_loss
@@ -12534,7 +12577,14 @@ class BaseTrainer(ABC):
         self._flush_deferred_extra_metrics()
         repa_wait = self._flush_repa_loss_metric_after_backward()
         self._finish_repa_profile_call(0.0, repa_wait)
+        self._flush_concept_sample_loss()
         return result
+
+    def _flush_concept_sample_loss(self):
+        pending = getattr(self, "_pending_concept_sample_loss", None)
+        self._pending_concept_sample_loss = None
+        if pending is not None:
+            self._concept_sample_loss_chunks.extend(pending.detach().float().cpu().reshape(-1).tolist())
 
     def _assert_sensenova_step_seam_residency(self, four_phase) -> None:
         """Which MoT half must be GPU-resident at the optimizer-step seam.
@@ -16602,6 +16652,7 @@ class BaseTrainer(ABC):
 
                 if checkpoint_result is not None:
                     checkpoint_path, checkpoint_step = checkpoint_result
+                    _require_loaded_resume_weights(self._loaded_checkpoint_path, Path(checkpoint_path))
                     print(f"{self.log_prefix} Resuming from checkpoint (weights already loaded in __init__): {checkpoint_path}")
                     # NOTE: Model weights were already loaded in __init__()
                     # We only need the step number here
@@ -16672,6 +16723,7 @@ class BaseTrainer(ABC):
                 # User specified a specific checkpoint file
                 checkpoint_path = self.output_dir / resume_from_checkpoint
                 if checkpoint_path.exists():
+                    _require_loaded_resume_weights(self._loaded_checkpoint_path, checkpoint_path)
                     print(f"{self.log_prefix} Resuming from specified checkpoint (weights already loaded in __init__): {checkpoint_path}")
 
                     # NOTE: Model weights were already loaded in __init__()
@@ -19971,6 +20023,12 @@ class BaseTrainer(ABC):
                         if (self.is_lens or self.is_ideogram4 or self.is_krea2 or self.is_qwen_image_21) and width and height:
                             batch_lens_latent_shape = (height // 16, width // 16)
 
+                        self._collect_concept_sample_loss = (
+                            self.is_qwen_image_21 and self._concept_exposure is not None
+                            and any(item.get("_concept_exposure_groups")
+                                    or item.get("_concept_exposure_group") is not None
+                                    for item, _dataset in _exposure_items)
+                        )
                         try:
                             mnt_loss_value, mnt_pred_loss_value, mnt_recon_loss_value, cuda_error_skip = self._forward_backward_with_oom_recovery(
                                 mnt_latents=mnt_latents,
@@ -20116,7 +20174,25 @@ class BaseTrainer(ABC):
                         if not cuda_error_skip:
                             self._backwards_completed += 1
                             if self._concept_exposure is not None:
-                                self._concept_exposure.record(_exposure_items, global_step + 1, 1)
+                                # Read only after backward's existing synchronization.
+                                exposure_t = None
+                                if not _sensenova_text_batch_active and any(
+                                    item.get("_concept_exposure_groups")
+                                    or item.get("_concept_exposure_group") is not None
+                                    for item, _dataset in _exposure_items
+                                ):
+                                    exposure_t = timesteps.detach()
+                                if exposure_t is not None:
+                                    if self.arch.name == "qwen_image_21":
+                                        exposure_t = exposure_t.to(self.training_dtype)
+                                    exposure_t = exposure_t.float().cpu().reshape(-1).tolist()
+                                self._concept_exposure.record(
+                                    _exposure_items, global_step + 1, 1,
+                                    exposure_t, convention=_convention,
+                                    losses=(self._concept_sample_loss_chunks
+                                            if len(self._concept_sample_loss_chunks) == len(_exposure_items)
+                                            else None),
+                                )
                         else:
                             self._mnt_iterations_oom_skipped += 1
 

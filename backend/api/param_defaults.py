@@ -7,6 +7,37 @@ Frontend fetches these via /schema/* endpoints, eliminating manual sync.
 
 from typing import Any, Dict, Optional
 
+# Compact captioner defaults are exposed by its own schema routes.
+CAPTIONER_DEFAULTS: Dict[str, Any] = {
+    "tag_source": "predicted", "tags": [], "max_new_tokens": 96,
+    "device": "cpu", "max_num_patches": 256, "allowed_categories": ["General"],
+    "max_concepts": 64,
+    "save_caption_type": "compact_caption",
+    "gpu_pause_timeout": 30.0,
+    "max_image_bytes": 20971520,
+}
+CAPTIONER_TRAINING_DEFAULTS: Dict[str, Any] = {
+    "device": "cpu", "max_num_patches": 256, "allowed_categories": ["General"],
+    "max_concepts": 64, "hidden_dim": 384, "heads": 6, "layers": 4,
+    "ffn_dim": 1536, "visual_queries": 32, "max_length": 96, "dropout": 0.1,
+    "vocab_size": 8192, "tokenizer_min_frequency": 2, "learning_rate": 0.0003,
+    "weight_decay": 0.01, "warmup_ratio": 0.05, "epochs": 10, "batch_size": 8,
+    "label_smoothing": 0.05, "max_grad_norm": 1.0, "seed": 42,
+    "val_ratio": 0.05, "test_ratio": 0.05, "near_duplicate_distance": 4,
+    "concept_dropout": 0.15, "all_concept_dropout": 0.1,
+    "source_weights": {"predicted": 0.7, "provided": 0.2, "merged": 0.1},
+    "cache_max_gb": 20.0, "save_every_steps": 100, "use_tag_aliases": True,
+    "language": "en",
+}
+CAPTIONER_RUN_DEFAULTS: Dict[str, Any] = {
+    "run_name": "captioner", "output_dir": None, "vision_encoder_path": "",
+    "lora_rank": 32, "lora_alpha": 16.0, "resume": False, "checkpoint": "",
+    "after_id": 0, "event_limit": 500,
+}
+CAPTIONER_BATCH_DEFAULTS: Dict[str, Any] = {
+    "retry_failed": False, "offset": 0, "limit": 200, "max_items": 10000,
+}
+
 # The only core import in this module. The hybrid block range is a CHECKPOINT
 # fact the loader validates against (hybrid_spec.py:71), so the API default is
 # imported rather than re-typed: two copies could disagree and the request would
@@ -17,6 +48,144 @@ from core.models.minimax_h3.hybrid_spec import (
     DEFAULT_FINAL_ADALN_FROM_OVERLAY,
     PRESET_BLOCK_RANGE_ADALN,
 )
+
+# The initial preset is resolved only for the matching native block layout.
+DIT_REWIRING_REGION_DEFAULTS: Dict[str, Any] = {"edge_blocks": 1, "down_factor": [2, 2],
+    "temporal_down_factor": [2, 1]}
+
+DIT_REWIRING_PRESETS: Dict[str, Any] = {
+    "yue2": {
+        "block_count": 28,
+        "regions": [
+            {"id": "r0", "stream": "nar", "parent": None,
+             "start_block": 4, "end_block": 24, "down_factor": [2, 1]},
+            {"id": "r1", "stream": "nar", "parent": "r0",
+             "start_block": 12, "end_block": 16, "down_factor": [2, 1]},
+        ],
+    },
+    "minimax_music3": {
+        "block_count": 36,
+        "regions": [
+            {"id": "r0", "stream": "main", "parent": None,
+             "start_block": 4, "end_block": 32, "down_factor": [2, 1]},
+            {"id": "r1", "stream": "main", "parent": "r0",
+             "start_block": 16, "end_block": 20, "down_factor": [2, 1]},
+        ],
+    },
+    "minimax_h3": {
+        "block_count": 50,
+        "regions": [
+            {"id": "r0", "stream": "main", "parent": None,
+             "start_block": 4, "end_block": 46, "down_factor": [2, 2]},
+            {"id": "r1", "stream": "main", "parent": "r0",
+             "start_block": 23, "end_block": 27, "down_factor": [2, 2]},
+        ],
+    },
+    "ltx2": {
+        "block_count": 48,
+        "regions": [
+            {"id": "r0", "stream": "main", "parent": None,
+             "start_block": 4, "end_block": 44, "down_factor": [2, 2]},
+            {"id": "r1", "stream": "main", "parent": "r0",
+             "start_block": 22, "end_block": 26, "down_factor": [2, 2]},
+        ],
+    },
+    "acestep": {
+        "block_count": 24,
+        "regions": [
+            {"id": "r0", "stream": "main", "parent": None,
+             "start_block": 4, "end_block": 20, "down_factor": [2, 1]},
+            {"id": "r1", "stream": "main", "parent": "r0",
+             "start_block": 10, "end_block": 14, "down_factor": [2, 1]},
+        ],
+    },
+    "sensenova": {
+        "block_count": 42,
+        "regions": [
+            {"id": "r0", "stream": "main", "parent": None,
+             "start_block": 4, "end_block": 38, "down_factor": [2, 2]},
+            {"id": "r1", "stream": "main", "parent": "r0",
+             "start_block": 19, "end_block": 23, "down_factor": [2, 2]},
+        ],
+    },
+    "ideogram4": {
+        "block_count": 34,
+        "regions": [
+            {"id": "r0", "stream": "main", "parent": None,
+             "start_block": 4, "end_block": 30, "down_factor": [2, 2]},
+            {"id": "r1", "stream": "main", "parent": "r0",
+             "start_block": 15, "end_block": 19, "down_factor": [2, 2]},
+        ],
+    },
+    "minit2i": {"variants": {
+        "b16": {"block_count": 17, "regions": [
+            {"id": "r0", "stream": "main", "parent": None,
+             "start_block": 4, "end_block": 13, "down_factor": [2, 2]},
+            {"id": "r1", "stream": "main", "parent": "r0",
+             "start_block": 6, "end_block": 10, "down_factor": [2, 2]},
+        ]},
+        "l16": {"block_count": 23, "regions": [
+            {"id": "r0", "stream": "main", "parent": None,
+             "start_block": 4, "end_block": 19, "down_factor": [2, 2]},
+            {"id": "r1", "stream": "main", "parent": "r0",
+             "start_block": 9, "end_block": 13, "down_factor": [2, 2]},
+        ]},
+    }},
+    "lens": {
+        "block_count": 48,
+        "regions": [
+            {"id": "r0", "stream": "main", "parent": None,
+             "start_block": 4, "end_block": 44, "down_factor": [2, 2]},
+            {"id": "r1", "stream": "main", "parent": "r0",
+             "start_block": 22, "end_block": 26, "down_factor": [2, 2]},
+        ],
+    },
+    "flux2": {
+        "streams": [{"name": "double", "block_count": 5}, {"name": "single", "block_count": 20}],
+        "regions": [
+            {"id": "r0", "stream": "single", "parent": None,
+             "start_block": 4, "end_block": 16, "down_factor": [2, 2]},
+            {"id": "r1", "stream": "single", "parent": "r0",
+             "start_block": 8, "end_block": 12, "down_factor": [2, 2]},
+        ],
+    },
+    "zimage": {
+        "block_count": 30,
+        "regions": [
+            {"id": "r0", "stream": "main", "parent": None,
+             "start_block": 4, "end_block": 26, "down_factor": [2, 2]},
+            {"id": "r1", "stream": "main", "parent": "r0",
+             "start_block": 13, "end_block": 17, "down_factor": [2, 2]},
+        ],
+    },
+    "qwen_image_21": {
+        "block_count": 32,
+        "regions": [
+            {"id": "r0", "stream": "main", "parent": None,
+             "start_block": 4, "end_block": 28, "down_factor": [2, 2]},
+            {"id": "r1", "stream": "main", "parent": "r0",
+             "start_block": 14, "end_block": 18, "down_factor": [2, 2]},
+        ],
+    },
+    "anima": {
+        "block_count": 28,
+        "regions": [
+            {"id": "r0", "stream": "main", "parent": None,
+             "start_block": 4, "end_block": 24, "down_factor": [2, 2]},
+            {"id": "r1", "stream": "main", "parent": "r0",
+             "start_block": 12, "end_block": 16, "down_factor": [2, 2]},
+        ],
+    },
+    "krea2": {
+        "block_count": 28,
+        "regions": [
+            {"id": "r0", "stream": "main", "parent": None,
+             "start_block": 4, "end_block": 24, "down_factor": [2, 2]},
+            {"id": "r1", "stream": "main", "parent": "r0",
+             "start_block": 12, "end_block": 16, "down_factor": [2, 2]},
+        ],
+    },
+}
 
 # ---------------------------------------------------------------------------
 # MiniMax-H3 prompt assistant
@@ -260,6 +429,10 @@ QWEN_IMAGE_21_GENERATION_DEFAULTS: Dict[str, Any] = {
     "steps": 40,
     "cfg_scale": 1.0,
     "qwen_image_21_kv_cache": True,
+    "qwen_image_21_partition": {
+        "version": 1, "mode": "off", "max_target_tokens": 4096,
+        "layout": None, "halo_tokens": 16,
+    },
 }
 
 # SenseNova visual-understanding generation. This is deliberately separate
@@ -312,6 +485,7 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     # it (accepted and warned, api/arch_capabilities.py).
     "sensenova_kv_cache_streaming": SENSENOVA_GENERATION_DEFAULTS["sensenova_kv_cache_streaming"],
     "qwen_image_21_kv_cache": QWEN_IMAGE_21_GENERATION_DEFAULTS["qwen_image_21_kv_cache"],
+    "qwen_image_21_partition": QWEN_IMAGE_21_GENERATION_DEFAULTS["qwen_image_21_partition"],
     "sampler": "euler",
     "schedule_type": "uniform",
     "seed": -1,
@@ -2678,9 +2852,12 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # the architecture policy; unsupported architectures reject explicit values.
     "dit_gradient_checkpointing_blocks": None,
     "dit_partition_gradient_checkpointing_blocks": None,
+    "dit_rewiring_mode": "inherit",
+    "dit_rewiring_spec": None,
     "dit_partition_training_enabled": False,
-    "dit_partition_mode": "fixed",
+    "dit_partition_mode": "token_threshold",
     "dit_partition_fixed_count": 2,
+    "dit_partition_full_frame_max_tokens": 4096,
     "dit_partition_halo_tokens": 0,
     "dit_partition_split_ratio_min": 0.35,
     "dit_partition_split_ratio_max": 0.65,
@@ -2711,6 +2888,7 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "qwen_guidance_loss_mix_mode": "stochastic",
     "qwen_cfg_null_sigma_schedule": False,
     "qwen_guidance_loss_scale": 3.0,
+    "qwen_guidance_loss_extrapolation_max_rms": 0.0,
     "qwen_guidance_loss_schedule": "sigma",
     "qwen_guidance_loss_weight_schedule": "constant",
     "qwen_guidance_loss_high_noise_weight": 1.0,
@@ -3513,6 +3691,7 @@ TRAINING_MONITOR_MEDIA_DEFAULTS: Dict[str, Any] = {
 CONCEPT_EXPOSURE_DEFAULTS: Dict[str, Any] = {
     "order": "latest",
     "limit": 12,
+    "q": "",
 }
 
 
@@ -3919,4 +4098,106 @@ VAE_TRAINING_DEFAULTS: Dict[str, Any] = {
     # significant trend, so the change costs nothing in signal quality.
     # Changing it MID-RUN puts a step in the vae_val_psnr chart.
     "validation_resolution": 1024,
+}
+
+# ---------------------------------------------------------------------------
+# Style encoder training (StyleTrainingRunCreateRequest)
+# ---------------------------------------------------------------------------
+STYLE_SDXL_GENERATION_DEFAULTS: Dict[str, Any] = {
+    "negative_prompt": "",
+    "width": 512,
+    "height": 512,
+    "steps": 20,
+    "guidance_scale": 5.0,
+    "style_strength": 0.1,
+    "seed": 0,
+}
+
+# Exactly the keys core/style_encoder/style_trainer.StyleTrainingConfig requires
+# (besides dataset_configs); the trainer validates every value. The encoder,
+# feature layer and token width follow the Phase 0 measurement; the patch
+# budget is still open (docs/plans/STYLE_EMBEDDING_DESIGN_2026-09.md §16).
+
+STYLE_TRAINING_DEFAULTS: Dict[str, Any] = {
+    # --- run / model --------------------------------------------------------
+    # Empty: the published weights of vision_encoder_repo (design §4).
+    "vision_encoder_path": "",
+    "vision_encoder_repo": "google/siglip2-so400m-patch16-naflex",
+    "training_method": "lora",
+    "lora_rank": 32,
+    "lora_alpha": 16.0,
+    "lora_dropout": 0.0,
+    "attn_implementation": "sdpa",
+    "mixed_precision": "bf16",
+    "gradient_checkpointing": True,
+    "gpu_index": None,
+    # --- optimisation ---------------------------------------------------------
+    "optimizer": "adamw8bit",
+    "learning_rate": 3e-4,
+    "head_lr_multiplier": 10.0,
+    "weight_decay": 1e-4,
+    "warmup_steps": 100,
+    "min_lr_ratio": 0.0,
+    "max_grad_norm": 1.0,
+    "epochs": 10,
+    # --- housekeeping ---------------------------------------------------------
+    "num_workers": 4,
+    "save_every_n_steps": 500,
+    "keep_last_n_checkpoints": 3,
+    "validate_every": 1,
+    "log_every_n_steps": 10,
+    # Also the evaluation tie-break seed (style_eval.retrieve).
+    "style_seed": 0,
+    "style_split_seed": 0,
+    # --- labels ---------------------------------------------------------------
+    "style_use_tag_aliases": True,
+    "style_use_gelbooru_categories": True,
+    "style_signature_tags": ["signature", "artist name", "watermark", "twitter username", "web address"],
+    "style_non_copyright_tags": ["original"],
+    # --- split / sampling -----------------------------------------------------
+    "style_val_artist_ratio": 0.05,
+    "style_val_image_ratio": 0.02,
+    "style_min_images_per_artist": 4,
+    "style_danbooru_enable": False,
+    "style_danbooru_min_post_count": 100,
+    "style_danbooru_order": "count_desc",
+    "style_danbooru_seed": 0,
+    "style_danbooru_max_artists": 16,
+    "style_danbooru_max_tag_pages": 100,
+    "style_danbooru_max_posts_per_artist": 32,
+    "style_danbooru_max_post_pages_per_artist": 4,
+    "style_danbooru_api_interval": 1.4,
+    "style_danbooru_dl_speed_kbps": 500,
+    "style_artists_per_batch": 16,
+    "style_images_per_artist": 4,
+    "style_same_copyright_batch_ratio": 0.5,
+    "style_artist_sampling_power": 0.5,
+    # --- views / loss ---------------------------------------------------------
+    "style_mask_ratio_min": 0.3,
+    "style_mask_ratio_max": 0.75,
+    "style_max_num_patches": 256,  # 256 vs 1024 is the repo owner's open decision
+    "style_temperature": 0.1,
+    "style_view_positive_weight": 1.0,
+    "style_positive_weight_min": 0.3,
+    "style_hsic_tagger_path": "",
+    "style_hsic_weights": {"Character": 0.1, "Copyright": 0.1, "Rating": 0.1, "Quality": 0.0},
+    # --- head -----------------------------------------------------------------
+    "style_feature_layers": [21],
+    "style_token_dim": 1152,  # divisible by style_pool_heads
+    "style_pool_heads": 8,
+    "style_projector_hidden_dim": 2048,
+    "style_embed_dim": 512,
+    # --- evaluation -----------------------------------------------------------
+    "style_val_max_items": 20000,
+    "style_val_batch_size": 64,
+    # Collapsed embeddings tie every similarity, so a retrieval chunk then holds
+    # ~65 B per (query, gallery) pair on the device: 256 x 20000 ~ 0.33 GB.
+    "style_eval_chunk_size": 256,
+}
+
+# GET /style-training/runs/{run_id}/metrics query parameters.
+STYLE_TRAINING_METRICS_QUERY_DEFAULTS: Dict[str, Any] = {
+    "since_step": 0,
+    # Uniform decimation budget of the dense per-step rows; 0 = no limit.
+    "max_points": 2000,
 }

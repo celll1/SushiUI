@@ -18,6 +18,7 @@ for _path in (_REPO, _BACKEND):
 from core.adapters import LoRALinearLayer  # noqa: E402
 from core.training.lora_trainer import LoRATrainer  # noqa: E402
 from core.training.adapters.krea2_adapter import Krea2LoRAAdapter  # noqa: E402
+from core.training.qwen_partition import QwenPartitionGlobalAdapter  # noqa: E402
 
 
 def _layer(seed):
@@ -72,6 +73,50 @@ def test_complete_checkpoint_loads_and_ignores_compatible_surplus(tmp_path):
     assert LoRATrainer.load_checkpoint(_trainer(layers), str(path)) == 9
     assert all(torch.equal(tensor, loaded[name])
                for name, tensor in _state(layers).items())
+
+
+def test_qwen_global_adapter_roundtrip_restores_every_parameter(tmp_path):
+    original = QwenPartitionGlobalAdapter(8, 32, rank=4, summary_tokens=3)
+    with torch.no_grad():
+        for index, parameter in enumerate(original.parameters(), 1):
+            parameter.fill_(index)
+    saved = _state({"qwen_partition_global_adapter": original})
+    path = tmp_path / "qwen-global.safetensors"
+    _write(path, saved, step=9, qwen_partition_global_adapter="latent_summary_v1",
+           qwen_partition_global_rank=4, qwen_partition_global_tokens=3)
+
+    restored = QwenPartitionGlobalAdapter(8, 32, rank=4, summary_tokens=3)
+    trainer = _trainer({"qwen_partition_global_adapter": restored})
+    trainer.is_qwen_image_21 = True
+    assert LoRATrainer.load_checkpoint(trainer, str(path)) == 9
+    assert all(torch.equal(value, saved[name])
+               for name, value in _state(trainer.lora_layers).items())
+
+
+def test_qwen_resume_refuses_to_drop_saved_global_adapter(tmp_path):
+    global_adapter = QwenPartitionGlobalAdapter(8, 32, rank=4, summary_tokens=3)
+    path = tmp_path / "qwen-global.safetensors"
+    _write(path, _state({"qwen_partition_global_adapter": global_adapter}),
+           qwen_partition_global_adapter="latent_summary_v1",
+           qwen_partition_global_rank=4, qwen_partition_global_tokens=3)
+
+    trainer = _trainer({"a": _layer(1)})
+    trainer.is_qwen_image_21 = True
+    with pytest.raises(ValueError, match="global adapter disabled"):
+        LoRATrainer.load_checkpoint(trainer, str(path))
+
+
+def test_qwen_resume_refuses_changed_global_adapter_settings(tmp_path):
+    global_adapter = QwenPartitionGlobalAdapter(8, 32, rank=4, summary_tokens=3)
+    path = tmp_path / "qwen-global.safetensors"
+    _write(path, _state({"qwen_partition_global_adapter": global_adapter}),
+           qwen_partition_global_adapter="latent_summary_v1",
+           qwen_partition_global_rank=4, qwen_partition_global_tokens=5)
+
+    trainer = _trainer({"qwen_partition_global_adapter": global_adapter})
+    trainer.is_qwen_image_21 = True
+    with pytest.raises(ValueError, match="qwen_partition_global_tokens"):
+        LoRATrainer.load_checkpoint(trainer, str(path))
 
 
 @pytest.mark.parametrize("defect", ["missing", "shape"])

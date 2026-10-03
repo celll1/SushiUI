@@ -92,3 +92,266 @@ def test_concept_tags_survive_dataset_rebase_independent_of_focus_assignment(tmp
     for batch in suffix:
         tracker.record(batch, 1, 1)
     assert tracker.state()["counts"] == {"miku": 1, "rin": 2}
+
+
+def test_timestep_histogram_tracks_per_item_repeats_mnt_and_resume(tmp_path):
+    from core.training.concept_exposure import TIMESTEP_BIN_EDGES
+    ds = SimpleNamespace(unique_id="dataset")
+    a = ({"image_path": "a", "_concept_exposure_groups": ("miku", "rin")}, ds)
+    b = ({"image_path": "b", "_concept_exposure_group": "miku"}, ds)
+    old = {"mode": "concept", "counts": {"miku": 7}}
+    tracker = ConceptExposure(tmp_path, "concept", old)
+    tracker.record([a, b], 1, 1, [0, 0.98])
+    tracker.record([a, a], 2, 1, [0.95, 1])
+    state = tracker.state()
+    assert state["counts"] == {"miku": 11, "rin": 3}
+    assert len(TIMESTEP_BIN_EDGES) == 37
+    assert sum(state["timestep_counts"]["miku"]) == 4
+    assert state["timestep_counts"]["miku"][0] == 1
+    assert state["timestep_counts"]["miku"][-1] == 1
+    tracker.record([a], 3, 1, [0.8])
+    assert sum(state["timestep_counts"]["miku"]) == 4  # Snapshot is isolated from later updates.
+    tracker.publish(wait=True)
+    disk = json.loads(tracker.path.read_text(encoding="utf-8"))
+    assert disk["version"] == 4
+    resumed = ConceptExposure(tmp_path, "concept", disk)
+    resumed.record([b], 4, 1, [0.99])
+    assert sum(resumed.state()["timestep_counts"]["miku"]) == 6
+    assert resumed.state()["counts"]["miku"] == 13
+
+
+def test_timestep_convention_unknown_values_and_invalid_resume(tmp_path):
+    import pytest
+    from core.training.concept_exposure import TIMESTEP_BIN_EDGES
+    ds = SimpleNamespace(unique_id="dataset")
+    item = ({"image_path": "a", "_concept_exposure_group": "priority-0"}, ds)
+    tracker = ConceptExposure(tmp_path, "priority")
+    tracker.record([item], 1, 1, [0], convention="t1")
+    assert tracker.state()["timestep_counts"]["priority-0"][-1] == 1
+    tracker.record([item], 2, 1, [1], convention="t1")
+    assert tracker.state()["timestep_counts"]["priority-0"][0] == 1
+    for value in (float("nan"), float("inf"), -0.1, 1.1):
+        tracker.record([item], 3, 1, [value])
+    assert sum(tracker.state()["timestep_counts"]["priority-0"]) == 2
+    before = tracker.state()
+    tracker.record([item], 4, 0, [0.5])
+    assert tracker.state() == before
+    with pytest.raises(ValueError):
+        tracker.record([item], 4, 1, [])
+    with pytest.raises(ValueError):
+        ConceptExposure(tmp_path, "priority", {**before, "timestep_bin_edges": [0, 1]})
+    with pytest.raises(ValueError):
+        ConceptExposure(tmp_path, "priority", {**before, "timestep_counts": {"x": [1]}})
+
+
+def test_api_histogram_preserves_legacy_unknown_and_known_counts(tmp_path):
+    from api.routes import get_training_concept_exposure
+    from core.training.concept_exposure import TIMESTEP_BIN_EDGES
+    class Db:
+        def query(self, _model): return self
+        def filter(self, _condition): return self
+        def first(self): return SimpleNamespace(output_dir=str(tmp_path))
+    bins = [0] * (len(TIMESTEP_BIN_EDGES) - 1)
+    bins[-1] = 3
+    data = {"mode": "priority", "counts": {"old": 5, "new": 8},
+            "timestep_bin_edges": list(TIMESTEP_BIN_EDGES), "timestep_counts": {"new": bins}}
+    (tmp_path / "concept_exposure.json").write_text(json.dumps(data), encoding="utf-8")
+    result = get_training_concept_exposure(1, order="top", limit=10, db=Db())
+    assert result["timestep_bin_edges"] == list(TIMESTEP_BIN_EDGES)
+    new, old = result["rows"]
+    assert new["timestep_recorded_passes"] == 3
+    assert new["timestep_unknown_passes"] == 5
+    assert old["timestep_recorded_passes"] == 0
+    assert old["timestep_unknown_passes"] == 5
+
+
+def test_search_covers_all_groups_before_limit_and_preserves_histogram(tmp_path):
+    import pytest
+    from fastapi import HTTPException
+    from api.routes import get_training_concept_exposure
+    from core.training.concept_exposure import TIMESTEP_BIN_EDGES
+    class Db:
+        def query(self, _model): return self
+        def filter(self, _condition): return self
+        def first(self): return SimpleNamespace(output_dir=str(tmp_path))
+    counts = {f"other-{i}": 100 + i for i in range(15)}
+    counts.update({"target": 1, "entry-17": 2})
+    bins = [0] * (len(TIMESTEP_BIN_EDGES) - 1)
+    bins[-1] = 1
+    data = {"mode": "concept", "counts": counts, "names": {
+        "target": "Mew Ichigo (Tokyo Mew Mew)", "entry-17": "Other [literal] character"},
+        "timestep_bin_edges": list(TIMESTEP_BIN_EDGES), "timestep_counts": {"target": bins}}
+    (tmp_path / "concept_exposure.json").write_text(json.dumps(data), encoding="utf-8")
+    assert "target" not in [r["key"] for r in get_training_concept_exposure(1, "top", 12, Db())["rows"]]
+    result = get_training_concept_exposure(1, "top", 1, Db(), q="  MEW_ICHIGO ")
+    assert result["total_groups"] == 17
+    assert result["matched_groups"] == 1
+    assert result["rows"][0]["key"] == "target"
+    assert result["rows"][0]["timestep_counts"] == bins
+    assert get_training_concept_exposure(1, "top", 1, Db(), q="entry-17")["rows"][0]["key"] == "entry-17"
+    assert get_training_concept_exposure(1, "top", 1, Db(), q="[literal]")["matched_groups"] == 1
+    assert get_training_concept_exposure(1, "top", 1, Db(), q=".*")["matched_groups"] == 0
+    assert get_training_concept_exposure(1, "top", 1, Db(), q="   ")["matched_groups"] == 17
+    with pytest.raises(HTTPException) as error:
+        get_training_concept_exposure(1, "top", 1, Db(), q="x" * 257)
+    assert error.value.status_code == 422
+
+
+def test_loss_coverage_keeps_legacy_timesteps_out_of_mean_and_restores(tmp_path):
+    import pytest
+    from core.training.concept_exposure import TIMESTEP_BIN_EDGES
+    ds = SimpleNamespace(unique_id="dataset")
+    a = ({"image_path": "a", "_concept_exposure_groups": ("miku", "rin")}, ds)
+    b = ({"image_path": "b", "_concept_exposure_group": "miku"}, ds)
+    bins = [0] * (len(TIMESTEP_BIN_EDGES) - 1)
+    bins[-1] = 4
+    old = {"mode": "concept", "counts": {"miku": 10}, "timestep_counts": {"miku": bins}}
+    tracker = ConceptExposure(tmp_path, "concept", old)
+    tracker.record([a, b], 1, 1, [1, 1], losses=[2, 6])
+    saved = tracker.state()
+    assert saved["counts"]["miku"] == 12
+    assert saved["timestep_counts"]["miku"][-1] == 6
+    assert saved["timestep_loss_counts"]["miku"][-1] == 2
+    assert saved["timestep_loss_sums"]["miku"][-1] == 8
+    assert saved["timestep_loss_sums"]["rin"][-1] == 2
+    tracker.record([a], 2, 1, [1], losses=[99])
+    assert saved["timestep_loss_sums"]["miku"][-1] == 8
+    resumed = ConceptExposure(tmp_path, "concept", saved)
+    resumed.record([a], 3, 2, [1], losses=[4])
+    resumed.record([a], 4, 1, [1], losses=[float("nan")])
+    resumed.record([a], 5, 1, [1], losses=[-1])
+    resumed.publish(wait=True)
+    assert resumed.state()["timestep_loss_counts"]["miku"][-1] == 4
+    assert resumed.state()["timestep_loss_sums"]["miku"][-1] == 16
+    with pytest.raises(ValueError, match="losses must match"):
+        resumed.record([a], 6, 1, [1], losses=[])
+    with pytest.raises(ValueError, match="loss histogram"):
+        ConceptExposure(tmp_path, "concept", {**saved, "timestep_loss_counts": {"miku": [99] * 36}})
+    with pytest.raises(ValueError, match="loss histogram"):
+        ConceptExposure(tmp_path, "concept", {**saved, "timestep_loss_sums": {"miku": [float("nan")] * 36}})
+    with pytest.raises(ValueError, match="Incomplete"):
+        ConceptExposure(tmp_path, "concept", {**saved, "timestep_loss_sums": {}})
+
+
+def test_api_loss_means_use_only_recorded_samples(tmp_path):
+    from api.routes import get_training_concept_exposure
+    class Db:
+        def query(self, _model): return self
+        def filter(self, _condition): return self
+        def first(self): return SimpleNamespace(output_dir=str(tmp_path))
+    ds = SimpleNamespace(unique_id="dataset")
+    item = ({"image_path": "a", "_concept_exposure_group": "miku"}, ds)
+    tracker = ConceptExposure(tmp_path, "concept", {"mode": "concept", "counts": {"miku": 10}})
+    tracker.record([item], 1, 1, [1])
+    tracker.record([item], 2, 1, [1], losses=[4])
+    tracker.record([item], 3, 1, [1], losses=[8])
+    tracker.publish(wait=True)
+    row = get_training_concept_exposure(1, db=Db())["rows"][0]
+    assert row["timestep_loss_means"][-1] == 6
+    assert row["timestep_loss_means"][0] is None
+    assert row["timestep_loss_counts"][-1] == 2
+    assert row["timestep_loss_recorded_passes"] == 2
+    assert row["timestep_loss_unknown_passes"] == 11
+
+
+def test_loss_chunks_discard_failed_microbatch_prefix_and_keep_image_order():
+    import torch
+    from core.training.base_trainer import BaseTrainer
+    calls = []
+    stub = SimpleNamespace(
+        is_qwen_image_21=False, use_fused_backward=False, fused_optimizer_groups=None,
+        activation_dispatcher=None, log_prefix="[Exposure test]",
+        _activation_dispatch_begin=lambda _latents: (None, None),
+        _activation_dispatch_end=lambda *_args: None,
+        _oom_recovery_cleanup=lambda: None,
+        _refuse_partial_fused_step=lambda _exc: None,
+        _classify_cuda_error=BaseTrainer._classify_cuda_error,
+        _slice_aux=BaseTrainer._slice_aux,
+    )
+    def execute(**kwargs):
+        ids = kwargs["mnt_latents"].flatten().tolist()
+        calls.append(ids)
+        stub._pending_concept_sample_loss = torch.tensor(ids)
+        BaseTrainer._flush_concept_sample_loss(stub)
+        if len(ids) == 4 or (len(ids) == 2 and ids[0] == 2):
+            raise RuntimeError("CUDA out of memory")
+        return 1.0, 1.0, 0.0
+    stub._execute_forward_backward = execute
+    stub._microbatch_two_stage = lambda *args: BaseTrainer._microbatch_two_stage(stub, *args)
+    inputs = dict(
+        mnt_latents=torch.arange(4, dtype=torch.float32).reshape(4, 1),
+        mnt_text_embeddings=None, mnt_attention_mask=None, mnt_pooled_embeddings=None,
+        timesteps=torch.zeros(4), debug_save_path=None, batch_captions=None,
+        batch_reference_paths=None, alphas_cumprod_cached=None, use_condition_images=False,
+        condition_images_batch=None, reference_latents_nested=None,
+    )
+    result = BaseTrainer._forward_backward_with_oom_recovery(stub, **inputs)
+    assert result[-1] is False
+    assert calls == [[0, 1, 2, 3], [0, 1], [2, 3], [0], [1], [2], [3]]
+    assert stub._concept_sample_loss_chunks == [0, 1, 2, 3]
+    # A new MNT iteration starts with empty coverage, even after successful chunks.
+    result = BaseTrainer._forward_backward_with_oom_recovery(stub, **inputs)
+    assert result[-1] is False
+    assert stub._concept_sample_loss_chunks == [0, 1, 2, 3]
+
+
+def test_variance_resume_excludes_mean_only_history_and_api_reports_cohort(tmp_path):
+    import pytest
+    from api.routes import get_training_concept_exposure
+    class Db:
+        def query(self, _model): return self
+        def filter(self, _condition): return self
+        def first(self): return SimpleNamespace(output_dir=str(tmp_path))
+    ds = SimpleNamespace(unique_id="dataset")
+    item = ({"image_path": "a", "_concept_exposure_group": "miku"}, ds)
+    tracker = ConceptExposure(tmp_path, "concept")
+    tracker.record([item], 1, 1, [1], losses=[2])
+    tracker.record([item], 2, 1, [1], losses=[6])
+    old = tracker.state()
+    for field in ("timestep_loss_variance_counts", "timestep_loss_variance_means", "timestep_loss_m2"):
+        del old[field]
+    resumed = ConceptExposure(tmp_path, "concept", old)
+    resumed.publish(wait=True)
+    row = get_training_concept_exposure(1, db=Db())["rows"][0]
+    assert row["timestep_loss_means"][-1] == 4
+    assert row["timestep_loss_stddevs"][-1] is None
+    assert row["timestep_loss_variance_counts"][-1] == 0
+    resumed.record([item], 3, 1, [1], losses=[10])
+    resumed.publish(wait=True)
+    assert get_training_concept_exposure(1, db=Db())["rows"][0]["timestep_loss_stddevs"][-1] is None
+    saved = resumed.state()
+    resumed.record([item], 4, 1, [1], losses=[99])
+    assert saved["timestep_loss_variance_counts"]["miku"][-1] == 1
+    restored = ConceptExposure(tmp_path, "concept", saved)
+    restored.record([item], 5, 1, [1], losses=[14])
+    restored.publish(wait=True)
+    row = get_training_concept_exposure(1, db=Db())["rows"][0]
+    assert row["timestep_loss_means"][-1] == 8
+    assert row["timestep_loss_variance_means"][-1] == 12
+    assert row["timestep_loss_variance_counts"][-1] == 2
+    assert row["timestep_loss_stddevs"][-1] == pytest.approx(8 ** 0.5)
+
+
+def test_welford_variance_is_stable_and_handles_repeated_passes(tmp_path):
+    import pytest
+    from core.training.concept_exposure import loss_moments
+    ds = SimpleNamespace(unique_id="dataset")
+    item = ({"image_path": "a", "_concept_exposure_group": "miku"}, ds)
+    tracker = ConceptExposure(tmp_path, "concept")
+    for step, value in enumerate([1e12 + 1, 1e12 + 2, 1e12 + 3]):
+        tracker.record([item], step, 1, [1], losses=[value])
+    state = tracker.state()
+    assert state["timestep_loss_m2"]["miku"][-1] == pytest.approx(2)
+    assert state["timestep_loss_variance_means"]["miku"][-1] == 1e12 + 2
+    repeated = ConceptExposure(tmp_path, "concept")
+    repeated.record([item], 1, 2, [1], losses=[2])
+    repeated.record([item], 2, 1, [1], losses=[4])
+    assert repeated.state()["timestep_loss_m2"]["miku"][-1] == pytest.approx(8 / 3)
+    broken = {**state, "timestep_loss_m2": {}}
+    with pytest.raises(ValueError, match="Incomplete"):
+        ConceptExposure(tmp_path, "concept", broken)
+    for field, bad in (("timestep_loss_m2", -1), ("timestep_loss_variance_counts", 99),
+                       ("timestep_loss_variance_means", float("nan"))):
+        broken = {**state, field: {"miku": [bad] * 36}}
+        with pytest.raises(ValueError, match="loss moments"):
+            loss_moments(broken, "miku", state["timestep_loss_counts"]["miku"])

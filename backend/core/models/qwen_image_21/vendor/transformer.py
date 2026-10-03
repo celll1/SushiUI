@@ -1248,42 +1248,54 @@ class QwenImage21Transformer2DModel(
             cache_write_slice = slice(0, prefix_len) if kv_cache_mode == "extract" else None
             block_key_valid = joint_key_valid
 
-        for index_block, block in enumerate(self.transformer_blocks):
-            layer_cache = kv_cache.get_layer(index_block) if kv_cache is not None else None
-            checkpoint_blocks = int(getattr(
-                self, "_training_gradient_checkpointing_blocks", len(self.transformer_blocks)
-            ))
-            if (
-                torch.is_grad_enabled()
-                and self.gradient_checkpointing
-                and index_block < checkpoint_blocks
-            ):
-                joint_hidden_states = self._gradient_checkpointing_func(
-                    block,
-                    joint_hidden_states,
-                    modulation,
-                    rotary_emb,
-                    attention_mask,
-                    modulation_mask,
-                    layer_cache,
-                    kv_cache_mode,
-                    cache_write_slice,
-                    block_segments,
-                    block_key_valid,
-                )
-            else:
-                joint_hidden_states = block(
-                    hidden_states=joint_hidden_states,
-                    modulation=modulation,
-                    rotary_emb=rotary_emb,
-                    attention_mask=attention_mask,
-                    target_token_mask=modulation_mask,
-                    layer_cache=layer_cache,
-                    kv_cache_mode=kv_cache_mode,
-                    cache_write_slice=cache_write_slice,
-                    segments=block_segments,
-                    key_valid=block_key_valid,
-                )
+        rewiring = getattr(self, "_residual_unet_spec", None)
+        if rewiring is not None:
+            if (kv_cache is not None or kv_cache_mode is not None
+                    or len(img_shapes[0]) != 1
+                    or target_spatial_position_ids is not None
+                    or target_input_residual is not None or style_ctx is not None):
+                raise ValueError("Qwen rewiring requires uncached single-target generation or training")
+            from ..residual_unet import run_rewired_qwen
+            joint_hidden_states = run_rewired_qwen(
+                self, joint_hidden_states, modulation, rotary_emb, attention_mask,
+                modulation_mask, block_segments, block_key_valid, img_shapes[0][-1], rewiring)
+        else:
+            for index_block, block in enumerate(self.transformer_blocks):
+                layer_cache = kv_cache.get_layer(index_block) if kv_cache is not None else None
+                checkpoint_blocks = int(getattr(
+                    self, "_training_gradient_checkpointing_blocks", len(self.transformer_blocks)
+                ))
+                if (
+                    torch.is_grad_enabled()
+                    and self.gradient_checkpointing
+                    and index_block < checkpoint_blocks
+                ):
+                    joint_hidden_states = self._gradient_checkpointing_func(
+                        block,
+                        joint_hidden_states,
+                        modulation,
+                        rotary_emb,
+                        attention_mask,
+                        modulation_mask,
+                        layer_cache,
+                        kv_cache_mode,
+                        cache_write_slice,
+                        block_segments,
+                        block_key_valid,
+                    )
+                else:
+                    joint_hidden_states = block(
+                        hidden_states=joint_hidden_states,
+                        modulation=modulation,
+                        rotary_emb=rotary_emb,
+                        attention_mask=attention_mask,
+                        target_token_mask=modulation_mask,
+                        layer_cache=layer_cache,
+                        kv_cache_mode=kv_cache_mode,
+                        cache_write_slice=cache_write_slice,
+                        segments=block_segments,
+                        key_valid=block_key_valid,
+                    )
 
         joint_hidden_states = self.norm_out(joint_hidden_states, temb, modulation_mask)
         output = self.proj_out(joint_hidden_states)

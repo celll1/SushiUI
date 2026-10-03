@@ -1,4 +1,224 @@
 import axios from "axios";
+
+export interface CaptionerOptions {
+  tag_source: "predicted" | "provided" | "merged";
+  tags: string[];
+  max_new_tokens: number;
+  device: "cpu" | "cuda:0";
+}
+export interface CaptionerDefaults extends CaptionerOptions {
+  save_caption_type: string;
+  max_image_bytes: number;
+}
+export interface CaptionerStatus {
+  loaded: boolean;
+  path?: string;
+  language?: string;
+  max_new_tokens?: number;
+  max_num_patches?: number;
+  tagger_weights_hash?: string;
+}
+export interface CaptionerPreview {
+  caption: string;
+  image_hash: string;
+  model_identity: string;
+  dataset_id?: number;
+  item_id?: number;
+  dataset_revision?: number;
+  run_id?: string;
+  checkpoint?: string;
+  termination: "eos" | "length_limit";
+  token_count: number;
+  warnings: string[];
+  used_tags: Array<{name: string; source: "predicted" | "provided"; score: number | null; score_calibrated: boolean}>;
+  timings_ms: Record<string, number>;
+}
+export const getCaptionerDefaults = async (): Promise<CaptionerDefaults> =>
+  (await api.get("/schema/captioner-defaults")).data;
+export const getCaptionerStatus = async (): Promise<CaptionerStatus> =>
+  (await api.get("/captioner/status")).data;
+export const loadCaptioner = async (path: string): Promise<CaptionerStatus> =>
+  (await api.post("/captioner/load", {path})).data;
+export const unloadCaptioner = async (): Promise<CaptionerStatus> =>
+  (await api.post("/captioner/unload")).data;
+export const predictCaptioner = async (image: File, requestId: string, options: CaptionerOptions): Promise<CaptionerPreview> => {
+  const form = new FormData();
+  form.append("image", image);
+  form.append("request_id", requestId);
+  form.append("tag_source", options.tag_source);
+  form.append("tags", JSON.stringify(options.tags));
+  form.append("max_new_tokens", String(options.max_new_tokens));
+  form.append("device", options.device);
+  return (await api.post("/captioner/predict", form, {headers: {"Content-Type": "multipart/form-data"}})).data;
+};
+export const predictCaptionerItem = async (datasetId: number, itemId: number, requestId: string, options: CaptionerOptions): Promise<CaptionerPreview> =>
+  (await api.post("/captioner/predict-item", {...options, dataset_id: datasetId, item_id: itemId, request_id: requestId})).data;
+export const cancelCaptionerRequest = async (requestId: string): Promise<void> => {
+  await api.post(`/captioner/requests/${requestId}/cancel`);
+};
+export const saveCaptionerPreview = async (preview: CaptionerPreview, captionType: string): Promise<{dataset_revision: number; caption_id: number}> => {
+  if (preview.dataset_id === undefined || preview.item_id === undefined || preview.dataset_revision === undefined) {
+    throw new Error("Dataset preview is required for caption persistence");
+  }
+  return (await api.post("/captioner/save", {dataset_id: preview.dataset_id, item_id: preview.item_id,
+    dataset_revision: preview.dataset_revision, image_hash: preview.image_hash, caption: preview.caption,
+    caption_type: captionType})).data;
+};
+
+export interface CaptionerTrainingConfig {
+  device: "cpu" | "cuda:0";
+  max_num_patches: number;
+  allowed_categories: string[];
+  max_concepts: number;
+  hidden_dim: number;
+  heads: number;
+  layers: number;
+  ffn_dim: number;
+  visual_queries: number;
+  max_length: number;
+  dropout: number;
+  vocab_size: number;
+  tokenizer_min_frequency: number;
+  learning_rate: number;
+  weight_decay: number;
+  warmup_ratio: number;
+  epochs: number;
+  batch_size: number;
+  label_smoothing: number;
+  max_grad_norm: number;
+  seed: number;
+  val_ratio: number;
+  test_ratio: number;
+  near_duplicate_distance: number;
+  concept_dropout: number;
+  all_concept_dropout: number;
+  source_weights: {predicted: number; provided: number; merged: number};
+  cache_max_gb: number;
+  save_every_steps: number;
+  use_tag_aliases: boolean;
+  language: string;
+}
+export interface CaptionerRunDefaults {
+  run_name: string;
+  output_dir: string | null;
+  vision_encoder_path: string;
+  lora_rank: number;
+  lora_alpha: number;
+  resume: boolean;
+  checkpoint: string;
+  after_id: number;
+  event_limit: number;
+}
+export interface CaptionerTaggerConfig {
+  checkpoint_path: string;
+  vocab_path: string;
+  vision_encoder_path: string;
+  lora_rank: number;
+  lora_alpha: number;
+}
+export interface CaptionerDatasetConfig {
+  dataset_id: number;
+  input_tag_caption_types: string[];
+  target_caption_types: string[];
+  filters: {item_ids?: number[]; min_width?: number; min_height?: number};
+}
+export interface CaptionerRunCreateRequest {
+  run_name: string;
+  output_dir: string | null;
+  tagger: CaptionerTaggerConfig;
+  dataset_configs: CaptionerDatasetConfig[];
+  config: CaptionerTrainingConfig;
+}
+export interface CaptionerTrainingRun extends Omit<CaptionerRunCreateRequest, "output_dir"> {
+  run_id: string;
+  output_dir: string;
+  status: "pending" | "starting" | "running" | "stopping" | "stopped" | "completed" | "failed" | "interrupted";
+  progress: Record<string, unknown>;
+  checkpoints: string[];
+  resume_seq: number;
+  error: string | null;
+  alias_count: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+export interface CaptionerTrainingEvent {
+  id: number;
+  run_id: string;
+  resume_seq: number;
+  payload: Record<string, unknown>;
+  timestamp: string;
+}
+export const getCaptionerTrainingDefaults = async (): Promise<CaptionerTrainingConfig> =>
+  (await api.get("/schema/captioner-training-defaults")).data;
+export const getCaptionerRunDefaults = async (): Promise<CaptionerRunDefaults> =>
+  (await api.get("/schema/captioner-run-defaults")).data;
+export const listCaptionerRuns = async (): Promise<{runs: CaptionerTrainingRun[]}> =>
+  (await api.get("/captioner-training/runs")).data;
+export const getCaptionerRun = async (runId: string): Promise<CaptionerTrainingRun> =>
+  (await api.get(`/captioner-training/runs/${runId}`)).data;
+export const createCaptionerRun = async (request: CaptionerRunCreateRequest): Promise<CaptionerTrainingRun> =>
+  (await api.post("/captioner-training/runs", request)).data;
+export const startCaptionerRun = async (runId: string, resume: boolean, checkpoint: string): Promise<CaptionerTrainingRun> =>
+  (await api.post(`/captioner-training/runs/${runId}/start`, {resume, checkpoint})).data;
+export const stopCaptionerRun = async (runId: string): Promise<CaptionerTrainingRun> =>
+  (await api.post(`/captioner-training/runs/${runId}/stop`)).data;
+export const getCaptionerRunEvents = async (runId: string, afterId: number, limit: number): Promise<{events: CaptionerTrainingEvent[]}> =>
+  (await api.get(`/captioner-training/runs/${runId}/events`, {params: {after_id: afterId, limit}})).data;
+export const exportCaptionerRun = async (runId: string, checkpoint: string): Promise<{path: string}> =>
+  (await api.post(`/captioner-training/runs/${runId}/export`, {checkpoint})).data;
+export const sampleCaptionerRun = async (runId: string, checkpoint: string, datasetId: number,
+  itemId: number, requestId: string, options: CaptionerOptions): Promise<CaptionerPreview> =>
+  (await api.post(`/captioner-training/runs/${runId}/sample`, {checkpoint, dataset_id: datasetId,
+    item_id: itemId, request_id: requestId, ...options})).data;
+
+export interface CaptionerBatchDefaults {retry_failed: boolean; offset: number; limit: number; max_items: number}
+export interface CaptionerBatch {
+  job_id: string;
+  dataset_id: number;
+  bundle_path: string;
+  manifest_hash: string;
+  options: CaptionerOptions;
+  status: "pending" | "running" | "stopping" | "stopped" | "completed" | "failed" | "interrupted";
+  counts: Record<string, number>;
+  total: number;
+  error: string | null;
+  error_code: string | null;
+  created_at: string;
+  updated_at: string;
+}
+export interface CaptionerBatchItem {
+  item_id: number;
+  position: number;
+  status: "pending" | "running" | "completed" | "failed";
+  attempts: number;
+  preview: CaptionerPreview | null;
+  error: string | null;
+  error_code: string | null;
+  saved: {caption_id: number; caption: string; caption_type: string; dataset_revision: number} | null;
+  pending_save: boolean;
+  reviewed_caption: string | null;
+  reviewed_caption_type: string | null;
+}
+export const getCaptionerBatchDefaults = async (): Promise<CaptionerBatchDefaults> =>
+  (await api.get("/schema/captioner-batch-defaults")).data;
+export const listCaptionerBatches = async (): Promise<{batches: CaptionerBatch[]}> =>
+  (await api.get("/captioner/batches")).data;
+export const getCaptionerBatch = async (jobId: string): Promise<CaptionerBatch> =>
+  (await api.get(`/captioner/batches/${jobId}`)).data;
+export const createCaptionerBatch = async (request: CaptionerOptions & {bundle_path: string; dataset_id: number; item_ids: number[]}): Promise<CaptionerBatch> =>
+  (await api.post("/captioner/batches", request)).data;
+export const startCaptionerBatch = async (jobId: string, retryFailed: boolean): Promise<CaptionerBatch> =>
+  (await api.post(`/captioner/batches/${jobId}/start`, {retry_failed: retryFailed})).data;
+export const stopCaptionerBatch = async (jobId: string): Promise<CaptionerBatch> =>
+  (await api.post(`/captioner/batches/${jobId}/stop`)).data;
+export const getCaptionerBatchResults = async (jobId: string, offset: number, limit: number): Promise<{items: CaptionerBatchItem[]; offset: number; total: number}> =>
+  (await api.get(`/captioner/batches/${jobId}/results`, {params: {offset, limit}})).data;
+export const saveCaptionerBatchItem = async (jobId: string, itemId: number, preview: CaptionerPreview,
+  caption: string, captionType: string): Promise<{caption_id: number; dataset_revision: number}> => {
+  if (preview.dataset_revision === undefined) throw new Error("Batch preview revision is missing");
+  return (await api.post(`/captioner/batches/${jobId}/items/${itemId}/save`, {caption, caption_type: captionType,
+    dataset_revision: preview.dataset_revision, image_hash: preview.image_hash})).data;
+};
 import { wsClient } from "./websocket";
 import { resolveGlobalAttentionImpl, resolveGlobalAttentionMethod, resolveGlobalAttentionType } from "./attentionSettings";
 import { trainingFeatureUnsupportedReason } from "./trainingCapabilities";
@@ -240,6 +460,11 @@ export interface ModelInfo {
   source: string;
   type: "sd15" | "sdxl" | "zimage" | "flux2" | "anima" | "lens" | "ideogram4" | "minit2i" | "krea2" | "qwen_image_21" | "sensenova" | "sensenova_sdxl_chimera" | "ltx2" | "acestep" | "minimax_h3" | "minimax_music3" | "yue2";
   is_v_prediction: boolean;
+  dit_rewiring_spec?: DiTRewiringSpec | null;
+  dit_rewiring_parameter_counts?: DiTRewiringParameterCounts | null;
+  dit_rewiring_token_stride?: number;
+  dit_rewiring_temporal_geometry?: DiTRewiringTemporalGeometry;
+  dit_rewiring_video_geometry?: DiTRewiringVideoGeometry;
   model_hash: string;
   // Model-list entry fields (from GET /models)
   name?: string;
@@ -420,6 +645,12 @@ export interface LoRAInfo extends Partial<LoRAAdapterDetection> {
   // Only present on GET /loras/{lora_name}; null when the file's metadata
   // declares nothing recognized -- never a guessed/invented recommendation.
   recommended?: LoRARecommendedSettings | null;
+  partition_guidance?: {
+    halo_tokens: number;
+    halo_pixels: number;
+    training_halo_tokens: number | null;
+    source: "file_metadata" | "sushiui_default";
+  } | null;
 }
 
 export interface ControlNetConfig {
@@ -453,6 +684,21 @@ export interface ControlNetConfig {
 // `null` (or an absent field) means "do not touch the process-level setting".
 export type QuantizedGemmMode = "w8a8" | "dequant" | null;
 
+export type QwenPartitionSplit = {
+  axis: "x" | "y";
+  ratio: number;
+  first: QwenPartitionSplit | null;
+  second: QwenPartitionSplit | null;
+};
+
+export interface QwenPartitionConfig {
+  version: 1;
+  mode: "off" | "auto" | "manual";
+  max_target_tokens: number;
+  layout: QwenPartitionSplit | null;
+  halo_tokens: number;
+}
+
 export interface GenerationParams {
   prompt: string;
   negative_prompt?: string;
@@ -474,6 +720,7 @@ export interface GenerationParams {
   // architecture ignores it.
   sensenova_kv_cache_streaming?: boolean;
   qwen_image_21_kv_cache?: boolean;
+  qwen_image_21_partition?: QwenPartitionConfig | null;
   sampler?: string;
   schedule_type?: string;
   seed?: number;
@@ -1748,6 +1995,10 @@ export const fetchTrainingDefaults = async (): Promise<Record<string, unknown>> 
 export const fetchTaggerTrainingDefaults = async (): Promise<Record<string, unknown>> =>
   (await api.get("/schema/tagger-training-defaults")).data;
 
+// Every key of the style trainer config (STYLE_TRAINING_DEFAULTS in param_defaults.py).
+export const fetchStyleTrainingDefaults = async (): Promise<StyleTrainingConfig> =>
+  (await api.get("/schema/style-training-defaults")).data;
+
 // Defaults for a decoder-only VAE fine-tune (training_method "vae_decoder").
 // Backed by backend/api/param_defaults.py VAE_TRAINING_DEFAULTS.
 export const fetchVaeTrainingDefaults = async (): Promise<Record<string, unknown>> =>
@@ -2554,6 +2805,9 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   // SenseNova U1.5 per-layer prefix KV cache CPU streaming; every other architecture ignores it.
   formData.append("sensenova_kv_cache_streaming", String(paramsWithImages.sensenova_kv_cache_streaming ?? false));
   formData.append("qwen_image_21_kv_cache", String(paramsWithImages.qwen_image_21_kv_cache ?? true));
+  if (paramsWithImages.qwen_image_21_partition) {
+    formData.append("qwen_image_21_partition", JSON.stringify(paramsWithImages.qwen_image_21_partition));
+  }
   formData.append("sampler", paramsWithImages.sampler || "euler");
   formData.append("schedule_type", paramsWithImages.schedule_type || "uniform");
   formData.append("seed", String(paramsWithImages.seed || -1));
@@ -2925,6 +3179,9 @@ export const generateImg2Img = async (
   // SenseNova U1.5 per-layer prefix KV cache CPU streaming; every other architecture ignores it.
   formData.append("sensenova_kv_cache_streaming", String(paramsWithImages.sensenova_kv_cache_streaming ?? false));
   formData.append("qwen_image_21_kv_cache", String(paramsWithImages.qwen_image_21_kv_cache ?? true));
+  if (paramsWithImages.qwen_image_21_partition) {
+    formData.append("qwen_image_21_partition", JSON.stringify(paramsWithImages.qwen_image_21_partition));
+  }
   formData.append("denoising_strength", String(paramsWithImages.denoising_strength || 0.75));
   formData.append("img2img_fix_steps", String(paramsWithImages.img2img_fix_steps ?? true));
   formData.append("vae_drift_correction", String(paramsWithImages.vae_drift_correction ?? false));
@@ -3854,6 +4111,9 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   // SenseNova U1.5 per-layer prefix KV cache CPU streaming; every other architecture ignores it.
   formData.append("sensenova_kv_cache_streaming", String(paramsWithImages.sensenova_kv_cache_streaming ?? false));
   formData.append("qwen_image_21_kv_cache", String(paramsWithImages.qwen_image_21_kv_cache ?? true));
+  if (paramsWithImages.qwen_image_21_partition) {
+    formData.append("qwen_image_21_partition", JSON.stringify(paramsWithImages.qwen_image_21_partition));
+  }
   formData.append("denoising_strength", String(paramsWithImages.denoising_strength || 0.75));
   formData.append("img2img_fix_steps", String(paramsWithImages.img2img_fix_steps ?? true));
   formData.append("vae_drift_correction", String(paramsWithImages.vae_drift_correction ?? false));
@@ -4055,6 +4315,9 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
   formData.append("denoising_strength", String(paramsWithImages.denoising_strength ?? 1.0));
   formData.append("img2img_fix_steps", String(paramsWithImages.img2img_fix_steps ?? true));
   formData.append("qwen_image_21_kv_cache", String(paramsWithImages.qwen_image_21_kv_cache ?? true));
+  if (paramsWithImages.qwen_image_21_partition) {
+    formData.append("qwen_image_21_partition", JSON.stringify(paramsWithImages.qwen_image_21_partition));
+  }
   formData.append("sampler", paramsWithImages.sampler || "euler");
   formData.append("schedule_type", paramsWithImages.schedule_type || "uniform");
   formData.append("seed", String(paramsWithImages.seed || -1));
@@ -7215,9 +7478,12 @@ export interface TrainingRunCreateRequest {
   activation_offload_pinned_budget_mb?: number;
   dit_gradient_checkpointing_blocks?: number | null;
   dit_partition_gradient_checkpointing_blocks?: number | null;
+  dit_rewiring_mode?: "inherit" | "configure";
+  dit_rewiring_spec?: DiTRewiringSpec | null;
   dit_partition_training_enabled?: boolean;
-  dit_partition_mode?: "fixed";
+  dit_partition_mode?: "fixed" | "token_threshold";
   dit_partition_fixed_count?: 2 | 4;
+  dit_partition_full_frame_max_tokens?: number;
   dit_partition_halo_tokens?: number;
   dit_partition_split_ratio_min?: number;
   dit_partition_split_ratio_max?: number;
@@ -7227,7 +7493,7 @@ export interface TrainingRunCreateRequest {
   dit_partition_global_rank?: number;
   dit_partition_global_tokens?: number;
   qwen_partition_training_enabled?: boolean;
-  qwen_partition_mode?: "fixed";
+  qwen_partition_mode?: "fixed" | "token_threshold";
   qwen_partition_fixed_count?: 2 | 4;
   qwen_partition_halo_tokens?: number;
   qwen_partition_split_ratio_min?: number;
@@ -7246,6 +7512,7 @@ export interface TrainingRunCreateRequest {
   qwen_guidance_loss_mix_mode?: "stochastic" | "blend";
   qwen_cfg_null_sigma_schedule?: boolean;
   qwen_guidance_loss_scale?: number;
+  qwen_guidance_loss_extrapolation_max_rms?: number;
   qwen_guidance_loss_schedule?: "constant" | "sigma";
   qwen_guidance_loss_weight_schedule?: "constant" | "high_noise_smoothstep";
   qwen_guidance_loss_high_noise_weight?: number;
@@ -7706,21 +7973,36 @@ export interface ConceptExposureRow {
   target_images: number;
   mean_passes_per_image: number;
   last_step: number;
+  timestep_counts?: number[];
+  timestep_recorded_passes?: number;
+  timestep_unknown_passes?: number;
+  timestep_loss_counts?: number[];
+  timestep_loss_means?: (number | null)[];
+  timestep_loss_recorded_passes?: number;
+  timestep_loss_unknown_passes?: number;
+  timestep_loss_metric?: "qwen_prediction_reconstruction_v1";
+  timestep_loss_variance_counts?: number[];
+  timestep_loss_variance_means?: (number | null)[];
+  timestep_loss_stddevs?: (number | null)[];
 }
 
 export interface ConceptExposureResponse {
   enabled: boolean;
   mode?: "concept" | "priority";
   total_groups?: number;
+  matched_groups?: number;
+  query?: string;
   order?: "latest" | "top";
+  timestep_bin_edges?: number[];
   rows: ConceptExposureRow[];
 }
 
 export const getTrainingConceptExposure = async (
-  runId: number, order: "latest" | "top" = "latest",
+  runId: number, order: "latest" | "top" = "latest", q?: string, signal?: AbortSignal,
 ): Promise<ConceptExposureResponse> => {
   const response = await api.get(`/training/runs/${runId}/concept-exposure`, {
-    params: { order },
+    params: { order, q },
+    signal,
   });
   return response.data;
 };
@@ -8503,6 +8785,10 @@ export interface DebugLatentVisualization {
   step: number;
   timestep: number;
   loss: number;
+  display_resolution?: { width: number; height: number; space: "image" | "latent" } | null;
+  partition_count?: number;
+  partition_grid_size?: [number, number]; // latent W, H
+  partition_regions?: { top: number; left: number; bottom: number; right: number }[];
   recon_loss?: number;  // Optional: may not exist in older debug data
   caption?: string;  // Processed caption used during training
   reference_image?: string;  // base64 thumbnail of reference image used in this training batch
@@ -8516,6 +8802,8 @@ export interface DebugLatentVisualization {
   noisy_latents_image?: string;  // base64
   predicted_noise_image?: string;  // base64
   predicted_latent_image?: string;  // base64
+  uncond_predicted_latent_image?: string; // base64; computed guidance-loss null-prompt x0
+  uncond_prediction_status?: "computed" | "not_selected";
   // Video archs (LTX-2.3, MiniMax-H3): the images above tile the clip's leading
   // decodable window along width, window_latent_frames frames wide.
   window_latent_frames?: number;
@@ -8535,6 +8823,7 @@ export interface DebugLatentVisualization {
     | "predicted_noise_image"
     | "predicted_velocity_image"
     | "predicted_latent_image"
+    | "uncond_predicted_latent_image"
     | "reference_image"
     | "audio_latents_image"
     | "audio_noisy_latents_image"
@@ -9058,6 +9347,225 @@ export const deleteTaggerTrainingRun = async (runId: string): Promise<void> => {
   await api.delete(`/tagger-training/runs/${runId}`);
 };
 
+// ---------------------------------------------------------------------------
+// Style encoder training (/style-training/*)
+// ---------------------------------------------------------------------------
+
+export interface StyleEmbedResponse {
+  embedding: number[];
+  dim: number;
+}
+
+export const embedStyleImage = async (encoderPath: string, imageBase64: string): Promise<StyleEmbedResponse> =>
+  (await api.post("/style/embed", { encoder_path: encoderPath, image_base64: imageBase64 })).data;
+
+export const compareStyleImages = async (
+  encoderPath: string, imageABase64: string, imageBBase64: string,
+): Promise<{ cosine_similarity: number }> =>
+  (await api.post("/style/similarity", {
+    encoder_path: encoderPath, image_a_base64: imageABase64, image_b_base64: imageBBase64,
+  })).data;
+
+export interface StyleDatasetConfig {
+  dataset_id: number;
+  caption_types?: string[];  // empty / absent = every tags-format caption
+}
+
+// The trainer config minus dataset_configs; defaults from GET /schema/style-training-defaults.
+export interface StyleTrainingConfig {
+  vision_encoder_path: string;  // .safetensors path or HF repo id; "" = the vision_encoder_repo release
+  vision_encoder_repo: string;
+  training_method: "full" | "lora";
+  lora_rank: number;
+  lora_alpha: number;
+  lora_dropout: number;
+  attn_implementation: string;
+  mixed_precision: "bf16" | "fp32";
+  gradient_checkpointing: boolean;
+  gpu_index: number | null;
+  optimizer: "adamw" | "adamw8bit" | "lion8bit";
+  learning_rate: number;
+  head_lr_multiplier: number;
+  weight_decay: number;
+  warmup_steps: number;
+  min_lr_ratio: number;
+  max_grad_norm: number;
+  epochs: number;
+  num_workers: number;
+  save_every_n_steps: number;
+  keep_last_n_checkpoints: number;
+  validate_every: number;
+  log_every_n_steps: number;
+  style_seed: number;
+  style_split_seed: number;
+  style_use_tag_aliases: boolean;
+  style_use_gelbooru_categories: boolean;
+  style_signature_tags: string[];
+  style_non_copyright_tags: string[];
+  style_val_artist_ratio: number;
+  style_val_image_ratio: number;
+  style_min_images_per_artist: number;
+  style_danbooru_enable: boolean;
+  style_danbooru_min_post_count: number;
+  style_danbooru_order: "count_desc" | "random";
+  style_danbooru_seed: number;
+  style_danbooru_max_artists: number;
+  style_danbooru_max_tag_pages: number;
+  style_danbooru_max_posts_per_artist: number;
+  style_danbooru_max_post_pages_per_artist: number;
+  style_danbooru_api_interval: number;
+  style_danbooru_dl_speed_kbps: number;
+  style_artists_per_batch: number;
+  style_images_per_artist: number;
+  style_same_copyright_batch_ratio: number;
+  style_artist_sampling_power: number;
+  style_mask_ratio_min: number;
+  style_mask_ratio_max: number;
+  style_max_num_patches: number;
+  style_temperature: number;
+  style_view_positive_weight: number;
+  style_positive_weight_min: number;
+  style_hsic_tagger_path: string;
+  style_hsic_weights: Record<"Character" | "Copyright" | "Rating" | "Quality", number>;
+  style_feature_layers: number[];
+  style_token_dim: number;
+  style_pool_heads: number;
+  style_projector_hidden_dim: number;
+  style_embed_dim: number;
+  style_val_max_items: number;
+  style_val_batch_size: number;
+  style_eval_chunk_size: number;
+}
+
+// Omitted config keys take the backend defaults; unknown keys are refused (422).
+export interface StyleTrainingRunCreateRequest extends Partial<StyleTrainingConfig> {
+  dataset_configs: StyleDatasetConfig[];
+  run_name?: string | null;
+  output_dir?: string | null;
+}
+
+// Only the given fields change; output_dir is fixed at creation.
+export interface StyleTrainingRunUpdateRequest extends Partial<StyleTrainingConfig> {
+  dataset_configs?: StyleDatasetConfig[];
+  run_name?: string | null;
+}
+
+export type StyleTrainingStatus =
+  | "pending" | "starting" | "running" | "stopping" | "completed" | "failed" | "stopped";
+
+export interface StyleTrainingRun {
+  id: number;
+  run_id: string;
+  run_name: string;
+  status: StyleTrainingStatus;
+  active: boolean;  // a trainer thread for this run is alive in the backend
+  progress: number;
+  current_epoch: number;
+  total_epochs: number;
+  current_step: number;
+  total_steps: number | null;
+  training_method: "full" | "lora";
+  vision_encoder_path: string;
+  vision_encoder_repo: string;
+  dataset_configs: StyleDatasetConfig[];
+  output_dir: string;
+  config: StyleTrainingConfig & { dataset_configs: StyleDatasetConfig[] };
+  index_hash: string | null;
+  latest_loss: number | null;
+  latest_lr: number | null;
+  best_map_at_r: number | null;
+  best_step: number | null;
+  best_checkpoint_path: string | null;
+  latest_checkpoint_path: string | null;
+  resumed_from_step: number | null;
+  last_resume_mode: "exact" | "epoch_boundary" | null;
+  last_resumed_at: string | null;
+  error_message: string | null;
+  status_message: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface StyleTrainingWarning {
+  message: string;
+  timestamp: string;
+  ignored?: Record<string, { saved: unknown; requested: unknown }>;
+  filled_defaults?: string[];
+}
+
+export interface StyleTrainingRunDetail extends StyleTrainingRun {
+  dataset_stats: Record<string, unknown> | null;
+  warnings: StyleTrainingWarning[];
+  detail_error: string | null;  // why the run's detail database could not be read
+}
+
+export interface StyleTrainingLifecycleResponse {
+  message: "started" | "stop_requested" | "marked_stopped";
+  run: StyleTrainingRun;
+  filled_defaults?: string[];  // start only: keys the stored config lacked, filled from current defaults
+}
+
+export interface StyleTrainingRunUpdated extends StyleTrainingRun {
+  filled_defaults: string[];
+}
+
+export interface StyleTrainingMetric {
+  step: number;
+  resume_seq: number;
+  epoch: number | null;
+  // Points with different index hashes were measured on different evaluation sets.
+  index_hash: string | null;
+  loss: number | null;
+  supcon_loss: number | null;
+  hsic_loss: number | null;
+  hsic_components: Record<string, number> | null;
+  learning_rate: number | null;
+  grad_norm: number | null;
+  epoch_loss: number | null;
+  val_map_at_r: number | null;
+  val_recall_at_1: number | null;
+  val_recall_at_5: number | null;
+  evaluation: Record<string, unknown> | null;
+  timestamp: string | null;
+}
+
+export const createStyleTrainingRun = async (
+  data: StyleTrainingRunCreateRequest
+): Promise<StyleTrainingRun> => (await api.post("/style-training/runs", data)).data;
+
+export const listStyleTrainingRuns = async (): Promise<StyleTrainingRun[]> =>
+  (await api.get("/style-training/runs")).data;
+
+export const getStyleTrainingRun = async (runId: string): Promise<StyleTrainingRunDetail> =>
+  (await api.get(`/style-training/runs/${runId}`)).data;
+
+export const updateStyleTrainingRun = async (
+  runId: string,
+  data: StyleTrainingRunUpdateRequest
+): Promise<StyleTrainingRunUpdated> => (await api.patch(`/style-training/runs/${runId}`, data)).data;
+
+export const deleteStyleTrainingRun = async (runId: string): Promise<{ deleted: string }> =>
+  (await api.delete(`/style-training/runs/${runId}`)).data;
+
+export const startStyleTrainingRun = async (runId: string): Promise<StyleTrainingLifecycleResponse> =>
+  (await api.post(`/style-training/runs/${runId}/start`)).data;
+
+export const stopStyleTrainingRun = async (runId: string): Promise<StyleTrainingLifecycleResponse> =>
+  (await api.post(`/style-training/runs/${runId}/stop`)).data;
+
+export const getStyleTrainingMetrics = async (
+  runId: string,
+  sinceStep?: number,
+  maxPoints?: number,  // omitted = the backend default budget; 0 = no limit
+): Promise<StyleTrainingMetric[]> => {
+  const params: Record<string, number> = {};
+  if (sinceStep !== undefined) params.since_step = sinceStep;
+  if (maxPoints !== undefined) params.max_points = maxPoints;
+  return (await api.get(`/style-training/runs/${runId}/metrics`, { params })).data;
+};
+
 export interface DanbooruRecentPost {
   post_id: number;
   tags: string[];
@@ -9206,3 +9714,84 @@ export const getTaggerVocabularyPreview = async (
   const response = await api.get("/tagger-training/vocabulary-preview", { params });
   return response.data;
 };
+
+
+export interface DiTRewiringRegion {
+  id: string; stream: string; parent: string | null;
+  start_block: number; end_block: number; down_factor: [number, number];
+  down: "avg_pool"; up: "bilinear"; align_corners: false;
+  merge: "identity_delta_add"; position_policy: "coarse_integer";
+  grid_policy: "require_divisible"; delta_dtype: "float32";
+}
+export interface DiTRewiringSpec {
+  schema_version: 1; method: "residual_delta_unet"; architecture: string;
+  streams: { name: string; block_count: number }[];
+  regions: DiTRewiringRegion[];
+  base_config_sha256: string; block_layout_sha256: string;
+}
+export interface DiTRewiringPlan {
+  levels: { id: string; depth: number; height: number; width: number; tokens: number }[];
+  skip_edges: { region: string; stream: string; source: number; target: number; merge: string }[];
+  blocks: { stream: string; index: number; depth: number; height: number; width: number; tokens: number }[];
+}
+export interface DiTRewiringTemporalGeometry {
+  frame_rate: number; patch_size: number; preview_frames: number;
+  grid_policy: "zero_token_tail_v1" | "zero_hidden_tail_v1" | "require_divisible";
+}
+export function temporalRewiringGrid(spec: DiTRewiringSpec, frames: number,
+  geometry: DiTRewiringTemporalGeometry, baseConfigHash?: string): { native: number; padded: number } {
+  if (!Number.isInteger(frames) || frames < 1) throw new Error("Preview frames must be a positive integer");
+  const native = Math.ceil(frames / geometry.patch_size);
+  if (geometry.grid_policy === "require_divisible" || (baseConfigHash && spec.base_config_sha256 !== baseConfigHash))
+    return { native, padded: native };
+  const factors = new Map<string, number>();
+  const visiting = new Set<string>();
+  const cumulative = (id: string): number => {
+    const known = factors.get(id); if (known !== undefined) return known;
+    const region = spec.regions.find(r => r.id === id);
+    if (!region || visiting.has(id)) throw new Error("Invalid temporal region parent");
+    visiting.add(id);
+    const factor = region.down_factor[0] * (region.parent ? cumulative(region.parent) : 1);
+    visiting.delete(id); factors.set(id, factor); return factor;
+  };
+  const gcd = (a: number, b: number): number => b ? gcd(b, a % b) : a;
+  let alignment = 1;
+  for (const region of spec.regions) {
+    if (region.down_factor[1] !== 1) throw new Error("Audio regions shrink the time axis only");
+    const factor = cumulative(region.id);
+    if (!Number.isInteger(factor) || factor < 1) throw new Error("Invalid temporal downsample factor");
+    alignment = alignment / gcd(alignment, factor) * factor;
+  }
+  return { native, padded: Math.ceil(native / alignment) * alignment };
+}
+export interface DiTRewiringVideoGeometry {
+  temporal_scale_factor: number | null; height_scale_factor: number; width_scale_factor: number;
+  grid_policy: "independent_spatial_frames_v1" | "packed_target_spatial_frames_v1";
+}
+export interface DiTRewiringParameterCounts {
+  scope: "native_dit"; source: "native_config_census";
+  total: number; shared: number; added: 0;
+  blocks: { stream: string; index: number; count: number }[];
+}
+export interface DiTRewiringModelInfo {
+  parameter_counts?: DiTRewiringParameterCounts | null;
+  architecture: string; streams: DiTRewiringSpec["streams"];
+  base_config_sha256: string; block_layout_sha256: string;
+  topology: DiTRewiringSpec | null; topology_sha256: string | null; default_spec: DiTRewiringSpec | null;
+  initial_spec: DiTRewiringSpec;
+  latent_scale_factor: number; pixel_alignment: number;
+  temporal_geometry?: DiTRewiringTemporalGeometry;
+  video_geometry?: DiTRewiringVideoGeometry;
+}
+export const getDiTRewiringSchema = async (): Promise<{
+  presets: Record<string, unknown>; runtime_architectures: string[];
+}> => (await api.get("/schema/dit-rewiring")).data;
+export const inspectDiTRewiring = async (modelPath: string): Promise<DiTRewiringModelInfo> =>
+  (await api.post("/models/rewiring/inspect", { model_path: modelPath })).data;
+export const previewDiTRewiring = async (spec: DiTRewiringSpec, tokenHeight: number, tokenWidth: number):
+  Promise<{ spec: DiTRewiringSpec; spec_sha256: string; plan: DiTRewiringPlan }> =>
+  (await api.post("/models/rewiring/validate", { spec, token_height: tokenHeight, token_width: tokenWidth })).data;
+
+export const exportDiTRewiring = async (modelPath: string, outputName: string, spec: DiTRewiringSpec):
+  Promise<{ model_path: string; spec_sha256: string }> =>
+  (await api.post("/models/rewiring/export", { model_path: modelPath, output_name: outputName, spec })).data;

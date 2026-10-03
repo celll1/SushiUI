@@ -6,6 +6,7 @@ import ModelLoader from "./ModelLoader";
 import ModelTools from "./ModelTools";
 import InferencePanel from "./InferencePanel";
 import DatasetBrowserPanel from "./DatasetBrowserPanel";
+import CaptionerPanel from "./CaptionerPanel";
 
 export default function TaggerSection() {
   const [modelStatus, setModelStatus] = useState<SigLIP2StatusResponse>({
@@ -15,7 +16,7 @@ export default function TaggerSection() {
     model_type: "",
     num_tags: 0,
   });
-  const [taggerTab, setTaggerTab] = useState<"inference" | "browser">(
+  const [taggerTab, setTaggerTab] = useState<"inference" | "browser" | "captioner">(
     "inference"
   );
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -92,7 +93,7 @@ export default function TaggerSection() {
           </span>
 
           <div className="app-tabs flex-1 border-b-0">
-            {(["inference", "browser"] as const).map((t) => (
+            {(["inference", "browser", "captioner"] as const).map((t) => (
               <button
                 key={t}
                 onClick={() => setTaggerTab(t)}
@@ -102,7 +103,7 @@ export default function TaggerSection() {
                     : ""
                 }`}
               >
-                {t === "inference" ? "推論" : "ブラウザ"}
+                {t === "inference" ? "推論" : t === "browser" ? "ブラウザ" : "Captioner"}
               </button>
             ))}
           </div>
@@ -113,6 +114,8 @@ export default function TaggerSection() {
             <div className="h-full overflow-y-auto">
               <InferencePanel modelStatus={modelStatus} />
             </div>
+          ) : taggerTab === "captioner" ? (
+            <CaptionerPanel />
           ) : (
             <DatasetBrowserPanel modelLoaded={modelStatus.loaded} />
           )}

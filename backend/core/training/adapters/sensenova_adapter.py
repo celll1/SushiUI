@@ -315,6 +315,8 @@ class SenseNovaLoRAAdapter(BaseLoRAAdapter):
                     "_sensenova_prompt_template_versions", ()
                 ))
             )
+        from core.models.sensenova.residual_unet import model_topology_metadata
+        metadata.update(model_topology_metadata(self.trainer.transformer))
         return metadata
 
 

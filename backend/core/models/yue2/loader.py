@@ -19,7 +19,10 @@ def read_header(path):
         size = struct.unpack("<Q", stream.read(8))[0]
         if not 0 < size <= 16 * 1024 * 1024:
             raise ValueError("Invalid YuE2 safetensors header length")
-        return json.loads(stream.read(size))
+        header = json.loads(stream.read(size))
+        if not isinstance(header, dict) or not isinstance(header.get("__metadata__", {}), dict):
+            raise ValueError("YuE2 header and metadata must be objects")
+        return header
 
 
 def keys_look_yue2(keys, metadata=None):
@@ -90,8 +93,8 @@ def build_empty_models():
     return model, vae
 
 
-def preflight_yue2(path, *, require_runtime=False):
-    """Read header, tiny markers, and tokenizer; never materialize model weights."""
+def preflight_yue2(path, *, require_runtime=False, load_tokenizer=True):
+    """Validate headers and markers; optionally parse the embedded tokenizer."""
     from core.models.common.convrot_marker import supported_int8_convrot_marker
     header = read_header(path)
     if not keys_look_yue2(header):
@@ -101,10 +104,17 @@ def preflight_yue2(path, *, require_runtime=False):
     metadata = header.get("__metadata__", {})
     if metadata.get("yue2_format") != "1":
         raise ValueError("Unsupported YuE2 checkpoint format version")
+    from core.rewiring.spec import read_checkpoint_metadata
+    from .residual_unet import validate_topology_identity
+    topology = read_checkpoint_metadata(metadata)
     model, vae = build_empty_models()
+    if topology is not None:
+        topology = validate_topology_identity(topology, model.config)
     expected = {**dict(model.state_dict()), **{"vae." + k: v for k, v in vae.state_dict().items()}}
     plan, targets, quantized = [], {}, {}
     with safe_open(path, framework="pt", device="cpu") as handle:
+        if read_checkpoint_metadata(handle.metadata() or {}) != topology:
+            raise ValueError("YuE2 checkpoint topology changed after header inspection")
         for key, info in header.items():
             if key == "__metadata__":
                 continue
@@ -150,11 +160,14 @@ def preflight_yue2(path, *, require_runtime=False):
         tok_info = header[TOKENIZER_KEY]
         if tok_info["dtype"] != "U8" or len(tok_info["shape"]) != 1 or not 0 < tok_info["shape"][0] <= 32 * 1024 * 1024:
             raise ValueError("Invalid YuE2 tokenizer payload")
-        tokenizer = EmbeddedTokenizer(bytes(handle.get_tensor(TOKENIZER_KEY).tolist()).decode("utf-8"))
+        tokenizer = (EmbeddedTokenizer(bytes(handle.get_tensor(TOKENIZER_KEY).tolist()).decode("utf-8"))
+                     if load_tokenizer else None)
     if require_runtime and quantized:
         from core.models.common.convrot_int8_linear import require_convrot_int8_runtime
         require_convrot_int8_runtime()
     return dict(plan=plan, quantized=quantized, metadata=metadata, tokenizer=tokenizer,
+                residual_topology=topology,
+                model_config={key: getattr(model.config, key) for key in model.config._inference_fields},
                 source_tensor_count=len(header) - int("__metadata__" in header))
 
 
@@ -211,6 +224,9 @@ def load_yue2_from_path(path, torch_dtype=torch.bfloat16):
         setattr(model.get_submodule(parent) if parent else model, leaf, replacement)
     model_state, vae_state = {}, {}
     with safe_open(path, framework="pt", device="cpu") as handle:
+        from core.rewiring.spec import read_checkpoint_metadata
+        if read_checkpoint_metadata(handle.metadata() or {}) != preflight["residual_topology"]:
+            raise ValueError("YuE2 checkpoint topology changed after preflight")
         for item in preflight["plan"]:
             if item.target == "tokenizer":
                 continue
@@ -227,6 +243,8 @@ def load_yue2_from_path(path, torch_dtype=torch.bfloat16):
                 model_state[item.target] = value
     model.load_state_dict(model_state, strict=True, assign=True)
     vae.load_state_dict(vae_state, strict=True, assign=True)
+    from .residual_unet import restore_topology
+    restore_topology(model, preflight["residual_topology"])
     model.eval().requires_grad_(False)
     vae.eval().requires_grad_(False)
     assert not any(t.is_meta for t in list(model.parameters()) + list(model.buffers()))

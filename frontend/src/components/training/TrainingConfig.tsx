@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
-import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, SenseNovaTaskView, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns, trainingMethodUnsupportedReason, trainingFeatureUnsupportedReason, trainingRequiredValues, TrainingRequiredValue, trainingFeatureAdvisory, TrainingFeatureAdvisory, archDisplayName, cfgUncondDropDefault, trainingSampleParameterSupported, trainingSampleNote, trainableAdapterAlgorithms, adapterTrainingRefusalReason, weightDecomposeTrainable, decomposedAdapterFamily, getLrSchedulePreview, LrSchedulePreview, getDatasetLatentCache, LatentCacheStatus } from "@/utils/api";
+import { getDiTRewiringSchema, createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, SenseNovaTaskView, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns, trainingMethodUnsupportedReason, trainingFeatureUnsupportedReason, trainingRequiredValues, TrainingRequiredValue, trainingFeatureAdvisory, TrainingFeatureAdvisory, archDisplayName, cfgUncondDropDefault, trainingSampleParameterSupported, trainingSampleNote, trainableAdapterAlgorithms, adapterTrainingRefusalReason, weightDecomposeTrainable, decomposedAdapterFamily, getLrSchedulePreview, LrSchedulePreview, getDatasetLatentCache, LatentCacheStatus } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
@@ -10,6 +10,7 @@ import NumberInput from "../common/NumberInput";
 import VisionEncoderSelector from "../common/VisionEncoderSelector";
 import TimestepDistributionGraph from "./TimestepDistributionGraph";
 import QwenTrainingObjective from "./QwenTrainingObjective";
+import DiTRewiringEditor from "./DiTRewiringEditor";
 import GpuSelect from "./GpuSelect";
 import VaeSwapSourceSelector from "./VaeSwapSourceSelector";
 import DanbooruAugmentationSection from "./DanbooruAugmentationSection";
@@ -67,6 +68,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // trainingConfigDefinitions.tsx.
   const [params, setParams] = useState<TrainingRunCreateRequest>(DEFAULT_PARAMS);
   const { trainingDefaults, trainingSampleDefaultsByArch, trainingGuidanceLossDefaultsByArch, timestepDefaultsByArch, bundleVaeDefaultsByArch, archCapabilities } = useStartup();
+  const [rewiringArchitectures, setRewiringArchitectures] = useState<string[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    getDiTRewiringSchema().then(value => {
+      if (!cancelled) setRewiringArchitectures(value.runtime_architectures);
+    }).catch(error => console.warn("Could not load residual U-Net capabilities", error));
+    return () => { cancelled = true; };
+  }, []);
+
 
   // Apply backend-fetched defaults when they arrive (only for new runs, not edit mode)
   useEffect(() => {
@@ -75,20 +85,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     setParams(prev => ({ ...DEFAULT_PARAMS, ...(trainingDefaults as Partial<TrainingRunCreateRequest>) }));
   }, [trainingDefaults, editRunId]);
 
-  // Edit mode gets no such replacement -- it would overwrite the run's own
-  // values with defaults -- so a control added AFTER a run was created had
-  // nothing to render: its key is in neither the run's YAML nor DEFAULT_PARAMS,
-  // and the input came up empty. That is not "unset"; the backend resolves
-  // TRAINING_DEFAULTS for an absent key, so the empty box stated something
-  // untrue about the run. Run 121's config predates the three SenseNova preview
-  // controls and showed exactly that.
-  //
-  // Back-fill only what the restore left undefined, so a value the YAML does
-  // carry always wins, and only preview keys: cfg_uncond_drop_rate and its
-  // deprecated twin distinguish "the caller said nothing" from an explicit 0.0,
-  // and filling one in would convert one into the other. No sample key carries
-  // that distinction. Order-independent -- the restore below merges by key, so
-  // it does not matter whether the defaults or the run's params land first.
+  // Back-fill absent preview/topology keys from API defaults; saved values win.
+  // Other keys can distinguish omission from an explicit value.
   useEffect(() => {
     if (!editRunId || !trainingDefaults) return;
     setParams(prev => {
@@ -96,7 +94,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       let changed = false;
       for (const [key, value] of Object.entries(trainingDefaults as Record<string, unknown>)) {
         if (key === "sample_prompts") continue;
-        if (!key.startsWith("sample_") && !key.startsWith("sensenova_sample_")) continue;
+        if (!key.startsWith("sample_") && !key.startsWith("sensenova_sample_")
+          && key !== "dit_rewiring_mode" && key !== "dit_rewiring_spec") continue;
         if (next[key] === undefined && value !== undefined) {
           next[key] = value;
           changed = true;
@@ -3737,7 +3736,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   >
                     <option value="uniform">Uniform (Default)</option>
                     <option value="logit_normal">Logit-Normal (FLUX/SD3)</option>
-                    <option value="normal">Normal (Gaussian)</option>
+                    <option value="normal">Normal (Gaussian, truncated to range)</option>
                     <option value="beta">Beta Distribution</option>
                   </select>
                   <p className="text-xs text-gray-500 mt-1">
@@ -3805,7 +3804,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     </div>
                     <p className="col-span-2 text-xs text-gray-500">
                       {timestepDistribution === "normal" ? (
-                        <>Mean: center of distribution (0.0-1.0). Std: spread (smaller = more concentrated)</>
+                        <>Mean: center of the Gaussian. Std: spread. Probability is renormalized within Min/Max, without piling up at the endpoints.</>
                       ) : (
                         <>{meanBiasNote}</>
                       )}
@@ -6238,6 +6237,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </div>
             )}
 
+            {rewiringArchitectures.includes(getModelArchitecture(baseModelPath) ?? "") && (trainingMethod === "lora" || trainingMethod === "full_finetune") && (
+              <DiTRewiringEditor modelPath={baseModelPath} resolution={Math.max(...baseResolutions)}
+                mode={params.dit_rewiring_mode} spec={params.dit_rewiring_spec}
+                onChange={(mode, spec) => setParams(prev => ({ ...prev, dit_rewiring_mode: mode, dit_rewiring_spec: spec }))} />
+            )}
+
             {/* Per-bucket activation offload dispatcher */}
             <div className="pt-2 border-t border-gray-700">
               <div className="flex items-center space-x-2">
@@ -6402,7 +6407,34 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 </div>
                 {params.dit_partition_training_enabled && (
                   <div className="grid grid-cols-2 gap-2">
-                    <div>
+                    <div className="col-span-2">
+                      <label className="block text-xs text-gray-400 mb-1">When to partition</label>
+                      <select
+                        value={params.dit_partition_mode ?? "token_threshold"}
+                        onChange={(e) => updateParam("dit_partition_mode", e.target.value as "fixed" | "token_threshold")}
+                        className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
+                      >
+                        <option value="token_threshold">Full / 2 / 4 regions by latent tokens</option>
+                        <option value="fixed">Every image (legacy fixed mode)</option>
+                      </select>
+                    </div>
+                    {params.dit_partition_mode === "token_threshold" && (
+                      <div className="col-span-2">
+                        <label className="block text-xs text-gray-400 mb-1">Full-frame limit (latent image tokens)</label>
+                        <input
+                          type="number"
+                          min={1}
+                          step={1}
+                          value={params.dit_partition_full_frame_max_tokens ?? 4096}
+                          onChange={(e) => updateParam("dit_partition_full_frame_max_tokens", Math.max(1, parseInt(e.target.value) || 4096))}
+                          className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">
+                          At or below this latent H × W: full frame. Above it: 2 regions; at 4× the limit or above: 4 regions.
+                        </p>
+                      </div>
+                    )}
+                    {params.dit_partition_mode === "fixed" && <div>
                       <label className="block text-xs text-gray-400 mb-1">Regions</label>
                       <select
                         value={params.dit_partition_fixed_count ?? 2}
@@ -6412,7 +6444,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         <option value={2}>2 regions</option>
                         <option value={4}>4 regions</option>
                       </select>
-                    </div>
+                    </div>}
                     <div>
                       <label className="block text-xs text-gray-400 mb-1">Halo (latent tokens)</label>
                       <input

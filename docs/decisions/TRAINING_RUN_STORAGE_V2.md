@@ -163,7 +163,8 @@ The implementation must cover:
 ## Operator boundary
 
 New diffusion and VAE runs create `training_run.db`; new tagger runs create
-`tagger_training_run.db`. Their detailed history is not written to
+`tagger_training_run.db`; style encoder runs, which have no legacy central
+history, always create `style_training_run.db`. Their detailed history is not written to
 `training.db`. Existing runs are not moved automatically. The training process
 that was already running when this cutover was deployed keeps its in-memory old
 code until the next ordinary backend start; no live database is rewritten by

@@ -221,12 +221,14 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
     def checkpoint_metadata(
         self, lora_layers: Dict[str, nn.Module], step: int, epoch: int
     ) -> Dict[str, str]:
+        from core.models.flux2.residual_unet import model_topology_metadata
         return {
             "lora_rank": str(self.lora_rank),
             "lora_alpha": str(self.lora_alpha),
             "step": str(step),
             "epoch": str(epoch),
             "model_type": "flux2",
+            **model_topology_metadata(self.trainer.transformer),
         }
 
 
@@ -410,6 +412,12 @@ class FLUX2FullParameterAdapter(BaseFullParameterAdapter):
         except Exception as _e:
             print(f"[FLUX2FullParameterAdapter] transformer_config not serialized: {_e}")
 
+        from core.models.flux2.residual_unet import model_topology_metadata, native_config
+        topology_metadata = model_topology_metadata(trainer.transformer)
+        if topology_metadata:
+            metadata["transformer_config"] = _json.dumps(native_config(trainer.transformer))
+            metadata.update(topology_metadata)
+
         # Component hints: VAE embedded only when bundle_vae; TE embedded only when trained.
         try:
             from core.models.common.single_file_format import build_component_metadata
@@ -439,3 +447,4 @@ class FLUX2FullParameterAdapter(BaseFullParameterAdapter):
 
         total_params = sum(p.numel() for p in dedup_state.values())
         print(f"[FLUX2FullParameterAdapter] Saved {len(dedup_state)} tensors ({total_params:,} params) to {written_path}")
+        return Path(written_path)

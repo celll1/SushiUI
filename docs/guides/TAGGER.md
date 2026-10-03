@@ -14,16 +14,25 @@ It trains encoder/head/router together, uses a new optimizer and an explicit
 fixed-square, unpadded overview policy, and retains square source-native locals
 inside source boundaries. Shape distortion of the overview is a recorded
 tradeoff. No fabricated gate or external tagger weights are used.
-Each start is bounded by `review_steps`; it stops with a resumable joint
+The legacy bounded start is limited by `review_steps`; it stops with a resumable joint
 checkpoint and a model/router-only `review.safetensors` for owner visual review.
 The latter is the latest review export, not an automatically accepted best model.
+`POST /tagger-training/runs/{run_id}/start?continuous=true` resumes joint runs
+without that segment stop. The joint monitor uses continuous starts; explicit
+stop still saves the optimizer/scheduler/RNG state.
 Defaults live in
 `TAGGER_JOINT_REVIEW_DEFAULTS`, not the generic SigLIP2 creation request.
 The monitor's loss curve uses the classification ASL term; the joint summary
 records classification/ranking/diversity terms separately.
-Diagnostics are enabled for this review workflow but remain optional. They
-load the actual joint router checkpoint and call staged routed inference;
-selected native boxes are overlaid on the same source image. Neither a numeric
+Diagnostics are enabled for this workflow but remain optional. At exact global
+step multiples of the user-selected interval, they capture one image (without a rating filter)
+image from that step's actual training batch, its pre-update probabilities,
+supervision mask, and the native boxes actually selected for that forward.
+Solid boxes are router selections; dashed boxes are random exploration.
+No fresh inference or alternative image substitutes for the training forward.
+If source metadata is unavailable, or the CPU renderer is busy, the
+attempt is recorded as skipped. Rendering uses an isolated CPU process without
+copying the full optimizer checkpoint. Neither a numeric
 gate nor the agent's inspection of generated images substitutes for owner
 review. Normal inference-manager integration and repeated refinement remain
 separate unfinished production work.
@@ -31,7 +40,7 @@ separate unfinished production work.
 Registered `foveatag_phase3` comparison monitors expose optional diagnostic
 panels under `/tagger-training/runs/{run_id}/diagnostics`. They default to OFF;
 settings can be changed while running without changing the frozen A/B/C training
-contract. `interval_steps` is a minimum catalog-step interval evaluated at saved
+contract. For these legacy comparisons only, `interval_steps` is a minimum catalog-step interval evaluated at saved
 checkpoint boundaries (not a wall-clock schedule). A single isolated CPU worker
 copies the atomic resume checkpoint and evaluates one deterministic,
 explicitly annotated Rating:General non-photo sample. The first selected sample
@@ -47,8 +56,9 @@ B uses overview-derived placebo views; C overlays the exact native view boxes
 passed to that diagnostic inference. Source pixels per canvas pixel are shown,
 so source-derived does not imply every view is exactly 1:1. An optional C-policy
 preview for A/B is explicitly marked as NOT used by that inference. Boxes are
-input footprints, not causal attribution or a trained router. The monitor shows
-the latest published panel; the metadata index retains the latest 12 entries.
+input footprints, not causal attribution or a trained router. The monitor supports
+older/newer navigation and step selection; polling does not move a selected older
+panel. All published panels remain in the history (no 12-entry truncation).
 Disabling generation does not delete prior images or cancel an in-flight worker.
 This diagnostic option supports registered comparisons and joint-review runs, not general
 SigLIP2/native trainer runs. Frontend build/type-check remains owner-run.

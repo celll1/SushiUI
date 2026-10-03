@@ -42,7 +42,8 @@ def validate_plan(plan):
     return cfg
 
 
-def run_direct_joint(plan, *, progress_callback, run_control, resume=None, segment_steps=None):
+def run_direct_joint(plan, *, progress_callback, run_control, resume=None, segment_steps=None,
+        diagnostic_due=None, diagnostic_callback=None):
     cfg = validate_plan(plan)
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for direct joint training")
@@ -86,6 +87,8 @@ def run_direct_joint(plan, *, progress_callback, run_control, resume=None, segme
         oracle_interval=plan["oracle_interval"], oracle_chunk_size=plan["oracle_chunk_size"],
         router_weight=plan["router_weight"], mixed_precision=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
         scheduler=scheduler)
+    trainer.diagnostic_due = diagnostic_due
+    trainer.diagnostic_callback = diagnostic_callback
     contract = json.loads(json.dumps(plan))
     epoch = offset = step = 0
     best, threshold = -1.0, .35
@@ -106,6 +109,8 @@ def run_direct_joint(plan, *, progress_callback, run_control, resume=None, segme
     status = "complete"
     try:
         while epoch < plan["epochs"]:
+            trainer.diagnostic_threshold = threshold
+            trainer.diagnostic_epoch = epoch
             train_data.set_epoch(epoch)
             train_summary, offset, step, _, stopped, accumulator = _train_epoch(trainer, train_data, epoch=epoch,
                 sample_offset=offset, batch_size=plan["batch_size"], workers=plan["workers"],

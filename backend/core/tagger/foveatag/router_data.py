@@ -26,6 +26,7 @@ class FoveaRouterSample:
     candidate_boxes: torch.Tensor
     label: torch.Tensor
     loss_mask: torch.Tensor
+    diagnostic_source: Optional[dict] = None
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,7 @@ class FoveaRouterBatch:
     candidate_boxes: torch.Tensor
     labels: torch.Tensor
     loss_masks: torch.Tensor
+    diagnostic_sources: tuple[Optional[dict], ...] = ()
 
     def to(
         self,
@@ -49,6 +51,7 @@ class FoveaRouterBatch:
             ),
             labels=self.labels.to(device=device, non_blocking=non_blocking),
             loss_masks=self.loss_masks.to(device=device, non_blocking=non_blocking),
+            diagnostic_sources=self.diagnostic_sources,
         )
 
     def stage_for_routing(
@@ -80,6 +83,7 @@ class FoveaRouterBatch:
             ),
             labels=self.labels.to(device=device, non_blocking=non_blocking),
             loss_masks=self.loss_masks.to(device=device, non_blocking=non_blocking),
+            diagnostic_sources=self.diagnostic_sources,
         )
 
     def pin_memory(self) -> "FoveaRouterBatch":
@@ -88,6 +92,7 @@ class FoveaRouterBatch:
             candidate_boxes=self.candidate_boxes.pin_memory(),
             labels=self.labels.pin_memory(),
             loss_masks=self.loss_masks.pin_memory(),
+            diagnostic_sources=self.diagnostic_sources,
         )
 
 
@@ -152,6 +157,8 @@ class FoveaRouterDataset(Dataset):
             candidate_boxes=boxes,
             label=raw.label,
             loss_mask=loss_mask,
+            diagnostic_source={"source_path": raw.source_path, "source_index": index,
+                "sample_seed": sample_seed, "dataset_id": raw.dataset_id},
         )
 
 
@@ -187,4 +194,5 @@ def collate_router_samples(
         candidate_boxes=torch.stack([sample.candidate_boxes for sample in valid]),
         labels=torch.stack([sample.label for sample in valid]),
         loss_masks=torch.stack([sample.loss_mask for sample in valid]),
+        diagnostic_sources=tuple(sample.diagnostic_source for sample in valid),
     )

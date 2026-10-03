@@ -13,8 +13,10 @@ settings can be changed while running without changing the frozen A/B/C training
 contract. `interval_steps` is a minimum catalog-step interval evaluated at saved
 checkpoint boundaries (not a wall-clock schedule). A single isolated CPU worker
 copies the atomic resume checkpoint and evaluates one deterministic,
-explicitly annotated Rating:General non-photo sample. This adds checkpoint I/O,
-CPU/RAM cost, but never forwards through the live training model or changes its
+explicitly annotated Rating:General non-photo sample. The first selected sample
+ID is pinned across later panels; if it becomes unavailable, generation reports
+an error instead of replacing it silently. This adds checkpoint I/O and CPU/RAM
+cost, but never forwards through the live training model or changes its
 optimizer, RNG or sample budget. Manual generation requires a paused run.
 
 Panels contain anonymized TP/FP/FN group ranks (up to 100 each), TN counts and

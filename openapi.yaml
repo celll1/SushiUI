@@ -28266,6 +28266,8 @@ components:
         train_f1_initial_threshold:
           type: number
           default: 0.35
+          description: Initial rolling training F1 probability threshold. Native FoveaTag refuses values outside [0, 1]. Native resume restores the learned threshold with the rolling prediction buffer.
+          example: 0.35
         train_f1_buffer_batches:
           type: integer
           default: 16

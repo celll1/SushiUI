@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 REQUIRED_SUFFIXES = (".safetensors", "_metadata.json", "_state.json", "_optimizer.pt", "_vocabulary.json")
-OPTIONAL_SUFFIXES = ("_tag_metrics.npz", "_ood_ref.npz", "_ood_reservoir.npz",
+OPTIONAL_SUFFIXES = ("_tag_metrics.npz", "_metrics_runtime.npz", "_f1_runtime.npz", "_ood_ref.npz", "_ood_reservoir.npz",
                     "_export.safetensors", "_export_metadata.json")
 
 

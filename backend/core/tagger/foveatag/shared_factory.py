@@ -32,6 +32,8 @@ def validate_config(config, *, resuming=False):
         raise ValueError("unsupported native checkpoint save mode")
     if config["mixed_precision"].lower() not in ("no", "fp32", "fp16", "bf16"):
         raise ValueError("unsupported native mixed precision")
+    if not 0 <= config["train_f1_initial_threshold"] <= 1:
+        raise ValueError("native F1 threshold must be a probability in [0, 1]")
     base_path = str(config.get("vision_encoder_path") or "").strip().strip('"').strip("'")
     if config["training_method"] == "lora" and not base_path and not resuming:
         raise ValueError("native LoRA requires a scratch-pretrained backbone; a random frozen encoder is refused")

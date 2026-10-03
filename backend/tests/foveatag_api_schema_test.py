@@ -29,6 +29,8 @@ def test_native_full_can_start_without_external_weights():
     ({"training_method": "head_only"}, "full or lora"),
     ({"checkpoint_save_mode": "invalid"}, "save mode"),
     ({"mixed_precision": "invalid"}, "mixed precision"),
+    ({"train_f1_initial_threshold": -1}, "probability"),
+    ({"train_f1_initial_threshold": 2}, "probability"),
 ])
 def test_invalid_native_configs_are_refused_before_catalog_creation(overrides, reason):
     with pytest.raises(ValidationError, match=reason):

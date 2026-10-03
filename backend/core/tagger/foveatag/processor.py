@@ -14,7 +14,11 @@ from .views import ViewConfig, build_views
 
 
 class FoveaProcessor:
-    def __init__(self, config: ViewConfig, *, seed: int, training: bool) -> None:
+    def __init__(self, config: ViewConfig, *, seed: int, training: bool,
+                 max_source_pixels: int | None = None) -> None:
+        if max_source_pixels is not None and max_source_pixels <= 0:
+            raise ValueError("native source pixel cap must be positive")
+        self.max_source_pixels = max_source_pixels
         self.config = config
         self.seed = int(seed)
         self.training = bool(training)
@@ -30,6 +34,8 @@ class FoveaProcessor:
             raise ValueError("FoveaProcessor only supports PyTorch tensors")
         views = []
         for image in images:
+            if self.max_source_pixels is not None and image.width * image.height > self.max_source_pixels:
+                raise ValueError("native source image exceeds the pixel cap")
             # Validation views are repeatable across workers and resumed runs.
             if self.training and sample_index is not None:
                 identity = f"{self.seed}:{self.epoch}:{sample_index}:{image.width}:{image.height}"

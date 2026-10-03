@@ -133,6 +133,21 @@ training to eval toggles or transient OOD hooks. Opt-in GPU concurrency tests
 cover full/LoRA, FP16/BF16 FlashAttention and exact RAM/disk state restoration.
 The frozen A/B/C runner's training numerics remain unchanged.
 
+Native online resumes bind `_collection_runtime.json` to the selected model,
+optimizer and runtime bundle. It retains dynamic/co-occurrence/query pools and
+recency, same-epoch collection quotas, query-expansion caps, resolver timing,
+unavailable targets, augmentation-added vocabulary and pending/deduplicated
+head-growth proposals. Native resume selects this bundle before rebuilding
+online state, ignores common legacy snapshots and starts the collector after
+vocabulary restoration. Pool entries saved just before a worker proposal are
+reconciled against the restored vocabulary. Epoch-boundary quotas belong to the
+completed model epoch and are cleared when entering the next epoch.
+Snapshot failures are fatal; missing/invalid bound collection state cannot
+silently restart collection. In-flight requests, prefetched samples and network
+arrival order remain outside the exact offline-replay guarantee.
+Native online collection applies the source pixel cap before decoding; the
+processor also rejects oversized inputs as a backstop.
+
 Native model-only publications use `_inference_commit.json` after weights,
 metadata, vocabulary and selected optional artifacts finish saving. This also
 covers `best_f1` without optimizer state. Training details expose completed

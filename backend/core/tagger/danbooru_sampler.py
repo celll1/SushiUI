@@ -324,7 +324,7 @@ class DanbooruSampleBuffer:
         # whose posts are all collected is marked "exhausted" and skipped for the
         # rest of the epoch; reset_download_cycle() (called at each epoch start)
         # clears these so the next epoch collects them again.
-        self._cycle_lock = threading.Lock()
+        self._cycle_lock = threading.RLock()
         self._downloaded_ids: Set[int] = set()
         self._exhausted_tags: Set[str] = set()
         self._cycle_gen = 0   # bumped on each reset; guards cross-epoch exhaustion
@@ -405,7 +405,7 @@ class DanbooruSampleBuffer:
                 }
                 self._exhausted_tags = {t for t in (_pending.get("exhausted_tags") or []) if t}
                 self._downloaded_ids.clear()   # not persisted: allow same-post re-DL
-                self._cooc_collected.clear()
+                self._cooc_collected = dict(_pending.get("cooc_collected") or {})
                 self._cycle_gen += 1
                 print(f"[DanbooruSampler] Resumed epoch {epoch} collection progress: "
                       f"{len(self._exhausted_tags)} exhausted tag(s), "
@@ -569,6 +569,30 @@ class DanbooruSampleBuffer:
         with self._cycle_lock:
             return {t: self._query_last_used.get(t, 0.0) for t in self._query_tags}
 
+    def snapshot_native_runtime(self):
+        with self._cycle_lock:
+            progress = self.snapshot_epoch_progress()
+            progress["cooc_collected"] = dict(self._cooc_collected)
+            return {"dynamic_tags": self.snapshot_dynamic_tags(),
+                "cooc_active_tags": self.snapshot_cooc_active_tags(), "query_tags": self.snapshot_query_tags(),
+                "epoch_progress": progress, "expanded_tags": sorted(getattr(self, "_native_expanded_tags", set())),
+                "query_expanded": sorted(self._expanded_via_query), "query_last_resolve": self._last_query_resolve,
+                "low_f1_unavailable": sorted(self._low_f1_unavailable),
+                "expander": self._expander.snapshot() if self._expander is not None else None}
+
+    def restore_native_runtime(self, document):
+        with self._cycle_lock:
+            self._pending_epoch_progress = dict(document["epoch_progress"])
+            self._expanded_via_query = set(document["query_expanded"])
+            self._last_query_resolve = document["query_last_resolve"]
+            self._low_f1_unavailable = set(document["low_f1_unavailable"])
+            if self._expander is not None and document["expander"] is not None:
+                self._expander.restore(document["expander"])
+                known = set(self._vocabulary.tag_to_idx) | {normalize_tag(name) for name in document["expanded_tags"]}
+                candidates = {normalize_tag(name) for pool in (document["dynamic_tags"],
+                    document["cooc_active_tags"], document["query_tags"]) for name in pool}
+                self._expander.propose(candidates - known)
+
 
     @staticmethod
     def _translate_query(q: str) -> str:
@@ -671,14 +695,15 @@ class DanbooruSampleBuffer:
                 dq = self._denormalize_tag(norm)
                 if not dq:
                     continue
-                self._query_seen.add(norm)
                 with self._cycle_lock:
+                    self._query_seen.add(norm)
                     self._query_tags.append(dq)
                     self._query_last_used[dq] = now
+                    if is_new:
+                        self._expanded_via_query.add(norm)
                 n_pool += 1
                 if is_new:
                     new_for_vocab.add(norm)
-                    self._expanded_via_query.add(norm)
         if new_for_vocab and self._expander is not None:
             self._expander.propose(new_for_vocab)
         if n_pool or new_for_vocab:
@@ -1122,6 +1147,11 @@ class DanbooruSampleBuffer:
         # Decode image
         try:
             img = Image.open(BytesIO(img_bytes))
+            cap = getattr(self._processor, "max_source_pixels", None)
+            if getattr(self._processor, "is_native_fovea_processor", False) and cap is not None:
+                if img.width * img.height > cap:
+                    img.close()
+                    return None
             img.load()
             if img.mode == "RGBA":
                 bg = Image.new("RGB", img.size, (255, 255, 255))

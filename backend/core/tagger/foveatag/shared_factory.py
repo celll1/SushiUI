@@ -20,7 +20,8 @@ def view_config(config):
 
 
 def build_processor(config, *, training):
-    return FoveaProcessor(view_config(config), seed=config["fovea_seed"], training=training)
+    return FoveaProcessor(view_config(config), seed=config["fovea_seed"], training=training,
+                          max_source_pixels=config["fovea_max_source_pixels"])
 
 
 def validate_config(config, *, resuming=False):

@@ -1,5 +1,7 @@
 """Optional execution controls must not alter the default encoder contract."""
 import torch
+from contextlib import contextmanager
+from torch.nn.attention import SDPBackend
 
 from core.tagger.foveatag.encoder import FoveaEncoder, FoveaEncoderConfig
 
@@ -47,3 +49,24 @@ def test_checkpointing_preserves_forward_and_gradients():
     for (name, left), (_, right) in zip(eager.named_parameters(), checked.named_parameters()):
         assert left.grad is not None, name
         torch.testing.assert_close(left.grad, right.grad)
+
+
+def test_flash_policy_is_applied_to_each_sdpa_call(monkeypatch):
+    seen = []
+
+    @contextmanager
+    def kernel(backends):
+        seen.append(backends)
+        yield
+
+    monkeypatch.setattr("core.tagger.foveatag.encoder.sdpa_kernel", kernel)
+    model = make_encoder().eval()
+    image, geometry = inputs()
+    for allowed in (False, True):
+        seen.clear()
+        model.set_sdpa(True, allow_flash=allowed)
+        with torch.no_grad():
+            model(image, geometry)
+        assert seen
+        assert all((SDPBackend.FLASH_ATTENTION in backends) == allowed for backends in seen)
+        assert all(SDPBackend.MATH in backends for backends in seen)

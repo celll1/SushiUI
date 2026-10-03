@@ -653,7 +653,8 @@
       "name": "use_flash_attention",
       "in_defaults": true,
       "in_request": true,
-      "status": "shared_feature_port_pending"
+      "status": "native_external_flash_verified_api_ui_deployment_pending",
+      "evidence": "External dense and packed-varlen kernels; real GPU FP16/BF16 forward/backward and checkpointed encoder tests pass. Frozen imported A/B/C execution remains unchanged."
     },
     {
       "name": "use_tag_aliases",

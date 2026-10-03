@@ -21,7 +21,7 @@ def _sha256(path):
     return digest.hexdigest()
 
 
-def commit_native_bundle(directory, name):
+def commit_native_bundle(directory, name, *, optional_suffixes=None):
     directory = Path(directory)
     state = json.loads((directory / f"{name}_state.json").read_text(encoding="utf-8"))
     metadata = json.loads((directory / f"{name}_metadata.json").read_text(encoding="utf-8"))
@@ -30,9 +30,12 @@ def commit_native_bundle(directory, name):
     if metadata.get("step") != state["global_step"]:
         raise ValueError("native bundle model and runtime steps differ")
     files = {}
-    for suffix in REQUIRED_SUFFIXES + OPTIONAL_SUFFIXES:
+    selected = OPTIONAL_SUFFIXES if optional_suffixes is None else tuple(optional_suffixes)
+    if not set(selected).issubset(OPTIONAL_SUFFIXES):
+        raise ValueError("unsupported native optional artifact")
+    for suffix in REQUIRED_SUFFIXES + selected:
         path = directory / f"{name}{suffix}"
-        if suffix in REQUIRED_SUFFIXES or path.is_file():
+        if optional_suffixes is not None or suffix in REQUIRED_SUFFIXES or path.is_file():
             files[path.name] = _sha256(path)
     document = {"version": 1, "kind": "foveatag_shared_resume_commit",
                 "global_step": state["global_step"], "files": files}

@@ -83,3 +83,14 @@ def test_processor_training_and_validation_are_separate(native_config):
     config, _ = native_config
     assert build_processor(config, training=True).training
     assert not build_processor(config, training=False).training
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_factory_applies_native_flash_permission(native_config, enabled):
+    config, _ = native_config
+    config["use_flash_attention"] = enabled
+    instance = build_model(config, 5, vocabulary={}, lineage={})
+    attention = [module for module in instance.modules() if hasattr(module, "use_sdpa")]
+    assert attention
+    assert all(module.use_sdpa and module.allow_flash == enabled
+               and module.use_external_flash == enabled for module in attention)

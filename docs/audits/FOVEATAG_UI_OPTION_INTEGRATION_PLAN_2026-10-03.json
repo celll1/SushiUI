@@ -30,5 +30,19 @@
     "note": "The legacy detached CLI lacks an external graceful-stop control. Its verified checkpoint is retained; unsaved subsequent steps will be replayed on resume."
   },
   "implementation_status": "in_progress",
+  "goal_status": "active",
+  "goal_update": "Owner-requested run/UI/option integration and the original remaining Phase 3/4/5 work are now recorded in the active goal.",
+  "shared_trainer_adapter": {
+    "status": "protocol_implemented_not_yet_wired_or_deployed",
+    "data": "Native overview/local tensors and source geometry can use the shared dataset and online-buffer collator without NaFlex encoding.",
+    "model": "Full and attention-linear LoRA protocols support forward, head growth and exact self-contained unmerged weight roundtrips. No SigLIP2 weights are used.",
+    "verification": "48 focused CPU tests pass, including bf16 backward with checkpointing, native collation and GPU pause/stop acknowledgement contracts. Backend compile and real import checks preserve an uninitialized CUDA context.",
+    "remaining": [
+      "Wire native processor/model construction into the shared trainer with repeatable validation views and checked scratch-backbone lineage.",
+      "Implement architecture-correct OOD features, checkpoint export modes, initialization and vocabulary inheritance; do not silently use SigLIP2 assumptions.",
+      "Synchronize API defaults, OpenAPI, request types and UI for native runs and audit remaining shared options.",
+      "Deploy, verify the real catalog and frontend, then resume the existing registered-budget comparison."
+    ]
+  },
   "reporting_policy": "Aggregate metrics only; do not display individual tag names or read generated diagnostic images."
 }

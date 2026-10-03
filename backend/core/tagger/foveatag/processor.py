@@ -1,0 +1,49 @@
+"""Native multi-view inputs for the shared tagger data lifecycle."""
+
+from __future__ import annotations
+
+import hashlib
+from dataclasses import fields
+from typing import Sequence
+
+import torch
+from PIL import Image
+
+from .batch import FoveaViewTensorBatch, collate_view_batches
+from .views import ViewConfig, build_views
+
+
+class FoveaProcessor:
+    def __init__(self, config: ViewConfig, *, seed: int, training: bool) -> None:
+        self.config = config
+        self.seed = int(seed)
+        self.training = bool(training)
+
+    def __call__(self, *, images: Sequence[Image.Image], return_tensors: str) -> dict:
+        if return_tensors != "pt":
+            raise ValueError("FoveaProcessor only supports PyTorch tensors")
+        views = []
+        for image in images:
+            # Validation views are repeatable across workers and resumed runs.
+            if self.training:
+                seed = int(torch.randint(0, 2**63 - 1, ()).item())
+            else:
+                digest = hashlib.sha256(image.resize((8, 8)).convert("RGB").tobytes()).digest()
+                seed = (int.from_bytes(digest[:8], "little") ^ self.seed) & ((1 << 63) - 1)
+            views.append(build_views(image, self.config, seed=seed, training=self.training))
+        return {"fovea_views": collate_view_batches(views)}
+
+
+def concatenate_view_tensors(batches: Sequence[FoveaViewTensorBatch]) -> FoveaViewTensorBatch:
+    if not batches:
+        raise ValueError("at least one native view batch is required")
+    expected = batches[0]
+    for batch in batches:
+        for field in fields(FoveaViewTensorBatch):
+            value = getattr(batch, field.name)
+            if value.shape[1:] != getattr(expected, field.name).shape[1:]:
+                raise ValueError("native view tensor shapes differ within one batch")
+    return FoveaViewTensorBatch(**{
+        field.name: torch.cat([getattr(batch, field.name) for batch in batches], dim=0)
+        for field in fields(FoveaViewTensorBatch)
+    })

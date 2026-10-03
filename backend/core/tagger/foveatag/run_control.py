@@ -9,6 +9,8 @@ class FoveaRunControl:
     """Request a checkpointed stop from a backend-owned training thread."""
 
     def __init__(self, *, run_id: str | None = None, output_dir: str | None = None) -> None:
+        if (run_id is None) != (output_dir is None):
+            raise ValueError("run_id and output_dir must be supplied together")
         self._stop = threading.Event()
         self.run_id = run_id
         self.output_dir = output_dir
@@ -23,6 +25,8 @@ class FoveaRunControl:
     def attach(self, model, optimizer, criterion) -> None:
         if self.run_id is None:
             return
+        if self._handle is not None:
+            raise RuntimeError("training handle is already attached")
         from core.gpu_coordinator import gpu_coordinator
         from core.tagger.tagger_offload import TaggerTrainerHandle
         handle = TaggerTrainerHandle(self.run_id, self.output_dir,
@@ -39,14 +43,15 @@ class FoveaRunControl:
         if decision is not None:
             handle.offload(decision)
         handle.resumed_event.set()
-        while handle.pause_event.is_set() and not self.should_stop():
-            self._stop.wait(0.5)
+        # A stop must not restore optimizer VRAM while generation owns it.
+        pause_wait = threading.Event()
+        while handle.pause_event.is_set():
+            pause_wait.wait(0.5)
         if decision is not None:
             handle.restore()
-        handle.restored_event.set()
-        handle.resumed_event.clear()
-        handle.restored_event.clear()
         handle.pending_decision = None
+        # The coordinator clears acknowledgements at the next pause cycle.
+        handle.restored_event.set()
 
     def detach(self) -> None:
         if self._handle is None:

@@ -88,5 +88,18 @@
       "Deploy, verify the real catalog and frontend, then resume the existing registered-budget comparison."
     ]
   },
+  "shared_default_followup": {
+    "change": "Removed 73 literal request defaults in favor of TAGGER_TRAINING_DEFAULTS. Existing required encoder path and dataset fields remain required. Saved imported comparison configuration is unchanged.",
+    "verification": "All table-backed request defaults match the authoritative values; an AST regression requires references to that table. OpenAPI property coverage and explicit defaults match. Compile and real API import pass without CUDA initialization. FoveaTag, custom-pooler and shared input-bound regressions: 451 passed, 16 opt-in GPU tests skipped, 28 subtests passed. Frontend still obtains defaults from the schema endpoint; no agent build/type-check performed.",
+    "paused_checkpoint": {
+      "run_id": "18e75bfd-4145-46c6-a155-d0ac83e2fa22",
+      "step": 30000,
+      "path": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase3_abc_20261003\\overview_only\\latest.pt",
+      "bytes": 1791193995,
+      "modified_utc": "2026-10-03T08:10:59.9373187Z",
+      "sha256": "a40e44ff083930e78c583bfca34a96b4b9825c4354c776b1f9ac43644b483ac2"
+    },
+    "ui": "Browser tab 1 remains at localhost:3000/login. Run remains stopped. No login credentials are requested in chat, no bypass attempted and no resume issued before real-screen verification."
+  },
   "reporting_policy": "Aggregate metrics only; do not display individual tag names or read generated diagnostic images."
 }

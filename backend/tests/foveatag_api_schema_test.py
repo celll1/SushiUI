@@ -21,6 +21,27 @@ def test_native_full_can_start_without_external_weights():
             assert getattr(request, key) == TAGGER_TRAINING_DEFAULTS[key]
 
 
+def test_all_shared_request_defaults_match_authoritative_table():
+    fields = TaggerTrainingRunCreateRequest.model_fields
+    for name, value in TAGGER_TRAINING_DEFAULTS.items():
+        if name == "vision_encoder_path":
+            assert fields[name].is_required()
+        else:
+            assert fields[name].default == value, name
+
+
+def test_documented_shared_defaults_match_authoritative_table():
+    from pathlib import Path
+    import yaml
+    root = Path(__file__).resolve().parents[2]
+    spec = yaml.safe_load((root / "openapi.yaml").read_text(encoding="utf-8"))
+    properties = spec["components"]["schemas"]["TaggerTrainingRunCreateRequest"]["properties"]
+    assert set(TAGGER_TRAINING_DEFAULTS).issubset(properties)
+    for name, value in properties.items():
+        if name in TAGGER_TRAINING_DEFAULTS and "default" in value:
+            assert value["default"] == TAGGER_TRAINING_DEFAULTS[name], name
+
+
 @pytest.mark.parametrize("overrides,reason", [
     ({"training_method": "lora"}, "scratch-pretrained"),
     ({"cls_dim": 512}, "pooling dimensions"),

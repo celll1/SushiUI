@@ -29518,6 +29518,7 @@ components:
 
     TaggerTrainingRunCreateRequest:
       type: object
+      description: Shared tagger options default from TAGGER_TRAINING_DEFAULTS in backend/api/param_defaults.py, also exposed by /schema/tagger-training-defaults. Encoder path and dataset_configs remain required. Defaults apply to new requests only; imported A/B/C comparisons preserve their saved configuration.
       properties:
         run_name:
           type: string

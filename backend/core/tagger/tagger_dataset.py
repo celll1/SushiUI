@@ -333,7 +333,8 @@ class TaggerDataset(Dataset):
         if self.processor is None:
             raise RuntimeError("processor=None requires an architecture-specific dataset adapter")
         try:
-            inputs = self.processor(images=[raw.image], return_tensors="pt")
+            options = {"sample_index": idx} if getattr(self.processor, "is_native_fovea_processor", False) else {}
+            inputs = self.processor(images=[raw.image], return_tensors="pt", **options)
         except Exception as e:
             image_path = self._samples[idx][0]
             print(f"[TaggerDataset] Skipping image rejected by processor {image_path}: {e}")

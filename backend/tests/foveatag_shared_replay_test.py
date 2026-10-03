@@ -226,3 +226,38 @@ def test_actual_common_loop_stop_resume_matches_uninterrupted(tmp_path, monkeypa
             assert getattr(metrics[0], key) == getattr(metrics[1], key)
     for key in expected:
         torch.testing.assert_close(expected[key], actual[key], rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("best_only", [False, True])
+def test_native_best_only_suppresses_archives_but_retains_resume(tmp_path, best_only):
+    from core.tagger.tagger_trainer import TaggerTrainer, _load_training_state
+    from core.tagger.tag_vocabulary import TagVocabulary
+    from core.gpu_coordinator import gpu_coordinator
+
+    config = dict(TAGGER_TRAINING_DEFAULTS)
+    config.update(architecture="foveatag", training_method="full", vision_encoder_path="",
+        fovea_feature_dim=16, epochs=1, optimizer="adamw", mixed_precision="fp32",
+        use_flash_attention=False, gradient_checkpointing=False, warmup_steps=2,
+        save_every_n_steps=1, save_every_n_epochs=1, save_best_only=best_only,
+        keep_last_n_checkpoints=0, save_tag_metrics=False, save_ood_reference=False,
+        train_f1_eval_every_n_steps=0)
+    small = FoveaEncoderConfig(widths=(8, 16, 32, 32), depths=(1, 1, 1, 1), attention_heads=(2, 2))
+    path = save_pretrained_encoder(tmp_path / "encoder.safetensors", FoveaEncoder(small),
+        run_contract={"encoder": asdict(small)}, epoch=1, global_step=1, validation={})
+    config["vision_encoder_path"] = str(path)
+    vocabulary = TagVocabulary()
+    vocabulary.tag_to_idx = {f"anonymous-{i}": i for i in range(5)}
+    vocabulary.idx_to_tag = {i: name for name, i in vocabulary.tag_to_idx.items()}
+    vocabulary.tag_to_category = {name: "General" for name in vocabulary.tag_to_idx}
+    source = SyntheticNativeDataset()
+    loader = DataLoader(source, batch_size=2, collate_fn=tagger_collate_fn)
+    trainer = TaggerTrainer("synthetic", config, vocabulary, str(tmp_path / "run"))
+    try:
+        trainer.train(loader, None, source.processor)
+    finally:
+        gpu_coordinator.unregister_trainer(trainer._coordinator_handle)
+        trainer._coordinator_handle.detach()
+    directory = tmp_path / "run"
+    assert _load_training_state(str(directory), "latest")["global_step"] == len(loader)
+    assert bool(list(directory.glob("step_*.safetensors"))) is not best_only
+    assert (directory / "epoch_0001.safetensors").is_file() is not best_only

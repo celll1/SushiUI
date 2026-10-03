@@ -1315,6 +1315,7 @@ class TaggerTrainer:
         # the exact shuffle permutation and therefore the exact batch order.
         epoch_start_rng_for_resume: Optional[Dict[str, Any]] = None
         native_run = cfg.get("architecture") == "foveatag"
+        native_best_only = native_run and bool(cfg.get("save_best_only", False))
         native_saved_runtime = None
         if native_run:
             from .foveatag.shared_replay import NativeReplayCursor, native_epoch_loader, native_dataset_fingerprint
@@ -1847,7 +1848,7 @@ class TaggerTrainer:
                     })
                     del _buf_p, _buf_l
 
-                if native_run and save_every_n_steps > 0 and global_step % save_every_n_steps == 0:
+                if native_run and not native_best_only and save_every_n_steps > 0 and global_step % save_every_n_steps == 0:
                     _save_step_checkpoint()
 
             if self._stop_requested:
@@ -1976,7 +1977,7 @@ class TaggerTrainer:
                 _save_artifacts("latest", epoch_boundary=True)
 
                 # Epoch-based checkpoint (model only; training state = same as latest)
-                if save_every_n_epochs > 0 and epoch % save_every_n_epochs == 0:
+                if not native_best_only and save_every_n_epochs > 0 and epoch % save_every_n_epochs == 0:
                     ckpt_name = f"epoch_{epoch:04d}"
                     _save_model_checkpoint(model, self.output_dir, ckpt_name, metadata, checkpoint_save_mode)
                     _save_artifacts(ckpt_name, epoch_boundary=True)

@@ -15,6 +15,7 @@ import { wsClient, TaggerMetrics, FpFnScatterData, DatasetScanProgress } from "@
 import VocabularyBrowser from "@/components/tagger/VocabularyBrowser";
 import TaggerMetricChart, { EpochBoundary } from "./TaggerMetricChart";
 import DanbooruMetricsPanel from "./DanbooruMetricsPanel";
+import TaggerDiagnosticsPanel from "./TaggerDiagnosticsPanel";
 
 interface TaggerTrainingMonitorProps {
   run: TaggerTrainingRun;
@@ -911,6 +912,9 @@ export default function TaggerTrainingMonitor({
           </div>
 
           <div className="space-y-4 min-w-0">
+            {run.config.architecture === "foveatag_phase3" && (
+              <TaggerDiagnosticsPanel runId={run.run_id} active={run.status === "running" || run.status === "starting"} />
+            )}
             <DanbooruMetricsPanel
               runId={run.run_id}
               active={run.status === "running" || run.status === "starting"}

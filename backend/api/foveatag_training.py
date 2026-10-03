@@ -136,6 +136,13 @@ def start_experiment(run, db, threads, callback_factory):
                     row.best_f1 = data["best_f1"]
                     row.best_threshold = data["best_threshold"]
                 session.commit()
+                if event == "checkpoint_saved":
+                    try:
+                        from api.tagger_diagnostics import schedule
+                        schedule(row)
+                    except Exception:
+                        # Optional visualization must not fail the training run.
+                        pass
             finally:
                 session.close()
 

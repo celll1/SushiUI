@@ -7,6 +7,29 @@ share checkpoint assumptions between them.
 
 ## Ownership
 
+Registered `foveatag_phase3` comparison monitors expose optional diagnostic
+panels under `/tagger-training/runs/{run_id}/diagnostics`. They default to OFF;
+settings can be changed while running without changing the frozen A/B/C training
+contract. `interval_steps` is a minimum catalog-step interval evaluated at saved
+checkpoint boundaries (not a wall-clock schedule). A single isolated CPU worker
+copies the atomic resume checkpoint and evaluates one deterministic,
+explicitly annotated Rating:General non-photo sample. This adds checkpoint I/O,
+CPU/RAM cost, but never forwards through the live training model or changes its
+optimizer, RNG or sample budget. Manual generation requires a paused run.
+
+Panels contain anonymized TP/FP/FN group ranks (up to 100 each), TN counts and
+unknown-label masking; no tag names or tag IDs are published. Counts remain
+annotation-based rather than guaranteed ground truth. A has no native focus;
+B uses overview-derived placebo views; C overlays the exact native view boxes
+passed to that diagnostic inference. Source pixels per canvas pixel are shown,
+so source-derived does not imply every view is exactly 1:1. An optional C-policy
+preview for A/B is explicitly marked as NOT used by that inference. Boxes are
+input footprints, not causal attribution or a trained router. The monitor shows
+the latest published panel; the metadata index retains the latest 12 entries.
+Disabling generation does not delete prior images or cancel an in-flight worker.
+This diagnostic option currently supports registered comparisons, not general
+SigLIP2/native trainer runs. Frontend build/type-check remains owner-run.
+
 | Concern | Owner |
 |---|---|
 | Legacy WD model load and prediction | `backend/core/extensions/tagger_manager.py` and `/api/v1/tagger/*` |

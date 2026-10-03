@@ -9690,6 +9690,32 @@ export const resumeTrainingDanbooru = async (runId: number): Promise<{ success: 
   return response.data;
 };
 
+export interface TaggerDiagnosticSettings {
+  enabled: boolean;
+  interval_steps: number;
+  focus_preview: boolean;
+}
+export interface TaggerDiagnosticStatus {
+  settings: TaggerDiagnosticSettings;
+  busy: boolean;
+  error: string | null;
+  items: Array<{
+    filename: string; mode: string; step: number; epoch: number;
+    counts: Record<"TP" | "FP" | "FN" | "TN", number>;
+    native_focus_used: boolean; focus_preview: boolean;
+  }>;
+}
+export const getTaggerDiagnostics = async (runId: string): Promise<TaggerDiagnosticStatus> =>
+  (await api.get(`/tagger-training/runs/${runId}/diagnostics`)).data;
+export const setTaggerDiagnostics = async (runId: string, settings: TaggerDiagnosticSettings): Promise<TaggerDiagnosticStatus> =>
+  (await api.put(`/tagger-training/runs/${runId}/diagnostics`, settings)).data;
+export const createTaggerDiagnostic = async (runId: string): Promise<TaggerDiagnosticStatus> =>
+  (await api.post(`/tagger-training/runs/${runId}/diagnostics`)).data;
+export const taggerDiagnosticImageUrl = (runId: string, name: string): string =>
+  `/api/v1/tagger-training/runs/${encodeURIComponent(runId)}/diagnostics/images/${encodeURIComponent(name)}`;
+export const getTaggerDiagnosticImage = async (runId: string, name: string): Promise<Blob> =>
+  (await api.get(`/tagger-training/runs/${encodeURIComponent(runId)}/diagnostics/images/${encodeURIComponent(name)}`, { responseType: "blob" })).data;
+
 export const getTaggerTrainingMetrics = async (
   runId: string,
   sinceStep: number = 0,

@@ -1,6 +1,6 @@
 # High-resolution tagger architecture research
 
-Status: **isolated prototype; Phase 2 accepted, Phase 3 throughput measurement in progress**
+Status: **isolated prototype; Phase 2 accepted, registered Phase 3 A/B/C training in progress**
 
 Date: 2026-09-29
 
@@ -1341,6 +1341,28 @@ benchmark must run only after the current Phase 2 GPU process releases the
 device. Its result fixes a feasible Phase 3 sample/step budget before branch A
 produces any quality result, preventing the budget from being selected after
 seeing the first outcome.
+
+The 2026-10-03 real-image measurement used the 107,926-tag vocabulary, batch 16,
+four local views, eight workers, four warmup and sixteen measured steps per
+mode. Overview-only throughput was 75.95 samples/s; placebo-local and
+source-native were 40.36 and 39.88 samples/s. Peak allocated VRAM was
+9,819/18,204/18,202 MiB respectively. These short measurements include steady
+state decode/render wait, transfers, and full AdamW updates; process startup
+and long-run storage stalls are not covered.
+
+`FOVEATAG_PHASE3_ABC_PLAN_2026-10-03.json` registers a two-domain architecture
+comparison before branch quality is observed: 200,000 illustration and 18,000
+photo training examples, 2,048/512 fixed validation examples, ten epochs of
+240,000 presented samples each, and 150,000 nominal updates per branch. Domain
+sampling weights are 0.85/0.15; photo loss weight is 0.25 with the existing
+fine-detail missing-negative mask. Each branch starts from the accepted Phase-2
+encoder and the same random head and updates every parameter. A consistent
+SQLite backup freezes the database at
+`outputs/foveatag_phase3_abc_20261003/datasets_snapshot.db`. The comparison runs
+in A/B/C order with resumable checkpoints every 1,000 updates. Projected pure
+training time is about 42 hours total, plus validation and startup. This is a
+two-domain causal experiment; broad-domain replacement coverage remains
+required before claiming a replacement for the existing 16-domain tagger.
 
 ## 10. Integration surface after acceptance
 

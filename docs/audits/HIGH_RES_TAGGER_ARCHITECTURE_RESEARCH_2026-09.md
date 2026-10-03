@@ -1,6 +1,6 @@
 # High-resolution tagger architecture research
 
-Status: **isolated prototype; Phase 0 complete, Phase 2 measurement in progress**
+Status: **isolated prototype; Phase 2 accepted, Phase 3 throughput measurement in progress**
 
 Date: 2026-09-29
 
@@ -1302,6 +1302,25 @@ epochs have completed and the validation improvement is far above the
 registered 0.5% plateau threshold. Exact metrics, policy binding, and artifact
 hashes are recorded in
 `FOVEATAG_PHASE2_ANTICOLLAPSE_EPOCH1_2026-09-30.json`.
+
+The replacement run completed all ten epochs on 2026-10-03 at step 954,024.
+Best held-out weighted loss was 0.113060, versus 0.166735 after the first epoch.
+It decoded 15,264,198 of 15,467,980 presented samples; 203,782 were skipped,
+including 203,694 in epoch 6 during a suspected transient storage outage.
+Actual optimizer steps are 12,726 below the nominal 966,750. The evidence keeps
+this shortfall explicit; completing ten source passes does not imply completing
+the nominal update budget.
+
+Post-run evaluation of the exact best encoder covered all 512 photo and 2,048
+illustration validation samples without skips. Photo/illustration correspondence
+was 0.030928/0.029115 versus same-seed scratch 0.639283/0.465378. Effective rank
+was 111.61/98.14 for masked-local and 261.04/233.70 for overview, versus scratch
+1.85--2.00. Channel standard deviations were 1.02--1.28 and pairwise cosine
+0.507--0.945. The explicit review accepts this representation for Phase 3;
+it does not establish tag quality. `FOVEATAG_PHASE2_GATE_2026-10-03.json` binds
+the evaluation, best encoder, metadata, completed summary, and fixed manifests.
+JSON-restored view configuration needed tuple normalization for Pillow padding;
+the repair passed 25 related CPU tests before the successful GPU evaluation.
 
 ### 9.14 Phase 3 throughput protocol (2026-09-29)
 

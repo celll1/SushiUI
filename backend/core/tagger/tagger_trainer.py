@@ -693,6 +693,8 @@ def _prune_step_checkpoints(output_dir: str, keep_last_n: int) -> None:
             "_vocabulary.json",
             "_tag_metrics.npz",
             "_ood_ref.npz",
+            "_export.safetensors",
+            "_export_metadata.json",
         ):
             path = os.path.join(output_dir, f"{name}{suffix}")
             if os.path.isfile(path):
@@ -1969,7 +1971,7 @@ class TaggerTrainer:
         self, epoch: int, step: int, best_f1: float, best_threshold: float
     ) -> Dict[str, Any]:
         from core.tagger.siglip2_tagger_model import SIGLIP2_DEFAULT_REPO_ID, _is_hf_repo_or_url
-        return {
+        metadata = {
             "run_id": self.run_id,
             "num_tags": self.vocabulary.num_tags,
             "epoch": epoch,
@@ -2000,6 +2002,13 @@ class TaggerTrainer:
                 "base_model_path": self.config["base_model_path"],
             } if self.config.get("base_model_path") else {}),
         }
+        if self.config.get("architecture") == "foveatag":
+            from dataclasses import asdict
+            from .foveatag.shared_factory import view_config
+            metadata["fovea_view_config"] = asdict(view_config(self.config))
+            metadata["max_source_pixels"] = self.config["fovea_max_source_pixels"]
+            metadata["fovea_seed"] = self.config["fovea_seed"]
+        return metadata
 
     def _emit(self, event_type: str, data: Dict[str, Any]) -> None:
         if self.callback:

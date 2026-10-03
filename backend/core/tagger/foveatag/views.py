@@ -92,6 +92,9 @@ class ViewConfig:
     pad_color: Tuple[int, int, int] = (255, 255, 255)
 
     def __post_init__(self) -> None:
+        # JSON contracts deserialize tuples as lists; Pillow requires tuple colors.
+        for field in ("field_levels", "scale_jitter", "pad_color"):
+            object.__setattr__(self, field, tuple(getattr(self, field)))
         if self.overview_size <= 0 or self.local_size <= 0:
             raise ValueError("view canvas sizes must be positive")
         if self.local_views < 0:

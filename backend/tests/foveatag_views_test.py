@@ -1,6 +1,8 @@
 """CPU geometry tests for FoveaTag multi-scale views."""
 
 import math
+import json
+from dataclasses import asdict
 
 from PIL import Image
 
@@ -17,6 +19,18 @@ from core.tagger.foveatag.views import (
     stack_view_tensors,
     without_local_views,
 )
+
+
+def test_json_restored_config_renders_identical_views():
+    config = ViewConfig()
+    restored = ViewConfig(**json.loads(json.dumps(asdict(config))))
+    assert restored == config
+    image = Image.new("RGB", (320, 240), (10, 20, 30))
+    expected = build_views(image, config, seed=123, training=True)
+    actual = build_views(image, restored, seed=123, training=True)
+    assert actual.overview.tobytes() == expected.overview.tobytes()
+    assert actual.local_specs == expected.local_specs
+    assert [v.tobytes() for v in actual.local_views] == [v.tobytes() for v in expected.local_views]
 
 
 def test_overview_never_enlarges_and_round_trips_coordinates():

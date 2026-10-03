@@ -23,9 +23,28 @@ def build_processor(config, *, training):
     return FoveaProcessor(view_config(config), seed=config["fovea_seed"], training=training)
 
 
-def build_model(config, num_tags, *, vocabulary, lineage, resume_path=None):
+def validate_config(config, *, resuming=False):
     if config.get("cls_dim") is not None or config.get("hidden_proj_dim") is not None:
         raise ValueError("SigLIP2 pooling dimensions do not apply to FoveaTag; use fovea_feature_dim")
+    if config["training_method"] not in ("full", "lora"):
+        raise ValueError("FoveaTag supports full or lora training")
+    if config["checkpoint_save_mode"] not in ("full", "lora", "merged"):
+        raise ValueError("unsupported native checkpoint save mode")
+    if config["mixed_precision"].lower() not in ("no", "fp32", "fp16", "bf16"):
+        raise ValueError("unsupported native mixed precision")
+    base_path = str(config.get("vision_encoder_path") or "").strip().strip('"').strip("'")
+    if config["training_method"] == "lora" and not base_path and not resuming:
+        raise ValueError("native LoRA requires a scratch-pretrained backbone; a random frozen encoder is refused")
+    if base_path:
+        from ..siglip2_tagger_model import _is_hf_repo_or_url
+        is_repo, _ = _is_hf_repo_or_url(base_path)
+        if is_repo:
+            raise ValueError("FoveaTag requires a local scratch artifact, not a SigLIP2 repository or URL")
+    view_config(config)
+
+
+def build_model(config, num_tags, *, vocabulary, lineage, resume_path=None):
+    validate_config(config, resuming=resume_path is not None)
     base_path = str(config.get("vision_encoder_path") or "").strip().strip('"').strip("'")
     method = config["training_method"]
     encoder_config = FoveaEncoderConfig()

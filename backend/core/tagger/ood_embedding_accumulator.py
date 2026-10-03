@@ -13,6 +13,7 @@ Contents:   mu (D,), cov_inv (D, D), p50, p95  (all float32)
 from __future__ import annotations
 
 import os
+import json
 import random
 from typing import Optional
 
@@ -102,25 +103,47 @@ class OodEmbeddingAccumulator:
             path,
             reservoir = np.stack(self.reservoir, axis=0).astype(np.float32),
             n_seen    = np.int64(self.n_seen),
+            max_samples = np.int64(self.max_samples),
+            rng_state_json = np.str_(json.dumps(self._rng.getstate())),
         )
 
-    def restore_from_reservoir(self, path: str) -> bool:
+    def restore_from_reservoir(self, path: str, *, strict: bool = False) -> bool:
         """Restore reservoir from a file saved by *save_reservoir*.
 
         Returns True on success, False if file not found or invalid.
         """
         if not os.path.isfile(path):
+            if strict:
+                raise ValueError("required OOD reservoir is missing")
             return False
         try:
-            data = np.load(path)
-            arr  = data["reservoir"]
-            self.reservoir = [arr[i] for i in range(len(arr))]
-            self.n_seen    = int(data["n_seen"])
+            with np.load(path, allow_pickle=False) as data:
+                arr = data["reservoir"].copy()
+                n_seen = int(data["n_seen"])
+                if arr.ndim != 2 or len(arr) > self.max_samples or n_seen < len(arr) or not np.isfinite(arr).all():
+                    raise ValueError("invalid OOD reservoir shape or counts")
+                if strict and len(arr) != min(n_seen, self.max_samples):
+                    raise ValueError("native OOD reservoir sample count differs")
+                rng = None
+                if "rng_state_json" in data:
+                    if int(data["max_samples"]) != self.max_samples:
+                        raise ValueError("OOD reservoir capacity differs")
+                    state = json.loads(str(data["rng_state_json"].item()))
+                    rng = random.Random()
+                    rng.setstate((state[0], tuple(state[1]), state[2]))
+                elif strict:
+                    raise ValueError("OOD reservoir lacks its sampling RNG state")
+            self.reservoir = [row for row in arr]
+            self.n_seen = n_seen
+            if rng is not None:
+                self._rng = rng
             print(
                 f"[OodEmbeddingAccumulator] Restored reservoir: "
                 f"{len(self.reservoir)} samples (n_seen={self.n_seen})"
             )
             return True
         except Exception as _e:
+            if strict:
+                raise ValueError("could not restore native OOD reservoir") from _e
             print(f"[OodEmbeddingAccumulator] WARNING: could not restore reservoir: {_e}")
             return False

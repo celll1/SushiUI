@@ -1412,7 +1412,7 @@ class TaggerTrainer:
                 reservoir_name = resume_ckpt_name if native_run and resume_ckpt_name else "latest"
                 _ood_reservoir_npz = os.path.join(self.output_dir, f"{reservoir_name}_ood_reservoir.npz")
                 if native_bundle_files is None or os.path.basename(_ood_reservoir_npz) in native_bundle_files:
-                    _ood_emb_acc.restore_from_reservoir(_ood_reservoir_npz)
+                    _ood_emb_acc.restore_from_reservoir(_ood_reservoir_npz, strict=native_run)
 
             # Fast-forward LR scheduler to match resumed global_step
             if native_run:

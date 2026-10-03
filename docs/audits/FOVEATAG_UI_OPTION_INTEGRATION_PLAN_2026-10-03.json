@@ -33,24 +33,30 @@
   "goal_status": "active",
   "goal_update": "Owner-requested run/UI/option integration and the original remaining Phase 3/4/5 work are now recorded in the active goal.",
   "shared_trainer_adapter": {
-    "status": "shared_trainer_wired_internally_not_yet_public_or_deployed",
+    "status": "native_api_ui_wired_on_isolated_branch_verification_in_progress_not_deployed",
     "data": "Native overview/local tensors and source geometry can use the shared dataset and online-buffer collator without NaFlex encoding.",
     "model": "Full and attention-linear LoRA protocols support forward, head growth and exact self-contained unmerged weight roundtrips. No SigLIP2 weights are used.",
-    "verification": "101 focused CPU tests pass, with eight explicit GPU checks skipped in that invocation. A separate opt-in run passes all 12 FlashAttention tests, including six actual GPU FP16/BF16 dense and shifted/padded forward/backward comparisons and two actual GPU checkpointed encoder comparisons. CPU common-loop full and LoRA stop/resume runs retain bit-identical final weights. Separate compile and real-import checks pass without initializing CUDA. These checks do not establish end-to-end speedups, native public API coverage, UI deployment or resumption of the existing comparison.",
+    "verification": "120 focused CPU tests pass, with eight explicit GPU checks skipped in that invocation. A separate opt-in run passes all 12 FlashAttention tests, including six actual GPU FP16/BF16 dense and shifted/padded forward/backward comparisons and two actual GPU checkpointed encoder comparisons. CPU common-loop full and LoRA stop/resume runs retain bit-identical final weights. Native schema default parity, configuration admission/refusal, self-contained LoRA reconstruction and owned OOD reservoir RNG continuation are covered. Compile and real-import checks pass without initializing CUDA. These checks do not establish complete option parity, live API/UI deployment or resumption of the existing comparison.",
+    "api_ui": {
+      "implemented_on_branch": "Architecture enum and six native fields match defaults, OpenAPI and request types. The shared configuration form exposes native canvases, view budget, feature width, pixel cap and seed. It clears cross-architecture encoder/head/pooling inputs, keeps shared training options, identifies external FlashAttention and distinguishes inference export from unmerged resume storage. Native schema admission rejects SigLIP2 pooling, repository initialization, blank frozen LoRA, invalid method/save mode/precision.",
+      "frontend_static_review": "Reviewed fetched-default initialization, architecture/full-LoRA switching, restoring SigLIP2 save mode, request spreading, pre-save error paths and existing A/B/C edit refusal. No frontend build/type-check run by the agent; owner-run results and actual browser checks remain pending.",
+      "live_state": "Main remains clean at 2b28c3b4. Backend health is OK, live defaults contain no native fields and live run catalog still has no FoveaTag comparison. Old detached process handles 56808/14676 are absent. Nothing is claimed deployed or resumed."
+    },
     "attention": {
       "owner_request": "Support external FlashAttention, not only PyTorch SDPA flash kernels.",
       "implementation": "The native shared factory maps use_flash_attention to external dense and packed-varlen kernels through the repository attention conduit. Packing separates shifted-window connected regions and preserves padding singleton attention. Shape/device plans are bounded-cached without per-step GPU-to-CPU mask synchronization.",
       "failure_policy": "Explicit selection requires importable flash-attn. CPU/FP32/unsupported head dimensions use SDPA. External kernel failure is fatal. Disabled excludes external and PyTorch flash kernels.",
       "numerics": "FP16 padding exposed an RMSNorm gradient NaN. Native optimized execution now uses FP32 normalization statistics; the frozen A/B/C eager runner remains unchanged.",
       "source": "https://github.com/Dao-AILab/flash-attention",
-      "remaining": "Native public API/UI selector, end-to-end measurements and deployment remain pending."
+      "remaining": "Actual native API/UI verification, end-to-end measurements and deployment remain pending."
     },
     "replay": {
       "offline": "Native sampling uses an owned per-epoch generator; views use source index, epoch and seed. Resume records completed source batches separately from mixed-loader events and restores exact scheduler/scaler plus latest RNG state.",
       "online": "Source cursor and injection cadence are restored separately, including an injection pending at the stop boundary. Live network arrivals and prefetched online samples are not claimed to be bit-reproducible.",
       "gpu_pause": "Both the comparison and native shared trainer wait for generation's GPU release before restoring state and retain coordinator acknowledgements.",
       "bundle": "Native resume commits bind required state plus only optional artifacts generated under current settings. Disabled stale sidecars are not published or restored; native vocabulary/metrics/OOD save failures propagate. Candidates are verified in descending step order with coherent retained-bundle fallback and no implicit scratch restart.",
-      "remaining": "Finish native option-specific, online/metrics integration, OOD reservoir's owned RNG continuity, API and frontend verification before public run creation."
+      "ood": "Reservoir artifacts include capacity and their owned RNG in non-pickle JSON. Native restore validates state strictly; legacy files remain readable through the legacy non-strict path. Continued sampling matches uninterrupted sampling exactly.",
+      "remaining": "Finish native option-specific and online/metrics verification. Native training metrics still use legacy merged histogram restoration rather than exact three-slot training state; preserve exact slots and epoch-rotation semantics before deployment."
     },
     "exports": {
       "resume": "The primary safetensors checkpoint always retains complete unmerged weights; shared optimizer and training-state files remain alongside it.",
@@ -62,8 +68,8 @@
       "Verify the complete native shared training loop, metrics, online data and optimizer resume contracts, not only the model/data protocols.",
       "Finish online/metrics feature-specific verification. Keep the existing atomic A/B/C runner's resume contract separate and unchanged.",
       "Finish visualization/inference and API/UI export integrations and measure attention end-to-end separately from correctness checks.",
-      "Synchronize API defaults, OpenAPI, request types and UI for native runs and audit remaining shared options.",
-      "Enable native run creation only after applicable options and their API/UI controls are complete; SigLIP2-only pooling dimensions must be explicitly refused.",
+      "Verify native API/UI paths beyond schema-only tests and finish the remaining shared-option coverage audit.",
+      "Do not deploy the native API until online/metrics, visualization/inference and export-path contracts are completed and verified.",
       "Deploy, verify the real catalog and frontend, then resume the existing registered-budget comparison."
     ]
   },

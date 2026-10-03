@@ -120,6 +120,38 @@ def test_native_model_rejects_siglip_input():
         model("full")(torch.zeros(1, 3, 32, 32))
 
 
+def test_ood_capture_is_per_image_and_does_not_change_predictions():
+    instance = model("full").eval()
+    batch = inputs()
+    expected = instance(batch)
+    captured = []
+    hook = instance.register_ood_feature_hook(lambda module, args: captured.append(args[0]))
+    try:
+        actual = instance(batch)
+    finally:
+        hook.remove()
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    assert len(captured) == 1
+    assert captured[0].shape == (1, 32)
+    assert not captured[0].requires_grad
+    assert torch.isfinite(captured[0]).all()
+
+
+def test_head_inheritance_replaces_the_actual_evidence_layer(tmp_path):
+    from core.tagger.siglip2_tagger_model import _inherit_head
+    source = model("full")
+    path = source.save_checkpoint(tmp_path, "original")
+    target = model("full")
+    vocab = {f"anonymous_{i}": i for i in range(5)}
+    reordered = {name: 4 - index for name, index in vocab.items()}
+    _inherit_head(target, path, 5, new_vocab=reordered, old_tag_to_idx=vocab)
+    assert target.head is target.core.evidence_head.head
+    assert target.core.evidence_head.num_tags == 5
+    torch.testing.assert_close(target.head.weight, source.head.weight.flip(0))
+    assert "head.weight" not in target.state_dict()
+    assert "core.evidence_head.head.weight" in target.state_dict()
+
+
 @pytest.mark.parametrize("method", ["full", "lora"])
 @pytest.mark.parametrize("checkpointing", [False, True])
 def test_native_bfloat16_backward(method, checkpointing):

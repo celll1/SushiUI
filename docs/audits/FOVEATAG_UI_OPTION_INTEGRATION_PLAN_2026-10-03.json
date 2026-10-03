@@ -33,14 +33,15 @@
   "goal_status": "active",
   "goal_update": "Owner-requested run/UI/option integration and the original remaining Phase 3/4/5 work are now recorded in the active goal.",
   "shared_trainer_adapter": {
-    "status": "protocol_implemented_not_yet_wired_or_deployed",
+    "status": "shared_trainer_wired_internally_not_yet_public_or_deployed",
     "data": "Native overview/local tensors and source geometry can use the shared dataset and online-buffer collator without NaFlex encoding.",
     "model": "Full and attention-linear LoRA protocols support forward, head growth and exact self-contained unmerged weight roundtrips. No SigLIP2 weights are used.",
-    "verification": "48 focused CPU tests pass, including bf16 backward with checkpointing, native collation and GPU pause/stop acknowledgement contracts. Backend compile and real import checks preserve an uninitialized CUDA context.",
+    "verification": "57 focused CPU tests pass; an additional overlapping 27-test run includes legacy head-expansion regressions. Scratch lineage, backbone loading before LoRA insertion, self-contained reconstruction without the original base, actual evidence-head inheritance and per-image OOD capture are covered. Backend compile and real import checks preserve an uninitialized CUDA context; six native API defaults match OpenAPI.",
     "remaining": [
-      "Wire native processor/model construction into the shared trainer with repeatable validation views and checked scratch-backbone lineage.",
-      "Implement architecture-correct OOD features, checkpoint export modes, initialization and vocabulary inheritance; do not silently use SigLIP2 assumptions.",
+      "Verify the complete native shared training loop, metrics, online data and optimizer resume contracts, not only the model/data protocols.",
+      "Implement compact/merged exports while retaining exact unmerged resume state, attention-option semantics, retention and visualization/inference integrations.",
       "Synchronize API defaults, OpenAPI, request types and UI for native runs and audit remaining shared options.",
+      "Enable native run creation only after applicable options and their API/UI controls are complete; SigLIP2-only pooling dimensions must be explicitly refused.",
       "Deploy, verify the real catalog and frontend, then resume the existing registered-budget comparison."
     ]
   },

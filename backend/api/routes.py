@@ -20853,6 +20853,12 @@ async def debug_vram_force_release():
 
 class TaggerTrainingRunCreateRequest(BaseModel):
     architecture: Literal["siglip2"] = TAGGER_TRAINING_DEFAULTS["architecture"]
+    fovea_overview_size: int = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_overview_size"], ge=1)
+    fovea_local_size: int = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_local_size"], ge=1)
+    fovea_local_views: int = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_local_views"], ge=0)
+    fovea_feature_dim: int = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_feature_dim"], ge=1)
+    fovea_max_source_pixels: int = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_max_source_pixels"], ge=1)
+    fovea_seed: int = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_seed"], ge=0)
     run_name: Optional[str] = None
     vision_encoder_path: str
     dataset_configs: List[Dict[str, Any]]          # [{dataset_id, caption_types}]

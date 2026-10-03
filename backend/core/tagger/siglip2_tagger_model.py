@@ -1010,7 +1010,10 @@ def _inherit_head(
 
     # Move to same device as existing head
     device = next(model.head.parameters()).device
-    model.head = new_head.to(device)
+    if hasattr(model, "replace_head"):
+        model.replace_head(new_head.to(device))
+    else:
+        model.head = new_head.to(device)
 
 
 def _inherit_custom_pooler(

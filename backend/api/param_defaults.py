@@ -3522,6 +3522,12 @@ CONCEPT_EXPOSURE_DEFAULTS: Dict[str, Any] = {
 
 TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "architecture": "siglip2",
+    "fovea_overview_size": 448,
+    "fovea_local_size": 256,
+    "fovea_local_views": 4,
+    "fovea_feature_dim": 512,
+    "fovea_max_source_pixels": 40000000,
+    "fovea_seed": 42,
     "run_name": None,
     "vision_encoder_path": "",
     # Physical GPU index this run trains on. None uses the default device.

@@ -114,7 +114,8 @@ class TaggerDataset(Dataset):
         else:
             _probe = processor(images=[Image.new("RGB", (64, 64))], return_tensors="pt")
             self.is_naflex = "pixel_attention_mask" in _probe and "spatial_shapes" in _probe
-            print(f"[TaggerDataset] Processor mode: {'NaFlex' if self.is_naflex else 'standard (fixed resolution)'}")
+            mode = "FoveaTag" if "fovea_views" in _probe else "NaFlex" if self.is_naflex else "standard (fixed resolution)"
+            print(f"[TaggerDataset] Processor mode: {mode}")
 
         self._samples: List[Tuple[str, List[str]]] = []  # (image_path, [tag, ...])
         # item_id aligned to _samples (sample idx -> item_id). Built during

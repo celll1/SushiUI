@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -107,6 +108,9 @@ class FoveaTrainerModel(nn.Module):
         self.load_state_dict(load_file(str(path), device="cpu"), strict=True)
 
     def save_checkpoint(self, output_dir, name, metadata=None):
+        mode = (metadata or {}).get("checkpoint_save_mode", "full")
+        if mode not in ("full", "lora", "merged"):
+            raise ValueError("unsupported native checkpoint save mode")
         directory = Path(output_dir)
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"{name}.safetensors"
@@ -118,6 +122,7 @@ class FoveaTrainerModel(nn.Module):
         _save_file_safe(state, str(path))
         document = dict(metadata or {})
         document.update({
+            "format_version": 1,
             "architecture": "foveatag", "kind": "foveatag_shared_trainer_weights",
             "training_method": self.training_method,
             "encoder_config": asdict(self.core.encoder.config),
@@ -127,9 +132,98 @@ class FoveaTrainerModel(nn.Module):
             "lora_rank": self.lora_rank, "lora_alpha": self.lora_alpha,
             "contains_frozen_base": True,
             "ood_feature_definition": "overview_plus_masked_mean_mixed_evidence_v1",
+            "resume_weight_mode": "full_unmerged",
         })
+        if self.training_method == "lora" and mode != "full":
+            export_path = directory / f"{name}_export.safetensors"
+            export_state = self.export_state(merged=mode == "merged")
+            _save_file_safe(export_state, str(export_path))
+            export_metadata = dict(document)
+            export_metadata.pop("resume_weight_mode", None)
+            export_metadata.update({
+                "kind": "foveatag_inference_export", "export_mode": mode,
+                "export_training_method": "full" if mode == "merged" else "lora",
+                "contains_frozen_base": mode == "merged",
+                "vocabulary_file": f"{name}_vocabulary.json",
+            })
+            if mode == "lora":
+                export_metadata["frozen_encoder_tensor_sha256"] = self.frozen_encoder_fingerprint()
+            _write_metadata(directory / f"{name}_export_metadata.json", export_metadata)
+            document["inference_export"] = export_path.name
         metadata_path = directory / f"{name}_metadata.json"
-        temporary = metadata_path.with_suffix(".json.tmp")
-        temporary.write_text(json.dumps(document, indent=2), encoding="utf-8")
-        os.replace(temporary, metadata_path)
+        _write_metadata(metadata_path, document)
         return str(path)
+
+    def frozen_encoder_state(self):
+        state = dict(self.vision_encoder.state_dict())
+        for name, adapter in self._lora_modules.items():
+            state.pop(f"{name}.lora_A")
+            state.pop(f"{name}.lora_B")
+            state[f"{name}.weight"] = state.pop(f"{name}.base.weight")
+            if adapter.base.bias is not None:
+                state[f"{name}.bias"] = state.pop(f"{name}.base.bias")
+        return state
+
+    def frozen_encoder_fingerprint(self):
+        digest = hashlib.sha256()
+        for key, value in sorted(self.frozen_encoder_state().items()):
+            value = value.detach().cpu().contiguous()
+            digest.update(json.dumps([key, str(value.dtype), list(value.shape)]).encode("utf-8"))
+            digest.update(value.reshape(-1).view(torch.uint8).numpy().tobytes())
+        return digest.hexdigest()
+
+    def export_state(self, *, merged):
+        trainable = {key for key, parameter in self.named_parameters() if parameter.requires_grad}
+        state = {
+            key: value.detach().cpu().contiguous().clone()
+            for key, value in self.state_dict().items()
+            if merged or key in trainable
+        }
+        if merged:
+            for name, adapter in self._lora_modules.items():
+                prefix = f"core.encoder.{name}"
+                delta = (state.pop(f"{prefix}.lora_A") @ state.pop(f"{prefix}.lora_B")).T * adapter.scale
+                state[f"{prefix}.weight"] = state.pop(f"{prefix}.base.weight") + delta
+                if adapter.base.bias is not None:
+                    state[f"{prefix}.bias"] = state.pop(f"{prefix}.base.bias")
+        return {
+            (key.removeprefix("core.evidence_head.") if key.startswith("core.evidence_head.head.") else key): value
+            for key, value in state.items()
+        }
+
+
+def load_inference_export(path, *, base_encoder_path=None):
+    path = Path(path)
+    metadata = json.loads(path.with_name(f"{path.stem}_metadata.json").read_text(encoding="utf-8"))
+    if metadata.get("format_version") != 1 or metadata.get("kind") != "foveatag_inference_export":
+        raise ValueError("not a supported native FoveaTag inference export")
+    mode = metadata.get("export_mode")
+    if mode not in ("lora", "merged"):
+        raise ValueError("unsupported native export mode")
+    if mode == "lora" and not base_encoder_path:
+        raise ValueError("compact native export requires its scratch backbone")
+    config = dict(metadata["encoder_config"])
+    for key in ("widths", "depths", "attention_heads"):
+        config[key] = tuple(config[key])
+    state = load_file(str(path), device="cpu")
+    instance = FoveaTrainerModel(
+        state["head.weight"].shape[0], encoder_config=FoveaEncoderConfig(**config),
+        feature_dim=metadata["feature_dim"], evidence_slots=metadata["evidence_slots_per_view"],
+        pool_heads=metadata["pool_heads"], temperature=metadata["temperature"],
+        training_method="lora" if mode == "lora" else "full",
+        lora_rank=metadata["lora_rank"], lora_alpha=metadata["lora_alpha"],
+        encoder_path=str(base_encoder_path) if mode == "lora" else None,
+    )
+    if mode == "lora":
+        if instance.frozen_encoder_fingerprint() != metadata.get("frozen_encoder_tensor_sha256"):
+            raise ValueError("compact native export scratch backbone fingerprint differs")
+        if set(state) != set(instance.export_state(merged=False)):
+            raise ValueError("compact native export trainable keys differ")
+    instance.load_state_dict(state, strict=mode == "merged")
+    return instance.eval(), metadata
+
+
+def _write_metadata(path, document):
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(document, indent=2), encoding="utf-8")
+    os.replace(temporary, path)

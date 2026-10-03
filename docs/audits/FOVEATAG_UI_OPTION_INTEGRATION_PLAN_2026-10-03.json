@@ -36,10 +36,17 @@
     "status": "shared_trainer_wired_internally_not_yet_public_or_deployed",
     "data": "Native overview/local tensors and source geometry can use the shared dataset and online-buffer collator without NaFlex encoding.",
     "model": "Full and attention-linear LoRA protocols support forward, head growth and exact self-contained unmerged weight roundtrips. No SigLIP2 weights are used.",
-    "verification": "57 focused CPU tests pass; an additional overlapping 27-test run includes legacy head-expansion regressions. Scratch lineage, backbone loading before LoRA insertion, self-contained reconstruction without the original base, actual evidence-head inheritance and per-image OOD capture are covered. Backend compile and real import checks preserve an uninitialized CUDA context; six native API defaults match OpenAPI.",
+    "verification": "67 focused CPU tests pass with CUDA availability disabled for checkpoint tests and CUDA import triggers stubbed. Export parity, unchanged live LoRA parameters, exact unmerged weight restoration, wrong-base refusal, complete export retention, scratch lineage, backbone loading before LoRA insertion, evidence-head inheritance and per-image OOD capture are covered. Backend compile and separate real import checks preserve an uninitialized CUDA context; six native API defaults match OpenAPI.",
+    "exports": {
+      "resume": "The primary safetensors checkpoint always retains complete unmerged weights; shared optimizer and training-state files remain alongside it.",
+      "inference": "LoRA runs additionally write name_export.safetensors and metadata in compact or merged form according to checkpoint_save_mode. Compact exports require a scratch backbone with the recorded frozen-tensor fingerprint. Merged exports are self-contained for weights, with vocabulary referenced separately.",
+      "retention": "Expired step bundles remove both export files; latest and best_f1 remain outside step retention.",
+      "ui_requirement": "Explain compact/merged inference export versus full unmerged resume storage and expose the export path; do not label the primary resume file compact or merged."
+    },
     "remaining": [
       "Verify the complete native shared training loop, metrics, online data and optimizer resume contracts, not only the model/data protocols.",
-      "Implement compact/merged exports while retaining exact unmerged resume state, attention-option semantics, retention and visualization/inference integrations.",
+      "Verify native shared-loop RNG, permutation and view replay. The legacy common RNG snapshot is CPU-only and its efficient permutation reconstruction has not been proven equivalent to DataLoader sampling. Keep the existing atomic A/B/C runner's resume contract separate and unchanged.",
+      "Implement attention-option semantics and finish visualization/inference and API/UI export integrations.",
       "Synchronize API defaults, OpenAPI, request types and UI for native runs and audit remaining shared options.",
       "Enable native run creation only after applicable options and their API/UI controls are complete; SigLIP2-only pooling dimensions must be explicitly refused.",
       "Deploy, verify the real catalog and frontend, then resume the existing registered-budget comparison."

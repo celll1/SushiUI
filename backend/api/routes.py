@@ -20852,6 +20852,7 @@ async def debug_vram_force_release():
 
 
 class TaggerTrainingRunCreateRequest(BaseModel):
+    architecture: Literal["siglip2"] = TAGGER_TRAINING_DEFAULTS["architecture"]
     run_name: Optional[str] = None
     vision_encoder_path: str
     dataset_configs: List[Dict[str, Any]]          # [{dataset_id, caption_types}]
@@ -21227,6 +21228,28 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
     return callback
 
 
+class FoveaExperimentImportRequest(BaseModel):
+    comparison_dir: str
+    phase2_gate: str
+    pretrained_encoder: str
+    vocabulary_path: str
+    checkpoint_every_steps: int = Field(ge=1)
+    log_every: int = Field(ge=1)
+    run_name: Optional[str] = TAGGER_TRAINING_DEFAULTS["run_name"]
+
+    class Config:
+        extra = "forbid"
+
+
+@router.post("/tagger-training/foveatag/import")
+def import_fovea_experiment(
+    request: FoveaExperimentImportRequest,
+    training_db: Session = Depends(get_training_db),
+):
+    from api.foveatag_training import register_experiment
+    return register_experiment(request.dict(), training_db)
+
+
 @router.post("/tagger-training/runs")
 def create_tagger_training_run(
     request: TaggerTrainingRunCreateRequest,
@@ -21301,6 +21324,8 @@ def update_tagger_training_run(
     run = training_db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Tagger training run not found")
+    if (run.config or {}).get("architecture") == "foveatag_phase3":
+        raise HTTPException(status_code=409, detail="Registered A/B/C settings are immutable; resume the existing comparison unchanged.")
     if run.status not in ("pending", "stopped", "failed"):
         raise HTTPException(
             status_code=400,
@@ -21389,6 +21414,9 @@ async def start_tagger_training_run(run_id: str, training_db: Session = Depends(
     run = training_db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Tagger training run not found")
+    if (run.config or {}).get("architecture") == "foveatag_phase3":
+        from api.foveatag_training import start_experiment
+        return start_experiment(run, training_db, _tagger_training_threads, _make_tagger_progress_callback)
     if run.status in ("running", "starting"):
         raise HTTPException(status_code=400, detail="Run is already running")
 
@@ -21665,6 +21693,9 @@ def stop_tagger_training_run(run_id: str, training_db: Session = Depends(get_tra
     run = training_db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Tagger training run not found")
+    if (run.config or {}).get("architecture") == "foveatag_phase3":
+        from api.foveatag_training import stop_experiment
+        return stop_experiment(run, training_db, _tagger_training_threads)
 
     # Signal the trainer to stop at the next checkpoint boundary
     entry = _tagger_training_threads.get(run_id)

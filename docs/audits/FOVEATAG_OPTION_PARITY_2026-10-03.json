@@ -1,0 +1,719 @@
+{
+  "format_version": 1,
+  "kind": "foveatag_siglip2_option_parity_audit",
+  "sources": [
+    "main and design-branch backend/api/param_defaults.py TAGGER_TRAINING_DEFAULTS",
+    "main and design-branch backend/api/routes.py TaggerTrainingRunCreateRequest"
+  ],
+  "scope": "Inventory only, not a claim of feature parity. Current comparison stays paused until owner-requested integration is complete.",
+  "options": [
+    {
+      "name": "architecture",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "architecture_specific_port_pending"
+    },
+    {
+      "name": "ban_tags",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "batch_size",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "implemented_in_registered_comparison"
+    },
+    {
+      "name": "build_lr_matrix_on_start",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "checkpoint_save_mode",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "architecture_specific_port_pending"
+    },
+    {
+      "name": "cls_dim",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "architecture_specific_port_pending"
+    },
+    {
+      "name": "danbooru_api_interval",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_buffer_size",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_cooc_categories",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_cooc_collect_per_epoch",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_cooc_expand_enable",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_cooc_min_count",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_cooc_order_random",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_dl_speed_kbps",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_injection_batch_size_ratio",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_injection_interval",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_low_f1_collect_per_epoch",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_low_f1_enable",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_low_f1_min_posts",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_low_f1_threshold",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_low_f1_top_k",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_max_dynamic_tags",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_max_posts_per_query",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_min_score",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_new_tag_categories",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_new_tag_collect_per_epoch",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_new_tag_lookback_days",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_new_tag_min_count",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_new_tag_min_count_by_cat",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_new_tag_survey_interval",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_quality_tag_attach_negative",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_quality_tag_enable",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_quality_tag_thresholds",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_query_collect_per_epoch",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_query_enable",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_query_expand_categories",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_query_expand_enable",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_query_max_expanded_tags",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_query_new_tag_min_count",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_query_resolve_interval",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_query_resolve_top_k",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_query_weight_cooc",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_query_weight_low_f1",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_query_weight_new_tag",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_query_weight_static",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_query_weight_train_count",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_speed_check_enable",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_speed_cooldown_seconds",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_speed_degraded_kbps",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_speed_min_slow_seconds",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_speed_min_slow_streak",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_tags",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_train_count_collect_per_epoch",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_train_count_enable",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_train_count_min_deficit_ratio",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_train_count_min_per_epoch",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_train_count_min_posts",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_train_count_top_k",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "danbooru_vocab_expand",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "dataset_configs",
+      "in_defaults": false,
+      "in_request": true,
+      "status": "implemented_in_registered_comparison"
+    },
+    {
+      "name": "enable_danbooru_augmentation",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "epochs",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "implemented_in_registered_comparison"
+    },
+    {
+      "name": "excluded_categories",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "gpu_index",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "gradient_checkpointing",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "hard_rate_hi",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "hard_rate_lo",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "head_lr_multiplier",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "fixed_by_current_comparison_contract"
+    },
+    {
+      "name": "hidden_proj_dim",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "architecture_specific_port_pending"
+    },
+    {
+      "name": "init_head_from",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "architecture_specific_port_pending"
+    },
+    {
+      "name": "keep_last_n_checkpoints",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "learning_rate",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "implemented_in_registered_comparison"
+    },
+    {
+      "name": "lora_alpha",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "architecture_specific_port_pending"
+    },
+    {
+      "name": "lora_rank",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "architecture_specific_port_pending"
+    },
+    {
+      "name": "loss_beta",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "loss_clip",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "fixed_by_current_comparison_contract"
+    },
+    {
+      "name": "loss_function",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "fixed_by_current_comparison_contract"
+    },
+    {
+      "name": "loss_gamma0",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "loss_gamma_neg",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "fixed_by_current_comparison_contract"
+    },
+    {
+      "name": "loss_gamma_pos",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "fixed_by_current_comparison_contract"
+    },
+    {
+      "name": "loss_label_weight",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "loss_m0",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "loss_rho",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "lr_min_anchor_count",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "lr_threshold",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "lr_top_anchors",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "lr_top_targets",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "mixed_precision",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "fixed_by_current_comparison_contract"
+    },
+    {
+      "name": "num_workers",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "implemented_in_registered_comparison"
+    },
+    {
+      "name": "num_workers_override",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "optimizer",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "fixed_by_current_comparison_contract"
+    },
+    {
+      "name": "output_dir",
+      "in_defaults": false,
+      "in_request": true,
+      "status": "implemented_in_registered_comparison"
+    },
+    {
+      "name": "quality_masking_mode",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "rescan_before_training",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "run_name",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "implemented_in_registered_comparison"
+    },
+    {
+      "name": "save_base_model",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "architecture_specific_port_pending"
+    },
+    {
+      "name": "save_best_only",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "save_every_n_epochs",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "save_every_n_steps",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "fixed_by_current_comparison_contract"
+    },
+    {
+      "name": "save_tag_metrics",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "tag_refresh_enable",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "tag_refresh_interval_seconds",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "train_f1_buffer_batches",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "train_f1_eval_every_n_steps",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "train_f1_initial_threshold",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "train_f1_threshold_search_every_n_steps",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "training_method",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "fixed_by_current_comparison_contract"
+    },
+    {
+      "name": "use_flash_attention",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "use_tag_aliases",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "val_fixed_size",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "val_split",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "val_split_mode",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "validate_every",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "fixed_by_current_comparison_contract"
+    },
+    {
+      "name": "vision_encoder_path",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "architecture_specific_port_pending"
+    },
+    {
+      "name": "vocab_min_count",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "vocab_use_gelbooru_categories",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_feature_port_pending"
+    },
+    {
+      "name": "warmup_steps",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "implemented_in_registered_comparison"
+    },
+    {
+      "name": "weight_decay",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "implemented_in_registered_comparison"
+    }
+  ]
+}

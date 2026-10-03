@@ -60,6 +60,7 @@ class FoveaSupervisedTrainer:
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.max_grad_norm = max_grad_norm
         self.scheduler = scheduler
+        self.batch_boundary = None
         self.scaler = torch.amp.GradScaler(
             "cuda",
             enabled=self.device.type == "cuda" and mixed_precision == torch.float16,
@@ -69,6 +70,8 @@ class FoveaSupervisedTrainer:
         """Run one optimizer step for step-resumable production training."""
         if self.gradient_accumulation_steps != 1:
             raise RuntimeError("train_batch requires gradient_accumulation_steps=1")
+        if self.batch_boundary is not None:
+            self.batch_boundary()
         self.model.train()
         batch = batch.to(self.device, non_blocking=True)
         self.optimizer.zero_grad(set_to_none=True)
@@ -175,6 +178,8 @@ class FoveaSupervisedTrainer:
             for batch in batches:
                 if batch is None:
                     continue
+                if self.batch_boundary is not None:
+                    self.batch_boundary()
                 batch = batch.to(self.device, non_blocking=True)
                 with self._autocast():
                     logits = self._forward(batch)

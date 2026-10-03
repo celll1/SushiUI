@@ -1,0 +1,34 @@
+{
+  "format_version": 1,
+  "kind": "foveatag_remaining_work_extension",
+  "original_objective": "Complete the remaining Phase 2 gate measurements and subsequent FoveaTag work.",
+  "owner_requested_extension": "Pause the current experiment, integrate run monitoring and SigLIP2 training-option coverage, verify it through the frontend, then resume the same run.",
+  "scope": [
+    "Preserve the accepted Phase 2 artifact and the complete downstream Phase 3/4/5 objectives.",
+    "Register the existing A/B/C experiment in the normal training-run catalog without fabricating a SigLIP2 run.",
+    "Display branch, epoch, step, progress, loss, validation precision/recall/F1, learning rate and checkpoint/resume state.",
+    "Connect start/resume/stop to checkpointed lifecycle controls and enforce GPU ownership and duplicate-run guards.",
+    "Audit every TAGGER_TRAINING_DEFAULTS and request/UI option: shared, architecture-specific, implemented, or remaining; no silent option dropping.",
+    "Implement applicable optimizer, loss, learning-rate groups, precision, attention and checkpointing controls.",
+    "Implement applicable dataset, vocabulary, masking, online collection, vocabulary growth, detailed metrics, retention, sample and export integrations.",
+    "Keep pretrained SigLIP2 initialization options out of the scratch FoveaTag default and explain incompatible architecture-specific options.",
+    "Preserve the registered A/B/C input/data/optimizer budget when resuming the current experiment; new optional controls must not change its contract.",
+    "Update API defaults, OpenAPI, request types and UI together; test backend compilation, real imports and lifecycle contracts; review frontend statically.",
+    "Deploy only task-scoped changes to the running checkout, use only the backend restart endpoint if needed, then verify real API and frontend operation.",
+    "Resume the paused experiment only after the requested integration is verified."
+  ],
+  "pause": {
+    "status": "confirmed",
+    "checkpoint_kind": "foveatag_supervised_training",
+    "branch": "overview_only",
+    "zero_based_epoch": 2,
+    "sample_offset": 0,
+    "global_step": 30000,
+    "optimizer_entries": 215,
+    "completed_validation_epochs": 2,
+    "optimizer_scheduler_rng_verified": true,
+    "note": "The legacy detached CLI lacks an external graceful-stop control. Its verified checkpoint is retained; unsaved subsequent steps will be replayed on resume."
+  },
+  "implementation_status": "in_progress",
+  "reporting_policy": "Aggregate metrics only; do not display individual tag names or read generated diagnostic images."
+}

@@ -7667,6 +7667,31 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /tagger-training/foveatag/import:
+    post:
+      summary: Register an existing paused Phase 3 FoveaTag comparison
+      description: |
+        Imports the exact saved A/B/C contract into the training catalog, including
+        aggregate validation history. Does not start training or change its budget.
+        Returns 409 if the directory is already registered; requires a valid Phase 2 gate.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FoveaExperimentImportRequest'
+      responses:
+        '200':
+          description: Registered paused experiment, returned as a tagger run
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '409':
+          description: Experiment already registered
+        '422':
+          description: Invalid, mismatched or missing experiment evidence
   /tagger-training/runs:
     post:
       tags: [tagger-training]
@@ -27945,12 +27970,48 @@ components:
         validation_every: 100
         validation_num_images: 8
         validation_resolution: 1024
+    FoveaExperimentImportRequest:
+      type: object
+      additionalProperties: false
+      required: [comparison_dir, phase2_gate, pretrained_encoder, vocabulary_path, checkpoint_every_steps, log_every]
+      properties:
+        comparison_dir:
+          type: string
+          description: Existing paused comparison output directory on the backend host.
+          example: outputs/foveatag_phase3_comparison
+        phase2_gate:
+          type: string
+          example: docs/audits/phase2_gate.json
+        pretrained_encoder:
+          type: string
+          example: outputs/pretraining/best_encoder.safetensors
+        vocabulary_path:
+          type: string
+          example: tagger_models/reference/best_f1_vocabulary.json
+        checkpoint_every_steps:
+          type: integer
+          minimum: 1
+          example: 1000
+        log_every:
+          type: integer
+          minimum: 1
+          example: 100
+        run_name:
+          type: string
+          nullable: true
+          default: null
     TaggerTrainingRunCreateRequest:
       type: object
       properties:
         run_name:
           type: string
           nullable: true
+        architecture:
+          type: string
+          enum: [siglip2]
+          default: siglip2
+          description: New standard runs use SigLIP2; existing FoveaTag comparisons use the explicit import endpoint.
+          example: siglip2
         vision_encoder_path:
           type: string
         dataset_configs:

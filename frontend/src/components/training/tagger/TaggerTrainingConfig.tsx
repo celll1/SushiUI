@@ -1080,7 +1080,11 @@ export default function TaggerTrainingConfig({
               onChange={(e) => setField("save_best_only", e.target.checked)}
               className="accent-blue-500"
             />
-            <span className="text-sm text-gray-300">Save Best Only (by F1)</span>
+            <span className="text-sm text-gray-300">
+              {config.architecture === "foveatag"
+                ? "Save Best Only (by F1; latest/stop resume checkpoints retained)"
+                : "Save Best Only (by F1)"}
+            </span>
           </label>
         </section>
 

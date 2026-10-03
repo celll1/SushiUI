@@ -147,6 +147,8 @@ silently restart collection. In-flight requests, prefetched samples and network
 arrival order remain outside the exact offline-replay guarantee.
 Native online collection applies the source pixel cap before decoding; the
 processor also rejects oversized inputs as a backstop.
+For native runs, `save_best_only` suppresses periodic step/epoch archives while
+retaining `best_f1`, the latest resume bundle and explicit stop checkpoints.
 
 Native model-only publications use `_inference_commit.json` after weights,
 metadata, vocabulary and selected optional artifacts finish saving. This also

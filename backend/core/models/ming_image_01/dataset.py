@@ -5,7 +5,9 @@ import hashlib
 import io
 import json
 import math
+import os
 from pathlib import Path
+import tempfile
 
 import numpy as np
 from PIL import Image, ImageOps
@@ -71,16 +73,24 @@ def _decode(data):
         return ImageOps.exif_transpose(image).copy()
 
 
-def inspect_item(primary, *, root, profile, reference_paths=()):
+def inspect_item(primary, *, root, profile, reference_paths=(), validated_sizes=None):
     """Validate every role and source asset once before bucket/model construction."""
     root = Path(root).resolve(strict=True)
     primary = _inside(root, primary)
     if profile not in {"generation_edit", "layer_decompose"}:
         raise ValueError("Unknown Ming dataset profile")
     primary_data = primary.read_bytes()
+    primary_sha = hashlib.sha256(primary_data).hexdigest()
+    manifest = sidecar_path(primary)
+    if profile == "generation_edit" and not manifest.exists() and not reference_paths:
+        cached = (validated_sizes or {}).get(str(primary))
+        if isinstance(cached, dict) and cached.get("sha256") == primary_sha:
+            size = cached.get("source_size")
+            if isinstance(size, list) and len(size) == 2 and all(type(v) is int and v > 0 for v in size):
+                return MingDatasetRecord(profile, root, None, tuple(size),
+                    (MingAsset(primary, primary_sha),), (), ("image",), (1.0,), None)
     primary_image = _decode(primary_data)
     source_size = primary_image.size
-    manifest = sidecar_path(primary)
     manifest_sha = None
     manifest_path = None
     if manifest.exists():
@@ -130,7 +140,7 @@ def inspect_item(primary, *, root, profile, reference_paths=()):
             raise ValueError("Ming paired target/reference assets require the source canvas geometry")
         if profile == "layer_decompose" and index < len(target_paths) and image.mode != "RGBA":
             raise ValueError("Ming Layer target assets require explicit RGBA alpha")
-        assets.append(MingAsset(path, hashlib.sha256(data).hexdigest()))
+        assets.append(MingAsset(path, primary_sha if path == primary else hashlib.sha256(data).hexdigest()))
     return MingDatasetRecord(profile, root, manifest_path, source_size, tuple(assets[:len(target_paths)]),
         tuple(assets[len(target_paths):]), tuple(roles), tuple(weights), manifest_sha)
 
@@ -250,9 +260,19 @@ def supervision_identity(record):
     return hashlib.sha256(json.dumps(payload, sort_keys=True, allow_nan=False).encode()).hexdigest()
 
 
-def annotate_datasets(datasets, *, profile, progress_callback=None, stop_check=None):
+def annotate_datasets(datasets, *, profile, progress_callback=None, stop_check=None, validation_cache_path=None):
     """Attach native records, excluding Layer assets that are not primary samples."""
     pending, selected = [], []
+    validated_sizes = {}
+    if validation_cache_path is not None and profile == "generation_edit":
+        cache_path = Path(validation_cache_path)
+        try:
+            if cache_path.stat().st_size <= 32 * 1024 * 1024:
+                cached = json.loads(cache_path.read_text(encoding="utf-8"))
+                if isinstance(cached, dict) and type(cached.get("version")) is int and cached["version"] == 1 and isinstance(cached.get("sizes"), dict):
+                    validated_sizes = cached["sizes"]
+        except (OSError, ValueError):
+            pass
     total = sum(len(dataset.items) for dataset in datasets)
     processed = 0
     for dataset in datasets:
@@ -273,7 +293,7 @@ def annotate_datasets(datasets, *, profile, progress_callback=None, stop_check=N
                 loose.append(item)
                 continue
             record = inspect_item(item["image_path"], root=root, profile=profile,
-                                  reference_paths=item.get("reference_images") or ())
+                                  reference_paths=item.get("reference_images") or (), validated_sizes=validated_sizes)
             primaries.append((item, record))
         assets = {asset.path for _, record in primaries for asset in (*record.targets, *record.references)}
         for item in loose:
@@ -281,6 +301,27 @@ def annotate_datasets(datasets, *, profile, progress_callback=None, stop_check=N
                 raise ValueError("Ming Layer primary images require an explicit .ming.json sidecar")
         pending.extend(primaries)
         selected.append((dataset, [item for item, _ in primaries]))
+    if validation_cache_path is not None and profile == "generation_edit":
+        sizes = {str(record.targets[0].path): {"sha256": record.targets[0].sha256,
+                 "source_size": list(record.source_size)} for _, record in pending
+                 if record.manifest_path is None and not record.references}
+        cache_path = Path(validation_cache_path)
+        temporary = None
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=cache_path.parent,
+                                             prefix=cache_path.name+".", delete=False) as handle:
+                temporary = Path(handle.name)
+                json.dump({"version": 1, "sizes": sizes}, handle, allow_nan=False)
+            os.replace(temporary, cache_path)
+        except OSError as exc:
+            print(f"[Ming Dataset] Validation cache could not be saved: {exc}")
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
     for item, record in pending:
         item["_ming_record"] = record
         item["_ming_batch_signature"] = (record.profile, len(record.targets))

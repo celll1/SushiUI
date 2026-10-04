@@ -415,3 +415,55 @@ def test_preloaded_epoch_keeps_validated_ming_records(tmp_path):
     records = [item["_ming_record"] for item in dataset.items]
     pairs = owner._prepare_epoch_items([dataset], 0, 7, manager, [32])
     assert [item["_ming_record"] for item, _ in pairs] == records
+
+
+@pytest.mark.parametrize("change", ["none", "pixels", "manifest", "reference", "corrupt_cache"])
+def test_plain_design_preflight_cache_requires_identical_content(tmp_path, monkeypatch, change):
+    from types import SimpleNamespace
+    import core.models.ming_image_01.dataset as native
+    primary=tmp_path/"image.png"
+    Image.new("RGB",(32,32),"red").save(primary)
+    cache=tmp_path/"cache.json"
+    def dataset():
+        return SimpleNamespace(dataset_root=tmp_path,items=[{"image_path":str(primary)}])
+    native.annotate_datasets([dataset()],profile="generation_edit",validation_cache_path=cache)
+    references=[]
+    if change=="pixels":
+        Image.new("RGB",(64,32),"blue").save(primary)
+    elif change=="manifest":
+        sidecar_path(primary).write_text(json.dumps({"schema_version":1,"profile":"generation_edit",
+            "targets":[{"path":primary.name,"role":"image","weight":1.}],"references":[]}),encoding="utf-8")
+    elif change=="reference":
+        reference=tmp_path/"ref.png"
+        Image.new("RGB",(32,32),"green").save(reference)
+        references=[str(reference)]
+    elif change=="corrupt_cache":
+        cache.write_text("{broken",encoding="utf-8")
+    original=native._decode
+    calls=[]
+    def decode(data):
+        calls.append(1)
+        return original(data)
+    monkeypatch.setattr(native,"_decode",decode)
+    value=dataset();value.items[0]["reference_images"]=references
+    native.annotate_datasets([value],profile="generation_edit",validation_cache_path=cache)
+    record=value.items[0]["_ming_record"]
+    assert len(calls)==(0 if change=="none" else 2 if change=="reference" else 1)
+    assert record.source_size==((64,32) if change=="pixels" else (32,32))
+    assert record.manifest_path is not None if change=="manifest" else record.manifest_path is None
+    native.verify_record_content(record)
+
+
+def test_cancelled_preflight_does_not_replace_disk_cache(tmp_path):
+    from types import SimpleNamespace
+    from core.models.ming_image_01.dataset import annotate_datasets
+    primary=tmp_path/"image.png"
+    Image.new("RGB",(32,32)).save(primary)
+    cache=tmp_path/"cache.json"
+    cache.write_text('{"version":1,"sizes":{}}',encoding="utf-8")
+    original=cache.read_bytes()
+    value=SimpleNamespace(dataset_root=tmp_path,items=[{"image_path":str(primary)}])
+    def cancel():raise KeyboardInterrupt("stop")
+    with pytest.raises(KeyboardInterrupt):
+        annotate_datasets([value],profile="generation_edit",validation_cache_path=cache,stop_check=cancel)
+    assert cache.read_bytes()==original and "_ming_record" not in value.items[0]

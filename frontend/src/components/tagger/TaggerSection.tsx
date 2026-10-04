@@ -40,6 +40,7 @@ export default function TaggerSection() {
       <ModelTools
         modelLoaded={modelStatus.loaded}
         modelType={modelStatus.model_type}
+        architecture={modelStatus.architecture}
       />
     </div>
   );

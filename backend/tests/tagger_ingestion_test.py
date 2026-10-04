@@ -90,6 +90,30 @@ def test_dataset_scan_preserves_filtered_samples(tmp_path):
             ["structured tag", "fallback tag", "second tag"],
         )
     ]
+    assert dataset.dataset_id_for_index(0) == 7
+    assert dataset.source_path_for_index(0) == str(tmp_path / "valid.png")
+    raw = dataset.get_raw_item(0)
+    assert raw is not None
+    assert raw.dataset_id == 7
+    assert raw.source_path == str(tmp_path / "valid.png")
+    session.close()
+
+
+def test_raw_dataset_rejects_source_above_decode_cap(tmp_path):
+    factory = _dataset_session(tmp_path)
+    session = factory()
+    vocabulary = TagVocabulary()
+    vocabulary.add_tags(["structured_tag"])
+    dataset = TaggerDataset(
+        [7],
+        vocabulary,
+        session,
+        processor=None,
+        caption_types=["main"],
+        max_source_pixels=63,
+    )
+
+    assert dataset.get_raw_item(0) is None
     session.close()
 
 

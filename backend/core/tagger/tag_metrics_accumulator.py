@@ -103,7 +103,7 @@ class TagMetricsAccumulator:
         return self._scatter_ones[:count]
 
 
-    def update(self, preds: torch.Tensor, labels: torch.Tensor) -> None:
+    def update(self, preds: torch.Tensor, labels: torch.Tensor, observation_mask=None) -> None:
         """Accumulate one batch of predictions.
 
         Args:
@@ -113,6 +113,12 @@ class TagMetricsAccumulator:
         p = preds.float()         # [B, V]
         l = (labels > 0.5)        # [B, V] bool
         B, V = p.shape
+        observed = None
+        if observation_mask is not None:
+            if observation_mask.shape != p.shape:
+                raise ValueError("metric observation mask shape differs")
+            observed = observation_mask.to(device="cpu", dtype=torch.bool)
+            l = l & observed
 
         # Bin index: [B, V]
         bin_idx = (p * self.n_bins).long().clamp(0, self.n_bins - 1)
@@ -125,8 +131,10 @@ class TagMetricsAccumulator:
         # ── total_hist (all predictions, regardless of label) ─────────
         # flat_idx[b, v] = v * n_bins + bin_idx[b, v]
         flat_idx = (self._tag_bin_offsets[:, :V] + bin_idx).reshape(-1)
+        if observed is not None:
+            flat_idx = flat_idx[observed.reshape(-1)]
         total_flat = torch.from_numpy(self.total_hist_cur).view(-1)
-        total_flat.scatter_add_(0, flat_idx, self._ones(B * V))
+        total_flat.scatter_add_(0, flat_idx, self._ones(flat_idx.numel()))
 
         # ── pos_hist (positive samples only — sparse) ─────────────────
         pos_b, pos_v = torch.where(l)

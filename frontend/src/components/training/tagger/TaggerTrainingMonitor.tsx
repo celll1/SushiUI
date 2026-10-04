@@ -15,6 +15,8 @@ import { wsClient, TaggerMetrics, FpFnScatterData, DatasetScanProgress } from "@
 import VocabularyBrowser from "@/components/tagger/VocabularyBrowser";
 import TaggerMetricChart, { EpochBoundary } from "./TaggerMetricChart";
 import DanbooruMetricsPanel from "./DanbooruMetricsPanel";
+import TaggerDiagnosticsPanel from "./TaggerDiagnosticsPanel";
+import FoveaJointConfigEditor from "./FoveaJointConfigEditor";
 
 interface TaggerTrainingMonitorProps {
   run: TaggerTrainingRun;
@@ -221,6 +223,7 @@ export default function TaggerTrainingMonitor({
   const [actionLoading, setActionLoading] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);  // Configuration panel collapsed by default
+  const [jointEditOpen, setJointEditOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Short-window rate (last ~20 samples, ~30s of WS step events).  Used
   // as the primary iter/s display and the basis for the ETA estimate.
@@ -647,7 +650,8 @@ export default function TaggerTrainingMonitor({
     setActionLoading(true);
     setError(null);
     try {
-      const result = await startTaggerTrainingRun(run.run_id);
+      const result = await startTaggerTrainingRun(run.run_id,
+        run.config?.architecture === "foveatag_joint_review" ? {continuous: true} : undefined);
       updateRun(result.run);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -704,7 +708,10 @@ export default function TaggerTrainingMonitor({
           <div className="flex items-center gap-3 mt-0.5">
             <span className={`text-sm font-medium ${statusColor}`}>{run.status}</span>
             <span className="text-xs text-gray-500">
-              {run.training_method.toUpperCase()} · {run.num_tags} tags
+              {run.config.architecture === "foveatag_phase3"
+                ? "FoveaTag A/B/C · FULL"
+                : run.config.architecture === "foveatag_joint_review" ? "FoveaTag · learned router joint"
+                : `${run.config.architecture === "foveatag" ? "FoveaTag · " : ""}${run.training_method.toUpperCase()}`} · {run.num_tags} tags
             </span>
           </div>
         </div>
@@ -721,9 +728,8 @@ export default function TaggerTrainingMonitor({
           <section>
             <div className="flex items-center justify-between text-sm mb-1">
               <span className="text-gray-400">
-                {run.status_message
-                  ? run.status_message
-                  : `Epoch ${run.current_epoch} · Step ${run.current_step}`}
+                {`Epoch ${run.current_epoch} · Step ${run.current_step.toLocaleString()}`}
+                {run.status_message && <span className="ml-2 text-gray-500">· {run.status_message}</span>}
                 {iterPerSec !== null && (
                   <span className="ml-2 text-gray-500 font-mono">
                     · {iterPerSec >= 1
@@ -909,6 +915,8 @@ export default function TaggerTrainingMonitor({
           </div>
 
           <div className="space-y-4 min-w-0">
+            <TaggerDiagnosticsPanel runId={run.run_id} active={run.status === "running" || run.status === "starting"}
+              legacyComparison={run.config.architecture === "foveatag_phase3"} />
             <DanbooruMetricsPanel
               runId={run.run_id}
               active={run.status === "running" || run.status === "starting"}
@@ -933,6 +941,13 @@ export default function TaggerTrainingMonitor({
               </div>
               {run.config && typeof run.config === "object" && (() => {
                 const CONFIG_LABELS: Record<string, string> = {
+                  architecture: "Architecture",
+                  fovea_overview_size: "Overview canvas",
+                  fovea_local_size: "Local canvas",
+                  fovea_local_views: "Local views",
+                  fovea_feature_dim: "Evidence width",
+                  fovea_max_source_pixels: "Source pixel cap",
+                  fovea_seed: "Sampling seed",
                   learning_rate: "LR",
                   head_lr_multiplier: "Head LR ×",
                   epochs: "Epochs",
@@ -1218,10 +1233,27 @@ export default function TaggerTrainingMonitor({
               );
             })()}
 
-            {(run.head_checkpoint_path || run.lora_checkpoint_path) && (
+            {(run.head_checkpoint_path || run.lora_checkpoint_path || run.latest_checkpoint_path || run.best_checkpoint_path || Boolean(run.inference_checkpoint_paths?.length)) && (
               <div>
                 <div className="text-sm font-medium text-gray-300 mb-2">Checkpoints</div>
                 <div className="space-y-1">
+                  {run.latest_checkpoint_path && (
+                    <div className="text-xs text-gray-400 bg-gray-800 rounded p-2 font-mono break-all">
+                      Resume: {run.latest_checkpoint_path}
+                    </div>
+                  )}
+                  {run.best_checkpoint_path && (
+                    <div className="text-xs text-gray-400 bg-gray-800 rounded p-2 font-mono break-all">
+                      Best: {run.best_checkpoint_path}
+                    </div>
+                  )}
+                  {run.inference_checkpoint_paths?.map((artifact) => (
+                    <div key={artifact.path} className="text-xs text-gray-400 bg-gray-800 rounded p-2 font-mono break-all">
+                      Inference ({artifact.name}, {artifact.mode}): {artifact.path}
+                      <div>Vocabulary: {artifact.vocabulary_path}</div>
+                      {artifact.requires_backbone && <div>Requires the matching scratch backbone.</div>}
+                    </div>
+                  ))}
                   {run.head_checkpoint_path && (
                     <div className="text-xs text-gray-400 bg-gray-800 rounded p-2 font-mono truncate" title={run.head_checkpoint_path}>
                       Head: {run.head_checkpoint_path}
@@ -1241,6 +1273,9 @@ export default function TaggerTrainingMonitor({
         <section>
           <VocabularyBrowser runId={run.run_id} />
         </section>
+
+        {jointEditOpen && run.config.architecture === "foveatag_joint_review" && <FoveaJointConfigEditor
+          key={run.run_id} run={run} active={isActive} onSaved={updateRun} onClose={() => setJointEditOpen(false)} />}
 
         {error && (
           <div className="p-3 bg-red-900/30 border border-red-700 rounded text-sm text-red-400">
@@ -1281,7 +1316,10 @@ export default function TaggerTrainingMonitor({
           Delete
         </button>
         <div className="flex gap-2">
-          {onEditConfig && ["pending", "stopped", "failed"].includes(run.status) && (
+          {run.config.architecture === "foveatag_joint_review" && run.status !== "completed" && <button
+            onClick={() => setJointEditOpen(true)} disabled={actionLoading}
+            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-600 rounded text-sm">Edit Config</button>}
+          {onEditConfig && !["foveatag_phase3", "foveatag_joint_review"].includes(String(run.config.architecture)) && ["pending", "stopped", "failed"].includes(run.status) && (
             <button
               onClick={onEditConfig}
               disabled={actionLoading}

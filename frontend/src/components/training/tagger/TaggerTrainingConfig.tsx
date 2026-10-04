@@ -23,6 +23,20 @@ interface TaggerTrainingConfigProps {
 
 type ConfigState = Omit<TaggerTrainingRunCreateRequest, "dataset_configs">;
 
+const FOVEA_INPUT_FIELDS = [
+  ["fovea_overview_size", "Overview canvas", 1],
+  ["fovea_local_size", "Source-local canvas", 1],
+  ["fovea_local_views", "Local views per image", 0],
+  ["fovea_feature_dim", "Evidence feature width", 1],
+  ["fovea_max_source_pixels", "Source pixel cap (larger images skipped)", 1],
+  ["fovea_seed", "Sampling / split seed", 0],
+  ["fovea_candidate_count", "Router candidates", 1],
+  ["fovea_random_count", "Training exploration slots", 0],
+  ["fovea_oracle_interval", "Oracle interval (steps)", 1],
+  ["fovea_oracle_chunk_size", "Oracle encoder chunk", 1],
+  ["fovea_router_weight", "Router loss weight", 0],
+] as const;
+
 function configFromDefaults(
   defaults: Record<string, unknown>,
   editRun?: TaggerTrainingRun,
@@ -33,6 +47,9 @@ function configFromDefaults(
     run_name: editRun?.run_name ?? "",
     vision_encoder_path: editRun?.vision_encoder_path ?? defaults.vision_encoder_path ?? "",
   } as ConfigState;
+  if (editRun?.config.architecture === "foveatag" && editRun.config.fovea_learned_routing === undefined) {
+    merged.fovea_learned_routing = false;
+  }
   return merged;
 }
 
@@ -100,6 +117,10 @@ export default function TaggerTrainingConfig({
     }
     if (selectedDatasetIds.length === 0) {
       setError("At least one dataset must be selected.");
+      return;
+    }
+    if (config.architecture === "foveatag" && config.training_method === "lora" && !config.vision_encoder_path.trim()) {
+      setError("FoveaTag LoRAにはスクラッチ事前学習済みencoderが必要です。完全スクラッチから始める場合はFull Parameterを選択してください。");
       return;
     }
     setSaving(true);
@@ -175,7 +196,10 @@ export default function TaggerTrainingConfig({
             {(["lora", "full"] as const).map((method) => (
               <button
                 key={method}
-                onClick={() => setField("training_method", method)}
+                onClick={() => setConfig((prev) => prev ? ({
+                  ...prev, training_method: method,
+                  ...(prev.architecture === "foveatag" && method === "full" ? { checkpoint_save_mode: "full" } : {}),
+                }) : prev)}
                 className={`px-4 py-2 rounded text-sm border transition-colors ${
                   config.training_method === method
                     ? "border-blue-500 bg-blue-600 text-white"
@@ -189,6 +213,48 @@ export default function TaggerTrainingConfig({
         </section>
 
         <section>
+          <label className="block text-sm font-medium text-gray-300 mb-2">Architecture</label>
+          <select
+            value={config.architecture}
+            onChange={(e) => setConfig((prev) => prev ? ({
+              ...prev, architecture: e.target.value as ConfigState["architecture"],
+              vision_encoder_path: "", init_head_from: undefined,
+              cls_dim: undefined, hidden_proj_dim: undefined,
+              ...(e.target.value === "foveatag" && prev.training_method === "full" ? { checkpoint_save_mode: "full" } : {}),
+              ...(e.target.value === "siglip2" && prev.checkpoint_save_mode === "full"
+                ? { checkpoint_save_mode: taggerTrainingDefaults?.checkpoint_save_mode as ConfigState["checkpoint_save_mode"] } : {}),
+            }) : prev)}
+            className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white"
+          >
+            <option value="siglip2">SigLIP2</option>
+            <option value="foveatag">FoveaTag · scratch</option>
+          </select>
+          <p className="text-xs text-gray-500 mt-1">Architectureを変更すると、別形式の重みを誤用しないようencoderとheadの指定をクリアします。</p>
+        </section>
+
+        {config.architecture === "foveatag" && (
+          <section>
+            <label className="block text-sm font-medium text-gray-300 mb-3">FoveaTag input</label>
+            <label className="flex items-center gap-2 text-sm text-gray-300 mb-3">
+              <input type="checkbox" checked={!!config.fovea_learned_routing}
+                onChange={e => setField("fovea_learned_routing", e.target.checked)} />
+              Learned router（既存の非router checkpointとは互換性なし）
+            </label>
+            <div className="grid grid-cols-2 gap-4">
+              {FOVEA_INPUT_FIELDS.map(([key, label, minimum]) => (
+                <div key={key}>
+                  <label className="block text-xs text-gray-400 mb-1">{label}</label>
+                  <NumberInput value={config[key]!} min={minimum} step={key === "fovea_router_weight" ? 0.01 : 1}
+                    onCommit={(v) => setField(key, v)}
+                    className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white" />
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-gray-500 mt-2">Router有効時は固定正方形overviewから原画像の局所viewを選択します。学習時のみ探索枠を残します。無効時のviewはモデルの選択ではありません。入力・router構造の変更には新しいRunが必要です。</p>
+          </section>
+        )}
+
+        <section>
           <label className="block text-sm font-medium text-gray-300 mb-1">
             Vision Encoder Path
           </label>
@@ -199,8 +265,9 @@ export default function TaggerTrainingConfig({
             className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
           />
           <p className="text-xs text-gray-500 mt-1">
-            Local path to <code>siglip2_so400m_vision_encoder.safetensors</code>, a LoRA/merged tagger checkpoint,
-            or a HuggingFace repo ID (e.g. <code>google/siglip2-so400m-patch16-naflex</code>) or URL.
+            {config.architecture === "foveatag"
+              ? "Local scratch encoder .safetensorsと対応metadataを指定してください。Full Parameterでは空欄ならencoderも新規初期化します。SigLIP2重みは使用しません。"
+              : <>Local SigLIP2 encoder / tagger checkpoint, or a HuggingFace repo ID / URL.</>}
           </p>
         </section>
 
@@ -212,11 +279,13 @@ export default function TaggerTrainingConfig({
             type="text"
             value={config.init_head_from ?? ""}
             onChange={(e) => setField("init_head_from", e.target.value)}
-            placeholder="leave empty to zero-initialize head"
+            placeholder={config.architecture === "foveatag" ? "leave empty to initialize a new native head" : "leave empty to zero-initialize head"}
             className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
           />
           <p className="text-xs text-gray-500 mt-1">
-            Path to a tagger checkpoint to inherit head weights from. Rows are copied and expanded (zero-init) or trimmed to match the current vocabulary size.
+            {config.architecture === "foveatag"
+              ? "同じfeature幅のnative FoveaTag checkpointだけを受け付けます。SigLIP2 headの重みは移植しません。"
+              : "Path to a tagger checkpoint to inherit head weights from. Rows are copied and expanded (zero-init) or trimmed to match the current vocabulary size."}
           </p>
         </section>
 
@@ -482,7 +551,7 @@ export default function TaggerTrainingConfig({
           </section>
         )}
 
-        {config.training_method === "full" && (
+        {config.training_method === "full" && config.architecture !== "foveatag" && (
           <section>
             <label className="block text-sm font-medium text-gray-300 mb-3">
               Custom Attention Pooling <span className="text-xs text-gray-500">(Full FT only)</span>
@@ -692,7 +761,11 @@ export default function TaggerTrainingConfig({
               >
                 <option value="lora">LoRA only (compact, requires base encoder)</option>
                 <option value="merged">Merged full model (standalone, larger file)</option>
+                {config.architecture === "foveatag" && <option value="full">Full unmerged resume weights only</option>}
               </select>
+              {config.architecture === "foveatag" && <p className="text-xs text-gray-500 mt-1">
+                再開用には常に完全な未merge重みとoptimizer等を保存します。LoRA学習時のLoRA / Mergedは別の推論exportファイルです。Full Parameterでは完全な重みを保存します。
+              </p>}
             </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">Warmup Steps</label>
@@ -1008,7 +1081,9 @@ export default function TaggerTrainingConfig({
               className="accent-blue-500"
             />
             <span className="text-sm text-gray-300">
-              FlashAttention-2 (encoder; requires bf16/fp16)
+              {config.architecture === "foveatag"
+                ? "External FlashAttention-2 (global + packed local windows; CUDA bf16/fp16)"
+                : "FlashAttention-2 (encoder; requires bf16/fp16)"}
             </span>
           </label>
           <label className="flex items-center gap-3 cursor-pointer">
@@ -1018,7 +1093,11 @@ export default function TaggerTrainingConfig({
               onChange={(e) => setField("save_best_only", e.target.checked)}
               className="accent-blue-500"
             />
-            <span className="text-sm text-gray-300">Save Best Only (by F1)</span>
+            <span className="text-sm text-gray-300">
+              {config.architecture === "foveatag"
+                ? "Save Best Only (by F1; latest/stop resume checkpoints retained)"
+                : "Save Best Only (by F1)"}
+            </span>
           </label>
         </section>
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import time
+from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -21,6 +22,19 @@ from transformers import AutoProcessor
 from .tag_labels import build_label_and_mask
 from .tag_parsing import resolve_caption_tags
 from .tag_vocabulary import TagVocabulary
+
+
+@dataclass(frozen=True)
+class RawTaggerSample:
+    image: Image.Image
+    label: torch.Tensor
+    loss_mask: torch.Tensor
+    dataset_id: Optional[int] = None
+    source_path: Optional[str] = None
+
+
+class SourcePixelLimitError(ValueError):
+    pass
 
 
 class TaggerDataset(Dataset):
@@ -39,12 +53,13 @@ class TaggerDataset(Dataset):
         dataset_ids: List[int],
         vocabulary: TagVocabulary,
         datasets_db,
-        processor: AutoProcessor,
+        processor: Optional[AutoProcessor],
         caption_types: Optional[List[str]] = None,
         alias_resolver=None,
         comma_resolver=None,
         quality_masking_mode: str = "intra_group",
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        max_source_pixels: Optional[int] = None,
     ) -> None:
         """
         Parameters
@@ -52,7 +67,8 @@ class TaggerDataset(Dataset):
         dataset_ids    : list of Dataset.id to include
         vocabulary     : TagVocabulary built from the same datasets
         datasets_db    : SQLAlchemy session for datasets.db
-        processor      : SigLIP2 AutoProcessor (handles NaFlex preprocessing)
+        processor      : SigLIP2 AutoProcessor, or None when an architecture
+                         adapter consumes ``get_raw_item``
         caption_types  : restrict to these caption_type values (None = all tags-format)
         alias_resolver : optional TagAliasResolver; when provided, deprecated
                          tags are resolved to canonical form during label construction
@@ -74,10 +90,15 @@ class TaggerDataset(Dataset):
                            positive Quality tags train as negatives.  Correct
                            only when intra-group labels are truly mutually
                            exclusive and prevalences are balanced.
+        max_source_pixels : optional pre-decode safety cap. Images above the
+                         cap are skipped before their pixel payload is loaded.
         """
+        if max_source_pixels is not None and max_source_pixels <= 0:
+            raise ValueError("max_source_pixels must be positive when provided")
         self.vocabulary = vocabulary
         self.processor = processor
         self.num_tags = vocabulary.num_tags
+        self.max_source_pixels = max_source_pixels
         self._alias_resolver = alias_resolver
         self._comma_resolver = comma_resolver
         if quality_masking_mode not in ("intra_group", "cross_group"):
@@ -87,9 +108,14 @@ class TaggerDataset(Dataset):
         self.quality_masking_mode = quality_masking_mode
         print(f"[TaggerDataset] Quality masking mode: {quality_masking_mode}")
 
-        _probe = processor(images=[Image.new("RGB", (64, 64))], return_tensors="pt")
-        self.is_naflex = "pixel_attention_mask" in _probe and "spatial_shapes" in _probe
-        print(f"[TaggerDataset] Processor mode: {'NaFlex' if self.is_naflex else 'standard (fixed resolution)'}")
+        if processor is None:
+            self.is_naflex = False
+            print("[TaggerDataset] Processor mode: deferred to architecture adapter")
+        else:
+            _probe = processor(images=[Image.new("RGB", (64, 64))], return_tensors="pt")
+            self.is_naflex = "pixel_attention_mask" in _probe and "spatial_shapes" in _probe
+            mode = "FoveaTag" if "fovea_views" in _probe else "NaFlex" if self.is_naflex else "standard (fixed resolution)"
+            print(f"[TaggerDataset] Processor mode: {mode}")
 
         self._samples: List[Tuple[str, List[str]]] = []  # (image_path, [tag, ...])
         # item_id aligned to _samples (sample idx -> item_id). Built during
@@ -98,6 +124,7 @@ class TaggerDataset(Dataset):
         # __getitem__ never needs it.
         self._item_ids: Optional["np.ndarray"] = None
         self._item_ids_list: List[int] = []
+        self._sample_dataset_ids_list: List[int] = []
         # Live tag-refresh (Option B). Paths/flag are set by the trainer after
         # construction (before the first DataLoader spawn) and DO travel into the
         # worker pickle; the reader/mmap below are worker-local and rebuilt there.
@@ -244,12 +271,15 @@ class TaggerDataset(Dataset):
                         (item_path_map[item_id], [_tag_pool.setdefault(t, t) for t in tags])
                     )
                     self._item_ids_list.append(item_id)
+                    self._sample_dataset_ids_list.append(dataset_id)
 
             print(f"[TaggerDataset]   {len(self._samples)} samples so far")
 
         # Finalise the sample-idx -> item_id map for the live tag-refresh detector.
         self._item_ids = np.asarray(self._item_ids_list, dtype=np.int64)
         self._item_ids_list = []  # free the Python list; numpy array is the source
+        self._sample_dataset_ids = np.asarray(self._sample_dataset_ids_list, dtype=np.int32)
+        self._sample_dataset_ids_list = []
 
     def _extract_tags(self, caption) -> List[str]:
         return resolve_caption_tags(
@@ -269,6 +299,7 @@ class TaggerDataset(Dataset):
         state = self.__dict__.copy()
         state.pop("_item_ids", None)        # detector-only (main process)
         state.pop("_item_ids_list", None)
+        state.pop("_sample_dataset_ids_list", None)
         state["_refresh_reader"] = None     # rebuilt lazily in the worker
         return state
 
@@ -276,6 +307,7 @@ class TaggerDataset(Dataset):
         self.__dict__.update(state)
         self._item_ids = None
         self._item_ids_list = []
+        self._sample_dataset_ids_list = []
         self._refresh_reader = None
 
     def _apply_tag_refresh(self, idx: int, tags: List[str]) -> List[str]:
@@ -295,17 +327,24 @@ class TaggerDataset(Dataset):
         return ov if ov is not None else tags
 
     def __getitem__(self, idx: int):
-        image_path, tags = self._samples[idx]
-        if self._refresh_enabled and self._refresh_gen_path:
-            tags = self._apply_tag_refresh(idx, tags)
+        raw = self.get_raw_item(idx)
+        if raw is None:
+            return None
+        if self.processor is None:
+            raise RuntimeError("processor=None requires an architecture-specific dataset adapter")
         try:
-            image = _load_image(image_path)
-            inputs = self.processor(images=[image], return_tensors="pt")
+            options = {"sample_index": idx} if getattr(self.processor, "is_native_fovea_processor", False) else {}
+            inputs = self.processor(images=[raw.image], return_tensors="pt", **options)
         except Exception as e:
-            print(f"[TaggerDataset] Skipping corrupt image {image_path}: {e}")
-            return None  # filtered out by tagger_collate_fn
+            image_path = self._samples[idx][0]
+            print(f"[TaggerDataset] Skipping image rejected by processor {image_path}: {e}")
+            return None
 
-        if self.is_naflex:
+        if "fovea_views" in inputs:
+            pixel_values = inputs["fovea_views"]
+            pixel_attention_mask = torch.zeros(0, dtype=torch.int32)
+            spatial_shapes = torch.zeros(0, dtype=torch.int64)
+        elif self.is_naflex:
             pixel_values         = inputs["pixel_values"].squeeze(0)          # [num_patches, patch_dim]
             pixel_attention_mask = inputs["pixel_attention_mask"].squeeze(0)  # [num_patches]
             spatial_shapes       = inputs["spatial_shapes"].squeeze(0)        # [2]
@@ -314,8 +353,51 @@ class TaggerDataset(Dataset):
             pixel_attention_mask = torch.zeros(0, dtype=torch.int32)          # sentinel → [B, 0] after collate
             spatial_shapes       = torch.zeros(0, dtype=torch.int64)          # sentinel
 
+        from .diagnostic_capture import DiagnosticBatch
+        return DiagnosticBatch((pixel_values, pixel_attention_mask, spatial_shapes, raw.label, raw.loss_mask),
+            ({"source_path": raw.source_path, "source_index": idx, "dataset_id": raw.dataset_id},))
+
+    def get_raw_item(self, idx: int) -> Optional[RawTaggerSample]:
+        """Decode one source image while retaining the existing label lifecycle."""
+        image_path, tags = self._samples[idx]
+        if self._refresh_enabled and self._refresh_gen_path:
+            tags = self._apply_tag_refresh(idx, tags)
+        try:
+            image = _load_image(image_path, max_pixels=self.max_source_pixels)
+        except SourcePixelLimitError as e:
+            print(f"[TaggerDataset] Skipping oversized image {image_path}: {e}")
+            return None
+        except Exception as e:
+            print(f"[TaggerDataset] Skipping corrupt image {image_path}: {e}")
+            return None
         label, loss_mask = self._build_label_and_mask(tags)
-        return pixel_values, pixel_attention_mask, spatial_shapes, label, loss_mask
+        return RawTaggerSample(
+            image=image,
+            label=label,
+            loss_mask=loss_mask,
+            dataset_id=int(self._sample_dataset_ids[idx]),
+            source_path=image_path,
+        )
+
+    def dataset_id_for_index(self, idx: int) -> int:
+        return int(self._sample_dataset_ids[idx])
+
+    def label_and_mask_for_index(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Build supervision metadata without decoding the source image."""
+        _image_path, tags = self._samples[idx]
+        if self._refresh_enabled and self._refresh_gen_path:
+            tags = self._apply_tag_refresh(idx, tags)
+        return self._build_label_and_mask(tags)
+
+    def source_path_for_index(self, idx: int) -> str:
+        return self._samples[idx][0]
+
+    def tag_names_for_index(self, idx: int) -> Tuple[str, ...]:
+        """Return the canonical supervision tags without decoding the image."""
+        _image_path, tags = self._samples[idx]
+        if self._refresh_enabled and self._refresh_gen_path:
+            tags = self._apply_tag_refresh(idx, tags)
+        return tuple(tags)
 
 
     def _build_label_and_mask(
@@ -339,6 +421,21 @@ def tagger_collate_fn(batch):
         return None
 
     pixel_values_list, masks_list, shapes_list, labels_list, loss_masks_list = zip(*valid)
+    from .diagnostic_capture import DiagnosticBatch
+    sources = tuple(getattr(item, "diagnostic_sources", ({},))[0] for item in valid)
+
+    if not isinstance(pixel_values_list[0], torch.Tensor):
+        from .foveatag.batch import FoveaViewTensorBatch
+        from .foveatag.processor import concatenate_view_tensors
+        if not all(isinstance(value, FoveaViewTensorBatch) for value in pixel_values_list):
+            raise ValueError("cannot mix native and SigLIP2 inputs in one batch")
+        return DiagnosticBatch((
+            concatenate_view_tensors(pixel_values_list),
+            torch.stack(masks_list),
+            torch.stack(shapes_list),
+            torch.stack(labels_list),
+            torch.stack(loss_masks_list),
+        ), sources)
 
     # Stack pixel_values; for NaFlex with varying patch counts, pad to max.
     try:
@@ -358,18 +455,25 @@ def tagger_collate_fn(batch):
             pixel_attention_mask[i, :n] = pm
         spatial_shapes = torch.stack(shapes_list)
 
-    return (
+    return DiagnosticBatch((
         pixel_values,
         pixel_attention_mask,
         spatial_shapes,
         torch.stack(labels_list),
         torch.stack(loss_masks_list),
-    )
+    ), sources)
 
 
 
-def _load_image(path: str) -> Image.Image:
+def _load_image(path: str, *, max_pixels: Optional[int] = None) -> Image.Image:
     img = Image.open(path)
+    source_pixels = img.width * img.height
+    if max_pixels is not None and source_pixels > max_pixels:
+        img.close()
+        raise SourcePixelLimitError(
+            f"source has {source_pixels:,} pixels, above the "
+            f"configured {max_pixels:,}-pixel decode cap"
+        )
     img.load()  # force full decode here so truncation raises OSError before reaching the processor
     if img.mode == "RGBA":
         bg = Image.new("RGB", img.size, (255, 255, 255))

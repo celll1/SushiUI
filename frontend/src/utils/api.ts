@@ -6155,6 +6155,7 @@ export interface SigLIP2PredictResponse {
 }
 
 export interface SigLIP2StatusResponse {
+  architecture?: "siglip2" | "foveatag";
   loaded: boolean;
   checkpoint_path: string;
   vocab_path: string;
@@ -6228,7 +6229,7 @@ export interface SigLIP2PredictOptions {
 
 export const loadSigLIP2Model = async (req: SigLIP2LoadRequest) => {
   const response = await api.post("/tagger/siglip2/load", req);
-  return response.data as { status: string; model_type: string; num_tags: number };
+  return response.data as { status: string; model_type: string; num_tags: number; architecture?: "siglip2" | "foveatag" };
 };
 
 export const predictSigLIP2Tags = async (
@@ -9228,6 +9229,15 @@ export interface TaggerTrainingRun {
   latest_loss: number | null;
   head_checkpoint_path: string | null;
   lora_checkpoint_path: string | null;
+  latest_checkpoint_path?: string | null;
+  best_checkpoint_path?: string | null;
+  inference_checkpoint_paths?: Array<{
+    name: string;
+    mode: "full_unmerged" | "lora" | "merged";
+    path: string;
+    vocabulary_path: string;
+    requires_backbone: boolean;
+  }>;
   error_message: string | null;
   status_message: string | null;
   created_at: string;
@@ -9243,6 +9253,19 @@ export interface TaggerDatasetConfig {
 }
 
 export interface TaggerTrainingRunCreateRequest {
+  architecture?: "siglip2" | "foveatag";
+  fovea_overview_size?: number;
+  fovea_local_size?: number;
+  fovea_local_views?: number;
+  fovea_feature_dim?: number;
+  fovea_max_source_pixels?: number;
+  fovea_seed?: number;
+  fovea_learned_routing?: boolean;
+  fovea_candidate_count?: number;
+  fovea_random_count?: number;
+  fovea_oracle_interval?: number;
+  fovea_oracle_chunk_size?: number;
+  fovea_router_weight?: number;
   run_name: string;
   training_method: "full" | "lora";
   vision_encoder_path: string;
@@ -9427,11 +9450,14 @@ export const getTaggerTrainingRun = async (runId: string): Promise<TaggerTrainin
 };
 
 export const startTaggerTrainingRun = async (
-  runId: string
+  runId: string, options?: {continuous: boolean}
 ): Promise<{ message: string; run: TaggerTrainingRun }> => {
-  const response = await api.post(`/tagger-training/runs/${runId}/start`);
+  const response = await api.post(`/tagger-training/runs/${runId}/start`, undefined, { params: options });
   return response.data;
 };
+
+export const editFoveaJointConfig = async (runId: string, updates: Record<string, number | boolean>): Promise<TaggerTrainingRun> =>
+  (await api.patch(`/tagger-training/runs/${runId}/joint-config`, updates)).data;
 
 export const stopTaggerTrainingRun = async (
   runId: string
@@ -9786,6 +9812,64 @@ export const resumeTrainingDanbooru = async (runId: number): Promise<{ success: 
   const response = await api.post(`/training/runs/${runId}/danbooru/resume`);
   return response.data;
 };
+
+export interface FoveaJointReviewRequest {
+  source_run_id: string; output_dir: string; run_name?: string;
+  batch_size?: number; workers?: number; epochs?: number; epoch_samples?: number;
+  candidate_count?: number; selection_budget?: number; random_count?: number;
+  oracle_interval?: number; oracle_chunk_size?: number; learning_rate?: number;
+  weight_decay?: number; warmup_steps?: number; router_weight?: number;
+  checkpoint_every_steps?: number; log_every?: number; review_steps?: number;
+  external_flash?: boolean;
+  save_tag_metrics?: boolean; train_f1_eval_every_n_steps?: number;
+  train_f1_threshold_search_every_n_steps?: number; train_f1_initial_threshold?: number;
+  train_f1_buffer_batches?: number;
+}
+export const createFoveaJointReview = async (request: FoveaJointReviewRequest): Promise<TaggerTrainingRun> =>
+  (await api.post("/tagger-training/foveatag/joint-review", request)).data;
+
+export interface TaggerDiagnosticSettings {
+  enabled: boolean;
+  interval_steps: number;
+  focus_preview: boolean;
+  threshold_mode: "training" | "global" | "per_tag";
+  threshold: number;
+  min_samples_for_per_tag: number;
+  min_best_thr: number;
+}
+export interface TaggerDiagnosticStatus {
+  settings: TaggerDiagnosticSettings;
+  busy: boolean;
+  error: string | null;
+  attempts?: Array<{step: number; status: "scheduled" | "skipped"; reason: string | null}>;
+  items: Array<{
+    filename: string; mode: string; step: number; epoch: number;
+    counts: Record<"TP" | "FP" | "FN" | "TN", number>;
+    native_focus_used: boolean; focus_preview: boolean;
+    prediction_origin?: string;
+    tag_labels?: "vocabulary" | "anonymous";
+    threshold_mode?: "training" | "global" | "per_tag";
+    per_tag_threshold_count?: number;
+    threshold_fallback_count?: number;
+    snapshot_filename?: string | null;
+    training_window?: {
+      start_step: number; end_step: number; samples: number; batches: number; threshold: number;
+      tp: number; fp: number; fn: number; known_negative: number;
+      precision: number | null; recall: number | null; fp_rate: number | null; fp_per_image: number | null;
+      scope: "training_annotations_pre_update";
+    } | null;
+  }>;
+}
+export const getTaggerDiagnostics = async (runId: string): Promise<TaggerDiagnosticStatus> =>
+  (await api.get(`/tagger-training/runs/${runId}/diagnostics`)).data;
+export const setTaggerDiagnostics = async (runId: string, settings: TaggerDiagnosticSettings): Promise<TaggerDiagnosticStatus> =>
+  (await api.put(`/tagger-training/runs/${runId}/diagnostics`, settings)).data;
+export const createTaggerDiagnostic = async (runId: string, filename?: string): Promise<TaggerDiagnosticStatus> =>
+  (await api.post(`/tagger-training/runs/${runId}/diagnostics`, filename ? {filename} : undefined)).data;
+export const taggerDiagnosticImageUrl = (runId: string, name: string): string =>
+  `/api/v1/tagger-training/runs/${encodeURIComponent(runId)}/diagnostics/images/${encodeURIComponent(name)}`;
+export const getTaggerDiagnosticImage = async (runId: string, name: string): Promise<Blob> =>
+  (await api.get(`/tagger-training/runs/${encodeURIComponent(runId)}/diagnostics/images/${encodeURIComponent(name)}`, { responseType: "blob" })).data;
 
 export const getTaggerTrainingMetrics = async (
   runId: string,

@@ -7,6 +7,94 @@ share checkpoint assumptions between them.
 
 ## Ownership
 
+The owner abandoned the A/B/C prerequisite at step 43,322. The new
+`/tagger-training/foveatag/joint-review` route registers a separate
+`foveatag_joint_review` run using only the stopped scratch run's own weights.
+It trains encoder/head/router together, uses a new optimizer and an explicit
+fixed-square, unpadded overview policy, and retains square source-native locals
+inside source boundaries. Shape distortion of the overview is a recorded
+tradeoff. No fabricated gate or external tagger weights are used.
+The legacy bounded start is limited by `review_steps`; it stops with a resumable joint
+checkpoint and a model/router-only `review.safetensors` for owner visual review.
+The latter is the latest review export, not an automatically accepted best model.
+`POST /tagger-training/runs/{run_id}/start?continuous=true` resumes joint runs
+without that segment stop. The joint monitor uses continuous starts; explicit
+stop still saves the optimizer/scheduler/RNG state.
+The joint monitor exposes Edit Config while running, but saving requires a
+stopped/pending/failed run. `/tagger-training/runs/{run_id}/joint-config` accepts
+the joint optimizer, schedule, batch/worker, routing and checkpoint/log settings;
+it refuses dataset, topology and input-policy changes. Revisions are recorded.
+Resumes preserve Adam moments and RNG; changed LR/warmup/epoch/batch settings
+rebase the schedule at the saved optimizer step and remaining sample budget.
+Defaults live in
+`TAGGER_JOINT_REVIEW_DEFAULTS`, not the generic SigLIP2 creation request.
+The monitor's loss curve uses the classification ASL term; the joint summary
+records classification/ranking/diversity terms separately.
+Router objective `masked_asl_delta_v2` rewards the per-image masked ASL reduction
+relative to overview-only logits, not the largest positive-tag logit increase.
+Known-negative deterioration offsets positive improvements; unknown labels and
+photo loss weights retain their classification masks. Negative-only samples
+can reward FP suppression. Positive improvements are normalized across valid
+candidates; non-improving candidates receive zero. Joint training uses the same
+criterion parameters as classification, detached float32 oracle losses, and
+bounded one-candidate loss temporaries. Utility is for individual candidates,
+not a guarantee of the selected set's combined improvement.
+Legacy resumes preserve optimizer/scheduler/RNG and record the objective change
+at the saved step in `objective_revisions.json`; checkpoints and exports identify
+the new objective. Existing epoch loss accumulators include the old objective.
+`training_windows.jsonl` records micro precision, recall, FP/known-negative rate
+and FP/image across every successful batch between progress logs. Diagnostic
+metadata/UI additionally report the window since the preceding diagnostic
+boundary or resume. Unknown labels are excluded, and counts are not reweighted
+by photo loss weights. Windows reset on resume or threshold changes; explicit
+step bounds identify partial windows. These are training-annotation metrics,
+not held-out accuracy or proof of generalization. No extra inference is used.
+Diagnostics are enabled for this workflow but remain optional. At exact global
+step multiples of the user-selected interval, they capture one image (without a rating filter)
+image from that step's actual training batch, its pre-update probabilities,
+supervision mask, and the native boxes actually selected for that forward.
+Solid boxes are router selections; dashed boxes are random exploration.
+No fresh inference or alternative image substitutes for the training forward.
+If source metadata is unavailable, or the CPU renderer is busy, the
+attempt is recorded as skipped. Rendering uses an isolated CPU process without
+copying the full optimizer checkpoint. Neither a numeric
+gate nor the agent's inspection of generated images substitutes for owner
+review. Direct-joint artifacts can use the common inference manager; repeated
+refinement and a live joint-run prediction handle remain separate work.
+
+Registered `foveatag_phase3` comparison monitors expose optional diagnostic
+panels under `/tagger-training/runs/{run_id}/diagnostics`. They default to OFF;
+settings can be changed while running without changing the frozen A/B/C training
+contract. For these legacy comparisons only, `interval_steps` is a minimum catalog-step interval evaluated at saved
+checkpoint boundaries (not a wall-clock schedule). A single isolated CPU worker
+copies the atomic resume checkpoint and evaluates one deterministic,
+explicitly annotated Rating:General non-photo sample. The first selected sample
+ID is pinned across later panels; if it becomes unavailable, generation reports
+an error instead of replacing it silently. This adds checkpoint I/O and CPU/RAM
+cost, but never forwards through the live training model or changes its
+optimizer, RNG or sample budget. Manual generation requires a paused run.
+
+New joint training panels display vocabulary tag names for TP/FP/FN (up to 100
+each), TN counts and unknown-label masking. Previously generated anonymous panels
+remain unchanged. Legacy comparison panels still use anonymous ranks. Counts remain
+annotation-based rather than guaranteed ground truth. A has no native focus;
+B uses overview-derived placebo views; C overlays the exact native view boxes
+passed to that diagnostic inference. Source pixels per canvas pixel are shown,
+so source-derived does not imply every view is exactly 1:1. An optional C-policy
+preview for A/B is explicitly marked as NOT used by that inference. Boxes are
+input footprints, not causal attribution or a trained router. The monitor supports
+older/newer navigation and step selection; polling does not move a selected older
+panel. All published panels remain in the history (no 12-entry truncation).
+Disabling generation does not delete prior images or cancel an in-flight worker.
+The same option now supports SigLIP2 and shared native training. Actual batches
+retain disk or online-download source provenance and capture pre-update
+probabilities, masks, vocabulary and available per-tag statistics. Settings select
+the saved training threshold, a user global threshold, or per-tag thresholds with
+minimum support and a scalar fallback. Immutable captured forwards can be
+re-rendered on CPU from history without inference, optimizer changes, or replacing
+the latest snapshot. These panels are training diagnostics, not held-out accuracy.
+Frontend build/type-check remains owner-run.
+
 | Concern | Owner |
 |---|---|
 | Legacy WD model load and prediction | `backend/core/extensions/tagger_manager.py` and `/api/v1/tagger/*` |
@@ -92,6 +180,110 @@ would invalidate block-wise scale metadata. Encoder and adapter optimizer state
 is not reset.
 
 ## Verification boundaries
+
+The experimental native FoveaTag shared trainer maps `use_flash_attention` to
+the external `flash-attn` kernels through `core/attention/`. Global attention
+uses the dense kernel; shifted and padded windows pack connected regions into
+independent varlen segments, preserving the existing mask and singleton padded
+tokens. Selecting this option requires an importable installation. CUDA
+FP16/BF16 with supported head dimensions use FlashAttention; CPU/FP32 and
+unsupported head dimensions use SDPA. A selected kernel failure is fatal rather
+than silently changing execution during training. Disabling the option excludes
+both external FlashAttention and PyTorch's flash SDPA kernel.
+
+The native optimized path computes RMSNorm statistics in FP32 to prevent FP16
+padding-gradient NaNs. The frozen A/B/C runner retains its original eager path.
+Opt-in real GPU tests in `backend/tests/foveatag_flash_attention_test.py` compare
+outputs and gradients for global, shifted/padded, FP16/BF16 and checkpointed
+execution. These checks do not establish end-to-end speedups or UI deployment.
+
+On the isolated design branch, standard run creation also accepts
+`architecture=foveatag` and the native input/routing defaults exposed by the schema.
+Full training accepts an empty encoder path for random initialization; LoRA
+requires a local scratch-pretrained encoder. SigLIP2 pooling dimensions and
+repository initialization are refused. The configuration form exposes the
+native input settings alongside shared training options. Shared native creation
+and diagnostics were deployed on 2026-10-04; frontend build/type-check are
+owner-run. The frozen comparison uses its import endpoint.
+New native runs enable learned routing by default. Legacy configurations without
+that field retain sampled locals on edit. Candidate count, selected K, exploration,
+oracle interval/chunk and router loss weight are explicit settings. Router state
+is preserved with model/optimizer bundles and full/compact/merged exports. Oracle
+utility uses the actual configured masked classification criterion. No external
+tagger teacher or weights are introduced.
+
+The native shared training-model prediction handle accepts coordinate-aware
+views, uses deterministic validation sampling without consuming training RNG,
+checks the source-pixel cap before decode and retains the run's CUDA precision.
+It restores the prior train/eval mode even if prediction fails. Loaded SigLIP2
+calibration and OOD references are not applied to the native model; native
+live concurrency is serialized with native training updates.
+
+The historical `/tagger/siglip2/load` and `/predict` endpoints also recognize
+native shared-trainer FoveaTag metadata. Full unmerged and merged checkpoints
+are self-contained; compact LoRA exports require their fingerprint-matched
+scratch encoder. Native view configuration, seed, decode cap and precision
+come from the artifact, not NaFlex patch settings or a downloaded processor.
+Sibling vocabulary and calibration/OOD artifacts follow the native metadata
+reference. Native OOD uses overview-plus-mixed-evidence features, not the MIL
+classifier input. Model-only `best_f1` files do not require optimizer state.
+Native inference-manager LoRA merge and local scratch-encoder extraction are
+implemented. Native ONNX export produces overview, optional router and classifier
+graphs with a host crop-selection contract. The CPU runtime validates graph hashes
+and reproduces staged selected-only inference; fixed graph batch/canvas/K do not
+limit the capped external image resolution. Max Num Patches is SigLIP2-specific
+and is not used for native export. Code/API are deployed; frontend is statically
+reviewed without an agent-run build or image inspection.
+
+Native shared training holds the handle's reentrant model lock from forward
+through optimizer update, and for head expansion. Prediction, offload/restore
+and attach/detach use the same lock. Validation acquires it per batch and
+restores the prior mode, allowing prediction between batches without exposing
+training to eval toggles or transient OOD hooks. Opt-in GPU concurrency tests
+cover full/LoRA, FP16/BF16 FlashAttention and exact RAM/disk state restoration.
+The frozen A/B/C runner's training numerics remain unchanged.
+
+Native online resumes bind `_collection_runtime.json` to the selected model,
+optimizer and runtime bundle. It retains dynamic/co-occurrence/query pools and
+recency, same-epoch collection quotas, query-expansion caps, resolver timing,
+unavailable targets, augmentation-added vocabulary and pending/deduplicated
+head-growth proposals. Native resume selects this bundle before rebuilding
+online state, ignores common legacy snapshots and starts the collector after
+vocabulary restoration. Pool entries saved just before a worker proposal are
+reconciled against the restored vocabulary. Epoch-boundary quotas belong to the
+completed model epoch and are cleared when entering the next epoch.
+Snapshot failures are fatal; missing/invalid bound collection state cannot
+silently restart collection. In-flight requests, prefetched samples and network
+arrival order remain outside the exact offline-replay guarantee.
+Native online collection applies the source pixel cap before decoding; the
+processor also rejects oversized inputs as a backstop.
+For native runs, `save_best_only` suppresses periodic step/epoch archives while
+retaining `best_f1`, the latest resume bundle and explicit stop checkpoints.
+
+Native model-only publications use `_inference_commit.json` after weights,
+metadata, vocabulary and selected optional artifacts finish saving. This also
+covers `best_f1` without optimizer state. Training details expose completed
+latest/best publications as `inference_checkpoint_paths`, distinguishing
+full-unmerged, compact LoRA and merged files and showing their vocabulary path.
+UI polling checks file generation stamps; inference loading verifies hashes.
+Partial or overwritten publications are not displayed, and disabled stale
+optional files are not included. Step retention removes the publication marker.
+
+OOD reservoirs now retain their owned sampling RNG and capacity. Native restore
+is strict; legacy reservoir files without RNG remain readable in the legacy
+path.
+
+Native checkpoints save exact current/previous/previous-previous histograms and
+exposure counters in `_metrics_runtime.npz`, separately from inference metrics.
+Epoch-boundary snapshots represent the state after rotation without mutating the
+live accumulator. Rolling F1 buffers and learned thresholds use `_f1_runtime.npz`;
+native step saves occur after periodic F1/threshold updates. Runtime sidecars are
+atomic, hash-bound to resume bundles and included in retention cleanup.
+Exact metrics are persisted whenever saving metrics, rolling F1 or exposure
+tracking requires them. Masked labels do not count as observed negatives in
+native histograms, rolling F1 or validation. Vocabulary reorders and one-source
+renames align rows; new or multi-source-merged rows restart because their joint
+observations cannot be reconstructed from marginal histograms.
 
 CPU contract tests live under `backend/tests/` for response selection, head
 growth, optimizer migration, validation collection, browser sidecars, and

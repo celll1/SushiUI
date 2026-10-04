@@ -58,6 +58,16 @@ def test_trainable_conditioner_stays_resident_for_backward():
     assert events == [("dit", "cpu"), ("te", "cuda"), ("dit", "cuda")]
 
 
+@pytest.mark.parametrize("phase,name", [("vae", "vae"), ("conditioner", "te")])
+def test_swap_releases_allocator_pools_before_next_component(monkeypatch, phase, name):
+    _, events, residency = setup()
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: events.append(("cache", "release")))
+    with residency(phase):
+        events.append(("encode", phase))
+    assert events == [("dit", "cpu"), ("cache", "release"), (name, "cuda"),
+                      ("encode", phase), (name, "cpu"), ("cache", "release"), ("dit", "cuda")]
+
+
 @pytest.mark.parametrize("failure", ["encode", "stage", "release"])
 def test_failure_restores_main_model_and_releases_phase(failure):
     components, events, residency = setup()

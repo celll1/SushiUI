@@ -68,6 +68,23 @@ def test_independent_windows_are_cpu_bounded_and_group_transfers(tmp_path):
     assert not torch.cuda.is_initialized()
 
 
+def test_latent_prefill_releases_pools_only_on_bucket_change(tmp_path, monkeypatch):
+    from core.models.ming_image_01 import training_buffer
+    _, owner, batches, buffer, _, _ = setup(tmp_path)
+    owner.device = "cuda"
+    buffer.latent_interval = 3
+    batches[2][0][0]["bucket_width"] = 64
+    calls = []
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: calls.append("release"))
+    monkeypatch.setattr(buffer, "_items", lambda *args: [])
+    monkeypatch.setattr(training_buffer, "prepare_shared_items_latents", lambda *args, **kwargs:
+                        SimpleNamespace(clean=torch.zeros(1), reference_latents=None))
+    buffer._fill_latents(0)
+    assert calls == ["release"] and len(buffer.latents) == 3
+    assert all(value.clean.device.type == "cpu" for _, value in buffer.latents.values())
+    assert not torch.cuda.is_initialized()
+
+
 def test_trainable_conditioner_is_not_prefilled_and_replays_live_mnt_graph(tmp_path):
     value, _, batches, buffer, events, _ = setup(tmp_path, trainable=True)
     prepared = buffer.prepare(0, batches[0])

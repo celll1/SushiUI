@@ -3,6 +3,8 @@
 import threading
 from contextlib import contextmanager
 
+import torch
+
 from .cache import identity_key
 from .dataset import (load_shared_items, prepare_shared_items_latents, prepare_record_conditioning,
                       shared_conditioning_context, supervision_identity, verify_record_content)
@@ -47,10 +49,17 @@ class MingBatchBuffer:
 
     def _fill_latents(self, start):
         self.latents.clear()
+        previous_shape = None
         with grouped_encoder_phase(self.policy, "vae") as grouped:
             for index in range(start, min(start+self.latent_interval, len(self.batches))):
                 self.trainer._check_stop_requested()
                 pairs = self.batches[index]
+                shape = tuple((item.get("bucket_width") or item.get("width"),
+                               item.get("bucket_height") or item.get("height")) for item, _ in pairs)
+                if previous_shape is not None and shape != previous_shape and torch.device(self.trainer.device).type == "cuda":
+                    # A swap window spans buckets that the outer training loop has not visited yet.
+                    torch.cuda.empty_cache()
+                previous_shape = shape
                 identity = batch_identity(pairs)
                 prepared = prepare_shared_items_latents(self.trainer, pairs, self._items(index, pairs), residency=grouped)
                 prepared.residency = self.policy

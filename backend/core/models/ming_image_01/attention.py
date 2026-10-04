@@ -29,7 +29,10 @@ def joint_attention(query, key, value, mask, *, backend, query_chunk_tokens=None
         if valid is not None and valid.shape[-1] == key.shape[1] and valid.shape[0] in (1, key.shape[0]):
             valid = valid.expand(key.shape[:2])
             lengths = valid.sum(-1, dtype=torch.int32)
-            if bool((lengths > 0).all()) and not bool(valid.all()) and queries:
+            if bool(valid.all()):
+                # An all-valid key mask needlessly forces Flash onto native SDPA.
+                mask = None
+            elif bool((lengths > 0).all()) and queries:
                 cu_k = torch.cat((lengths.new_zeros(1), lengths.cumsum(0, dtype=torch.int32)))
                 packed_key, packed_value = key[valid], value[valid]
                 outputs = []

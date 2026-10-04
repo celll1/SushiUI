@@ -75,6 +75,30 @@ def test_packed_flash_keeps_all_query_rows_and_matches_key_mask_gradients(monkey
     assert not torch.cuda.is_initialized()
 
 
+@pytest.mark.parametrize("shape", [(2, 5), (2, 1, 1, 5), (1, 5)])
+@pytest.mark.parametrize("chunk", [0, 2])
+def test_all_valid_key_mask_keeps_flash_and_matches_gradients(monkeypatch, shape, chunk):
+    from core.models.ming_image_01 import attention
+    calls = []
+    def dispatch(q, k, v, *, attn_mask, backend, mode):
+        calls.append((attn_mask, backend))
+        return torch.nn.functional.scaled_dot_product_attention(
+            q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)).transpose(1, 2)
+    monkeypatch.setattr(attention, "dispatch_attention", dispatch)
+    values = [torch.randn(2, 5, 3, 8) for _ in range(3)]
+    first = [v.clone().requires_grad_() for v in values]
+    second = [v.clone().requires_grad_() for v in values]
+    expected = dense_oracle(*first, torch.ones(2, 5, dtype=torch.bool))
+    actual = joint_attention(*second, torch.ones(shape, dtype=torch.bool),
+                             backend="flash", query_chunk_tokens=chunk)
+    expected.square().sum().backward()
+    actual.square().sum().backward()
+    assert calls and all(mask is None and backend == "flash" for mask, backend in calls)
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+    for a, b in zip(first, second):
+        torch.testing.assert_close(a.grad, b.grad, rtol=1e-5, atol=1e-6)
+
+
 def test_training_sage_guard_and_all_masked_dense_semantics(monkeypatch):
     calls = []
     def kernel(*args, **kwargs):

@@ -64,7 +64,7 @@ lettering and do not satisfy every requested object; the Layer sample separates
 subject and background but does not establish clean transparency or exact
 recomposition. Numerical parity against original full-precision inference,
 quantization quality acceptance, official-model GPU training/resume and high-
-resolution Layer memory limits have not been established by these runs.
+resolution Layer memory limits have not been established by these inference runs.
 
 ## Final primary-output and preview verification
 
@@ -74,3 +74,47 @@ both layers. The follow-up Preview selection change is `4304b481`, integrated
 into main. Existing results verified Layer 2 / Layer 1 switching in the browser,
 with main image URLs and active indicators changing together. This UI verification
 required no additional GPU inference. See the frontend audit for review scope.
+
+## LoRA training and VRAM diagnosis (2026-10-04)
+
+Run 168 is the pending full-data Ming Design preset copied from Qwen run 167.
+The read-back parameters differ only in model/run identity, fresh-start resume
+selection, and FP32 VAE precision required by the native Ming path. The original
+datasets (38, 37, 30), rank/alpha 128, base LR 5e-5, 1024/1280/1536 resolutions,
+partition/global adapter, guidance loss and ConvRot policies are retained.
+The full preset has not been started.
+
+Run 169 exposed and corrected shared `single` image-item compatibility,
+cancellable preflight progress, duplicate primary-image decoding and redundant
+preloaded-epoch validation. Its full-data initialization was stopped; no optimizer
+step was completed. Run 170 uses 24 unchanged images/captions, eight from each
+original dataset (registered as 44, 42, 43), with a three-step cap, save every step
+and sampling disabled. This is a functional check, not a quality or throughput
+benchmark of the original dataset.
+
+The initial run 170 reached about 48 GB physical GPU usage. Phase diagnostics
+showed 19.38 GiB of live CUDA allocations but 40.75 GiB reserved when its frozen
+conditioner loaded: mixed-resolution VAE pools survived component offload.
+Release those pools before staging the next component and after encoder offload.
+Also release obsolete VAE pools between resolution buckets within a swap window;
+the outer training loop's bucket cleanup does not cover that prefill loop.
+All-valid key masks are removed before attention dispatch, preserving equivalent
+outputs/gradients while avoiding unnecessary Flash-to-native fallback.
+
+With phase release applied, the real run resumed step 1, restored all 277 named
+optimizer tensors and completed step 3 with exit code 0. Conditioner load reserved
+19.52 GiB, its forward peaked at 20.34 GiB live / 21.39 GiB reserved, and returning
+to DiT left 7.55 GiB reserved. VAE prefill still peaked at 29.64 GiB reserved in
+this run: the additional within-window bucket cleanup was added afterwards and
+verified on CPU, not rerun on GPU. Only Flash dispatch was reported in the final
+training log. These numbers are phase measurements, not an asserted maximum over
+every forward/backward allocation.
+
+Step 3 loss was 5.517778; warmup LR was 5e-7. Its checkpoint contains 414 finite
+tensors, 277 changed since step 1 and all 136 ordinary LoRA up matrices nonzero.
+Native profile, INT8 backward policy and global adapter metadata were retained;
+LoRA, training state and optimizer artifacts were saved. CPU checks covered
+attention/query chunk/residency (59 cases before the allocator additions),
+updated residency (28 cases), and buffer behavior (7 cases); these sets overlap.
+Changed backend files compile and import without CUDA initialization. Full-data
+long-run memory behavior and quality recovery remain unverified.

@@ -15,6 +15,13 @@ class MingTrainingResidency:
         self.components, self.device, self.modes = components, torch.device(device), modes
         self.active = None
 
+    def _report_memory(self, phase, stage):
+        if self.device.type == "cuda":
+            print(f"[Ming Residency] {phase} {stage}: "
+                  f"CUDA allocated={torch.cuda.memory_allocated(self.device) / 2**30:.2f} GiB "
+                  f"reserved={torch.cuda.memory_reserved(self.device) / 2**30:.2f} GiB "
+                  f"peak={torch.cuda.max_memory_allocated(self.device) / 2**30:.2f} GiB", flush=True)
+
     @contextmanager
     def __call__(self, phase):
         if phase not in {"vae", "conditioner"}:
@@ -31,16 +38,24 @@ class MingTrainingResidency:
         try:
             if swap:
                 move_component(self.components.transformer, "cpu")
+                if self.device.type == "cuda":
+                    torch.cuda.empty_cache()
             encoder.to(device=self.device)
+            self._report_memory(phase, "loaded")
             yield
         finally:
             try:
+                self._report_memory(phase, "finished")
                 if release_encoder:
                     encoder.to(device="cpu")
+                    if self.device.type == "cuda":
+                        # Mixed-resolution encoder work must not retain allocator pools across phases.
+                        torch.cuda.empty_cache()
             finally:
                 try:
                     if swap:
                         move_component(self.components.transformer, self.device)
+                    self._report_memory(phase, "released")
                 finally:
                     self.active = None
 

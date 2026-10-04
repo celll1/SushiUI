@@ -28,6 +28,43 @@ from core.rewiring.spec import OPERATORS, build_spec
 from core.rewiring.artifacts import read_directory_topology
 
 
+def test_training_pixel_alignment_tracks_nested_topology():
+    from types import SimpleNamespace
+    from core.training.base_trainer import BaseTrainer
+    model = create_transformer(config("zero_masked"), device="cpu", dtype=torch.float32)
+    owner = SimpleNamespace(arch=SimpleNamespace(pixel_align=16), is_ming_image_01=True, transformer=model)
+    assert BaseTrainer._arch_pixel_align(owner) == 16
+    restore_topology(model, spec_for(model))
+    assert BaseTrainer._arch_pixel_align(owner) == 64
+    owner.is_ming_image_01 = False
+    assert BaseTrainer._arch_pixel_align(owner) == 16
+
+
+@pytest.mark.parametrize("count,halo", [(2, 0), (4, 0), (4, 2)])
+def test_random_partition_inputs_align_to_nested_unet_without_changing_cores(count, halo):
+    from types import SimpleNamespace
+    from core.models.ming_image_01.partition_training import training_plan
+    from core.models.ming_image_01.partition import MingPartitionAdapter
+    from core.rewiring.spec import preview_plan
+    model = create_transformer(config("zero_masked"), device="cpu", dtype=torch.float32)
+    spec = spec_for(model)
+    restore_topology(model, spec)
+    settings = dict(dit_partition_training_enabled=True, dit_partition_mode="fixed",
+                    dit_partition_fixed_count=count, dit_partition_halo_tokens=halo,
+                    dit_partition_seed=42, dit_partition_split_ratio_min=.35, dit_partition_split_ratio_max=.65)
+    owner = SimpleNamespace(config=settings, transformer=model)
+    clean = torch.zeros(1, 16, 1, 32, 48)
+    for occurrence in range(8):
+        owner._current_batch_position = occurrence
+        plan = training_plan(owner, clean)
+        original = MingPartitionAdapter().build_fixed_plan(16, 24, count=count, halo=halo,
+            seed=42, epoch=0, occurrence=occurrence, split_ratio_min=.35, split_ratio_max=.65)
+        assert [region.core for region in plan.regions] == [region.core for region in original.regions]
+        for region in plan.regions:
+            assert region.input.top % 4 == region.input.left % 4 == 0
+            preview_plan(spec, region.input.height, region.input.width)
+
+
 def config(padding):
     return {"dim": 24, "n_layers": 6, "n_refiner_layers": 1, "n_heads": 3,
             "n_kv_heads": 3, "cap_feat_dim": 8, "in_channels": 16,
@@ -74,6 +111,10 @@ def test_native_nested_rewiring_gradients_reference_caption_and_batch_padding(pa
 def test_transport_identity_preserves_each_frame_and_auxiliary_update():
     model = create_transformer(config("learned"), device="cpu", dtype=torch.float32)
     class Add(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.attention = torch.nn.Identity()
+
         def forward(self, value, mask, positions, modulation):
             assert mask.shape == value.shape[:2]
             assert positions.shape[:2] == value.shape[:2]

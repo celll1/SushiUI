@@ -14943,7 +14943,13 @@ class BaseTrainer(ABC):
         SD/SDXL declare 8, so their bucket lists are unchanged; 512 and 1024
         generate an identical list under any of 8/16/32 in any case.
         """
-        return int(getattr(getattr(self, "arch", None), "pixel_align", 8))
+        alignment = int(getattr(getattr(self, "arch", None), "pixel_align", 8))
+        if getattr(self, "is_ming_image_01", False):
+            import math
+            from core.models.ming_image_01.residual_unet import spatial_alignment
+            h, w = spatial_alignment(self.transformer)
+            alignment *= math.lcm(h, w)
+        return alignment
 
     @staticmethod
     def _still_latent_5d_is_valid(latent, width: int, height: int) -> bool:

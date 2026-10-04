@@ -1,12 +1,26 @@
 """Ming target-only residual transport with native reference/padding state."""
 
 import inspect
+import math
 
 import torch
 
 from core.rewiring.runtime import run_rewired_stream
 from core.rewiring.spec import preview_plan, validate_model_identity
 from core.rewiring.training import NO_RESUME_SPEC
+
+
+def spatial_alignment(model):
+    """Cumulative downsample multiples for the native spatial token grid."""
+    spec = getattr(model, "_residual_unet_spec", None)
+    factors = {}
+    height = width = 1
+    for region in (spec or {}).get("regions", []):
+        parent_h, parent_w = factors.get(region["parent"], (1, 1))
+        h, w = region["down_factor"]
+        factors[region["id"]] = (parent_h*h, parent_w*w)
+        height, width = math.lcm(height, parent_h*h), math.lcm(width, parent_w*w)
+    return height, width
 
 
 def native_config(config):

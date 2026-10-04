@@ -15743,7 +15743,8 @@ class TrainingRunCreateRequest(BaseModel):
             if self.training_method not in {"lora", "full_finetune"}:
                 raise ValueError("Residual rewiring currently supports lora and full_finetune training")
             from core.rewiring.training import validate_training_features
-            validate_training_features(self.model_dump())
+            from core.training.training_config import _detect_arch
+            validate_training_features(self.model_dump(), _detect_arch(self.base_model_path))
         return self
 
     dit_partition_training_enabled: bool = TRAINING_DEFAULTS["dit_partition_training_enabled"]

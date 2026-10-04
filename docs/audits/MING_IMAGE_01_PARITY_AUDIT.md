@@ -1,5 +1,26 @@
 # Ming-Image 0.1 feature parity audit
 
+## Training follow-up audit (2026-10-04)
+
+Rechecked source ownership for encoding progress, stop/cancel, sampling progress,
+debug previews, checkpoint topology/global metadata and LoRA restoration, native
+conditioning, optimizer/MNT and the frontend U-Net editor/phase monitor. This
+found two further actionable gaps: API rewiring validation omitted the detected
+architecture and rejected Ming partition/global combinations; bucket and random
+partition inputs did not derive cumulative U-Net spatial divisibility. Both are
+fixed. Native bucket alignment follows the installed topology (64 pixels for the
+two-stage preset); partition input bounds expand to aligned coordinates while
+loss cores and their exact coverage remain unchanged.
+
+CPU validation: 50 native rewiring/partition backward/LoRA resume/buffer/progress
+cases passed; 14 API rewiring and shared partition cases passed separately.
+The symbolic transport fixture now supplies the attention attribute expected by
+native style hooks, and the partition oracle crops expanded inputs to loss cores.
+This is source and CPU acceptance, not official-weight U-Net GPU/quality acceptance.
+Run 170's save-every-step and disabled automatic sampling are retained settings,
+not missing implementations. The new comparison run changes only rewiring mode
+and spec, apart from run identity and the derived legacy primary dataset ID.
+
 Date: 2026-10-02. Scope: source, contracts and recorded CPU milestone evidence in
 `codex/ming-image-design` through `456edc8c`, plus the CPU Adafactor follow-up below; no official weights, running API,
 frontend build/type-check or actual CUDA execution. This is a completed source

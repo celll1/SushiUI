@@ -396,3 +396,22 @@ def test_primary_decode_is_reused_for_target_and_reference(tmp_path, monkeypatch
     assert len(decoded) == (1 if profile == "generation_edit" else 2)
     assert record.targets[0] == record.references[0]
     assert record.source_size == (64, 32)
+
+
+def test_preloaded_epoch_keeps_validated_ming_records(tmp_path):
+    from types import SimpleNamespace
+    from core.models.ming_image_01.dataset import annotate_datasets
+    from core.training.bucketing import BucketManager
+    from bucket_caption_epoch_sync_test import _Trainer
+    dataset = shared_dataset(tmp_path)
+    annotate_datasets([dataset], profile="layer_decompose")
+    dataset.reload_for_epoch = lambda **kwargs: None
+    owner = _Trainer(pixel_align=16)
+    owner.is_ming_image_01 = True
+    def duplicate_validation(*args, **kwargs):
+        raise AssertionError("Preloaded records must not be decoded again")
+    owner._annotate_ming_items = duplicate_validation
+    manager = BucketManager(base_resolutions=[32], divisibility=16, strategy="resize")
+    records = [item["_ming_record"] for item in dataset.items]
+    pairs = owner._prepare_epoch_items([dataset], 0, 7, manager, [32])
+    assert [item["_ming_record"] for item, _ in pairs] == records

@@ -19,7 +19,8 @@ def batch_identity(pairs):
 
 
 class MingBatchBuffer:
-    def __init__(self, trainer, batches, *, epoch, batch_offset, latent_interval, text_interval, prefetch_depth=None):
+    def __init__(self, trainer, batches, *, epoch, batch_offset, latent_interval, text_interval, prefetch_depth=None,
+                 progress_callback=None):
         if any(type(v) is not int or v < 1 for v in (latent_interval, text_interval)):
             raise ValueError("Ming swap intervals must be positive integers")
         if any(type(v) is not int or v < 0 for v in (epoch, batch_offset)):
@@ -27,6 +28,7 @@ class MingBatchBuffer:
         self.trainer, self.batches, self.epoch, self.offset = trainer, batches, epoch, batch_offset
         self.policy = trainer.ming_training_residency
         self.latent_interval, self.text_interval = latent_interval, text_interval
+        self.progress_callback = progress_callback
         self.latents, self.conditions = {}, {}
         self.closed = False
         self.next_cursor = 0
@@ -47,8 +49,16 @@ class MingBatchBuffer:
     def _items(self, index, pairs):
         return load_shared_items(self.trainer, pairs, epoch=self.epoch, batch_position=self.offset+index)
 
+    def _progress(self, phase, step, total):
+        if self.progress_callback is not None:
+            self.progress_callback(phase=phase, step=step, total=total)
+
     def _fill_latents(self, start):
         self.latents.clear()
+        end = min(start+self.latent_interval, len(self.batches))
+        total = sum(len(batch) for batch in self.batches[start:end])
+        completed = 0
+        self._progress("latent_cache", 0, total)
         previous_shape = None
         with grouped_encoder_phase(self.policy, "vae") as grouped:
             for index in range(start, min(start+self.latent_interval, len(self.batches))):
@@ -68,9 +78,16 @@ class MingBatchBuffer:
                     prepared.reference_latents = [None if value is None else value.detach().cpu()
                                                   for value in prepared.reference_latents]
                 self.latents[index] = (identity, prepared)
+                completed += len(pairs)
+                if (index-start+1) % 10 == 0 or index+1 == end:
+                    self._progress("latent_cache", completed, total)
 
     def _fill_conditions(self, start):
         self.conditions.clear()
+        end = min(start+self.text_interval, len(self.batches))
+        total = sum(len(batch) for batch in self.batches[start:end])
+        completed = 0
+        self._progress("text_encoder_cache", 0, total)
         with grouped_encoder_phase(self.policy, "conditioner") as grouped:
             for index in range(start, min(start+self.text_interval, len(self.batches))):
                 self.trainer._check_stop_requested()
@@ -97,6 +114,9 @@ class MingBatchBuffer:
                 condition = source.for_step().detached()
                 condition.queries, condition.direct = condition.queries.cpu(), condition.direct.cpu()
                 self.conditions[index] = (batch_identity(pairs), condition)
+                completed += len(pairs)
+                if (index-start+1) % 10 == 0 or index+1 == end:
+                    self._progress("text_encoder_cache", completed, total)
 
     def prepare(self, index, pairs):
         if self.closed or type(index) is not int or not 0 <= index < len(self.batches):

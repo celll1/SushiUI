@@ -139,6 +139,36 @@ def test_plain_design_conditioning_matches_without_pixel_decode(tmp_path, monkey
     buffer.close()
 
 
+def test_initial_and_tail_refills_publish_existing_progress_phases(tmp_path):
+    _, _, batches, buffer, _, _ = setup(tmp_path, profile="generation_edit")
+    snapshots = []
+    buffer.progress_callback = lambda **snapshot: snapshots.append(snapshot)
+    buffer.prepare(0, batches[0])
+    assert snapshots == [
+        dict(phase="latent_cache", step=0, total=2),
+        dict(phase="latent_cache", step=2, total=2),
+        dict(phase="text_encoder_cache", step=0, total=3),
+        dict(phase="text_encoder_cache", step=3, total=3)]
+    snapshots.clear()
+    buffer.prepare(1, batches[1])
+    assert snapshots == []
+    buffer.prepare(2, batches[2])
+    assert snapshots == [dict(phase="latent_cache", step=0, total=1),
+                         dict(phase="latent_cache", step=1, total=1)]
+    buffer.close()
+
+
+def test_cancelled_refill_never_reports_completion(tmp_path):
+    _, owner, batches, buffer, _, _ = setup(tmp_path)
+    snapshots = []
+    buffer.progress_callback = lambda **snapshot: snapshots.append(snapshot)
+    owner._check_stop_requested = lambda: (_ for _ in ()).throw(KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        buffer.prepare(0, batches[0])
+    assert snapshots == [dict(phase="latent_cache", step=0, total=2)]
+    buffer.close()
+
+
 def test_source_edit_after_prefill_is_refused_before_consumption(tmp_path):
     _, _, batches, buffer, _, _ = setup(tmp_path)
     buffer.prepare(0, batches[0])

@@ -164,6 +164,14 @@ The running child was not restarted; these changes apply to subsequent training
 processes, and a cache must first be populated by a successful validation pass.
 # Training refill and transfer follow-up (2026-10-04)
 
+Follow-up: swap buffer progress now uses the same `latent_cache` and
+`text_encoder_cache` callback phases as Qwen/SDXL, including initial refill,
+subsequent refill and partial tail windows. Successful item counts are reported
+at start, every ten batches and completion; cancellation never emits a false
+completion. The existing frontend polling and phase bar consume these fields.
+The running child retains its imported code, so this correction applies on its
+next restart; the progressing run was not interrupted solely for this display fix.
+
 Ming coincident latent/conditioning refills now defer restoring DiT until both
 encoder phases finish, including failure/stop cleanup. Plain Design batches
 without references or persistent conditioning caches prepare text inputs from

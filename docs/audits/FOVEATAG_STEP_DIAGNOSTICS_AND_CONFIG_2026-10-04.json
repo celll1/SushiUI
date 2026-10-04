@@ -6,6 +6,8 @@
     "interval_steps": 1000,
     "origin": "training_forward_before_optimizer_update",
     "actual_step_verified": 2000,
+    "second_actual_step_verified": 3000,
+    "distinct_actual_training_samples_verified": 2,
     "published_filename": "training_routed_2000_c7c42438.png",
     "actual_training_boxes_and_random_exploration_distinguished": true,
     "extra_inference_forward": false,
@@ -19,7 +21,9 @@
     "saved_for_config_ui_deployment": 2716,
     "epoch_cursor": 0,
     "sample_offset": 21728,
-    "stop_was_requested_not_failure": true
+    "stop_was_requested_not_failure": true,
+    "resumed_after_config_ui_deployment_verified_step": 3150,
+    "running_without_error_after_deployment": true
   },
   "configuration": {
     "endpoint": "PATCH /tagger-training/runs/{run_id}/joint-config",
@@ -28,7 +32,9 @@
     "optimizer_moments_preserved": true,
     "rng_preserved": true,
     "schedule_changes_rebased_at_saved_step": true,
-    "dataset_topology_and_input_policy_remain_frozen": true
+    "dataset_topology_and_input_policy_remain_frozen": true,
+    "live_api_edit_save_and_restore_verified": true,
+    "live_active_edit_rejection_status": 409
   },
   "verification": {
     "initial_cpu_regressions_passed": 465,

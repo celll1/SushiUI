@@ -705,6 +705,8 @@ class ImageGenerationPipeline(DiffusionPipeline):
             if image.dim() == 5:
                 image = image.squeeze(2)
 
+            if not torch.isfinite(image).all():
+                raise ValueError("Ming VAE produced nonfinite decoded pixels")
             image = self.image_processor.postprocess(image, output_type=output_type)
 
         # Offload all models

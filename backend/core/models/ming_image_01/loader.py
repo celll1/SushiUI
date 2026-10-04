@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import torch
+
 from .artifact import MingArtifact, inspect_artifact
 
 
@@ -125,7 +127,7 @@ def load_components(path, *, dtype, conditioner_attention: str) -> MingComponent
     global_payload = payload_from_directory(artifact.root, latent_channels=transformer.in_channels, hidden_dim=transformer.dim)
     if global_payload is not None:transformer._ming_partition_global_payload = global_payload
     vae, info = AutoencoderKLQwenImage.from_pretrained(
-        str(artifact.components["vae"]), torch_dtype=dtype, local_files_only=True,
+        str(artifact.components["vae"]), torch_dtype=torch.float32, local_files_only=True,
         low_cpu_mem_usage=True, output_loading_info=True)
     _strict_loading_info(info, "vae")
     vae.input_channels = artifact.configs["vae"]["input_channels"]

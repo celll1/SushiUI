@@ -13,7 +13,7 @@ Vendored files live under `backend/core/models/ming_image_01/vendor/`. Original 
 | `diffusion/autoencoder_kl_qwenimage.py` | Apache-2.0 | `5550326b4a24bd091a536b6130e34cc5c278697b6f5b0007fbb04f89b2fd93c8` | Unmodified |
 | `diffusion/generator.py` | MIT (root license) | `8c6bab1f288931edfac8a09c823cc1fc54adbc8f39c517400ff41df9511c96f3` | package-relative imports; AST-equivalent trailing-whitespace cleanup |
 | `diffusion/padding.py` | MIT (root license) | `009b5b7c22858827f0de132dd30cdbd5b51788cebb1401ee150ee4d6ef664d29` | Unmodified |
-| `diffusion/pipeline.py` | Apache-2.0 | `4ec14e6b7f9d541bd5f10c6c53495bc4c383bd8416f8236150d02c6282be364f` | AST-equivalent trailing-whitespace cleanup |
+| `diffusion/pipeline.py` | Apache-2.0 | `4ec14e6b7f9d541bd5f10c6c53495bc4c383bd8416f8236150d02c6282be364f` | reject nonfinite decoded pixels before image postprocessing; AST-equivalent trailing-whitespace cleanup |
 | `diffusion/transformer.py` | Apache-2.0 | `bec8b892e1b08f0fb6d5c305cec3047527858a032b4ddfaef0f9198365217de4` | package-relative imports; device-aware FP32 rotary/timestep computation; optional target-only residual U-Net dispatch; explicit full-canvas target coordinates and independent full-reference patch packing for spatial partitions; bounded partial main-stream gradient checkpointing; optional target-token-only global input residual; AST-equivalent trailing-whitespace cleanup |
 | `image_processing_bailingmm2.py` | Apache-2.0 | `ae6275c6aaae742b32230ff9a84475b535cf882af95a0ef7bca9ebfe93b20d0c` | package-relative imports |
 | `inference_profile.py` | MIT (root license) | `0ac0424173f65c143b4ff7b7004e06db9af287f456031e0a9c58995533b6329d` | Unmodified |

@@ -111,6 +111,8 @@ class MingSampler:
 
         def callback(_pipe, index, timestep, values):
             check_cancel()
+            if not torch.isfinite(values["latents"]).all():
+                raise ValueError(f"Ming denoising produced nonfinite latents at step {index + 1}")
             if reference_guides:
                 from .reference_guide import blend_guides
                 values["latents"] = blend_guides(values["latents"], reference_guides,

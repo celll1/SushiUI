@@ -8494,6 +8494,31 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /tagger-training/runs/{run_id}/joint-config:
+    patch:
+      tags: [tagger-training]
+      summary: Edit paused FoveaTag joint training settings without discarding optimizer state
+      description: |
+        Running/starting runs are refused. Editable keys are epochs, batch_size,
+        workers, learning_rate, weight_decay, warmup_steps, candidate_count,
+        selection_budget, random_count, oracle_interval, oracle_chunk_size,
+        router_weight, checkpoint_every_steps, log_every, review_steps and external_flash.
+        Data, model topology, source initialization and view policy remain immutable.
+        Resume retains Adam moments and RNG. Schedule edits rebase the schedule at
+        the saved optimizer step; configuration revisions are recorded.
+      parameters:
+        - {name: run_id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: true}
+            example: {learning_rate: 0.00005, oracle_interval: 8}
+      responses:
+        '200': {description: Updated run configuration}
+        '404': {description: Run not found}
+        '409': {description: Stop the run before editing}
+        '422': {description: Unsupported run, frozen key or invalid values/budget}
   /tagger-training/runs/{run_id}/start:
     post:
       tags: [tagger-training]

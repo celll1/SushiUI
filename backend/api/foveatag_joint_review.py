@@ -83,10 +83,12 @@ def start_joint_review(run, db, threads, callback_factory, *, continuous=False):
     from core.tagger.foveatag.run_control import FoveaRunControl
     from core.tagger.foveatag.direct_joint import run_direct_joint
     from api.tagger_diagnostics import training_due, schedule_training
-    run_id, plan = run.run_id, run.config["joint_review"]
-    diagnostic_run = SimpleNamespace(run_id=run_id, output_dir=run.output_dir, config=run.config)
+    run_id = run.run_id
     activity = "FoveaTag joint review " + run_id
     with _lifecycle_lock:
+        db.refresh(run)
+        plan = run.config["joint_review"]
+        diagnostic_run = SimpleNamespace(run_id=run_id, output_dir=run.output_dir, config=run.config)
         if run.status in ("running", "starting", "completed") or run_id in threads:
             raise HTTPException(409, "Joint review is already active or complete")
         try:
@@ -164,6 +166,7 @@ def start_joint_review(run, db, threads, callback_factory, *, continuous=False):
         thread = threading.Thread(target=worker, daemon=True, name="fovea-joint-" + run_id[:8])
         threads[run_id] = {"thread": thread, "fovea_control": control, "output_dir": run.output_dir}
         run.status, run.error_message = "starting", None
+        run.status_message = "FoveaTag learned routing: preparing"
         run.started_at = run.started_at or datetime.now()
         run.last_resumed_at = datetime.now()
         run.resumed_from_step = run.current_step
@@ -177,3 +180,51 @@ def start_joint_review(run, db, threads, callback_factory, *, continuous=False):
             db.commit()
             raise
         return {"message": "started", "run": run.to_list_dict()}
+
+
+def edit_joint_config(run_id, updates, db):
+    from api.routes import FoveaJointReviewRequest
+    from api.param_defaults import TAGGER_JOINT_REVIEW_DEFAULTS
+    from core.tagger.foveatag.joint_checkpoint import EDITABLE_JOINT_FIELDS
+    from core.tagger.foveatag.supervised_run import _write_json_atomic
+    from database.models import TaggerTrainingRun
+    from pydantic import ValidationError
+    with _lifecycle_lock:
+        run = db.query(TaggerTrainingRun).filter_by(run_id=run_id).first()
+        if run is None:
+            raise HTTPException(404, "Run not found")
+        if run.config.get("architecture") != "foveatag_joint_review":
+            raise HTTPException(422, "A FoveaTag joint run is required")
+        if run.status not in ("pending", "stopped", "failed"):
+            raise HTTPException(409, "Stop the run before saving training settings")
+        if set(updates) - set(EDITABLE_JOINT_FIELDS):
+            raise HTTPException(422, "Dataset, model topology and input policy cannot be edited in this run")
+        original = run.config["joint_review"]
+        try:
+            request = FoveaJointReviewRequest(source_run_id="config-edit", output_dir=run.output_dir,
+                **{**{key: original[key] for key in TAGGER_JOINT_REVIEW_DEFAULTS}, **updates})
+        except ValidationError as exc:
+            raise HTTPException(422, "Invalid training values or routing budget") from exc
+        if request.epochs < (run.current_epoch or 0):
+            raise HTTPException(422, "Epoch target cannot precede the saved epoch")
+        plan = {**original, **{key: request.model_dump()[key] for key in EDITABLE_JOINT_FIELDS}}
+        changes = {key: {"before": original[key], "after": plan[key]} for key in EDITABLE_JOINT_FIELDS if original[key] != plan[key]}
+        if not changes:
+            return run.to_list_dict()
+        revisions = [*run.config.get("joint_config_history", []),
+            {"saved_step": run.current_step, "updated_at": datetime.now().isoformat(), "changes": changes}]
+        run.config = {**run.config, "joint_review": plan, "joint_config_history": revisions,
+            "epochs": plan["epochs"], "batch_size": plan["batch_size"], "learning_rate": plan["learning_rate"]}
+        run.total_epochs = plan["epochs"]
+        run.total_steps = math.ceil(plan["epoch_samples"] / plan["batch_size"]) * plan["epochs"]
+        root = Path(run.output_dir)
+        try:
+            _write_json_atomic(root / "review_plan.json", plan)
+            _write_json_atomic(root / "config_revisions.json", revisions)
+            db.commit()
+        except Exception:
+            db.rollback()
+            _write_json_atomic(root / "review_plan.json", original)
+            raise
+        db.refresh(run)
+        return run.to_list_dict()

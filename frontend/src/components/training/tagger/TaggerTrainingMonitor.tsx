@@ -16,6 +16,7 @@ import VocabularyBrowser from "@/components/tagger/VocabularyBrowser";
 import TaggerMetricChart, { EpochBoundary } from "./TaggerMetricChart";
 import DanbooruMetricsPanel from "./DanbooruMetricsPanel";
 import TaggerDiagnosticsPanel from "./TaggerDiagnosticsPanel";
+import FoveaJointConfigEditor from "./FoveaJointConfigEditor";
 
 interface TaggerTrainingMonitorProps {
   run: TaggerTrainingRun;
@@ -222,6 +223,7 @@ export default function TaggerTrainingMonitor({
   const [actionLoading, setActionLoading] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);  // Configuration panel collapsed by default
+  const [jointEditOpen, setJointEditOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Short-window rate (last ~20 samples, ~30s of WS step events).  Used
   // as the primary iter/s display and the basis for the ETA estimate.
@@ -708,7 +710,7 @@ export default function TaggerTrainingMonitor({
             <span className="text-xs text-gray-500">
               {run.config.architecture === "foveatag_phase3"
                 ? "FoveaTag A/B/C · FULL"
-                : run.config.architecture === "foveatag_joint_review" ? "FoveaTag · learned router joint · owner review"
+                : run.config.architecture === "foveatag_joint_review" ? "FoveaTag · learned router joint"
                 : `${run.config.architecture === "foveatag" ? "FoveaTag · " : ""}${run.training_method.toUpperCase()}`} · {run.num_tags} tags
             </span>
           </div>
@@ -1274,6 +1276,9 @@ export default function TaggerTrainingMonitor({
           <VocabularyBrowser runId={run.run_id} />
         </section>
 
+        {jointEditOpen && run.config.architecture === "foveatag_joint_review" && <FoveaJointConfigEditor
+          key={run.run_id} run={run} active={isActive} onSaved={updateRun} onClose={() => setJointEditOpen(false)} />}
+
         {error && (
           <div className="p-3 bg-red-900/30 border border-red-700 rounded text-sm text-red-400">
             {error}
@@ -1313,6 +1318,9 @@ export default function TaggerTrainingMonitor({
           Delete
         </button>
         <div className="flex gap-2">
+          {run.config.architecture === "foveatag_joint_review" && run.status !== "completed" && <button
+            onClick={() => setJointEditOpen(true)} disabled={actionLoading}
+            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-600 rounded text-sm">Edit Config</button>}
           {onEditConfig && !["foveatag_phase3", "foveatag_joint_review"].includes(String(run.config.architecture)) && ["pending", "stopped", "failed"].includes(run.status) && (
             <button
               onClick={onEditConfig}

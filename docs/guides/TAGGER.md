@@ -20,6 +20,12 @@ The latter is the latest review export, not an automatically accepted best model
 `POST /tagger-training/runs/{run_id}/start?continuous=true` resumes joint runs
 without that segment stop. The joint monitor uses continuous starts; explicit
 stop still saves the optimizer/scheduler/RNG state.
+The joint monitor exposes Edit Config while running, but saving requires a
+stopped/pending/failed run. `/tagger-training/runs/{run_id}/joint-config` accepts
+the joint optimizer, schedule, batch/worker, routing and checkpoint/log settings;
+it refuses dataset, topology and input-policy changes. Revisions are recorded.
+Resumes preserve Adam moments and RNG; changed LR/warmup/epoch/batch settings
+rebase the schedule at the saved optimizer step and remaining sample budget.
 Defaults live in
 `TAGGER_JOINT_REVIEW_DEFAULTS`, not the generic SigLIP2 creation request.
 The monitor's loss curve uses the classification ASL term; the joint summary

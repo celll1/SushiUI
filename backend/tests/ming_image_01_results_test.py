@@ -62,7 +62,8 @@ def test_layer_groups_preserve_alpha_order_database_and_png_metadata(store):
     value = output(batch=2)
     response = save(value, store)
     assert len(response["images"]) == 6 and len(response["groups"]) == 2
-    assert response["image"] == response["images"][0]
+    assert response["image"] == response["images"][1]
+    assert value.primary.tobytes() == value.groups[0].values[1].tobytes()
     assert store.query(GeneratedImage).count() == 6
     for batch, group in enumerate(response["groups"]):
         assert group["roles"] == value.groups[batch].roles
@@ -196,3 +197,12 @@ def test_four_routes_handle_rich_output_before_generic_latent_or_single_image_sa
                    and isinstance(node.func, ast.Name) and node.func.id in {"store_latent", "save_image_with_metadata"}]
         assert generic and all(finish[0].lineno < call.lineno for call in generic)
         assert any(key.arg == "skip_gallery" for key in finish[0].keywords)
+
+
+def test_layer_skip_gallery_selects_layer_one_and_keeps_canvas(store):
+    response = save(output(), store, skip_gallery=True)
+    assert response["filename"] == response["groups"][0]["filenames"][1]
+    assert response["image_path"].endswith(response["filename"])
+    assert response["groups"][0]["roles"] == ["auxiliary_canvas", "layer_1", "layer_2"]
+    assert len(response["groups"][0]["filenames"]) == 3
+    assert store.query(GeneratedImage).count() == 0

@@ -55,4 +55,5 @@ class MingGenerationOutput:
 
     @property
     def primary(self):
-        return self.groups[0].values[0]
+        group = self.groups[0]
+        return group.values[1 if group.profile == "layer_decompose" else 0]

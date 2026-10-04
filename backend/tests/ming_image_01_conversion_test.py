@@ -46,6 +46,8 @@ def digest_tree(root):
 def test_real_offline_quantization_shards_generation_and_frozen_companions(tmp_path,monkeypatch,profile,format_):
     source=tmp_path/"source"
     original,topology=make_source(source,profile)
+    (source/"LICENSE").write_text("MIT source license fixture\n")
+    (source/"NOTICE.txt").write_text("Source notice fixture\n")
     before=digest_tree(source)
     from core.models.ming_image_01.vendor.modeling_bailingmm2 import BailingMM2NativeForConditionalGeneration
     from core.models.ming_image_01.vendor.diffusion.autoencoder_kl_qwenimage import AutoencoderKLQwenImage
@@ -61,6 +63,8 @@ def test_real_offline_quantization_shards_generation_and_frozen_companions(tmp_p
     assert progress[-1][0]==progress[-1][1]==len(original.state_dict())
     manifest=Path(result["manifest"])
     assert (manifest.parent/"transformer/diffusion_pytorch_model.safetensors.index.json").is_file()
+    for name in ("LICENSE", "NOTICE.txt"):
+        assert (manifest.parent/name).read_bytes() == (source/name).read_bytes()
     for name in ("mllm","connector","mlp","vae","scheduler"):
         assert digest_tree(source/name)==digest_tree(manifest.parent/name)
     from core.model_loader import ModelLoader

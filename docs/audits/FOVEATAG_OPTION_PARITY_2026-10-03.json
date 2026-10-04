@@ -5,19 +5,19 @@
     "main and design-branch backend/api/param_defaults.py TAGGER_TRAINING_DEFAULTS",
     "main and design-branch backend/api/routes.py TaggerTrainingRunCreateRequest"
   ],
-  "scope": "Per-option inventory and bounded evidence, not a blanket feature-parity claim. Native implementation refers to the isolated branch, not live deployment. The original comparison retains its immutable budget and stays paused until the requested integration is complete. Shared-path static review records consumption and applicability, not live end-to-end behavior or external service reproducibility.",
+  "scope": "Per-option inventory and bounded evidence, not a blanket feature-parity claim. Common learned-router training, diagnostics and native tools were deployed on 2026-10-04. The original comparison remains paused; the active legacy joint run resumes continuously. Shared-path static review records consumption and applicability, not verification of every optimizer, external collection service or owner-run frontend build.",
   "options": [
-    {"name": "fovea_learned_routing", "in_defaults": true, "in_request": true, "status": "native_learned_router_cpu_verified_not_deployed"},
-    {"name": "fovea_candidate_count", "in_defaults": true, "in_request": true, "status": "native_learned_router_cpu_verified_not_deployed"},
-    {"name": "fovea_random_count", "in_defaults": true, "in_request": true, "status": "native_learned_router_cpu_verified_not_deployed"},
-    {"name": "fovea_oracle_interval", "in_defaults": true, "in_request": true, "status": "native_learned_router_cpu_verified_not_deployed"},
-    {"name": "fovea_oracle_chunk_size", "in_defaults": true, "in_request": true, "status": "native_learned_router_cpu_verified_not_deployed"},
-    {"name": "fovea_router_weight", "in_defaults": true, "in_request": true, "status": "native_learned_router_cpu_verified_not_deployed"},
+    {"name": "fovea_learned_routing", "in_defaults": true, "in_request": true, "status": "native_routing_cpu_gpu_verified_deployed"},
+    {"name": "fovea_candidate_count", "in_defaults": true, "in_request": true, "status": "native_routing_cpu_gpu_verified_deployed"},
+    {"name": "fovea_random_count", "in_defaults": true, "in_request": true, "status": "native_routing_cpu_gpu_verified_deployed"},
+    {"name": "fovea_oracle_interval", "in_defaults": true, "in_request": true, "status": "native_routing_cpu_gpu_verified_deployed"},
+    {"name": "fovea_oracle_chunk_size", "in_defaults": true, "in_request": true, "status": "native_routing_cpu_gpu_verified_deployed"},
+    {"name": "fovea_router_weight", "in_defaults": true, "in_request": true, "status": "native_routing_cpu_gpu_verified_deployed"},
     {
       "name": "architecture",
       "in_defaults": true,
       "in_request": true,
-      "status": "native_schema_ui_verified_not_deployed"
+      "status": "native_schema_deployed_ui_statically_reviewed"
     },
     {
       "name": "ban_tags",
@@ -875,7 +875,8 @@
       "name": "save_base_model",
       "in_defaults": true,
       "in_request": true,
-      "status": "architecture_specific_port_pending"
+      "status": "native_local_copy_and_optional_random_initial_base_verified",
+      "evidence": "Local scratch encoders are copied with metadata; full random initialization exports the actual initial encoder before training. Existing base snapshots are not replaced and save_base_model=false suppresses creation."
     },
     {
       "name": "save_best_only",
@@ -963,7 +964,7 @@
       "name": "use_flash_attention",
       "in_defaults": true,
       "in_request": true,
-      "status": "native_external_flash_verified_api_ui_deployment_pending",
+      "status": "native_external_flash_gpu_verified_deployed_ui_statically_reviewed",
       "evidence": "External dense and packed-varlen kernels; real GPU FP16/BF16 forward/backward and checkpointed encoder tests pass. Frozen imported A/B/C execution remains unchanged."
     },
     {
@@ -1050,19 +1051,19 @@
       "name": "fovea_feature_dim",
       "in_defaults": true,
       "in_request": true,
-      "status": "native_factory_schema_ui_verified_not_deployed"
+      "status": "native_factory_deployed_ui_statically_reviewed"
     },
     {
       "name": "fovea_local_size",
       "in_defaults": true,
       "in_request": true,
-      "status": "native_factory_schema_ui_verified_not_deployed"
+      "status": "native_factory_deployed_ui_statically_reviewed"
     },
     {
       "name": "fovea_local_views",
       "in_defaults": true,
       "in_request": true,
-      "status": "native_factory_schema_ui_verified_not_deployed"
+      "status": "native_factory_deployed_ui_statically_reviewed"
     },
     {
       "name": "fovea_max_source_pixels",
@@ -1074,7 +1075,7 @@
       "name": "fovea_overview_size",
       "in_defaults": true,
       "in_request": true,
-      "status": "native_factory_schema_ui_verified_not_deployed"
+      "status": "native_factory_deployed_ui_statically_reviewed"
     },
     {
       "name": "fovea_seed",

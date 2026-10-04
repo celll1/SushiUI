@@ -202,8 +202,9 @@ On the isolated design branch, standard run creation also accepts
 Full training accepts an empty encoder path for random initialization; LoRA
 requires a local scratch-pretrained encoder. SigLIP2 pooling dimensions and
 repository initialization are refused. The configuration form exposes the
-native input settings alongside shared training options. Deployment and live
-UI verification remain pending; the frozen comparison uses its import endpoint.
+native input settings alongside shared training options. Shared native creation
+and diagnostics were deployed on 2026-10-04; frontend build/type-check are
+owner-run. The frozen comparison uses its import endpoint.
 New native runs enable learned routing by default. Legacy configurations without
 that field retain sampled locals on edit. Candidate count, selected K, exploration,
 oracle interval/chunk and router loss weight are explicit settings. Router state
@@ -231,7 +232,8 @@ implemented. Native ONNX export produces overview, optional router and classifie
 graphs with a host crop-selection contract. The CPU runtime validates graph hashes
 and reproduces staged selected-only inference; fixed graph batch/canvas/K do not
 limit the capped external image resolution. Max Num Patches is SigLIP2-specific
-and is not used for native export. Live API/UI deployment remains pending.
+and is not used for native export. Code/API are deployed; frontend is statically
+reviewed without an agent-run build or image inspection.
 
 Native shared training holds the handle's reentrant model lock from forward
 through optimizer update, and for head expansion. Prediction, offload/restore

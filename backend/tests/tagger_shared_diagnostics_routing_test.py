@@ -135,6 +135,29 @@ def test_actual_forward_capture_accepts_online_bytes():
     assert snapshot["step"] == 8
 
 
+def test_save_random_scratch_base_is_optional_and_preserves_initialization(tmp_path):
+    from core.tagger.foveatag.shared_factory import save_initial_base
+    from core.tagger.foveatag.pretraining_checkpoint import load_pretrained_encoder
+    from core.tagger.foveatag.encoder import FoveaEncoder
+    model = routed_model()
+    config = {"save_base_model": False}
+    save_initial_base(model,config,tmp_path)
+    assert not (tmp_path / "base_model.safetensors").exists()
+    config["save_base_model"] = True
+    save_initial_base(model,config,tmp_path)
+    expected = {key: value.clone() for key,value in model.vision_encoder.state_dict().items()}
+    restored = FoveaEncoder(model.vision_encoder.config)
+    load_pretrained_encoder(tmp_path / config["base_model_path"],restored)
+    for key,value in restored.state_dict().items():
+        torch.testing.assert_close(value,expected[key],rtol=0,atol=0)
+    with torch.no_grad():
+        next(model.parameters()).add_(1)
+    save_initial_base(model,config,tmp_path)
+    load_pretrained_encoder(tmp_path / config["base_model_path"],restored)
+    for key,value in restored.state_dict().items():
+        torch.testing.assert_close(value,expected[key],rtol=0,atol=0)
+
+
 def test_joint_metrics_checkpoint_is_portable_and_resizes_rolling_buffer(tmp_path):
     keys=("save_tag_metrics","train_f1_eval_every_n_steps","train_f1_threshold_search_every_n_steps",
         "train_f1_initial_threshold","train_f1_buffer_batches")

@@ -65,3 +65,12 @@ subject and background but does not establish clean transparency or exact
 recomposition. Numerical parity against original full-precision inference,
 quantization quality acceptance, official-model GPU training/resume and high-
 resolution Layer memory limits have not been established by these runs.
+
+## Final primary-output and preview verification
+
+The final Layer API run completed without error and reported `_1.png` as
+`last_result.filename` (gallery ID 11619); its output group retained canvas and
+both layers. The follow-up Preview selection change is `4304b481`, integrated
+into main. Existing results verified Layer 2 / Layer 1 switching in the browser,
+with main image URLs and active indicators changing together. This UI verification
+required no additional GPU inference. See the frontend audit for review scope.

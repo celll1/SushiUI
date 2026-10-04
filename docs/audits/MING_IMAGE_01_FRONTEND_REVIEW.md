@@ -113,3 +113,17 @@ Both official ConvRot packages are now selectable and loadable on main. Generate
 and ordered Layer outputs were exercised in the logged-in browser; see
 [Ming deployment evidence](MING_IMAGE_01_DEPLOYMENT.md) for precision findings,
 primary-output fixes, and the remaining quality/owner acceptance boundaries.
+
+## Preview output selection (2026-10-04)
+
+Moved Ming output groups from settings into Preview for txt2img, img2img,
+inpaint and outpaint. Selection updates the main image and its group seed;
+existing viewer, Send image and Studio consumers use that selected URL.
+Downloads remain attached to each RGBA output. Unrelated or cleared previews
+hide stale groups; active generation disables selection. Thumbnail groups are
+height-limited and scrollable. No frontend build/type-check was run by the agent.
+
+Main browser verification used existing completed Layer results without another
+GPU generation: Layer 2 selected `_2.png`, then Layer 1 selected `_1.png`, with
+matching active indicators. Preview placement was inspected at the current narrow
+viewport. Evidence: `local/deployment/ming_layer_ui.png` in the main checkout.

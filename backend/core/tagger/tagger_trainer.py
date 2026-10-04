@@ -992,6 +992,9 @@ class TaggerTrainer:
         trainable_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
         total_count     = sum(p.numel() for p in model.parameters())
         print(f"[TaggerTrainer] Model built: {trainable_count:,} trainable / {total_count:,} total parameters")
+        if _native_fovea and resume_state is None:
+            from .foveatag.shared_factory import save_initial_base
+            save_initial_base(model, cfg, self.output_dir)
         model = model.to(device)
         print(f"[TaggerTrainer] Model moved to {device}")
         # Expose the live model so the Danbooru vocab-expansion callback (defined
@@ -2947,7 +2950,7 @@ def run_tagger_training(
         if config.get("save_base_model", True):
             import shutil as _shutil
             _base_dst = os.path.join(output_dir, "base_model.safetensors")
-            _ve_path_for_copy = config.get("vision_encoder_path", "")
+            _ve_path_for_copy = str(config.get("vision_encoder_path") or "").strip().strip('"').strip("'")
             _is_hf_ve, _resolved_ve_id = _is_hf_repo_or_url(_ve_path_for_copy)
 
             if os.path.isfile(_base_dst):

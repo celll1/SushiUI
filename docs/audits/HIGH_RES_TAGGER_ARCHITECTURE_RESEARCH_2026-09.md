@@ -74,13 +74,33 @@ collection-driven vocabulary growth, native live prediction-handle migration and
 compact-caption feature-provider support are not established for that legacy run.
 Do not silently migrate its frozen data/schedule into a new shared run.
 
-Verification completed on the isolated branch includes routed full/LoRA gradients,
+Verification completed includes routed full/LoRA gradients,
 exact shared-loop stop/resume, captured-source/mask handling, per-tag fallback,
-direct-artifact common prediction and staged ONNX numerical comparison. Remaining
-work: complete regression/static-contract review, production-dtype routing probes,
-deployment preserving the active run, and record live API evidence. Frontend build
-and type-check are owner-run. This section does not certify all requested parity
-as complete while those compatibility boundaries remain.
+direct-artifact common prediction and staged ONNX numerical comparison. CPU
+regression passed 492 Fovea cases and 59 existing tagger cases; later focused
+checks passed 42 and 40 cases. Bounded GPU probes passed full/LoRA FP16/BF16
+selected-only routing, external FlashAttention and finite gradients. OpenAPI
+unique keys, request fields/defaults and frontend operation paths were reviewed.
+These are fixture checks, not a quality or large-model ONNX speed claim.
+
+Deployment on 2026-10-04 preserved the active joint run: stopped step 23,476,
+immutable `pre_common_parity_step_23476.pt`, then continuous restart at that step.
+Step 23,750 retained 240 Adam states (min 1,485 / max 23,750), scheduler 23,750
+and CUDA RNG. Common metric runtime starts at 23,477, not retroactively at zero;
+rolling F1 and histogram state are embedded/hash-bound in the checkpoint. Actual
+step 24,000 diagnostics were published without agent image inspection. The user
+interval and threshold mode are retained. Standard native creation uses common
+training options; the existing legacy run is not silently converted to a different
+dataset/optimizer contract. Frontend build/type-check remain owner-run.
+
+`save_base_model` also covers random full scratch starts: save the actual initial
+encoder before training, keep an existing base snapshot, and honor disabling the
+option. SigLIP2-specific pooling dimensions remain explicitly rejected in native
+creation; native evidence width is configured by `fovea_feature_dim`, not by
+pretending a SigLIP2 pooler exists. Compact captioner integration is a separate
+future feature contract, not a silently working capability. Remaining roadmap:
+legacy-to-shared exact run migration if requested, repeated refinement, native
+caption features, owner frontend checks and real-data quality/latency assessment.
 
 ### Current owner-directed revision (supersedes the staged A/B/C gates below)
 

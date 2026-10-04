@@ -27,6 +27,22 @@ def build_processor(config, *, training):
                           max_source_pixels=config["fovea_max_source_pixels"])
 
 
+def save_initial_base(model, config, output_dir):
+    """Keep the actual scratch initialization when no input encoder file exists."""
+    from dataclasses import asdict
+    from .pretraining_checkpoint import save_pretrained_encoder
+    path = Path(output_dir) / "base_model.safetensors"
+    if not config["save_base_model"]:
+        return
+    if not path.is_file():
+        if model.training_method != "full":
+            raise ValueError("native LoRA base snapshot must be copied from its scratch encoder")
+        save_pretrained_encoder(path, model.vision_encoder, run_contract={
+            "encoder": asdict(model.vision_encoder.config), "source_stage": "tagger_initialization",
+            "external_weights": []}, epoch=0, global_step=0, validation={})
+    config["base_model_path"] = path.name
+
+
 def validate_config(config, *, resuming=False):
     if config.get("cls_dim") is not None or config.get("hidden_proj_dim") is not None:
         raise ValueError("SigLIP2 pooling dimensions do not apply to FoveaTag; use fovea_feature_dim")

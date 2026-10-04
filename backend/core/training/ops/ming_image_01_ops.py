@@ -30,16 +30,17 @@ def train_step(trainer, batch, *, timesteps=None, cfg_drop_mask=None, guidance_d
         guidance_drop_mask if guidance_drop_mask is not None else cfg_drop_mask)
     uncond = None
     context = torch.autocast(device_type=torch.device(device).type, dtype=dtype) if trainer.mixed_precision else nullcontext()
+    if guidance is not None and bool(selected.any()):
+        indices = selected.nonzero(as_tuple=True)[0]
+        # End the null autocast scope before training so cached casts retain gradients.
+        with torch.no_grad(), context:
+            zero = MingConditioning(conditioning.queries[indices],conditioning.direct[indices]).zero()
+            sampled = flow_loss(trainer.transformer,clean=clean[indices],noise=noise[indices],sigma=sigma[indices],
+                conditioning=zero,frame_weights=batch.frame_weights[indices.to(batch.frame_weights.device)],
+                reference_latents=None if references is None else [references[i] for i in indices.tolist()])
+            uncond = sampled.prediction.new_zeros(clean.shape)
+            uncond[indices] = sampled.prediction
     with context:
-        if guidance is not None and bool(selected.any()):
-            indices = selected.nonzero(as_tuple=True)[0]
-            with torch.no_grad():
-                zero = MingConditioning(conditioning.queries[indices],conditioning.direct[indices]).zero()
-                sampled = flow_loss(trainer.transformer,clean=clean[indices],noise=noise[indices],sigma=sigma[indices],
-                    conditioning=zero,frame_weights=batch.frame_weights[indices.to(batch.frame_weights.device)],
-                    reference_latents=None if references is None else [references[i] for i in indices.tolist()])
-                uncond = sampled.prediction.new_zeros(clean.shape)
-                uncond[indices] = sampled.prediction
         result = flow_loss(trainer.transformer, clean=clean, noise=noise, sigma=sigma,
             conditioning=conditioning, frame_weights=batch.frame_weights, reference_latents=references,
             cfg_drop_mask=cfg_drop_mask)

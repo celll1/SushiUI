@@ -5,6 +5,30 @@ import torch
 from core.models.ming_image_01.guidance import prepare_guidance,guidance_loss
 
 
+def test_bf16_null_forward_does_not_poison_trainable_weight_cast_cache(monkeypatch):
+    from core.training.ops import ming_image_01_ops
+    from core.models.ming_image_01.conditioning import MingConditioning
+    model=torch.nn.Linear(4,4)
+    calls=[]
+    def objective(transformer,*,clean,**kwargs):
+        prediction=transformer(clean.permute(0,2,3,4,1)).permute(0,4,1,2,3)
+        calls.append(prediction.requires_grad)
+        target=torch.ones_like(prediction)
+        per_item=(prediction.float()-target.float()).square().flatten(1).mean(1)
+        return SimpleNamespace(prediction=prediction,target=target,per_item_loss=per_item,loss=per_item.mean())
+    monkeypatch.setattr(ming_image_01_ops,'flow_loss',objective)
+    trainer=SimpleNamespace(device='cpu',training_dtype=torch.bfloat16,mixed_precision=True,
+        transformer=model,reconstruction_loss_weight=0.,log_extra_metric=lambda *args:None,
+        config={'qwen_guidance_loss_weight':1.,'qwen_guidance_loss_mix_mode':'blend',
+                'qwen_guidance_loss_scale':2.,'qwen_guidance_loss_schedule':'constant'})
+    batch=SimpleNamespace(clean=torch.randn(1,4,1,4,4),reference_latents=None,
+        conditioning=MingConditioning(torch.ones(1,2,4),torch.ones(1,2,4)),frame_weights=torch.ones(1,1))
+    loss,_,_=ming_image_01_ops.train_step(trainer,batch,timesteps=torch.tensor([.5]))
+    assert calls==[False,True] and loss.requires_grad
+    loss.backward()
+    assert all(p.grad is not None and p.grad.isfinite().all() and p.grad.abs().sum()>0 for p in model.parameters())
+
+
 @pytest.mark.parametrize('schedule',['constant','sigma'])
 @pytest.mark.parametrize('cap',[0.,.25])
 def test_frame_weighted_guidance_matches_independent_dense_oracle(schedule,cap):

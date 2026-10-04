@@ -8690,6 +8690,9 @@ class BaseTrainer(ABC):
             optimizer_kwargs = {
                 "weight_decay": weight_decay,
             }
+            if getattr(self, "is_ming_image_01", False) and getattr(self, "trains_base_weights", False) and optimizer_type.lower() == "adamw":
+                # Full Ming leaves no room for AdamW's parameter-sized foreach temporary.
+                optimizer_kwargs["foreach"] = False
             if "lion" in optimizer_type.lower():
                 optimizer_kwargs["lion_betas"] = (beta1, beta2)
                 # Lion doesn't use epsilon
@@ -20734,6 +20737,9 @@ class BaseTrainer(ABC):
                                 except Exception as lr_err:
                                     print(f"{self.log_prefix} [CUDA Recovery] LR scheduler step failed: {lr_err}")
                         elif should_step_optimizer:
+                            if getattr(self, "is_ming_image_01", False) and getattr(self, "trains_base_weights", False) and torch.cuda.is_available():
+                                # Return fragmented activation pools before allocating AdamW moments.
+                                torch.cuda.empty_cache()
                             four_phase = (
                                 None if _sensenova_text_batch_active else
                                 getattr(self, "sensenova_four_phase", None)

@@ -1,5 +1,30 @@
 # Ming official model deployment and live UI verification
 
+## U-Net Full training follow-up (2026-10-04)
+
+Run 172 copies run 171's datasets and learning settings, with Full parameter
+training, explicit INT8 base materialization and the non-LoRA dequant forward.
+Its fresh `latest` selection exposed a false resume topology guard: only an
+actually resolved full checkpoint now enters the immutable-resume path
+(`0020369c`; 61 CPU rewiring/resume cases passed).
+
+The first real GPU backward produced finite gradient norm 1.701255, then AdamW
+failed allocating its first `exp_avg_sq` state (45.27 GiB live, 1.69 GiB reserved
+but unused). The emergency native model, training state and optimizer were saved
+and quarantined under the run's `failed_optimizer_init_20261004` directory;
+that attempted update is not a successful training acceptance result.
+Ming Full AdamW now disables parameter-sized foreach temporaries and releases
+unused CUDA activation pools before the optimizer seam. Learning rates, betas,
+epsilon, weight decay, clipping and component ownership remain configured.
+The five targeted CPU optimizer construction/update checks passed, including
+exact FP32/BF16 scalar-reference updates. Modules compiled and imported with
+CUDA forbidden. The broader optimizer-option/resume suite reported 67 passes
+and seven existing fixture/contract failures: six lack current fused-gradient
+probe attributes and one assumes every stochastic-rounding config read is a
+literal-default call. The production code triggering those failures predates
+this change. Run 172 was restarted from the original base for GPU verification;
+successful updates and normal checkpoint acceptance are still pending here.
+
 Date: 2026-10-04. Owner explicitly authorized main GPU/API use and API restart.
 
 ## Deployed packages

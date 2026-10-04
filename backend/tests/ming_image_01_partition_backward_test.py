@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 from core.models.ming_image_01.partition import MingPartitionAdapter
-from core.models.ming_image_01.partition_training import backward_regions
+from core.models.ming_image_01.partition_training import backward_regions, training_plan
 from core.models.ming_image_01.conditioning import MingConditioning
 from core.models.ming_image_01.model_definition import create_transformer
 from core.models.ming_image_01.residual_unet import restore_topology
@@ -13,7 +13,7 @@ from ming_image_01_rewiring_test import config,spec_for
 
 @pytest.mark.parametrize('padding',['zero_masked','learned'])
 @pytest.mark.parametrize('guided',[False,True])
-@pytest.mark.parametrize('grid,rewired',[((8,8),False),((8,8),True),((9,6),False)])
+@pytest.mark.parametrize('grid,rewired',[((8,8),False),((8,8),True),((12,8),True),((9,6),False)])
 def test_native_sequential_backward_matches_single_backward_oracle(padding,guided,rewired,grid):
     torch.manual_seed(59)
     model=create_transformer(config(padding),device='cpu',dtype=torch.float32)
@@ -31,6 +31,11 @@ def test_native_sequential_backward_matches_single_backward_oracle(padding,guide
               'qwen_guidance_loss_scale':4.,'qwen_guidance_loss_schedule':'sigma',
               'qwen_guidance_loss_extrapolation_max_rms':.25}
     plan=MingPartitionAdapter().build_fixed_plan(height,width,count=4,halo=0,split_ratio_min=.5,split_ratio_max=.5)
+    if rewired:
+        plan=training_plan(SimpleNamespace(transformer=model,config={
+            'dit_partition_training_enabled':True,'dit_partition_mode':'fixed',
+            'dit_partition_fixed_count':4,'dit_partition_halo_tokens':0,
+            'dit_partition_split_ratio_min':.5,'dit_partition_split_ratio_max':.5}),clean)
     leaves=[];metrics={}
     for current,sequential in ((model,True),(oracle,False)):
         qs=q.clone().requires_grad_(not guided);cs=c.clone().requires_grad_(not guided);leaves.append((qs,cs))
@@ -47,10 +52,11 @@ def test_native_sequential_backward_matches_single_backward_oracle(padding,guide
         def crop(v,b):return v[...,2*b.top:2*b.bottom,2*b.left:2*b.right]
         def error(a,b):return ((a.float()-b.float()).square().mean(dim=(1,3,4))*weights).sum(1)/weights.sum(1)
         def forward(region,zero=False):
-            return torch.stack(current(list(crop(noisy,region.input).unbind()),1-sigma,
+            output = torch.stack(current(list(crop(noisy,region.input).unbind()),1-sigma,
                 list((batch.conditioning.queries*0 if zero else batch.conditioning.queries).unbind()),
                 cap_feats_2=list((batch.conditioning.direct*0 if zero else batch.conditioning.direct).unbind()),
                 ref_x=refs,target_spatial_position_ids=MingPartitionAdapter().position_ids(height,width,region.input),return_dict=False)[0])
+            return crop(output,region.core_in_input)
         nulls=[];distance=torch.zeros(2)
         if guided:
             with torch.no_grad():

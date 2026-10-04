@@ -28,6 +28,18 @@ def model():
 
 
 class TrainingContracts(unittest.TestCase):
+    def test_ming_partition_rewiring_request_uses_detected_architecture(self):
+        from unittest.mock import patch
+        with patch("core.training.training_config._detect_arch", return_value="ming_image_01"):
+            request = TrainingRunCreateRequest(training_method="lora", base_model_path="test",
+                total_steps=1, dit_rewiring_mode="configure", dit_partition_training_enabled=True,
+                dit_partition_global_adapter_enabled=True)
+            self.assertTrue(request.dit_partition_training_enabled)
+        with patch("core.training.training_config._detect_arch", return_value="qwen_image_21"):
+            with self.assertRaisesRegex(ValueError, "incompatible with dit_partition_training_enabled"):
+                TrainingRunCreateRequest(training_method="lora", base_model_path="test",
+                    total_steps=1, dit_rewiring_mode="configure", dit_partition_training_enabled=True)
+
     def test_request_and_yaml(self):
         request = TrainingRunCreateRequest(training_method="lora",base_model_path="test",
                                            total_steps=1,dit_rewiring_mode="configure")

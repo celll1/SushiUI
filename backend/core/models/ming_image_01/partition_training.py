@@ -140,10 +140,24 @@ def training_plan(trainer,clean):
         return TRAINING_DEFAULTS[canonical] if candidate is None else candidate
     count=region_count(trainer,clean)
     if count == 1:raise ValueError("Ming full-frame execution has no partition plan")
-    return MingPartitionAdapter().build_fixed_plan(clean.shape[-2]//2,clean.shape[-1]//2,count=count,
+    plan = MingPartitionAdapter().build_fixed_plan(clean.shape[-2]//2,clean.shape[-1]//2,count=count,
         halo=value("halo_tokens"),seed=value("seed"),epoch=int(getattr(trainer,"_current_epoch",0)),
         occurrence=int(getattr(trainer,"_current_batch_position",0)),
         split_ratio_min=value("split_ratio_min"),split_ratio_max=value("split_ratio_max"))
+    from .residual_unet import spatial_alignment
+    ah, aw = spatial_alignment(trainer.transformer)
+    if ah == aw == 1:
+        return plan
+    if plan.full_height % ah or plan.full_width % aw:
+        raise ValueError("Ming U-net partition canvas must match cumulative downsample alignment")
+    from dataclasses import replace
+    from core.training.partition.core import PartitionBox, PartitionRegion, validate_partition_regions
+    regions = tuple(PartitionRegion(region.core, PartitionBox(
+        region.input.top//ah*ah, region.input.left//aw*aw,
+        min(plan.full_height, (region.input.bottom+ah-1)//ah*ah),
+        min(plan.full_width, (region.input.right+aw-1)//aw*aw))) for region in plan.regions)
+    validate_partition_regions(plan.full_height, plan.full_width, regions)
+    return replace(plan, regions=regions)
 
 
 def backward_regions(trainer,batch,**kwargs):

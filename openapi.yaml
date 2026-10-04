@@ -26895,6 +26895,8 @@ components:
             Supported architectures are reported by /schema/dit-rewiring runtime_architectures.
             SenseNova residual training requires batch_size 1. Resume requires the same topology.
             Incompatible with token/block skipping and positive stochastic block dropout.
+            Ming-Image 0.1 supports combined partition/global-adapter training;
+            feature compatibility is validated against the detected base architecture.
         dit_rewiring_spec:
           allOf:
             - {$ref: '#/components/schemas/DiTRewiringSpec'}

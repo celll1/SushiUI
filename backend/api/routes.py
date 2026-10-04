@@ -1,4 +1,4 @@
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends, UploadFile, File, Form, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends, UploadFile, File, Form, Request, Body
 from fastapi.responses import Response, StreamingResponse, FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
@@ -21556,6 +21556,13 @@ def get_tagger_training_vocabulary(run_id: str, training_db: Session = Depends(g
                 return _json.load(f)
 
     raise HTTPException(status_code=404, detail="Vocabulary not yet available for this run")
+
+
+@router.patch("/tagger-training/runs/{run_id}/joint-config")
+def edit_fovea_joint_config(run_id: str, request: Dict[str, Any] = Body(...),
+        training_db: Session = Depends(get_training_db)):
+    from api.foveatag_joint_review import edit_joint_config
+    return edit_joint_config(run_id, request, training_db)
 
 
 @router.post("/tagger-training/runs/{run_id}/start")

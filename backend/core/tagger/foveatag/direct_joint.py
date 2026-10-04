@@ -15,7 +15,7 @@ from ..tag_vocabulary import TagVocabulary
 from ..tagger_loss import AsymmetricLossOptimized
 from .artifact import FoveaArtifactConfig, load_inference_artifact, save_inference_artifact
 from .control_run import select_domain_splits
-from .joint_checkpoint import load_joint_checkpoint, save_joint_checkpoint
+from .joint_checkpoint import EDITABLE_JOINT_FIELDS, load_joint_checkpoint, save_joint_checkpoint
 from .joint_experiment import _train_epoch, _model, _write_json_atomic
 from .joint_training import FoveaJointTrainer
 from .router import EvidenceRouter
@@ -94,10 +94,20 @@ def run_direct_joint(plan, *, progress_callback, run_control, resume=None, segme
     best, threshold = -1.0, .35
     history, accumulator = [], None
     if resume:
-        saved = load_joint_checkpoint(resume, model, router, optimizer, scheduler=scheduler, expected_run_contract=contract)
+        saved = load_joint_checkpoint(resume, model, router, optimizer, scheduler=scheduler,
+            expected_run_contract=contract, allowed_contract_changes=EDITABLE_JOINT_FIELDS,
+            scheduler_contract_fields=("epochs", "batch_size", "learning_rate", "warmup_steps"))
         epoch, offset, step = saved["epoch"], saved["sample_offset"], saved["global_step"]
         best, threshold = saved["best_validation_f1"], saved["best_threshold"]
         history, accumulator = saved["history"], saved["epoch_accumulator"]
+        changed = {key for key in EDITABLE_JOINT_FIELDS if saved["run_contract"].get(key) != plan.get(key)}
+        for group in optimizer.param_groups:
+            group["weight_decay"] = plan["weight_decay"]
+        if changed & {"epochs", "batch_size", "learning_rate", "warmup_steps"}:
+            total = step + math.ceil(max(0, plan["epoch_samples"] - offset) / plan["batch_size"]) + max(0, plan["epochs"] - epoch - 1) * math.ceil(plan["epoch_samples"] / plan["batch_size"])
+            scheduler = _rebase_schedule(optimizer, step, plan, total)
+            trainer.scheduler = scheduler
+    cfg = replace(cfg, inference_modes={"balanced": replace(cfg.inference_modes["balanced"], local_views=plan["selection_budget"])})
     start_step = step
     progress_callback("resumed", {"epoch": epoch, "global_step": step, "sample_offset": offset})
 
@@ -106,7 +116,7 @@ def run_direct_joint(plan, *, progress_callback, run_control, resume=None, segme
 
     run_control.attach(model, optimizer, trainer.criterion)
     trainer.batch_boundary = run_control.batch_boundary
-    status = "complete"
+    status, train_summary = "complete", {}
     try:
         while epoch < plan["epochs"]:
             trainer.diagnostic_threshold = threshold
@@ -154,3 +164,26 @@ def run_direct_joint(plan, *, progress_callback, run_control, resume=None, segme
         del trainer, optimizer, scheduler, model, router
         gc.collect()
         torch.cuda.empty_cache()
+
+
+def _rebase_schedule(optimizer, step, plan, total):
+    warmup = min(plan["warmup_steps"], max(0, total - 1))
+    base = plan["learning_rate"]
+    for group in optimizer.param_groups:
+        group["initial_lr"], group["lr"] = base, base
+    scheduler = _cosine_with_warmup(optimizer, total_steps=total, warmup_steps=plan["warmup_steps"], learning_rate=base)
+    factor = .01 + .99 * step / warmup if warmup and step < warmup else (
+        .01 + .99 * (1 + math.cos(math.pi * min(max(0, step - warmup), max(1, total - warmup)) / max(1, total - warmup))) / 2)
+    lr = base * factor
+    state = scheduler.state_dict()
+    state["last_epoch"], state["_last_lr"] = step, [lr for _ in optimizer.param_groups]
+    if "_schedulers" in state:
+        linear, cosine = state["_schedulers"]
+        linear["last_epoch"] = min(step, warmup)
+        linear["_last_lr"] = [base * (.01 + .99 * min(step, warmup) / warmup) for _ in optimizer.param_groups]
+        cosine["last_epoch"] = max(0, step - warmup)
+        cosine["_last_lr"] = state["_last_lr"]
+    scheduler.load_state_dict(state)
+    for group in optimizer.param_groups:
+        group["initial_lr"], group["lr"] = base, lr
+    return scheduler

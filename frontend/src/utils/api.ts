@@ -9336,6 +9336,9 @@ export const startTaggerTrainingRun = async (
   return response.data;
 };
 
+export const editFoveaJointConfig = async (runId: string, updates: Record<string, number | boolean>): Promise<TaggerTrainingRun> =>
+  (await api.patch(`/tagger-training/runs/${runId}/joint-config`, updates)).data;
+
 export const stopTaggerTrainingRun = async (
   runId: string
 ): Promise<{ message: string; run: TaggerTrainingRun }> => {

@@ -6,13 +6,16 @@ import json
 import os
 from pathlib import Path
 import random
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 
 import torch
 from torch import nn
 
 
 JOINT_CHECKPOINT_FORMAT_VERSION = 1
+EDITABLE_JOINT_FIELDS = ("epochs", "batch_size", "workers", "learning_rate", "weight_decay",
+    "warmup_steps", "candidate_count", "selection_budget", "random_count", "oracle_interval",
+    "oracle_chunk_size", "router_weight", "checkpoint_every_steps", "log_every", "review_steps", "external_flash")
 
 
 def save_joint_checkpoint(
@@ -73,13 +76,17 @@ def load_joint_checkpoint(
     scheduler: Optional[Any],
     expected_run_contract: Mapping[str, Any],
     restore_rng: bool = True,
+    allowed_contract_changes: Sequence[str] = (),
+    scheduler_contract_fields: Sequence[str] = (),
 ) -> dict[str, Any]:
     payload = torch.load(path, map_location="cpu", weights_only=False)
     if payload.get("format_version") != JOINT_CHECKPOINT_FORMAT_VERSION:
         raise ValueError("unsupported FoveaTag joint checkpoint")
     if payload.get("kind") != "foveatag_joint_training":
         raise ValueError("checkpoint is not FoveaTag joint training")
-    if payload.get("run_contract") != _canonical_json(expected_run_contract):
+    actual, expected = payload.get("run_contract"), _canonical_json(expected_run_contract)
+    if actual is None or {k: v for k, v in actual.items() if k not in allowed_contract_changes} != {
+            k: v for k, v in expected.items() if k not in allowed_contract_changes}:
         raise ValueError("joint checkpoint run contract does not match")
     model.load_state_dict(payload["model"], strict=True)
     router.load_state_dict(payload["router"], strict=True)
@@ -88,7 +95,7 @@ def load_joint_checkpoint(
     saved_scheduler = payload.get("scheduler")
     if (scheduler is None) != (saved_scheduler is None):
         raise ValueError("checkpoint and runtime disagree about scheduler state")
-    if scheduler is not None:
+    if scheduler is not None and not any(actual.get(key) != expected.get(key) for key in scheduler_contract_fields):
         scheduler.load_state_dict(saved_scheduler)
     if restore_rng:
         random.setstate(payload["python_rng_state"])

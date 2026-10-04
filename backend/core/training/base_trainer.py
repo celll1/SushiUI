@@ -11811,6 +11811,9 @@ class BaseTrainer(ABC):
         reserved_gb = torch.cuda.memory_reserved() / GB
         total_gb = torch.cuda.get_device_properties(0).total_memory / GB
         headroom_gb = (free_gb + (reserved_gb - resident_gb)) - self.activation_dispatch_margin_gb
+        if getattr(self, "is_ming_image_01", False):
+            from core.models.ming_image_01.training_memory import pending_gradient_bytes
+            headroom_gb -= pending_gradient_bytes(self) / GB
 
         disp = self._activation_dispatcher_for_family(family, total_gb)
         if not getattr(self, "_actdispatch_allocator_capped", False):
@@ -18501,6 +18504,8 @@ class BaseTrainer(ABC):
                     if getattr(self, "_ming_pending_runtime", None) is not None and not optimizer_restored:
                         raise ValueError("Ming runtime cannot resume without restored optimizer state")
                     restore_runtime(self)
+                    from core.models.ming_image_01.training_memory import initialize_full_adamw_state
+                    initialize_full_adamw_state(self)
 
                 for batch_idx, batch in enumerate(tqdm(batches, desc=f"Epoch {epoch+1}/{num_epochs} ({epoch_steps} steps)")):
                     _exposure_items = batch

@@ -106,3 +106,10 @@ execution checks may wait for the occupied API/GPU to be released.
 - [frontend/src/utils/archConstraints.ts](../../frontend/src/utils/archConstraints.ts)
 - [frontend/src/utils/loopGenerationInheritance.ts](../../frontend/src/utils/loopGenerationInheritance.ts)
 - [frontend/src/utils/mingPromptUpsample.ts](../../frontend/src/utils/mingPromptUpsample.ts)
+
+## Official-weight live follow-up (2026-10-04)
+
+Both official ConvRot packages are now selectable and loadable on main. Generate
+and ordered Layer outputs were exercised in the logged-in browser; see
+[Ming deployment evidence](MING_IMAGE_01_DEPLOYMENT.md) for precision findings,
+primary-output fixes, and the remaining quality/owner acceptance boundaries.

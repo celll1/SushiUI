@@ -18487,7 +18487,7 @@ class BaseTrainer(ABC):
                     self.ming_batch_buffer = MingBatchBuffer(self, batches, epoch=epoch,
                         batch_offset=int(getattr(self, "_epoch_batch_offset", 0) or 0),
                         latent_interval=latent_encoding_swap_interval, text_interval=text_encoding_swap_interval,
-                        prefetch_depth=text_encoding_prefetch_depth)
+                        prefetch_depth=text_encoding_prefetch_depth, progress_callback=progress_callback)
                     from core.models.ming_image_01.training_resume import restore_runtime
                     if getattr(self, "_ming_pending_runtime", None) is not None and not optimizer_restored:
                         raise ValueError("Ming runtime cannot resume without restored optimizer state")

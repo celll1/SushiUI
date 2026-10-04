@@ -30,6 +30,25 @@ Defaults live in
 `TAGGER_JOINT_REVIEW_DEFAULTS`, not the generic SigLIP2 creation request.
 The monitor's loss curve uses the classification ASL term; the joint summary
 records classification/ranking/diversity terms separately.
+Router objective `masked_asl_delta_v2` rewards the per-image masked ASL reduction
+relative to overview-only logits, not the largest positive-tag logit increase.
+Known-negative deterioration offsets positive improvements; unknown labels and
+photo loss weights retain their classification masks. Negative-only samples
+can reward FP suppression. Positive improvements are normalized across valid
+candidates; non-improving candidates receive zero. Joint training uses the same
+criterion parameters as classification, detached float32 oracle losses, and
+bounded one-candidate loss temporaries. Utility is for individual candidates,
+not a guarantee of the selected set's combined improvement.
+Legacy resumes preserve optimizer/scheduler/RNG and record the objective change
+at the saved step in `objective_revisions.json`; checkpoints and exports identify
+the new objective. Existing epoch loss accumulators include the old objective.
+`training_windows.jsonl` records micro precision, recall, FP/known-negative rate
+and FP/image across every successful batch between progress logs. Diagnostic
+metadata/UI additionally report the window since the preceding diagnostic
+boundary or resume. Unknown labels are excluded, and counts are not reweighted
+by photo loss weights. Windows reset on resume or threshold changes; explicit
+step bounds identify partial windows. These are training-annotation metrics,
+not held-out accuracy or proof of generalization. No extra inference is used.
 Diagnostics are enabled for this workflow but remain optional. At exact global
 step multiples of the user-selected interval, they capture one image (without a rating filter)
 image from that step's actual training batch, its pre-update probabilities,

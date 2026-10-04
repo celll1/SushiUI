@@ -62,9 +62,12 @@ def test_snapshot_has_no_optimizer_copy_and_preserves_rng(tmp_path, monkeypatch)
 
 
 def test_capture_uses_matching_batch_row_boxes_masks_and_exploration():
+    from core.tagger.foveatag.training_metrics import TrainingMetricWindow
     captured = []
     trainer = SimpleNamespace(diagnostic_callback=captured.append, diagnostic_epoch=2,
-        diagnostic_threshold=.4, selection_budget=3, random_count=1)
+        diagnostic_threshold=.4, selection_budget=3, random_count=1,
+        diagnostic_metric_window=TrainingMetricWindow())
+    trainer.diagnostic_metric_window.add({"tp": 12, "fp": 3, "fn": 4, "known_negative": 20}, 8, 999, .4)
     batch = SimpleNamespace(
         diagnostic_sources=({}, {"source_path": "actual.png"}),
         labels=torch.tensor([[0.,1.,0.],[1.,0.,1.]]), loss_masks=torch.tensor([[1.,1.,1.],[1.,0.,1.]]),
@@ -81,6 +84,8 @@ def test_capture_uses_matching_batch_row_boxes_masks_and_exploration():
     assert data["random_slots"].tolist() == [False, True]
     assert data["known"].tolist() == [True, False, True]
     assert data["step"] == 1000 and data["epoch"] == 2
+    assert data["training_window"]["samples"] == 8
+    assert data["training_window"]["fp"] == 3
     assert torch.equal(rng, torch.get_rng_state())
     batch.diagnostic_sources = ()
     FoveaJointTrainer._capture_diagnostic(trainer, batch, logits, indices, 2000)
@@ -140,7 +145,12 @@ def test_render_keeps_entire_history_and_actual_source_without_opening_output(tm
     vocabulary.write_text(json.dumps({"tag_to_idx": {"fixture_alpha": 0, "fixture_beta": 1, "fixture_gamma": 2}}))
     run.config["joint_review"]["vocabulary_path"] = str(vocabulary)
     service.write_json(root / "index.json", {"items": [{"filename": f"old{i}.png", "step": i} for i in range(20)]})
-    torch.save(snapshot(source), job / "training_snapshot.pt")
+    captured = snapshot(source)
+    captured["training_window"] = {"start_step": 1001, "end_step": 2000,
+        "samples": 8000, "batches": 1000, "threshold": .5, "tp": 12000, "fp": 3000,
+        "fn": 4000, "known_negative": 20000, "precision": .8, "recall": .75,
+        "fp_rate": .15, "fp_per_image": .375, "scope": "training_annotations_pre_update"}
+    torch.save(captured, job / "training_snapshot.pt")
     service.write_json(job / "request.json", {"training_snapshot": True, "arguments": run.config["joint_review"]})
     completed = subprocess.run([sys.executable, worker.__file__, str(job)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
@@ -151,6 +161,7 @@ def test_render_keeps_entire_history_and_actual_source_without_opening_output(tm
     assert item["step"] == 2000 and item["sample_id"] == 17
     assert item["prediction_origin"] == "training_forward_before_optimizer_update"
     assert item["tag_labels"] == "vocabulary"
+    assert item["training_window"] == captured["training_window"]
     assert item["counts"] == {"TP": 1, "FP": 0, "FN": 1, "TN": 0}
     assert item["local_boxes"][0]["x"] == pytest.approx(24)
     assert (root / item["filename"]).stat().st_size > 0

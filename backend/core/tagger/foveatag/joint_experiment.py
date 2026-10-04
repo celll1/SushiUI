@@ -576,6 +576,14 @@ def _train_epoch(
                 "oracle_used": result.oracle_used,
                 "samples_per_second": accumulator["samples"] / max(elapsed, 1e-9),
             }
+            if hasattr(trainer, "metric_window"):
+                from .router import ROUTER_OBJECTIVE_VERSION
+                window = trainer.metric_window.report()
+                message["training_window"] = window
+                with (output_dir / "training_windows.jsonl").open("a", encoding="utf-8") as stream:
+                    stream.write(json.dumps({"epoch": epoch, "global_step": global_step,
+                        "router_objective": ROUTER_OBJECTIVE_VERSION, **window}, allow_nan=False) + "\n")
+                trainer.metric_window.reset()
             print(
                 f"[FoveaTagJoint] epoch={epoch} sample={current_offset}/{len(dataset)} "
                 f"step={global_step} loss={result.loss:.6f} "

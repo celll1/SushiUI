@@ -11,6 +11,9 @@ from torch import nn
 from torch.nn import functional as F
 
 from .encoder import RMSNorm
+from ..tagger_loss import AsymmetricLossOptimized
+
+ROUTER_OBJECTIVE_VERSION = "masked_asl_delta_v2"
 
 
 @dataclass(frozen=True)
@@ -132,8 +135,10 @@ def dense_oracle_targets(
     positive_labels: torch.Tensor,
     loss_mask: Optional[torch.Tensor] = None,
     candidate_mask: Optional[torch.Tensor] = None,
+    *,
+    criterion: Optional[nn.Module] = None,
 ) -> torch.Tensor:
-    """Convert vocabulary-agnostic positive-margin improvements to [0, 1]."""
+    """Reward masked classification-loss reductions, including known negatives."""
     if candidate_tag_scores.ndim != 3:
         raise ValueError("candidate_tag_scores must have shape [batch, candidates, tags]")
     batch, candidates, tags = candidate_tag_scores.shape
@@ -144,20 +149,29 @@ def dense_oracle_targets(
     if loss_mask is not None and loss_mask.shape != (batch, tags):
         raise ValueError("loss_mask must have shape [batch, tags]")
     valid = _candidate_mask(candidate_mask, batch, candidates, candidate_tag_scores.device)
-    positives = positive_labels.to(device=candidate_tag_scores.device, dtype=torch.bool)
-    if loss_mask is not None:
-        positives &= loss_mask.to(device=candidate_tag_scores.device) > 0
-    improvements = (
-        candidate_tag_scores.detach()
-        - overview_tag_scores.detach().to(candidate_tag_scores.device)[:, None]
-    )
-    improvements = improvements.masked_fill(~positives[:, None], -torch.inf)
-    values = improvements.max(dim=-1).values
-    has_positive = positives.any(dim=-1)
-    values = torch.where(has_positive[:, None] & valid, values, torch.zeros_like(values))
-    values = F.relu(values)
+    criterion = criterion if criterion is not None else AsymmetricLossOptimized(reduction="none")
+    with torch.no_grad(), torch.autocast(device_type=candidate_tag_scores.device.type, enabled=False):
+        labels = positive_labels.to(device=candidate_tag_scores.device, dtype=torch.float32)
+        mask = loss_mask.to(device=labels.device, dtype=torch.float32) if loss_mask is not None else None
+        def per_image(logits):
+            elements = criterion(logits.detach().float(), labels, mask)
+            if elements.ndim == 0:
+                return torch.stack([criterion(logits[i:i+1].detach().float(), labels[i:i+1],
+                    mask[i:i+1] if mask is not None else None) for i in range(batch)])
+            if elements.shape != labels.shape:
+                raise ValueError("oracle criterion must return unreduced [batch, tags] losses")
+            return elements.mean(dim=-1)
+        baseline = per_image(overview_tag_scores.to(labels.device))
+        # One candidate at a time bounds temporary loss storage for large vocabularies.
+        values = torch.stack([baseline - per_image(candidate_tag_scores[:, i])
+            for i in range(candidates)], dim=1) if candidates else baseline.new_empty((batch, 0))
+        if not torch.isfinite(values[valid]).all():
+            raise FloatingPointError("non-finite oracle loss improvement")
+        values = torch.where(valid, values.clamp_min(0), torch.zeros_like(values))
+    if candidates == 0:
+        return values
     maximum = values.max(dim=1, keepdim=True).values
-    return torch.where(maximum > 0, values / maximum.clamp_min(1e-8), values)
+    return torch.where(maximum > 0, values / maximum.clamp_min(torch.finfo(values.dtype).tiny), values)
 
 
 def router_ranking_loss(

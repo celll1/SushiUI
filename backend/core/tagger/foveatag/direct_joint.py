@@ -18,7 +18,7 @@ from .control_run import select_domain_splits
 from .joint_checkpoint import EDITABLE_JOINT_FIELDS, load_joint_checkpoint, save_joint_checkpoint
 from .joint_experiment import _train_epoch, _model, _write_json_atomic
 from .joint_training import FoveaJointTrainer
-from .router import EvidenceRouter
+from .router import EvidenceRouter, ROUTER_OBJECTIVE_VERSION
 from .router_data import FoveaRouterDataset
 from .router_run import _loader
 from .supervised_data import DomainBalancedSupervisedDataset, SupervisionPolicy
@@ -90,16 +90,27 @@ def run_direct_joint(plan, *, progress_callback, run_control, resume=None, segme
     trainer.diagnostic_due = diagnostic_due
     trainer.diagnostic_callback = diagnostic_callback
     contract = json.loads(json.dumps(plan))
+    contract["router_objective"] = ROUTER_OBJECTIVE_VERSION
     epoch = offset = step = 0
     best, threshold = -1.0, .35
     history, accumulator = [], None
     if resume:
         saved = load_joint_checkpoint(resume, model, router, optimizer, scheduler=scheduler,
-            expected_run_contract=contract, allowed_contract_changes=EDITABLE_JOINT_FIELDS,
+            expected_run_contract=contract, allowed_contract_changes=(*EDITABLE_JOINT_FIELDS, "router_objective"),
             scheduler_contract_fields=("epochs", "batch_size", "learning_rate", "warmup_steps"))
         epoch, offset, step = saved["epoch"], saved["sample_offset"], saved["global_step"]
         best, threshold = saved["best_validation_f1"], saved["best_threshold"]
         history, accumulator = saved["history"], saved["epoch_accumulator"]
+        prior_objective = saved["run_contract"].get("router_objective", "positive_margin_v1")
+        if prior_objective not in ("positive_margin_v1", ROUTER_OBJECTIVE_VERSION):
+            raise ValueError("Unsupported prior router objective")
+        if prior_objective != ROUTER_OBJECTIVE_VERSION:
+            revisions_path = root / "objective_revisions.json"
+            revisions = json.loads(revisions_path.read_text()) if revisions_path.exists() else []
+            revision = {"saved_step": step, "from": prior_objective, "to": ROUTER_OBJECTIVE_VERSION,
+                "optimizer_state": "preserved", "epoch_loss_accumulator": "includes_prior_objective"}
+            if revision not in revisions:
+                _write_json_atomic(revisions_path, [*revisions, revision])
         changed = {key for key in EDITABLE_JOINT_FIELDS if saved["run_contract"].get(key) != plan.get(key)}
         for group in optimizer.param_groups:
             group["weight_decay"] = plan["weight_decay"]
@@ -142,7 +153,8 @@ def run_direct_joint(plan, *, progress_callback, run_control, resume=None, segme
                 save_inference_artifact(root / "best_joint.safetensors", model, cfg, router=router,
                     vocabulary=vocab.to_dict(), provenance={"initialization": "scratch", "external_weights": [],
                         "stage": "direct_joint_owner_review", "acceptance": "awaiting_owner_visual_review",
-                        "global_step": step, "epoch": epoch, "threshold": threshold})
+                        "global_step": step, "epoch": epoch, "threshold": threshold,
+                        "router_objective": ROUTER_OBJECTIVE_VERSION})
             epoch, offset, accumulator = epoch + 1, 0, None
             save_joint_checkpoint(root / "latest.pt", model, router, optimizer, scheduler=scheduler,
                 epoch=epoch, sample_offset=offset, global_step=step, best_validation_f1=best,
@@ -154,9 +166,11 @@ def run_direct_joint(plan, *, progress_callback, run_control, resume=None, segme
         save_inference_artifact(root / "review.safetensors", model, cfg, router=router,
             vocabulary=vocab.to_dict(), provenance={"initialization": "scratch", "external_weights": [],
                 "stage": "direct_joint_owner_review", "acceptance": "awaiting_owner_visual_review",
-                "global_step": step, "epoch": epoch, "threshold": threshold})
+                "global_step": step, "epoch": epoch, "threshold": threshold,
+                "router_objective": ROUTER_OBJECTIVE_VERSION})
         summary = {"status": status, "global_step": step, "epoch": epoch, "sample_offset": offset, "train": train_summary,
-            "acceptance": "awaiting_owner_visual_review", "history": history}
+            "acceptance": "awaiting_owner_visual_review", "history": history,
+            "router_objective": ROUTER_OBJECTIVE_VERSION}
         _write_json_atomic(root / "summary.json", summary)
         return summary
     finally:

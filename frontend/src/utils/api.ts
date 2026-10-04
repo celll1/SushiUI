@@ -9721,6 +9721,12 @@ export interface TaggerDiagnosticStatus {
     native_focus_used: boolean; focus_preview: boolean;
     prediction_origin?: string;
     tag_labels?: "vocabulary" | "anonymous";
+    training_window?: {
+      start_step: number; end_step: number; samples: number; batches: number; threshold: number;
+      tp: number; fp: number; fn: number; known_negative: number;
+      precision: number | null; recall: number | null; fp_rate: number | null; fp_per_image: number | null;
+      scope: "training_annotations_pre_update";
+    } | null;
   }>;
 }
 export const getTaggerDiagnostics = async (runId: string): Promise<TaggerDiagnosticStatus> =>

@@ -7829,11 +7829,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
             >
               <option value="" disabled>Loading default…</option>
-              <option value="existing">Existing behavior</option>
+              <option value="existing">Restart epoch on dataset changes</option>
               <option value="strict">Reject changes</option>
               <option value="rebase_remaining">Continue remaining batches</option>
             </select>
             <p className="text-xs text-gray-500 mt-1">
+              Restart epoch keeps weights, optimizer and step count, rebuilding batch order
+              from the new dataset. Previously seen images can be trained again.
               Continue remaining batches requires a checkpoint saved with this mode enabled.
               It accepts dataset selection changes and rejects changes inside retained datasets.
               Validation runs after model and optimizer loading, so an incompatible selection stops then.

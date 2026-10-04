@@ -17036,13 +17036,14 @@ class BaseTrainer(ABC):
             if fp_changed or bpe_changed:
                 if resume_dataset_change_policy == "strict":
                     raise ValueError("Cannot resume: dataset or batch structure changed")
-                if concept_config and not _ledger_resume:
-                    raise ValueError("Cannot resume concept batch order: dataset or batch structure changed")
                 if _ledger_resume:
                     print(f"{self.log_prefix} Dataset or batch count differs; verifying batch ledger before continuing")
                 else:
                     self._resume_structure_changed = True
                 if not _ledger_resume:
+                    if concept_config:
+                        print(f"{self.log_prefix} Rebuilding concept batch order for the changed dataset; "
+                              "previously seen images may be presented again in the new epoch.")
                     print(f"{self.log_prefix} Dataset/batch structure changed since checkpoint "
                       f"(fingerprint_changed={fp_changed}, batches_per_epoch: {saved_bpe} -> {batches_per_epoch})")
                     print(f"{self.log_prefix} Stored epoch/batch position is not portable; keeping "

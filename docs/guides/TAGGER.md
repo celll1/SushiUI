@@ -55,8 +55,9 @@ an error instead of replacing it silently. This adds checkpoint I/O and CPU/RAM
 cost, but never forwards through the live training model or changes its
 optimizer, RNG or sample budget. Manual generation requires a paused run.
 
-Panels contain anonymized TP/FP/FN group ranks (up to 100 each), TN counts and
-unknown-label masking; no tag names or tag IDs are published. Counts remain
+New joint training panels display vocabulary tag names for TP/FP/FN (up to 100
+each), TN counts and unknown-label masking. Previously generated anonymous panels
+remain unchanged. Legacy comparison panels still use anonymous ranks. Counts remain
 annotation-based rather than guaranteed ground truth. A has no native focus;
 B uses overview-derived placebo views; C overlays the exact native view boxes
 passed to that diagnostic inference. Source pixels per canvas pixel are shown,

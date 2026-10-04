@@ -136,6 +136,9 @@ def test_render_keeps_entire_history_and_actual_source_without_opening_output(tm
     job.mkdir(parents=True)
     source = tmp_path / "source.png"
     Image.new("RGB", (80,64), "white").save(source)
+    vocabulary = tmp_path / "vocab.json"
+    vocabulary.write_text(json.dumps({"tag_to_idx": {"fixture_alpha": 0, "fixture_beta": 1, "fixture_gamma": 2}}))
+    run.config["joint_review"]["vocabulary_path"] = str(vocabulary)
     service.write_json(root / "index.json", {"items": [{"filename": f"old{i}.png", "step": i} for i in range(20)]})
     torch.save(snapshot(source), job / "training_snapshot.pt")
     service.write_json(job / "request.json", {"training_snapshot": True, "arguments": run.config["joint_review"]})
@@ -147,7 +150,19 @@ def test_render_keeps_entire_history_and_actual_source_without_opening_output(tm
     item = state["items"][0]
     assert item["step"] == 2000 and item["sample_id"] == 17
     assert item["prediction_origin"] == "training_forward_before_optimizer_update"
+    assert item["tag_labels"] == "vocabulary"
     assert item["counts"] == {"TP": 1, "FP": 0, "FN": 1, "TN": 0}
     assert item["local_boxes"][0]["x"] == pytest.approx(24)
     assert (root / item["filename"]).stat().st_size > 0
     assert "source_path" not in json.dumps(item)
+
+
+def test_named_rows_align_vocabulary_indices_and_known_tp_fp_fn():
+    import numpy as np
+    from core.tagger.foveatag.diagnostic_worker import named_probability_rows, probability_groups
+    probs = np.array([.8, .1, .9, .9])
+    groups = probability_groups(probs, np.array([True, True, False, False]), np.array([True, True, True, False]), .5)
+    rows = named_probability_rows(probs, groups, {"fixture_beta": 1, "fixture_gamma": 2, "fixture_alpha": 0, "fixture_unknown": 3})
+    assert [row[0] for row in rows] == ["TP: fixture_alpha", "FP: fixture_gamma", "FN: fixture_beta"]
+    with pytest.raises(ValueError, match="vocabulary"):
+        named_probability_rows(probs, groups, {"fixture_alpha": 0})

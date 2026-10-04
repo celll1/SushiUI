@@ -25,6 +25,13 @@
     "resumed_after_config_ui_deployment_verified_step": 3150,
     "running_without_error_after_deployment": true
   },
+  "label_policy_revision": {
+    "new_joint_panels": "actual vocabulary tag names for TP/FP/FN",
+    "old_anonymous_panels": "unchanged",
+    "metadata_tag_labels": "vocabulary",
+    "cpu_diagnostic_tests_passed": 18,
+    "images_opened_by_agent": false
+  },
   "configuration": {
     "endpoint": "PATCH /tagger-training/runs/{run_id}/joint-config",
     "button_visible_while_running": true,

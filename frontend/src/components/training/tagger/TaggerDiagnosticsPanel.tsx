@@ -55,7 +55,7 @@ export default function TaggerDiagnosticsPanel({ runId, active }: { runId: strin
     finally { setPending(false); }
   };
   return <section className="bg-gray-900 rounded-lg p-3 space-y-2">
-    <h3 className="text-sm text-gray-200">診断画像（任意・個別タグ名なし）</h3>
+    <h3 className="text-sm text-gray-200">診断画像（任意）</h3>
     {draft && <>
       <label className="flex gap-2 text-xs text-gray-300">
         <input type="checkbox" checked={draft.enabled} disabled={pending}
@@ -81,7 +81,7 @@ export default function TaggerDiagnosticsPanel({ runId, active }: { runId: strin
           onClick={() => void update(true)} className="text-xs bg-gray-700 rounded px-2 py-1 disabled:opacity-40">今すぐ作成（停止中のみ）</button>
       </div>
     </>}
-    <p className="text-xs text-gray-400">routed_trainingは対象stepの学習バッチの画像・学習時の予測・実際のfocusを保存します（Ratingによる制限なし）。実線はrouter、破線はランダム探索。TP/FP/FNは各上位100件、TNは件数のみ。それ以外の旧診断画像は固定サンプルです。</p>
+    <p className="text-xs text-gray-400">routed_trainingは対象stepの学習バッチの画像・学習時の予測・実際のfocusを保存します（Ratingによる制限なし）。実線はrouter、破線はランダム探索。TP/FP/FNはタグ名付きで各上位100件、TNは件数のみ。旧画像の匿名表示はそのまま残ります。それ以外の旧診断画像は固定サンプルです。</p>
     {state?.busy && <p className="text-xs text-gray-400">診断画像を作成中…</p>}
     {(error || state?.error) && <p className="text-xs text-red-400">{error || state?.error}</p>}
     {!!skippedAttempts.length && <p className="text-xs text-gray-400">未作成step: {skippedAttempts.map(attempt => `${attempt.step.toLocaleString()} (${attempt.reason === "no_source_metadata_in_step_batch" ? "入力情報なし" : "診断処理中"})`).join(" / ")}</p>}
@@ -98,10 +98,10 @@ export default function TaggerDiagnosticsPanel({ runId, active }: { runId: strin
         <button onClick={() => setSelectedFilename(null)} className="bg-gray-700 rounded px-2 py-1">最新を表示</button>
         <span className="text-gray-400">{selectedIndex + 1} / {state?.items.length}</span>
       </div>
-      <p className="text-xs text-gray-300">{selected.mode} · step {selected.step.toLocaleString()} · TP {selected.counts.TP} / FP {selected.counts.FP} / FN {selected.counts.FN} / TN {selected.counts.TN}</p>
+      <p className="text-xs text-gray-300">{selected.mode} · step {selected.step.toLocaleString()} · {selected.tag_labels === "vocabulary" ? "タグ名表示" : "匿名表示（旧画像）"} · TP {selected.counts.TP} / FP {selected.counts.FP} / FN {selected.counts.FN} / TN {selected.counts.TN}</p>
       {imageUrl && <a href={imageUrl} target="_blank" rel="noreferrer">
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={imageUrl} alt="匿名TP/FP/FN診断とfocus入力範囲" className="w-full rounded" />
+        <img src={imageUrl} alt="TP/FP/FN診断とfocus入力範囲" className="w-full rounded" />
       </a>}
     </>}
   </section>;

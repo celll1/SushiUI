@@ -9720,6 +9720,7 @@ export interface TaggerDiagnosticStatus {
     counts: Record<"TP" | "FP" | "FN" | "TN", number>;
     native_focus_used: boolean; focus_preview: boolean;
     prediction_origin?: string;
+    tag_labels?: "vocabulary" | "anonymous";
   }>;
 }
 export const getTaggerDiagnostics = async (runId: string): Promise<TaggerDiagnosticStatus> =>

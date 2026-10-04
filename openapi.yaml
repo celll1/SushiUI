@@ -8251,8 +8251,8 @@ paths:
     parameters:
       - {name: run_id, in: path, required: true, schema: {type: string}}
     get:
-      summary: Get optional anonymous FoveaTag diagnostic history
-      description: Joint runs publish the actual training-step forward and selected views without a rating filter; legacy comparison panels use a fixed General sample. All published history is retained. Attempts lists skipped interval steps.
+      summary: Get optional FoveaTag diagnostic history
+      description: New joint panels display vocabulary tag names with actual training-step predictions and selected views, without a rating filter. Metadata tag_labels=vocabulary identifies named panels; older anonymous panels are unchanged. Legacy comparisons use a fixed General sample. All published history is retained. Attempts lists skipped interval steps.
       responses:
         '200':
           description: Settings, published panels, worker status and sanitized error
@@ -8287,13 +8287,13 @@ paths:
         '422': {description: Unsupported run or unavailable checkpoint}
   /tagger-training/runs/{run_id}/diagnostics/images/{name}:
     get:
-      summary: Serve a published anonymous diagnostic PNG
+      summary: Serve a published diagnostic PNG
       parameters:
         - {name: run_id, in: path, required: true, schema: {type: string}}
         - {name: name, in: path, required: true, schema: {type: string}}
       responses:
         '200':
-          description: Published anonymous panel (joint training has no rating filter)
+          description: Published diagnostic panel (new joint panels use vocabulary tag labels and have no rating filter)
           content:
             image/png:
               schema: {type: string, format: binary}

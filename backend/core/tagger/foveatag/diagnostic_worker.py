@@ -1,4 +1,4 @@
-"""Render anonymous step-native or legacy panels without training RNG or CUDA."""
+"""Render named step-native or legacy anonymous panels without training RNG or CUDA."""
 from __future__ import annotations
 
 import json
@@ -8,6 +8,7 @@ import shutil
 import sqlite3
 import sys
 import uuid
+import textwrap
 
 
 def atomic_json(path, value):
@@ -26,12 +27,31 @@ def probability_groups(probs, positive, known, threshold):
     }
 
 
+def named_probability_rows(probs, groups, mapping):
+    import numpy as np
+    labels = [None] * len(probs)
+    for tag, value in mapping.items():
+        index = int(value)
+        if not isinstance(tag, str) or not 0 <= index < len(labels) or labels[index] is not None:
+            raise ValueError("Invalid diagnostic vocabulary indices")
+        labels[index] = tag
+    if any(label is None for label in labels):
+        raise ValueError("Diagnostic vocabulary does not match training predictions")
+    rows = []
+    for key, color in (("TP", "green"), ("FP", "red"), ("FN", "blue")):
+        indices = np.flatnonzero(groups[key])
+        indices = indices[np.argsort(-probs[indices], kind="stable")][:100]
+        rows.extend((textwrap.fill(f"{key}: {labels[index]}", width=45), float(probs[index]), color) for index in indices)
+    return rows
+
+
 def render_training(job, request):
     import torch
     from PIL import Image
     import numpy as np
     import matplotlib
     matplotlib.use("Agg")
+    matplotlib.rcParams["text.parse_math"] = False
     from matplotlib.figure import Figure
     from matplotlib.patches import Rectangle
     snapshot = torch.load(job / "training_snapshot.pt", map_location="cpu", weights_only=False)
@@ -47,12 +67,10 @@ def render_training(job, request):
     threshold = float(snapshot["threshold"])
     groups = probability_groups(probs, positive, known, threshold)
     counts = {key: int(mask.sum()) for key, mask in groups.items()}
-    rows = []
-    for key, color in (("TP", "green"), ("FP", "red"), ("FN", "blue")):
-        indices = np.flatnonzero(groups[key])
-        indices = indices[np.argsort(-probs[indices], kind="stable")][:100]
-        rows.extend((f"{key} {rank + 1:03d}", float(probs[index]), color) for rank, index in enumerate(indices))
-    fig = Figure(figsize=(15, 10))
+    vocabulary = json.loads(Path(request["arguments"]["vocabulary_path"]).read_text())
+    rows = named_probability_rows(probs, groups, vocabulary["tag_to_idx"])
+    height = max(10, min(60, sum(row[0].count("\n") + 1 for row in rows) * .15))
+    fig = Figure(figsize=(18, height))
     axes = fig.subplots(1, 2)
     axes[0].imshow(image)
     axes[0].axis("off")
@@ -72,14 +90,14 @@ def render_training(job, request):
     axes[0].set_ylim(image.height, 0)
     axes[0].set_title("Actual step training input (no rating filter)\nSolid: router selection; dashed: random exploration", fontsize=10)
     axes[1].barh(np.arange(len(rows)), [row[1] for row in rows], color=[row[2] for row in rows])
-    axes[1].set_yticks(np.arange(len(rows)), [row[0] for row in rows], fontsize=max(3, min(8, 650 / max(1, len(rows)))))
+    axes[1].set_yticks(np.arange(len(rows)), [row[0] for row in rows], fontsize=7)
     axes[1].set_xlim(0, 1)
     axes[1].axvline(threshold, color="black", linestyle="--")
     axes[1].set_title(" / ".join(f"{key}={count}" for key, count in counts.items()))
     axes[1].set_xlabel("Training probabilities; top 100 per TP / FP / FN; TN count only")
     step = int(snapshot["step"])
     fig.suptitle(f"FoveaTag training forward / step {step}")
-    fig.text(.5, .02, "Before optimizer update; actual selected training views. Anonymous ranks; no tag names/IDs. Annotation-based counts.", ha="center", fontsize=8)
+    fig.text(.5, .02, "Before optimizer update; actual selected training views. Vocabulary tag labels; annotation-based counts.", ha="center", fontsize=8)
     fig.tight_layout(rect=(0, .04, 1, .96))
     root = job.parent
     name = f"training_routed_{step}_{uuid.uuid4().hex[:8]}.png"
@@ -91,7 +109,8 @@ def render_training(job, request):
     item = {"filename": name, "mode": "routed_training", "step": step, "epoch": snapshot["epoch"],
         "catalog_step": step, "counts": counts, "threshold": threshold,
         "sample_id": source["source_index"], "native_focus_used": True, "learned_routing": True,
-        "focus_preview": False, "local_boxes": geometry, "prediction_origin": snapshot["prediction_origin"]}
+        "focus_preview": False, "local_boxes": geometry, "prediction_origin": snapshot["prediction_origin"],
+        "tag_labels": "vocabulary"}
     atomic_json(index_path, {"items": [item, *previous["items"]], "error": None})
     assert not torch.cuda.is_initialized()
 

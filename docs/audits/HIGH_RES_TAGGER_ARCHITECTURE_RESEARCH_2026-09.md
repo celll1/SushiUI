@@ -56,8 +56,9 @@ step's batch, its pre-update probabilities, supervision mask and selected native
 regions. Router slots and retained random exploration slots are distinguished.
 Rendering runs on CPU without a second model forward. Unavailable source metadata
 or a busy renderer is recorded as skipped, never replaced with a fixed sample.
-TP/FP/FN ranks are anonymous; TN is only a count. No individual tag names or IDs
-are published. The frontend retains history and provides older/newer and step
+The owner now requires actual vocabulary tag names for TP/FP/FN in new training
+panels; TN is only a count. Earlier anonymous panels remain in the history.
+The frontend retains history and provides older/newer and step
 selection without polling away from the selected panel. Missing labels remain
 a limitation. This
 workflow explicitly enables diagnostics, but the owner can disable them.

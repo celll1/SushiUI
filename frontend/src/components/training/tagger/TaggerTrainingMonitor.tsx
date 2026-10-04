@@ -728,9 +728,8 @@ export default function TaggerTrainingMonitor({
           <section>
             <div className="flex items-center justify-between text-sm mb-1">
               <span className="text-gray-400">
-                {run.status_message
-                  ? run.status_message
-                  : `Epoch ${run.current_epoch} · Step ${run.current_step}`}
+                {`Epoch ${run.current_epoch} · Step ${run.current_step.toLocaleString()}`}
+                {run.status_message && <span className="ml-2 text-gray-500">· {run.status_message}</span>}
                 {iterPerSec !== null && (
                   <span className="ml-2 text-gray-500 font-mono">
                     · {iterPerSec >= 1

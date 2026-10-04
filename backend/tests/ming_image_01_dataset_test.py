@@ -336,3 +336,19 @@ def test_shared_crop_spec_is_authoritative_and_missing_seed_refuses(tmp_path):
     expected = load_pixels(record, caption="word5", width=32, height=16, crop_box=(16, 8, 32, 16))
     assert loaded.pixel_identity == expected.pixel_identity
     torch.testing.assert_close(loaded.pixels, expected.pixels, rtol=0, atol=0)
+
+@pytest.mark.parametrize("item_type", ["single", "image", "video", "audio"])
+def test_shared_item_type_contract(tmp_path, item_type):
+    from types import SimpleNamespace
+    from core.models.ming_image_01.dataset import annotate_datasets
+    primary = tmp_path / "image.png"
+    Image.new("RGB", (32, 32)).save(primary)
+    item = {"image_path": str(primary), "item_type": item_type}
+    dataset = SimpleNamespace(dataset_root=tmp_path, items=[item])
+    if item_type in {"single", "image"}:
+        assert annotate_datasets([dataset], profile="generation_edit") == 1
+        assert item["_ming_record"].profile == "generation_edit"
+    else:
+        with pytest.raises(ValueError, match="images, not video/audio"):
+            annotate_datasets([dataset], profile="generation_edit")
+        assert "_ming_record" not in item

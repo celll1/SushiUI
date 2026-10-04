@@ -3147,7 +3147,6 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
       )}
       <MingLayerControls mode="outpaint" value={params.ming_image_01_layers}
         onChange={ming_image_01_layers => setParams(previous => ({ ...previous, ming_image_01_layers }))} />
-      <MingOutputGroups panel="outpaint" />
       {loadedArchType === "qwen_image_21" && (
         <QwenPartitionControls value={params.qwen_image_21_partition}
           width={params.canvas_width} height={params.canvas_height}
@@ -4978,6 +4977,14 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
                   <p className="text-gray-500">No image/video/audio generated yet</p>
                 )}
               </div>
+
+              <MingOutputGroups panel="outpaint" selectedUrl={generatedImage} disabled={isGenerating}
+                onSelect={(url, seed) => {
+                  setGeneratedImage(url);
+                  setGeneratedImageSeed(seed);
+                  setGeneratedImageAncestralSeed(seed);
+                  setGeneratedImageParams(previous => ({ ...(previous || params), seed, ancestral_seed: seed }));
+                }} />
 
               {/* Post-Edit controls (client-side brightness/saturation/flatten) */}
               {!isVideo && !isAudio && generatedImage && (

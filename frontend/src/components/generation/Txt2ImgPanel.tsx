@@ -3522,7 +3522,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       )}
       <MingLayerControls value={params.ming_image_01_layers}
         onChange={ming_image_01_layers => setParams(previous => ({ ...previous, ming_image_01_layers }))} />
-      <MingOutputGroups panel="txt2img" />
       {loadedArch === "qwen_image_21" && (
         <QwenPartitionControls value={params.qwen_image_21_partition}
           width={params.width} height={params.height}
@@ -5025,6 +5024,14 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
                 <p className="text-gray-500">No image generated yet</p>
               )}
             </div>
+
+            <MingOutputGroups panel="txt2img" selectedUrl={generatedImage} disabled={isGenerating}
+              onSelect={(url, seed) => {
+                setGeneratedImage(url);
+                setGeneratedImageSeed(seed);
+                setGeneratedImageAncestralSeed(seed);
+                setGeneratedImageParams(previous => ({ ...(previous || params), seed, ancestral_seed: seed }));
+              }} />
 
             {/* Post-Edit controls (client-side brightness/saturation) */}
             {generatedImage && (

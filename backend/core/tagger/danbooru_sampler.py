@@ -324,7 +324,7 @@ class DanbooruSampleBuffer:
         # whose posts are all collected is marked "exhausted" and skipped for the
         # rest of the epoch; reset_download_cycle() (called at each epoch start)
         # clears these so the next epoch collects them again.
-        self._cycle_lock = threading.Lock()
+        self._cycle_lock = threading.RLock()
         self._downloaded_ids: Set[int] = set()
         self._exhausted_tags: Set[str] = set()
         self._cycle_gen = 0   # bumped on each reset; guards cross-epoch exhaustion
@@ -405,7 +405,7 @@ class DanbooruSampleBuffer:
                 }
                 self._exhausted_tags = {t for t in (_pending.get("exhausted_tags") or []) if t}
                 self._downloaded_ids.clear()   # not persisted: allow same-post re-DL
-                self._cooc_collected.clear()
+                self._cooc_collected = dict(_pending.get("cooc_collected") or {})
                 self._cycle_gen += 1
                 print(f"[DanbooruSampler] Resumed epoch {epoch} collection progress: "
                       f"{len(self._exhausted_tags)} exhausted tag(s), "
@@ -569,6 +569,30 @@ class DanbooruSampleBuffer:
         with self._cycle_lock:
             return {t: self._query_last_used.get(t, 0.0) for t in self._query_tags}
 
+    def snapshot_native_runtime(self):
+        with self._cycle_lock:
+            progress = self.snapshot_epoch_progress()
+            progress["cooc_collected"] = dict(self._cooc_collected)
+            return {"dynamic_tags": self.snapshot_dynamic_tags(),
+                "cooc_active_tags": self.snapshot_cooc_active_tags(), "query_tags": self.snapshot_query_tags(),
+                "epoch_progress": progress, "expanded_tags": sorted(getattr(self, "_native_expanded_tags", set())),
+                "query_expanded": sorted(self._expanded_via_query), "query_last_resolve": self._last_query_resolve,
+                "low_f1_unavailable": sorted(self._low_f1_unavailable),
+                "expander": self._expander.snapshot() if self._expander is not None else None}
+
+    def restore_native_runtime(self, document):
+        with self._cycle_lock:
+            self._pending_epoch_progress = dict(document["epoch_progress"])
+            self._expanded_via_query = set(document["query_expanded"])
+            self._last_query_resolve = document["query_last_resolve"]
+            self._low_f1_unavailable = set(document["low_f1_unavailable"])
+            if self._expander is not None and document["expander"] is not None:
+                self._expander.restore(document["expander"])
+                known = set(self._vocabulary.tag_to_idx) | {normalize_tag(name) for name in document["expanded_tags"]}
+                candidates = {normalize_tag(name) for pool in (document["dynamic_tags"],
+                    document["cooc_active_tags"], document["query_tags"]) for name in pool}
+                self._expander.propose(candidates - known)
+
 
     @staticmethod
     def _translate_query(q: str) -> str:
@@ -671,14 +695,15 @@ class DanbooruSampleBuffer:
                 dq = self._denormalize_tag(norm)
                 if not dq:
                     continue
-                self._query_seen.add(norm)
                 with self._cycle_lock:
+                    self._query_seen.add(norm)
                     self._query_tags.append(dq)
                     self._query_last_used[dq] = now
+                    if is_new:
+                        self._expanded_via_query.add(norm)
                 n_pool += 1
                 if is_new:
                     new_for_vocab.add(norm)
-                    self._expanded_via_query.add(norm)
         if new_for_vocab and self._expander is not None:
             self._expander.propose(new_for_vocab)
         if n_pool or new_for_vocab:
@@ -1122,6 +1147,11 @@ class DanbooruSampleBuffer:
         # Decode image
         try:
             img = Image.open(BytesIO(img_bytes))
+            cap = getattr(self._processor, "max_source_pixels", None)
+            if getattr(self._processor, "is_native_fovea_processor", False) and cap is not None:
+                if img.width * img.height > cap:
+                    img.close()
+                    return None
             img.load()
             if img.mode == "RGBA":
                 bg = Image.new("RGB", img.size, (255, 255, 255))
@@ -1134,12 +1164,17 @@ class DanbooruSampleBuffer:
             return None
 
         try:
-            inputs = self._processor(images=[img], return_tensors="pt")
+            options = {"sample_index": int(post["id"])} if getattr(self._processor, "is_native_fovea_processor", False) else {}
+            inputs = self._processor(images=[img], return_tensors="pt", **options)
         except Exception as exc:
             print(f"[DanbooruSampler] Processor error (post {post.get('id')}): {exc}")
             return None
 
-        if self._is_naflex:
+        if "fovea_views" in inputs:
+            pixel_values = inputs["fovea_views"]
+            pixel_attention_mask = torch.zeros(0, dtype=torch.int32)
+            spatial_shapes = torch.zeros(0, dtype=torch.int64)
+        elif self._is_naflex:
             pixel_values         = inputs["pixel_values"].squeeze(0)
             pixel_attention_mask = inputs["pixel_attention_mask"].squeeze(0)
             spatial_shapes       = inputs["spatial_shapes"].squeeze(0)
@@ -1174,7 +1209,9 @@ class DanbooruSampleBuffer:
                 "timestamp":  time.time(),
             })
 
-        return (pixel_values, pixel_attention_mask, spatial_shapes, raw_tags)
+        from .diagnostic_capture import DiagnosticBatch
+        return DiagnosticBatch((pixel_values, pixel_attention_mask, spatial_shapes, raw_tags),
+            ({"source_bytes": img_bytes, "source_index": int(post.get("id", 0)), "source_kind": "online_collection"},))
 
 
 
@@ -1231,6 +1268,8 @@ class MixedDataLoader:
         # Current epoch index, set by the trainer before each epoch's iteration so
         # __iter__ can pass it to the buffer for mid-epoch-resume progress matching.
         self._current_epoch: Optional[int] = None
+        self._base_step_offset = 0
+        self._pending_injection = False
 
     def set_epoch(self, epoch: int) -> None:
         """Record the epoch index so the next __iter__ passes it to the buffer's
@@ -1254,7 +1293,8 @@ class MixedDataLoader:
     def __len__(self) -> int:
         return len(self.base_loader)
 
-    def rewrap(self, new_base_loader: DataLoader) -> "MixedDataLoader":
+    def rewrap(self, new_base_loader: DataLoader, *, base_step_offset=None,
+               pending_injection=None) -> "MixedDataLoader":
         """Return a new MixedDataLoader over *new_base_loader*, sharing this
         instance's Danbooru buffer, expander, vocabulary and injection settings.
 
@@ -1276,6 +1316,8 @@ class MixedDataLoader:
             alias_resolver=self._alias_resolver,
         )
         _re._current_epoch = self._current_epoch
+        _re._base_step_offset = self._base_step_offset if base_step_offset is None else int(base_step_offset)
+        _re._pending_injection = self._pending_injection if pending_injection is None else bool(pending_injection)
         return _re
 
     def _build_injection_batch(self) -> Optional[Tuple]:
@@ -1287,13 +1329,15 @@ class MixedDataLoader:
             return None
         voc = self._vocabulary if self._vocabulary is not None else self._buffer._vocabulary
         built = []
-        for (pv_d, pam_d, ss_d, raw_tags) in items:
+        for item in items:
+            pv_d, pam_d, ss_d, raw_tags = item
             lbl, lm = _build_label_and_mask_standalone(
                 raw_tags, voc,
                 quality_masking_mode=self._quality_masking,
                 alias_resolver=self._alias_resolver,
             )
-            built.append((pv_d, pam_d, ss_d, lbl, lm))
+            from .diagnostic_capture import DiagnosticBatch
+            built.append(DiagnosticBatch((pv_d, pam_d, ss_d, lbl, lm), getattr(item, "diagnostic_sources", (None,))))
         return tagger_collate_fn(built)
 
     def __iter__(self):
@@ -1303,7 +1347,11 @@ class MixedDataLoader:
         # when it matches (otherwise it clears for a fresh cycle).
         if hasattr(self._buffer, "reset_download_cycle"):
             self._buffer.reset_download_cycle(self._current_epoch)
-        base_step = 0
+        base_step = self._base_step_offset
+        if self._pending_injection:
+            inj = self._build_injection_batch()
+            if inj is not None:
+                yield (inj, True)
         for batch in self.base_loader:
             if batch is None:
                 yield (None, False)
@@ -1325,7 +1373,9 @@ class MixedDataLoader:
                     labels     = F.pad(labels,     (0, pad), value=0.0)
                     loss_masks = F.pad(loss_masks, (0, pad), value=1.0)
 
-            yield ((pv, pam, ss, labels, loss_masks), False)
+            from .diagnostic_capture import DiagnosticBatch
+            yield (DiagnosticBatch((pv, pam, ss, labels, loss_masks),
+                getattr(batch, "diagnostic_sources", ())), False)
             base_step += 1
 
             # ③ Interrupt batch: every injection_interval base batches,

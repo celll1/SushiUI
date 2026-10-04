@@ -21,7 +21,9 @@ import random
 import re as _re
 import threading
 import time
+import numpy as np
 from collections import deque
+from contextlib import nullcontext
 from queue import Queue as _Queue
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -269,10 +271,10 @@ def _compute_label_stats(
 
 
 
-def _capture_rng() -> Dict[str, Any]:
-    """Capture current Python + PyTorch CPU RNG state as a serialisable dict."""
+def _capture_rng(*, native=False) -> Dict[str, Any]:
+    """Capture CPU RNG, plus native NumPy and current-device CUDA streams."""
     rs = random.getstate()
-    return {
+    snapshot = {
         "random_state": {
             "version": rs[0],
             "state": list(rs[1]),
@@ -282,10 +284,19 @@ def _capture_rng() -> Dict[str, Any]:
             torch.get_rng_state().numpy().tobytes()
         ).decode("utf-8"),
     }
+    if native:
+        numpy_state = np.random.get_state()
+        snapshot["numpy_rng_state"] = {
+            "algorithm": numpy_state[0], "state": numpy_state[1].tolist(),
+            "position": numpy_state[2], "has_gauss": numpy_state[3], "cached_gaussian": numpy_state[4],
+        }
+        if torch.cuda.is_initialized():
+            snapshot["cuda_rng_state"] = base64.b64encode(torch.cuda.get_rng_state().numpy().tobytes()).decode("utf-8")
+    return snapshot
 
 
 def _restore_rng(rng_snapshot: Dict[str, Any]) -> None:
-    """Restore Python + PyTorch CPU RNG state from a snapshot produced by _capture_rng."""
+    """Restore the RNG streams recorded by _capture_rng."""
     rs = rng_snapshot.get("random_state")
     if rs:
         random.setstate((rs["version"], tuple(rs["state"]), rs["gauss_next"]))
@@ -293,6 +304,13 @@ def _restore_rng(rng_snapshot: Dict[str, Any]) -> None:
     if torch_rng:
         rng_bytes = base64.b64decode(torch_rng)
         torch.set_rng_state(torch.frombuffer(bytearray(rng_bytes), dtype=torch.uint8))
+    numpy_state = rng_snapshot.get("numpy_rng_state")
+    if numpy_state is not None:
+        np.random.set_state((numpy_state["algorithm"], np.asarray(numpy_state["state"], dtype=np.uint32),
+                             numpy_state["position"], numpy_state["has_gauss"], numpy_state["cached_gaussian"]))
+    cuda_state = rng_snapshot.get("cuda_rng_state")
+    if cuda_state is not None:
+        torch.cuda.set_rng_state(torch.frombuffer(bytearray(base64.b64decode(cuda_state)), dtype=torch.uint8))
 
 
 def _compute_dataset_fingerprint(dataset: Any) -> Dict[str, Any]:
@@ -357,6 +375,7 @@ def _save_training_state(
     best_threshold: float,
     epoch_start_rng: Optional[Dict[str, Any]] = None,
     dataset_fingerprint: Optional[Dict[str, Any]] = None,
+    native_runtime: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Save training state JSON for resume.
 
@@ -381,18 +400,31 @@ def _save_training_state(
         state["epoch_start_rng"] = epoch_start_rng
     if dataset_fingerprint is not None:
         state["dataset_fingerprint"] = dataset_fingerprint
+    if native_runtime is not None:
+        state["native_runtime"] = native_runtime
+        if batch_idx >= 0:
+            state["batch_idx"] = native_runtime["cursor"]["last_batch_idx"]
     path = os.path.join(output_dir, f"{name}_state.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(state, f)
+    _write_json_atomic(path, state)
 
 
-def _load_training_state(output_dir: str, name: str) -> Optional[Dict[str, Any]]:
+def _load_training_state(output_dir: str, name: str, *, verify_native=True) -> Optional[Dict[str, Any]]:
     """Load training state JSON. Returns None if not found."""
     path = os.path.join(output_dir, f"{name}_state.json")
     if not os.path.isfile(path):
         return None
     with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        state = json.load(f)
+    if verify_native:
+        native = "native_runtime" in state or os.path.isfile(os.path.join(output_dir, f"{name}_resume_commit.json"))
+        metadata_path = os.path.join(output_dir, f"{name}_metadata.json")
+        if os.path.isfile(metadata_path):
+            with open(metadata_path, encoding="utf-8") as handle:
+                native = native or json.load(handle).get("kind") == "foveatag_shared_trainer_weights"
+        if native:
+            from .foveatag.shared_bundle import verify_native_bundle
+            verify_native_bundle(output_dir, name)
+    return state
 
 
 def _write_json_atomic(path: str, payload: Any) -> None:
@@ -434,10 +466,12 @@ def _save_danbooru_runtime_state(buffer: Any, output_dir: str, epoch: int) -> No
 def _save_optimizer_state(optimizer: Any, output_dir: str, name: str) -> None:
     """Save optimizer state dict to <name>_optimizer.pt."""
     path = os.path.join(output_dir, f"{name}_optimizer.pt")
-    torch.save(optimizer.state_dict(), path)
+    temporary = path + ".tmp"
+    torch.save(optimizer.state_dict(), temporary)
+    os.replace(temporary, path)
 
 
-def _save_vocabulary_snapshot(vocabulary: Any, output_dir: str, name: str) -> None:
+def _save_vocabulary_snapshot(vocabulary: Any, output_dir: str, name: str, *, strict=False) -> None:
     """Save a per-checkpoint vocabulary snapshot to ``<name>_vocabulary.json``.
 
     This pinpoints the exact tag→idx mapping that was active when this
@@ -450,6 +484,8 @@ def _save_vocabulary_snapshot(vocabulary: Any, output_dir: str, name: str) -> No
         with open(path, "w", encoding="utf-8") as f:
             json.dump(vocabulary.to_dict(), f, ensure_ascii=False, indent=2)
     except Exception as e:   # noqa: BLE001
+        if strict:
+            raise
         print(f"[TaggerTrainer] WARNING: could not save vocabulary snapshot for {name}: {e}")
 
 
@@ -465,6 +501,7 @@ def _save_tag_metrics(
     calib_method: str = "jeffreys",
     calib_eps: float = 0.5,
     calib_prior_strength: float = 10.0,
+    strict: bool = False,
 ) -> None:
     """Save per-tag threshold metrics alongside a checkpoint.
 
@@ -489,6 +526,8 @@ def _save_tag_metrics(
             calib_prior_strength=calib_prior_strength,
         )
     except Exception as e:   # noqa: BLE001
+        if strict:
+            raise
         print(f"[TaggerTrainer] WARNING: could not save tag_metrics for {name}: {e}")
 
 
@@ -497,6 +536,7 @@ def _save_ood_reference(
     output_dir: str,
     name: str,
     save_enabled: bool = True,
+    strict: bool = False,
 ) -> None:
     """Fit and save the OOD reference distribution alongside a checkpoint.
 
@@ -513,9 +553,12 @@ def _save_ood_reference(
         path = os.path.join(output_dir, f"{name}_ood_ref.npz")
         accumulator.finalize(path)
         # Persist raw reservoir for resume
-        reservoir_path = os.path.join(output_dir, "latest_ood_reservoir.npz")
+        reservoir_name = name if strict else "latest"
+        reservoir_path = os.path.join(output_dir, f"{reservoir_name}_ood_reservoir.npz")
         accumulator.save_reservoir(reservoir_path)
     except Exception as _e:
+        if strict:
+            raise
         print(f"[TaggerTrainer] WARNING: could not save ood_reference for {name}: {_e}")
 
 
@@ -534,9 +577,10 @@ def _save_checkpoint_artifacts(
     calib_eps: float,
     calib_prior_strength: float,
     save_ood_reference: bool,
+    strict: bool = False,
 ) -> None:
     """Save the vocabulary and inference sidecars paired with a checkpoint."""
-    _save_vocabulary_snapshot(vocabulary, output_dir, name)
+    _save_vocabulary_snapshot(vocabulary, output_dir, name, strict=strict)
     _save_tag_metrics(
         tag_metrics_accumulator,
         output_dir,
@@ -549,12 +593,14 @@ def _save_checkpoint_artifacts(
         calib_method=calib_method,
         calib_eps=calib_eps,
         calib_prior_strength=calib_prior_strength,
+        strict=strict,
     )
     _save_ood_reference(
         ood_accumulator,
         output_dir,
         name,
         save_enabled=save_ood_reference,
+        strict=strict,
     )
 
 
@@ -660,6 +706,8 @@ def _load_optimizer_state(
                     f"weight stats={summary['weight']}, bias stats={summary['bias']}"
                 )
         except Exception as e:   # noqa: BLE001
+            if getattr(model, "architecture", None) == "foveatag":
+                raise ValueError("native head optimizer migration failed") from e
             print(
                 f"[TaggerTrainer] WARNING: head optimizer state migration failed: {e}; "
                 f"loading raw state (may produce loss spike). "
@@ -692,7 +740,15 @@ def _prune_step_checkpoints(output_dir: str, keep_last_n: int) -> None:
             "_optimizer.pt",
             "_vocabulary.json",
             "_tag_metrics.npz",
+            "_metrics_runtime.npz",
+            "_f1_runtime.npz",
             "_ood_ref.npz",
+            "_export.safetensors",
+            "_export_metadata.json",
+            "_inference_commit.json",
+            "_collection_runtime.json",
+            "_ood_reservoir.npz",
+            "_resume_commit.json",
         ):
             path = os.path.join(output_dir, f"{name}{suffix}")
             if os.path.isfile(path):
@@ -741,29 +797,31 @@ def _find_resume_checkpoint(output_dir: str) -> Optional[Tuple[str, Dict[str, An
         return None
 
     candidates: List[Tuple[int, str, Dict[str, Any]]] = []
-
-    # Epoch-boundary checkpoint ("latest")
-    state = _load_training_state(output_dir, "latest")
-    if state is not None and os.path.isfile(os.path.join(output_dir, "latest.safetensors")):
-        candidates.append((state.get("global_step", 0), "latest", state))
-
-    # Step-based checkpoints
+    names = ["latest"]
+    damaged = False
     for fn in os.listdir(output_dir):
         m = _re.match(r"^step_(\d+)_state\.json$", fn)
         if m:
-            ckpt_name = f"step_{int(m.group(1)):06d}"
-            if os.path.isfile(os.path.join(output_dir, f"{ckpt_name}.safetensors")):
-                s = _load_training_state(output_dir, ckpt_name)
-                if s is not None:
-                    candidates.append((s.get("global_step", 0), ckpt_name, s))
-
-    if not candidates:
-        return None
-
-    # Pick the checkpoint that advanced furthest in training
+            names.append(f"step_{int(m.group(1)):06d}")
+    for name in names:
+        try:
+            state = _load_training_state(output_dir, name, verify_native=False)
+            weights_exist = os.path.isfile(os.path.join(output_dir, f"{name}.safetensors"))
+            if state is not None and weights_exist:
+                candidates.append((state.get("global_step", 0), name, state))
+            elif state is not None or weights_exist:
+                damaged = True
+        except (OSError, ValueError):
+            damaged = True
     candidates.sort(key=lambda x: x[0], reverse=True)
-    _, best_name, best_state = candidates[0]
-    return best_name, best_state
+    for _, name, _ in candidates:
+        try:
+            return name, _load_training_state(output_dir, name)
+        except (OSError, ValueError):
+            damaged = True
+    if damaged:
+        raise ValueError("No consistent resumable checkpoint found; refusing to start from scratch")
+    return None
 
 
 
@@ -788,12 +846,16 @@ class TaggerTrainer:
         progress_callback: Optional[Callable] = None,
         old_vocabulary: Optional[TagVocabulary] = None,
         vocab_lineage: Optional[Dict[str, List[str]]] = None,
+        diagnostic_due: Optional[Callable] = None,
+        diagnostic_callback: Optional[Callable] = None,
     ) -> None:
         self.run_id = run_id
         self.config = config
         self.vocabulary = vocabulary
         self.output_dir = output_dir
         self.callback = progress_callback
+        self.diagnostic_due = diagnostic_due
+        self.diagnostic_callback = diagnostic_callback
         self.old_vocabulary = old_vocabulary
         # new_tag -> [old_predecessor, ...] for head / optimizer-state inheritance
         # across vocab renames (alias) and merges (comma re-join). See vocab_lineage.py.
@@ -864,14 +926,14 @@ class TaggerTrainer:
         print(f"[TaggerTrainer] Building model (method={cfg.get('training_method', 'lora')}, "
               f"num_tags={self.vocabulary.num_tags}, device={device})...")
         self._emit("phase", {"phase": "initializing", "message": "Building model..."})
-        # FlashAttention-2 for the encoder self-attention (opt-in per run).
-        # Three guards before we commit to FA2, each falling back to SDPA:
-        #   1. dtype  — FA2 only engages under fp16/bf16 autocast (not fp32).
-        #   2. avail. — flash-attn must be installed/usable in this environment.
-        #   3. build  — if the FA2 model build still fails, retry with SDPA.
-        _use_fa2 = bool(cfg.get("use_flash_attention", False))
+        # SigLIP2 probes HF FA2; native Fovea uses the shared attention conduit.
+        _native_fovea = cfg.get("architecture") == "foveatag"
+        _use_fa2 = bool(cfg.get("use_flash_attention", False)) and not _native_fovea
         _mp_str = str(cfg.get("mixed_precision", "bf16")).lower()
         _attn_impl = "sdpa"
+        if _native_fovea:
+            policy = "external FlashAttention (dense/packed windows)" if cfg["use_flash_attention"] else "PyTorch SDPA, flash disabled"
+            print(f"[TaggerTrainer] Native FoveaTag attention: {policy}; CPU/fp32 use SDPA")
         if _use_fa2:
             if _mp_str not in ("bf16", "fp16"):
                 print(f"[TaggerTrainer] FlashAttention-2 requested but mixed_precision={_mp_str} "
@@ -891,6 +953,16 @@ class TaggerTrainer:
                           "(flash-attn not installed or unsupported here) — falling back to SDPA")
 
         def _build_model(_attn: str):
+            if cfg.get("architecture") == "foveatag":
+                from .foveatag.shared_factory import build_model as build_fovea_model
+                resume_path = (
+                    os.path.join(self.output_dir, f"{resume_ckpt_name}.safetensors")
+                    if resume_state is not None and resume_ckpt_name is not None else None
+                )
+                return build_fovea_model(
+                    cfg, self.vocabulary.num_tags, vocabulary=self.vocabulary.tag_to_idx,
+                    lineage=self.vocab_lineage, resume_path=resume_path,
+                )
             return build_tagger_model(
                 training_method=cfg.get("training_method", "lora"),
                 num_tags=self.vocabulary.num_tags,
@@ -920,6 +992,9 @@ class TaggerTrainer:
         trainable_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
         total_count     = sum(p.numel() for p in model.parameters())
         print(f"[TaggerTrainer] Model built: {trainable_count:,} trainable / {total_count:,} total parameters")
+        if _native_fovea and resume_state is None:
+            from .foveatag.shared_factory import save_initial_base
+            save_initial_base(model, cfg, self.output_dir)
         model = model.to(device)
         print(f"[TaggerTrainer] Model moved to {device}")
         # Expose the live model so the Danbooru vocab-expansion callback (defined
@@ -1142,9 +1217,16 @@ class TaggerTrainer:
         # pause us at the next batch boundary.  Cleanup happens at the end of
         # train() and defensively in run_tagger_training()'s finally.
         from core.gpu_coordinator import gpu_coordinator
+        inference_processor = processor
+        if cfg.get("architecture") == "foveatag":
+            from .foveatag.shared_factory import build_processor
+            inference_processor = build_processor(cfg, training=False)
         self._coordinator_handle.attach(model, optimizer, criterion,
-                                        processor=processor,
-                                        vocabulary=self.vocabulary)
+                                        processor=inference_processor,
+                                        vocabulary=self.vocabulary,
+                                        max_source_pixels=(cfg["fovea_max_source_pixels"]
+                                            if cfg.get("architecture") == "foveatag" else None),
+                                        inference_amp_dtype=amp_dtype if use_amp else None)
         gpu_coordinator.register_trainer(self._coordinator_handle)
 
         # Step-based checkpoint interval (0 = disabled)
@@ -1170,6 +1252,7 @@ class TaggerTrainer:
         # Per-tag threshold metrics accumulator
         from core.tagger.tag_metrics_accumulator import TagMetricsAccumulator
         _save_tag_metrics_enabled = bool(cfg.get("save_tag_metrics", True))
+        _metrics_runtime_needed = _save_tag_metrics_enabled or _n2_eval > 0 or _train_count_on
         _hard_lo = float(cfg.get("hard_rate_lo", 0.25))
         _hard_hi = float(cfg.get("hard_rate_hi", 0.75))
         _calib_method         = str(cfg.get("calib_method", "jeffreys"))
@@ -1198,7 +1281,28 @@ class TaggerTrainer:
                 calib_eps=_calib_eps,
                 calib_prior_strength=_calib_prior_strength,
                 save_ood_reference=_save_ood_ref_enabled,
+                strict=cfg.get("architecture") == "foveatag",
             )
+            if cfg.get("architecture") == "foveatag" and _metrics_runtime_needed:
+                from .foveatag.metrics_runtime import save_metrics_runtime
+                save_metrics_runtime(_tag_metrics_acc,
+                    os.path.join(self.output_dir, f"{name}_metrics_runtime.npz"),
+                    step=global_step, epoch_boundary=epoch_boundary)
+            if cfg.get("architecture") == "foveatag" and _n2_eval > 0:
+                from .foveatag.metrics_runtime import save_f1_runtime
+                save_f1_runtime(_train_f1_buffer,
+                    os.path.join(self.output_dir, f"{name}_f1_runtime.npz"),
+                    step=global_step, threshold=_f1_threshold, vocab_size=self.vocabulary.num_tags)
+            if cfg.get("architecture") == "foveatag":
+                from .foveatag.inference_bundle import publish_inference_bundle
+                optional = []
+                if _save_tag_metrics_enabled and _tag_metrics_acc.has_data:
+                    optional.append("_tag_metrics.npz")
+                if _save_ood_ref_enabled and _ood_emb_acc.n_seen >= 10:
+                    optional.append("_ood_ref.npz")
+                if model.training_method == "lora" and checkpoint_save_mode != "full":
+                    optional.extend(("_export.safetensors", "_export_metadata.json"))
+                publish_inference_bundle(self.output_dir, name, optional_suffixes=optional)
 
         # Training state
         best_f1         = 0.0
@@ -1217,24 +1321,101 @@ class TaggerTrainer:
         # resume_epoch.  Restoring it before iterating the DataLoader reproduces
         # the exact shuffle permutation and therefore the exact batch order.
         epoch_start_rng_for_resume: Optional[Dict[str, Any]] = None
+        native_run = cfg.get("architecture") == "foveatag"
+        native_best_only = native_run and bool(cfg.get("save_best_only", False))
+        native_saved_runtime = None
+        if native_run:
+            from .foveatag.shared_replay import NativeReplayCursor, native_epoch_loader, native_dataset_fingerprint
+            native_cursor = NativeReplayCursor()
+
+        def _native_runtime(saved_batch_idx):
+            if not native_run:
+                return None
+            cursor = NativeReplayCursor() if saved_batch_idx == -1 else native_cursor
+            return {
+                "version": 1, "cursor": cursor.to_dict(), "seed": cfg["fovea_seed"],
+                "rng": _capture_rng(native=True), "scheduler": scheduler.state_dict(),
+                "scaler": scaler.state_dict() if scaler is not None else None,
+                "collection_enabled": getattr(train_loader, "_buffer", None) is not None,
+                "expanded_tags": sorted(getattr(self, "_native_expanded_tags",
+                    getattr(getattr(train_loader, "_buffer", None), "_native_expanded_tags", set()))),
+            }
+
+        def _commit_native(name):
+            if native_run:
+                from .foveatag.shared_bundle import commit_native_bundle
+                optional = []
+                collection = getattr(train_loader, "_buffer", None)
+                if collection is not None:
+                    from .foveatag.collection_runtime import save_collection_runtime
+                    save_collection_runtime(collection,
+                        os.path.join(self.output_dir, f"{name}_collection_runtime.json"),
+                        step=global_step, epoch=epoch)
+                    optional.append("_collection_runtime.json")
+                if _metrics_runtime_needed:
+                    optional.append("_metrics_runtime.npz")
+                if _n2_eval > 0:
+                    optional.append("_f1_runtime.npz")
+                if _save_tag_metrics_enabled and _tag_metrics_acc.has_data:
+                    optional.append("_tag_metrics.npz")
+                if _save_ood_ref_enabled and _ood_emb_acc.n_seen >= 10:
+                    optional.extend(("_ood_ref.npz", "_ood_reservoir.npz"))
+                if model.training_method == "lora" and checkpoint_save_mode != "full":
+                    optional.extend(("_export.safetensors", "_export_metadata.json"))
+                commit_native_bundle(self.output_dir, name, optional_suffixes=optional)
+
+        def _save_step_checkpoint():
+            ckpt_name = f"step_{global_step:06d}"
+            metadata = self._make_metadata(epoch, global_step, best_f1, best_threshold)
+            ckpt_path = _save_model_checkpoint(model, self.output_dir, ckpt_name, metadata, checkpoint_save_mode)
+            _save_training_state(self.output_dir, ckpt_name, epoch, global_step, batch_idx,
+                best_f1, best_threshold, epoch_start_rng=epoch_start_rng,
+                dataset_fingerprint=current_fingerprint, native_runtime=_native_runtime(batch_idx))
+            _save_optimizer_state(optimizer, self.output_dir, ckpt_name)
+            _save_artifacts(ckpt_name, epoch_boundary=False)
+            _commit_native(ckpt_name)
+            if keep_last_n_checkpoints > 0:
+                _prune_step_checkpoints(self.output_dir, keep_last_n_checkpoints)
+            self._emit("checkpoint", {"name": ckpt_name, "step": global_step,
+                                      "epoch": epoch, "path": ckpt_path})
 
         # Compute the *current* dataset fingerprint up-front so we can both
         # (a) compare it to the saved one to detect mid-run dataset changes
         #     (e.g. caused by a pre-flight rescan adding/removing items), and
         # (b) include it in every state file we save below.
-        current_fingerprint = _compute_dataset_fingerprint(train_loader.dataset)
+        current_fingerprint = (
+            native_dataset_fingerprint(train_loader.dataset) if native_run
+            else _compute_dataset_fingerprint(train_loader.dataset)
+        )
         print(
             f"[TaggerTrainer] Dataset fingerprint: {current_fingerprint['total_item_count']} items, "
             f"hash={current_fingerprint['image_paths_hash'][:8]}..."
         )
 
         if resume_state is not None:
+            native_bundle_files = None
+            if native_run:
+                from .foveatag.shared_bundle import verify_native_bundle
+                native_bundle_files = verify_native_bundle(self.output_dir, resume_ckpt_name)["files"]
             resume_epoch     = resume_state["epoch"]         # next epoch to train
             resume_batch_idx = resume_state["batch_idx"]     # last completed batch (-1 = full epoch done)
             global_step      = resume_state["global_step"]
             best_f1          = resume_state.get("best_f1", 0.0)
             best_threshold   = resume_state.get("best_threshold", 0.5)
             epoch_start_rng_for_resume = resume_state.get("epoch_start_rng")
+            if native_run:
+                native_saved_runtime = resume_state.get("native_runtime")
+                if native_saved_runtime is None or native_saved_runtime.get("version") != 1:
+                    raise ValueError("native resume checkpoint lacks supported replay runtime")
+                if native_saved_runtime.get("seed") != cfg["fovea_seed"]:
+                    raise ValueError("native resume sampler seed differs from checkpoint")
+                expanded = native_saved_runtime.get("expanded_tags", [])
+                if not isinstance(expanded, list) or any(not isinstance(name, str) for name in expanded):
+                    raise ValueError("invalid native expanded-vocabulary ledger")
+                if not hasattr(self, "_native_expanded_tags"):
+                    self._native_expanded_tags = set()
+                self._native_expanded_tags.update(expanded)
+                native_cursor = NativeReplayCursor(**native_saved_runtime["cursor"])
 
             # Dataset-change detection: if the on-disk dataset differs from
             # the one this checkpoint was saved against, the saved RNG +
@@ -1253,6 +1434,8 @@ class TaggerTrainer:
                 )
                 resume_batch_idx           = -1
                 epoch_start_rng_for_resume = None
+                if native_run:
+                    native_cursor = NativeReplayCursor()
 
             # Restore optimizer state.  Pass the old/new vocab maps so that
             # the head's per-parameter state can be tag-name aligned when the
@@ -1273,16 +1456,44 @@ class TaggerTrainer:
                 )
                 if loaded:
                     print(f"[TaggerTrainer] Optimizer state restored from {resume_ckpt_name}")
+                elif native_run:
+                    raise ValueError("native optimizer state could not be restored")
 
-            # Restore tag metrics accumulator from latest_tag_metrics.npz so
-            # histogram data is not discarded across resume boundaries.
-            if _save_tag_metrics_enabled:
-                _metrics_npz = os.path.join(self.output_dir, "latest_tag_metrics.npz")
-                restored = _tag_metrics_acc.restore_from_npz(_metrics_npz)
+            if native_run and _n2_eval > 0:
+                from .foveatag.metrics_runtime import restore_f1_runtime
+                runtime_name = f"{resume_ckpt_name}_f1_runtime.npz"
+                if runtime_name not in native_bundle_files:
+                    raise ValueError("native resume lacks rolling F1 runtime")
+                _f1_threshold = restore_f1_runtime(_train_f1_buffer,
+                    os.path.join(self.output_dir, runtime_name), step=global_step,
+                    vocab_size=self.vocabulary.num_tags,
+                    saved_vocab=(self.old_vocabulary.tag_to_idx if self.old_vocabulary is not None else None),
+                    current_vocab=(self.vocabulary.tag_to_idx if self.old_vocabulary is not None else None),
+                    lineage=self.vocab_lineage)
+
+            # Native training slots are distinct from merged inference calibration.
+            if _save_tag_metrics_enabled or (native_run and _metrics_runtime_needed):
+                metrics_name = resume_ckpt_name if native_run and resume_ckpt_name else "latest"
+                _metrics_npz = os.path.join(self.output_dir, f"{metrics_name}_tag_metrics.npz")
+                if native_run:
+                    from .foveatag.metrics_runtime import restore_metrics_runtime
+                    runtime_name = f"{metrics_name}_metrics_runtime.npz"
+                    if runtime_name not in native_bundle_files:
+                        raise ValueError("native resume lacks exact training metric runtime")
+                    alignment = restore_metrics_runtime(_tag_metrics_acc,
+                        os.path.join(self.output_dir, runtime_name), step=global_step,
+                        saved_vocab=(self.old_vocabulary.tag_to_idx if self.old_vocabulary is not None else None),
+                        current_vocab=(self.vocabulary.tag_to_idx if self.old_vocabulary is not None else None),
+                        lineage=self.vocab_lineage)
+                    print(f"[TaggerTrainer] Exact metric runtime restored; reset rows={alignment['reset_rows']}")
+                    restored = True
+                else:
+                    restored = _tag_metrics_acc.restore_from_npz(_metrics_npz)
                 if restored:
+                    restored_name = runtime_name if native_run else "latest_tag_metrics.npz"
                     print(
                         f"[TaggerTrainer] Tag metrics accumulator restored from "
-                        f"latest_tag_metrics.npz "
+                        f"{restored_name} "
                         f"(prev={_tag_metrics_acc.total_images_prev:,}, "
                         f"pp={_tag_metrics_acc.total_images_pp:,}, "
                         f"all={_tag_metrics_acc.total_images_all:,})"
@@ -1295,12 +1506,22 @@ class TaggerTrainer:
 
             # Restore OOD embedding reservoir for resume continuity
             if _save_ood_ref_enabled:
-                _ood_reservoir_npz = os.path.join(self.output_dir, "latest_ood_reservoir.npz")
-                _ood_emb_acc.restore_from_reservoir(_ood_reservoir_npz)
+                reservoir_name = resume_ckpt_name if native_run and resume_ckpt_name else "latest"
+                _ood_reservoir_npz = os.path.join(self.output_dir, f"{reservoir_name}_ood_reservoir.npz")
+                if native_bundle_files is None or os.path.basename(_ood_reservoir_npz) in native_bundle_files:
+                    _ood_emb_acc.restore_from_reservoir(_ood_reservoir_npz, strict=native_run)
 
             # Fast-forward LR scheduler to match resumed global_step
-            for _ in range(global_step):
-                scheduler.step()
+            if native_run:
+                scheduler.load_state_dict(native_saved_runtime["scheduler"])
+                saved_scaler = native_saved_runtime.get("scaler")
+                if (scaler is None) != (saved_scaler is None):
+                    raise ValueError("native resume precision/scaler configuration differs")
+                if scaler is not None:
+                    scaler.load_state_dict(saved_scaler)
+            else:
+                for _ in range(global_step):
+                    scheduler.step()
 
             print(
                 f"[TaggerTrainer] Resuming from step {global_step} "
@@ -1331,7 +1552,10 @@ class TaggerTrainer:
                 inp = args[0]  # (B, D) on GPU, possibly bf16/fp16
                 _ood_cap_buf.append(inp.detach().float().cpu())
 
-        _ood_hook_handle = model.head.register_forward_pre_hook(_ood_forward_pre_hook)
+        if hasattr(model, "register_ood_feature_hook"):
+            _ood_hook_handle = model.register_ood_feature_hook(_ood_forward_pre_hook)
+        else:
+            _ood_hook_handle = model.head.register_forward_pre_hook(_ood_forward_pre_hook)
 
         for epoch in range(1, epochs + 1):
             if self._stop_requested:
@@ -1352,7 +1576,7 @@ class TaggerTrainer:
             # call, then let the DataLoader re-generate the same permutation,
             # and simply skip the already-processed batches.
             # -------------------------------------------------------
-            if epoch == resume_epoch and epoch_start_rng_for_resume is not None:
+            if not native_run and epoch == resume_epoch and epoch_start_rng_for_resume is not None:
                 # Restore the saved epoch-start RNG so the DataLoader produces
                 # the same shuffle permutation as the interrupted run.
                 _restore_rng(epoch_start_rng_for_resume)
@@ -1364,7 +1588,8 @@ class TaggerTrainer:
             epoch_start_rng = _capture_rng()
 
             print(f"[TaggerTrainer] --- Epoch {epoch}/{epochs} ---")
-            model.train()
+            with self._coordinator_handle.model_access() if native_run else nullcontext():
+                model.train()
             epoch_loss       = 0.0
             batches_processed = 0
 
@@ -1373,7 +1598,23 @@ class TaggerTrainer:
             # PIL decode and NaFlex transforms release the GIL, so true CPU/GPU
             # parallelism is achievable.  With num_workers>0, the DataLoader
             # already handles prefetching via worker processes.
-            if epoch == resume_epoch and resume_batch_idx >= 0:
+            if native_run:
+                if epoch != resume_epoch:
+                    native_cursor = NativeReplayCursor()
+                _loader_for_epoch = native_epoch_loader(
+                    train_loader, seed=cfg["fovea_seed"], epoch=epoch,
+                    base_batches=native_cursor.base_batches,
+                )
+                if hasattr(train_loader, "rewrap"):
+                    _loader_for_epoch = train_loader.rewrap(
+                        _loader_for_epoch, base_step_offset=native_cursor.valid_base_batches,
+                        pending_injection=native_cursor.pending_injection,
+                    )
+                _batch_idx_offset = native_cursor.last_batch_idx + 1
+                if native_saved_runtime is not None:
+                    _restore_rng(native_saved_runtime["rng"])
+                    native_saved_runtime = None
+            elif epoch == resume_epoch and resume_batch_idx >= 0:
                 # Efficiently skip already-processed batches by reconstructing the
                 # same shuffle permutation (RNG was restored to epoch-start state above)
                 # and slicing off the first (resume_batch_idx + 1) batches.
@@ -1426,6 +1667,9 @@ class TaggerTrainer:
                     batch, is_injection_batch = _yielded, False
 
                 if batch is None:
+                    if native_run:
+                        native_cursor.complete(batch_idx, is_injection=is_injection_batch,
+                            readable=False, injection_interval=max(1, cfg.get("danbooru_injection_interval", 4)))
                     continue  # entire batch was corrupt images
 
                 pv, pam, ss, labels, loss_masks = batch
@@ -1433,71 +1677,67 @@ class TaggerTrainer:
                 if self._stop_requested:
                     break
 
-                pv         = pv.to(device)
+                if native_run:
+                    native_cursor.complete(batch_idx, is_injection=is_injection_batch,
+                        readable=True, injection_interval=max(1, cfg.get("danbooru_injection_interval", 4)))
+
+                if not getattr(model, "routing", None):
+                    pv = pv.to(device)
                 pam        = pam.to(device)
                 ss         = ss.to(device)
                 labels     = labels.to(device)
                 loss_masks = loss_masks.to(device)
 
-                optimizer.zero_grad()
+                with self._coordinator_handle.model_access() if native_run else nullcontext():
+                    optimizer.zero_grad()
+                    if _save_ood_ref_enabled:
+                        _ood_cap_once[0] = True
+                    if use_amp:
+                        with torch.autocast(device_type="cuda", dtype=amp_dtype):
+                            from .diagnostic_capture import training_forward
+                            logits, classification_loss, loss, diagnostic_focus = training_forward(model, pv, pam, ss,
+                                labels, loss_masks, criterion, global_step)
+                    else:
+                        from .diagnostic_capture import training_forward
+                        logits, classification_loss, loss, diagnostic_focus = training_forward(model, pv, pam, ss,
+                            labels, loss_masks, criterion, global_step)
 
-                # Arm the OOD hook (one-shot flag) before the forward pass
-                if _save_ood_ref_enabled:
-                    _ood_cap_once[0] = True
-
-                if use_amp:
-                    with torch.autocast(device_type="cuda", dtype=amp_dtype):
-                        logits = model(pv, pam, ss)
-                        loss   = criterion(logits, labels, loss_masks)
-                else:
-                    logits = model(pv, pam, ss)
-                    loss   = criterion(logits, labels, loss_masks)
-
-                # Feed any captured CLS embeddings to the OOD accumulator
-                if _save_ood_ref_enabled and _ood_cap_buf:
-                    _ood_emb_acc.update(_ood_cap_buf.pop().numpy())
-
-                # Skip batch only when loss itself is NaN/Inf (backward is meaningless)
-                loss_val = loss.item()
-                if loss_val != loss_val or loss_val == float("inf"):
-                    print(f"[TaggerTrainer] WARNING: NaN/Inf loss at step {global_step}, skipping batch")
-                    optimizer.zero_grad(set_to_none=True)
+                    if _save_ood_ref_enabled and _ood_cap_buf:
+                        _ood_emb_acc.update(_ood_cap_buf.pop().numpy())
+                    loss_val = classification_loss.item()
+                    if not torch.isfinite(loss):
+                        print(f"[TaggerTrainer] WARNING: NaN/Inf loss at step {global_step}, skipping batch")
+                        optimizer.zero_grad(set_to_none=True)
+                        if scaler is not None:
+                            scaler.update()
+                        continue
+                    if _n2_eval > 0 or _train_count_on or _save_tag_metrics_enabled:
+                        _step_probs = torch.sigmoid(logits.detach()).to(torch.float16).cpu()
+                        _step_labels = labels.detach().bool().cpu()
                     if scaler is not None:
+                        scaler.scale(loss).backward()
+                        scaler.unscale_(optimizer)
+                        # Clipping non-finite gradients would create NaNs.
+                        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                        if not torch.isfinite(grad_norm):
+                            print(f"[TaggerTrainer] WARNING: non-finite grad norm ({grad_norm:.3g}) "
+                                  f"at step {global_step}, skipping optimizer step")
+                            optimizer.zero_grad(set_to_none=True)
+                            scaler.update()
+                            continue
+                        scaler.step(optimizer)
+                        self._optimizer_steps_completed += 1
                         scaler.update()
-                    continue
-
-                # Capture sigmoid probs for training F1 rolling buffer (fp16, CPU).
-                # Also needed when train-count augmentation is on (tag_count update).
-                if _n2_eval > 0 or _train_count_on:
-                    _step_probs  = torch.sigmoid(logits.detach()).to(torch.float16).cpu()
-                    _step_labels = labels.detach().bool().cpu()
-
-                if scaler is not None:
-                    scaler.scale(loss).backward()
-                    scaler.unscale_(optimizer)
-                    # Clip first — large-but-finite gradients are clipped and learned from.
-                    # clip_grad_norm_ returns the pre-clip total norm; if it is non-finite
-                    # (fp16 overflow produced Inf gradients), skip to avoid 0×Inf = NaN.
-                    grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                    if not torch.isfinite(grad_norm):
-                        print(f"[TaggerTrainer] WARNING: non-finite grad norm ({grad_norm:.3g}) "
-                              f"at step {global_step}, skipping optimizer step")
-                        optimizer.zero_grad(set_to_none=True)
-                        scaler.update()
-                        continue
-                    scaler.step(optimizer)
-                    self._optimizer_steps_completed += 1
-                    scaler.update()
-                else:
-                    loss.backward()
-                    grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                    if not torch.isfinite(grad_norm):
-                        print(f"[TaggerTrainer] WARNING: non-finite grad norm ({grad_norm:.3g}) "
-                              f"at step {global_step}, skipping optimizer step")
-                        optimizer.zero_grad(set_to_none=True)
-                        continue
-                    optimizer.step()
-                    self._optimizer_steps_completed += 1
+                    else:
+                        loss.backward()
+                        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                        if not torch.isfinite(grad_norm):
+                            print(f"[TaggerTrainer] WARNING: non-finite grad norm ({grad_norm:.3g}) "
+                                  f"at step {global_step}, skipping optimizer step")
+                            optimizer.zero_grad(set_to_none=True)
+                            continue
+                        optimizer.step()
+                        self._optimizer_steps_completed += 1
 
                 # Injection (Danbooru pure-batch) updates: skip LR scheduler
                 # and step counter so resume reproducibility is preserved.
@@ -1510,13 +1750,17 @@ class TaggerTrainer:
                 # Append to training F1 rolling buffer (F1 only); accumulate
                 # tag_count whenever F1 metrics OR train-count augmentation is on.
                 if _n2_eval > 0:
-                    _train_f1_buffer.append((_step_probs, _step_labels))
-                if _n2_eval > 0 or _train_count_on:
-                    _tag_metrics_acc.update(_step_probs, _step_labels)
+                    from .foveatag.metrics_runtime import masked_metric_inputs
+                    _train_f1_buffer.append(masked_metric_inputs(_step_probs, _step_labels, loss_masks.detach().cpu()))
+                if _n2_eval > 0 or _train_count_on or _save_tag_metrics_enabled:
+                    _tag_metrics_acc.update(_step_probs, _step_labels,
+                        observation_mask=(loss_masks.detach() > 0).cpu())
 
-                # GPU-coordinator pause at the batch boundary; the state moves
-                # on this thread so cross-thread ``.to()`` never happens.
-                self._coordinator_handle.service_pause(self._stop_event, lambda: self._stop_requested)
+                if native_run:
+                    from .foveatag.run_control import wait_for_gpu_release
+                    wait_for_gpu_release(self._coordinator_handle)
+                else:
+                    self._coordinator_handle.service_pause(self._stop_event, lambda: self._stop_requested)
 
                 # Progress callback every 10 steps
                 if global_step % 10 == 0:
@@ -1524,7 +1768,7 @@ class TaggerTrainer:
                     self._emit("step", {
                         "step": global_step,
                         "epoch": epoch,
-                        "loss": loss.item(),
+                        "loss": loss_val,
                         "lr": current_lr,
                         "progress": global_step / total_steps,
                     })
@@ -1534,27 +1778,8 @@ class TaggerTrainer:
                         _save_danbooru_runtime_state(_db_buf, self.output_dir, epoch)
 
                 # Step-based checkpoint (model + state + optimizer + vocab)
-                if save_every_n_steps > 0 and global_step % save_every_n_steps == 0:
-                    ckpt_name = f"step_{global_step:06d}"
-                    metadata  = self._make_metadata(epoch, global_step, best_f1, best_threshold)
-                    ckpt_path = _save_model_checkpoint(model, self.output_dir, ckpt_name, metadata, checkpoint_save_mode)
-                    _save_training_state(
-                        self.output_dir, ckpt_name,
-                        epoch, global_step, batch_idx,
-                        best_f1, best_threshold,
-                        epoch_start_rng=epoch_start_rng,  # epoch-start RNG for exact replay
-                        dataset_fingerprint=current_fingerprint,
-                    )
-                    _save_optimizer_state(optimizer, self.output_dir, ckpt_name)
-                    _save_artifacts(ckpt_name, epoch_boundary=False)
-                    if keep_last_n_checkpoints > 0:
-                        _prune_step_checkpoints(self.output_dir, keep_last_n_checkpoints)
-                    self._emit("checkpoint", {
-                        "name": ckpt_name,
-                        "step": global_step,
-                        "epoch": epoch,
-                        "path": ckpt_path,
-                    })
+                if not native_run and save_every_n_steps > 0 and global_step % save_every_n_steps == 0:
+                    _save_step_checkpoint()
 
                 # Training F1 periodic evaluation (N2 steps) and threshold search (N1 steps)
                 if _n2_eval > 0 and global_step > 0 and global_step % _n2_eval == 0 \
@@ -1604,6 +1829,13 @@ class TaggerTrainer:
                     })
                     del _buf_p, _buf_l
 
+                if self.diagnostic_due is not None and self.diagnostic_due(global_step):
+                    self._capture_diagnostic(batch, pv, logits, labels, loss_masks, global_step, epoch,
+                        _f1_threshold, _tag_metrics_acc if _metrics_runtime_needed else None, focus=diagnostic_focus)
+
+                if native_run and not native_best_only and save_every_n_steps > 0 and global_step % save_every_n_steps == 0:
+                    _save_step_checkpoint()
+
             if self._stop_requested:
                 # Release the DataLoader iterator early so worker processes
                 # (num_workers > 0) are terminated before the checkpoint is saved.
@@ -1633,9 +1865,11 @@ class TaggerTrainer:
                     best_f1, best_threshold,
                     epoch_start_rng=epoch_start_rng,
                     dataset_fingerprint=current_fingerprint,
+                    native_runtime=_native_runtime(batch_idx),
                 )
                 _save_optimizer_state(optimizer, self.output_dir, ckpt_name)
                 _save_artifacts(ckpt_name, epoch_boundary=False)
+                _commit_native(ckpt_name)
                 # Also update "latest" to the stop position
                 _save_model_checkpoint(model, self.output_dir, "latest", metadata, checkpoint_save_mode)
                 _save_training_state(
@@ -1644,9 +1878,11 @@ class TaggerTrainer:
                     best_f1, best_threshold,
                     epoch_start_rng=epoch_start_rng,
                     dataset_fingerprint=current_fingerprint,
+                    native_runtime=_native_runtime(batch_idx),
                 )
                 _save_optimizer_state(optimizer, self.output_dir, "latest")
                 _save_artifacts("latest", epoch_boundary=False)
+                _commit_native("latest")
                 self._emit("checkpoint", {
                     "name": ckpt_name,
                     "step": global_step,
@@ -1726,7 +1962,7 @@ class TaggerTrainer:
                 _save_artifacts("latest", epoch_boundary=True)
 
                 # Epoch-based checkpoint (model only; training state = same as latest)
-                if save_every_n_epochs > 0 and epoch % save_every_n_epochs == 0:
+                if not native_best_only and save_every_n_epochs > 0 and epoch % save_every_n_epochs == 0:
                     ckpt_name = f"epoch_{epoch:04d}"
                     _save_model_checkpoint(model, self.output_dir, ckpt_name, metadata, checkpoint_save_mode)
                     _save_artifacts(ckpt_name, epoch_boundary=True)
@@ -1736,8 +1972,10 @@ class TaggerTrainer:
                     epoch + 1, global_step, -1,
                     best_f1, best_threshold,
                     dataset_fingerprint=current_fingerprint,
+                    native_runtime=_native_runtime(-1),
                 )
                 _save_optimizer_state(optimizer, self.output_dir, "latest")
+                _commit_native("latest")
 
             # Rotate epoch histograms: prev ← cur, cur ← zero. This also finalizes
             # the per-epoch exposure delta used by train-count deficiency.
@@ -1864,7 +2102,10 @@ class TaggerTrainer:
         max_batches: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Collect validation predictions and labels as float16 tensors."""
-        model.eval()
+        native = getattr(model, "architecture", None) == "foveatag"
+        handle = getattr(self, "_coordinator_handle", None)
+        if not native:
+            model.eval()
         all_preds  = []
         all_labels = []
         with torch.no_grad():
@@ -1873,21 +2114,37 @@ class TaggerTrainer:
                     break
                 if batch is None:
                     continue
-                pv, pam, ss, labels, _ = batch
-                pv  = pv.to(device)
+                pv, pam, ss, labels, loss_masks = batch
+                if not getattr(model, "routing", None):
+                    pv = pv.to(device)
                 pam = pam.to(device)
                 ss  = ss.to(device)
-                if amp_dtype is not None:
-                    with torch.autocast(device_type="cuda", dtype=amp_dtype):
-                        logits = model(pv, pam, ss)
-                else:
-                    logits = model(pv, pam, ss)
+                with handle.model_access() if native and handle is not None else nullcontext():
+                    was_training = model.training
+                    if native:
+                        model.eval()
+                    try:
+                        if amp_dtype is not None:
+                            with torch.autocast(device_type="cuda", dtype=amp_dtype):
+                                logits = model(pv, pam, ss)
+                        else:
+                            logits = model(pv, pam, ss)
+                    finally:
+                        if native:
+                            model.train(was_training)
                 # Pad stale-width val labels after a mid-training vocab expansion.
                 if labels.shape[1] < logits.shape[1]:
                     labels = torch.nn.functional.pad(
                         labels, (0, logits.shape[1] - labels.shape[1]), value=0.0
                     )
-                all_preds.append(torch.sigmoid(logits).to(torch.float16).cpu())
+                probabilities = torch.sigmoid(logits).to(torch.float16).cpu()
+                if getattr(model, "architecture", None) == "foveatag":
+                    from .foveatag.metrics_runtime import masked_metric_inputs
+                    if loss_masks.shape[1] < logits.shape[1]:
+                        loss_masks = torch.nn.functional.pad(loss_masks,
+                            (0, logits.shape[1] - loss_masks.shape[1]), value=0.0)
+                    probabilities, labels = masked_metric_inputs(probabilities, labels.cpu(), loss_masks.cpu())
+                all_preds.append(probabilities)
                 all_labels.append(labels.to(torch.float16))
         if not all_preds:
             raise RuntimeError("Validation produced no readable batches")
@@ -1930,11 +2187,32 @@ class TaggerTrainer:
         }
 
 
+    def _capture_diagnostic(self, batch, inputs, logits, labels, masks, step, epoch, threshold, accumulator, focus=None):
+        if self.diagnostic_callback is None:
+            return
+        from .diagnostic_capture import capture_forward
+        supplied_focus = focus
+        if supplied_focus is not None:
+            focus = lambda index: supplied_focus[index]
+        elif self.config.get("architecture") == "foveatag":
+            def focus(index):
+                valid = inputs.local_view_mask[index].detach().cpu()
+                return {"boxes": inputs.local_geometry[index, :, :4].detach().float().cpu()[valid],
+                    "random_slots": torch.ones(int(valid.sum()), dtype=torch.bool),
+                    "local_size": int(inputs.local_images.shape[-1]), "focus_kind": "sampled"}
+        try:
+            snapshot = capture_forward(batch, logits, labels, masks, step=step, epoch=epoch,
+                threshold=threshold, vocabulary=self.vocabulary,
+                tag_metrics=accumulator.compute_metrics() if accumulator is not None else None, focus=focus)
+            self.diagnostic_callback(snapshot)
+        except Exception as exc:
+            self.diagnostic_callback({"step": step, "skip_reason": "capture_failed_" + type(exc).__name__})
+
     def _make_metadata(
         self, epoch: int, step: int, best_f1: float, best_threshold: float
     ) -> Dict[str, Any]:
         from core.tagger.siglip2_tagger_model import SIGLIP2_DEFAULT_REPO_ID, _is_hf_repo_or_url
-        return {
+        metadata = {
             "run_id": self.run_id,
             "num_tags": self.vocabulary.num_tags,
             "epoch": epoch,
@@ -1965,6 +2243,18 @@ class TaggerTrainer:
                 "base_model_path": self.config["base_model_path"],
             } if self.config.get("base_model_path") else {}),
         }
+        if self.config.get("architecture") == "foveatag":
+            from dataclasses import asdict
+            from .foveatag.shared_factory import view_config
+            metadata["fovea_view_config"] = asdict(view_config(self.config))
+            metadata["max_source_pixels"] = self.config["fovea_max_source_pixels"]
+            metadata["fovea_seed"] = self.config["fovea_seed"]
+            metadata["mixed_precision"] = self.config["mixed_precision"]
+            metadata.pop("is_naflex", None)
+            metadata["attention_requested"] = "flash_attention_2" if self.config["use_flash_attention"] else "sdpa_no_flash"
+            metadata["attention_window_layout"] = "packed_connected_regions_v1"
+            metadata["normalization_execution"] = "fp32_statistics_v1"
+        return metadata
 
     def _emit(self, event_type: str, data: Dict[str, Any]) -> None:
         if self.callback:
@@ -1983,6 +2273,8 @@ def run_tagger_training(
     progress_callback: Optional[Callable] = None,
     resume_from_checkpoint: Optional[str] = None,
     trainer_holder: Optional[List] = None,
+    diagnostic_due: Optional[Callable] = None,
+    diagnostic_callback: Optional[Callable] = None,
 ) -> Dict[str, Any]:
     """Top-level function to build everything and start training.
 
@@ -1998,6 +2290,31 @@ def run_tagger_training(
 
     datasets_db = DatasetsSessionLocal()
     try:
+        native_run = config.get("architecture") == "foveatag"
+        native_resume = None
+        native_collection = None
+        native_expanded = set()
+        if native_run and resume_from_checkpoint:
+            if os.path.normcase(os.path.abspath(output_dir)) != os.path.normcase(os.path.abspath(resume_from_checkpoint)):
+                raise ValueError("native resume must use its existing output directory")
+            native_resume = _find_resume_checkpoint(resume_from_checkpoint)
+            if native_resume is None:
+                raise ValueError("native resume has no coherent checkpoint")
+            from .foveatag.shared_bundle import verify_native_bundle
+            name, state = native_resume
+            files = verify_native_bundle(output_dir, name)["files"]
+            if state["native_runtime"].get("collection_enabled", False):
+                if f"{name}_collection_runtime.json" not in files:
+                    raise ValueError("native resume lacks collection runtime")
+                from .foveatag.collection_runtime import load_collection_runtime
+                native_collection = load_collection_runtime(os.path.join(output_dir, f"{name}_collection_runtime.json"),
+                    step=state["global_step"])
+            recorded_expanded = state["native_runtime"].get("expanded_tags", [])
+            if not isinstance(recorded_expanded, list) or any(not isinstance(name, str) for name in recorded_expanded):
+                raise ValueError("invalid native expanded-vocabulary ledger")
+            native_expanded = set(recorded_expanded)
+            if native_collection is not None:
+                native_expanded.update(native_collection["expanded_tags"])
         print(f"[TaggerTraining] === Phase: vocabulary ===")
         print(f"[TaggerTraining] Building tag vocabulary from {len(dataset_ids)} dataset(s)...")
         progress_callback and progress_callback(run_id, "phase", {
@@ -2099,6 +2416,11 @@ def run_tagger_training(
         #   4. Default (patch16-naflex)
         _ve_path = config.get("vision_encoder_path", "")
         _is_hf_ve, _resolved_ve = _is_hf_repo_or_url(_ve_path)
+        if config.get("architecture") == "foveatag":
+            if _is_hf_ve:
+                raise ValueError("native FoveaTag accepts local scratch encoder artifacts, not SigLIP2 repositories")
+            config = dict(config)
+            config["vision_encoder_repo"] = "foveatag-scratch"
         if _is_hf_ve or "vision_encoder_repo" not in config:
             config = dict(config)  # shallow copy — do not mutate caller's dict
             if _is_hf_ve:
@@ -2124,14 +2446,21 @@ def run_tagger_training(
         processor_repo = config["vision_encoder_repo"]
         print(f"[TaggerTraining] === Phase: processor ===")
         print(f"[TaggerTraining] Loading processor from {processor_repo}...")
-        try:
-            processor = AutoProcessor.from_pretrained(processor_repo, local_files_only=True)
-        except Exception:
-            processor = AutoProcessor.from_pretrained(processor_repo)
+        if config.get("architecture") == "foveatag":
+            from .foveatag.shared_factory import build_processor as build_fovea_processor
+            processor = build_fovea_processor(config, training=True)
+        else:
+            try:
+                processor = AutoProcessor.from_pretrained(processor_repo, local_files_only=True)
+            except Exception:
+                processor = AutoProcessor.from_pretrained(processor_repo)
         # Probe processor to detect architecture (NaFlex vs standard fixed-resolution).
         _probe = processor(images=[_PILImage.new("RGB", (64, 64))], return_tensors="pt")
         _is_naflex = "pixel_attention_mask" in _probe and "spatial_shapes" in _probe
-        _mode_str = "NaFlex (variable resolution)" if _is_naflex else "standard (fixed resolution)"
+        _mode_str = (
+            "FoveaTag (source-local views)" if "fovea_views" in _probe else
+            "NaFlex (variable resolution)" if _is_naflex else "standard (fixed resolution)"
+        )
         print(f"[TaggerTraining] Processor loaded (repo: {processor_repo}, mode: {_mode_str})")
         # Store in config so build_tagger_model() and _make_metadata() can access it.
         # Ensure config is a mutable dict copy (the if-branch above may not have copied it).
@@ -2162,6 +2491,7 @@ def run_tagger_training(
             comma_resolver=comma_resolver,
             quality_masking_mode=config.get("quality_masking_mode", "intra_group"),
             progress_callback=_ds_progress,
+            max_source_pixels=(config["fovea_max_source_pixels"] if config.get("architecture") == "foveatag" else None),
         )
         total_samples = len(full_ds)
         print(f"[TaggerTraining] Dataset: {total_samples} samples total")
@@ -2176,8 +2506,13 @@ def run_tagger_training(
         train_size = total_samples - val_size
         train_ds, val_ds = torch.utils.data.random_split(
             full_ds, [train_size, val_size],
-            generator=torch.Generator().manual_seed(42),
+            generator=torch.Generator().manual_seed(config["fovea_seed"] if config.get("architecture") == "foveatag" else 42),
         )
+        if config.get("architecture") == "foveatag":
+            import copy
+            validation_source = copy.copy(full_ds)
+            validation_source.processor = build_fovea_processor(config, training=False)
+            val_ds = torch.utils.data.Subset(validation_source, val_ds.indices)
         print(f"[TaggerTraining] Split: {train_size} train / {val_size} val "
               f"(mode={val_split_mode})")
 
@@ -2289,14 +2624,18 @@ def run_tagger_training(
                 _expanded_tags_path = os.path.join(output_dir, "danbooru_expanded_tags.json")
                 _expanded_accum: set = set()
                 try:
-                    if os.path.isfile(_expanded_tags_path):
+                    if not native_run and os.path.isfile(_expanded_tags_path):
                         with open(_expanded_tags_path, "r", encoding="utf-8") as _ef:
                             _el = json.load(_ef)
                         _expanded_accum = set(_el if isinstance(_el, list) else _el.keys())
                 except Exception:
                     _expanded_accum = set()
+                if native_run:
+                    _expanded_accum = native_expanded
 
                 def _save_expanded_tags() -> None:
+                    if native_run:
+                        return
                     try:
                         _tmp = _expanded_tags_path + ".tmp"
                         with open(_tmp, "w", encoding="utf-8") as _wf:
@@ -2316,9 +2655,10 @@ def run_tagger_training(
                     # tags would wrongly survive resume.
                     _norms = [normalize_tag(t) for t in new_tags]
                     _were_present = {t for t in _norms if t in vocabulary.tag_to_idx}
-                    n = expand_vocab_and_head(
-                        new_tags, vocabulary, trainer.model, trainer.optimizer
-                    )
+                    with trainer._coordinator_handle.model_access() if config.get("architecture") == "foveatag" else nullcontext():
+                        n = expand_vocab_and_head(
+                            new_tags, vocabulary, trainer.model, trainer.optimizer
+                        )
                     if n > 0:
                         _newly = [
                             t for t in _norms
@@ -2336,12 +2676,16 @@ def run_tagger_training(
                             if _acc is not None:
                                 _acc.grow(_new_size)
                         except Exception as _ge:
+                            if native_run:
+                                raise
                             print(f"[TaggerTraining] metrics accumulator grow failed: {_ge}")
                         try:
                             _ng = _grow_criterion_buffers(trainer.criterion, _new_size)
                             if _ng:
                                 print(f"[TaggerTraining] Grew {_ng} per-tag loss buffer(s) for new tags")
                         except Exception as _ce:
+                            if native_run:
+                                raise
                             print(f"[TaggerTraining] criterion buffer grow failed: {_ce}")
                         # The train-F1 rolling buffer holds old-width probs/labels
                         # which can no longer be concatenated with new-width ones.
@@ -2384,7 +2728,7 @@ def run_tagger_training(
                 _initial_dynamic_tags: Any = None
                 try:
                     _dt_path = os.path.join(output_dir, "danbooru_dynamic_tags.json")
-                    if os.path.isfile(_dt_path):
+                    if not native_run and os.path.isfile(_dt_path):
                         with open(_dt_path, "r", encoding="utf-8") as _df:
                             _loaded = json.load(_df)
                         if isinstance(_loaded, (dict, list)) and len(_loaded) > 0:
@@ -2400,7 +2744,7 @@ def run_tagger_training(
                 _initial_cooc_active: Any = None
                 try:
                     _ct_path = os.path.join(output_dir, "danbooru_cooc_active_tags.json")
-                    if os.path.isfile(_ct_path):
+                    if not native_run and os.path.isfile(_ct_path):
                         with open(_ct_path, "r", encoding="utf-8") as _cf:
                             _cl = json.load(_cf)
                         # {tag: last_used} (current) or [tag, ...] (legacy) — the
@@ -2418,7 +2762,7 @@ def run_tagger_training(
                 _initial_query_tags: Any = None
                 try:
                     _qt_path = os.path.join(output_dir, "danbooru_query_tags.json")
-                    if os.path.isfile(_qt_path):
+                    if not native_run and os.path.isfile(_qt_path):
                         with open(_qt_path, "r", encoding="utf-8") as _qf:
                             _ql = json.load(_qf)
                         if isinstance(_ql, (dict, list)) and len(_ql) > 0:
@@ -2434,7 +2778,7 @@ def run_tagger_training(
                 # only if the resumed epoch matches the persisted epoch, so a
                 # cross-epoch resume still starts the new epoch's collection clean.
                 _initial_epoch_progress: Any = None
-                if resume_from_checkpoint:
+                if resume_from_checkpoint and not native_run:
                     try:
                         _epp_path = os.path.join(output_dir, "danbooru_epoch_progress.json")
                         if os.path.isfile(_epp_path):
@@ -2448,6 +2792,11 @@ def run_tagger_training(
                     except Exception as _eppe:
                         print(f"[TaggerTraining] Could not restore epoch progress: {_eppe}")
 
+                if native_run:
+                    _initial_dynamic_tags = native_collection["dynamic_tags"] if native_collection else None
+                    _initial_cooc_active = native_collection["cooc_active_tags"] if native_collection else None
+                    _initial_query_tags = native_collection["query_tags"] if native_collection else None
+                    _initial_epoch_progress = native_collection["epoch_progress"] if native_collection else None
                 _danbooru_buffer = DanbooruSampleBuffer(
                     tag_queries=_active_queries,
                     vocabulary=vocabulary,
@@ -2516,7 +2865,12 @@ def run_tagger_training(
                     min_slow_seconds=float(config.get("danbooru_speed_min_slow_seconds", 90)),
                     cooldown_seconds=float(config.get("danbooru_speed_cooldown_seconds", 3600)),
                 )
-                _danbooru_buffer.start()
+                if native_run:
+                    _danbooru_buffer._native_expanded_tags = _expanded_accum
+                    if native_collection is not None:
+                        _danbooru_buffer.restore_native_runtime(native_collection)
+                else:
+                    _danbooru_buffer.start()
                 train_loader = _MixedDL(
                     train_loader,
                     buffer=_danbooru_buffer,
@@ -2577,7 +2931,7 @@ def run_tagger_training(
         resume_ckpt_name: Optional[str] = None
 
         if resume_from_checkpoint:
-            result = _find_resume_checkpoint(resume_from_checkpoint)
+            result = native_resume if native_run else _find_resume_checkpoint(resume_from_checkpoint)
             if result is not None:
                 resume_ckpt_name, resume_state = result
                 print(
@@ -2596,7 +2950,7 @@ def run_tagger_training(
         if config.get("save_base_model", True):
             import shutil as _shutil
             _base_dst = os.path.join(output_dir, "base_model.safetensors")
-            _ve_path_for_copy = config.get("vision_encoder_path", "")
+            _ve_path_for_copy = str(config.get("vision_encoder_path") or "").strip().strip('"').strip("'")
             _is_hf_ve, _resolved_ve_id = _is_hf_repo_or_url(_ve_path_for_copy)
 
             if os.path.isfile(_base_dst):
@@ -2643,6 +2997,8 @@ def run_tagger_training(
                     print(f"[TaggerTraining] Loaded old vocabulary ({old_vocabulary.num_tags} tags) "
                           f"from {_src} for head alignment")
                 except Exception as _e:
+                    if config.get("architecture") == "foveatag":
+                        raise ValueError("native checkpoint vocabulary could not be restored") from _e
                     print(f"[TaggerTraining] WARNING: could not load old vocabulary: {_e}")
             else:
                 print(f"[TaggerTraining] WARNING: no vocabulary file found for {resume_ckpt_name}; "
@@ -2659,10 +3015,13 @@ def run_tagger_training(
         # then copies the surviving head rows for the re-added tags by tag name.
         if resume_ckpt_name is not None and old_vocabulary is not None and output_dir:
             _exp_path = os.path.join(output_dir, "danbooru_expanded_tags.json")
-            if os.path.isfile(_exp_path):
+            if (native_run and native_expanded) or (not native_run and os.path.isfile(_exp_path)):
                 try:
-                    with open(_exp_path, "r", encoding="utf-8") as _ef:
-                        _exp_loaded = json.load(_ef)
+                    if native_run:
+                        _exp_loaded = list(native_expanded)
+                    else:
+                        with open(_exp_path, "r", encoding="utf-8") as _ef:
+                            _exp_loaded = json.load(_ef)
                     _exp_set = set(_exp_loaded if isinstance(_exp_loaded, list) else _exp_loaded.keys())
                     # Only re-add tags the checkpoint actually had (so a head row
                     # exists to inherit) AND that the rebuilt dataset vocab lacks.
@@ -2685,6 +3044,8 @@ def run_tagger_training(
                         print(f"[TaggerTraining] Expanded-tags file present ({len(_exp_set)} tags) "
                               f"but none needed re-adding (already in dataset vocab)")
                 except Exception as _xe:
+                    if native_run:
+                        raise
                     print(f"[TaggerTraining] WARNING: could not restore expanded tags: {_xe}")
 
         # Build the vocab lineage so renamed (alias) / merged (comma re-join) tags
@@ -2713,6 +3074,8 @@ def run_tagger_training(
             progress_callback=progress_callback,
             old_vocabulary=old_vocabulary,
             vocab_lineage=vocab_lineage,
+            diagnostic_due=diagnostic_due,
+            diagnostic_callback=diagnostic_callback,
         )
         # Expose trainer reference so the API can call trainer.stop()
         if trainer_holder is not None:
@@ -2758,6 +3121,10 @@ def run_tagger_training(
                 _tag_refresh_detector = None
 
         try:
+            if native_run and _danbooru_buffer is not None:
+                _danbooru_buffer.start()
+            if native_run:
+                trainer._native_expanded_tags = native_expanded
             return trainer.train(
                 train_loader, val_loader, processor,
                 resume_state=resume_state,

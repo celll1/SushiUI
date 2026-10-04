@@ -1,0 +1,75 @@
+{
+  "format_version": 1,
+  "kind": "foveatag_existing_siglip2_training_reference",
+  "observed_on": "2026-09-29",
+  "run": {
+    "run_id": "cca72ce1-7420-4164-9f24-c30ae77cdf2f",
+    "run_name": "0510_So14_384_LoRA",
+    "status": "stopped",
+    "vision_encoder": "google/siglip2-so400m-patch14-384",
+    "training_method": "lora",
+    "planned_epochs": 20,
+    "checkpoint_epoch": 13,
+    "checkpoint_step": 1179633,
+    "best_epoch": 10,
+    "best_step": 949537,
+    "best_macro_f1": 0.592726767063141,
+    "best_threshold": 0.41
+  },
+  "optimizer": {
+    "kind": "adamw8bit",
+    "encoder_learning_rate": 0.00015,
+    "head_learning_rate_multiplier": 10.0,
+    "weight_decay": 0.0001,
+    "warmup_steps": 100,
+    "batch_size": 32,
+    "mixed_precision": "bf16",
+    "loss": {
+      "kind": "asymmetric_loss",
+      "gamma_negative": 4.0,
+      "gamma_positive": 1.0,
+      "negative_clip": 0.05,
+      "reduction": "mean"
+    }
+  },
+  "datasets": {
+    "registered_item_count": 3700884,
+    "entries": [
+      {"id": 2, "name": "[ultra]", "registered_items": 8315},
+      {"id": 5, "name": "copyright", "registered_items": 2780},
+      {"id": 6, "name": "character", "registered_items": 604122},
+      {"id": 12, "name": "concept", "registered_items": 198753},
+      {"id": 16, "name": "cosplay_202601", "registered_items": 21510},
+      {"id": 18, "name": "comic", "registered_items": 3116},
+      {"id": 19, "name": "artist", "registered_items": 116610},
+      {"id": 24, "name": "endfield_character", "registered_items": 1416},
+      {"id": 25, "name": "character_gelbooru", "registered_items": 1548785},
+      {"id": 26, "name": "gel_wildcard", "registered_items": 812440},
+      {"id": 27, "name": "dataset_working-copyright", "registered_items": 43235},
+      {"id": 28, "name": "pokemon", "registered_items": 23102},
+      {"id": 29, "name": "dan_wildcard", "registered_items": 292241},
+      {"id": 30, "name": "dan_character", "registered_items": 12320},
+      {"id": 31, "name": "cosplay_all_json", "registered_items": 10606},
+      {"id": 32, "name": "cosplay_all_nojson", "registered_items": 1533}
+    ],
+    "dynamic_training_features": [
+      "hourly tag refresh",
+      "Danbooru query injection",
+      "online vocabulary expansion"
+    ],
+    "count_semantics": "Database-registered items, not the number remaining after file, caption, holdout, and source-pixel eligibility checks."
+  },
+  "source_artifacts": {
+    "best_f1_metadata_sha256": "e0d66fb3a18a87ae50c8001d917246ce4870347f90a13be1a7c0ac7aa214e4d4",
+    "latest_metadata_sha256": "7447f3a054e33510a47b216db5630774c1cffa00ed584dd9218842783e3027c9"
+  },
+  "phase3_implication": {
+    "sets_budget": false,
+    "requirements": [
+      "The 24000-sample Phase-1 diagnostic is not a full tagger-training budget.",
+      "A two-domain architecture experiment must be labeled as a subset and cannot be described as matching the existing tagger data.",
+      "Choose the Phase-3 budget from measured FoveaTag supervised throughput before branch A produces a result, then freeze it through the shared training contract.",
+      "Any later production-replacement training must cover the broad semantic domains or explicitly record and evaluate every omitted domain."
+    ]
+  }
+}

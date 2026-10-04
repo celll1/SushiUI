@@ -1,0 +1,64 @@
+{
+  "format_version": 1,
+  "kind": "foveatag_phase2_pretraining_smoke",
+  "scope": "Lifecycle and resume verification only; not a convergence or quality result.",
+  "lineage": {
+    "initialization": "scratch",
+    "external_weights": [],
+    "teacher": null
+  },
+  "input_contract": {
+    "local_canvas": 256,
+    "overview_canvas": 448,
+    "max_source_pixels": 40000000,
+    "pair": "source-native-local-plus-full-overview"
+  },
+  "production_manifest": {
+    "dataset_25_train": 1544750,
+    "dataset_25_validation": 2048,
+    "dataset_16_train": 20293,
+    "dataset_16_validation": 512,
+    "excluded_photo_holdout": 671,
+    "domain_weights": {
+      "25": 0.85,
+      "16": 0.15
+    }
+  },
+  "resume_smoke": {
+    "first_segment": {
+      "samples": 128,
+      "global_step": 8
+    },
+    "resumed_segment": {
+      "samples": 64,
+      "global_steps": 4
+    },
+    "checkpoint_after_resume": {
+      "epoch": 0,
+      "sample_offset": 192,
+      "global_step": 12,
+      "scheduler_last_epoch": 12,
+      "learning_rate": 1.2376000000000002e-06,
+      "checkpoint_bytes": 286950347
+    },
+    "cumulative_losses": {
+      "loss": 1.1973442534605663,
+      "correspondence": 0.42864324400822323,
+      "reconstruction": 0.6731227884689966,
+      "chroma": 0.19115642830729485
+    },
+    "peak_reserved_mib": 11648.0
+  },
+  "epoch_boundary_smoke": {
+    "train_samples": 32,
+    "validation_samples": 8,
+    "global_step": 8,
+    "validation_loss": 1.3361680507659912,
+    "checkpoint_epoch": 1,
+    "checkpoint_sample_offset": 0,
+    "encoder_tensor_count": 211,
+    "encoder_artifact_bytes": 149589368,
+    "encoder_artifact_external_weights": []
+  },
+  "decision": "The Phase-2 lifecycle is ready for the pre-registered long run; convergence remains unmeasured."
+}

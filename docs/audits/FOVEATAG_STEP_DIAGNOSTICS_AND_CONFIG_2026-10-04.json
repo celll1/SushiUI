@@ -1,0 +1,58 @@
+{
+  "run_id": "bcb720cc-2077-4314-b794-33f11c730345",
+  "diagnostics": {
+    "fixed_sample_replaced": true,
+    "rating_filter": false,
+    "interval_steps": 1000,
+    "origin": "training_forward_before_optimizer_update",
+    "actual_step_verified": 2000,
+    "second_actual_step_verified": 3000,
+    "distinct_actual_training_samples_verified": 2,
+    "published_filename": "training_routed_2000_c7c42438.png",
+    "actual_training_boxes_and_random_exploration_distinguished": true,
+    "extra_inference_forward": false,
+    "history_navigation": ["older", "newer", "step selection", "follow latest"],
+    "history_truncated": false,
+    "images_opened_by_agent": false,
+    "tag_names_published": false
+  },
+  "training": {
+    "continuous_start_verified_beyond_old_segment_stop": 2675,
+    "saved_for_config_ui_deployment": 2716,
+    "epoch_cursor": 0,
+    "sample_offset": 21728,
+    "stop_was_requested_not_failure": true,
+    "resumed_after_config_ui_deployment_verified_step": 3150,
+    "running_without_error_after_deployment": true
+  },
+  "label_policy_revision": {
+    "new_joint_panels": "actual vocabulary tag names for TP/FP/FN",
+    "old_anonymous_panels": "unchanged",
+    "metadata_tag_labels": "vocabulary",
+    "cpu_diagnostic_tests_passed": 18,
+    "images_opened_by_agent": false
+  },
+  "configuration": {
+    "endpoint": "PATCH /tagger-training/runs/{run_id}/joint-config",
+    "button_visible_while_running": true,
+    "save_requires_stopped_run": true,
+    "optimizer_moments_preserved": true,
+    "rng_preserved": true,
+    "schedule_changes_rebased_at_saved_step": true,
+    "dataset_topology_and_input_policy_remain_frozen": true,
+    "live_api_edit_save_and_restore_verified": true,
+    "live_active_edit_rejection_status": 409
+  },
+  "verification": {
+    "initial_cpu_regressions_passed": 465,
+    "initial_gpu_opt_in_tests_skipped": 16,
+    "config_checkpoint_and_step_diagnostic_tests_passed": 25,
+    "final_cpu_regressions_passed": 472,
+    "final_gpu_opt_in_tests_skipped": 16,
+    "frontend_static_review": true,
+    "frontend_owner_build_and_typecheck": "not run by agent",
+    "frontend_route_http_status": 200,
+    "visual_ui_or_generated_image_inspection": false,
+    "model_quality_accepted": false
+  }
+}

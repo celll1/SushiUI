@@ -1,0 +1,90 @@
+{
+  "format_version": 1,
+  "kind": "foveatag_phase2_anticollapse_pilot",
+  "decision": "bounded_pilot_pass_start_replacement_long_run",
+  "scope": "A 1,000-step objective-health pilot, not a Phase-2 convergence or quality result.",
+  "lineage": {
+    "initialization": "scratch",
+    "external_weights": []
+  },
+  "budget": {
+    "presented_samples": 16000,
+    "optimizer_steps": 1000,
+    "batch_size": 16,
+    "warmup_steps": 100,
+    "validation_samples": {
+      "16": 512,
+      "25": 2048
+    }
+  },
+  "objective": {
+    "correspondence_weight": 1.0,
+    "reconstruction_weight": 1.0,
+    "chroma_weight": 0.5,
+    "variance_weight": 1.0,
+    "covariance_weight": 0.01,
+    "centering_weight": 0.1,
+    "target_standard_deviation": 1.0,
+    "distribution_epsilon": 0.0001
+  },
+  "performance": {
+    "training_seconds": 258.219000000041,
+    "training_samples_per_second": 61.962907454515204,
+    "total_seconds": 307.09399999980815,
+    "peak_allocated_mib": 10277.04345703125,
+    "peak_reserved_mib": 11538.0
+  },
+  "validation": {
+    "loss": 0.8107520925812424,
+    "correspondence": 0.03328642897395184,
+    "reconstruction": 0.12420134228013921,
+    "chroma": 0.05010906902389252,
+    "variance": 0.4676701104152016,
+    "covariance": 12.111978103406727,
+    "centering": 0.3941990191699006
+  },
+  "feature_health": {
+    "16": {
+      "masked_local": {
+        "scratch_pairwise_cosine": 0.9128433254699966,
+        "trained_pairwise_cosine": 0.8422656425058798,
+        "scratch_effective_rank": 1.9985107345293947,
+        "trained_effective_rank": 2.9836529600482455
+      },
+      "overview": {
+        "scratch_pairwise_cosine": 0.9766743416154001,
+        "trained_pairwise_cosine": 0.6168819946263668,
+        "scratch_effective_rank": 1.8524625337979068,
+        "trained_effective_rank": 3.064787622309992
+      }
+    },
+    "25": {
+      "masked_local": {
+        "scratch_pairwise_cosine": 0.8691382542734075,
+        "trained_pairwise_cosine": 0.7490508804142755,
+        "scratch_effective_rank": 1.9972426794310678,
+        "trained_effective_rank": 3.425978765431134
+      },
+      "overview": {
+        "scratch_pairwise_cosine": 0.9596209913283986,
+        "trained_pairwise_cosine": 0.5292046578942008,
+        "scratch_effective_rank": 1.9050826951287183,
+        "trained_effective_rank": 3.528896466463003
+      }
+    }
+  },
+  "artifacts": {
+    "root": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase2_anticollapse_pilot_20260929",
+    "checkpoint_sha256": "b33818ad58689d0da469cfba8b9db3247d216e313234c77b4d54479fb25c21b9",
+    "best_encoder_sha256": "9a5ea3b484c8c92aeb42ad2f0a9a083249f9f3423d1b4f0fe4f9c640608935b2",
+    "best_encoder_metadata_sha256": "eaadfcd74788baa009b73f9361f72e46490c768b89b4761d0709a556793c825a",
+    "evaluation_sha256": "6cf153482cb603313ffbb29cdfab3fb5302eca9d78b5f674bd94b4260ce97062",
+    "summary_sha256": "8884aa89170388e7bd27fbadbf4f298f427638f119fe942890232a79c1d1252e"
+  },
+  "interpretation": [
+    "All four domain-and-view pairs reduced mean pairwise cosine and increased effective rank relative to the same-seed scratch initialization.",
+    "The pilot did not reproduce the rejected objective's movement toward cosine 0.998 and rank 1 after training.",
+    "Effective rank remains only 2.98 to 3.53 of 384 channels, so this is permission to measure a replacement long run, not Phase-2 acceptance.",
+    "The pilot used a 100-step warmup and one-epoch cosine schedule; its loss trajectory is not a convergence comparison with the registered long-run schedule."
+  ]
+}

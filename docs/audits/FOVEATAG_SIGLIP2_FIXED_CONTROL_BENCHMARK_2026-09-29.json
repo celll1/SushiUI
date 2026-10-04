@@ -1,0 +1,149 @@
+{
+  "checkpoint": "D:\\celll1\\webui_cl\\tagger_models\\cca72ce1-7420-4164-9f24-c30ae77cdf2f\\best_f1.safetensors",
+  "cuda_version": "13.0",
+  "device": "NVIDIA RTX 6000 Ada Generation",
+  "dtype": "bfloat16",
+  "encoder_input_contract": "fixed",
+  "format_version": 1,
+  "kind": "foveatag_siglip2_control",
+  "load_seconds": 5.538709300104529,
+  "local_patch_budget": 256,
+  "modes": {
+    "0": {
+      "encoded_patches": null,
+      "images": 8,
+      "images_per_second": 8.779933815031308,
+      "peak_allocated_mib": 2268.2490234375,
+      "peak_reserved_mib": 2512.0,
+      "stage_ms": {
+        "end_to_end": {
+          "count": 8,
+          "max": 199.36139998026192,
+          "mean": 113.89607496676035,
+          "p50": 97.36699995119125,
+          "p95": 199.36139998026192
+        },
+        "forward": {
+          "count": 8,
+          "max": 36.84339998289943,
+          "mean": 30.454712454229593,
+          "p50": 29.273549909703434,
+          "p95": 36.84339998289943
+        },
+        "host_to_device": {
+          "count": 8,
+          "max": 0.34449994564056396,
+          "mean": 0.28009992092847824,
+          "p50": 0.27089985087513924,
+          "p95": 0.34449994564056396
+        },
+        "processor": {
+          "count": 8,
+          "max": 2.7155999559909105,
+          "mean": 2.091025118716061,
+          "p50": 2.0127001916989684,
+          "p95": 2.7155999559909105
+        },
+        "view_render": {
+          "count": 8,
+          "max": 167.90230013430119,
+          "mean": 81.06998744187877,
+          "p50": 63.20809992030263,
+          "p95": 167.90230013430119
+        }
+      }
+    },
+    "1": {
+      "encoded_patches": null,
+      "images": 8,
+      "images_per_second": 6.541978731693842,
+      "peak_allocated_mib": 2281.89697265625,
+      "peak_reserved_mib": 2516.0,
+      "stage_ms": {
+        "end_to_end": {
+          "count": 8,
+          "max": 250.30580000020564,
+          "mean": 152.8589500230737,
+          "p50": 141.10810006968677,
+          "p95": 250.30580000020564
+        },
+        "forward": {
+          "count": 8,
+          "max": 67.95100006274879,
+          "mean": 59.9010375153739,
+          "p50": 58.73669998254627,
+          "p95": 67.95100006274879
+        },
+        "host_to_device": {
+          "count": 8,
+          "max": 0.5580000579357147,
+          "mean": 0.488012534333393,
+          "p50": 0.48429996240884066,
+          "p95": 0.5580000579357147
+        },
+        "processor": {
+          "count": 8,
+          "max": 6.503600161522627,
+          "mean": 3.625100012868643,
+          "p50": 3.2088998705148697,
+          "p95": 6.503600161522627
+        },
+        "view_render": {
+          "count": 8,
+          "max": 188.03960015065968,
+          "mean": 88.84456250234507,
+          "p50": 72.6278000511229,
+          "p95": 188.03960015065968
+        }
+      }
+    },
+    "4": {
+      "encoded_patches": null,
+      "images": 8,
+      "images_per_second": 5.581041539749084,
+      "peak_allocated_mib": 2303.12646484375,
+      "peak_reserved_mib": 2622.0,
+      "stage_ms": {
+        "end_to_end": {
+          "count": 8,
+          "max": 278.5716999787837,
+          "mean": 179.17802490410395,
+          "p50": 159.03339989017695,
+          "p95": 278.5716999787837
+        },
+        "forward": {
+          "count": 8,
+          "max": 78.13489995896816,
+          "mean": 72.43247496080585,
+          "p50": 72.27219990454614,
+          "p95": 78.13489995896816
+        },
+        "host_to_device": {
+          "count": 8,
+          "max": 0.999300042167306,
+          "mean": 0.7599250238854438,
+          "p50": 0.7326999912038445,
+          "p95": 0.999300042167306
+        },
+        "processor": {
+          "count": 8,
+          "max": 6.889899959787726,
+          "mean": 6.1328375013545156,
+          "p50": 6.07160001527518,
+          "p95": 6.889899959787726
+        },
+        "view_render": {
+          "count": 8,
+          "max": 204.5088999439031,
+          "mean": 99.85254995990545,
+          "p50": 78.26914999168366,
+          "p95": 204.5088999439031
+        }
+      }
+    }
+  },
+  "num_tags": 107926,
+  "overview_patch_budget": 784,
+  "scope": "Decode, FoveaTag view rendering, SigLIP2 processing, transfer, and encoder-swap control forward.",
+  "torch_version": "2.10.0+cu130"
+}

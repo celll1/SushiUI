@@ -24,11 +24,20 @@ from __future__ import annotations
 
 import os
 import threading
+from functools import wraps
 from typing import Any, Callable, Dict, Optional
 
 import torch
 
 from core.gpu_coordinator import OffloadDecision, TrainerHandle  # type: ignore
+
+
+def _exclusive_handle(method):
+    @wraps(method)
+    def call(self, *args, **kwargs):
+        with self._model_lock:
+            return method(self, *args, **kwargs)
+    return call
 
 
 def _move_state_dict_inplace(state: Dict[str, Any], device: torch.device | str) -> None:
@@ -46,7 +55,7 @@ def _move_state_dict_inplace(state: Dict[str, Any], device: torch.device | str) 
 
 
 class TaggerTrainerHandle:
-    """TrainerHandle implementation for SigLIP2 tagger training.
+    """TrainerHandle implementation for shared tagger training.
 
     Constructed by the trainer in __init__ with just the pause events;
     model / optimizer / criterion references are attached at train() start
@@ -74,7 +83,10 @@ class TaggerTrainerHandle:
         self._criterion: Optional[torch.nn.Module] = None
         self._processor = None  # AutoProcessor — for training-model inference
         self._vocabulary = None  # TagVocabulary snapshot — for training-model inference
+        self._max_source_pixels = None
+        self._inference_amp_dtype = None
         self._owner_tid: Optional[int] = None
+        self._model_lock = threading.RLock()
 
         self._param_origin_devices: Dict[int, torch.device] = {}
         self._buffer_origin_devices: Dict[int, torch.device] = {}
@@ -99,6 +111,11 @@ class TaggerTrainerHandle:
         return m + b + 2 * opt
 
 
+    def model_access(self):
+        """Serialize native updates, prediction and device/state changes."""
+        return self._model_lock
+
+    @_exclusive_handle
     def attach(
         self,
         model: torch.nn.Module,
@@ -106,6 +123,8 @@ class TaggerTrainerHandle:
         criterion: Optional[torch.nn.Module],
         processor=None,
         vocabulary=None,
+        max_source_pixels=None,
+        inference_amp_dtype=None,
     ) -> None:
         """Called by the trainer once model / optimizer / criterion exist
         (start of train()).  Must be invoked from the trainer thread."""
@@ -114,8 +133,11 @@ class TaggerTrainerHandle:
         self._criterion = criterion
         self._processor = processor
         self._vocabulary = vocabulary
+        self._max_source_pixels = max_source_pixels
+        self._inference_amp_dtype = inference_amp_dtype
         self._owner_tid = threading.get_ident()
 
+    @_exclusive_handle
     def detach(self) -> None:
         """Called at train() exit (success, error, or stop)."""
         self._model = None
@@ -123,6 +145,8 @@ class TaggerTrainerHandle:
         self._criterion = None
         self._processor = None
         self._vocabulary = None
+        self._max_source_pixels = None
+        self._inference_amp_dtype = None
         self._owner_tid = None
         # Cleanup any leftover swap file
         if self._swap_path and os.path.isfile(self._swap_path):
@@ -133,6 +157,7 @@ class TaggerTrainerHandle:
         self._swap_path = None
         self._cached_opt_state = None
 
+    @_exclusive_handle
     def offload(self, decision: OffloadDecision) -> None:
         """Move trainer state off GPU according to *decision*.  Must be
         invoked from the trainer thread."""
@@ -185,6 +210,7 @@ class TaggerTrainerHandle:
         self._active_decision = decision
         print(f"[TaggerHandle:{self.run_id[:8]}] offload complete (mode={decision.mode})")
 
+    @_exclusive_handle
     def restore(self) -> None:
         """Move trainer state back to GPU.  Must be invoked from the
         trainer thread."""
@@ -257,6 +283,7 @@ class TaggerTrainerHandle:
         p = next(iter(self._model.parameters()), None)
         return p is not None and p.device.type == "cuda"
 
+    @_exclusive_handle
     def predict(
         self,
         image_bytes: bytes,
@@ -302,14 +329,29 @@ class TaggerTrainerHandle:
         )
 
         vocab    = self._vocabulary
-        _assist  = assist or {}
+        native = getattr(self._model, "architecture", None) == "foveatag"
+        # A loaded SigLIP2 checkpoint is not native calibration or feature space.
+        _assist = (assist or {}) if not native or (assist or {}).get("architecture") == "foveatag" else {}
         _ood_ref = _assist.get("ood_ref") if use_ood_detection else None
 
-        pil_img = PILImage.open(io.BytesIO(image_bytes)).convert("RGB")
-        inputs = self._processor(images=[pil_img], return_tensors="pt")
+        with PILImage.open(io.BytesIO(image_bytes)) as source:
+            if self._max_source_pixels is not None and source.width * source.height > self._max_source_pixels:
+                raise ValueError("Image exceeds the training model's source-pixel cap")
+            pil_img = source.convert("RGB")
+        processor = self._processor
+        if native and processor.training:
+            from .foveatag.processor import FoveaProcessor
+            processor = FoveaProcessor(processor.config, seed=processor.seed, training=False)
+        staged_native = native and getattr(self._model, "router", None) is not None
+        inputs = None if staged_native else processor(images=[pil_img], return_tensors="pt")
         device = next(iter(self._model.parameters())).device
-        inputs = {k: v.to(device) for k, v in inputs.items()
-                  if isinstance(v, torch.Tensor)}
+        if staged_native:
+            pass
+        elif native:
+            inputs = {"views": inputs["fovea_views"].to(device)}
+        else:
+            inputs = {k: v.to(device) for k, v in inputs.items()
+                      if isinstance(v, torch.Tensor)}
 
         # OOD: capture the CLS embedding (classification-head input) via a
         # transient forward_pre_hook, mirroring the inference manager's hook.
@@ -321,16 +363,21 @@ class TaggerTrainerHandle:
                 if e.dim() > 1:
                     e = e[0]
                 _cap["emb"] = e.numpy()
-            _hook = self._model.head.register_forward_pre_hook(_capture_cls_emb)
+            _hook = (self._model.register_ood_feature_hook(_capture_cls_emb)
+                if native else self._model.head.register_forward_pre_hook(_capture_cls_emb))
 
+        was_training = self._model.training
         self._model.eval()
         try:
-            with torch.no_grad():
-                logits = self._model(**inputs)  # [1, V]
+            with torch.no_grad(), torch.autocast(device_type=device.type,
+                    dtype=self._inference_amp_dtype,
+                    enabled=native and device.type == "cuda" and self._inference_amp_dtype is not None):
+                logits = self._model.predict_native(pil_img, processor) if staged_native else self._model(**inputs)
                 probs = torch.sigmoid(logits[0]).cpu().float().numpy()  # [V]
         finally:
             if _hook is not None:
                 _hook.remove()
+            self._model.train(was_training)
 
         idx_to_tag = vocab.idx_to_tag
         tag_to_cat = vocab.tag_to_category

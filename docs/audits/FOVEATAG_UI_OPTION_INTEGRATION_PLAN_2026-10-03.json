@@ -1,0 +1,112 @@
+{
+  "format_version": 1,
+  "kind": "foveatag_remaining_work_extension",
+  "original_objective": "Complete the remaining Phase 2 gate measurements and subsequent FoveaTag work.",
+  "owner_requested_extension": "Pause the current experiment, integrate run monitoring and SigLIP2 training-option coverage, verify it through the frontend, then resume the same run.",
+  "scope": [
+    "Preserve the accepted Phase 2 artifact and the complete downstream Phase 3/4/5 objectives.",
+    "Register the existing A/B/C experiment in the normal training-run catalog without fabricating a SigLIP2 run.",
+    "Display branch, epoch, step, progress, loss, validation precision/recall/F1, learning rate and checkpoint/resume state.",
+    "Connect start/resume/stop to checkpointed lifecycle controls and enforce GPU ownership and duplicate-run guards.",
+    "Audit every TAGGER_TRAINING_DEFAULTS and request/UI option: shared, architecture-specific, implemented, or remaining; no silent option dropping.",
+    "Implement applicable optimizer, loss, learning-rate groups, precision, attention and checkpointing controls.",
+    "Implement applicable dataset, vocabulary, masking, online collection, vocabulary growth, detailed metrics, retention, sample and export integrations.",
+    "Keep pretrained SigLIP2 initialization options out of the scratch FoveaTag default and explain incompatible architecture-specific options.",
+    "Preserve the registered A/B/C input/data/optimizer budget when resuming the current experiment; new optional controls must not change its contract.",
+    "Update API defaults, OpenAPI, request types and UI together; test backend compilation, real imports and lifecycle contracts; review frontend statically.",
+    "Deploy only task-scoped changes to the running checkout, use only the backend restart endpoint if needed, then verify real API and frontend operation.",
+    "Resume the paused experiment only after the requested integration is verified."
+  ],
+  "pause": {
+    "status": "confirmed",
+    "checkpoint_kind": "foveatag_supervised_training",
+    "branch": "overview_only",
+    "zero_based_epoch": 2,
+    "sample_offset": 0,
+    "global_step": 30000,
+    "optimizer_entries": 215,
+    "completed_validation_epochs": 2,
+    "optimizer_scheduler_rng_verified": true,
+    "note": "The legacy detached CLI lacks an external graceful-stop control. Its verified checkpoint is retained; unsaved subsequent steps will be replayed on resume."
+  },
+  "implementation_status": "in_progress",
+  "goal_status": "active",
+  "goal_update": "Owner-requested run/UI/option integration and the original remaining Phase 3/4/5 work are now recorded in the active goal.",
+  "shared_trainer_adapter": {
+    "status": "deployed_api_and_authenticated_ui_verified_existing_comparison_resumed",
+    "data": "Native overview/local tensors and source geometry can use the shared dataset and online-buffer collator without NaFlex encoding.",
+    "model": "Full and attention-linear LoRA protocols support forward, head growth and exact self-contained unmerged weight roundtrips. No SigLIP2 weights are used.",
+    "verification": "174 focused CPU tests pass, with 16 explicit GPU checks skipped in that invocation. Separate opt-in runs pass all 12 FlashAttention tests and all 11 concurrency/lifecycle tests; 16 actual GPU cases are covered across those suites. Sixteen CPU common-loop full/LoRA stop/resume combinations cover histogram saving, rolling F1 and exposure tracking; final weights, metric slots and F1 traces match uninterrupted execution, with model-lock ownership asserted at forward. Native schema default parity, configuration admission/refusal, self-contained LoRA reconstruction, owned OOD reservoir RNG, native inference restoration, completed model-only publication and complete option-name inventory are covered. Compile and real-import checks pass without initializing CUDA. These checks do not establish complete option behavior parity, live API/UI deployment or resumption of the existing comparison.",
+    "api_ui": {
+      "implemented_on_branch": "Architecture enum and six native fields match defaults, OpenAPI and request types. The shared configuration form exposes native canvases, view budget, feature width, pixel cap and seed. It clears cross-architecture encoder/head/pooling inputs, keeps shared training options, identifies external FlashAttention and distinguishes inference export from unmerged resume storage. Native schema admission rejects SigLIP2 pooling, repository initialization, blank frozen LoRA, invalid method/save mode/precision.",
+      "frontend_static_review": "Reviewed fetched-default initialization, architecture/full-LoRA switching, restoring SigLIP2 save mode, request spreading, pre-save error paths and existing A/B/C edit refusal. No frontend build/type-check run by the agent; owner-run results and actual browser checks remain pending.",
+      "live_state": "Main fast-forwarded to b5fc2645 after resolving four conflicts on the isolated branch while preserving main changes. All FoveaTag and custom-pooler tests: 441 passed, 16 opt-in GPU checks skipped. Changed backend compilation and real API imports pass without initializing CUDA. Backend restarted only through POST /system/restart-backend after confirming generation idle and no active training. Health OK; live defaults expose all six native fields. Run 18e75bfd-4145-46c6-a155-d0ac83e2fa22 imported exactly once, stopped at step 30000 / 450000 and completed epoch 2 / 30, preserving the original checkpoint and arguments. Live metrics endpoint returns both aggregate validation rows (steps 15000/30000); second F1 0.025098932580411046, precision 0.018216745666441343, recall 0.10182655480934727. The actual localhost:3000/training browser redirects to /login; no authenticated browser is available. Owner login requested without asking for credentials. The Run is deliberately not resumed before real-screen verification. Frontend build/type-check remain owner-run."
+    },
+    "attention": {
+      "owner_request": "Support external FlashAttention, not only PyTorch SDPA flash kernels.",
+      "implementation": "The native shared factory maps use_flash_attention to external dense and packed-varlen kernels through the repository attention conduit. Packing separates shifted-window connected regions and preserves padding singleton attention. Shape/device plans are bounded-cached without per-step GPU-to-CPU mask synchronization.",
+      "failure_policy": "Explicit selection requires importable flash-attn. CPU/FP32/unsupported head dimensions use SDPA. External kernel failure is fatal. Disabled excludes external and PyTorch flash kernels.",
+      "numerics": "FP16 padding exposed an RMSNorm gradient NaN. Native optimized execution now uses FP32 normalization statistics; the frozen A/B/C eager runner remains unchanged.",
+      "source": "https://github.com/Dao-AILab/flash-attention",
+      "remaining": "Actual native API/UI verification, end-to-end measurements and deployment remain pending."
+    },
+    "replay": {
+      "offline": "Native sampling uses an owned per-epoch generator; views use source index, epoch and seed. Resume records completed source batches separately from mixed-loader events and restores exact scheduler/scaler plus latest RNG state.",
+      "online": "Source cursor and injection cadence are restored separately, including an injection pending at the stop boundary. Live network arrivals and prefetched online samples are not claimed to be bit-reproducible.",
+      "collection": "Native collection pools/recency, epoch quotas, query-expansion cap allocation, resolver timing, unavailable targets, augmentation-added vocabulary and pending/deduplicated proposals are checkpoint-bound. Resume selects a coherent bundle before online construction, ignores common legacy snapshots and starts collection after vocabulary restoration. Saved pool entries without worker proposals are reconciled. Bound collection runtime is required when enabled; save or validation failure is fatal. Native online source cap rejects oversized images before decoding, with a processor backstop. Eleven synthetic collection tests cover runtime integrity, atomic save failure, matching/new epoch quotas, injected optimizer updates, collection-disabled resume ledger, full/LoRA head growth and input cap. All FoveaTag filename-selected tests pass: 436 passed, 16 opt-in GPU checks skipped. Network arrivals/in-flight downloads are not claimed deterministic.",
+      "gpu_pause": "Both the comparison and native shared trainer wait for generation's GPU release before restoring state and retain coordinator acknowledgements.",
+      "bundle": "Native resume commits bind required state plus only optional artifacts generated under current settings. Disabled stale sidecars are not published or restored; native vocabulary/metrics/OOD save failures propagate. Candidates are verified in descending step order with coherent retained-bundle fallback and no implicit scratch restart.",
+      "ood": "Reservoir artifacts include capacity and their owned RNG in non-pickle JSON. Native restore validates state strictly; legacy files remain readable through the legacy non-strict path. Continued sampling matches uninterrupted sampling exactly.",
+      "metrics": "Native exact three-slot histogram/exposure runtime and rolling F1 buffer/threshold are stored separately from inference calibration. Epoch-boundary snapshots represent post-rotation state without changing the live accumulator. Native step checkpoints are published after periodic F1/threshold work, so step-file resume does not omit an evaluation. Histograms persist even when inference metric saving is disabled but rolling F1 or exposure tracking needs them. Unknown/masked entries are excluded from native histogram, rolling-F1 and validation confusion counts. One-source vocabulary rows are aligned; new/merged rows reset explicitly rather than invent joint observations.",
+      "remaining": "Finish online feature-specific and inference/export-path verification, the full option-coverage audit, live API/UI checks and deployment."
+    },
+    "exports": {
+      "resume": "The primary safetensors checkpoint always retains complete unmerged weights; shared optimizer and training-state files remain alongside it.",
+      "inference": "LoRA runs additionally write name_export.safetensors and metadata in compact or merged form according to checkpoint_save_mode. Compact exports require a scratch backbone with the recorded frozen-tensor fingerprint. Merged exports are self-contained for weights, with vocabulary referenced separately.",
+      "retention": "Expired step bundles remove both export files; latest and best_f1 remain outside step retention.",
+      "ui_requirement": "Explain compact/merged inference export versus full unmerged resume storage and expose the export path; do not label the primary resume file compact or merged.",
+      "publication_on_branch": "Model-only inference commits bind completed weights/metadata/vocabulary and selected optional metrics/OOD/export files, without optimizer state. Native training details expose generation-checked latest/best paths; the UI labels full-unmerged, compact and merged variants and their vocabulary/backbone requirement. Loading verifies hashes. Stale/partial/disabled optional artifacts are not exposed; retention removes publication markers. Live deployment remains pending."
+    },
+    "live_prediction": {
+      "implemented_on_branch": "The native shared trainer attaches a deterministic inference processor. The handle passes coordinate-aware views, checks the input pixel cap before decode, retains CUDA autocast precision and restores train/eval state on success or failure. It does not borrow SigLIP2 calibration or OOD feature-space references.",
+      "verification": "Six synthetic CPU prediction tests cover full/LoRA, train/eval restoration, deterministic outputs, unchanged weights/RNG, foreign-assist exclusion, pre-decode cap refusal and failure cleanup. They do not establish live CUDA concurrency, checkpoint loading or API/UI deployment."
+    },
+    "native_concurrency": {
+      "implemented_on_branch": "Native optimizer steps, head expansion, prediction and handle lifecycle transitions share a reentrant lock. Validation locks per batch and restores the prior train/eval mode. The existing comparison's eager training numerics and immutable resume budget are unchanged.",
+      "verification": "All 11 opt-in concurrency tests pass, including four actual GPU FP16/BF16 FlashAttention train/predict cases and four actual GPU full/LoRA RAM/disk offload cases with bit-exact weights/optimizer and retained parameter identities. Three synthetic CPU cases cover blocking and failure cleanup. The common-loop resume matrix asserts lock ownership at forward. No live UI deployment is claimed."
+    },
+    "native_checkpoint_inference": {
+      "implemented_on_branch": "The historical inference load/predict endpoints recognize native metadata without downloading a processor or encoder. Self-contained full/LoRA and merged artifacts reconstruct strictly; compact exports require a fingerprint-matched scratch backbone. Native view/seed/cap/precision are mandatory, vocabulary indices must match the head, native metrics use the metadata's sibling vocabulary stem and OOD uses the native feature tap. Model-only best artifacts do not require optimizer state. Native ONNX/manager merge operations are refused explicitly.",
+      "remaining": "Complete live API/UI deployment; fresh native inference paths and CUDA handle concurrency are verified on the isolated branch."
+    },
+    "remaining": [
+      "Verify the complete native shared training loop, metrics, online data and optimizer resume contracts, not only the model/data protocols.",
+      "Finish online/metrics feature-specific verification. Keep the existing atomic A/B/C runner's resume contract separate and unchanged.",
+      "Finish visualization/inference and API/UI export integrations and measure attention end-to-end separately from correctness checks.",
+      "Verify native API/UI paths beyond schema-only tests and finish the remaining shared-option coverage audit.",
+      "Do not deploy the native API until online/metrics, visualization/inference and export-path contracts are completed and verified.",
+      "Deploy, verify the real catalog and frontend, then resume the existing registered-budget comparison."
+    ]
+  },
+  "shared_default_followup": {
+    "change": "Removed 73 literal request defaults in favor of TAGGER_TRAINING_DEFAULTS. Existing required encoder path and dataset fields remain required. Saved imported comparison configuration is unchanged.",
+    "verification": "All table-backed request defaults match the authoritative values; an AST regression requires references to that table. OpenAPI property coverage and explicit defaults match. Compile and real API import pass without CUDA initialization. FoveaTag, custom-pooler and shared input-bound regressions: 451 passed, 16 opt-in GPU tests skipped, 28 subtests passed. Frontend still obtains defaults from the schema endpoint; no agent build/type-check performed.",
+    "paused_checkpoint": {
+      "run_id": "18e75bfd-4145-46c6-a155-d0ac83e2fa22",
+      "step": 30000,
+      "path": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase3_abc_20261003\\overview_only\\latest.pt",
+      "bytes": 1791193995,
+      "modified_utc": "2026-10-03T08:10:59.9373187Z",
+      "sha256": "a40e44ff083930e78c583bfca34a96b4b9825c4354c776b1f9ac43644b483ac2"
+    },
+    "ui": "Browser tab 1 remains at localhost:3000/login. Run remains stopped. No login credentials are requested in chat, no bypass attempted and no resume issued before real-screen verification."
+  },
+  "authenticated_ui_resume": {
+    "observed_at_jst": "2026-10-03 22:50",
+    "ui": "After owner login, inspected Training > Tagger > FoveaTag Phase 3 A/B/C. Verified stopped state, aggregate loss/F1/precision-recall/threshold charts, original latest.pt and best_f1 paths, and Start Training. After resume verified running state, Stop button, a new resume-session curve and step 30100/Epoch 3. Did not open vocabulary or diagnostic images.",
+    "repair": "The first start failed before optimization because Python tuple-valued ViewConfig fields were compared directly with JSON arrays. Commit 30221c9f canonicalizes the candidate JSON representation only; existing contract bytes and hashes are not modified, and changed optimizer values remain refused. Compile/import and 27 focused resume/contract/import regressions passed. The original checkpoint SHA-256 remained a40e44ff083930e78c583bfca34a96b4b9825c4354c776b1f9ac43644b483ac2 before retry. Backend updated only by restart API while idle.",
+    "runtime": "Same run_id 18e75bfd-4145-46c6-a155-d0ac83e2fa22 resumed from step 30000 using the original weights/optimizer/scheduler/RNG and immutable comparison budget. REST detail and live WebSocket both confirm running at step 30100, displayed epoch 3, loss 0.0002591006050352007, progress 0.0668888888888889, no run error. Source branch remains overview_only; no new comparison was created.",
+    "boundary": "UI integration and existing-run resumption are verified. This is not a Phase 3 gate pass, superior-to-SigLIP2 quality claim, router acceptance or completion of the full objective. Frontend build/type-check remains owner-run. Earlier login-blocked observations above are historical."
+  },
+  "reporting_policy": "Aggregate metrics only; do not display individual tag names or read generated diagnostic images."
+}

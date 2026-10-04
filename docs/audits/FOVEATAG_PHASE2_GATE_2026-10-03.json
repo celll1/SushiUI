@@ -1,0 +1,49 @@
+{
+  "format_version": 1,
+  "kind": "foveatag_phase2_gate_decision",
+  "decision": "pass",
+  "rationale": "Accept the exact best scratch encoder for Phase 3 experimentation. All ten registered epochs completed. Fixed validation covers all 512 photo and 2048 illustration images with zero skips; correspondence improves from scratch 0.6393/0.4654 to 0.03093/0.02912. Effective ranks increase from about 2 to local 98.14/111.61 and overview 233.70/261.04 with channel std above 1 and no collapse. Held-out reconstruction and chroma improve across the completed run. Training decoded 15,264,198 of 15,467,980 presented samples: 203,782 skipped (1.32%), concentrated in epoch 6 during a suspected transient storage outage; actual optimizer steps are 954,024 versus 966,750 nominal. This measured budget shortfall is retained in the hashed summary, not represented as a full optimizer budget. Passing authorizes supervised comparison, not a claim of tag quality or superiority to SigLIP2.",
+  "decided_by": "OpenAI Codex",
+  "evidence": [
+    {
+      "role": "encoder",
+      "path": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase2_anticollapse_pretrain_20260929\\best_encoder.safetensors",
+      "sha256": "3efe259fc1f4a559dea0906c275c16d0a11b52d055b782e41c1c81258777a4f6"
+    },
+    {
+      "role": "encoder_metadata",
+      "path": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase2_anticollapse_pretrain_20260929\\best_encoder_metadata.json",
+      "sha256": "76e8128e6e0cccc98a694b664435907e544dfa073d6b18a375ee2c1f1ab83774"
+    },
+    {
+      "role": "encoder_evaluation",
+      "path": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase2_anticollapse_pretrain_20260929\\final_encoder_evaluation.json",
+      "sha256": "3113b0e749ff278ba0bccd18e9c285f94e08e063365cb3ccfe529948c1d552f0"
+    },
+    {
+      "role": "validation_paths:16",
+      "path": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase2_anticollapse_pretrain_20260929\\manifests\\dataset_16_validation.jsonl",
+      "sha256": "5bfb7f8708c45864eb87c301a60ef5aef91a3768ec7007f16799b8db07635350"
+    },
+    {
+      "role": "validation_index:16",
+      "path": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase2_anticollapse_pretrain_20260929\\manifests\\dataset_16_validation.jsonl.idx",
+      "sha256": "dea512b7e9ce9d2acf793de36a2f985025d53c57f0e41d0dc6bec7cc17d704ec"
+    },
+    {
+      "role": "validation_paths:25",
+      "path": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase2_anticollapse_pretrain_20260929\\manifests\\dataset_25_validation.jsonl",
+      "sha256": "079d63fdaa74fcc1f000878b38fb9f081d0ae52f704f9cd81f6b3173c6d6d756"
+    },
+    {
+      "role": "validation_index:25",
+      "path": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase2_anticollapse_pretrain_20260929\\manifests\\dataset_25_validation.jsonl.idx",
+      "sha256": "bf31a654b7c7c10c15795e9b2be71303898785cac22970bf526a8320c0dc9956"
+    },
+    {
+      "role": "run_summary",
+      "path": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase2_anticollapse_pretrain_20260929\\summary.json",
+      "sha256": "faf71fc95825dbe9018a1652777b32cc212a9e99b6c67b68dd23e552bf1f9215"
+    }
+  ]
+}

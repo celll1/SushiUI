@@ -1,0 +1,65 @@
+{
+  "format_version": 1,
+  "kind": "foveatag_phase2_anticollapse_checkpoint_audit",
+  "decision": "continue_registered_long_run",
+  "checkpoint": {
+    "epoch": 0,
+    "sample_offset": 80000,
+    "global_step": 5000,
+    "presented_samples": 80000,
+    "decoded_samples": 79999,
+    "skipped_samples": 1,
+    "optimizer_steps": 5000,
+    "scheduler_last_epoch": 5000,
+    "history_entries": 0,
+    "external_path": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase2_anticollapse_pretrain_20260929\\step5000.pt",
+    "bytes": 286949003,
+    "sha256": "63ccd676b6a5fea982cad8e165dc0b4088265c1dd49b2047d833b3f6ccfe23d2"
+  },
+  "training": {
+    "elapsed_seconds": 1251.9689999998081,
+    "samples_per_second": 63.8985470087616,
+    "cumulative_loss": 0.8940393114728041,
+    "cumulative_correspondence": 0.07804456783640923,
+    "cumulative_reconstruction": 0.17132343665225624,
+    "cumulative_chroma": 0.05678607488981949,
+    "cumulative_variance": 0.46193589608654884,
+    "cumulative_covariance": 11.233998443545723,
+    "cumulative_centering": 0.4200239131777857
+  },
+  "validation": {
+    "external_path": "D:\\celll1\\webui_cl\\outputs\\foveatag_phase2_anticollapse_pretrain_20260929\\step5000_evaluation.json",
+    "sha256": "8caa4a2ff2360ab586060066e5a6831a1129355490b4557e71040062bc704152",
+    "weighted_loss": 0.6247296113753691,
+    "weighted_correspondence": 0.05667908105460811,
+    "weighted_reconstruction": 0.11065190442022867,
+    "weighted_chroma": 0.03238805579676409,
+    "weighted_variance": 0.21125686520390444,
+    "weighted_covariance": 19.165813890099525,
+    "weighted_centering": 0.3828959672129713,
+    "domains": {
+      "16": {
+        "masked_local_pairwise_cosine": 0.7762219243007037,
+        "masked_local_effective_rank": 7.542523660744353,
+        "overview_pairwise_cosine": 0.6687028771255072,
+        "overview_effective_rank": 9.31860205783398
+      },
+      "25": {
+        "masked_local_pairwise_cosine": 0.7320525120893504,
+        "masked_local_effective_rank": 10.835309483405853,
+        "overview_pairwise_cosine": 0.6472321722535489,
+        "overview_effective_rank": 12.058122105779809
+      }
+    }
+  },
+  "scratch_reference": {
+    "encoder_sha256": "ce4512dcf8440953da6ba6a5fa21209d53545fc272485fa6e09f8859504221d5",
+    "effective_rank_range": [1.8524625337979068, 1.9985107345293947],
+    "pairwise_cosine_range": [0.8691382542734075, 0.9766743416154001]
+  },
+  "interpretation": [
+    "At the end of the registered 5,000-step warmup, all four domain-and-view pairs have higher effective rank and lower mean pairwise cosine than the same-seed scratch initialization.",
+    "The retained hard-link snapshot preserves the exact optimizer, scheduler, RNG, accumulator, and source offset used for resume while latest.pt continues to advance.",
+    "This checkpoint authorizes continuation of the registered long run but is not the Phase-2 acceptance artifact."
+  ]
+}

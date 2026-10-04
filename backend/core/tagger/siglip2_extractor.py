@@ -32,6 +32,12 @@ def extract_vision_encoder(repo_id: str, output_path: str) -> Dict[str, Any]:
         hidden_size  – encoder hidden dimension
         num_layers   – number of transformer layers
     """
+    if os.path.isfile(repo_id) and repo_id.endswith(".safetensors"):
+        from .siglip2_inference_manager import _read_metadata
+        from .foveatag.direct_inference import normalize_metadata
+        if normalize_metadata(_read_metadata(repo_id), repo_id).get("architecture") == "foveatag":
+            from .foveatag.model_tools import extract_encoder
+            return extract_encoder(repo_id, output_path)
     from transformers import AutoModel
 
     output_path = os.path.abspath(output_path.strip().strip('"').strip("'"))

@@ -1,0 +1,49 @@
+{
+  "batch_size": 2,
+  "cuda_version": "13.0",
+  "data_wait_ms": {
+    "count": 10,
+    "max": 0.23450003936886787,
+    "mean": 0.17997997347265482,
+    "p50": 0.18690002616494894,
+    "p95": 0.23450003936886787
+  },
+  "device": "NVIDIA RTX 6000 Ada Generation",
+  "dtype": "bfloat16",
+  "eligible_images": 1546928,
+  "end_to_end_step_ms": {
+    "count": 10,
+    "max": 150.62649990431964,
+    "mean": 138.61367995850742,
+    "p50": 140.59474994428456,
+    "p95": 150.62649990431964
+  },
+  "estimated_epoch_hours": 29.781303154285272,
+  "format_version": 1,
+  "host_to_device_ms": {
+    "count": 10,
+    "max": 2.6851999573409557,
+    "mean": 1.7730200430378318,
+    "p50": 1.7398000927641988,
+    "p95": 2.6851999573409557
+  },
+  "kind": "foveatag_real_data_pretraining",
+  "loss_first": 0.912299633026123,
+  "loss_last": 0.6907777190208435,
+  "measured_steps": 10,
+  "model_parameters": 37687712,
+  "optimizer_step_ms": {
+    "count": 10,
+    "max": 148.8426998257637,
+    "mean": 136.66067994199693,
+    "p50": 138.72904994059354,
+    "p95": 148.8426998257637
+  },
+  "peak_allocated_mib": 923.48388671875,
+  "peak_reserved_mib": 980.0,
+  "scope": "Includes image decode, paired-view rendering, host-to-device copy, forward, backward, and AdamW update.",
+  "selected_images": 64,
+  "torch_version": "2.10.0+cu130",
+  "warmup_steps": 3,
+  "workers": 2
+}

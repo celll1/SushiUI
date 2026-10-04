@@ -1,0 +1,470 @@
+{
+  "benchmark": "foveatag-danbooru-ground-v1",
+  "evidence_mode": "dense_oracle",
+  "label_provenance": "danbooru_ground_illustration",
+  "model_name": "foveatag-control-random-4",
+  "resolutions": {
+    "native": {
+      "evidence_area": {
+        "large": {
+          "mean_score": null,
+          "positive_count": 0,
+          "recall": null
+        },
+        "medium": {
+          "mean_score": null,
+          "positive_count": 0,
+          "recall": null
+        },
+        "small": {
+          "mean_score": null,
+          "positive_count": 0,
+          "recall": null
+        },
+        "tiny": {
+          "mean_score": null,
+          "positive_count": 0,
+          "recall": null
+        }
+      },
+      "groups": {
+        "all": {
+          "macro_average_precision": 0.36770893203980465,
+          "macro_f1": 0.2877585944373477,
+          "tag_count": 30
+        },
+        "coarse": {
+          "macro_average_precision": 0.5992020773809025,
+          "macro_f1": 0.4314569967605337,
+          "tag_count": 11
+        },
+        "fine_detail": {
+          "macro_average_precision": 0.2336865847370638,
+          "macro_f1": 0.20456478256602945,
+          "tag_count": 19
+        }
+      },
+      "per_tag": {
+        "1boy": {
+          "average_precision": 0.6369874713601793,
+          "f1": 0.45551128818061093,
+          "fn": 5,
+          "fp": 1635,
+          "fpr": 0.7331838565022422,
+          "precision": 0.2955622576475657,
+          "recall": 0.9927641099855282,
+          "support": 691,
+          "tn": 595,
+          "tp": 686
+        },
+        "1girl": {
+          "average_precision": 0.956751687501674,
+          "f1": 0.7572988633831068,
+          "fn": 9,
+          "fp": 1080,
+          "fpr": 0.8903544929925804,
+          "precision": 0.6113709967614249,
+          "recall": 0.9947306791569087,
+          "support": 1708,
+          "tn": 133,
+          "tp": 1699
+        },
+        "aqua eyes": {
+          "average_precision": 0.19193323800879108,
+          "f1": 0.19186991869918701,
+          "fn": 116,
+          "fp": 381,
+          "fpr": 0.13874726875455207,
+          "precision": 0.1340909090909091,
+          "recall": 0.33714285714285713,
+          "support": 175,
+          "tn": 2365,
+          "tp": 59
+        },
+        "black eyes": {
+          "average_precision": 0.19318944927052115,
+          "f1": 0.21548117154811716,
+          "fn": 79,
+          "fp": 671,
+          "fpr": 0.24497991967871485,
+          "precision": 0.1330749354005168,
+          "recall": 0.5659340659340659,
+          "support": 182,
+          "tn": 2068,
+          "tp": 103
+        },
+        "blue eyes": {
+          "average_precision": 0.40597746803228446,
+          "f1": 0.3045169009871373,
+          "fn": 0,
+          "fp": 2325,
+          "fpr": 0.9639303482587065,
+          "precision": 0.17960479887085393,
+          "recall": 1.0,
+          "support": 509,
+          "tn": 87,
+          "tp": 509
+        },
+        "brown eyes": {
+          "average_precision": 0.2584937323193673,
+          "f1": 0.20638209697472026,
+          "fn": 13,
+          "fp": 1902,
+          "fpr": 0.7153065062053403,
+          "precision": 0.11576011157601115,
+          "recall": 0.950381679389313,
+          "support": 262,
+          "tn": 757,
+          "tp": 249
+        },
+        "earrings": {
+          "average_precision": 0.4131353500213221,
+          "f1": 0.31842304776345715,
+          "fn": 22,
+          "fp": 1776,
+          "fpr": 0.7164179104477612,
+          "precision": 0.1912568306010929,
+          "recall": 0.9502262443438914,
+          "support": 442,
+          "tn": 703,
+          "tp": 420
+        },
+        "eyeliner": {
+          "average_precision": 0.24958507658389023,
+          "f1": 0.12244897959183672,
+          "fn": 162,
+          "fp": 10,
+          "fpr": 0.0036403349108117948,
+          "precision": 0.5454545454545454,
+          "recall": 0.06896551724137931,
+          "support": 174,
+          "tn": 2737,
+          "tp": 12
+        },
+        "eyeshadow": {
+          "average_precision": 0.2163519064499626,
+          "f1": 0.1786743515850144,
+          "fn": 201,
+          "fp": 84,
+          "fpr": 0.031238378579397545,
+          "precision": 0.26956521739130435,
+          "recall": 0.1336206896551724,
+          "support": 232,
+          "tn": 2605,
+          "tp": 31
+        },
+        "full body": {
+          "average_precision": 0.45108302408232326,
+          "f1": 0.3133514986376022,
+          "fn": 13,
+          "fp": 1499,
+          "fpr": 0.5848614904408895,
+          "precision": 0.18709327548806942,
+          "recall": 0.9636871508379888,
+          "support": 358,
+          "tn": 1064,
+          "tp": 345
+        },
+        "green eyes": {
+          "average_precision": 0.32080551719931166,
+          "f1": 0.22105608396195475,
+          "fn": 5,
+          "fp": 2370,
+          "fpr": 0.9189608375339279,
+          "precision": 0.12449205762837089,
+          "recall": 0.9853801169590644,
+          "support": 342,
+          "tn": 209,
+          "tp": 337
+        },
+        "grey eyes": {
+          "average_precision": 0.11283259970173376,
+          "f1": 0.16056118472330477,
+          "fn": 79,
+          "fp": 998,
+          "fpr": 0.3643665571376415,
+          "precision": 0.09355131698455948,
+          "recall": 0.5659340659340659,
+          "support": 182,
+          "tn": 1741,
+          "tp": 103
+        },
+        "heterochromia": {
+          "average_precision": 0.14245046094360994,
+          "f1": 0.1945031712473573,
+          "fn": 129,
+          "fp": 252,
+          "fpr": 0.09176984705025491,
+          "precision": 0.15436241610738255,
+          "recall": 0.26285714285714284,
+          "support": 175,
+          "tn": 2494,
+          "tp": 46
+        },
+        "indoors": {
+          "average_precision": 0.37760196632426357,
+          "f1": 0.28644829800899163,
+          "fn": 19,
+          "fp": 1092,
+          "fpr": 0.4076147816349384,
+          "precision": 0.16958174904942966,
+          "recall": 0.9214876033057852,
+          "support": 242,
+          "tn": 1587,
+          "tp": 223
+        },
+        "lipstick": {
+          "average_precision": 0.24219390512695227,
+          "f1": 0.24595469255663427,
+          "fn": 162,
+          "fp": 71,
+          "fpr": 0.0260933480338111,
+          "precision": 0.3486238532110092,
+          "recall": 0.19,
+          "support": 200,
+          "tn": 2650,
+          "tp": 38
+        },
+        "logo": {
+          "average_precision": 0.12443569521871382,
+          "f1": 0.1413427561837456,
+          "fn": 136,
+          "fp": 107,
+          "fpr": 0.038698010849909585,
+          "precision": 0.15748031496062992,
+          "recall": 0.1282051282051282,
+          "support": 156,
+          "tn": 2658,
+          "tp": 20
+        },
+        "mascara": {
+          "average_precision": 0.03383461656209079,
+          "f1": 0.0,
+          "fn": 131,
+          "fp": 0,
+          "fpr": 0.0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "support": 131,
+          "tn": 2790,
+          "tp": 0
+        },
+        "multiple boys": {
+          "average_precision": 0.7365886384544897,
+          "f1": 0.4349680170575694,
+          "fn": 13,
+          "fp": 782,
+          "fpr": 0.3005380476556495,
+          "precision": 0.28125,
+          "recall": 0.9592476489028213,
+          "support": 319,
+          "tn": 1820,
+          "tp": 306
+        },
+        "multiple girls": {
+          "average_precision": 0.9215039184453414,
+          "f1": 0.6401913875598086,
+          "fn": 8,
+          "fp": 744,
+          "fpr": 0.3315508021390374,
+          "precision": 0.4734607218683652,
+          "recall": 0.9881831610044313,
+          "support": 677,
+          "tn": 1500,
+          "tp": 669
+        },
+        "nail polish": {
+          "average_precision": 0.2769774154434737,
+          "f1": 0.27716994894237784,
+          "fn": 64,
+          "fp": 927,
+          "fpr": 0.34758155230596177,
+          "precision": 0.1700984780662489,
+          "recall": 0.7480314960629921,
+          "support": 254,
+          "tn": 1740,
+          "tp": 190
+        },
+        "orange eyes": {
+          "average_precision": 0.08959207392417026,
+          "f1": 0.13875598086124402,
+          "fn": 137,
+          "fp": 223,
+          "fpr": 0.0809437386569873,
+          "precision": 0.11507936507936507,
+          "recall": 0.1746987951807229,
+          "support": 166,
+          "tn": 2532,
+          "tp": 29
+        },
+        "outdoors": {
+          "average_precision": 0.5151167588920166,
+          "f1": 0.3047895500725689,
+          "fn": 17,
+          "fp": 941,
+          "fpr": 0.34929472902746844,
+          "precision": 0.18245004344048654,
+          "recall": 0.9251101321585903,
+          "support": 227,
+          "tn": 1753,
+          "tp": 210
+        },
+        "pink eyes": {
+          "average_precision": 0.2324385274054044,
+          "f1": 0.2330246913580247,
+          "fn": 62,
+          "fp": 932,
+          "fpr": 0.34416543574593794,
+          "precision": 0.1394275161588181,
+          "recall": 0.7089201877934272,
+          "support": 213,
+          "tn": 1776,
+          "tp": 151
+        },
+        "purple eyes": {
+          "average_precision": 0.33987393078851824,
+          "f1": 0.26402393418100223,
+          "fn": 11,
+          "fp": 1957,
+          "fpr": 0.765350019554165,
+          "precision": 0.15281385281385282,
+          "recall": 0.9697802197802198,
+          "support": 364,
+          "tn": 600,
+          "tp": 353
+        },
+        "red eyes": {
+          "average_precision": 0.37514721960170766,
+          "f1": 0.25054129291679555,
+          "fn": 1,
+          "fp": 2422,
+          "fpr": 0.9630218687872764,
+          "precision": 0.14326140785284755,
+          "recall": 0.9975369458128078,
+          "support": 406,
+          "tn": 93,
+          "tp": 405
+        },
+        "sitting": {
+          "average_precision": 0.39608397894544795,
+          "f1": 0.26140231449965967,
+          "fn": 5,
+          "fp": 2165,
+          "fpr": 0.8550552922590837,
+          "precision": 0.15064731267163595,
+          "recall": 0.987146529562982,
+          "support": 389,
+          "tn": 367,
+          "tp": 384
+        },
+        "solo": {
+          "average_precision": 0.9155265859721113,
+          "f1": 0.730040206777714,
+          "fn": 1,
+          "fp": 939,
+          "fpr": 0.569436021831413,
+          "precision": 0.5751131221719457,
+          "recall": 0.9992138364779874,
+          "support": 1272,
+          "tn": 710,
+          "tp": 1271
+        },
+        "standing": {
+          "average_precision": 0.3099513006408875,
+          "f1": 0.26229508196721313,
+          "fn": 7,
+          "fp": 2243,
+          "fpr": 0.8922036595067622,
+          "precision": 0.1513431706394249,
+          "recall": 0.9828009828009828,
+          "support": 407,
+          "tn": 271,
+          "tp": 400
+        },
+        "upper body": {
+          "average_precision": 0.37402752057119126,
+          "f1": 0.2997304582210243,
+          "fn": 11,
+          "fp": 1288,
+          "fpr": 0.48936170212765956,
+          "precision": 0.17752234993614305,
+          "recall": 0.9619377162629758,
+          "support": 289,
+          "tn": 1344,
+          "tp": 278
+        },
+        "yellow eyes": {
+          "average_precision": 0.22079692740238566,
+          "f1": 0.2220006646726487,
+          "fn": 10,
+          "fp": 2331,
+          "fpr": 0.9045401629802096,
+          "precision": 0.12532833020637899,
+          "recall": 0.9709302325581395,
+          "support": 344,
+          "tn": 246,
+          "tp": 334
+        }
+      },
+      "sample_count": 2921,
+      "stability_to_native": {
+        "all": {
+          "matched_samples": 2921,
+          "mean_absolute_score_delta": 0.0,
+          "score_count": 87630,
+          "threshold_agreement": 1.0
+        },
+        "coarse": {
+          "matched_samples": 2921,
+          "mean_absolute_score_delta": 0.0,
+          "score_count": 32131,
+          "threshold_agreement": 1.0
+        },
+        "fine_detail": {
+          "matched_samples": 2921,
+          "mean_absolute_score_delta": 0.0,
+          "score_count": 55499,
+          "threshold_agreement": 1.0
+        }
+      }
+    }
+  },
+  "stage_timing_ms": {
+    "decode": {
+      "count": 2921,
+      "max": 586.7300000973046,
+      "mean": 51.50495977469365,
+      "p50": 25.122399907559156,
+      "p95": 189.32999996468425
+    },
+    "forward": {
+      "count": 2921,
+      "max": 383.8204999919981,
+      "mean": 73.30698007343095,
+      "p50": 72.87589996121824,
+      "p95": 79.0295999031514
+    },
+    "preprocess": {
+      "count": 2921,
+      "max": 36.23259998857975,
+      "mean": 7.13098216449567,
+      "p50": 7.036900147795677,
+      "p95": 8.153700036928058
+    },
+    "resize": {
+      "count": 2921,
+      "max": 36.01179993711412,
+      "mean": 3.171650190891565,
+      "p50": 2.13009980507195,
+      "p95": 8.643699809908867
+    },
+    "view_render": {
+      "count": 2921,
+      "max": 410.5092000681907,
+      "mean": 35.73817175682934,
+      "p50": 23.737600073218346,
+      "p95": 97.74739993736148
+    }
+  },
+  "threshold": 0.4
+}

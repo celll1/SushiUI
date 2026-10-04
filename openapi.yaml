@@ -8324,6 +8324,117 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /tagger-training/runs/{run_id}/diagnostics:
+    parameters:
+      - {name: run_id, in: path, required: true, schema: {type: string}}
+    get:
+      summary: Get optional FoveaTag diagnostic history
+      description: Optional actual-forward diagnostics for SigLIP2, native FoveaTag and learned-router training. Images display TP/FP/FN vocabulary names, without a rating filter. threshold_mode is training (captured common threshold), global (user threshold) or per_tag (captured tag metrics with common fallback). Captured vocabulary/probabilities/masks are retained for CPU-only rerendering without new inference. Optional training_window contains annotation-based aggregate training metrics, not validation accuracy. Legacy comparisons retain their fixed General sample. All history is retained; attempts lists skipped intervals.
+      responses:
+        '200':
+          description: Settings, published panels, worker status and sanitized error
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        '404': {description: Run not found}
+        '422': {description: Unsupported run architecture}
+    put:
+      summary: Configure diagnostics independently of the frozen training contract
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                enabled: {type: boolean, default: false, example: false, description: Opt-in periodic generation}
+                interval_steps: {type: integer, minimum: 1000, maximum: 1000000, default: 15000, example: 15000, description: Joint runs capture actual training forwards at global-step multiples of this interval with no rating filter. Legacy comparisons evaluate a minimum interval at checkpoints.}
+                focus_preview: {type: boolean, default: false, example: false, description: Show clearly marked C-policy preview for A/B; never claim it was used}
+                threshold_mode: {type: string, enum: [training, global, per_tag], default: training, example: per_tag, description: "Captured training threshold, user common threshold, or captured tag-specific best-F1 thresholds with fallback"}
+                threshold: {type: number, minimum: 0, maximum: 1, default: 0.35, example: 0.5, description: User common threshold and fallback for insufficient per-tag samples}
+                min_samples_for_per_tag: {type: integer, minimum: 1, default: 5, example: 5, description: Minimum observed positives required for a captured tag-specific threshold}
+                min_best_thr: {type: number, minimum: 0, maximum: 1, default: 0.05, example: 0.05, description: Floor on valid per-tag thresholds}
+      responses:
+        '200': {description: Updated diagnostic status}
+        '404': {description: Run not found}
+        '422': {description: Invalid settings or unsupported architecture}
+    post:
+      summary: Render a captured panel using current diagnostic threshold settings
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                filename: {type: string, description: Published panel whose immutable snapshot is rerendered; omitted selects latest captured forward}
+      responses:
+        '200': {description: Current status; busy worker is not duplicated}
+        '409': {description: Legacy checkpoint-based comparison generation requires a paused run; captured forward rendering is CPU-only and allowed during training}
+        '404': {description: Run not found}
+        '422': {description: Unsupported run or unavailable checkpoint}
+  /tagger-training/runs/{run_id}/diagnostics/images/{name}:
+    get:
+      summary: Serve a published diagnostic PNG
+      parameters:
+        - {name: run_id, in: path, required: true, schema: {type: string}}
+        - {name: name, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: Published diagnostic panel (new joint panels use vocabulary tag labels and have no rating filter)
+          content:
+            image/png:
+              schema: {type: string, format: binary}
+        '404': {description: Run or published image not found}
+        '422': {description: Invalid name or unsupported architecture}
+  /tagger-training/foveatag/joint-review:
+    post:
+      summary: Create a direct encoder/head/router training run for owner visual review
+      description: |
+        Replaces the abandoned A/B/C prerequisite, not a fabricated Phase 3 pass.
+        Uses only a stopped scratch FoveaTag run's own weights. New optimizer,
+        scheduler and input contract; fixed square overview without added bands,
+        source-native square local views shifted inside source bounds.
+        Each start runs at most review_steps, then saves for owner review.
+        Diagnostics are enabled for this review workflow and remain configurable.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/FoveaJointReviewRequest'}
+            example: {source_run_id: '18e75bfd-4145-46c6-a155-d0ac83e2fa22', output_dir: 'outputs/foveatag_joint_review', review_steps: 1000}
+      responses:
+        '200': {description: Registered new pending joint-review run}
+        '404': {description: Source run not found}
+        '409': {description: Source must be stopped or output directory exists}
+        '422': {description: Invalid routing budget or source checkpoint}
+  /tagger-training/foveatag/import:
+    post:
+      summary: Register an existing paused Phase 3 FoveaTag comparison
+      description: |
+        Imports the exact saved A/B/C contract into the training catalog, including
+        aggregate validation history. Does not start training or change its budget.
+        Returns 409 if the directory is already registered; requires a valid Phase 2 gate.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FoveaExperimentImportRequest'
+      responses:
+        '200':
+          description: Registered paused experiment, returned as a tagger run
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '409':
+          description: Experiment already registered
+        '422':
+          description: Invalid, mismatched or missing experiment evidence
   /tagger-training/runs:
     post:
       tags: [tagger-training]
@@ -8359,6 +8470,11 @@ paths:
     get:
       tags: [tagger-training]
       summary: Get a tagger training run
+      description: |
+        Native FoveaTag details include inference_checkpoint_paths for completed
+        latest/best_f1 publications only. Each entry identifies name, mode
+        (full_unmerged, lora, merged), path, vocabulary_path and requires_backbone.
+        Resume files and model-only inference publications are distinct.
       parameters:
         - name: run_id
           in: path
@@ -8373,6 +8489,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+                properties:
+                  inference_checkpoint_paths:
+                    type: array
+                    description: Completed native model-only publications; absent for non-native runs.
+                    items:
+                      $ref: '#/components/schemas/TaggerInferenceCheckpoint'
         '404':
           description: Tagger training run not found
           content:
@@ -8462,6 +8584,31 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /tagger-training/runs/{run_id}/joint-config:
+    patch:
+      tags: [tagger-training]
+      summary: Edit paused FoveaTag joint training settings without discarding optimizer state
+      description: |
+        Running/starting runs are refused. Editable keys are epochs, batch_size,
+        workers, learning_rate, weight_decay, warmup_steps, candidate_count,
+        selection_budget, random_count, oracle_interval, oracle_chunk_size,
+        router_weight, checkpoint_every_steps, log_every, review_steps and external_flash.
+        Data, model topology, source initialization and view policy remain immutable.
+        Resume retains Adam moments and RNG. Schedule edits rebase the schedule at
+        the saved optimizer step; configuration revisions are recorded.
+      parameters:
+        - {name: run_id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: true}
+            example: {learning_rate: 0.00005, oracle_interval: 8}
+      responses:
+        '200': {description: Updated run configuration}
+        '404': {description: Run not found}
+        '409': {description: Stop the run before editing}
+        '422': {description: Unsupported run, frozen key or invalid values/budget}
   /tagger-training/runs/{run_id}/start:
     post:
       tags: [tagger-training]
@@ -8472,6 +8619,12 @@ paths:
           required: true
           schema:
             type: string
+        - name: continuous
+          in: query
+          required: false
+          schema: {type: boolean, default: false}
+          description: Joint-review runs only. If true, resume until configured epochs finish or explicitly stopped, without the review_steps segment stop. Other architectures reject true.
+          example: true
       responses:
         '200':
           description: Tagger training started
@@ -9108,7 +9261,12 @@ paths:
   /tagger/siglip2/load:
     post:
       tags: [tagger]
-      summary: Load a SigLIP2 tagger checkpoint
+      summary: Load a SigLIP2 or native FoveaTag tagger checkpoint
+      description: |
+        The historical endpoint also accepts native shared-trainer FoveaTag weights
+        and compact/merged native exports. Native inputs come from checkpoint view
+        metadata; compact exports require their fingerprint-matched scratch encoder.
+        Per-checkpoint vocabulary is authoritative. Native ONNX export is not yet supported.
       requestBody:
         required: true
         content:
@@ -9126,7 +9284,11 @@ paths:
   /tagger/siglip2/predict:
     post:
       tags: [tagger]
-      summary: Predict tags with the SigLIP2 tagger
+      summary: Predict tags with the loaded tagger
+      description: |
+        Native FoveaTag uses deterministic source-local views and the checkpoint's
+        source-pixel cap and precision. max_num_patches applies only to NaFlex;
+        it does not alter the native view budget.
       requestBody:
         required: true
         content:
@@ -9275,7 +9437,8 @@ paths:
   /tagger/siglip2/export-onnx:
     post:
       tags: [tagger]
-      summary: Export the loaded SigLIP2 model to ONNX
+      summary: Export the loaded SigLIP2 or native FoveaTag model to ONNX
+      description: Native FoveaTag exports overview and optional router stages alongside the classifier graph. Host preprocessing selects and renders source crops before classification; all companion graphs and metadata are required. Native head filtering reindexes metrics consistently. Fixed canvas and focus budgets are recorded in metadata.
       requestBody:
         required: true
         content:
@@ -9293,7 +9456,8 @@ paths:
   /tagger/siglip2/extract-encoder:
     post:
       tags: [tagger]
-      summary: Extract a vision or text encoder from a HuggingFace repo
+      summary: Extract a vision or text encoder from a HuggingFace repo or a native vision encoder from local FoveaTag weights
+      description: For native FoveaTag vision extraction supply a local self-contained checkpoint path in repo_id. Native LoRA weights are merged into the extracted encoder. FoveaTag has no text encoder. The scratch-project lineage and source hash are recorded without introducing external weights.
       requestBody:
         required: true
         content:
@@ -29766,12 +29930,148 @@ components:
         validation_every: 100
         validation_num_images: 8
         validation_resolution: 1024
+    FoveaExperimentImportRequest:
+      type: object
+      additionalProperties: false
+      required: [comparison_dir, phase2_gate, pretrained_encoder, vocabulary_path, checkpoint_every_steps, log_every]
+      properties:
+        comparison_dir:
+          type: string
+          description: Existing paused comparison output directory on the backend host.
+          example: outputs/foveatag_phase3_comparison
+        phase2_gate:
+          type: string
+          example: docs/audits/phase2_gate.json
+        pretrained_encoder:
+          type: string
+          example: outputs/pretraining/best_encoder.safetensors
+        vocabulary_path:
+          type: string
+          example: tagger_models/reference/best_f1_vocabulary.json
+        checkpoint_every_steps:
+          type: integer
+          minimum: 1
+          example: 1000
+        log_every:
+          type: integer
+          minimum: 1
+          example: 100
+        run_name:
+          type: string
+          nullable: true
+          default: null
+    TaggerInferenceCheckpoint:
+      type: object
+      additionalProperties: false
+      required: [name, mode, path, vocabulary_path, requires_backbone]
+      properties:
+        name:
+          type: string
+          enum: [latest, best_f1]
+        mode:
+          type: string
+          enum: [full_unmerged, lora, merged]
+        path:
+          type: string
+          description: Completed inference weights, not an optimizer/resume bundle.
+        vocabulary_path:
+          type: string
+          description: Checkpoint-specific vocabulary required for index alignment.
+        requires_backbone:
+          type: boolean
+          description: Compact LoRA requires the fingerprint-matched scratch encoder.
+      example:
+        name: latest
+        mode: lora
+        path: 'D:/training/native/latest_export.safetensors'
+        vocabulary_path: 'D:/training/native/latest_vocabulary.json'
+        requires_backbone: true
+
+    FoveaJointReviewRequest:
+      type: object
+      additionalProperties: false
+      required: [source_run_id, output_dir]
+      properties:
+        source_run_id: {type: string}
+        output_dir: {type: string}
+        run_name: {type: string, nullable: true}
+        batch_size: {type: integer, minimum: 1, default: 8}
+        workers: {type: integer, minimum: 0, default: 8}
+        epochs: {type: integer, minimum: 1, default: 10}
+        epoch_samples: {type: integer, minimum: 1, default: 240000}
+        candidate_count: {type: integer, minimum: 1, default: 16}
+        selection_budget: {type: integer, minimum: 1, default: 4}
+        random_count: {type: integer, minimum: 0, default: 1}
+        oracle_interval: {type: integer, minimum: 1, default: 16}
+        oracle_chunk_size: {type: integer, minimum: 1, default: 4}
+        learning_rate: {type: number, exclusiveMinimum: true, minimum: 0, default: 0.0001}
+        weight_decay: {type: number, minimum: 0, default: 0.0001}
+        warmup_steps: {type: integer, minimum: 0, default: 1000}
+        router_weight: {type: number, exclusiveMinimum: true, minimum: 0, default: 1.0}
+        checkpoint_every_steps: {type: integer, minimum: 1, default: 250}
+        log_every: {type: integer, minimum: 1, default: 25}
+        review_steps: {type: integer, minimum: 1, default: 1000}
+        external_flash: {type: boolean, default: true}
+        save_tag_metrics: {type: boolean, default: true}
+        train_f1_eval_every_n_steps: {type: integer, minimum: 0, default: 100}
+        train_f1_threshold_search_every_n_steps: {type: integer, minimum: 0, default: 500}
+        train_f1_initial_threshold: {type: number, minimum: 0, maximum: 1, default: 0.35}
+        train_f1_buffer_batches: {type: integer, minimum: 1, default: 16}
     TaggerTrainingRunCreateRequest:
       type: object
+      description: Shared tagger options default from TAGGER_TRAINING_DEFAULTS in backend/api/param_defaults.py, also exposed by /schema/tagger-training-defaults. Encoder path and dataset_configs remain required. Defaults apply to new requests only; imported A/B/C comparisons preserve their saved configuration.
       properties:
         run_name:
           type: string
           nullable: true
+        architecture:
+          type: string
+          enum: [siglip2, foveatag]
+          default: siglip2
+          description: Standard SigLIP2 or native scratch FoveaTag shared-trainer run. Frozen A/B/C comparisons use the explicit import endpoint and retain immutable settings. Native full training accepts an empty encoder path for random initialization; native LoRA requires a local scratch-pretrained encoder. SigLIP2 pooling dimensions are refused for native runs.
+          example: siglip2
+        fovea_overview_size:
+          type: integer
+          minimum: 1
+          default: 448
+          description: Native FoveaTag overview canvas size; unused by SigLIP2 and frozen imported comparisons.
+          example: 448
+        fovea_local_size:
+          type: integer
+          minimum: 1
+          default: 256
+          description: Native FoveaTag source-local canvas size; unused by SigLIP2 and frozen imported comparisons.
+          example: 256
+        fovea_local_views:
+          type: integer
+          minimum: 0
+          default: 4
+          description: Native FoveaTag local view budget; unused by SigLIP2 and frozen imported comparisons.
+          example: 4
+        fovea_feature_dim:
+          type: integer
+          minimum: 1
+          default: 512
+          description: Native evidence feature width, not SigLIP2 cls_dim; unused by SigLIP2.
+          example: 512
+        fovea_max_source_pixels:
+          type: integer
+          minimum: 1
+          default: 40000000
+          description: Native pre-decode pixel cap; larger sources are skipped. Unused by SigLIP2 and frozen imported comparisons.
+          example: 40000000
+        fovea_seed:
+          type: integer
+          minimum: 0
+          default: 42
+          description: Native validation view and dataset split seed; unused by SigLIP2 and frozen imported comparisons.
+          example: 42
+        fovea_learned_routing: {type: boolean, default: true, example: true, description: Train and use a learned source-local router in the common trainer; legacy sampled-view artifacts retain their recorded mode}
+        fovea_candidate_count: {type: integer, minimum: 1, default: 16, example: 16, description: Bounded generic multiscale candidate count; selected local budget must not exceed this}
+        fovea_random_count: {type: integer, minimum: 0, default: 1, example: 1, description: Training-only exploration slots; must be less than local view budget}
+        fovea_oracle_interval: {type: integer, minimum: 1, default: 16, example: 16, description: Logical optimizer-step interval for masked-loss oracle supervision}
+        fovea_oracle_chunk_size: {type: integer, minimum: 1, default: 4, example: 4, description: Local encoder chunk size for training-only dense oracle}
+        fovea_router_weight: {type: number, minimum: 0, default: 1.0, example: 1.0, description: Weight of the detached-utility router ranking loss; does not replace classification loss}
         vision_encoder_path:
           type: string
         dataset_configs:
@@ -29861,6 +30161,8 @@ components:
         use_flash_attention:
           type: boolean
           default: false
+          description: SigLIP2 selects HF FlashAttention-2 when usable. Native FoveaTag selects external flash-attn dense/global and packed-varlen local kernels on supported CUDA FP16/BF16 inputs; CPU/FP32 use SDPA. Native explicit selection requires an importable flash-attn installation and kernel failures are fatal. Disabled native runs exclude external and PyTorch flash kernels.
+          example: true
         gradient_checkpointing:
           type: boolean
           default: true
@@ -29988,6 +30290,8 @@ components:
         train_f1_initial_threshold:
           type: number
           default: 0.35
+          description: Initial rolling training F1 probability threshold. Native FoveaTag refuses values outside [0, 1]. Native resume restores the learned threshold with the rolling prediction buffer.
+          example: 0.35
         train_f1_buffer_batches:
           type: integer
           default: 16

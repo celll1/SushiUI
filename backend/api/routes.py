@@ -1,4 +1,4 @@
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends, UploadFile, File, Form, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends, UploadFile, File, Form, Request, Body
 from fastapi.responses import Response, StreamingResponse, FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
@@ -52,7 +52,7 @@ from api.param_defaults import (
     UPSCALE_DEFAULTS, TXT2VID_DEFAULTS, IMG2VID_DEFAULTS, REF2VID_DEFAULTS,
     TXT2AUD_DEFAULTS, AUD2AUD_DEFAULTS, YUE2_REQUEST_DEFAULT,
     OUTPAINT_AUDIO_DEFAULTS,
-    TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS, VAE_TRAINING_DEFAULTS,
+    TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS, TAGGER_DIAGNOSTIC_DEFAULTS, TAGGER_JOINT_REVIEW_DEFAULTS, TAGGER_TRAINING_START_DEFAULTS, VAE_TRAINING_DEFAULTS,
     DATASET_DEFAULTS,
     LR_RETARGET_DEFAULTS,
     LR_PREVIEW_DEFAULTS,
@@ -21155,7 +21155,20 @@ async def debug_vram_force_release():
 
 
 class TaggerTrainingRunCreateRequest(BaseModel):
-    run_name: Optional[str] = None
+    architecture: Literal["siglip2", "foveatag"] = TAGGER_TRAINING_DEFAULTS["architecture"]
+    fovea_overview_size: int = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_overview_size"], ge=1)
+    fovea_local_size: int = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_local_size"], ge=1)
+    fovea_local_views: int = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_local_views"], ge=0)
+    fovea_feature_dim: int = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_feature_dim"], ge=1)
+    fovea_max_source_pixels: int = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_max_source_pixels"], ge=1)
+    fovea_seed: int = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_seed"], ge=0)
+    fovea_learned_routing: bool = TAGGER_TRAINING_DEFAULTS["fovea_learned_routing"]
+    fovea_candidate_count: int = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_candidate_count"], ge=1)
+    fovea_random_count: int = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_random_count"], ge=0)
+    fovea_oracle_interval: int = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_oracle_interval"], ge=1)
+    fovea_oracle_chunk_size: int = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_oracle_chunk_size"], ge=1)
+    fovea_router_weight: float = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_router_weight"], ge=0)
+    run_name: Optional[str] = TAGGER_TRAINING_DEFAULTS["run_name"]
     vision_encoder_path: str
     dataset_configs: List[Dict[str, Any]]          # [{dataset_id, caption_types}]
     # Physical GPU index to train on. None uses the default device. Validated
@@ -21163,19 +21176,19 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     gpu_index: Optional[int] = Field(
         default=TAGGER_TRAINING_DEFAULTS["gpu_index"], ge=0
     )
-    training_method: str = "lora"                  # "lora" | "full"
-    lora_rank: int = 32
-    lora_alpha: float = 16.0
+    training_method: str = TAGGER_TRAINING_DEFAULTS["training_method"]  # "lora" | "full"
+    lora_rank: int = TAGGER_TRAINING_DEFAULTS["lora_rank"]
+    lora_alpha: float = TAGGER_TRAINING_DEFAULTS["lora_alpha"]
     # gt=0: the tagger's only base rate, with no component fallback beneath
     # it to hold at zero -- same reasoning as TrainingRunCreateRequest.learning_rate.
     learning_rate: float = Field(default=TAGGER_TRAINING_DEFAULTS["learning_rate"], gt=0)
-    head_lr_multiplier: float = 10.0
-    optimizer: str = "adamw8bit"
-    warmup_steps: int = 100
-    epochs: int = 10
-    batch_size: int = 32
-    num_workers: int = 4
-    num_workers_override: Optional[int] = None
+    head_lr_multiplier: float = TAGGER_TRAINING_DEFAULTS["head_lr_multiplier"]
+    optimizer: str = TAGGER_TRAINING_DEFAULTS["optimizer"]
+    warmup_steps: int = TAGGER_TRAINING_DEFAULTS["warmup_steps"]
+    epochs: int = TAGGER_TRAINING_DEFAULTS["epochs"]
+    batch_size: int = TAGGER_TRAINING_DEFAULTS["batch_size"]
+    num_workers: int = TAGGER_TRAINING_DEFAULTS["num_workers"]
+    num_workers_override: Optional[int] = TAGGER_TRAINING_DEFAULTS["num_workers_override"]
     tag_refresh_enable: bool = TAGGER_TRAINING_DEFAULTS["tag_refresh_enable"]
     tag_refresh_interval_seconds: int = TAGGER_TRAINING_DEFAULTS["tag_refresh_interval_seconds"]
     # ge=0: 0 means "never save" (tagger_trainer.py guards `> 0` before the
@@ -21189,46 +21202,46 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     keep_last_n_checkpoints: int = Field(
         default=TAGGER_TRAINING_DEFAULTS["keep_last_n_checkpoints"], ge=0
     )
-    checkpoint_save_mode: str = "lora"
-    mixed_precision: str = "bf16"
+    checkpoint_save_mode: str = TAGGER_TRAINING_DEFAULTS["checkpoint_save_mode"]
+    mixed_precision: str = TAGGER_TRAINING_DEFAULTS["mixed_precision"]
     use_flash_attention: bool = TAGGER_TRAINING_DEFAULTS["use_flash_attention"]
-    gradient_checkpointing: bool = True
-    weight_decay: float = 1e-4
-    loss_function: str = "asl"
-    loss_gamma_neg: float = 4.0
-    loss_gamma_pos: float = 1.0
-    loss_clip: float = 0.05
-    loss_gamma0: float = 4.0
-    loss_m0: float = 0.2
-    loss_beta: float = 2.0
-    loss_rho: float = 0.5
-    loss_label_weight: str = "fisher"
+    gradient_checkpointing: bool = TAGGER_TRAINING_DEFAULTS["gradient_checkpointing"]
+    weight_decay: float = TAGGER_TRAINING_DEFAULTS["weight_decay"]
+    loss_function: str = TAGGER_TRAINING_DEFAULTS["loss_function"]
+    loss_gamma_neg: float = TAGGER_TRAINING_DEFAULTS["loss_gamma_neg"]
+    loss_gamma_pos: float = TAGGER_TRAINING_DEFAULTS["loss_gamma_pos"]
+    loss_clip: float = TAGGER_TRAINING_DEFAULTS["loss_clip"]
+    loss_gamma0: float = TAGGER_TRAINING_DEFAULTS["loss_gamma0"]
+    loss_m0: float = TAGGER_TRAINING_DEFAULTS["loss_m0"]
+    loss_beta: float = TAGGER_TRAINING_DEFAULTS["loss_beta"]
+    loss_rho: float = TAGGER_TRAINING_DEFAULTS["loss_rho"]
+    loss_label_weight: str = TAGGER_TRAINING_DEFAULTS["loss_label_weight"]
     validate_every: int = Field(
         default=TAGGER_TRAINING_DEFAULTS["validate_every"], ge=1
     )
-    val_split: float = 0.05
-    val_split_mode: str = "percent"
-    val_fixed_size: Optional[int] = None
-    save_best_only: bool = False
-    vocab_min_count: int = 10
+    val_split: float = TAGGER_TRAINING_DEFAULTS["val_split"]
+    val_split_mode: str = TAGGER_TRAINING_DEFAULTS["val_split_mode"]
+    val_fixed_size: Optional[int] = TAGGER_TRAINING_DEFAULTS["val_fixed_size"]
+    save_best_only: bool = TAGGER_TRAINING_DEFAULTS["save_best_only"]
+    vocab_min_count: int = TAGGER_TRAINING_DEFAULTS["vocab_min_count"]
     vocab_use_gelbooru_categories: bool = TAGGER_TRAINING_DEFAULTS["vocab_use_gelbooru_categories"]
     output_dir: Optional[str] = None
-    excluded_categories: Optional[List[str]] = None
-    ban_tags: Optional[str] = None
-    use_tag_aliases: bool = False
-    save_base_model: bool = False
+    excluded_categories: Optional[List[str]] = TAGGER_TRAINING_DEFAULTS["excluded_categories"]
+    ban_tags: Optional[str] = TAGGER_TRAINING_DEFAULTS["ban_tags"]
+    use_tag_aliases: bool = TAGGER_TRAINING_DEFAULTS["use_tag_aliases"]
+    save_base_model: bool = TAGGER_TRAINING_DEFAULTS["save_base_model"]
     # Quality-tag loss masking strategy: "intra_group" or "cross_group".
     # See core/tagger/tagger_dataset.py / param_defaults.py for semantics.
-    quality_masking_mode: str = "intra_group"
-    cls_dim: Optional[int] = None
-    hidden_proj_dim: Optional[int] = None
-    init_head_from: Optional[str] = None
+    quality_masking_mode: str = TAGGER_TRAINING_DEFAULTS["quality_masking_mode"]
+    cls_dim: Optional[int] = TAGGER_TRAINING_DEFAULTS["cls_dim"]
+    hidden_proj_dim: Optional[int] = TAGGER_TRAINING_DEFAULTS["hidden_proj_dim"]
+    init_head_from: Optional[str] = TAGGER_TRAINING_DEFAULTS["init_head_from"]
     # LR matrix (conditional inference) — built once at training start when enabled.
-    build_lr_matrix_on_start: bool = False
-    lr_top_anchors:            int   = 10000
-    lr_top_targets:            int   = 1000
-    lr_threshold:              float = 1.0
-    lr_min_anchor_count:       int   = 10
+    build_lr_matrix_on_start: bool = TAGGER_TRAINING_DEFAULTS["build_lr_matrix_on_start"]
+    lr_top_anchors:            int   = TAGGER_TRAINING_DEFAULTS["lr_top_anchors"]
+    lr_top_targets:            int   = TAGGER_TRAINING_DEFAULTS["lr_top_targets"]
+    lr_threshold:              float = TAGGER_TRAINING_DEFAULTS["lr_threshold"]
+    lr_min_anchor_count:       int   = TAGGER_TRAINING_DEFAULTS["lr_min_anchor_count"]
     # Pre-flight dataset drift check + optional rescan.  Four modes (see
     # core/training/dataset_drift.py):
     #   "off"   — skip entirely (default)
@@ -21247,10 +21260,10 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     train_f1_threshold_search_every_n_steps: int = Field(
         default=TAGGER_TRAINING_DEFAULTS["train_f1_threshold_search_every_n_steps"], ge=0
     )
-    train_f1_initial_threshold:              float = 0.35
-    train_f1_buffer_batches:                 int   = 16
+    train_f1_initial_threshold:              float = TAGGER_TRAINING_DEFAULTS["train_f1_initial_threshold"]
+    train_f1_buffer_batches:                 int   = TAGGER_TRAINING_DEFAULTS["train_f1_buffer_batches"]
     # Online Danbooru augmentation
-    enable_danbooru_augmentation: bool = False
+    enable_danbooru_augmentation: bool = TAGGER_TRAINING_DEFAULTS["enable_danbooru_augmentation"]
     # Query mode (first-class collection mode; see param_defaults.py)
     danbooru_query_enable: bool = TAGGER_TRAINING_DEFAULTS["danbooru_query_enable"]
     danbooru_query_expand_enable: bool = TAGGER_TRAINING_DEFAULTS["danbooru_query_expand_enable"]
@@ -21273,46 +21286,53 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     danbooru_quality_tag_enable: bool = TAGGER_TRAINING_DEFAULTS["danbooru_quality_tag_enable"]
     danbooru_quality_tag_thresholds: str = TAGGER_TRAINING_DEFAULTS["danbooru_quality_tag_thresholds"]
     danbooru_quality_tag_attach_negative: bool = TAGGER_TRAINING_DEFAULTS["danbooru_quality_tag_attach_negative"]
-    danbooru_tags: Optional[str] = None        # newline-separated; use !tag or -tag to exclude
-    danbooru_injection_interval: int = 4       # interrupt-batch every N base steps
-    danbooru_injection_batch_size_ratio: float = 1.0  # 1.0=B, 0.5=B/2, etc.
-    danbooru_min_score: int = 0
-    danbooru_max_posts_per_query: int = 200
-    danbooru_api_interval: float = 1.4
-    danbooru_dl_speed_kbps: int = 500
+    danbooru_tags: Optional[str] = TAGGER_TRAINING_DEFAULTS["danbooru_tags"]  # newline-separated; use !tag or -tag to exclude
+    danbooru_injection_interval: int = TAGGER_TRAINING_DEFAULTS["danbooru_injection_interval"]  # interrupt-batch every N base steps
+    danbooru_injection_batch_size_ratio: float = TAGGER_TRAINING_DEFAULTS["danbooru_injection_batch_size_ratio"]  # 1.0=B, 0.5=B/2, etc.
+    danbooru_min_score: int = TAGGER_TRAINING_DEFAULTS["danbooru_min_score"]
+    danbooru_max_posts_per_query: int = TAGGER_TRAINING_DEFAULTS["danbooru_max_posts_per_query"]
+    danbooru_api_interval: float = TAGGER_TRAINING_DEFAULTS["danbooru_api_interval"]
+    danbooru_dl_speed_kbps: int = TAGGER_TRAINING_DEFAULTS["danbooru_dl_speed_kbps"]
     danbooru_speed_check_enable: bool = TAGGER_TRAINING_DEFAULTS["danbooru_speed_check_enable"]
     danbooru_speed_degraded_kbps: int = TAGGER_TRAINING_DEFAULTS["danbooru_speed_degraded_kbps"]
     danbooru_speed_min_slow_streak: int = TAGGER_TRAINING_DEFAULTS["danbooru_speed_min_slow_streak"]
     danbooru_speed_min_slow_seconds: int = TAGGER_TRAINING_DEFAULTS["danbooru_speed_min_slow_seconds"]
     danbooru_speed_cooldown_seconds: int = TAGGER_TRAINING_DEFAULTS["danbooru_speed_cooldown_seconds"]
-    danbooru_buffer_size: Optional[int] = None  # None → auto (2 × batch_size)
-    danbooru_vocab_expand: bool = False
-    danbooru_new_tag_min_count: int = 200
-    danbooru_new_tag_min_count_by_cat: Dict[str, int] = {}
-    danbooru_new_tag_lookback_days: int = 90
-    danbooru_new_tag_categories: List[int] = [0, 3, 4]
-    danbooru_new_tag_survey_interval: int = 3600
-    danbooru_max_dynamic_tags: int = 0
+    danbooru_buffer_size: Optional[int] = TAGGER_TRAINING_DEFAULTS["danbooru_buffer_size"]  # None → auto (2 × batch_size)
+    danbooru_vocab_expand: bool = TAGGER_TRAINING_DEFAULTS["danbooru_vocab_expand"]
+    danbooru_new_tag_min_count: int = TAGGER_TRAINING_DEFAULTS["danbooru_new_tag_min_count"]
+    danbooru_new_tag_min_count_by_cat: Dict[str, int] = TAGGER_TRAINING_DEFAULTS["danbooru_new_tag_min_count_by_cat"]
+    danbooru_new_tag_lookback_days: int = TAGGER_TRAINING_DEFAULTS["danbooru_new_tag_lookback_days"]
+    danbooru_new_tag_categories: List[int] = TAGGER_TRAINING_DEFAULTS["danbooru_new_tag_categories"]
+    danbooru_new_tag_survey_interval: int = TAGGER_TRAINING_DEFAULTS["danbooru_new_tag_survey_interval"]
+    danbooru_max_dynamic_tags: int = TAGGER_TRAINING_DEFAULTS["danbooru_max_dynamic_tags"]
     # Collection-path weights (weighted selection among available paths)
-    danbooru_query_weight_static: float = 1.0
-    danbooru_query_weight_new_tag: float = 1.0
-    danbooru_query_weight_low_f1: float = 1.0
+    danbooru_query_weight_static: float = TAGGER_TRAINING_DEFAULTS["danbooru_query_weight_static"]
+    danbooru_query_weight_new_tag: float = TAGGER_TRAINING_DEFAULTS["danbooru_query_weight_new_tag"]
+    danbooru_query_weight_low_f1: float = TAGGER_TRAINING_DEFAULTS["danbooru_query_weight_low_f1"]
     # Low-F1 deficiency collection (existing vocab tags with low per-tag F1)
-    danbooru_low_f1_enable: bool = False
-    danbooru_low_f1_threshold: float = 0.5
-    danbooru_low_f1_top_k: int = 500
-    danbooru_low_f1_min_posts: int = 50
+    danbooru_low_f1_enable: bool = TAGGER_TRAINING_DEFAULTS["danbooru_low_f1_enable"]
+    danbooru_low_f1_threshold: float = TAGGER_TRAINING_DEFAULTS["danbooru_low_f1_threshold"]
+    danbooru_low_f1_top_k: int = TAGGER_TRAINING_DEFAULTS["danbooru_low_f1_top_k"]
+    danbooru_low_f1_min_posts: int = TAGGER_TRAINING_DEFAULTS["danbooru_low_f1_min_posts"]
     # Co-occurrence vocab discovery (vocab-absent tags seen in collected posts)
-    danbooru_cooc_expand_enable: bool = False
-    danbooru_cooc_min_count: int = 50
-    danbooru_cooc_categories: List[int] = [0, 3, 4]
+    danbooru_cooc_expand_enable: bool = TAGGER_TRAINING_DEFAULTS["danbooru_cooc_expand_enable"]
+    danbooru_cooc_min_count: int = TAGGER_TRAINING_DEFAULTS["danbooru_cooc_min_count"]
+    danbooru_cooc_categories: List[int] = TAGGER_TRAINING_DEFAULTS["danbooru_cooc_categories"]
     danbooru_query_weight_cooc: float = TAGGER_TRAINING_DEFAULTS["danbooru_query_weight_cooc"]
     danbooru_cooc_collect_per_epoch: int = TAGGER_TRAINING_DEFAULTS["danbooru_cooc_collect_per_epoch"]
     danbooru_cooc_order_random: bool = TAGGER_TRAINING_DEFAULTS["danbooru_cooc_order_random"]
     # save_tag_metrics / hard_rate (passed through to trainer)
-    save_tag_metrics: bool = True
-    hard_rate_lo: float = 0.25
-    hard_rate_hi: float = 0.75
+    save_tag_metrics: bool = TAGGER_TRAINING_DEFAULTS["save_tag_metrics"]
+    hard_rate_lo: float = TAGGER_TRAINING_DEFAULTS["hard_rate_lo"]
+    hard_rate_hi: float = TAGGER_TRAINING_DEFAULTS["hard_rate_hi"]
+
+    @model_validator(mode="after")
+    def validate_native_architecture(self):
+        if self.architecture == "foveatag":
+            from core.tagger.foveatag.shared_factory import validate_config
+            validate_config(self.model_dump())
+        return self
 
 
 # Active tagger training threads
@@ -21508,6 +21528,71 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
     return callback
 
 
+class FoveaExperimentImportRequest(BaseModel):
+    comparison_dir: str
+    phase2_gate: str
+    pretrained_encoder: str
+    vocabulary_path: str
+    checkpoint_every_steps: int = Field(ge=1)
+    log_every: int = Field(ge=1)
+    run_name: Optional[str] = TAGGER_TRAINING_DEFAULTS["run_name"]
+
+    class Config:
+        extra = "forbid"
+
+
+class FoveaJointReviewRequest(BaseModel):
+    source_run_id: str
+    output_dir: str
+    run_name: Optional[str] = TAGGER_TRAINING_DEFAULTS["run_name"]
+    batch_size: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["batch_size"], ge=1)
+    workers: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["workers"], ge=0)
+    epochs: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["epochs"], ge=1)
+    epoch_samples: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["epoch_samples"], ge=1)
+    candidate_count: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["candidate_count"], ge=1)
+    selection_budget: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["selection_budget"], ge=1)
+    random_count: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["random_count"], ge=0)
+    oracle_interval: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["oracle_interval"], ge=1)
+    oracle_chunk_size: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["oracle_chunk_size"], ge=1)
+    learning_rate: float = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["learning_rate"], gt=0)
+    weight_decay: float = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["weight_decay"], ge=0)
+    warmup_steps: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["warmup_steps"], ge=0)
+    router_weight: float = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["router_weight"], gt=0)
+    checkpoint_every_steps: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["checkpoint_every_steps"], ge=1)
+    log_every: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["log_every"], ge=1)
+    review_steps: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["review_steps"], ge=1)
+    external_flash: bool = TAGGER_JOINT_REVIEW_DEFAULTS["external_flash"]
+    save_tag_metrics: bool = TAGGER_TRAINING_DEFAULTS["save_tag_metrics"]
+    train_f1_eval_every_n_steps: int = Field(default=TAGGER_TRAINING_DEFAULTS["train_f1_eval_every_n_steps"], ge=0)
+    train_f1_threshold_search_every_n_steps: int = Field(default=TAGGER_TRAINING_DEFAULTS["train_f1_threshold_search_every_n_steps"], ge=0)
+    train_f1_initial_threshold: float = Field(default=TAGGER_TRAINING_DEFAULTS["train_f1_initial_threshold"], ge=0, le=1)
+    train_f1_buffer_batches: int = Field(default=TAGGER_TRAINING_DEFAULTS["train_f1_buffer_batches"], ge=1)
+
+    @model_validator(mode="after")
+    def validate_budget(self):
+        if not 0 <= self.random_count < self.selection_budget <= self.candidate_count:
+            raise ValueError("At least one learned routing slot is required within the candidate budget")
+        return self
+
+    class Config:
+        extra = "forbid"
+
+
+@router.post("/tagger-training/foveatag/joint-review")
+def create_fovea_joint_review(request: FoveaJointReviewRequest, training_db: Session = Depends(get_training_db)):
+    from api.foveatag_joint_review import register_joint_review
+    return register_joint_review(request.model_dump(), training_db)
+
+
+@router.post("/tagger-training/foveatag/import")
+def import_fovea_experiment(
+    request: FoveaExperimentImportRequest,
+    training_db: Session = Depends(get_training_db),
+):
+    from api.foveatag_training import register_experiment
+    return register_experiment(request.dict(), training_db)
+
+
 @router.post("/tagger-training/runs")
 def create_tagger_training_run(
     request: TaggerTrainingRunCreateRequest,
@@ -21569,7 +21654,14 @@ def get_tagger_training_run(run_id: str, training_db: Session = Depends(get_trai
     run = training_db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Tagger training run not found")
-    return run.to_list_dict()
+    result = run.to_list_dict()
+    architecture = (run.config or {}).get("architecture")
+    if architecture in ("foveatag", "foveatag_joint_review"):
+        from core.tagger.foveatag.inference_bundle import published_inference_paths
+        names = ("review", "best_joint") if architecture == "foveatag_joint_review" else ("latest", "best_f1")
+        result["inference_checkpoint_paths"] = [entry for name in names
+            for entry in published_inference_paths(run.output_dir, name)]
+    return result
 
 
 @router.patch("/tagger-training/runs/{run_id}")
@@ -21582,6 +21674,8 @@ def update_tagger_training_run(
     run = training_db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Tagger training run not found")
+    if (run.config or {}).get("architecture") in ("foveatag_phase3", "foveatag_joint_review"):
+        raise HTTPException(status_code=409, detail="Registered experimental training contracts are immutable; create a new run to change them.")
     if run.status not in ("pending", "stopped", "failed"):
         raise HTTPException(
             status_code=400,
@@ -21656,8 +21750,16 @@ def get_tagger_training_vocabulary(run_id: str, training_db: Session = Depends(g
     raise HTTPException(status_code=404, detail="Vocabulary not yet available for this run")
 
 
+@router.patch("/tagger-training/runs/{run_id}/joint-config")
+def edit_fovea_joint_config(run_id: str, request: Dict[str, Any] = Body(...),
+        training_db: Session = Depends(get_training_db)):
+    from api.foveatag_joint_review import edit_joint_config
+    return edit_joint_config(run_id, request, training_db)
+
+
 @router.post("/tagger-training/runs/{run_id}/start")
-async def start_tagger_training_run(run_id: str, training_db: Session = Depends(get_training_db)):
+async def start_tagger_training_run(run_id: str, training_db: Session = Depends(get_training_db),
+        continuous: bool = TAGGER_TRAINING_START_DEFAULTS["continuous"]):
     """Start or resume a tagger training run in a background thread.
 
     When ``config.rescan_before_training`` is True, runs a pre-flight
@@ -21670,6 +21772,14 @@ async def start_tagger_training_run(run_id: str, training_db: Session = Depends(
     run = training_db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Tagger training run not found")
+    if continuous and (run.config or {}).get("architecture") != "foveatag_joint_review":
+        raise HTTPException(422, "Continuous override is supported only for FoveaTag joint-review runs")
+    if (run.config or {}).get("architecture") == "foveatag_phase3":
+        from api.foveatag_training import start_experiment
+        return start_experiment(run, training_db, _tagger_training_threads, _make_tagger_progress_callback)
+    if (run.config or {}).get("architecture") == "foveatag_joint_review":
+        from api.foveatag_joint_review import start_joint_review
+        return start_joint_review(run, training_db, _tagger_training_threads, _make_tagger_progress_callback, continuous=continuous)
     if run.status in ("running", "starting"):
         raise HTTPException(status_code=400, detail="Run is already running")
 
@@ -21856,6 +21966,9 @@ async def start_tagger_training_run(run_id: str, training_db: Session = Depends(
                 row.status = "running"
                 db.commit()
 
+            from api.tagger_diagnostics import training_due, schedule_training_safe
+            from types import SimpleNamespace
+            diagnostic_run = SimpleNamespace(run_id=run_id, output_dir=output_dir, config=config)
             result = run_tagger_training(
                 run_id=run_id,
                 config=config,
@@ -21864,6 +21977,8 @@ async def start_tagger_training_run(run_id: str, training_db: Session = Depends(
                 progress_callback=callback,
                 resume_from_checkpoint=resume_from_checkpoint,
                 trainer_holder=trainer_holder,
+                diagnostic_due=lambda step: training_due(diagnostic_run, step),
+                diagnostic_callback=lambda snapshot: schedule_training_safe(diagnostic_run, snapshot),
             )
             # Keep the vocabulary snapshot with the run's detailed history.
             vocab_path = os.path.join(output_dir, "vocabulary.json")
@@ -21935,6 +22050,12 @@ def stop_tagger_training_run(run_id: str, training_db: Session = Depends(get_tra
     run = training_db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Tagger training run not found")
+    if (run.config or {}).get("architecture") == "foveatag_phase3":
+        from api.foveatag_training import stop_experiment
+        return stop_experiment(run, training_db, _tagger_training_threads)
+    if (run.config or {}).get("architecture") == "foveatag_joint_review":
+        from api.foveatag_training import stop_experiment
+        return stop_experiment(run, training_db, _tagger_training_threads)
 
     # Signal the trainer to stop at the next checkpoint boundary
     entry = _tagger_training_threads.get(run_id)
@@ -22019,6 +22140,74 @@ def resume_tagger_danbooru(run_id: str, training_db: Session = Depends(get_train
         raise HTTPException(status_code=400, detail="Run output dir unavailable")
     _write_danbooru_resume(run.output_dir)
     return {"success": True}
+
+
+class TaggerDiagnosticSettings(BaseModel):
+    enabled: bool = TAGGER_DIAGNOSTIC_DEFAULTS["enabled"]
+    interval_steps: int = Field(default=TAGGER_DIAGNOSTIC_DEFAULTS["interval_steps"], ge=1000, le=1000000)
+    focus_preview: bool = TAGGER_DIAGNOSTIC_DEFAULTS["focus_preview"]
+    threshold_mode: Literal["training", "global", "per_tag"] = TAGGER_DIAGNOSTIC_DEFAULTS["threshold_mode"]
+    threshold: float = Field(default=TAGGER_DIAGNOSTIC_DEFAULTS["threshold"], ge=0, le=1)
+    min_samples_for_per_tag: int = Field(default=TAGGER_DIAGNOSTIC_DEFAULTS["min_samples_for_per_tag"], ge=1)
+    min_best_thr: float = Field(default=TAGGER_DIAGNOSTIC_DEFAULTS["min_best_thr"], ge=0, le=1)
+
+    class Config:
+        extra = "forbid"
+
+
+def _diagnostic_run(run_id, training_db):
+    run = training_db.query(TaggerTrainingRun).filter_by(run_id=run_id).first()
+    if run is None:
+        raise HTTPException(404, "Run not found")
+    return run
+
+
+@router.get("/tagger-training/runs/{run_id}/diagnostics")
+def get_tagger_diagnostics(run_id: str, training_db: Session = Depends(get_training_db)):
+    from api.tagger_diagnostics import status
+    try:
+        return status(_diagnostic_run(run_id, training_db))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.put("/tagger-training/runs/{run_id}/diagnostics")
+def set_tagger_diagnostics(run_id: str, request: TaggerDiagnosticSettings, training_db: Session = Depends(get_training_db)):
+    from api.tagger_diagnostics import configure
+    try:
+        return configure(_diagnostic_run(run_id, training_db), request.model_dump())
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/tagger-training/runs/{run_id}/diagnostics")
+def create_tagger_diagnostic(run_id: str, request: Optional[Dict[str, str]] = Body(default=None), training_db: Session = Depends(get_training_db)):
+    from api.tagger_diagnostics import schedule, status
+    from api.foveatag_training import _lifecycle_lock
+    with _lifecycle_lock:
+        run = _diagnostic_run(run_id, training_db)
+        training_db.refresh(run)
+        if request is not None and set(request) - {"filename"}:
+            raise HTTPException(422, "Only a published diagnostic filename may be supplied")
+        if run.config.get("architecture") == "foveatag_phase3" and run.status in ("running", "starting"):
+            raise HTTPException(409, "Manual generation requires a paused run; periodic generation runs at training-step intervals")
+        try:
+            schedule(run, force=True, filename=(request or {}).get("filename"))
+            return status(run)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(422, "Diagnostic checkpoint unavailable") from exc
+
+
+@router.get("/tagger-training/runs/{run_id}/diagnostics/images/{name}")
+def get_tagger_diagnostic_image(run_id: str, name: str, training_db: Session = Depends(get_training_db)):
+    from api.tagger_diagnostics import image_path
+    try:
+        path = image_path(_diagnostic_run(run_id, training_db), name)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, max-age=86400"})
 
 
 @router.get("/tagger-training/runs/{run_id}/metrics")

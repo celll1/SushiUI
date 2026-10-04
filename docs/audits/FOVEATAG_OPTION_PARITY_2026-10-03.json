@@ -1,0 +1,1087 @@
+{
+  "format_version": 1,
+  "kind": "foveatag_siglip2_option_parity_audit",
+  "sources": [
+    "main and design-branch backend/api/param_defaults.py TAGGER_TRAINING_DEFAULTS",
+    "main and design-branch backend/api/routes.py TaggerTrainingRunCreateRequest"
+  ],
+  "scope": "Per-option inventory and bounded evidence, not a blanket feature-parity claim. Common learned-router training, diagnostics and native tools were deployed on 2026-10-04. The original comparison remains paused; the active legacy joint run resumes continuously. Shared-path static review records consumption and applicability, not verification of every optimizer, external collection service or owner-run frontend build.",
+  "options": [
+    {"name": "fovea_learned_routing", "in_defaults": true, "in_request": true, "status": "native_routing_cpu_gpu_verified_deployed"},
+    {"name": "fovea_candidate_count", "in_defaults": true, "in_request": true, "status": "native_routing_cpu_gpu_verified_deployed"},
+    {"name": "fovea_random_count", "in_defaults": true, "in_request": true, "status": "native_routing_cpu_gpu_verified_deployed"},
+    {"name": "fovea_oracle_interval", "in_defaults": true, "in_request": true, "status": "native_routing_cpu_gpu_verified_deployed"},
+    {"name": "fovea_oracle_chunk_size", "in_defaults": true, "in_request": true, "status": "native_routing_cpu_gpu_verified_deployed"},
+    {"name": "fovea_router_weight", "in_defaults": true, "in_request": true, "status": "native_routing_cpu_gpu_verified_deployed"},
+    {
+      "name": "architecture",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "native_schema_deployed_ui_statically_reviewed"
+    },
+    {
+      "name": "ban_tags",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared vocabulary/data split/loader/device or metric construction remains in the native shared trainer path; architecture-specific changes occur at processor/model/forward boundaries."
+      ]
+    },
+    {
+      "name": "batch_size",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "implemented_in_registered_comparison"
+    },
+    {
+      "name": "build_lr_matrix_on_start",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared LR matrix builder unwraps the retained native dataset _samples and vocabulary, independent of image encoder."
+      ]
+    },
+    {
+      "name": "checkpoint_save_mode",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "native_unmerged_resume_and_compact_merged_inference_verified"
+    },
+    {
+      "name": "cls_dim",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "siglip2_only_native_refusal_verified"
+    },
+    {
+      "name": "danbooru_api_interval",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_buffer_size",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_cooc_categories",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_cooc_collect_per_epoch",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_cooc_expand_enable",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_cooc_min_count",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_cooc_order_random",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_dl_speed_kbps",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_injection_batch_size_ratio",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_injection_interval",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_low_f1_collect_per_epoch",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_low_f1_enable",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_low_f1_min_posts",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_low_f1_threshold",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_low_f1_top_k",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_max_dynamic_tags",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_max_posts_per_query",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_min_score",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_new_tag_categories",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_new_tag_collect_per_epoch",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_new_tag_lookback_days",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_new_tag_min_count",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_new_tag_min_count_by_cat",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_new_tag_survey_interval",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_quality_tag_attach_negative",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_quality_tag_enable",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_quality_tag_thresholds",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_query_collect_per_epoch",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_query_enable",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_query_expand_categories",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_query_expand_enable",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_query_max_expanded_tags",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_query_new_tag_min_count",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_query_resolve_interval",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_query_resolve_top_k",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_query_weight_cooc",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_query_weight_low_f1",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_query_weight_new_tag",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_query_weight_static",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_query_weight_train_count",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_speed_check_enable",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_speed_cooldown_seconds",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_speed_degraded_kbps",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_speed_min_slow_seconds",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_speed_min_slow_streak",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_tags",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_train_count_collect_per_epoch",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_train_count_enable",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_train_count_min_deficit_ratio",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_train_count_min_per_epoch",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_train_count_min_posts",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_train_count_top_k",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "danbooru_vocab_expand",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "dataset_configs",
+      "in_defaults": false,
+      "in_request": true,
+      "status": "implemented_in_registered_comparison"
+    },
+    {
+      "name": "enable_danbooru_augmentation",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared native online construction passes collection limits, discovery/deficiency providers, injection cadence, quality labeling and speed controls through the unchanged sampler/mixed-loader services. Native processing, head growth, masked metrics and checkpoint-bound runtime are verified separately; no live network parity claim."
+      ]
+    },
+    {
+      "name": "epochs",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "implemented_in_registered_comparison"
+    },
+    {
+      "name": "excluded_categories",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared vocabulary/data split/loader/device or metric construction remains in the native shared trainer path; architecture-specific changes occur at processor/model/forward boundaries."
+      ]
+    },
+    {
+      "name": "gpu_index",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared vocabulary/data split/loader/device or metric construction remains in the native shared trainer path; architecture-specific changes occur at processor/model/forward boundaries."
+      ]
+    },
+    {
+      "name": "gradient_checkpointing",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "native_checkpointed_encoder_forward_gradient_gpu_verified"
+    },
+    {
+      "name": "hard_rate_hi",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared vocabulary/data split/loader/device or metric construction remains in the native shared trainer path; architecture-specific changes occur at processor/model/forward boundaries."
+      ]
+    },
+    {
+      "name": "hard_rate_lo",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared vocabulary/data split/loader/device or metric construction remains in the native shared trainer path; architecture-specific changes occur at processor/model/forward boundaries."
+      ]
+    },
+    {
+      "name": "head_lr_multiplier",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "fixed_by_current_comparison_contract"
+    },
+    {
+      "name": "hidden_proj_dim",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "siglip2_only_native_refusal_verified"
+    },
+    {
+      "name": "init_head_from",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "native_head_lineage_and_dimension_checks_verified"
+    },
+    {
+      "name": "keep_last_n_checkpoints",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "native_resume_inference_metrics_sidecar_retention_verified"
+    },
+    {
+      "name": "learning_rate",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "implemented_in_registered_comparison"
+    },
+    {
+      "name": "lora_alpha",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "native_attention_lora_and_exact_resume_verified"
+    },
+    {
+      "name": "lora_rank",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "native_attention_lora_and_exact_resume_verified"
+    },
+    {
+      "name": "loss_beta",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared criterion construction consumes these loss parameters independently of encoder architecture; native model returns the shared logits/label/mask protocol."
+      ]
+    },
+    {
+      "name": "loss_clip",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "fixed_by_current_comparison_contract"
+    },
+    {
+      "name": "loss_function",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "fixed_by_current_comparison_contract"
+    },
+    {
+      "name": "loss_gamma0",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared criterion construction consumes these loss parameters independently of encoder architecture; native model returns the shared logits/label/mask protocol."
+      ]
+    },
+    {
+      "name": "loss_gamma_neg",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "fixed_by_current_comparison_contract"
+    },
+    {
+      "name": "loss_gamma_pos",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "fixed_by_current_comparison_contract"
+    },
+    {
+      "name": "loss_label_weight",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared criterion construction consumes these loss parameters independently of encoder architecture; native model returns the shared logits/label/mask protocol."
+      ]
+    },
+    {
+      "name": "loss_m0",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared criterion construction consumes these loss parameters independently of encoder architecture; native model returns the shared logits/label/mask protocol."
+      ]
+    },
+    {
+      "name": "loss_rho",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared criterion construction consumes these loss parameters independently of encoder architecture; native model returns the shared logits/label/mask protocol."
+      ]
+    },
+    {
+      "name": "lr_min_anchor_count",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared LR matrix builder unwraps the retained native dataset _samples and vocabulary, independent of image encoder."
+      ]
+    },
+    {
+      "name": "lr_threshold",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared LR matrix builder unwraps the retained native dataset _samples and vocabulary, independent of image encoder."
+      ]
+    },
+    {
+      "name": "lr_top_anchors",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared LR matrix builder unwraps the retained native dataset _samples and vocabulary, independent of image encoder."
+      ]
+    },
+    {
+      "name": "lr_top_targets",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared LR matrix builder unwraps the retained native dataset _samples and vocabulary, independent of image encoder."
+      ]
+    },
+    {
+      "name": "mixed_precision",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "fixed_by_current_comparison_contract"
+    },
+    {
+      "name": "num_workers",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "implemented_in_registered_comparison"
+    },
+    {
+      "name": "num_workers_override",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared vocabulary/data split/loader/device or metric construction remains in the native shared trainer path; architecture-specific changes occur at processor/model/forward boundaries."
+      ]
+    },
+    {
+      "name": "optimizer",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "fixed_by_current_comparison_contract"
+    },
+    {
+      "name": "output_dir",
+      "in_defaults": false,
+      "in_request": true,
+      "status": "implemented_in_registered_comparison"
+    },
+    {
+      "name": "quality_masking_mode",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared vocabulary/data split/loader/device or metric construction remains in the native shared trainer path; architecture-specific changes occur at processor/model/forward boundaries."
+      ]
+    },
+    {
+      "name": "rescan_before_training",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared API start worker handles preflight rescan before run_tagger_training; native comparison import retains its immutable separate path."
+      ]
+    },
+    {
+      "name": "run_name",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "implemented_in_registered_comparison"
+    },
+    {
+      "name": "save_base_model",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "native_local_copy_and_optional_random_initial_base_verified",
+      "evidence": "Local scratch encoders are copied with metadata; full random initialization exports the actual initial encoder before training. Existing base snapshots are not replaced and save_base_model=false suppresses creation."
+    },
+    {
+      "name": "save_best_only",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "native_archive_suppression_and_resume_retention_loop_verified",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py: native_best_only suppresses periodic step/epoch archives, not latest or stop resume checkpoints",
+        "backend/tests/foveatag_shared_replay_test.py: test_native_best_only_suppresses_archives_but_retains_resume (both settings)"
+      ]
+    },
+    {
+      "name": "save_every_n_epochs",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared epoch archive condition consumes the interval; native best-only override retains latest recovery."
+      ]
+    },
+    {
+      "name": "save_every_n_steps",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "fixed_by_current_comparison_contract"
+    },
+    {
+      "name": "save_tag_metrics",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "native_masked_metrics_exact_resume_and_inference_publication_verified"
+    },
+    {
+      "name": "tag_refresh_enable",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared detector updates the retained dataset's refresh store; native get_raw_item and label metadata access apply refreshed labels."
+      ]
+    },
+    {
+      "name": "tag_refresh_interval_seconds",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared detector updates the retained dataset's refresh store; native get_raw_item and label metadata access apply refreshed labels."
+      ]
+    },
+    {
+      "name": "train_f1_buffer_batches",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "native_rolling_buffer_strict_capacity_and_resume_verified"
+    },
+    {
+      "name": "train_f1_eval_every_n_steps",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "native_post_evaluation_checkpoint_and_trace_resume_verified"
+    },
+    {
+      "name": "train_f1_initial_threshold",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "native_probability_bounds_and_learned_threshold_resume_verified"
+    },
+    {
+      "name": "train_f1_threshold_search_every_n_steps",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "native_post_search_checkpoint_and_trace_resume_verified"
+    },
+    {
+      "name": "training_method",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "fixed_by_current_comparison_contract"
+    },
+    {
+      "name": "use_flash_attention",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "native_external_flash_gpu_verified_deployed_ui_statically_reviewed",
+      "evidence": "External dense and packed-varlen kernels; real GPU FP16/BF16 forward/backward and checkpointed encoder tests pass. Frozen imported A/B/C execution remains unchanged."
+    },
+    {
+      "name": "use_tag_aliases",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "native_external_flash_dense_windowed_fp16_bf16_gpu_verified"
+    },
+    {
+      "name": "val_fixed_size",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared vocabulary/data split/loader/device or metric construction remains in the native shared trainer path; architecture-specific changes occur at processor/model/forward boundaries."
+      ]
+    },
+    {
+      "name": "val_split",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared vocabulary/data split/loader/device or metric construction remains in the native shared trainer path; architecture-specific changes occur at processor/model/forward boundaries."
+      ]
+    },
+    {
+      "name": "val_split_mode",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared vocabulary/data split/loader/device or metric construction remains in the native shared trainer path; architecture-specific changes occur at processor/model/forward boundaries."
+      ]
+    },
+    {
+      "name": "validate_every",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "fixed_by_current_comparison_contract"
+    },
+    {
+      "name": "vision_encoder_path",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "native_scratch_or_self_contained_resume_only_verified"
+    },
+    {
+      "name": "vocab_min_count",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared vocabulary/data split/loader/device or metric construction remains in the native shared trainer path; architecture-specific changes occur at processor/model/forward boundaries."
+      ]
+    },
+    {
+      "name": "vocab_use_gelbooru_categories",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "shared_path_static_reviewed_live_verification_pending",
+      "evidence": [
+        "backend/core/tagger/tagger_trainer.py; backend/core/tagger/tagger_dataset.py; backend/api/routes.py: bounded static review",
+        "Shared vocabulary/data split/loader/device or metric construction remains in the native shared trainer path; architecture-specific changes occur at processor/model/forward boundaries."
+      ]
+    },
+    {
+      "name": "warmup_steps",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "implemented_in_registered_comparison"
+    },
+    {
+      "name": "weight_decay",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "implemented_in_registered_comparison"
+    },
+    {
+      "name": "fovea_feature_dim",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "native_factory_deployed_ui_statically_reviewed"
+    },
+    {
+      "name": "fovea_local_size",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "native_factory_deployed_ui_statically_reviewed"
+    },
+    {
+      "name": "fovea_local_views",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "native_factory_deployed_ui_statically_reviewed"
+    },
+    {
+      "name": "fovea_max_source_pixels",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "native_dataset_and_inference_predecode_cap_verified"
+    },
+    {
+      "name": "fovea_overview_size",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "native_factory_deployed_ui_statically_reviewed"
+    },
+    {
+      "name": "fovea_seed",
+      "in_defaults": true,
+      "in_request": true,
+      "status": "native_indexed_train_and_deterministic_inference_views_verified"
+    }
+  ]
+}

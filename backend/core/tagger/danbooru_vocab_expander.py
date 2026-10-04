@@ -65,6 +65,17 @@ class VocabExpander:
             self._pending.clear()
             return tags
 
+    def snapshot(self):
+        with self._lock:
+            return {"pending": sorted(self._pending), "already_proposed": sorted(self._already_proposed)}
+
+    def restore(self, document):
+        pending, proposed = set(document["pending"]), set(document["already_proposed"])
+        if not pending.issubset(proposed):
+            raise ValueError("pending proposals are not in the deduplication set")
+        with self._lock:
+            self._pending, self._already_proposed = pending, proposed
+
 def _expand_param_state(
     state: Dict[str, Any],
     n_new: int,

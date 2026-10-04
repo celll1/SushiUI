@@ -359,6 +359,25 @@ class CustomAttentionPooling(nn.Module):
         return self.proj_v(x)  # [B, N, hidden_proj_dim]
 
 
+def _infer_pooler_dimensions(
+    cls_dim: Optional[int],
+    hidden_proj_dim: Optional[int],
+    tensor_shapes: Dict[str, Tuple[int, ...]],
+) -> Tuple[Optional[int], Optional[int]]:
+    """Recover pooler metadata omitted by early checkpoints."""
+    if cls_dim is None and "custom_pooler.query" in tensor_shapes:
+        cls_dim = int(tensor_shapes["custom_pooler.query"][-1])
+    if (
+        cls_dim is not None
+        and hidden_proj_dim is None
+        and "custom_pooler.proj_v.weight" in tensor_shapes
+    ):
+        projected_dim = int(tensor_shapes["custom_pooler.proj_v.weight"][0])
+        if projected_dim != cls_dim:
+            hidden_proj_dim = projected_dim
+    return cls_dim, hidden_proj_dim
+
+
 
 def _expanded_linear_head(old_head: nn.Linear, new_num_tags: int) -> nn.Linear:
     old_num_tags = old_head.out_features
@@ -526,7 +545,16 @@ class SigLIP2TaggerModel(nn.Module):
         # overwritten by model.load_state_dict below regardless).
         from safetensors import safe_open as _safe_open
         with _safe_open(checkpoint_path, framework="pt", device="cpu") as _f:
-            _ckpt_has_encoder = any(k.startswith("vision_encoder.") for k in _f.keys())
+            _checkpoint_keys = set(_f.keys())
+            _ckpt_has_encoder = any(k.startswith("vision_encoder.") for k in _checkpoint_keys)
+            _pooler_shapes = {
+                key: tuple(_f.get_slice(key).get_shape())
+                for key in ("custom_pooler.query", "custom_pooler.proj_v.weight")
+                if key in _checkpoint_keys
+            }
+        cls_dim, hidden_proj_dim = _infer_pooler_dimensions(
+            cls_dim, hidden_proj_dim, _pooler_shapes
+        )
 
         if vision_encoder_path and not _ckpt_has_encoder:
             vision_encoder = _load_vision_encoder(vision_encoder_path, repo_id=repo_id)
@@ -1018,7 +1046,10 @@ def _inherit_head(
 
     # Move to same device as existing head
     device = next(model.head.parameters()).device
-    model.head = new_head.to(device)
+    if hasattr(model, "replace_head"):
+        model.replace_head(new_head.to(device))
+    else:
+        model.head = new_head.to(device)
 
 
 def _inherit_custom_pooler(

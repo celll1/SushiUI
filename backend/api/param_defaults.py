@@ -3761,7 +3761,41 @@ CONCEPT_EXPOSURE_DEFAULTS: Dict[str, Any] = {
 # Tagger Training (TaggerTrainingRunCreateRequest)
 # ---------------------------------------------------------------------------
 
+TAGGER_DIAGNOSTIC_DEFAULTS: Dict[str, Any] = {
+    "enabled": False,
+    "interval_steps": 15000,
+    "focus_preview": False,
+    "threshold_mode": "training",
+    "threshold": 0.35,
+    "min_samples_for_per_tag": 5,
+    "min_best_thr": 0.05,
+}
+
+TAGGER_TRAINING_START_DEFAULTS: Dict[str, Any] = {"continuous": False}
+
+TAGGER_JOINT_REVIEW_DEFAULTS: Dict[str, Any] = {
+    "batch_size": 8, "workers": 8, "epochs": 10, "epoch_samples": 240000,
+    "candidate_count": 16, "selection_budget": 4, "random_count": 1,
+    "oracle_interval": 16, "oracle_chunk_size": 4, "learning_rate": 0.0001,
+    "weight_decay": 0.0001, "warmup_steps": 1000, "router_weight": 1.0,
+    "checkpoint_every_steps": 250, "log_every": 25, "review_steps": 1000,
+    "external_flash": True,
+}
+
 TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
+    "architecture": "siglip2",
+    "fovea_overview_size": 448,
+    "fovea_local_size": 256,
+    "fovea_local_views": 4,
+    "fovea_feature_dim": 512,
+    "fovea_max_source_pixels": 40000000,
+    "fovea_seed": 42,
+    "fovea_learned_routing": True,
+    "fovea_candidate_count": 16,
+    "fovea_random_count": 1,
+    "fovea_oracle_interval": 16,
+    "fovea_oracle_chunk_size": 4,
+    "fovea_router_weight": 1.0,
     "run_name": None,
     "vision_encoder_path": "",
     # Physical GPU index this run trains on. None uses the default device.

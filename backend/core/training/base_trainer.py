@@ -4232,11 +4232,12 @@ class BaseTrainer(ABC):
             metadata["has_reference"] = bool(metadata["reference_images"])
         return metadata
 
-    def _annotate_ming_items(self, datasets):
+    def _annotate_ming_items(self, datasets, progress_callback=None):
         if not getattr(self, "is_ming_image_01", False):
             return 0
         from core.models.ming_image_01.dataset import annotate_datasets
-        return annotate_datasets(datasets, profile=self.ming_image_01_components.artifact.profile)
+        return annotate_datasets(datasets, profile=self.ming_image_01_components.artifact.profile,
+            progress_callback=progress_callback, stop_check=self._check_stop_requested)
 
     def _prepare_epoch_items(self, datasets, epoch, run_id, bucket_manager, base_resolutions):
         """Materialize one epoch's ``[(item, dataset)]`` and re-establish the invariants
@@ -15798,7 +15799,7 @@ class BaseTrainer(ABC):
             self.bucket_strategy = bucket_strategy
 
         self._training_datasets = datasets
-        self._annotate_ming_items(datasets)
+        self._annotate_ming_items(datasets, progress_callback=progress_callback)
         self._sample_prompts = sample_prompts or [
             dict(prompt) for prompt in _TRAINING_DEFAULTS["sample_prompts"]
         ]

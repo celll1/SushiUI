@@ -210,6 +210,7 @@ def test_common_epoch_reload_reestablishes_records_and_bucket_metadata(tmp_path)
     original = [dict(item) for item in dataset.items]
     dataset.reload_for_epoch = lambda epoch_num, run_id: [dict(item, caption=f"word{epoch_num+5}") for item in original]
     owner = _Trainer(pixel_align=16)
+    owner._check_stop_requested = lambda: None
     owner.is_ming_image_01 = True
     owner.ming_image_01_components = SimpleNamespace(artifact=SimpleNamespace(profile="layer_decompose"))
     owner._annotate_ming_items = MethodType(BaseTrainer._annotate_ming_items, owner)
@@ -352,3 +353,29 @@ def test_shared_item_type_contract(tmp_path, item_type):
         with pytest.raises(ValueError, match="images, not video/audio"):
             annotate_datasets([dataset], profile="generation_edit")
         assert "_ming_record" not in item
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_annotation_progress_and_cancel_are_atomic(tmp_path, cancel):
+    from types import SimpleNamespace
+    from core.models.ming_image_01.dataset import annotate_datasets
+    primary = tmp_path / "image.png"
+    Image.new("RGB", (32, 32)).save(primary)
+    items = [{"image_path": str(primary), "item_type": "single"} for _ in range(2)]
+    dataset = SimpleNamespace(dataset_root=tmp_path, items=items)
+    reports, checks = [], []
+    def stop_check():
+        checks.append(1)
+        if cancel and len(checks) == 2:
+            raise KeyboardInterrupt("stop")
+    def progress(**event):
+        reports.append(event)
+    if cancel:
+        with pytest.raises(KeyboardInterrupt):
+            annotate_datasets([dataset], profile="generation_edit", progress_callback=progress, stop_check=stop_check)
+        assert all("_ming_record" not in item for item in items)
+        assert [r["step"] for r in reports] == [0]
+    else:
+        annotate_datasets([dataset], profile="generation_edit", progress_callback=progress, stop_check=stop_check)
+        assert [r["step"] for r in reports] == [0, 2]
+        assert reports[-1]["detail"] == "Validating Ming images: 2/2"
+    assert len(checks) == 2

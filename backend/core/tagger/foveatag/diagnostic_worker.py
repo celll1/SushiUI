@@ -110,7 +110,7 @@ def render_training(job, request):
         "catalog_step": step, "counts": counts, "threshold": threshold,
         "sample_id": source["source_index"], "native_focus_used": True, "learned_routing": True,
         "focus_preview": False, "local_boxes": geometry, "prediction_origin": snapshot["prediction_origin"],
-        "tag_labels": "vocabulary"}
+        "tag_labels": "vocabulary", "training_window": snapshot.get("training_window")}
     atomic_json(index_path, {"items": [item, *previous["items"]], "error": None})
     assert not torch.cuda.is_initialized()
 

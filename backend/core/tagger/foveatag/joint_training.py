@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import copy
 from typing import Iterable, Optional, Sequence
 
 import torch
@@ -14,6 +15,7 @@ from .router import EvidenceRouter, select_proposals, select_training_proposals
 from .router_data import FoveaRouterBatch
 from .router_training import evaluate_dense_candidates, router_objective
 from .supervised_training import FoveaValidationResult, _loss_tensor, _threshold_metrics
+from .training_metrics import TrainingMetricWindow, confusion_counts
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,11 @@ class FoveaJointTrainer:
         self.model = model
         self.router = router
         self.criterion = criterion
+        self.oracle_criterion = copy.deepcopy(criterion)
+        if hasattr(self.oracle_criterion, "reduction"):
+            self.oracle_criterion.reduction = "none"
+        self.metric_window = TrainingMetricWindow()
+        self.diagnostic_metric_window = TrainingMetricWindow()
         self.optimizer = optimizer
         self.device = torch.device(device)
         self.selection_budget = selection_budget
@@ -154,6 +161,7 @@ class FoveaJointTrainer:
                     loss_mask=batch.loss_masks,
                     candidate_mask=batch.views.local_view_mask,
                     diversity_weight=0.0,
+                    criterion=self.oracle_criterion,
                 )
                 ranking = router_loss.ranking
                 diversity = router_loss.diversity
@@ -182,8 +190,12 @@ class FoveaJointTrainer:
         if self.scheduler is not None:
             self.scheduler.step()
         self.optimizer.zero_grad(set_to_none=True)
+        counts = confusion_counts(logits, batch.labels, batch.loss_masks, self.diagnostic_threshold)
+        for window in (self.metric_window, self.diagnostic_metric_window):
+            window.add(counts, int(batch.labels.shape[0]), global_step + 1, self.diagnostic_threshold)
         if self.diagnostic_due is not None and self.diagnostic_due(global_step + 1):
             self._capture_diagnostic(batch, logits, selected, global_step + 1)
+            self.diagnostic_metric_window.reset()
         return FoveaJointTrainResult(
             loss=float(loss.detach()),
             classification=float(classification.detach()),
@@ -210,6 +222,7 @@ class FoveaJointTrainer:
             "boxes": batch.candidate_boxes[index].detach().float().cpu()[indices[valid]],
             "random_slots": (torch.arange(len(indices))[valid] >= self.selection_budget - self.random_count),
             "threshold": self.diagnostic_threshold, "local_size": int(batch.views.local_images.shape[-1]),
+            "training_window": self.diagnostic_metric_window.report(),
             "prediction_origin": "training_forward_before_optimizer_update"})
 
     @torch.inference_mode()

@@ -181,6 +181,7 @@ def router_objective(
     loss_mask: Optional[torch.Tensor] = None,
     candidate_mask: Optional[torch.Tensor] = None,
     diversity_weight: float = 0.05,
+    criterion: Optional[nn.Module] = None,
 ) -> RouterObjectiveOutput:
     """Build detached dense-oracle targets and differentiable router losses."""
     if diversity_weight < 0:
@@ -202,9 +203,10 @@ def router_objective(
     targets = dense_oracle_targets(
         oracle.candidate_logits,
         oracle.overview_logits,
-        labels > 0,
+        labels,
         loss_mask=loss_mask,
         candidate_mask=valid,
+        criterion=criterion,
     )
     routing = router(
         oracle.overview.local_map.detach(),

@@ -44,6 +44,21 @@ An untrained router can be wrong; retaining exploration prevents exclusive
 dependence on its early choices. Oracle frequency and gradient balance remain
 measured optimization questions, not evidence of useful learned focus.
 
+The 2026-10-04 FP review found that the initial implementation rewarded only
+the largest positive-tag logit increase, without subtracting known-negative
+deterioration. This did not implement the intended classification-loss utility.
+`masked_asl_delta_v2` replaces it with detached float32 per-image masked ASL
+improvement over overview-only prediction, using the joint classifier's loss
+parameters and masks. Improvements are clamped at zero and normalized across
+valid candidates; negative-only samples can reward suppression. This remains
+independent-candidate supervision, not a measured combined-set improvement.
+Resumes retain optimizer/scheduler/RNG and record the objective revision at the
+saved step; new checkpoints and exports name the objective. Annotation-based
+micro precision/recall, FP/known-negative rate and FP/image are recorded across
+all successful training batches, with explicit window bounds and threshold.
+Diagnostic history shows interval aggregates alongside the single-image panel.
+No A/B/C, fixed-image gate or agent image inspection is reintroduced.
+
 Initial bounded starts used 1,000 updates per review segment. The owner now
 requests continuous training and step-native diagnostics. The monitor resumes
 with `continuous=true`, without a review-segment stop. Explicit stop and epoch
@@ -65,7 +80,7 @@ workflow explicitly enables diagnostics, but the owner can disable them.
 Generated diagnostic images are not opened or read by the agent.
 
 Acceptance is owner visual review of (a) whether selected regions are useful,
-(b) whether the anonymous prediction diagnostic improves the desired decisions,
+(b) whether the prediction diagnostic improves the desired decisions,
 and (c) whether the fixed overview causes unacceptable distortion-related errors.
 Aggregate metrics are supporting diagnostics, not automatic pass/fail rules.
 All-tag averages cannot substitute for the small-detail objective. AP/F1 slices
@@ -302,9 +317,10 @@ accessories, text, distant objects, and details not named during design.
 At training time, reserve part of the budget for stratified random coverage.
 Otherwise an early, incorrect router can permanently hide rare evidence. On a
 small fraction of batches, evaluate a denser candidate set and train the router
-to rank regions by positive-tag margin improvement relative to the overview-only
-prediction. Absolute local confidence is not the target, and unknown labels are
-masked before tag identities are reduced into one candidate utility. The dense pass is a
+to rank regions by masked classification-loss reduction relative to the overview-only
+prediction, including known-negative penalties. Absolute local confidence is
+not the target, and unknown labels are masked before losses are reduced into
+one candidate utility. The dense pass is a
 training-only oracle and is detached from the main classifier when producing
 router targets. Its cost is one local-encoder pass per dense candidate, so the
 candidate count and batch fraction must be set from the Phase 0 timing harness

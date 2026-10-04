@@ -8252,7 +8252,7 @@ paths:
       - {name: run_id, in: path, required: true, schema: {type: string}}
     get:
       summary: Get optional FoveaTag diagnostic history
-      description: New joint panels display vocabulary tag names with actual training-step predictions and selected views, without a rating filter. Metadata tag_labels=vocabulary identifies named panels; older anonymous panels are unchanged. Legacy comparisons use a fixed General sample. All published history is retained. Attempts lists skipped interval steps.
+      description: New joint panels display vocabulary tag names with actual training-step predictions and selected views, without a rating filter. Optional training_window contains all successful training batches since the last diagnostic boundary or resume, with start_step, end_step, samples, batches, threshold, tp, fp, fn, known_negative, precision, recall, fp_rate (FP/known negatives), fp_per_image and scope=training_annotations_pre_update. Undefined rates are null. These are annotation-based training metrics, not validation accuracy. Metadata tag_labels=vocabulary identifies named panels; older anonymous panels are unchanged. Legacy comparisons use a fixed General sample. All published history is retained. Attempts lists skipped interval steps.
       responses:
         '200':
           description: Settings, published panels, worker status and sanitized error

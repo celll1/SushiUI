@@ -99,6 +99,11 @@ export default function TaggerDiagnosticsPanel({ runId, active }: { runId: strin
         <span className="text-gray-400">{selectedIndex + 1} / {state?.items.length}</span>
       </div>
       <p className="text-xs text-gray-300">{selected.mode} · step {selected.step.toLocaleString()} · {selected.tag_labels === "vocabulary" ? "タグ名表示" : "匿名表示（旧画像）"} · TP {selected.counts.TP} / FP {selected.counts.FP} / FN {selected.counts.FN} / TN {selected.counts.TN}</p>
+      {selected.training_window && <div className="text-xs text-gray-300 space-y-1">
+        <p>区間集計（学習ラベル基準・検証精度ではありません）: step {selected.training_window.start_step.toLocaleString()}–{selected.training_window.end_step.toLocaleString()} · {selected.training_window.samples.toLocaleString()}枚 · threshold {selected.training_window.threshold}</p>
+        <p>Precision {selected.training_window.precision == null ? "—" : `${(selected.training_window.precision * 100).toFixed(2)}%`} / Recall {selected.training_window.recall == null ? "—" : `${(selected.training_window.recall * 100).toFixed(2)}%`} / FP率（既知negative中） {selected.training_window.fp_rate == null ? "—" : `${(selected.training_window.fp_rate * 100).toFixed(4)}%`} / FP/画像 {selected.training_window.fp_per_image?.toFixed(2) ?? "—"}</p>
+        <p>TP {selected.training_window.tp.toLocaleString()} / FP {selected.training_window.fp.toLocaleString()} / FN {selected.training_window.fn.toLocaleString()}。再開・閾値変更後の区間は短くなる場合があります。</p>
+      </div>}
       {imageUrl && <a href={imageUrl} target="_blank" rel="noreferrer">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={imageUrl} alt="TP/FP/FN診断とfocus入力範囲" className="w-full rounded" />

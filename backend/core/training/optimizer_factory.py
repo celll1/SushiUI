@@ -82,6 +82,7 @@ class OptimizerFactory:
                 betas=betas,
                 weight_decay=weight_decay,
                 eps=eps,
+                foreach=kwargs.get("foreach"),
             )
             print(f"[OptimizerFactory] Created AdamW optimizer (32bit)")
             return optimizer

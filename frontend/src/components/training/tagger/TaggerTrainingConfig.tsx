@@ -30,6 +30,11 @@ const FOVEA_INPUT_FIELDS = [
   ["fovea_feature_dim", "Evidence feature width", 1],
   ["fovea_max_source_pixels", "Source pixel cap (larger images skipped)", 1],
   ["fovea_seed", "Sampling / split seed", 0],
+  ["fovea_candidate_count", "Router candidates", 1],
+  ["fovea_random_count", "Training exploration slots", 0],
+  ["fovea_oracle_interval", "Oracle interval (steps)", 1],
+  ["fovea_oracle_chunk_size", "Oracle encoder chunk", 1],
+  ["fovea_router_weight", "Router loss weight", 0],
 ] as const;
 
 function configFromDefaults(
@@ -42,6 +47,9 @@ function configFromDefaults(
     run_name: editRun?.run_name ?? "",
     vision_encoder_path: editRun?.vision_encoder_path ?? defaults.vision_encoder_path ?? "",
   } as ConfigState;
+  if (editRun?.config.architecture === "foveatag" && editRun.config.fovea_learned_routing === undefined) {
+    merged.fovea_learned_routing = false;
+  }
   return merged;
 }
 
@@ -227,17 +235,22 @@ export default function TaggerTrainingConfig({
         {config.architecture === "foveatag" && (
           <section>
             <label className="block text-sm font-medium text-gray-300 mb-3">FoveaTag input</label>
+            <label className="flex items-center gap-2 text-sm text-gray-300 mb-3">
+              <input type="checkbox" checked={!!config.fovea_learned_routing}
+                onChange={e => setField("fovea_learned_routing", e.target.checked)} />
+              Learned router（既存の非router checkpointとは互換性なし）
+            </label>
             <div className="grid grid-cols-2 gap-4">
               {FOVEA_INPUT_FIELDS.map(([key, label, minimum]) => (
                 <div key={key}>
                   <label className="block text-xs text-gray-400 mb-1">{label}</label>
-                  <NumberInput value={config[key]!} min={minimum} step={1}
+                  <NumberInput value={config[key]!} min={minimum} step={key === "fovea_router_weight" ? 0.01 : 1}
                     onCommit={(v) => setField(key, v)}
                     className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white" />
                 </div>
               ))}
             </div>
-            <p className="text-xs text-gray-500 mt-2">Overviewと原画像の局所viewを共有encoderで処理します。この設定は新しい通常Run用で、既存A/B/C比較の条件は変更しません。</p>
+            <p className="text-xs text-gray-500 mt-2">Router有効時は固定正方形overviewから原画像の局所viewを選択します。学習時のみ探索枠を残します。無効時のviewはモデルの選択ではありません。入力・router構造の変更には新しいRunが必要です。</p>
           </section>
         )}
 

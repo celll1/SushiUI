@@ -146,12 +146,13 @@ def test_native_rng_roundtrip_includes_numpy_and_current_cuda_stream(monkeypatch
 @pytest.mark.parametrize("metrics_enabled", [False, True])
 @pytest.mark.parametrize("f1_enabled", [False, True])
 @pytest.mark.parametrize("exposure_enabled", [False, True])
-def test_actual_common_loop_stop_resume_matches_uninterrupted(tmp_path, monkeypatch, method, metrics_enabled, f1_enabled, exposure_enabled):
+def test_actual_common_loop_stop_resume_matches_uninterrupted(tmp_path, monkeypatch, method, metrics_enabled, f1_enabled, exposure_enabled, routing_enabled=False):
     from core.tagger.tagger_trainer import TaggerTrainer, _load_training_state
     from core.tagger.tag_vocabulary import TagVocabulary
     from core.gpu_coordinator import gpu_coordinator
     from core.tagger.foveatag.trainer_model import FoveaTrainerModel
     original_forward = FoveaTrainerModel.forward
+    original_routed = FoveaTrainerModel.forward_routed
     encoder_config = FoveaEncoderConfig(widths=(8, 16, 32, 32), depths=(1, 1, 1, 1),
         attention_heads=(2, 2), scale_dropout=.2)
     encoder = FoveaEncoder(encoder_config)
@@ -159,6 +160,7 @@ def test_actual_common_loop_stop_resume_matches_uninterrupted(tmp_path, monkeypa
         run_contract={"encoder": asdict(encoder_config)}, epoch=1, global_step=1, validation={})
     config = dict(TAGGER_TRAINING_DEFAULTS)
     config.update(architecture="foveatag", vision_encoder_path=str(path), training_method=method,
+        fovea_learned_routing=False,
         fovea_feature_dim=16, fovea_overview_size=32, fovea_local_size=32, fovea_local_views=2,
         epochs=1, batch_size=2, num_workers=0, optimizer="adamw", mixed_precision="fp32",
         gradient_checkpointing=False, head_lr_multiplier=1., warmup_steps=2,
@@ -166,6 +168,9 @@ def test_actual_common_loop_stop_resume_matches_uninterrupted(tmp_path, monkeypa
         train_f1_eval_every_n_steps=1 if f1_enabled else 0,
         train_f1_threshold_search_every_n_steps=2 if f1_enabled else 0,
         danbooru_train_count_enable=exposure_enabled)
+    if routing_enabled:
+        config.update(fovea_learned_routing=True, fovea_candidate_count=2, fovea_random_count=1,
+            fovea_oracle_interval=1, fovea_oracle_chunk_size=1)
     vocabulary = TagVocabulary()
     vocabulary.tag_to_idx = {f"anonymous-{i}": i for i in range(5)}
     vocabulary.idx_to_tag = {i: name for name, i in vocabulary.tag_to_idx.items()}
@@ -177,6 +182,9 @@ def test_actual_common_loop_stop_resume_matches_uninterrupted(tmp_path, monkeypa
         random.seed(15)
         np.random.seed(15)
         source = SyntheticNativeDataset()
+        if routing_enabled:
+            from core.tagger.foveatag.shared_factory import build_processor
+            source.processor = build_processor(config, training=True)
         loader = DataLoader(source, batch_size=2, collate_fn=tagger_collate_fn)
         trainer = None
         events = []
@@ -190,6 +198,10 @@ def test_actual_common_loop_stop_resume_matches_uninterrupted(tmp_path, monkeypa
             assert trainer._coordinator_handle._model_lock._is_owned()
             return original_forward(instance, *args, **kwargs)
         monkeypatch.setattr(FoveaTrainerModel, "forward", locked_forward)
+        def locked_routed(instance, *args, **kwargs):
+            assert trainer._coordinator_handle._model_lock._is_owned()
+            return original_routed(instance, *args, **kwargs)
+        monkeypatch.setattr(FoveaTrainerModel, "forward_routed", locked_routed)
         resume_name = "step_000002" if f1_enabled else "latest"
         state = _load_training_state(str(directory), resume_name) if resume else None
         try:
@@ -228,6 +240,11 @@ def test_actual_common_loop_stop_resume_matches_uninterrupted(tmp_path, monkeypa
         torch.testing.assert_close(expected[key], actual[key], rtol=0, atol=0)
 
 
+def test_learned_router_common_loop_exact_resume(tmp_path, monkeypatch):
+    test_actual_common_loop_stop_resume_matches_uninterrupted(tmp_path, monkeypatch,
+        "full", True, True, True, routing_enabled=True)
+
+
 @pytest.mark.parametrize("best_only", [False, True])
 def test_native_best_only_suppresses_archives_but_retains_resume(tmp_path, best_only):
     from core.tagger.tagger_trainer import TaggerTrainer, _load_training_state
@@ -236,6 +253,7 @@ def test_native_best_only_suppresses_archives_but_retains_resume(tmp_path, best_
 
     config = dict(TAGGER_TRAINING_DEFAULTS)
     config.update(architecture="foveatag", training_method="full", vision_encoder_path="",
+        fovea_learned_routing=False,
         fovea_feature_dim=16, epochs=1, optimizer="adamw", mixed_precision="fp32",
         use_flash_attention=False, gradient_checkpointing=False, warmup_steps=2,
         save_every_n_steps=1, save_every_n_epochs=1, save_best_only=best_only,

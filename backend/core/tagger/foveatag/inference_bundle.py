@@ -16,7 +16,7 @@ def publish_inference_bundle(directory, name, *, optional_suffixes):
     if Path(name).name != name or not set(optional_suffixes).issubset(OPTIONAL):
         raise ValueError("invalid native inference publication paths")
     metadata = json.loads((directory / f"{name}_metadata.json").read_text(encoding="utf-8"))
-    if metadata.get("kind") != "foveatag_shared_trainer_weights":
+    if metadata.get("kind") not in ("foveatag_shared_trainer_weights", "foveatag_direct_joint_weights"):
         raise ValueError("native inference publication requires native weights")
     export_selected = "_export.safetensors" in optional_suffixes
     if export_selected != ("_export_metadata.json" in optional_suffixes):

@@ -342,9 +342,12 @@ class TaggerTrainerHandle:
         if native and processor.training:
             from .foveatag.processor import FoveaProcessor
             processor = FoveaProcessor(processor.config, seed=processor.seed, training=False)
-        inputs = processor(images=[pil_img], return_tensors="pt")
+        staged_native = native and getattr(self._model, "router", None) is not None
+        inputs = None if staged_native else processor(images=[pil_img], return_tensors="pt")
         device = next(iter(self._model.parameters())).device
-        if native:
+        if staged_native:
+            pass
+        elif native:
             inputs = {"views": inputs["fovea_views"].to(device)}
         else:
             inputs = {k: v.to(device) for k, v in inputs.items()
@@ -369,7 +372,7 @@ class TaggerTrainerHandle:
             with torch.no_grad(), torch.autocast(device_type=device.type,
                     dtype=self._inference_amp_dtype,
                     enabled=native and device.type == "cuda" and self._inference_amp_dtype is not None):
-                logits = self._model(**inputs)  # [1, V]
+                logits = self._model.predict_native(pil_img, processor) if staged_native else self._model(**inputs)
                 probs = torch.sigmoid(logits[0]).cpu().float().numpy()  # [V]
         finally:
             if _hook is not None:

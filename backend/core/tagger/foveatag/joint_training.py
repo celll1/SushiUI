@@ -83,6 +83,9 @@ class FoveaJointTrainer:
         self.diagnostic_callback = None
         self.diagnostic_threshold = .35
         self.diagnostic_epoch = 0
+        self.common_metrics = None
+        self.diagnostic_vocabulary = None
+        self.metrics_event = None
         self.scaler = torch.amp.GradScaler(
             "cuda",
             enabled=self.device.type == "cuda" and mixed_precision == torch.float16,
@@ -190,6 +193,9 @@ class FoveaJointTrainer:
         if self.scheduler is not None:
             self.scheduler.step()
         self.optimizer.zero_grad(set_to_none=True)
+        if self.common_metrics is not None:
+            self.metrics_event = self.common_metrics.update(logits, batch.labels, batch.loss_masks, global_step + 1)
+            self.diagnostic_threshold = self.common_metrics.threshold
         counts = confusion_counts(logits, batch.labels, batch.loss_masks, self.diagnostic_threshold)
         for window in (self.metric_window, self.diagnostic_metric_window):
             window.add(counts, int(batch.labels.shape[0]), global_step + 1, self.diagnostic_threshold)
@@ -215,6 +221,8 @@ class FoveaJointTrainer:
             return
         indices = selected[index].detach().cpu()
         valid = indices >= 0
+        runtime = getattr(self, "common_metrics", None)
+        metrics = runtime.accumulator.compute_metrics() if runtime is not None else None
         self.diagnostic_callback({"step": step, "epoch": self.diagnostic_epoch, "source": batch.diagnostic_sources[index],
             "probabilities": logits[index].detach().float().sigmoid().cpu(),
             "positive": (batch.labels[index] >= .5).detach().cpu(),
@@ -223,6 +231,8 @@ class FoveaJointTrainer:
             "random_slots": (torch.arange(len(indices))[valid] >= self.selection_budget - self.random_count),
             "threshold": self.diagnostic_threshold, "local_size": int(batch.views.local_images.shape[-1]),
             "training_window": self.diagnostic_metric_window.report(),
+            "vocabulary": getattr(self, "diagnostic_vocabulary", None),
+            "tag_metrics": ({key: torch.as_tensor(metrics[key]) for key in ("best_thr", "n_pos")} if metrics is not None else None),
             "prediction_origin": "training_forward_before_optimizer_update"})
 
     @torch.inference_mode()

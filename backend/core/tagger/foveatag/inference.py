@@ -36,6 +36,7 @@ class FoveaInferenceResult:
     evidence_boxes: Tuple[Optional[SourceBox], ...]
     selected_boxes: Tuple[SourceBox, ...]
     stage_milliseconds: Dict[str, float]
+    ood_features: Optional[torch.Tensor] = None
 
 
 def source_field_sizes(
@@ -176,12 +177,16 @@ def predict_image(
         timings["local_and_head"] = _elapsed_ms(local_started)
         evidence_boxes = _tag_evidence_boxes(details, local_specs)
         timings["total"] = _elapsed_ms(total_started)
+        valid = local_batch.local_view_mask.repeat_interleave(model.evidence_slots_per_view, dim=1)
+        evidence = details.head_output.mixed_evidence
+        local_mean = (evidence * valid[..., None]).sum(1) / valid.sum(1).clamp_min(1)[:, None]
         return FoveaInferenceResult(
             logits=details.logits[0].detach().cpu(),
             probabilities=details.logits[0].sigmoid().detach().cpu(),
             evidence_boxes=evidence_boxes,
             selected_boxes=tuple(spec.source_box for spec in local_specs),
             stage_milliseconds=timings,
+            ood_features=torch.cat((details.global_features, local_mean), dim=1).detach().cpu(),
         )
     finally:
         model.train(model_was_training)

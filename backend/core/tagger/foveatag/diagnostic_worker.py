@@ -27,7 +27,7 @@ def probability_groups(probs, positive, known, threshold):
     }
 
 
-def named_probability_rows(probs, groups, mapping):
+def named_probability_rows(probs, groups, mapping, thresholds=None):
     import numpy as np
     labels = [None] * len(probs)
     for tag, value in mapping.items():
@@ -41,7 +41,8 @@ def named_probability_rows(probs, groups, mapping):
     for key, color in (("TP", "green"), ("FP", "red"), ("FN", "blue")):
         indices = np.flatnonzero(groups[key])
         indices = indices[np.argsort(-probs[indices], kind="stable")][:100]
-        rows.extend((textwrap.fill(f"{key}: {labels[index]}", width=45), float(probs[index]), color) for index in indices)
+        rows.extend((textwrap.fill(f"{key}: {labels[index]}", width=45), float(probs[index]), color,
+            *(() if thresholds is None else (float(thresholds[index]),))) for index in indices)
     return rows
 
 
@@ -55,20 +56,28 @@ def render_training(job, request):
     from matplotlib.figure import Figure
     from matplotlib.patches import Rectangle
     snapshot = torch.load(job / "training_snapshot.pt", map_location="cpu", weights_only=False)
-    if snapshot.get("prediction_origin") != "training_forward_before_optimizer_update":
+    if snapshot.get("prediction_origin") not in ("training_forward_before_optimizer_update", "validation_forward"):
         raise ValueError("Actual training predictions are required")
     source = snapshot["source"]
-    with Image.open(source["source_path"]) as original:
-        if original.width * original.height > request["arguments"]["max_source_pixels"]:
+    from io import BytesIO
+    image_source = BytesIO(source["source_bytes"]) if source.get("source_bytes") else source["source_path"]
+    with Image.open(image_source) as original:
+        cap = request["arguments"].get("max_source_pixels")
+        if cap is not None and original.width * original.height > cap:
             raise ValueError("Training source exceeds input cap")
         image = original.convert("RGB")
         image.load()
     probs, positive, known = (snapshot[key].numpy() for key in ("probabilities", "positive", "known"))
-    threshold = float(snapshot["threshold"])
-    groups = probability_groups(probs, positive, known, threshold)
+    from core.tagger.diagnostic_thresholds import decision_thresholds
+    from api.param_defaults import TAGGER_DIAGNOSTIC_DEFAULTS
+    settings = request.get("threshold_settings", TAGGER_DIAGNOSTIC_DEFAULTS)
+    thresholds, threshold, per_tag_count = decision_thresholds(snapshot, settings)
+    groups = probability_groups(probs, positive, known, thresholds)
     counts = {key: int(mask.sum()) for key, mask in groups.items()}
-    vocabulary = json.loads(Path(request["arguments"]["vocabulary_path"]).read_text())
-    rows = named_probability_rows(probs, groups, vocabulary["tag_to_idx"])
+    vocabulary = snapshot.get("vocabulary")
+    if vocabulary is None:
+        vocabulary = json.loads(Path(request["arguments"]["vocabulary_path"]).read_text())
+    rows = named_probability_rows(probs, groups, vocabulary["tag_to_idx"], thresholds)
     height = max(10, min(60, sum(row[0].count("\n") + 1 for row in rows) * .15))
     fig = Figure(figsize=(18, height))
     axes = fig.subplots(1, 2)
@@ -83,34 +92,46 @@ def render_training(job, request):
         axes[0].add_patch(Rectangle((x, y), width, height, fill=False, linewidth=2,
             edgecolor=color, linestyle="--" if random_slot else "-"))
         scale = width / snapshot["local_size"]
-        axes[0].text(x, y, f"L{index + 1}: {'exploration' if random_slot else 'router'}; {scale:.2f} source px/canvas px", color=color, fontsize=8)
+        selection = "sampled" if snapshot.get("focus_kind") == "sampled" else "exploration" if random_slot else "router"
+        axes[0].text(x, y, f"L{index + 1}: {selection}; {scale:.2f} source px/canvas px", color=color, fontsize=8)
         geometry.append({"x": x, "y": y, "width": width, "height": height,
             "random_exploration": random_slot, "source_pixels_per_canvas_pixel": scale})
     axes[0].set_xlim(0, image.width)
     axes[0].set_ylim(image.height, 0)
-    axes[0].set_title("Actual step training input (no rating filter)\nSolid: router selection; dashed: random exploration", fontsize=10)
+    focus_kind = snapshot.get("focus_kind", "learned_router")
+    focus_label = ("Solid: router selection; dashed: random exploration" if focus_kind == "learned_router" else
+        "Sampled local inputs (not learned routing)" if focus_kind == "sampled" else "No source-native focus")
+    axes[0].set_title("Actual forward source (no rating filter)\n" + focus_label, fontsize=10)
     axes[1].barh(np.arange(len(rows)), [row[1] for row in rows], color=[row[2] for row in rows])
     axes[1].set_yticks(np.arange(len(rows)), [row[0] for row in rows], fontsize=7)
     axes[1].set_xlim(0, 1)
-    axes[1].axvline(threshold, color="black", linestyle="--")
+    if settings["threshold_mode"] == "per_tag":
+        axes[1].scatter([row[3] for row in rows], np.arange(len(rows)), marker="|", color="black",
+            label="Decision threshold (per tag / fallback)", zorder=3)
+        axes[1].legend(fontsize=8)
+    else:
+        axes[1].axvline(threshold, color="black", linestyle="--")
     axes[1].set_title(" / ".join(f"{key}={count}" for key, count in counts.items()))
     axes[1].set_xlabel("Training probabilities; top 100 per TP / FP / FN; TN count only")
     step = int(snapshot["step"])
-    fig.suptitle(f"FoveaTag training forward / step {step}")
-    fig.text(.5, .02, "Before optimizer update; actual selected training views. Vocabulary tag labels; annotation-based counts.", ha="center", fontsize=8)
+    fig.suptitle(f"Tagger {snapshot['prediction_origin']} / step {step} / thresholds: {settings['threshold_mode']}")
+    fig.text(.5, .02, "Captured forward; vocabulary tag labels; annotation-based counts. Threshold changes do not change model probabilities.", ha="center", fontsize=8)
     fig.tight_layout(rect=(0, .04, 1, .96))
     root = job.parent
-    name = f"training_routed_{step}_{uuid.uuid4().hex[:8]}.png"
+    name = f"training_{'routed' if focus_kind == 'learned_router' else 'tagger'}_{step}_{uuid.uuid4().hex[:8]}.png"
     temporary = root / (name + ".tmp")
     fig.savefig(temporary, format="png", dpi=120)
     os.replace(temporary, root / name)
     index_path = root / "index.json"
     previous = json.loads(index_path.read_text()) if index_path.is_file() else {"items": []}
-    item = {"filename": name, "mode": "routed_training", "step": step, "epoch": snapshot["epoch"],
+    item = {"filename": name, "mode": "routed_training" if focus_kind == "learned_router" else "tagger_training", "step": step, "epoch": snapshot["epoch"],
         "catalog_step": step, "counts": counts, "threshold": threshold,
-        "sample_id": source["source_index"], "native_focus_used": True, "learned_routing": True,
+        "sample_id": source["source_index"], "native_focus_used": focus_kind != "none", "learned_routing": focus_kind == "learned_router",
         "focus_preview": False, "local_boxes": geometry, "prediction_origin": snapshot["prediction_origin"],
-        "tag_labels": "vocabulary", "training_window": snapshot.get("training_window")}
+        "tag_labels": "vocabulary", "training_window": snapshot.get("training_window"),
+        "threshold_mode": settings["threshold_mode"], "per_tag_threshold_count": per_tag_count,
+        "threshold_fallback_count": len(probs) - per_tag_count,
+        "threshold_revision": request.get("threshold_revision"), "snapshot_filename": request.get("snapshot_filename")}
     atomic_json(index_path, {"items": [item, *previous["items"]], "error": None})
     assert not torch.cuda.is_initialized()
 

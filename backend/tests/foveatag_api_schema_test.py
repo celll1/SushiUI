@@ -77,5 +77,5 @@ def test_native_positive_dimensions_refuse_zero(key):
 
 
 def test_zero_local_budget_and_zero_seed_are_explicitly_supported():
-    request = TaggerTrainingRunCreateRequest(**params(fovea_local_views=0, fovea_seed=0))
+    request = TaggerTrainingRunCreateRequest(**params(fovea_learned_routing=False, fovea_local_views=0, fovea_seed=0))
     assert request.fovea_local_views == request.fovea_seed == 0

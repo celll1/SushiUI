@@ -15,7 +15,9 @@ from torch import nn
 JOINT_CHECKPOINT_FORMAT_VERSION = 1
 EDITABLE_JOINT_FIELDS = ("epochs", "batch_size", "workers", "learning_rate", "weight_decay",
     "warmup_steps", "candidate_count", "selection_budget", "random_count", "oracle_interval",
-    "oracle_chunk_size", "router_weight", "checkpoint_every_steps", "log_every", "review_steps", "external_flash")
+    "oracle_chunk_size", "router_weight", "checkpoint_every_steps", "log_every", "review_steps", "external_flash",
+    "save_tag_metrics", "train_f1_eval_every_n_steps", "train_f1_threshold_search_every_n_steps",
+    "train_f1_initial_threshold", "train_f1_buffer_batches")
 
 
 def save_joint_checkpoint(
@@ -33,6 +35,7 @@ def save_joint_checkpoint(
     run_contract: Mapping[str, Any],
     history: list[Mapping[str, Any]],
     epoch_accumulator: Optional[Mapping[str, Any]] = None,
+    metrics_runtime: Optional[Mapping[str, Any]] = None,
 ) -> Path:
     if min(epoch, sample_offset, global_step) < 0:
         raise ValueError("joint checkpoint progress must be non-negative")
@@ -50,6 +53,7 @@ def save_joint_checkpoint(
         "best_threshold": float(best_threshold),
         "run_contract": _canonical_json(run_contract),
         "history": list(history),
+        "metrics_runtime": dict(metrics_runtime) if metrics_runtime is not None else None,
         "epoch_accumulator": (
             dict(epoch_accumulator) if epoch_accumulator is not None else None
         ),

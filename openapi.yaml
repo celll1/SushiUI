@@ -8252,7 +8252,7 @@ paths:
       - {name: run_id, in: path, required: true, schema: {type: string}}
     get:
       summary: Get optional FoveaTag diagnostic history
-      description: New joint panels display vocabulary tag names with actual training-step predictions and selected views, without a rating filter. Optional training_window contains all successful training batches since the last diagnostic boundary or resume, with start_step, end_step, samples, batches, threshold, tp, fp, fn, known_negative, precision, recall, fp_rate (FP/known negatives), fp_per_image and scope=training_annotations_pre_update. Undefined rates are null. These are annotation-based training metrics, not validation accuracy. Metadata tag_labels=vocabulary identifies named panels; older anonymous panels are unchanged. Legacy comparisons use a fixed General sample. All published history is retained. Attempts lists skipped interval steps.
+      description: Optional actual-forward diagnostics for SigLIP2, native FoveaTag and learned-router training. Images display TP/FP/FN vocabulary names, without a rating filter. threshold_mode is training (captured common threshold), global (user threshold) or per_tag (captured tag metrics with common fallback). Captured vocabulary/probabilities/masks are retained for CPU-only rerendering without new inference. Optional training_window contains annotation-based aggregate training metrics, not validation accuracy. Legacy comparisons retain their fixed General sample. All history is retained; attempts lists skipped intervals.
       responses:
         '200':
           description: Settings, published panels, worker status and sanitized error
@@ -8274,15 +8274,28 @@ paths:
                 enabled: {type: boolean, default: false, example: false, description: Opt-in periodic generation}
                 interval_steps: {type: integer, minimum: 1000, maximum: 1000000, default: 15000, example: 15000, description: Joint runs capture actual training forwards at global-step multiples of this interval with no rating filter. Legacy comparisons evaluate a minimum interval at checkpoints.}
                 focus_preview: {type: boolean, default: false, example: false, description: Show clearly marked C-policy preview for A/B; never claim it was used}
+                threshold_mode: {type: string, enum: [training, global, per_tag], default: training, example: per_tag, description: "Captured training threshold, user common threshold, or captured tag-specific best-F1 thresholds with fallback"}
+                threshold: {type: number, minimum: 0, maximum: 1, default: 0.35, example: 0.5, description: User common threshold and fallback for insufficient per-tag samples}
+                min_samples_for_per_tag: {type: integer, minimum: 1, default: 5, example: 5, description: Minimum observed positives required for a captured tag-specific threshold}
+                min_best_thr: {type: number, minimum: 0, maximum: 1, default: 0.05, example: 0.05, description: Floor on valid per-tag thresholds}
       responses:
         '200': {description: Updated diagnostic status}
         '404': {description: Run not found}
         '422': {description: Invalid settings or unsupported architecture}
     post:
-      summary: Render a captured training-step panel or a legacy checkpoint panel
+      summary: Render a captured panel using current diagnostic threshold settings
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                filename: {type: string, description: Published panel whose immutable snapshot is rerendered; omitted selects latest captured forward}
       responses:
         '200': {description: Current status; busy worker is not duplicated}
-        '409': {description: Manual generation requires a paused run}
+        '409': {description: Legacy checkpoint-based comparison generation requires a paused run; captured forward rendering is CPU-only and allowed during training}
         '404': {description: Run not found}
         '422': {description: Unsupported run or unavailable checkpoint}
   /tagger-training/runs/{run_id}/diagnostics/images/{name}:
@@ -9347,7 +9360,8 @@ paths:
   /tagger/siglip2/export-onnx:
     post:
       tags: [tagger]
-      summary: Export the loaded SigLIP2 model to ONNX
+      summary: Export the loaded SigLIP2 or native FoveaTag model to ONNX
+      description: Native FoveaTag exports overview and optional router stages alongside the classifier graph. Host preprocessing selects and renders source crops before classification; all companion graphs and metadata are required. Native head filtering reindexes metrics consistently. Fixed canvas and focus budgets are recorded in metadata.
       requestBody:
         required: true
         content:
@@ -9365,7 +9379,8 @@ paths:
   /tagger/siglip2/extract-encoder:
     post:
       tags: [tagger]
-      summary: Extract a vision or text encoder from a HuggingFace repo
+      summary: Extract a vision or text encoder from a HuggingFace repo or a native vision encoder from local FoveaTag weights
+      description: For native FoveaTag vision extraction supply a local self-contained checkpoint path in repo_id. Native LoRA weights are merged into the extracted encoder. FoveaTag has no text encoder. The scratch-project lineage and source hash are recorded without introducing external weights.
       requestBody:
         required: true
         content:
@@ -29645,6 +29660,11 @@ components:
         log_every: {type: integer, minimum: 1, default: 25}
         review_steps: {type: integer, minimum: 1, default: 1000}
         external_flash: {type: boolean, default: true}
+        save_tag_metrics: {type: boolean, default: true}
+        train_f1_eval_every_n_steps: {type: integer, minimum: 0, default: 100}
+        train_f1_threshold_search_every_n_steps: {type: integer, minimum: 0, default: 500}
+        train_f1_initial_threshold: {type: number, minimum: 0, maximum: 1, default: 0.35}
+        train_f1_buffer_batches: {type: integer, minimum: 1, default: 16}
     TaggerTrainingRunCreateRequest:
       type: object
       description: Shared tagger options default from TAGGER_TRAINING_DEFAULTS in backend/api/param_defaults.py, also exposed by /schema/tagger-training-defaults. Encoder path and dataset_configs remain required. Defaults apply to new requests only; imported A/B/C comparisons preserve their saved configuration.
@@ -29694,6 +29714,12 @@ components:
           default: 42
           description: Native validation view and dataset split seed; unused by SigLIP2 and frozen imported comparisons.
           example: 42
+        fovea_learned_routing: {type: boolean, default: true, example: true, description: Train and use a learned source-local router in the common trainer; legacy sampled-view artifacts retain their recorded mode}
+        fovea_candidate_count: {type: integer, minimum: 1, default: 16, example: 16, description: Bounded generic multiscale candidate count; selected local budget must not exceed this}
+        fovea_random_count: {type: integer, minimum: 0, default: 1, example: 1, description: Training-only exploration slots; must be less than local view budget}
+        fovea_oracle_interval: {type: integer, minimum: 1, default: 16, example: 16, description: Logical optimizer-step interval for masked-loss oracle supervision}
+        fovea_oracle_chunk_size: {type: integer, minimum: 1, default: 4, example: 4, description: Local encoder chunk size for training-only dense oracle}
+        fovea_router_weight: {type: number, minimum: 0, default: 1.0, example: 1.0, description: Weight of the detached-utility router ranking loss; does not replace classification loss}
         vision_encoder_path:
           type: string
         dataset_configs:

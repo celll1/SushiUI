@@ -109,10 +109,10 @@ class EvidenceTagHead(nn.Module):
             )
             valid_counts = mask.sum(dim=1).clamp_min(1).to(local_term.dtype)
             local_term = local_term - self.temperature * valid_counts.log().unsqueeze(1)
-            local_term = torch.where(valid_samples.unsqueeze(-1), local_term, 0.0)
+            local_term = torch.where(valid_samples.unsqueeze(1), local_term, 0.0)
             best_indices = masked_scores.argmax(dim=1)
             best_indices = torch.where(
-                valid_samples.unsqueeze(-1),
+                valid_samples.unsqueeze(1),
                 best_indices,
                 torch.full_like(best_indices, -1),
             )

@@ -3703,6 +3703,10 @@ TAGGER_DIAGNOSTIC_DEFAULTS: Dict[str, Any] = {
     "enabled": False,
     "interval_steps": 15000,
     "focus_preview": False,
+    "threshold_mode": "training",
+    "threshold": 0.35,
+    "min_samples_for_per_tag": 5,
+    "min_best_thr": 0.05,
 }
 
 TAGGER_TRAINING_START_DEFAULTS: Dict[str, Any] = {"continuous": False}
@@ -3724,6 +3728,12 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "fovea_feature_dim": 512,
     "fovea_max_source_pixels": 40000000,
     "fovea_seed": 42,
+    "fovea_learned_routing": True,
+    "fovea_candidate_count": 16,
+    "fovea_random_count": 1,
+    "fovea_oracle_interval": 16,
+    "fovea_oracle_chunk_size": 4,
+    "fovea_router_weight": 1.0,
     "run_name": None,
     "vision_encoder_path": "",
     # Physical GPU index this run trains on. None uses the default device.

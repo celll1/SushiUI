@@ -144,6 +144,7 @@ def test_actual_native_mixed_loop_commits_collection_runtime(tmp_path):
         run_contract={"encoder": asdict(encoder.config)}, epoch=1, global_step=1, validation={})
     config = dict(TAGGER_TRAINING_DEFAULTS)
     config.update(architecture="foveatag", vision_encoder_path=path, training_method="full",
+        fovea_learned_routing=False,
         fovea_feature_dim=16, fovea_overview_size=32, fovea_local_size=32, fovea_local_views=2,
         epochs=1, batch_size=2, num_workers=0, optimizer="adamw", mixed_precision="fp32",
         gradient_checkpointing=False, save_tag_metrics=False, save_ood_reference=False,

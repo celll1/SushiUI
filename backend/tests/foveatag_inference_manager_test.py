@@ -61,9 +61,6 @@ def test_native_manager_load_predict_without_pretrained_processor(tmp_path, monk
         assert actual[f"tag_{index}"] == pytest.approx(float(probability), rel=3e-5, abs=3e-6)
     assert result == manager.predict(payload.getvalue(), threshold=0, max_num_patches=1)
     assert manager.predict(payload.getvalue(), use_calibration=True)["has_calibration"]
-    with pytest.raises(ValueError, match="ONNX export is not implemented"):
-        manager.export_onnx(str(tmp_path / "forbidden.onnx"))
-    assert not (tmp_path / "forbidden.onnx").exists()
     manager.unload()
     assert not manager.status["loaded"] and manager.native_sidecar_base is None
 

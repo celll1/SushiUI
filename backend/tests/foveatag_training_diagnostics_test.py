@@ -177,3 +177,33 @@ def test_named_rows_align_vocabulary_indices_and_known_tp_fp_fn():
     assert [row[0] for row in rows] == ["TP: fixture_alpha", "FP: fixture_gamma", "FN: fixture_beta"]
     with pytest.raises(ValueError, match="vocabulary"):
         named_probability_rows(probs, groups, {"fixture_alpha": 0})
+
+
+@pytest.mark.parametrize("architecture", ["siglip2", "foveatag"])
+def test_common_history_rerender_is_threshold_bound_and_keeps_latest(tmp_path, monkeypatch, architecture):
+    run = joint_run(tmp_path)
+    run.config = {"architecture": architecture}
+    monkeypatch.setattr(service, "_jobs", {})
+    monkeypatch.setattr(service.subprocess, "Popen", lambda *a, **k: SimpleNamespace(poll=lambda: 0))
+    settings = {**TAGGER_DIAGNOSTIC_DEFAULTS, "enabled": True}
+    service.configure(run, settings)
+    earlier = snapshot(tmp_path / "unopened.png", 1000)
+    later = snapshot(tmp_path / "unopened.png", 2000)
+    assert service.schedule_training(run, earlier)
+    root = service.directory(run)
+    old_job = next(root.glob("job-*"))
+    request = json.loads((old_job / "request.json").read_text())
+    service.write_json(root / "index.json", {"items": [{"filename": "old.png", "step": 1000,
+        "prediction_origin": earlier["prediction_origin"], "snapshot_filename": request["snapshot_filename"],
+        "threshold_revision": request["threshold_revision"]}]})
+    assert service.schedule_training(run, later)
+    latest_bytes = (root / "latest_training_snapshot.pt").read_bytes()
+    service.configure(run, {**settings, "threshold_mode": "global", "threshold": .8})
+    assert service.schedule(run, force=True, filename="old.png")
+    assert (root / "latest_training_snapshot.pt").read_bytes() == latest_bytes
+    with pytest.raises(ValueError, match="retained snapshot"):
+        service.schedule(run, force=True, filename="../old.png")
+    jobs = [json.loads((job / "request.json").read_text()) for job in root.glob("job-*")]
+    rerender = next(job for job in jobs if job["threshold_settings"]["threshold_mode"] == "global")
+    assert rerender["catalog_step"] == 1000
+    assert rerender["threshold_revision"] != request["threshold_revision"]

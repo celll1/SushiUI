@@ -124,7 +124,10 @@ def nearest_source_features(
     """Gather the nearest overview cell for each source-space proposal center."""
     features = feature_map.flatten(2).transpose(1, 2)
     coordinates = feature_coordinates.flatten(1, 2).to(torch.float32)
-    distances = torch.cdist(candidate_centers.to(torch.float32), coordinates)
+    if torch.onnx.is_in_onnx_export():
+        distances = (candidate_centers.float()[:, :, None] - coordinates[:, None]).square().sum(-1)
+    else:
+        distances = torch.cdist(candidate_centers.to(torch.float32), coordinates)
     indices = distances.argmin(dim=-1)
     return torch.gather(features, 1, indices.unsqueeze(-1).expand(-1, -1, features.shape[-1]))
 

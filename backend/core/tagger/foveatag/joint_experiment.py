@@ -560,6 +560,9 @@ def _train_epoch(
         accumulator["oracle_steps"] += int(result.oracle_used)
         accumulator["selected_views"] += result.selected_views
         global_step += 1
+        if getattr(trainer, "metrics_event", None) is not None:
+            _emit_progress(progress_callback, "train_f1", trainer.metrics_event)
+            trainer.metrics_event = None
         steps_added += 1
         current_offset = sample_offset + consumed
         if global_step == 1 or global_step % log_every == 0:
@@ -571,6 +574,7 @@ def _train_epoch(
                 "global_step": global_step,
                 "loss": result.loss,
                 "classification": result.classification,
+                "lr": trainer.optimizer.param_groups[0]["lr"],
                 "router_ranking": result.router_ranking,
                 "router_diversity": result.router_diversity,
                 "oracle_used": result.oracle_used,
@@ -621,6 +625,7 @@ def _save_progress(trainer, output_dir, epoch, offset, step, best_f1, threshold,
         run_contract=contract,
         history=list(history),
         epoch_accumulator=accumulator,
+        metrics_runtime=(trainer.common_metrics.save(output_dir, step) if getattr(trainer, "common_metrics", None) is not None else None),
     )
 
 

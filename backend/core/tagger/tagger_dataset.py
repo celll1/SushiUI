@@ -353,7 +353,9 @@ class TaggerDataset(Dataset):
             pixel_attention_mask = torch.zeros(0, dtype=torch.int32)          # sentinel → [B, 0] after collate
             spatial_shapes       = torch.zeros(0, dtype=torch.int64)          # sentinel
 
-        return pixel_values, pixel_attention_mask, spatial_shapes, raw.label, raw.loss_mask
+        from .diagnostic_capture import DiagnosticBatch
+        return DiagnosticBatch((pixel_values, pixel_attention_mask, spatial_shapes, raw.label, raw.loss_mask),
+            ({"source_path": raw.source_path, "source_index": idx, "dataset_id": raw.dataset_id},))
 
     def get_raw_item(self, idx: int) -> Optional[RawTaggerSample]:
         """Decode one source image while retaining the existing label lifecycle."""
@@ -419,19 +421,21 @@ def tagger_collate_fn(batch):
         return None
 
     pixel_values_list, masks_list, shapes_list, labels_list, loss_masks_list = zip(*valid)
+    from .diagnostic_capture import DiagnosticBatch
+    sources = tuple(getattr(item, "diagnostic_sources", ({},))[0] for item in valid)
 
     if not isinstance(pixel_values_list[0], torch.Tensor):
         from .foveatag.batch import FoveaViewTensorBatch
         from .foveatag.processor import concatenate_view_tensors
         if not all(isinstance(value, FoveaViewTensorBatch) for value in pixel_values_list):
             raise ValueError("cannot mix native and SigLIP2 inputs in one batch")
-        return (
+        return DiagnosticBatch((
             concatenate_view_tensors(pixel_values_list),
             torch.stack(masks_list),
             torch.stack(shapes_list),
             torch.stack(labels_list),
             torch.stack(loss_masks_list),
-        )
+        ), sources)
 
     # Stack pixel_values; for NaFlex with varying patch counts, pad to max.
     try:
@@ -451,13 +455,13 @@ def tagger_collate_fn(batch):
             pixel_attention_mask[i, :n] = pm
         spatial_shapes = torch.stack(shapes_list)
 
-    return (
+    return DiagnosticBatch((
         pixel_values,
         pixel_attention_mask,
         spatial_shapes,
         torch.stack(labels_list),
         torch.stack(loss_masks_list),
-    )
+    ), sources)
 
 
 

@@ -379,3 +379,20 @@ def test_annotation_progress_and_cancel_are_atomic(tmp_path, cancel):
         assert [r["step"] for r in reports] == [0, 2]
         assert reports[-1]["detail"] == "Validating Ming images: 2/2"
     assert len(checks) == 2
+
+@pytest.mark.parametrize("profile", ["generation_edit", "layer_decompose"])
+def test_primary_decode_is_reused_for_target_and_reference(tmp_path, monkeypatch, profile):
+    import core.models.ming_image_01.dataset as native
+    primary, _ = layer_files(tmp_path)
+    if profile == "generation_edit":
+        sidecar_path(primary).unlink()
+    original, decoded = native._decode, []
+    def decode(data):
+        decoded.append(1)
+        return original(data)
+    monkeypatch.setattr(native, "_decode", decode)
+    record = native.inspect_item(primary, root=tmp_path, profile=profile,
+        reference_paths=[primary] if profile == "generation_edit" else ())
+    assert len(decoded) == (1 if profile == "generation_edit" else 2)
+    assert record.targets[0] == record.references[0]
+    assert record.source_size == (64, 32)

@@ -2733,8 +2733,7 @@ def update_training_progress(
         epoch: Current epoch (training phase only)
         loss: Current loss (training phase only)
         lr: Learning rate (training phase only)
-        detail: Pre-built phase_detail override (used by "sampling" to name the
-            prompt being rendered); ignored for phases with a fixed template.
+        detail: Optional initialization or sampling phase description.
     """
     run = db.get(TrainingRun, run_id)
     if run:
@@ -2749,7 +2748,7 @@ def _apply_training_progress(run, phase, step, total, epoch=0, loss=None,
     phase_progress = min((step / total * 100.0) if total > 0 else 0.0, 100.0)
     run.phase_progress = phase_progress
     if phase == "initializing":
-        run.phase_detail = f"Loading dataset: {step}/{total} items"
+        run.phase_detail = detail or f"Loading dataset: {step}/{total} items"
     elif phase == "bucketing":
         run.phase_detail = f"Assigning buckets: {step}/{total} images"
     elif phase == "crop_precompute":

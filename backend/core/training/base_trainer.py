@@ -4236,8 +4236,10 @@ class BaseTrainer(ABC):
         if not getattr(self, "is_ming_image_01", False):
             return 0
         from core.models.ming_image_01.dataset import annotate_datasets
+        output_dir = getattr(self, "output_dir", None)
         return annotate_datasets(datasets, profile=self.ming_image_01_components.artifact.profile,
-            progress_callback=progress_callback, stop_check=self._check_stop_requested)
+            progress_callback=progress_callback, stop_check=self._check_stop_requested,
+            validation_cache_path=None if output_dir is None else Path(output_dir)/".dataset_cache"/"ming_preflight_sizes_v1.json")
 
     def _prepare_epoch_items(self, datasets, epoch, run_id, bucket_manager, base_resolutions):
         """Materialize one epoch's ``[(item, dataset)]`` and re-establish the invariants

@@ -30,6 +30,14 @@ def test_apply_training_progress_preserves_training_fields():
     assert run.progress == 40.0
 
 
+def test_initializing_progress_preserves_validation_detail_and_default():
+    run = SimpleNamespace()
+    _apply_training_progress(run, "initializing", 64, 128, detail="Validating Ming images: 64/128")
+    assert run.phase_detail == "Validating Ming images: 64/128" and run.phase_progress == 50.
+    _apply_training_progress(run, "initializing", 64, 128)
+    assert run.phase_detail == "Loading dataset: 64/128 items"
+
+
 def test_reporter_coalesces_pending_snapshots_and_flushes_latest():
     run = SimpleNamespace(loss=None, learning_rate=None)
     first_commit_started = threading.Event()

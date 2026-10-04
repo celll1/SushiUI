@@ -142,3 +142,23 @@ The corrected GPU continuation reached step 8/120 with finite loss 7.6341295,
 LR 1.75e-6 and status `running`; step 6-8 checkpoints were saved. Five-epoch
 completion is not claimed. Browser reconnection timed out, so this continuation
 was verified through the trainer log and REST status rather than a new UI capture.
+
+## Dataset preflight latency
+
+On the original 17,683-image dataset, DB/caption materialization took about three
+seconds, while native Ming preflight fully decoded every original image before
+bucketing. Preserve successful plain-Design size validation in a per-run JSON
+cache under `.dataset_cache/ming_preflight_sizes_v1.json`. Every reuse still reads
+and hashes the source bytes; only an exact SHA-256 match skips pixel decoding.
+Sidecars/references use the full validation path, changed images are decoded
+again, corrupt cache files fall back to validation, and failed/cancelled passes
+do not replace the cache. Per-batch content checks remain in place.
+
+Eight original dataset-38 images measured 0.233 seconds on first validation and
+0.011 seconds on cached validation (about 22x for that small, OS-cached sample).
+This is not a full-dataset speed guarantee; initial validation remains necessary.
+The combined dataset/progress CPU suite passed 49 cases, and edited modules
+compiled/imported without initializing CUDA. Initialization progress now retains
+the explicit `Validating Ming images` detail instead of a generic loading label.
+The running child was not restarted; these changes apply to subsequent training
+processes, and a cache must first be populated by a successful validation pass.

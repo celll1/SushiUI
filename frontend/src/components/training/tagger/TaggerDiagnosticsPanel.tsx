@@ -121,7 +121,7 @@ export default function TaggerDiagnosticsPanel({ runId, active, legacyComparison
           onClick={() => setSelectedFilename(state?.items[selectedIndex + 1]?.filename ?? null)}
           className="bg-gray-700 rounded px-2 py-1 disabled:opacity-40">古い画像へ</button>
         <select value={filename} onChange={e => setSelectedFilename(e.target.value)} className="bg-gray-800 rounded p-1" aria-label="診断画像の履歴">
-          {state?.items.map(item => <option key={item.filename} value={item.filename}>step {item.step.toLocaleString()} · {item.mode}</option>)}
+          {state?.items.map(item => <option key={item.filename} value={item.filename}>step {item.step.toLocaleString()} · {item.mode} · {item.threshold_mode ?? "旧設定"}</option>)}
         </select>
         <button disabled={selectedIndex === 0} onClick={() => setSelectedFilename(state?.items[selectedIndex - 1]?.filename ?? null)}
           className="bg-gray-700 rounded px-2 py-1 disabled:opacity-40">新しい画像へ</button>

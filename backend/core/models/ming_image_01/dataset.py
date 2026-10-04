@@ -249,15 +249,23 @@ def supervision_identity(record):
     return hashlib.sha256(json.dumps(payload, sort_keys=True, allow_nan=False).encode()).hexdigest()
 
 
-def annotate_datasets(datasets, *, profile):
+def annotate_datasets(datasets, *, profile, progress_callback=None, stop_check=None):
     """Attach native records, excluding Layer assets that are not primary samples."""
     pending, selected = [], []
+    total = sum(len(dataset.items) for dataset in datasets)
+    processed = 0
     for dataset in datasets:
         root = getattr(dataset, "dataset_root", None)
         if root is None:
             raise ValueError("Ming datasets require an explicit dataset_root")
         primaries, loose = [], []
         for item in dataset.items:
+            if stop_check is not None:
+                stop_check()
+            if progress_callback is not None and processed % 64 == 0:
+                progress_callback(phase="initializing", step=processed, total=total,
+                    detail=f"Validating Ming images: {processed}/{total}")
+            processed += 1
             if item.get("item_type", "single") not in {"single", "image"}:
                 raise ValueError("Ming training targets are images, not video/audio")
             if profile == "layer_decompose" and not sidecar_path(item["image_path"]).exists():
@@ -279,6 +287,9 @@ def annotate_datasets(datasets, *, profile):
         item["reference_images"] = [str(asset.path) for asset in record.references]
     for dataset, items in selected:
         dataset.items = items
+    if progress_callback is not None:
+        progress_callback(phase="initializing", step=total, total=total,
+            detail=f"Validating Ming images: {total}/{total}")
     return len(pending)
 
 

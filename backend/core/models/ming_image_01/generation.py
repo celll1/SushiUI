@@ -2,6 +2,8 @@
 
 from contextlib import nullcontext
 
+import torch
+
 from .conditioning import MingConditioning
 from .prompting import prepare_inputs, encode_inputs
 from .sampling import MingSampler, MingGenerationCancelled
@@ -39,6 +41,8 @@ class MingGenerator:
         with context("conditioner"):
             check_cancel()
             condition = encode_inputs(self.components.conditioner, prepared, requires_grad=False)
+            if not all(torch.isfinite(value).all() for value in (condition.queries, condition.direct)):
+                raise ValueError("Ming conditioner produced nonfinite conditioning")
         check_cancel()
         with context("denoising"):
             transformer = self.components.transformer

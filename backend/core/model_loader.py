@@ -2298,7 +2298,7 @@ class ModelLoader:
             return ModelLoader.load_flux2_from_safetensors(file_path, device, torch.bfloat16)
 
         if model_type == "ming_image_01":
-            return ModelLoader.load_ming_image_01_from_path(file_path, torch_dtype)
+            return ModelLoader.load_ming_image_01_from_path(file_path, torch.bfloat16)
 
         if model_type == "qwen_image_21":
             print("[ModelLoader] Loading as Qwen-Image 2.1 (split artifact)")
@@ -2800,7 +2800,7 @@ class ModelLoader:
             return ModelLoader.load_krea2_from_path(model_path, torch.bfloat16)
 
         if model_type == "ming_image_01":
-            return ModelLoader.load_ming_image_01_from_path(model_path, torch_dtype)
+            return ModelLoader.load_ming_image_01_from_path(model_path, torch.bfloat16)
 
         if model_type == "qwen_image_21":
             print("[ModelLoader] Loading as Qwen-Image 2.1")

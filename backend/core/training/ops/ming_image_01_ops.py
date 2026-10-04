@@ -66,7 +66,7 @@ def train_step(trainer, batch, *, timesteps=None, cfg_drop_mask=None, guidance_d
     return loss, prediction_loss.detach(), reconstruction.detach()
 
 
-def load_components(trainer):
+def load_components(trainer, *, resuming=False):
     from core.models.ming_image_01.loader import load_components as native_load
     from core.models.ming_image_01.training_options import resolve_ownership
     from core.models.ming_image_01.residual_unet import configure_training_topology
@@ -77,7 +77,7 @@ def load_components(trainer):
     trainer.ming_full_initialization = saved_full_initialization(components.artifact)
     trainer.ming_conditioner_full_initialization = saved_full_initialization(components.artifact,component="conditioner")
     configure_training_topology(components.transformer, trainer.config,
-                                resuming=bool(getattr(trainer, "resume_from_checkpoint", None)),
+                                resuming=resuming,
                                 pending_adapter_resume=bool(getattr(trainer, "_manages_own_resume", False)))
     groups, rates = resolve_ownership(trainer.config)
     trainer.ming_image_01_components = components

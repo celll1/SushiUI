@@ -77,7 +77,8 @@ def inspect_item(primary, *, root, profile, reference_paths=()):
     primary = _inside(root, primary)
     if profile not in {"generation_edit", "layer_decompose"}:
         raise ValueError("Unknown Ming dataset profile")
-    primary_image = _decode(primary.read_bytes())
+    primary_data = primary.read_bytes()
+    primary_image = _decode(primary_data)
     source_size = primary_image.size
     manifest = sidecar_path(primary)
     manifest_sha = None
@@ -123,8 +124,8 @@ def inspect_item(primary, *, root, profile, reference_paths=()):
     assets = []
     for index, path in enumerate([*target_paths, *reference_paths]):
         path = _inside(root, path)
-        data = path.read_bytes()
-        image = _decode(data)
+        data = primary_data if path == primary else path.read_bytes()
+        image = primary_image if path == primary else _decode(data)
         if image.size != source_size:
             raise ValueError("Ming paired target/reference assets require the source canvas geometry")
         if profile == "layer_decompose" and index < len(target_paths) and image.mode != "RGBA":

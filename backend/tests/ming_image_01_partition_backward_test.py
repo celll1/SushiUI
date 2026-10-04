@@ -13,20 +13,24 @@ from ming_image_01_rewiring_test import config,spec_for
 
 @pytest.mark.parametrize('padding',['zero_masked','learned'])
 @pytest.mark.parametrize('guided',[False,True])
-@pytest.mark.parametrize('rewired',[False,True])
-def test_native_sequential_backward_matches_single_backward_oracle(padding,guided,rewired):
+@pytest.mark.parametrize('grid,rewired',[((8,8),False),((8,8),True),((9,6),False)])
+def test_native_sequential_backward_matches_single_backward_oracle(padding,guided,rewired,grid):
     torch.manual_seed(59)
     model=create_transformer(config(padding),device='cpu',dtype=torch.float32)
+    if padding=='learned':
+        torch.nn.init.constant_(model.x_pad_token,.02)
+        torch.nn.init.constant_(model.cap_pad_token,.03)
     if rewired:restore_topology(model,spec_for(model))
     oracle=deepcopy(model);frames=3 if padding=='learned' else 1
-    clean=torch.randn(2,16,frames,16,16);noise=torch.randn_like(clean);sigma=torch.tensor([.2,.7])
+    height,width=grid
+    clean=torch.randn(2,16,frames,height*2,width*2);noise=torch.randn_like(clean);sigma=torch.tensor([.2,.7])
     weights=torch.tensor([[0.,1.,2.],[0.,2.,1.]]) if frames==3 else torch.ones(2,1)
     q=torch.randn(2,5,8);c=torch.randn(2,3,24)
     refs=[torch.randn(16,1,16,16),torch.randn(16,2,16,16)]
     settings={'qwen_guidance_loss_weight':.4 if guided else 0.,'qwen_guidance_loss_mix_mode':'blend',
               'qwen_guidance_loss_scale':4.,'qwen_guidance_loss_schedule':'sigma',
               'qwen_guidance_loss_extrapolation_max_rms':.25}
-    plan=MingPartitionAdapter().build_fixed_plan(8,8,count=4,halo=0,split_ratio_min=.5,split_ratio_max=.5)
+    plan=MingPartitionAdapter().build_fixed_plan(height,width,count=4,halo=0,split_ratio_min=.5,split_ratio_max=.5)
     leaves=[];metrics={}
     for current,sequential in ((model,True),(oracle,False)):
         qs=q.clone().requires_grad_(not guided);cs=c.clone().requires_grad_(not guided);leaves.append((qs,cs))
@@ -46,7 +50,7 @@ def test_native_sequential_backward_matches_single_backward_oracle(padding,guide
             return torch.stack(current(list(crop(noisy,region.input).unbind()),1-sigma,
                 list((batch.conditioning.queries*0 if zero else batch.conditioning.queries).unbind()),
                 cap_feats_2=list((batch.conditioning.direct*0 if zero else batch.conditioning.direct).unbind()),
-                ref_x=refs,target_spatial_position_ids=MingPartitionAdapter().position_ids(8,8,region.input),return_dict=False)[0])
+                ref_x=refs,target_spatial_position_ids=MingPartitionAdapter().position_ids(height,width,region.input),return_dict=False)[0])
         nulls=[];distance=torch.zeros(2)
         if guided:
             with torch.no_grad():

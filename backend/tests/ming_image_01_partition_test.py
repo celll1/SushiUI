@@ -14,6 +14,9 @@ from ming_image_01_rewiring_test import config,spec_for
 def test_full_box_matches_native_target_forward_and_all_gradients(padding,rewired):
     torch.manual_seed(29)
     original=create_transformer(config(padding),device='cpu',dtype=torch.float32)
+    if padding=='learned':
+        torch.nn.init.constant_(original.x_pad_token,.02)
+        torch.nn.init.constant_(original.cap_pad_token,.03)
     if rewired:restore_topology(original,spec_for(original))
     tiled=deepcopy(original)
     frames=3 if padding=='learned' else 1
@@ -38,6 +41,9 @@ def test_full_box_matches_native_target_forward_and_all_gradients(padding,rewire
 @pytest.mark.parametrize('rewired',[False,True])
 def test_cropped_target_keeps_full_reference_positions_and_gradient(padding,rewired):
     torch.manual_seed(31);model=create_transformer(config(padding),device='cpu',dtype=torch.float32)
+    if padding=='learned':
+        torch.nn.init.constant_(model.x_pad_token,.02)
+        torch.nn.init.constant_(model.cap_pad_token,.03)
     if rewired:restore_topology(model,spec_for(model))
     frames=3 if padding=='learned' else 1
     image=torch.randn(16,frames,16,16,requires_grad=True)
@@ -83,3 +89,20 @@ def test_adapter_complete_coverage_and_joint_caption_contract():
         assert ids[0].tolist()==[region.input.top,region.input.left]
     assert torch.all(coverage==1)
     assert adapter.topology.prefix_attends_target and adapter.topology.global_position_ids
+
+
+@pytest.mark.parametrize('height,width', [(105,60),(60,105),(105,61)])
+@pytest.mark.parametrize('count', [2,4])
+@pytest.mark.parametrize('halo', [0,2])
+def test_odd_patch_grid_has_exact_loss_coverage(height,width,count,halo):
+    from core.training.partition.core import build_fixed_partition_plan
+    adapter=MingPartitionAdapter()
+    plan=adapter.build_fixed_plan(height,width,count=count,halo=halo,seed=9)
+    coverage=torch.zeros(height,width,dtype=torch.int32)
+    for region in plan.regions:
+        b=region.core;coverage[b.top:b.bottom,b.left:b.right]+=1
+        ids=adapter.position_ids(height,width,region.input)
+        assert ids.shape==(region.input.tokens,2)
+    assert torch.all(coverage==1)
+    with pytest.raises(ValueError,match='even latent sides'):
+        build_fixed_partition_plan(height,width,count=count,halo=halo)

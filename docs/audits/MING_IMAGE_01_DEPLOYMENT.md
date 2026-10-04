@@ -118,3 +118,16 @@ attention/query chunk/residency (59 cases before the allocator additions),
 updated residency (28 cases), and buffer behavior (7 cases); these sets overlap.
 Changed backend files compile and import without CUDA initialization. Full-data
 long-run memory behavior and quality recovery remain unverified.
+
+## Five-epoch continuation: odd patch grids
+
+Extending run 170 to five epochs exposed a partition-planner rejection of a
+105x60 native patch grid (an aligned 210x120 latent). Ming's adapter now opts
+into odd patch-grid sides; the common planner retains its even-side requirement
+by default for Qwen. Core coverage, halo bounds and native pixel/patch alignment
+remain validated. U-Net downsample divisibility remains a separate constraint.
+CPU checks passed 36 Ming planning/forward/backward cases, including odd grids,
+guided losses and aligned U-Net cases, plus four existing Qwen coverage cases.
+The learned-padding test fixtures now initialize tokens that production obtains
+from the checkpoint instead of relying on `torch.empty` contents.
+Run 170 retains the 24-image subset and a total five-epoch/120-step target.

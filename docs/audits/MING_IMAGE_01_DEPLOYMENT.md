@@ -62,6 +62,76 @@ config change, frontend build or five-epoch completion is claimed.
 
 Date: 2026-10-04. Owner explicitly authorized main GPU/API use and API restart.
 
+## Latent encode performance investigation (2026-10-04)
+
+This follow-up is source inspection, read-only API comparison and a bounded CPU
+measurement; no training restart, GPU benchmark or precision change was made.
+Run 167 (Qwen) reports BF16 VAE; runs 170/172 (Ming) report FP32. All three use
+batch 1 and `swap_onthefly` with interval 256. Ming's loader explicitly loads
+the native VAE in FP32. This is a concrete precision difference, not a measured
+explanation of the whole speed gap. Earlier generation failures justify keeping
+the working FP32 path; encoder-only lower precision has not been accepted.
+
+`MingBatchBuffer._fill_latents` serializes image read/hash, paired pixel preparation,
+prompt preparation, VAE encode and blocking CPU latent copies. It releases CUDA
+allocator cache whenever the upcoming logical batch's shape changes. The shared
+Qwen/SDXL image swap refill also encodes items serially and copies latents to CPU;
+it does not establish that those models already have batched VAE/pixel prefetch.
+Ming's VAE stays resident for the grouped phase, so it is not reloaded per image.
+The native VAE uses posterior `mode()`, while the Qwen bridge uses `sample()`;
+do not substitute Qwen's distribution/normalization to chase speed.
+
+A one-pass CPU sample of 12 existing JPEG/PNG/WebP assets, four per extension,
+center-cropped/resized to 1024x1024 RGBA, with eight Torch CPU threads, measured:
+
+| Preparation stage | Mean per image |
+|---|---:|
+| File read and SHA-256 verification | 35.6 ms |
+| RGBA decode, center crop and resize | 66.0 ms |
+| Tensor normalization and finite/range checks | 8.1 ms |
+
+This approximately 110 ms includes neither the native prompt processor nor VAE,
+and is not the actual mixed-bucket epoch or a controlled cold/warm filesystem
+benchmark. The ignored reproducible script/results are
+`local/deployment/ming_latent_cpu_prepare_benchmark.{py,json}`. No disk tensor
+cache was created. Source-content verification remains necessary.
+
+Implementation priority:
+
+1. Prefetch paired pixels on CPU in a small, byte-bounded queue while one owner
+   encodes the preceding item on GPU. Preserve original epoch/batch-position crop
+   seeds, source SHA checks, paired Layer/reference transforms, cancellation and
+   worker exception propagation. Limit decoded-source memory as well as output
+   tensors; huge source images make a count-only queue unsafe. Prompt processor
+   ownership must remain serialized unless separately proven thread-safe.
+2. Group identical VAE geometry within a bounded refill window, scattering
+   outputs back to their original logical indices. This reduces shape-change
+   cache flushes without changing concept/batch order. Start with Design; native
+   Layer frames remain independent images. The VAE feature cache is mutable, so
+   parallel calls into the same GPU VAE are invalid. Never globally remove the
+   shape-transition cache release that fixed real VRAM retention.
+3. Measure same-geometry VAE batches of two, separate from the optimizer's
+   training batch size, only when live VRAM allows. Retain batch-one fallback;
+   Full optimizer residency changes available encoding memory. The native VAE
+   supports the B axis but optional slicing would defeat this batching. Validate
+   latent differences before accepting a different convolution execution shape.
+4. Add bounded pinned staging and event-owned H2D/D2H overlap if profiling shows
+   transfer stalls. `non_blocking=True` alone is insufficient; a CPU buffer must
+   not be consumed/reused until its transfer event completes.
+5. Evaluate encoder-only BF16/autocast against FP32 with finite checks, latent
+   error, RGBA/alpha reconstruction and training-loss checks. Keep decoder FP32
+   and make any accepted precision choice explicit in API/defaults/cache identity.
+   No precision change or numerical speedup is assumed from Qwen's success.
+
+At the next authorized GPU verification, measure source/hash, pixel/prompt CPU
+time, H2D, VAE, D2H, shape-flush counts and encoder residency transfer separately.
+Use a short warmed fixed-shape sample and one mixed-bucket refill, with CUDA events
+for GPU work and wall time for the complete phase. Compare identical inputs,
+weights, precision, crop identities and optimizer residency; report latency,
+images/sec, peak allocated/reserved VRAM, cancellation and latent agreement.
+Reducing the 256-item interval only shortens the initial wait and increases
+refill/swap frequency; it is not evidence of improved total encoding throughput.
+
 ## Deployed packages
 
 | Profile | Local model directory | HF revision | Converted package bytes |

@@ -19543,7 +19543,8 @@ components:
 
         - normal decode: `image` holds the full gallery record. Native Ming
           groups additionally retain every ordered RGBA image in `images` and
-          `groups`; `image` is the first record for existing clients.
+          `groups`; `image` is the Design image or Layer 1 from the first group.
+          The auxiliary canvas remains frame zero in `images` and `groups`.
         - `loop_decode="none"` (txt2img/img2img): `latent_id` only -- nothing
           was decoded, saved, or written to the gallery.
         - `skip_gallery=true` (txt2img/img2img/inpaint/outpaint): `filename`

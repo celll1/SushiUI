@@ -81,11 +81,12 @@ def persist_ming_results(output: MingGenerationOutput, *, db, params, generation
         response_groups = [{**{key: value for key, value in group.items() if key != "rows"},
                             "image_ids": [row.id for row in group["rows"]]} for group in groups]
         response = {"success": True, "actual_seed": output.groups[0].seed, "groups": response_groups, "warnings": warnings}
+        primary_index = 1 if output.groups[0].profile == "layer_decompose" else 0
         if skip_gallery:
-            response.update(filename=groups[0]["filenames"][0],
-                            image_path=f"/outputs/{groups[0]['filenames'][0]}")
+            response.update(filename=groups[0]["filenames"][primary_index],
+                            image_path=f"/outputs/{groups[0]['filenames'][primary_index]}")
         else:
-            response.update(image=response_images[0], images=response_images)
+            response.update(image=response_images[primary_index], images=response_images)
             check_cancel()
             db.commit()
         return response

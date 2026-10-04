@@ -110,6 +110,10 @@ def convert_package(source, destination, *, format_, device="cpu", max_shard_byt
     with tempfile.TemporaryDirectory(prefix=f".{destination.name}.ming-",dir=destination.parent) as temporary:
         staging = Path(temporary)/"package"
         staging.mkdir()
+        for pattern in ("LICENSE*", "NOTICE*"):
+            for notice in artifact.root.glob(pattern):
+                if notice.is_file():
+                    shutil.copy2(notice, staging / notice.name)
         processed = 0
         for component,directory in artifact.components.items():
             check_cancel()

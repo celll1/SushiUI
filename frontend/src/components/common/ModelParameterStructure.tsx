@@ -17,9 +17,9 @@ export default function ModelParameterStructure({ info }: { info: ModelInfo }) {
   const total = rows.reduce((sum, [, row]) => sum + row.parameters, 0);
   const stored = Object.values(info.serialized_storage ?? {}).reduce((sum, row) => sum + row.storage_bytes, 0);
   return <details className="mt-2 w-full rounded border border-gray-700 p-2 text-xs">
-    <summary className="cursor-pointer text-sky-300">Loaded component structure / {total.toLocaleString()} parameters</summary>
+    <summary className="cursor-pointer text-sky-300">Loaded component structure / {total.toLocaleString()} floating parameter objects</summary>
     <p className="my-2 text-gray-400">{info.profile} / {info.main_blocks} main blocks + {info.noise_refiner_blocks} image and {info.context_refiner_blocks} context refiners. Green: trainable; blue: frozen.</p>
-    <div role="img" aria-label="Loaded model parameter distribution and training ownership">
+    <div role="img" aria-label="Loaded floating parameter distribution and training ownership">
       {rows.map(([name, row]) => <div key={name} className="my-2">
         <div className="flex flex-wrap justify-between gap-2"><span>{labels[name] ?? name}</span><span>{row.parameters.toLocaleString()} / trainable {row.trainable_parameters.toLocaleString()}</span></div>
         <div className="h-2 rounded bg-gray-800"><div className="h-2 overflow-hidden rounded bg-sky-600" style={{ width: `${total ? row.parameters / total * 100 : 0}%` }}>

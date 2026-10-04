@@ -134,12 +134,13 @@ def build_fixed_partition_plan(
     split_ratio_min: float = 0.35,
     split_ratio_max: float = 0.65,
     input_token_multiple: int = 1,
+    allow_odd_sides: bool = False,
 ) -> PartitionPlan:
     """Build a deterministic, epoch-varying two- or four-region plan."""
     height, width, count, halo = int(height), int(width), int(count), int(halo)
     if count not in (2, 4):
         raise ValueError(f"dit_partition_fixed_count must be 2 or 4, got {count}")
-    if height <= 0 or width <= 0 or height % 2 or width % 2:
+    if height <= 0 or width <= 0 or (not allow_odd_sides and (height % 2 or width % 2)):
         raise ValueError(
             "Fixed DiT partition prototype requires positive even latent sides, "
             f"got {height}x{width}"

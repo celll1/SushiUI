@@ -7,6 +7,10 @@ class MingPartitionAdapter(DiTPartitionAdapter):
     topology = PartitionTopology(prefix_attends_target=True, global_position_ids=True,
                                  input_token_multiple=1)
 
+    def build_fixed_plan(self, height, width, **kwargs):
+        # These are patch-grid sides; native latent sides are already aligned to patch size 2.
+        return super().build_fixed_plan(height, width, allow_odd_sides=True, **kwargs)
+
     def position_ids(self, full_height, full_width, box, *, device=None):
         if not (0 <= box.top < box.bottom <= full_height and
                 0 <= box.left < box.right <= full_width):
